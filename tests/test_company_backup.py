@@ -939,32 +939,21 @@ async def test_module_tables_referencing_in_a_loop_refused(real_engine, real_cli
         await _bk_drop(real_engine, "zz_gadgets", "zz_widgets")
 
 
-_BK_OUTSIDE_KEYS = {
-    # A key into a table of another schema, which a backup never carries.
-    "other_schema": ["CREATE SCHEMA zz_ext", "CREATE TABLE zz_ext.lookup (id uuid primary key)",
-                     "CREATE TABLE zz_widgets (id uuid primary key, "
-                     "company_id uuid not null references companies(id) on delete cascade, "
-                     "lookup_id uuid references zz_ext.lookup(id))"],
-    # A key one partition holds that its partitioned table does not.
-    "one_partition": ["CREATE SCHEMA zz_ext", "CREATE TABLE zz_ext.lookup (id uuid primary key)",
-                      "CREATE TABLE zz_widgets (id uuid primary key, "
-                      "company_id uuid not null references companies(id) on delete cascade, "
-                      "lookup_id uuid) PARTITION BY HASH (id)",
-                      "CREATE TABLE zz_widgets_p0 PARTITION OF zz_widgets FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
-                      "CREATE TABLE zz_widgets_p1 PARTITION OF zz_widgets FOR VALUES WITH (MODULUS 2, REMAINDER 1)",
-                      "ALTER TABLE zz_widgets_p0 ADD FOREIGN KEY (lookup_id) REFERENCES zz_ext.lookup(id)"],
-}
+# A key into a table of another schema, which a backup never carries.
+_BK_OTHER_SCHEMA = ("CREATE SCHEMA zz_ext", "CREATE TABLE zz_ext.lookup (id uuid primary key)",
+                    "CREATE TABLE zz_widgets (id uuid primary key, "
+                    "company_id uuid not null references companies(id) on delete cascade, "
+                    "lookup_id uuid references zz_ext.lookup(id))")
 
 
-@pytest.mark.parametrize("shape", sorted(_BK_OUTSIDE_KEYS))
-async def test_reference_outside_the_backup_is_cleared(real_engine, real_client, tmp_path, monkeypatch, shape):
-    """A value naming a row the backup does not carry is exported empty, so the backup
-    restores without binding it to an unrelated row that happens to share the id."""
+async def test_reference_outside_the_backup_is_cleared(real_engine, real_client, tmp_path, monkeypatch):
+    """A value naming a row the backup does not carry is exported empty, so the backup restores without binding it to an
+    unrelated row that happens to share the id."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
     try:
-        for sql in _BK_OUTSIDE_KEYS[shape]:
+        for sql in _BK_OTHER_SCHEMA:
             await _bk_sql(real_engine, sql)
         lookup = uuid.uuid4()
         await _bk_sql(real_engine, "INSERT INTO zz_ext.lookup (id) VALUES (:i)", i=lookup)
@@ -987,25 +976,33 @@ _BK_GADGETS = ("CREATE TABLE zz_gadgets (id uuid primary key, "
                "company_id uuid not null references companies(id) on delete cascade)")
 
 
-async def test_a_key_one_partition_holds_into_a_carried_table_stops_the_export(
-        real_engine, real_client, tmp_path, monkeypatch):
-    """Only one partition of zz_widgets holds its key to zz_gadgets, so in the other
-    partition the same column is plain data naming no gadget. A backup cannot tell the
-    two apart, so the export is refused naming the module and table, rather than writing
-    a file that could never be restored."""
+_BK_PARTIAL_TARGETS = {
+    "a carried table": (_BK_GADGETS, "zz_gadgets"),
+    "a table of another schema": (
+        "CREATE SCHEMA zz_ext", "CREATE TABLE zz_ext.gadgets (id uuid primary key, company_id uuid)", "zz_ext.gadgets"),
+}
+
+
+@pytest.mark.parametrize("target", list(_BK_PARTIAL_TARGETS))
+async def test_a_key_one_partition_holds_stops_the_export(real_engine, real_client, tmp_path, monkeypatch, target):
+    """Only one partition of zz_widgets holds its key, so in the other partition the same
+    column is plain company data naming nothing. A backup cannot tell the two apart, so
+    wherever the key points the export is refused naming the module and table, rather
+    than clearing that data or writing a file that could never be restored."""
+    *statements, table = _BK_PARTIAL_TARGETS[target]
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
     try:
-        for sql in (_BK_GADGETS,
+        for sql in (*statements,
                     "CREATE TABLE zz_widgets (id uuid primary key, company_id uuid not null "
                     "references companies(id) on delete cascade, gadget_id uuid) PARTITION BY RANGE (id)",
                     f"CREATE TABLE zz_widgets_p0 PARTITION OF zz_widgets FOR VALUES FROM (MINVALUE) TO ('{_BK_SPLIT}')",
                     f"CREATE TABLE zz_widgets_p1 PARTITION OF zz_widgets FOR VALUES FROM ('{_BK_SPLIT}') TO (MAXVALUE)",
-                    "ALTER TABLE zz_widgets_p0 ADD FOREIGN KEY (gadget_id) REFERENCES zz_gadgets(id)"):
+                    f"ALTER TABLE zz_widgets_p0 ADD FOREIGN KEY (gadget_id) REFERENCES {table}(id)"):
             await _bk_sql(real_engine, sql)
         gadget = uuid.uuid4()
-        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (:g, :c)", g=gadget, c=cid)
+        await _bk_sql(real_engine, f"INSERT INTO {table} VALUES (:g, :c)", g=gadget, c=cid)
         await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES ('10000000-0000-0000-0000-000000000001', :c, :g)",
                       c=cid, g=gadget)
         await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES ('f0000000-0000-0000-0000-000000000001', :c, :g)",
@@ -1018,6 +1015,7 @@ async def test_a_key_one_partition_holds_into_a_carried_table_stops_the_export(
                                       "back up yet. Nothing was backed up.")
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
 
 
 async def test_a_key_naming_a_partition_of_a_carried_table_stops_the_export(
@@ -1211,7 +1209,7 @@ async def test_a_backup_naming_a_row_outside_it_is_refused_plainly(
     _bk_fake_module(tmp_path, monkeypatch)
     user, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
     try:
-        for sql in _BK_OUTSIDE_KEYS["other_schema"]:
+        for sql in _BK_OTHER_SCHEMA:
             await _bk_sql(real_engine, sql)
         lookup = uuid.uuid4()
         await _bk_sql(real_engine, "INSERT INTO zz_ext.lookup (id) VALUES (:i)", i=lookup)

@@ -270,11 +270,11 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         keep = set(carried)
         order, unordered = db_catalog.fk_order(carried, schema)
         # A key one partition holds binds only that partition's rows, so the other rows'
-        # values in its columns name nothing a restore could check them against.
+        # values in its columns are data of their own that neither clearing nor remapping
+        # may touch, wherever the key points.
         for name in list(carried):
             fks = schema[name].fks
-            if (name in unordered
-                    or any(fk.partial for fk in fks if fk.target == "companies" or fk.target in keep)
+            if (name in unordered or any(fk.partial for fk in fks)
                     or any(schema[name].columns[c].notnull for fk in fks
                            if fk.target != "companies" and fk.target not in keep for c in fk.cols)):
                 if strict:
