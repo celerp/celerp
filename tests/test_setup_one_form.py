@@ -58,6 +58,8 @@ class _Stubs:
             side_effect=business_type_error,
             return_value=business_type_result or {"restart_required": False})
         self.restart_system = AsyncMock(return_value={})
+        # The first person to set up Celerp is its installation owner.
+        self.installation_owner = AsyncMock(return_value=True)
         self.get_company = AsyncMock(return_value=company or {"id": "c1", "settings": {}})
         self.migration_sources = AsyncMock(return_value=_SOURCES if sources is None else sources)
         if isinstance(sources, Exception):
@@ -75,6 +77,7 @@ class _Stubs:
             ("ui.api_client.patch_company", self.patch_company),
             ("ui.api_client.set_business_type", self.set_business_type),
             ("ui.api_client.restart_system", self.restart_system),
+            ("ui.api_client.installation_owner", self.installation_owner),
             ("ui.api_client.get_company", self.get_company),
             ("ui.api_client.migration_sources", self.migration_sources),
         ):
