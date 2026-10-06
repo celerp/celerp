@@ -21,6 +21,7 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import locked_company
+from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
 from celerp_docs.sequences import next_doc_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
@@ -95,6 +96,7 @@ def _build_router() -> APIRouter:
     async def generate_now(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -239,6 +241,7 @@ def _build_router() -> APIRouter:
     async def pause_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -258,6 +261,7 @@ def _build_router() -> APIRouter:
     async def resume_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -285,6 +289,7 @@ def _build_router() -> APIRouter:
     async def cancel_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -304,6 +309,7 @@ def _build_router() -> APIRouter:
     async def activate_subscription(
         entity_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
