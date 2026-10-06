@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from fasthtml.common import *
@@ -85,7 +86,67 @@ def _sync_status_label(status: str) -> str:
     return t(key) if key else (status or "")
 
 
-def _last_sync_info(run, attention: int = 0) -> FT:
+# Raw error text a sync stores (exception messages, kept in English) -> the plain reason
+# shown on the connector's page, matched in order on the text after any record label
+# and "... API error:" style prefix. Anything unmatched gets connectors.fail_generic.
+_FAILURE_REASONS: tuple[tuple[re.Pattern, str], ...] = tuple(
+    (re.compile(pattern, re.IGNORECASE), key) for pattern, key in (
+        (r"already in progress", "connectors.fail_busy"),
+        (r"connection changed while", "connectors.fail_connection_changed"),
+        (r"blocked by direction", "connectors.fail_direction"),
+        (r"does not support", "connectors.fail_unsupported"),
+        (r"update celerp to continue", "connectors.fail_upgrade"),
+        (r"records came from it", "connectors.fail_store_unchecked"),
+        (r"does not have them", "connectors.fail_store_changed"),
+        (r"credentials are temporarily unavailable", "connectors.fail_credentials"),
+        (r"realm_id", "connectors.fail_credentials"),
+        (r"\b40[13]\b|unauthori[sz]ed|forbidden|invalid.{0,20}(token|key|credential)", "connectors.fail_access"),
+        (r"\b429\b|rate.?limit|too many requests", "connectors.fail_rate_limited"),
+        (r"timed? ?out|timeout|connecterror|connection (refused|reset|error)|name or service|"
+         r"name resolution|nodename|unreachable|all connection attempts", "connectors.fail_unreachable"),
+        (r"\b5\d\d\b|server error|bad gateway|service unavailable", "connectors.fail_remote"),
+        (r"invalid stock quantity", "connectors.fail_stock"),
+    )
+)
+# A record-level error starts with what it was about ("SKU ABC-1: ...", "WooCommerce
+# product 12: ..."); the record stays in front of the reason.
+_RECORD_PREFIX = re.compile(r"^((?:[A-Za-z]+ )?(?:SKU|Invoice|Customer|Contact|Item|Product)\b[^:]*): (.*)$", re.DOTALL)
+_SYNC_REASONS_ID = "connector-sync-reasons"
+
+
+def sync_failure_reason(raw: str, service: str, lang: str | None = None) -> str:
+    """The plain reason, with what to do, for one error a *service* sync stored. Never
+    echoes the raw text, which is an exception message, not something to act on."""
+    text = str(raw or "")
+    record = _RECORD_PREFIX.match(text)
+    cause = record.group(2) if record else text
+    key = next((k for pattern, k in _FAILURE_REASONS if pattern.search(cause)), "connectors.fail_generic")
+    reason = t(key, lang, service=service)
+    return f"{record.group(1)}: {reason}" if record else reason
+
+
+def _sync_reasons(runs: dict, service: str, lang: str = "en") -> FT:
+    """Why the latest sync of each record type had problems, in plain words, shown under
+    the status table; the Failed and Issues badges link here. Identical reasons are
+    listed once."""
+    items = []
+    for e in _ENTITY_ORDER:
+        r = runs.get(e)
+        if r is None or getattr(r, "finished_at", None) is None:
+            continue
+        reasons = dict.fromkeys(sync_failure_reason(x, service, lang) for x in (getattr(r, "errors", None) or []))
+        items += [Li(Strong(_entity_label(e, lang)), ": ", reason) for reason in reasons]
+    if not items:
+        return Span()
+    return Div(
+        P(t("connectors.fail_reasons_header", lang), cls="settings-section-title"),
+        Ul(*items),
+        id=_SYNC_REASONS_ID,
+        cls="connector-sync-reasons",
+    )
+
+
+def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     """Compact summary of the latest SyncRun, or a 'never synced' note. Uses the shared
     relative_time() formatter and thousands-separated counts for consistency with the
     rest of the app. ``attention`` counts records still waiting on a person, which
@@ -104,10 +165,16 @@ def _last_sync_info(run, attention: int = 0) -> FT:
         "failed": "connector-sync-info--err",
     }.get(run.status, "")
     counts = f"+{run.created_count:,} ~{run.updated_count:,}"
-    parts = [relative_time(finished.isoformat()), _sync_status_label(run.status), counts]
+    status = _sync_status_label(run.status)
+    if href and run.status in ("failed", "partial") and getattr(run, "errors", None):
+        status = A(status, href=f"{href}#{_SYNC_REASONS_ID}")
+    parts = [relative_time(finished.isoformat()), status, counts]
     if attention:
         parts.append(t("connectors.attention_count", n=attention))
-    return Span(" · ".join(parts), cls=f"connector-sync-info {status_cls}")
+    joined = [parts[0]]
+    for part in parts[1:]:
+        joined += [" · ", part]
+    return Span(*joined, cls=f"connector-sync-info {status_cls}")
 
 
 def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
@@ -258,6 +325,16 @@ async def _get_connector_config(company_id: str, connector: str):
         return None
 
 
+def _service_name(platform: str) -> str:
+    """Display name of a connector (Shopify, Xero, ...), or the raw id if unknown."""
+    from celerp.connectors.registry import get as get_connector
+
+    try:
+        return get_connector(platform).display_name
+    except KeyError:
+        return platform
+
+
 def _local_connector_entry(platform: str) -> dict:
     """Build display metadata for a locally known connector."""
     from celerp.connectors.registry import get as get_connector
@@ -400,12 +477,15 @@ def _overall_status(runs: dict) -> str:
     return "success"
 
 
-def _status_badge_for(status: str, lang: str = "en") -> FT:
+def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False) -> FT:
+    """Status badge; a Failed or Issues badge with reasons links to them below the table."""
     cls = {"success": "badge--active", "partial": "badge--draft",
            "failed": "badge--overdue", "running": "badge--inactive"}.get(status, "badge--inactive")
     label = {"success": t("connectors.status_ok", lang), "partial": t("connectors.status_partial", lang),
              "failed": t("connectors.status_failed", lang), "running": t("connectors.syncing", lang)}.get(
         status, status or "-")
+    if has_reasons and status in ("failed", "partial"):
+        return A(label, href=f"#{_SYNC_REASONS_ID}", cls=f"badge {cls}")
     return Span(label, cls=f"badge {cls}")
 
 
@@ -424,9 +504,9 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         rows.append(Tr(
             Td(_entity_label(e, lang)),
             Td(when),
-            Td(_status_badge_for("running" if running else r.status, lang)),
+            Td(_status_badge_for("running" if running else r.status, lang, has_reasons=bool(errs))),
             Td(counts, cls="cell--number"),
-            Td(str(len(errs)) if errs else "--", cls="cell--number", title="; ".join(errs) if errs else ""),
+            Td(str(len(errs)) if errs else "--", cls="cell--number"),
             cls="data-row",
         ))
     return Table(
@@ -507,6 +587,7 @@ def _connector_status_view(
                  "hx_trigger": "load delay:2s", "hx_swap": "outerHTML"}
     return Div(
         _entity_status_table(runs, lang),
+        _sync_reasons(runs, _service_name(platform), lang),
         _attention_list(platform, list(attention), lang),
         id=f"connector-status-{platform}",
         cls="connector-status-view",
@@ -659,7 +740,7 @@ def _connector_card(
     # ── Connected details ─────────────────────────────────────────────────────
     connected_details = Span()
     if connected:
-        sync_info = _last_sync_info(last_run, attention)
+        sync_info = _last_sync_info(last_run, attention, href=f"/settings/connectors/{cid}")
         dir_row = _direction_toggle(cid, config.direction if config else "both", lang)
         freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
         connected_details = Div(
@@ -1245,7 +1326,7 @@ def setup_routes(app):
         polling = request.query_params.get("polling") == "1"
         if polling and runs and not _any_in_progress(runs):
             ok = _overall_status(runs) != "failed"
-            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang)
+            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang, service=_service_name(platform))
             from ui.components.shell import toast_header
             return HTMLResponse(
                 to_xml(view),
