@@ -167,3 +167,24 @@ def test_nav_lets_viewers_see_documents_and_contacts():
     for line in contacts.splitlines():
         if '"group": "Contacts"' in line:
             assert '"permission": "view_contacts"' in line, line
+
+
+@pytest.mark.asyncio
+async def test_subscription_actions_follow_document_permissions(client, session):
+    """Activate, pause, resume and cancel need edit_documents and generate needs
+    finalize_documents (it issues a numbered invoice), so a viewer gets 403 on each
+    while an operator runs the whole lifecycle. Red statement: every action answered
+    200 to a viewer."""
+    admin = await _admin(client)
+    viewer = await _user_with_role(client, session, admin, "viewer")
+    operator = await _user_with_role(client, session, admin, "operator")
+    r = await client.post("/docs", headers=_h(admin), json={
+        "doc_type": "subscription_invoice", "frequency": "monthly", "start_date": "2026-01-01",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}]})
+    assert r.status_code in (200, 201), r.text
+    sub = r.json()["id"]
+    for action in ("activate", "pause", "resume", "generate", "cancel"):
+        url = f"/subscriptions/{sub}/{action}"
+        assert (await client.post(url, headers=_h(viewer))).status_code == 403, action
+        r = await client.post(url, headers=_h(operator))
+        assert r.status_code == 200, (action, r.text)
