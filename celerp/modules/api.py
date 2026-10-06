@@ -85,8 +85,9 @@ async def ai_query(
 
     ``db_session`` is the database session of the request the query is made for;
     the query runs only for that request's company and for the user its signed
-    access token names, who must be allowed to use the AI assistant. ``session_token`` is optional: without it, the installation's
-    own Celerp Connect session is used.
+    access token names, who must be allowed to use the AI assistant.
+    ``session_token`` is optional: without it, the installation's own Celerp
+    Connect session is used.
     """
     from celerp.services.auth import signed_request_context
     from celerp.services.permissions import assert_role_permission, read_authority
