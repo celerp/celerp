@@ -2980,11 +2980,16 @@ async def reopen_reconciliation(
     """Reopen a completed reconciliation so its matches can be changed. Its matches stay
     as they are and no journal entry is written; the reopening is recorded as an event.
     Reopening one that is already in progress changes nothing."""
+    recon = await _get_recon(db, session_id, company_id)
+    # One open reconciliation per statement: lock the bank account first, as
+    # start_reconciliation does, so a start or another reopen of the same statement
+    # waits for this one. Then lock this reconciliation and read its status as committed
+    # by whoever held it (a completion in flight), not as first read.
+    await db.execute(select(BankAccount.id).where(BankAccount.id == recon.bank_account_id).with_for_update())
     recon = await _get_recon(db, session_id, company_id, for_update=True)
+    await db.refresh(recon)
     if recon.status != "completed":
         return _recon_to_dict(recon)
-    # One open reconciliation per statement (start_reconciliation): reopening this one
-    # while another of the same statement is open would make two.
     other = (await db.execute(select(ReconciliationSession.id).where(
         ReconciliationSession.company_id == company_id,
         ReconciliationSession.bank_account_id == recon.bank_account_id,

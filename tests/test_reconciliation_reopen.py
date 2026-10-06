@@ -213,3 +213,94 @@ async def test_a_reopen_that_arrives_while_completing_waits_and_reopens_the_comp
             "SELECT count(*) FROM ledger WHERE event_type = 'acc.reconciliation.reopened' AND entity_id = :e"),
             {"e": f"recon:{sid}"})).scalar()
     assert status == "open" and events == 1
+
+
+async def _bank(client, headers) -> str:
+    r = await client.post("/accounting/bank-accounts", json={
+        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
+        "currency": "USD", "opening_balance": _OPENING}, headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _start(client, headers, bank):
+    return await client.post("/accounting/reconciliation/start", json={
+        "bank_account_id": bank, "statement_date": "2026-09-30", "statement_balance": _OPENING},
+        headers=headers)
+
+
+async def _complete_one(client, headers, bank) -> str:
+    sid = (await _start(client, headers, bank)).json()["id"]
+    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=headers)
+    assert r.json()["status"] == "completed", r.text
+    return sid
+
+
+async def _open_ids(engine) -> list[str]:
+    async with maker(engine)() as s:
+        return [str(i) for i in (await s.execute(text(
+            "SELECT id FROM reconciliation_sessions WHERE status = 'open' AND statement_date = '2026-09-30'"
+        ))).scalars()]
+
+
+def _hold_reopen(monkeypatch):
+    """Hold a reopen after its check for another open reconciliation, before it commits."""
+    from celerp_accounting import routes
+    reached, release = asyncio.Event(), asyncio.Event()
+    real = routes.emit_event
+
+    async def held(*args, **kw):
+        if kw.get("event_type") == "acc.reconciliation.reopened" and not release.is_set():
+            reached.set()
+            await release.wait()
+        return await real(*args, **kw)
+    monkeypatch.setattr(routes, "emit_event", held)
+    return reached, release
+
+
+async def _let_it_reach_a_lock(engine, task) -> None:
+    for _ in range(500):
+        if task.done() or await _waiting_on_a_lock(engine):
+            return
+        await asyncio.sleep(0.01)
+
+
+async def test_two_reopens_of_the_same_statement_leave_one_open(monkeypatch, real_engine, real_client):
+    boss, a, _ = await _harbor(real_engine)
+    h = auth(await token(real_engine, boss, a))
+    bank = await _bank(real_client, h)
+    s1 = await _complete_one(real_client, h, bank)
+    s2 = await _complete_one(real_client, h, bank)
+    reached, release = _hold_reopen(monkeypatch)
+    first = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{s1}/reopen", headers=h))
+    await asyncio.wait_for(reached.wait(), 10)
+    second = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{s2}/reopen", headers=h))
+    try:
+        await _let_it_reach_a_lock(real_engine, second)
+    finally:
+        release.set()
+    r1, r2 = await first, await second
+    assert r1.status_code == 200 and r1.json()["status"] == "open", r1.text
+    assert r2.status_code == 409, r2.text
+    assert "already open" in r2.json()["detail"]
+    assert await _open_ids(real_engine) == [s1]
+
+
+async def test_start_during_a_reopen_of_the_same_statement_continues_the_reopened_one(
+        monkeypatch, real_engine, real_client):
+    boss, a, _ = await _harbor(real_engine)
+    h = auth(await token(real_engine, boss, a))
+    bank = await _bank(real_client, h)
+    s1 = await _complete_one(real_client, h, bank)
+    reached, release = _hold_reopen(monkeypatch)
+    reopening = asyncio.create_task(real_client.post(f"/accounting/reconciliation/{s1}/reopen", headers=h))
+    await asyncio.wait_for(reached.wait(), 10)
+    starting = asyncio.create_task(_start(real_client, h, bank))
+    try:
+        await _let_it_reach_a_lock(real_engine, starting)
+    finally:
+        release.set()
+    r1, r2 = await reopening, await starting
+    assert r1.status_code == 200 and r1.json()["status"] == "open", r1.text
+    assert r2.status_code == 200 and r2.json()["id"] == s1, r2.text
+    assert await _open_ids(real_engine) == [s1]
