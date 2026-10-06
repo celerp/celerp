@@ -29,9 +29,10 @@ from migration_support import (
     staged_run,
 )
 from test_helpers import register_admin
+from ui.i18n import t
 
 PHASE = "contacts_locations"
-RESTART = "This migration was created by an older importer version and must be restarted."
+RESTART = t("migration.err_older_importer", "en")
 
 
 async def _stop_midway(engine, sink, run_id) -> None:

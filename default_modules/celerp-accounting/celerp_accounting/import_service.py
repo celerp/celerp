@@ -23,6 +23,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
+from ui.i18n import t
 
 JOURNAL_CREATED = "acc.journal_entry.created"
 
@@ -63,7 +64,7 @@ async def check_line_contacts(
     if missing:
         raise HTTPException(
             status_code=422,
-            detail="No contact matches " + ", ".join(missing) + ".",
+            detail=t("error.contacts_not_found", names=", ".join(missing)),
         )
 
 
@@ -146,7 +147,7 @@ async def create_chart_account(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
     if existing:
-        raise HTTPException(status_code=409, detail=f"Account code {code} already exists")
+        raise HTTPException(status_code=409, detail=t("error.account_code_used", code=code))
     acc = Account(
         id=uuid.uuid4(),
         company_id=company_id,

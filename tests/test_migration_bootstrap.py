@@ -34,7 +34,7 @@ from migration_support import (
 )
 from ui.i18n import t
 
-BOOTSTRAPPED = "System already bootstrapped. Contact your admin."
+BOOTSTRAPPED = t("migration.err_bootstrapped", "en")
 EXPIRED = "This scan has expired. Upload the file again."
 
 

@@ -1458,7 +1458,7 @@ class TestTabularParityInvariant:
         monkeypatch.setattr(tabular, "MAX_ROWS", 1)
         data = _PARITY_CSV.encode() if fmt == "csv" else _xlsx({"Items": _PARITY_XLSX_ROWS})
         rows, err = await _read(data, f"items.{fmt}")
-        assert rows == [] and "Too many rows" in err
+        assert rows == [] and "more than the 1 Celerp can import at once" in err
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("fmt", ["csv", "xlsx"])
@@ -1467,7 +1467,7 @@ class TestTabularParityInvariant:
         monkeypatch.setattr(tabular, "MAX_CELLS", 6)
         data = _PARITY_CSV.encode() if fmt == "csv" else _xlsx({"Items": _PARITY_XLSX_ROWS})
         rows, err = await _read(data, f"items.{fmt}")
-        assert rows == [] and "Too many cells" in err
+        assert rows == [] and "cells, limit 6)" in err
 
     @pytest.mark.asyncio
     async def test_several_sheets_with_data_require_a_choice(self):
@@ -1497,12 +1497,14 @@ class TestTabularParityInvariant:
     @pytest.mark.parametrize("filename", ["items.xls", "items.xlsm", "items.pdf"])
     async def test_unsupported_formats_are_refused_with_a_reason(self, filename):
         rows, err = await _read(b"whatever", filename)
-        assert rows == [] and ("not supported" in err or "Unsupported" in err)
+        expected = (t_("import.err_unsupported_type", "en", type=".pdf") if filename.endswith(".pdf")
+                    else "files are not supported")
+        assert rows == [] and expected in err
 
     @pytest.mark.asyncio
     async def test_formula_cells_are_refused_with_their_position(self):
         rows, err = await _read(_xlsx({"Items": [["sku", "qty"], ["A", "=1+1"]]}), "items.xlsx")
-        assert rows == [] and "Formula" in err
+        assert rows == [] and t_("import.err_formula", "en") in err
 
     def test_upload_form_accepts_csv_and_xlsx(self):
         html = to_xml(ci.upload_form(template_href="/t", preview_action="/p"))

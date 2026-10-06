@@ -581,10 +581,10 @@ def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
 
 def _enforce_bounds(n_cols: int, n_rows: int) -> None:
     if n_rows > MAX_ROWS:
-        raise TabularError(f"Too many rows: {n_rows} exceeds the {MAX_ROWS} limit.")
+        raise TabularError(t("import.err_too_many_rows", n_rows=n_rows, max=MAX_ROWS))
     cells = n_rows * max(n_cols, 1)
     if cells > MAX_CELLS:
-        raise TabularError(f"Too many cells: {cells} exceeds the {MAX_CELLS} limit.")
+        raise TabularError(t("import.err_too_many_cells", cells=cells, max=MAX_CELLS))
 
 
 def _filled_width(line: list[str]) -> int:
@@ -603,7 +603,7 @@ async def read_upload_bytes(upload: Any, limit: int = MAX_TABLE_BYTES) -> bytes:
     while chunk := await upload.read(1024 * 1024):
         size += len(chunk)
         if size > limit:
-            raise TabularError(f"File is too large: the limit is {limit // (1024 * 1024)} MB.")
+            raise TabularError(t("import.err_file_over_limit", mb=limit // (1024 * 1024)))
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -622,7 +622,7 @@ def _table(lines: list[list[str]], header_row: int) -> tuple[list[str], list[dic
     no filled cell are skipped, as empty sheet rows are.
     """
     if header_row < 0 or (lines and header_row >= len(lines)):
-        raise TabularError("The chosen header row is not in the file.", code="header_row")
+        raise TabularError(t("import.err_header_row_missing"), code="header_row")
     header = lines[header_row] if lines else []
     data = [line for line in lines[header_row + 1:] if any(line)]
     _enforce_bounds(max(_filled_width(line) for line in [header, *data]), len(data))
@@ -676,11 +676,11 @@ def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[di
         elif any(i < len(line) and line[i] for line in lines):
             if i > last_named:
                 raise TabularError(
-                    f"Column {_column_letter(i)} has values but is past the last header.",
+                    t("import.err_column_unnamed", column=_column_letter(i)),
                     column=_column_letter(i), code="extra_columns",
                 )
             raise TabularError(
-                f"Column {_column_letter(i)} has values but no header.",
+                t("import.err_column_unnamed", column=_column_letter(i)),
                 column=_column_letter(i), code="no_header",
             )
     rows = [{cols[i]: (line[i] if i < len(line) else "") for i in range(width)} for line in lines]
@@ -725,33 +725,33 @@ def _xlsx_lines(data: bytes, *, sheet: str | None) -> list[list[str]]:
     external links are never evaluated.
     """
     if len(data) > MAX_TABLE_BYTES:
-        raise TabularError("File is too large.")
+        raise TabularError(t("import.err_file_too_large"))
 
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
-        raise TabularError("File is not a valid .xlsx workbook.", code="not_workbook") from exc
+        raise TabularError(t("import.err_not_xlsx"), code="not_workbook") from exc
     infos = archive.infolist()
     if len(infos) > MAX_XLSX_ENTRIES:
-        raise TabularError("Workbook has too many internal entries.")
+        raise TabularError(t("import.err_xlsx_entries"))
     if sum(info.file_size for info in infos) > MAX_XLSX_UNCOMPRESSED:
-        raise TabularError("Workbook is too large when uncompressed.")
+        raise TabularError(t("import.err_xlsx_uncompressed"))
 
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
     except (InvalidFileException, zipfile.BadZipFile, KeyError) as exc:
-        raise TabularError("Could not open the workbook.", code="not_workbook") from exc
+        raise TabularError(t("import.err_xlsx_open"), code="not_workbook") from exc
 
     try:
         names = list(workbook.sheetnames)
         if sheet is not None:
             if sheet not in names:
-                raise TabularError(f"Sheet {sheet!r} is not in the workbook.", sheets=names)
+                raise TabularError(t("import.err_no_sheet", sheet=repr(sheet)), sheets=names)
             worksheet = workbook[sheet]
         else:
             non_empty = [name for name in names if not _sheet_is_empty(workbook[name])]
             if not non_empty:
-                raise TabularError("The workbook has no data.", code="empty")
+                raise TabularError(t("import.err_workbook_empty"), code="empty")
             if len(non_empty) > 1:
                 raise TabularError("Choose a sheet.", sheets=non_empty)
             worksheet = workbook[non_empty[0]]
@@ -769,7 +769,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None) -> list[list[str]]:
                     isinstance(value, str) and value.startswith("=")
                 ):
                     raise TabularError(
-                        "Formula cells are not supported.",
+                        t("import.err_formula"),
                         row=cell.row,
                         column=getattr(cell, "column_letter", None),
                         code="formula",
@@ -796,7 +796,7 @@ def _lines(data: bytes, filename: str, *, sheet: str | None) -> list[list[str]]:
     """Dispatch on the file suffix. CSV and .xlsx are supported; .xlsm/.xls and
     everything else raise."""
     if len(data) > MAX_TABLE_BYTES:
-        raise TabularError("File is too large.")
+        raise TabularError(t("import.err_file_too_large"))
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
         return _csv_lines(data.decode("utf-8-sig"))
@@ -804,7 +804,7 @@ def _lines(data: bytes, filename: str, *, sheet: str | None) -> list[list[str]]:
         return _xlsx_lines(data, sheet=sheet)
     if suffix in (".xlsm", ".xls"):
         raise TabularError(f"{suffix} files are not supported; save as .xlsx or .csv.", code="unsupported_type")
-    raise TabularError(f"Unsupported file type: {suffix or filename!r}.", code="unsupported_type")
+    raise TabularError(t("import.err_unsupported_type", type=suffix or repr(filename)), code="unsupported_type")
 
 
 def read_table(

@@ -11,6 +11,7 @@ import openpyxl
 import pytest
 
 from celerp.importers import tabular
+from ui.i18n import t
 
 
 def _xlsx_bytes(sheets: dict[str, list[list]]) -> bytes:
@@ -90,7 +91,7 @@ def test_zip_bomb_rejected_before_parse():
 
     with pytest.raises(tabular.TabularError) as excinfo:
         tabular.read_xlsx(data, sheet=None)
-    assert "uncompressed" in str(excinfo.value).lower()
+    assert str(excinfo.value) == t("import.err_xlsx_uncompressed", "en")
 
 
 @pytest.mark.parametrize("csv_text,cells", [
@@ -193,7 +194,7 @@ async def test_upload_over_the_byte_limit_is_refused_before_it_is_read_whole():
     upload = _Chunked(b"note\n" + b"x" * (tabular.MAX_TABLE_BYTES + 5 * 1024 * 1024))
     with pytest.raises(tabular.TabularError) as err:
         await tabular.read_upload_bytes(upload)
-    assert "too large" in str(err.value).lower()
+    assert str(err.value) == t("import.err_file_over_limit", "en", mb=tabular.MAX_TABLE_BYTES // (1024 * 1024))
     assert sum(upload.reads) <= tabular.MAX_TABLE_BYTES + 1024 * 1024
     with pytest.raises(tabular.TabularError):
         tabular.read_table(b"note\n" + b"x" * tabular.MAX_TABLE_BYTES, "items.csv")
