@@ -458,7 +458,7 @@ async def test_infra_handler_rejects_without_manage_integrations(
 
     assert r.status_code == 200
     assert r.text.strip() == "<div></div>"
-    assert t("error.unauthorized") not in r.text
+    assert t("error.session_expired") not in r.text
     merge_key.assert_not_called()
     popen.assert_not_called()
     cfg = json.loads((tmp_path / "celerp-config.json").read_text())

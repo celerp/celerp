@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from ui.i18n import t
 
 pytestmark = pytest.mark.xdist_group("modules_api")
 
@@ -603,7 +604,7 @@ class TestModuleDataPurge:
                 "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "depends on" in detail and "Nothing was deleted" in detail
+        assert detail == t("company.err_purge_dependency")
         # Rolled back: the module table and its row survive untouched.
         assert (await session.execute(
             text('SELECT count(*) FROM "acme_parent"'))).scalar_one() == 1

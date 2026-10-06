@@ -37,6 +37,7 @@ from celerp.services.import_stage import read_stage, write_stage
 from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
 from ui.i18n import t
+from celerp.services.permissions import missing_permission_text
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
@@ -2312,7 +2313,7 @@ class TestInventoryCategoryTabs:
         with patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})):
             r = await ui_client.patch("/settings/users/u1/role", data={"value": "admin"}, cookies=_authed())
         assert r.status_code == 200
-        assert b"last owner" in r.content.lower()
+        assert t("company.err_last_owner_demote") in html.unescape(r.text)
 
     @pytest.mark.asyncio
     async def test_user_role_non_owner_demotion_allowed(self, ui_client):
@@ -2498,7 +2499,7 @@ class TestSettingsInlineEditValidation:
             r = await ui_client.patch("/settings/terms/0/days", data={"value": "-5"}, cookies=_authed())
         assert r.status_code == 200
         assert b"cell-error" in r.content
-        assert b"negative" in r.content.lower()
+        assert t("error.days_negative") in html.unescape(r.text)
         mock_patch.assert_not_called()
 
     # ── Company name / slug ──────────────────────────────────────────────────
@@ -2510,7 +2511,7 @@ class TestSettingsInlineEditValidation:
             r = await ui_client.patch("/settings/company/name", data={"value": "   "}, cookies=_authed())
         assert r.status_code == 200
         assert b"cell-error" in r.content
-        assert b"blank" in r.content.lower()
+        assert t("error.company_name_blank") in html.unescape(r.text)
         mock_patch.assert_not_called()
 
     @pytest.mark.asyncio
@@ -6669,7 +6670,7 @@ class TestBulkDuplicate:
                 cookies=_authed(role="viewer"),
             )
         assert r.status_code == 200
-        assert b"Unauthorized" in r.content
+        assert missing_permission_text("edit_inventory") in html.unescape(r.text)
         assert create.call_count == 0
 
     def test_bulkActionChanged_handles_duplicate(self):
@@ -12966,7 +12967,7 @@ class TestUnitsSettings:
         ]}
         r = await client.put("/companies/me/units", json=payload, headers=headers)
         assert r.status_code == 422
-        assert "duplicate" in r.json()["detail"].lower()
+        assert r.json()["detail"] == t("company.err_unit_duplicate", name="piece")
 
     # ── API: Validation — invalid decimals ──────────────────────────
 

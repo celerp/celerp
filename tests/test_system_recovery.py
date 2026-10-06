@@ -29,7 +29,7 @@ from ui.i18n import t
 pytestmark = pytest.mark.asyncio
 
 DESTRUCTIVE = "Replaces the Celerp database and installation files, affecting every company and user."
-SAFETY_WARNING = "A safety backup could not be made before restoring."
+SAFETY_WARNING = "Celerp couldn't make a safety copy before restoring"
 PAGE = "/settings/system-recovery"
 LEGACY_ROUTES = {
     "/backup/trigger": "post", "/backup/list": "get", "/backup/restore/{backup_id}": "post",
@@ -321,7 +321,7 @@ async def test_cloud_restore_failure_shown_in_ui(ui, real_engine, tmp_path, monk
     r = await ui.post("/backup/restore/snap-1")
     assert r.status_code == 200, r.text
     page = _page(r)
-    assert "Restore failed" in page and "pg_restore exited with status 1" in page
+    assert "flash--error" in page and "pg_restore exited with status 1" in page
     assert "Database restored" not in page
     assert "restart" not in page.lower()
     assert not _cleared(r, "celerp_token")

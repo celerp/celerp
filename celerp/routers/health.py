@@ -597,7 +597,7 @@ async def _post_partner_claim(path: str, body: dict) -> tuple[dict | None, dict 
     if r.status_code == 409:
         return None, {"error": "This claim is no longer available. It may already have been claimed or expired."}
     if r.status_code != 200:
-        return None, {"error": "This claim could not be verified. It may be invalid, expired, or already used."}
+        return None, {"error": t("settings_cloud.partner_claim_error")}
     return r.json(), None
 
 
@@ -606,7 +606,7 @@ async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_r
     """Preview the partner identity behind a claim token. Owner/admin only. Binds
     nothing: a resolve leaves the install celerp_direct."""
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
-        raise HTTPException(status_code=403, detail="Only an owner or admin can review a partner claim.")
+        raise HTTPException(status_code=403, detail=t("settings_cloud.partner_claim_owner_admin"))
     from celerp.config import settings
     if not settings.cloud_disconnected:
         return {"error": "Partner claiming is only available while Web Access is disconnected."}
@@ -618,7 +618,7 @@ async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_r
         return err
     identity = _partner_identity(data)
     if identity is None:
-        return {"error": "This claim could not be verified. It may be invalid, expired, or already used."}
+        return {"error": t("settings_cloud.partner_claim_error")}
     return identity
 
 

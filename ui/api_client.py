@@ -40,6 +40,11 @@ def timeout_message() -> str:
     return t("api.timed_out")
 
 
+def error_text(exc: Exception) -> str:
+    """What to show for a failed call: the API's own reason, else the unreachable copy."""
+    return exc.detail if isinstance(exc, APIError) else t("api.unreachable")
+
+
 NO_RESPONSE = "no_response"
 
 

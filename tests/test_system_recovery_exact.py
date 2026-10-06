@@ -30,7 +30,7 @@ from celerp.services.session_tracker import end_all_sessions as _real_end_sessio
 
 pytestmark = pytest.mark.asyncio
 
-SAFETY_WARNING = "A safety backup could not be made before restoring."
+SAFETY_WARNING = "Celerp couldn't make a safety copy before restoring"
 SOURCE_DUMP = b"SOURCE-DUMP"
 SAFETY_DUMP = b"SAFETY-DUMP"
 ROOTS = {"attachments": ("static", "attachments"), "ai_uploads": ("ai_uploads",), "modules": ("modules",)}

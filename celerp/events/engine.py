@@ -20,6 +20,7 @@ from celerp.services.document_lines import (
     linked_items,
 )
 from celerp.services.business_time import business_timezone
+from ui.i18n import t
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -28,9 +29,6 @@ def apply_event(state: dict, event: LedgerEntry) -> dict:
 
 STRIPE_OWNED_PAYMENT = (
     "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
-)
-STRIPE_RECEIPT_KEPT = (
-    "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
 )
 # Every event that takes a received payment back off a document.
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
@@ -94,7 +92,7 @@ async def refuse_stripe_payment_removal(session, company_id, entity_id, payments
     payment = next((p for p in payments if p.get("index") == index), None)
     if (event_type == "doc.payment.deleted" and payment is not None
             and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
-        raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)
+        raise HTTPException(status_code=422, detail=t("error.stripe_receipt_kept"))
 
 
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
@@ -172,7 +170,7 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
                         raise HTTPException(status_code=422, detail=str(exc)) from exc
                     event_date = instant.astimezone(zone).date()
         except (ValueError, TypeError):
-            raise HTTPException(status_code=422, detail=f"{event_date_str} is not a date. Enter it as YYYY-MM-DD.") from None
+            raise HTTPException(status_code=422, detail=t("error.date_invalid", value=event_date_str)) from None
     else:
         try:
             zone = business_timezone((company.settings or {}).get("timezone"))
@@ -182,7 +180,7 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
-            detail=f"Period is locked through {lock_date_str}. Unlock in Settings > Accounting to modify past transactions.",
+            detail=t("error.period_locked", date=lock_date_str),
         )
 
 
@@ -335,7 +333,7 @@ async def emit_event(
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
     if _backup_active():
-        raise HTTPException(status_code=503, detail="Backup in progress, try again shortly.")
+        raise HTTPException(status_code=503, detail=t("error.backup_running"))
 
     schema = EVENT_SCHEMA_MAP.get(kwargs["event_type"])
     if schema is None:

@@ -693,7 +693,7 @@ def setup_routes(app):
         """Inline editor for a run's due date / priority (double-click to edit on the queue)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         current = request.query_params.get("current", "")
         post = f"/manufacturing/runs/{run_id}/schedule"
         # ESC cancels the edit: restore the cell's display chip (innerHTML of the editable-cell)
@@ -729,7 +729,7 @@ def setup_routes(app):
         """Persist a scheduling edit and refresh the In Production table."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         fields = {k: str(form[k]) for k in ("due_date", "priority", "planned_start") if k in form}
         if fields:
@@ -737,7 +737,7 @@ def setup_routes(app):
                 await api.schedule_mfg_order(token, run_id, fields)
             except APIError as e:
                 if e.status == 401:
-                    return P(t("error.unauthorized"), cls="cell-error")
+                    return P(t("error.session_expired"), cls="cell-error")
         return await _incomplete_runs_table(token)
 
     # ── Work Centers ──────────────────────────────────────────────────────
@@ -766,7 +766,7 @@ def setup_routes(app):
     async def work_center_new(request: Request):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.create_work_center(token, {"name": "New work center"})
         except APIError:
@@ -778,7 +778,7 @@ def setup_routes(app):
     async def work_center_edit(request: Request, wc_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         current = request.query_params.get("current", "")
         post = f"/manufacturing/work-centers/{wc_id}/save/{field}"
         # ESC leaves the field without saving: the cell goes straight back to the
@@ -819,7 +819,7 @@ def setup_routes(app):
     async def work_center_save(request: Request, wc_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         raw = str(form.get("value", "")).strip()
         if field in ("labor_rate", "capacity", "hours_per_day"):
@@ -839,7 +839,7 @@ def setup_routes(app):
             await api.patch_work_center(token, wc_id, {field: value})
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             # A refused edit (a name that collides, a value the API rejects, or a
             # caller without manage rights) must say why rather than silently
             # reverting the cell with no explanation.
@@ -852,12 +852,12 @@ def setup_routes(app):
         """Make this center the company's default; the previous one is cleared."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.set_default_work_center(token, wc_id)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             return await _wc_error_response(
                 token, str(e.detail) or t("manufacturing.err_wc_default"))
         return await _wc_table_response(token)
@@ -866,12 +866,12 @@ def setup_routes(app):
     async def work_center_delete(request: Request, wc_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.delete_work_center(token, wc_id)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             # A refused delete (the last center, or the default one) must say why
             # rather than leaving the row sitting there with no explanation.
             return await _wc_error_response(

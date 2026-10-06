@@ -175,7 +175,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
         async def tax_field_edit(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             try:
                 taxes = await getattr(api, gname)(token)
             except APIError as e:
@@ -214,7 +214,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
         async def tax_field_patch(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             form = await request.form()
             value = str(form.get("value", ""))
             if field == "tax_type" and value not in {"sales", "purchase", "both"}:
@@ -285,7 +285,7 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
         async def term_field_edit(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             try:
                 terms = await getattr(api, gname)(token)
             except APIError as e:
@@ -310,7 +310,7 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
         async def term_field_patch(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             form = await request.form()
             value = str(form.get("value", ""))
             if field == "days":
@@ -398,7 +398,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
         async def price_list_field_edit(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             try:
                 price_lists = await getattr(api, gname)(token)
             except APIError as e:
@@ -458,7 +458,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
         async def price_list_field_patch(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             form = await request.form()
             value = str(form.get("value", ""))
             try:
@@ -711,7 +711,7 @@ def setup_routes(app):
         """HTMX: return editable select for a dashboard preference."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             company = await api.get_company(token)
         except APIError as e:
@@ -757,7 +757,7 @@ def setup_routes(app):
         """HTMX: save a dashboard preference, return display cell."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         raw = str(form.get("value", ""))
         # Coerce numeric preferences
@@ -834,7 +834,7 @@ def setup_routes(app):
         """HTMX: return editable input for a company field."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             company = await api.get_company(token)
         except APIError as e:
@@ -972,7 +972,7 @@ def setup_routes(app):
         """HTMX: return read-only display cell (used by Cancel button)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             company = await api.get_company(token)
         except APIError as e:
@@ -984,7 +984,7 @@ def setup_routes(app):
         """HTMX: save a company field, return display cell."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
 
@@ -1038,7 +1038,7 @@ def setup_routes(app):
     async def user_field_edit(request: Request, user_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             users = (await api.get_users(token)).get("items", [])
         except APIError as e:
@@ -1079,7 +1079,7 @@ def setup_routes(app):
     async def user_field_patch(request: Request, user_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if field not in ("role", "is_active"):
             # Name and email are not editable here (the backend user PATCH accepts
             # only role and is_active); ignore a stray patch and re-render the
@@ -1114,7 +1114,7 @@ def setup_routes(app):
                 owner_count = sum(1 for u in users_now if u.get("role") == "owner" and u.get("is_active", True))
                 is_currently_owner = any(u.get("id") == user_id and u.get("role") == "owner" for u in users_now)
                 if is_currently_owner and owner_count <= 1:
-                    return P(t("settings.cannot_demote_the_last_owner_assign_another_owner"), cls="cell-error")
+                    return P(t("company.err_last_owner_demote"), cls="cell-error")
             except APIError:
                 pass
         try:
@@ -1130,7 +1130,7 @@ def setup_routes(app):
     async def install_owner_display(request: Request):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             users = (await api.get_users(token)).get("items", [])
         except APIError as e:
@@ -1142,7 +1142,7 @@ def setup_routes(app):
     async def install_owner_edit(request: Request):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             users = (await api.get_users(token)).get("items", [])
         except APIError as e:
@@ -1153,7 +1153,7 @@ def setup_routes(app):
     async def install_owner_patch(request: Request):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         value = str((await request.form()).get("value", ""))
         try:
             await api.transfer_install_owner(token, value)
@@ -1169,7 +1169,7 @@ def setup_routes(app):
         from celerp.services.permissions import PERMISSIONS
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         granted = str(form.get("granted", "")).lower() == "true"
         perm = next((p for p in PERMISSIONS if p.key == perm_key), None)
@@ -1235,7 +1235,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         name = str(form.get("name", "")).strip()
         email = str(form.get("email", "")).strip()
@@ -1265,7 +1265,7 @@ def setup_routes(app):
     async def set_default_price_list(request: Request):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         name = str(form.get("name", "")).strip()
         if not name:
@@ -1280,7 +1280,7 @@ def setup_routes(app):
     async def set_base_price_list(request: Request):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         name = str(form.get("name", "")).strip()
         if not name:
@@ -1311,7 +1311,7 @@ def setup_routes(app):
     async def schema_field_edit(request: Request, idx: int, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             schema = await api.get_item_schema(token)
         except APIError as e:
@@ -1363,7 +1363,7 @@ def setup_routes(app):
     async def schema_field_patch(request: Request, idx: int, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
         _SCHEMA_TYPES = frozenset({"text", "number", "money", "select", "date", "boolean", "weight", "status", "image"})
@@ -1400,7 +1400,7 @@ def setup_routes(app):
     async def cat_schema_field_display(request: Request, category: str, idx: int, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             fields = await api.get_category_schema(token, category)
         except APIError as e:
@@ -1414,7 +1414,7 @@ def setup_routes(app):
         from urllib.parse import quote
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             fields = await api.get_category_schema(token, category)
         except APIError as e:
@@ -1478,7 +1478,7 @@ def setup_routes(app):
     async def cat_schema_field_patch(request: Request, category: str, idx: int, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         # Key is auto-managed - never directly editable
         if field == "key":
             try:
@@ -1589,7 +1589,7 @@ def setup_routes(app):
     async def location_field_edit(request: Request, location_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             locations = (await api.get_locations(token)).get("items", [])
         except APIError as e:
@@ -1626,7 +1626,7 @@ def setup_routes(app):
     async def location_field_patch(request: Request, location_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
         if field == "type" and value not in _LOC_TYPE_VALUES:
@@ -1661,7 +1661,7 @@ def setup_routes(app):
     async def settings_bulk_attach(request: Request):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized"), cls="error-banner"), id="bulk-attach-result")
+            return Div(P(t("error.session_expired"), cls="error-banner"), id="bulk-attach-result")
         form = await request.form()
         file = form.get("file")
         if file is None:
@@ -1829,7 +1829,7 @@ def setup_routes(app):
             intent = str(form.get("intent") or "connect")
             data = await _api.activate_relay(ui_token, intent=intent)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
+            return _cloud_relay_unconnected(iid, error=api.error_text(exc))
 
         # Use instance_id from API response if present (canonical process)
         iid = data.get("instance_id") or iid
@@ -2098,7 +2098,7 @@ def setup_routes(app):
             data = await _api.send_otp(ui_token, email)
         except Exception as exc:
             from celerp.config import ensure_instance_id
-            return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.could_not_reach_api", exc=exc))
+            return _cloud_relay_unconnected(ensure_instance_id(), error=api.error_text(exc))
 
         iid = data.get("instance_id", "")
         if err := data.get("error"):
@@ -2143,11 +2143,11 @@ def setup_routes(app):
             # already have moved the subscription, so the honest advice is to
             # restart or retry, not the generic busy-server copy.
             from celerp.config import ensure_instance_id
-            copy = t("settings.link_timed_out") if exc.status == 504 else t("settings.could_not_reach_api", exc=exc)
+            copy = t("settings.link_timed_out") if exc.status == 504 else api.error_text(exc)
             return _cloud_relay_unconnected(ensure_instance_id(), error=copy)
         except Exception as exc:
             from celerp.config import ensure_instance_id
-            return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.could_not_reach_api", exc=exc))
+            return _cloud_relay_unconnected(ensure_instance_id(), error=api.error_text(exc))
 
         iid = data.get("instance_id", "")
 
@@ -2198,7 +2198,7 @@ def setup_routes(app):
         except Exception as exc:
             return Div(
                 H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
-                P(t("settings.could_not_reach_api", exc=exc), cls="text-error"),
+                P(api.error_text(exc), cls="text-error"),
                 id="cloud-relay-tab", cls="settings-card",
             )
         if err := data.get("error"):
@@ -2221,7 +2221,7 @@ def setup_routes(app):
         try:
             data = await _api.accept_relay_tos(ui_token)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
+            return _cloud_relay_unconnected(iid, error=api.error_text(exc))
         return _cloud_relay_tab(
             relay_status=data.get("relay_status", "connecting"),
             public_url=data.get("public_url", ""),
@@ -2297,12 +2297,8 @@ def setup_routes(app):
         try:
             await api.delete_category(token, category_key)
         except APIError as e:
-            detail = e.detail
-            if isinstance(detail, dict):
-                item_count = detail.get("item_count", "?")
-                msg = t("settings.cant_delete_category_in_use", n=item_count)
-            else:
-                msg = str(detail)
+            # The in-use refusal is a dict carrying its count; its text is already worded.
+            msg = e.detail["detail"] if isinstance(e.detail, dict) else str(e.detail)
             return Tr(
                 Td(await _category_name(token, category_key), cls="cell"),
                 Td(
@@ -2490,7 +2486,7 @@ def setup_routes(app):
             data = await _api.list_backups(token)
         except _api.APIError as exc:
             # Any error (including relay 401) renders as a fragment — never redirect.
-            msg = exc.detail if exc.detail and exc.status_code != 401 else t("settings.cloud_not_connected", lang)
+            msg = exc.detail if exc.detail and exc.status != 401 else t("settings.cloud_not_connected", lang)
             return _backup_error(msg, lang)
         items = data.get("items", []) if isinstance(data, dict) else []
         if not items:
@@ -3508,7 +3504,7 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
         async def tc_field_edit(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             try:
                 templates = await getattr(api, gname)(token)
             except APIError as e:
@@ -3598,7 +3594,7 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
         async def tc_field_patch(request: Request, idx: int, field: str):
             token = _token(request)
             if not token:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             form = await request.form()
             try:
                 templates = await getattr(api, gname)(token)

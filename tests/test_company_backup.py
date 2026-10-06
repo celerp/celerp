@@ -24,6 +24,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 import pytest
+
+from ui.i18n import t
 from sqlalchemy import text
 
 from company_backup_support import (
@@ -291,7 +293,7 @@ async def _bk_refused(engine, client, tok: str, user_id, tmp_path, data: bytes, 
     assert err.value.status_code == status
     for message in messages:
         assert message in err.value.detail, err.value.detail
-    assert err.value.detail.endswith("Nothing was restored."), err.value.detail
+    assert "Nothing was restored." in err.value.detail, err.value.detail
     assert await snapshot(engine) == before
     assert await count(engine, "companies") == companies
 
@@ -313,7 +315,7 @@ async def _bk_modules_required(engine, client, tok: str, user_id, tmp_path, data
     assert needed[module]["label"] in refused.json()["detail"]
     with pytest.raises(cb.ModulesRequired) as err:
         await cb.restore_company(_bk_file(tmp_path, data), mode="new_company", user_id=user_id)
-    assert err.value.detail.endswith("Nothing was restored."), err.value.detail
+    assert "Nothing was restored." in err.value.detail, err.value.detail
     assert await snapshot(engine) == before
     assert await count(engine, "companies") == companies
 
@@ -820,7 +822,7 @@ async def test_export_refuses_unclassified_table(real_engine, real_client, tmp_p
     try:
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == cb.UNSUPPORTED
+        assert r.json()["detail"] == t(cb.UNSUPPORTED)
         async with maker(real_engine)() as s:
             assert "bk_unknown_things" not in await cb.classify(s)
         out = tmp_path / "bk-out" / "books.celerp-company"
@@ -844,7 +846,7 @@ async def test_export_refusal_surfaces_on_settings_and_migration_download(real_e
                                    "company_id uuid not null references companies(id) on delete cascade)")
         await _bk_sql(real_engine, "INSERT INTO bk_unknown_things (id, company_id) VALUES (gen_random_uuid(), :c)",
                       c=str(cid))
-        named = "cannot back up yet"
+        named = "can't hold yet"
     else:
         named = f"/static/attachments/{cid}/missing.png"
         await _bk_point_at(real_engine, cid, named)
@@ -853,7 +855,7 @@ async def test_export_refusal_surfaces_on_settings_and_migration_download(real_e
             r = await real_client.get("/company-backups/download", params=params or None, headers=auth(tok))
             assert r.status_code == 409, (params, r.text)
             detail = r.json()["detail"]
-            assert named in detail and detail.endswith("Nothing was backed up."), detail
+            assert named in detail and "Nothing was backed up." in detail, detail
     finally:
         await _bk_drop(real_engine, "bk_unknown_things")
 
@@ -1002,7 +1004,7 @@ async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_droppi
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert detail == cb.UNSUPPORTED and detail.endswith("Nothing was backed up."), detail
+        assert detail == t(cb.UNSUPPORTED) and "Nothing was backed up." in detail, detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -1027,7 +1029,7 @@ async def test_module_table_outside_invariants_refused(real_engine, real_client,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "Widgets" in detail and "zz_" not in detail and detail.endswith("Nothing was backed up.")
+        assert "Widgets" in detail and "zz_" not in detail and "Nothing was backed up." in detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -1055,7 +1057,7 @@ async def test_unsupported_module_refusal_names_module_and_table_before_archive(
             await cb.export_company_snapshot(cid, out_dir / "books.celerp-company")
         assert err.value.status_code == 409
         assert "Widgets" in err.value.detail and "zz_" not in err.value.detail
-        assert err.value.detail.endswith("Nothing was backed up.")
+        assert "Nothing was backed up." in err.value.detail
         assert opened == [] and list(out_dir.iterdir()) == []
     finally:
         await _bk_drop(real_engine, "zz_widgets")
@@ -1228,7 +1230,7 @@ def test_restore_memory_bounded_for_rows_of_empty_containers(tmp_path):
             _, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
-    assert err.value.detail == cb.TOO_LARGE
+    assert err.value.detail == t(cb.TOO_LARGE)
     assert peak < 32 * 1024 ** 2, peak
 
 
@@ -1239,7 +1241,7 @@ def test_deeply_nested_row_is_refused_before_it_is_parsed():
     deep = b'{"id":1,"state":' + b"[" * 5000 + b"]" * 5000 + b"}"
     with pytest.raises(cb.BackupError) as err:
         cb._parse_row(deep)
-    assert err.value.detail == cb.TOO_LARGE
+    assert err.value.detail == t(cb.TOO_LARGE)
     text = b'{"id":1,"state":"' + b"[" * 5000 + b'"}'
     assert cb._parse_row(text)["state"] == "[" * 5000
 
@@ -1447,7 +1449,7 @@ async def test_upload_size_limit_refused(real_engine, real_client, tmp_path, mon
     monkeypatch.setattr(cb, "MAX_UPLOAD_BYTES", len(data) - 1)
     before = await snapshot(real_engine)
     r = await read(real_client, tok, data)
-    assert r.status_code == 413 and "too large" in r.json()["detail"], r.text
+    assert r.status_code == 413 and "larger than 2 GB" in r.json()["detail"], r.text
     assert await snapshot(real_engine) == before
     monkeypatch.setattr(cb, "MAX_UPLOAD_BYTES", len(data))
     assert (await read(real_client, tok, data)).status_code == 200
@@ -1538,7 +1540,7 @@ async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_cl
     monkeypatch.setattr(cb, "MAX_ROW_BYTES", max(len(line) for line in rows) - 1)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == cb.ROW_TOO_LARGE_TO_BACK_UP
+    assert r.json()["detail"] == t(cb.ROW_TOO_LARGE_TO_BACK_UP)
 
 
 @pytest.mark.parametrize("limit", [("MAX_ROW_NODES", 3), ("MAX_ROW_DEPTH", 1)])
@@ -1550,7 +1552,7 @@ async def test_record_too_large_to_parse_is_not_backed_up(real_engine, real_clie
     monkeypatch.setattr(cb, *limit)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == cb.ROW_TOO_LARGE_TO_BACK_UP
+    assert r.json()["detail"] == t(cb.ROW_TOO_LARGE_TO_BACK_UP)
     assert "too large for a company backup" in r.json()["detail"]
 
 
@@ -1572,7 +1574,7 @@ async def test_backup_restore_would_refuse_is_not_made(real_engine, real_client,
                                     "MAX_UPLOAD_BYTES": len(data) - 64}[limit])
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == cb.TOO_LARGE_TO_BACK_UP
+    assert r.json()["detail"] == t(cb.TOO_LARGE_TO_BACK_UP)
 
 
 @pytest.mark.parametrize("header", ["honest", "understated"])
@@ -1641,10 +1643,10 @@ def _bk_wrong_format(data: bytes) -> bytes:
 _BK_TAMPERING = {
     "changed_row": (_bk_changed_row, "damaged or was changed"),
     "wrong_row_count": (_bk_wrong_count, "damaged or was changed"),
-    "not_a_zip": (lambda _: b"this is not a backup", "not a Celerp company backup"),
-    "wrong_format": (_bk_wrong_format, "not a Celerp company backup"),
+    "not_a_zip": (lambda _: b"this is not a backup", "isn't a Celerp company backup"),
+    "wrong_format": (_bk_wrong_format, "isn't a Celerp company backup"),
     "system_backup": (lambda _: _bk_system_backup(),
-                      "This is a whole-installation backup. Use System Recovery instead."),
+                      "This is a whole-installation backup, not a company backup."),
 }
 
 
@@ -1934,7 +1936,7 @@ def _r_created(r) -> dict:
 
 def _r_refused(r) -> None:
     assert r.status_code in (409, 422), r.text
-    assert r.json()["detail"].endswith("Nothing was restored."), r.text
+    assert "Nothing was restored." in r.json()["detail"], r.text
 
 
 def _r_table_lines(data: bytes, table: str) -> list[bytes]:
@@ -2520,7 +2522,7 @@ async def test_id_of_another_company_outside_foreign_keys_refused(real_engine, r
     async with _r_company_insert_probe(real_engine) as reached:
         r = await restore(real_client, tok, changed)
         _r_refused(r)
-        assert "another company" in r.json()["detail"], r.text
+        assert "a different company" in r.json()["detail"], r.text
         assert not await reached()
     assert await snapshot(real_engine) == before
 
@@ -2864,7 +2866,7 @@ async def test_bootstrap_upload_limits_refused(real_engine, real_client, tmp_pat
     before = await snapshot(real_engine)
     r = await _r_bread(real_client, data, code_config)
     assert r.status_code == (413 if limit == "MAX_UPLOAD_BYTES" else 422), r.text
-    assert "too large" in r.json()["detail"]
+    assert ("larger than" if limit == "MAX_UPLOAD_BYTES" else "too large") in r.json()["detail"]
     assert await snapshot(real_engine) == before
 
 
@@ -2922,7 +2924,7 @@ async def test_restore_refuses_attachment_of_unstored_type(real_engine, real_cli
     body = b"<html><body><script>document.title = 'x'</script></body></html>"
     data = _bk_with_attachment(await download(real_client, tok), name, f"/static/attachments/{cid}/{name}", body)
     folders = set((tmp_path / "static" / "attachments").glob("*"))
-    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "a type Celerp does not store")
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "an attached file Celerp can't store")
     assert set((tmp_path / "static" / "attachments").glob("*")) == folders
 
 
@@ -2958,7 +2960,7 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     await _bk_set_data(real_engine, cid, state)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert "a type Celerp does not store" in r.json()["detail"] and r.json()["detail"].endswith("Nothing was backed up.")
+    assert "a type Celerp does not store" in r.json()["detail"] and "Nothing was backed up." in r.json()["detail"]
 
 
 async def test_team_count_stated_in_preview_and_result(real_engine, real_client, tmp_path, monkeypatch):
@@ -3529,7 +3531,7 @@ async def test_inactive_prior_restore_refuses_member_and_non_member(real_engine,
             refusals.append(await real_client.post(f"/company-backups/{route}", headers=auth(who_tok), json={
                 "upload_token": upload, "mode": "new_company", "plan_fingerprint": "0" * 64}))
     assert [r.status_code for r in refusals] == [409] * 6, [r.text for r in refusals]
-    assert refusals[0].json() == {"detail": cb.NOT_A_MEMBER}
+    assert refusals[0].json() == {"detail": t(cb.NOT_A_MEMBER)}
     assert len({r.content for r in refusals}) == 1
     assert await snapshot(real_engine) == before
 
@@ -3709,7 +3711,7 @@ async def test_restore_refuses_attachment_missing_from_archive(real_engine, real
     del parts[f"attachments/{entry['name']}"]
     m["attachments"] = []
     data = rezip({**parts, "manifest.json": json.dumps(m).encode()})
-    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "does not carry")
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "missing one of its attached files")
 
 
 async def test_reactivate_without_prior_restore_is_stale_preview(real_engine, real_client, tmp_path, monkeypatch):
@@ -3804,7 +3806,7 @@ async def test_module_tables_travel_only_as_their_manifest_declares(real_engine,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "Widgets" in detail and "zz_" not in detail and detail.endswith("Nothing was backed up.")
+        assert "Widgets" in detail and "zz_" not in detail and "Nothing was backed up." in detail
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_tokens", "zz_widgets")

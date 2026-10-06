@@ -602,7 +602,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         bank_name = str(form.get("bank_name", "")).strip()
         account_number = str(form.get("account_number", "")).strip()
@@ -700,7 +700,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         patch = {}
         for field in ("bank_name", "account_number", "bank_type", "currency"):
@@ -719,7 +719,7 @@ def setup_routes(app):
     async def toggle_bank_account(request: Request, bank_id: str):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="bank-accounts-list")
+            return Div(P(t("error.session_expired")), id="bank-accounts-list")
         refused = []
         try:
             b = await api.get_bank_account(token, bank_id)
@@ -776,7 +776,7 @@ def setup_routes(app):
     async def create_rule(request: Request):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="rules-list")
+            return Div(P(t("error.session_expired")), id="rules-list")
         form = await request.form()
         data = {
             "bank_account_id": str(form.get("bank_account_id", "")).strip(),
@@ -801,7 +801,7 @@ def setup_routes(app):
     async def delete_rule(request: Request, rule_id: str):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="rules-list")
+            return Div(P(t("error.session_expired")), id="rules-list")
         try:
             await api.delete_recon_rule(token, rule_id)
             rules_data = await api.get_recon_rules(token)
@@ -816,7 +816,7 @@ def setup_routes(app):
     async def seed_chart_route(request: Request):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="chart-content")
+            return Div(P(t("error.session_expired")), id="chart-content")
         try:
             await api.seed_chart(token)
             chart_data = await api.get_chart(token)
@@ -854,7 +854,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         code = str(form.get("code", "")).strip()
         name = str(form.get("name", "")).strip()
@@ -911,7 +911,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         name = str(form.get("name", "")).strip()
         account_type = str(form.get("account_type", "")).strip()
@@ -935,7 +935,7 @@ def setup_routes(app):
     async def cash_flow_field_edit(request: Request, code: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
@@ -951,7 +951,7 @@ def setup_routes(app):
         """Return the read-only display cell (used by the Escape cancel handler)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
@@ -970,7 +970,7 @@ def setup_routes(app):
         422 whose message is shown in place rather than swallowed."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", "")).strip()
         try:

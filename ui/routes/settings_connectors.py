@@ -1051,7 +1051,7 @@ def setup_routes(app):
         """HTMX: get OAuth authorize URL and return JS to open it in a new tab."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         lang = get_lang(request)
@@ -1093,7 +1093,7 @@ def setup_routes(app):
         """HTMX: update sync frequency for an accounting connector."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1142,7 +1142,7 @@ def setup_routes(app):
         """HTMX: update sync direction (inbound / outbound / both) for a connector."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1187,7 +1187,7 @@ def setup_routes(app):
         """HTMX: disconnect a connector by deleting its tokens on relay."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1236,7 +1236,7 @@ def setup_routes(app):
         """HTMX: reset a connection no company owns, for the whole installation."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1273,7 +1273,7 @@ def setup_routes(app):
         per-entity sync failures surface in the status table + the completion toast."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1301,7 +1301,7 @@ def setup_routes(app):
         (only when ?polling=1, so opening the detail page never fires a stale toast)."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1329,7 +1329,7 @@ def setup_routes(app):
         """HTMX: choose the account payments from this store's orders are booked to."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if platform != "woocommerce":
@@ -1372,7 +1372,7 @@ def setup_routes(app):
         re-render it. Only WooCommerce orders carry this action."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if platform != "woocommerce":
@@ -1445,7 +1445,7 @@ def setup_routes(app):
         """HTMX: save API key credentials for a connector (e.g. WooCommerce)."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
