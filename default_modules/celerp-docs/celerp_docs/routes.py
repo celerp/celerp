@@ -62,7 +62,7 @@ from celerp.services.list_behavior import (
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 from celerp.schemas.numbers import FiniteFloat
-from ui.i18n import t
+from ui.i18n import item_status_label, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -80,7 +80,7 @@ def _validate_shipment_values(values: dict) -> None:
     for field, allowed in _SHIPMENT_ENUM_FIELDS.items():
         v = values.get(field)
         if v and v not in allowed:
-            raise ValueError(f"Invalid {field}: {v!r}")
+            raise ValueError(t("documents.err_incoterms_invalid" if field == "incoterms" else "documents.err_export_reason_invalid", value=v))
 
 
 class LineItem(BaseModel):
@@ -207,7 +207,7 @@ def _check_replay(replay, *, event_type: str, digest: str, entity_id: str | None
         or (entity_id is not None and replay.entity_id != entity_id)
         or (replay.metadata_ or {}).get("request") != digest
     ):
-        raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
 
 
 def _replay_result(replay, *, event_type: str, digest: str, entity_id: str | None = None) -> dict:
@@ -259,7 +259,7 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
     if attempted:
         raise HTTPException(
             status_code=422,
-            detail=f"Fields {sorted(attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
+            detail=t("documents.err_fields_not_patchable", fields=", ".join(sorted(attempted))),
         )
 
 
@@ -506,7 +506,7 @@ def _assert_date_order(patch: dict, current: dict | None = None) -> None:
     if issue and due and due < issue:
         raise HTTPException(
             status_code=422,
-            detail="due_date cannot be earlier than issue_date",
+            detail=t("documents.err_due_before_issue"),
         )
 
 
@@ -521,7 +521,7 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_upd
     else:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "doc":
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
     return row
 
 
@@ -545,7 +545,7 @@ def _assert_contacts_unchanged(named: dict[str, str], rows) -> None:
         if row is not None and ((row.state or {}).get("contact_id") or "") != named.get(row.entity_id, ""):
             raise HTTPException(
                 status_code=409,
-                detail="The contact on this record changed while it was being copied. Reload and try again.",
+                detail=t("documents.err_contact_changed_copy"),
             )
 
 
@@ -561,12 +561,12 @@ async def _lock_contact_reference(session: AsyncSession, company_id, contact_id:
     contact = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
     if contact is None:
         if await session.get(Projection, {"company_id": company_id, "entity_id": contact_id}) is not None:
-            raise HTTPException(status_code=422, detail="contact_id refers to a non-contact record")
+            raise HTTPException(status_code=422, detail=t("documents.err_contact_not_contact"))
         return None
     if (contact.state or {}).get("deleted"):
         raise HTTPException(
             status_code=422,
-            detail="This contact has been deleted and cannot be used on documents.",
+            detail=t("documents.err_contact_deleted"),
         )
     return contact
 
@@ -691,13 +691,13 @@ def _check_line_quantity(
     require_positive=False so a real zero on-hand count is allowed).
     """
     if qty_raw is None or isinstance(qty_raw, bool):
-        raise HTTPException(status_code=422, detail=f"{label}: quantity is required and must be a number")
+        raise HTTPException(status_code=422, detail=t("documents.err_qty_required", label=label))
     try:
         qty = float(qty_raw)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail=f"{label}: quantity must be a number, got {qty_raw!r}")
+        raise HTTPException(status_code=422, detail=t("documents.err_qty_not_number", label=label, qty=qty_raw))
     if not math.isfinite(qty):
-        raise HTTPException(status_code=422, detail=f"{label}: quantity must be a finite number, got {qty_raw!r}")
+        raise HTTPException(status_code=422, detail=t("documents.err_qty_not_finite", label=label, qty=qty_raw))
     validate_line_quantity(qty, sell_by, unit_map, label=label, require_positive=require_positive)
 
 
@@ -854,7 +854,7 @@ async def _assert_ref_id_unique(
         )
     ).scalars().first()
     if existing and existing.entity_id != exclude_entity_id:
-        raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
+        raise HTTPException(status_code=409, detail=t("documents.err_doc_number_taken", number=ref_id))
 
 
 @dataclass
@@ -905,7 +905,7 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     here; query_docs applies them in Python, and the summary ignores them by design."""
     id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
-        raise HTTPException(status_code=422, detail=f"ids accepts at most {MAX_IDS_FILTER} document ids")
+        raise HTTPException(status_code=422, detail=t("documents.err_too_many_ids", max=MAX_IDS_FILTER))
     base_where = [
         Projection.company_id == company_id,
         Projection.entity_type == "doc",
@@ -944,12 +944,12 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
 def _doc_sort_field(f: DocListFilters) -> str:
     """The state field ``f.sort``/``f.dir`` order by, or a 422 naming the accepted values."""
     if f.dir not in ("asc", "desc"):
-        raise HTTPException(status_code=422, detail="dir must be asc or desc")
+        raise HTTPException(status_code=422, detail=t("documents.err_sort_dir"))
     if f.sort is None:
         return "issue_date"
     field = _DOC_SORT_FIELDS.get(f.sort)
     if field is None:
-        raise HTTPException(status_code=422, detail=f"Unknown sort {f.sort!r}. Choose from: {', '.join(_DOC_SORT_FIELDS)}")
+        raise HTTPException(status_code=422, detail=t("documents.err_sort_unknown", sort=f.sort))
     return field
 
 
@@ -1045,7 +1045,7 @@ def _payable_balance(state: dict) -> Decimal:
     number."""
     balance = outstanding_balance(state)
     if balance is None:
-        raise HTTPException(status_code=409, detail="The document's outstanding balance is not a number")
+        raise HTTPException(status_code=409, detail=t("documents.err_balance_damaged"))
     return round_money(balance, str(state.get("currency") or "USD").upper())
 
 
@@ -1120,8 +1120,8 @@ async def _assert_import_number_free(session: AsyncSession, company_id, kind: Li
     for number in {str(data[f]).strip() for f in fields if str(data.get(f) or "").strip()}:
         doc_type = data.get("doc_type") if kind == "doc" else None
         if await _ids_numbered(session, company_id, kind, number, doc_type):
-            label = "Document" if kind == "doc" else "List"
-            raise HTTPException(status_code=409, detail=f"{label} number '{number}' already exists")
+            key = "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken"
+            raise HTTPException(status_code=409, detail=t(key, number=number))
 
 
 @router.get("/numbered", dependencies=[require_permission("view_documents")])
@@ -1271,7 +1271,7 @@ class SequencePatch(BaseModel):
 async def get_sequences(company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return get_all_sequences(company)
 
 
@@ -1279,7 +1279,7 @@ async def get_sequences(company_id: str = Depends(get_current_company_id), user=
 async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("manage_module_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await locked_company(session, company_id)
     if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     try:
         result = update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
     except ValueError as e:
@@ -1521,7 +1521,7 @@ async def create_doc(
         inv = await _get_doc(session, company_id, payload.original_doc_id)
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
-            raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
+            raise HTTPException(status_code=409, detail=t("documents.err_credit_over_invoice"))
 
     # Contact before company, the lock order every contact-reference writer takes. The
     # company lock comes before the line checks, so a concurrent Revert to Draft or
@@ -1567,7 +1567,7 @@ async def create_doc(
     # Uniqueness check: reject if a doc with this ref_id already exists
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if existing is not None:
-        raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
+        raise HTTPException(status_code=409, detail=t("documents.err_doc_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
     chosen = _chosen_terms(data)
@@ -1702,7 +1702,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
-        raise HTTPException(status_code=422, detail="Change the contact and the line items in separate saves.")
+        raise HTTPException(status_code=422, detail=t("documents.err_contact_and_lines"))
     digest, idem_key = _patch_identity("doc", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
@@ -1723,7 +1723,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
     if payload.expected_version is not None and row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail="This document was changed by someone else; reload to get the latest before saving")
+        raise HTTPException(status_code=409, detail=t("documents.err_doc_changed"))
     if selecting:
         client_values = {k: (v or {}).get("new") for k, v in fields_changed.items()}
         selection = await _contact_selection_values(
@@ -1761,7 +1761,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
                     if v != orig_v:
                         raise HTTPException(
                             status_code=409,
-                            detail=f"Field '{k}' in line item {i} cannot be changed on a finalized document.",
+                            detail=t("documents.err_line_field_finalized", field=k, line=i + 1),
                         )
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
@@ -1797,7 +1797,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
             if item_proj and item_proj.state.get("status") in FULFILLED_ITEM_STATUSES:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
+                    detail=t("documents.err_line_delivered_delete"),
                 )
 
     # Money fields are stored at currency precision. The client computes subtotal/tax/total as
@@ -1825,7 +1825,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
             try:
                 return to_stored_float(checked_exchange_rate(value))
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=f"The conversion rate {exc}.") from exc
+                raise HTTPException(status_code=422, detail=t("error.rate_invalid", raw=value)) from exc
         return value
     # Keep only fields that actually changed (old != new). A re-select/blur that resets a
     # field to its current value must emit no event - otherwise it records an empty
@@ -1937,7 +1937,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
     if row.state.get("status") == "void":
-        raise HTTPException(status_code=409, detail="Cannot send void document")
+        raise HTTPException(status_code=409, detail=t("documents.err_send_void"))
     if row.state.get("status") == "closed":
         raise HTTPException(status_code=409, detail="Cannot send a closed memo; reopen it first.")
     if not (row.state.get("line_items") or []):
@@ -1945,7 +1945,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     doc_type = row.state.get("doc_type", "")
     if doc_type in NO_SEND_DOC_TYPES:
-        raise HTTPException(status_code=409, detail=f"Document type '{doc_type}' cannot be sent")
+        raise HTTPException(status_code=409, detail=t("documents.err_send_type"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
@@ -2012,7 +2012,7 @@ async def _finalize_doc_impl(
     # the row lock, same as the other post-close mutations; the user reopens first.
     _reject_if_closed(row.state, "finalize it")
     if row.state.get("status") == "void":
-        raise HTTPException(status_code=409, detail="Cannot finalize void document")
+        raise HTTPException(status_code=409, detail=t("documents.err_finalize_void"))
     if row.state.get("finalized"):
         return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
@@ -2138,7 +2138,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
         raise HTTPException(
             status_code=409,
-            detail="Cannot void a document with fulfilled items; revert fulfillment (receive the goods back) first")
+            detail=t("documents.err_void_delivered"))
     if row.state.get("received_items"):
         raise HTTPException(
             status_code=409,
@@ -2173,12 +2173,12 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
         return done
     state = row.state
     if state.get("doc_type") != "memo":
-        raise HTTPException(status_code=422, detail="Only memos can be closed")
+        raise HTTPException(status_code=422, detail=t("documents.err_close_not_memo"))
     # Denylist, not an issued-only allowlist: a memo can reach "partial" from a
     # deposit payment and stays resolvable, so only draft/void/converted/already-
     # closed are excluded.
     if state.get("status") in ("draft", "void", "converted", "closed"):
-        raise HTTPException(status_code=409, detail="Only a live, issued memo can be closed")
+        raise HTTPException(status_code=409, detail=t("documents.err_close_memo_status"))
     # Resolution is per-item memo_out, NOT fulfillment_status (a "fulfilled" memo
     # is all-memo_out = all still at the customer = maximally unresolved). Mirror
     # convert's per-line read.
@@ -2205,7 +2205,7 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
     if state.get("status") == "paid":
         raise HTTPException(
             status_code=409,
-            detail="This memo is fully paid and already settled; it cannot be closed.",
+            detail=t("documents.err_close_memo_paid"),
         )
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_close_status"] = state.get("status")
@@ -2227,7 +2227,7 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
     if row.state.get("status") != "closed":
-        raise HTTPException(status_code=409, detail="Only a closed memo can be reopened")
+        raise HTTPException(status_code=409, detail=t("documents.err_reopen_not_closed"))
     restored = row.state.get("pre_close_status") or "final"
     event_data = payload.model_dump(exclude_none=True)
     event_data["restored_status"] = restored
@@ -2258,9 +2258,9 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         else {"final", "sent", "awaiting_payment"}
     )
     if previous_status not in _REVERTABLE:
-        raise HTTPException(status_code=409, detail="Can only revert documents in 'final', 'sent', or 'awaiting_payment' status")
+        raise HTTPException(status_code=409, detail=t("documents.err_revert_status"))
     if float(state.get("amount_paid", 0) or 0) != 0:
-        raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
+        raise HTTPException(status_code=409, detail=t("documents.err_revert_has_payments"))
     # Both blocks below name the button on the document's lines that clears them, so the
     # user is sent to the action rather than left to guess where goods are returned.
     if state.get("received_items"):
@@ -2340,11 +2340,11 @@ async def renumber_doc(
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("status") == "void":
-        raise HTTPException(status_code=409, detail="Voided documents cannot be renumbered")
+        raise HTTPException(status_code=409, detail=t("documents.err_renumber_void"))
 
     new_ref = payload.ref_id.strip()
     if not new_ref:
-        raise HTTPException(status_code=422, detail="ref_id must not be empty")
+        raise HTTPException(status_code=422, detail=t("documents.err_number_required"))
 
     old_ref = state.get("ref_id") or ""
     if new_ref == old_ref:
@@ -2384,10 +2384,10 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         return done
     state = row.state
     if state.get("status") != "void":
-        raise HTTPException(status_code=409, detail="Can only unvoid documents in 'void' status")
+        raise HTTPException(status_code=409, detail=t("documents.err_unvoid_not_void"))
     restored_status = state.get("pre_void_status")
     if not restored_status:
-        raise HTTPException(status_code=409, detail="Cannot unvoid: document was voided before unvoid support was added (no pre_void_status)")
+        raise HTTPException(status_code=409, detail=t("documents.err_unvoid_legacy"))
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -2484,7 +2484,7 @@ async def bulk_delete_drafts(
     """
     ids = [x.strip() for x in doc_ids.split(",") if x.strip()]
     if not ids:
-        raise HTTPException(status_code=422, detail="No document IDs specified")
+        raise HTTPException(status_code=422, detail=t("documents.err_no_docs_selected"))
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
     # Locked and read fresh, so a finalize that committed while this waited is seen.
@@ -2500,9 +2500,7 @@ async def bulk_delete_drafts(
     if posted:
         raise HTTPException(
             status_code=422,
-            detail=f"Nothing was deleted. These documents have journal entries in the books, "
-                   f"so deleting them would leave the entries unattributable: {_first_few(posted)}. "
-                   f"Untick them and try again.",
+            detail=t("documents.err_delete_posted_many", docs=_first_few(posted)),
         )
 
     deleted = []
@@ -2519,13 +2517,12 @@ async def bulk_delete_drafts(
 async def delete_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("delete_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Only draft documents can be deleted")
+        raise HTTPException(status_code=409, detail=t("documents.err_delete_not_draft"))
     entries = await _posted_journal_entries(session, company_id, entity_id)
     if entries:
         raise HTTPException(
             status_code=409,
-            detail=f"This document has journal entries in the books, so deleting it would leave "
-                   f"them unattributable: {_first_few(entries)}. It can stay void instead.",
+            detail=t("documents.err_delete_posted", entries=_first_few(entries)),
         )
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
@@ -2577,7 +2574,7 @@ async def _books_still_kept(session, company_id, doc_state: dict, books: tuple[s
     current = await books_currency_still(session, company_id, base)
     current_rate = _require_doc_rate_http(doc_state, current)
     if rate != current_rate:
-        raise HTTPException(status_code=422, detail=f"The payment is at rate {rate}; the document is now at {current_rate}")
+        raise HTTPException(status_code=422, detail=t("documents.err_payment_rate", rate=rate, current_rate=current_rate))
     return base, float(rate)
 
 
@@ -2606,16 +2603,16 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         if request is not None:
             _check_replay(replay, event_type="doc.payment.received", digest=request, entity_id=entity_id)
         elif replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
         # Match emit_event's duplicate-race contract so callers can distinguish a
         # replay from a newly applied payment without changing this function's return shape.
         replay.was_deduped = True
         return replay, float((replay.data or {}).get("amount") or 0)
     doc_state = dict(row.state)
     if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
-        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
+        raise HTTPException(status_code=409, detail=t("documents.err_no_money_doc"))
     if doc_state.get("status") not in PAYABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Cannot record payment in current status")
+        raise HTTPException(status_code=409, detail=t("documents.err_payment_status"))
     # Replay guard for referenced (online) payments: the same Stripe intent
     # delivered twice records exactly once.
     reference = body.get("reference")
@@ -2623,34 +2620,32 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # payment frees its charge to be re-recorded, as removal always did.
     if reference and any(p.get("reference") == reference and p.get("status") != "deleted"
                          for p in doc_state.get("payments", [])):
-        raise HTTPException(status_code=409, detail="Payment already recorded")
+        raise HTTPException(status_code=409, detail=t("documents.err_payment_recorded"))
     doc_currency = str(doc_state.get("currency") or "USD").upper()
     payment_currency = str(body.get("currency") or doc_currency).upper()
     if payment_currency != doc_currency:
         raise HTTPException(
             status_code=422,
-            detail=f"Payment currency {payment_currency} does not match document currency {doc_currency}",
+            detail=t("documents.err_payment_currency", payment_currency=payment_currency, doc_currency=doc_currency),
         )
     body["currency"] = doc_currency
     outstanding_d = _payable_balance(doc_state)
     if outstanding_d <= 0:
-        raise HTTPException(status_code=409, detail="Invoice already fully paid")
+        raise HTTPException(status_code=409, detail=t("documents.err_invoice_paid"))
     amount_d = round_money(body["amount"], doc_currency)
     if amount_d <= 0:
-        raise HTTPException(status_code=422, detail="Payment amount must be positive")
+        raise HTTPException(status_code=422, detail=t("documents.err_payment_amount_positive"))
     if amount_d > outstanding_d:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"Payment {to_stored_float(amount_d)} exceeds amount outstanding "
-                f"{to_stored_float(outstanding_d)}"
-            ),
+            detail=t("documents.err_payment_too_much", amount=to_stored_float(amount_d),
+                     outstanding=to_stored_float(outstanding_d)),
         )
     amount = to_stored_float(amount_d)
     body["amount"] = amount
     bank_code = body.get("bank_account")
     if not bank_code:
-        raise HTTPException(status_code=422, detail="bank_account is required")
+        raise HTTPException(status_code=422, detail=t("documents.err_bank_account_required"))
     body["currency"] = doc_currency
     # A payment carries its own rate because the rate moves between issuing a
     # foreign-currency document and being paid for it. On a document in the
@@ -2669,10 +2664,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             and to_decimal(body["conversion_rate"]) != 1:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"{_base_currency} is this company's own currency, so a payment on this "
-                f"document converts at 1, not {body['conversion_rate']}."
-            ),
+            detail=t("error.rate_not_one_for_base", base=_base_currency, raw=body["conversion_rate"]),
         )
     body["remaining_balance"] = to_stored_float(max(Decimal(0), outstanding_d - amount_d))
     payment_index = await _alloc_payment_index(
@@ -2838,16 +2830,16 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
     if payment.get("method") in ("credit_note", "applied"):
         raise HTTPException(
             status_code=422,
-            detail="A credit note application moved no money, so it cannot be refunded. Void it instead.",
+            detail=t("documents.err_refund_credit_application"),
         )
     amount_d = round_money(amount, currency)
     if amount_d <= 0:
-        raise HTTPException(status_code=422, detail="Refund amount must be positive")
+        raise HTTPException(status_code=422, detail=t("documents.err_refund_amount_positive"))
     left = min(_refundable(payment, currency), round_money(row.state.get("amount_paid", 0) or 0, currency))
     if amount_d > left:
         raise HTTPException(
             status_code=422,
-            detail=f"At most {to_stored_float(max(left, 0))} {currency} of this payment can still be refunded.",
+            detail=t("documents.err_refund_too_much", amount=to_stored_float(max(left, 0)), currency=currency),
         )
     refund_number = int(payment.get("refund_count", 0))
     given_back = float(payment.get("refunded") or 0)
@@ -2930,7 +2922,7 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
     if payload.currency and str(payload.currency).upper() != currency:
         raise HTTPException(
             status_code=422,
-            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
+            detail=t("documents.err_refund_currency", refund_currency=str(payload.currency).upper(), currency=currency),
         )
     payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
     if payment is None or payment.get("status") != "active":
@@ -2971,9 +2963,9 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     # Payments are identified by their index FIELD, not list position.
     payment = next((p for p in payments if p.get("index") == payload.payment_index), None)
     if payment is None:
-        raise HTTPException(status_code=422, detail="Invalid payment index")
+        raise HTTPException(status_code=422, detail=t("documents.err_payment_not_found"))
     if payment.get("status") != "active":
-        raise HTTPException(status_code=409, detail="Payment is already voided")
+        raise HTTPException(status_code=409, detail=t("documents.err_payment_already_void"))
     # A refund already gave back part of the payment; the void reverses the rest.
     remaining = _refundable(payment, str(row.state.get("currency") or "USD").upper())
     if payment.get("refunded") and remaining <= 0:
@@ -3135,16 +3127,16 @@ async def delete_payment(
     # Payments are identified by their index FIELD, not list position.
     payment = next((p for p in payments if p.get("index") == payment_index), None)
     if payment is None:
-        raise HTTPException(status_code=422, detail="Invalid payment index")
+        raise HTTPException(status_code=422, detail=t("documents.err_payment_not_found"))
     if payment.get("status") != "active":
-        raise HTTPException(status_code=409, detail="Only active payments can be deleted")
+        raise HTTPException(status_code=409, detail=t("documents.err_payment_not_active"))
     # Said before "void it instead": a Stripe payment is voided only in Stripe either.
     await refuse_stripe_payment_removal(session, company_id, entity_id, payments, payment_index,
                                         "doc.payment.deleted")
     if payment.get("refunded"):
         raise HTTPException(
             status_code=409,
-            detail="Part of this payment has been refunded, so it was real. Void it instead of deleting it.",
+            detail=t("documents.err_payment_partly_refunded"),
         )
     if payment.get("method") in ("credit_note", "applied"):
         # A credit-note settlement is a pair with an AR transfer entry, not a
@@ -3198,7 +3190,7 @@ async def delete_payment(
     if any(recon.status == "closed" for recon in recon_sessions):
         raise HTTPException(
             status_code=409,
-            detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
+            detail=t("documents.err_payment_reconciled"),
         )
 
     # Emit doc.payment.deleted first - projection tombstones the row in place.
@@ -3285,49 +3277,49 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     cn_row = locked.get(entity_id)
     inv_row = locked.get(target_doc_id)
     if cn_row is None or inv_row is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
         if request is not None:
             _check_replay(replay, event_type="doc.payment.received", digest=request, entity_id=entity_id)
         elif replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
         replay.was_deduped = True
         return replay
     cn = cn_row.state
     if cn.get("doc_type") != "credit_note":
-        raise HTTPException(status_code=409, detail="Only credit notes can be applied to invoices")
+        raise HTTPException(status_code=409, detail=t("documents.err_only_credit_note_apply"))
     if cn.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409, detail="Credit note must be issued before applying")
+        raise HTTPException(status_code=409, detail=t("documents.err_credit_note_finalize_apply"))
 
     inv = inv_row.state
     if inv.get("doc_type") != "invoice":
-        raise HTTPException(status_code=409, detail="Target must be an invoice")
+        raise HTTPException(status_code=409, detail=t("documents.err_apply_target_invoice"))
     if inv.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409, detail="Invoice must be in a payable status")
+        raise HTTPException(status_code=409, detail=t("documents.err_apply_invoice_not_payable"))
 
     # Validate same contact
     cn_contact = cn.get("contact_id")
     inv_contact = inv.get("contact_id")
     if cn_contact and inv_contact and cn_contact != inv_contact:
-        raise HTTPException(status_code=422, detail="Credit note and invoice must belong to the same contact")
+        raise HTTPException(status_code=422, detail=t("documents.err_apply_contact_mismatch"))
 
     cn_currency = str(cn.get("currency") or "USD").upper()
     inv_currency = str(inv.get("currency") or "USD").upper()
     if cn_currency != inv_currency:
         raise HTTPException(
             status_code=422,
-            detail="Credit note and invoice must use the same currency",
+            detail=t("documents.err_apply_currency_mismatch"),
         )
     amount_d = round_money(amount, cn_currency)
     if amount_d <= 0:
-        raise HTTPException(status_code=422, detail="Application amount must be positive")
+        raise HTTPException(status_code=422, detail=t("documents.err_amount_positive"))
     cn_outstanding = _payable_balance(cn)
     inv_outstanding = _payable_balance(inv)
     if amount_d > cn_outstanding:
-        raise HTTPException(status_code=409, detail="Amount exceeds credit note balance")
+        raise HTTPException(status_code=409, detail=t("documents.err_apply_over_credit"))
     if amount_d > inv_outstanding:
-        raise HTTPException(status_code=409, detail="Amount exceeds invoice outstanding")
+        raise HTTPException(status_code=409, detail=t("documents.err_apply_over_invoice"))
     amount = to_stored_float(amount_d)
 
     payment_date = payment_date or datetime.now(timezone.utc).date().isoformat()
@@ -3422,21 +3414,21 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         return done
     cn = row.state
     if cn.get("doc_type") != "credit_note":
-        raise HTTPException(status_code=409, detail="Only credit notes can be refunded")
+        raise HTTPException(status_code=409, detail=t("documents.err_only_credit_note_refund"))
     if cn.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409, detail="Credit note must be issued before refunding")
+        raise HTTPException(status_code=409, detail=t("documents.err_credit_note_finalize_refund"))
     currency = str(cn.get("currency") or "USD").upper()
     amount_d = round_money(payload.amount, currency)
     if amount_d <= 0:
-        raise HTTPException(status_code=422, detail="Refund amount must be positive")
+        raise HTTPException(status_code=422, detail=t("documents.err_refund_amount_positive"))
     cn_outstanding = _payable_balance(cn)
     if amount_d > cn_outstanding:
-        raise HTTPException(status_code=409, detail="Refund amount exceeds credit note balance")
+        raise HTTPException(status_code=409, detail=t("documents.err_refund_over_credit"))
     amount = to_stored_float(amount_d)
 
     payment_date = payload.date
     if not payload.bank_account:
-        raise HTTPException(status_code=422, detail="bank_account is required")
+        raise HTTPException(status_code=422, detail=t("documents.err_bank_account_required"))
     bank_code = payload.bank_account
 
     _refund_company = await session.get(Company, company_id)
@@ -3492,7 +3484,7 @@ class BulkPaymentBody(BaseModel):
 @router.post("/bulk-payment")
 async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.doc_ids:
-        raise HTTPException(status_code=422, detail="No documents specified")
+        raise HTTPException(status_code=422, detail=t("documents.err_no_docs_selected"))
     key, digest = _operation("bulk-payment", None, payload)
     rows = await _get_docs_for_update(session, company_id, payload.doc_ids)
     if (done := await _earlier_run(session, company_id, key, event_type="payment_batch.recorded",
@@ -3501,14 +3493,14 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
 
     docs = [(doc_id, dict(rows[doc_id].state)) for doc_id in dict.fromkeys(payload.doc_ids) if doc_id in rows]
     if not docs:
-        raise HTTPException(status_code=404, detail="No valid documents found")
+        raise HTTPException(status_code=404, detail=t("documents.err_selected_docs_gone"))
     if payload.bank_account:
         from celerp_accounting.ledger_accounts import require_money_account
         await require_money_account(session, company_id, payload.bank_account)
 
     contact_ids = {s.get("contact_id") for _, s in docs if s.get("contact_id")}
     if len(contact_ids) > 1:
-        raise HTTPException(status_code=422, detail="All documents must belong to the same contact")
+        raise HTTPException(status_code=422, detail=t("documents.err_selected_contacts_differ"))
 
     payable = []
     for doc_id, state in docs:
@@ -3517,20 +3509,20 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
         currency = str(state.get("currency") or "USD").upper()
         payable.append((doc_id, state, currency, _payable_balance(state)))
     if not payable:
-        raise HTTPException(status_code=409, detail="No documents in payable status")
+        raise HTTPException(status_code=409, detail=t("documents.err_none_payable"))
 
     currencies = {currency for _, _, currency, _ in payable}
     if len(currencies) != 1:
         raise HTTPException(
             status_code=422,
-            detail="Bulk payment requires all payable documents to use the same currency",
+            detail=t("documents.err_selected_currencies_differ"),
         )
     currency = next(iter(currencies))
     tender = round_money(payload.amount, currency)
     if tender <= 0:
-        raise HTTPException(status_code=422, detail="Payment amount must be positive")
+        raise HTTPException(status_code=422, detail=t("documents.err_payment_amount_positive"))
     if not payload.bank_account:
-        raise HTTPException(status_code=422, detail="bank_account is required")
+        raise HTTPException(status_code=422, detail=t("documents.err_bank_account_required"))
 
     payable.sort(key=lambda x: (
         x[1].get("due_date") or x[1].get("issue_date") or "9999",
@@ -3601,7 +3593,7 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
     what = it.sku or it.name or it.item_id or "Received item"
     if it.po_line_index != -1:
         if not 0 <= it.po_line_index < len(lines):
-            raise HTTPException(status_code=422, detail=f"{what}: line {it.po_line_index + 1} is not on this {label}.")
+            raise HTTPException(status_code=422, detail=t("documents.err_receive_no_line", what=what, line=it.po_line_index + 1, label=t(f"settings.doc_type_{doc_type}")))
         index = it.po_line_index
     else:
         index = next((i for i, li in enumerate(lines)
@@ -3621,13 +3613,14 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
     line_kind = auto_je.bill_line_kind(line) if doc_type == "bill" else line.get("receive_as") or "stock"
     if it.item_id and it.item_id != line_item and not (line_item is None and line_sku
                                                       and item_skus.get(it.item_id) == line_sku):
-        raise HTTPException(status_code=422, detail=f"{what}: that item is not the one on line {index + 1} of this {label}.")
+        raise HTTPException(status_code=422, detail=t("documents.err_receive_line_other_item", what=what, line=index + 1, label=t(f"settings.doc_type_{doc_type}")))
     if it.sku and it.sku.strip() != (line_sku or item_skus.get(line_item or "")):
-        raise HTTPException(status_code=422, detail=f"{what}: that SKU is not the one on line {index + 1} of this {label}.")
+        raise HTTPException(status_code=422, detail=t("documents.err_receive_line_other_sku", what=what, line=index + 1, label=t(f"settings.doc_type_{doc_type}")))
     if it.receive_as and it.receive_as != line_kind:
         raise HTTPException(
             status_code=422,
-            detail=f"{what}: line {index + 1} of this {label} is received as {line_kind}, not {it.receive_as}.")
+            detail=t("documents.err_receive_line_kind", what=what, line=index + 1, label=t(f"settings.doc_type_{doc_type}"),
+                     line_kind=line_kind, receive_as=it.receive_as))
     it.po_line_index = index
     it.item_id = it.item_id or line_item
     it.sku = line_sku or it.sku
@@ -3693,7 +3686,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         return done
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
-        raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
+        raise HTTPException(status_code=409, detail=t("documents.err_receive_wrong_type"))
 
     location_uuid = None
     if payload.location_id:
@@ -3854,7 +3847,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # PO (outbound-style): adjust quantity on the canonical catalog item.
             item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
             if item is None:
-                raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
+                raise HTTPException(status_code=404, detail=t("documents.err_receive_item_gone", item=it.item_id))
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
             # The receipt adds what these goods cost to the lot's basis, so a delivery at a new
             # price moves the lot's unit cost to the weighted average of old and new stock.
@@ -3873,7 +3866,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             if it.receive_as != "stock":
                 continue
             if not it.name:
-                raise HTTPException(status_code=422, detail="name is required when creating received item")
+                raise HTTPException(status_code=422, detail=t("documents.err_receive_name_required"))
             # Auto-generate SKU from name if not provided (e.g. custom ad-hoc items)
             _sku = it.sku or it.name.strip().upper().replace(" ", "-")[:40]
 
@@ -4057,7 +4050,7 @@ async def _historical_doc(session: AsyncSession, company_id, entity_id: str, *, 
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
         if replay.event_type not in event_types or replay.entity_id != entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
         replay.was_deduped = True
         return row, replay
     if row.state.get("doc_type") != doc_type or row.state.get("status") in ("draft", "void"):
@@ -4238,9 +4231,9 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         return done
     doc_type = row.state.get("doc_type")
     if doc_type not in ("consignment_in", "bill", "purchase_order"):
-        raise HTTPException(status_code=409, detail="return-items is only valid for bills, POs, and consignment_in documents")
+        raise HTTPException(status_code=409, detail=t("documents.err_return_wrong_type"))
     if row.state.get("status") not in ("received", "partially_received", "partial_returned", "awaiting_payment"):
-        raise HTTPException(status_code=409, detail="Document must be in received/partial/awaiting_payment status to return items")
+        raise HTTPException(status_code=409, detail=t("documents.err_return_not_received"))
 
     from celerp_inventory.services import goods_basis
 
@@ -4249,7 +4242,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     returnable = await _returnable_quantities(session, company_id, row.state)
     for it in payload.items:
         if it.quantity_returned <= 0:
-            raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")
+            raise HTTPException(status_code=422, detail=t("error.qty_positive", label=it.item_id))
         left = returnable.get(it.item_id)
         if left is None:
             raise HTTPException(status_code=422,
@@ -4257,7 +4250,8 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         if it.quantity_returned > left + 1e-9:
             raise HTTPException(
                 status_code=422,
-                detail=f"{it.item_id}: at most {max(0.0, left):g} received on this {label} can still be returned.")
+                detail=t("documents.err_return_over_received", item=it.item_id, left=f"{max(0.0, left):g}",
+                         label=t(f"settings.doc_type_{doc_type}")))
         returnable[it.item_id] = left - it.quantity_returned
 
     # Owned goods leave the books at what they carried; consigned goods were never on them.
@@ -4271,7 +4265,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     for line_no, it in enumerate(payload.items):
         item = lots.get(it.item_id)
         if item is None or item.entity_type != "item":
-            raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
+            raise HTTPException(status_code=404, detail=t("documents.err_receive_item_gone", item=it.item_id))
         # Only goods actually on the shelf can go back to a supplier. Anything out on memo
         # is at a customer's site and anything sold has left; shrinking those here would
         # quietly write off stock that is still owed back to us.
@@ -4284,7 +4278,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             )
         current_qty = float(item.state.get("quantity", 0) or 0)
         if it.quantity_returned > current_qty + 1e-9:
-            raise HTTPException(status_code=409, detail=f"Cannot return more than on-hand quantity for {it.item_id}")
+            raise HTTPException(status_code=409, detail=t("documents.err_return_over_stock", item=it.item_id))
         new_qty = max(0.0, current_qty - it.quantity_returned)
         adjustment: dict = {"new_qty": new_qty}
         returned.append(it.model_dump())
@@ -4379,11 +4373,11 @@ async def create_shipment_from_docs(
     for eid in doc_ids:
         row = locked.get(eid)
         if row is None:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
         state = row.state
         if state.get("doc_type") not in ("invoice", "memo"):
             raise HTTPException(status_code=422,
-                                detail="Only invoices and consignment-out memos can be shipped")
+                                detail=t("documents.err_ship_wrong_type"))
         if state.get("status") in ("draft", "void"):
             raise HTTPException(status_code=409,
                                 detail="Issue every document before creating its shipping paperwork")
@@ -4404,7 +4398,7 @@ async def create_shipment_from_docs(
     currencies = {s.get("currency") or "" for s in states}
     if len(currencies) > 1:
         raise HTTPException(status_code=422,
-                            detail="Selected documents use different currencies - a shipping document declares one")
+                            detail=t("documents.err_ship_currencies"))
 
     lines = []
     for state in states:
@@ -4464,10 +4458,10 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
     state = row.state
     if state.get("doc_type") == "quotation":
         if state.get("status") in {"void", "converted"}:
-            raise HTTPException(status_code=409, detail="Cannot convert quotation in current status")
+            raise HTTPException(status_code=409, detail=t("documents.err_quote_convert_status"))
         valid_until = state.get("valid_until")
         if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
-            raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
+            raise HTTPException(status_code=409, detail=t("documents.err_quote_expired"))
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -4490,7 +4484,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # backing lot, so a converted memo has an empty allocation set and can never
         # re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
         if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
-            raise HTTPException(status_code=409, detail="Memo must be issued before converting to invoice")
+            raise HTTPException(status_code=409, detail=t("documents.err_memo_issue_first"))
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
 
@@ -4510,7 +4504,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         if not memo_out_backing:
             raise HTTPException(
                 status_code=422,
-                detail="Cannot convert: no items are currently On Memo (memo_out). Fulfill at least one item before converting.",
+                detail=t("documents.err_memo_nothing_out"),
             )
 
         # Bill each still-out lot against the original memo line it is bound to, at THAT
@@ -4580,7 +4574,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
             if _target_eid is None or _target_eid not in billed_by_bound_eid:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"convert: sibling SKU {_sku} has no matching original line",
+                    detail=t("documents.err_convert_line_unmatched", sku=_sku),
                 )
             billed = billed_by_bound_eid[_target_eid]
             _unit = to_decimal(billed.get("unit_price") or 0)
@@ -4631,7 +4625,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
 
     if state.get("doc_type") == "consignment_in":
         if state.get("status") not in ("final", "sent", "received", "partially_received"):
-            raise HTTPException(status_code=409, detail="Consignment In must be issued before converting to vendor bill")
+            raise HTTPException(status_code=409, detail=t("documents.err_consignment_issue_first"))
         ref = next_doc_ref(company, "bill")
         new_doc_id = f"doc:{ref}"
         new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
@@ -4660,7 +4654,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         await session.commit()
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
-    raise HTTPException(status_code=409, detail="Unsupported document conversion")
+    raise HTTPException(status_code=409, detail=t("documents.err_convert_unsupported"))
 
 
 class NoteCreate(BaseModel):
@@ -4713,7 +4707,7 @@ async def add_doc_note(
 ) -> dict:
     await _get_doc(session, company_id, entity_id)
     if not payload.note.strip():
-        raise HTTPException(status_code=422, detail="Note text cannot be empty")
+        raise HTTPException(status_code=422, detail=t("documents.err_note_empty"))
     note_id = f"note:{uuid.uuid4()}"
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
@@ -4746,7 +4740,7 @@ async def update_doc_note(
     await _get_doc(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
-        raise HTTPException(status_code=404, detail="Note not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
         event_type="doc.note_updated",
@@ -4770,7 +4764,7 @@ async def delete_doc_note(
     await _get_doc(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
-        raise HTTPException(status_code=404, detail="Note not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
         event_type="doc.note_removed",
@@ -4801,7 +4795,7 @@ async def import_doc(
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
         if replay.event_type != "doc.created" or replay.entity_id != body.entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
     # Entity guard: one create event per document identity.
@@ -5051,7 +5045,7 @@ ListBatchImportRequest = DocBatchImportRequest
 async def _get_list(session: AsyncSession, company_id, entity_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "list":
-        raise HTTPException(status_code=404, detail="List not found")
+        raise HTTPException(status_code=404, detail=t("documents.list_not_found"))
     return row
 
 
@@ -5064,7 +5058,7 @@ async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str
     session's identity map. The company lock comes first, as for documents."""
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.entity_type != "list":
-        raise HTTPException(status_code=404, detail="List not found")
+        raise HTTPException(status_code=404, detail=t("documents.list_not_found"))
     return row
 
 
@@ -5383,7 +5377,7 @@ async def get_list_page(
         {"cid": str(company_id), "eid": entity_id},
     )).first()
     if head is None:
-        raise HTTPException(status_code=404, detail="List not found")
+        raise HTTPException(status_code=404, detail=t("documents.list_not_found"))
     total = head.total
     window = (await session.execute(
         text("""
@@ -5471,7 +5465,7 @@ async def create_list(
     # Uniqueness check
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if existing is not None:
-        raise HTTPException(status_code=409, detail=f"List number '{ref_id}' already exists")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
     data["ref_id"] = ref_id
@@ -5520,7 +5514,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
-        raise HTTPException(status_code=422, detail="Change the customer and the line items in separate saves.")
+        raise HTTPException(status_code=422, detail=t("documents.err_customer_and_lines"))
     digest, idem_key = _patch_identity("list", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "list.updated", entity_id, digest)) is not None:
         return done
@@ -5533,16 +5527,16 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     if (done := await _find_patch_replay(session, company_id, idem_key, "list.updated", entity_id, digest)) is not None:
         return done
     if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))
     # Replacing line_items is a read-modify-write over the whole array: two concurrent editors (or a
     # scan and a line edit) would each save their own full array and the second would silently drop the
     # first's lines. Require expected_version for it so the stale writer is rejected; scalar-only patches
     # touch independent fields and stay backward compatible without a version.
     _new_lines = (fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list) and payload.expected_version is None:
-        raise HTTPException(status_code=409, detail="Reload the list to get its latest version before saving line changes")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
     if payload.expected_version is not None and row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
     _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
     if selecting:
         # Lines a selection reprices are computed from the locked List, so they cannot
@@ -5559,7 +5553,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     if "discount" in _new_values and discount_from_inputs(_new_values, 0, row.state.get("currency")) is None:
-        raise HTTPException(status_code=422, detail="Discount must be a number")
+        raise HTTPException(status_code=422, detail=t("documents.err_discount_number"))
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
         await _validate_list_line_quantities(
@@ -5615,7 +5609,7 @@ def _reprice_replay_result(
     ):
         raise HTTPException(
             status_code=409,
-            detail="Idempotency key was already used for another operation",
+            detail=t("documents.err_already_submitted"),
         )
     return {
         "ok": True,
@@ -5647,7 +5641,7 @@ async def _reprice_catalog_lines(
     price_lists, _base_name, company_currency = price_config
     configured_names = {str(pl.get("name") or "") for pl in price_lists}
     if price_list not in configured_names:
-        raise HTTPException(status_code=422, detail=f"Unknown price list: {price_list}")
+        raise HTTPException(status_code=422, detail=t("documents.err_price_list_unknown", price_list=price_list))
 
     effective_currency = currency or company_currency
     item_ids = {
@@ -5808,7 +5802,7 @@ async def _contact_selection_values(
             if contact_currency not in CURRENCY_CODES:
                 raise HTTPException(
                     status_code=422,
-                    detail=f"The contact's currency {contact_currency!r} is not a valid currency code. Correct it on the contact first.",
+                    detail=t("documents.err_contact_currency_invalid", currency=contact_currency),
                 )
             currency = values["currency"] = contact_currency
             if kind == "doc":
@@ -5860,11 +5854,11 @@ async def reprice_doc(
         return _reprice_replay_result(
             replay, entity_id=entity_id, event_type="doc.updated", payload=payload)
     if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Cannot reprice a non-draft document")
+        raise HTTPException(status_code=409, detail=t("documents.err_reprice_not_draft"))
     if row.version != payload.expected_version:
         raise HTTPException(
             status_code=409,
-            detail="This document was changed by someone else; reload to get the latest before repricing",
+            detail=t("documents.err_doc_changed_reprice"),
         )
 
     stored_lines = list(row.state.get("line_items") or [])
@@ -5943,18 +5937,18 @@ async def reprice_list(
     if not is_money_list(row.state.get("list_type")):
         raise HTTPException(
             status_code=422,
-            detail="This list type does not support repricing",
+            detail=t("documents.err_list_no_reprice"),
         )
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         return _reprice_replay_result(
             replay, entity_id=entity_id, event_type="list.updated", payload=payload)
     if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))
     if row.version != payload.expected_version:
         raise HTTPException(
             status_code=409,
-            detail="This list was changed by someone else; reload to get the latest before repricing",
+            detail=t("documents.err_list_changed_reprice"),
         )
 
     stored_lines = list(row.state.get("line_items") or [])
@@ -6020,15 +6014,15 @@ async def patch_list_line_page(
     always sends."""
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))
     if payload.expected_version is None:
-        raise HTTPException(status_code=409, detail="Reload the list to get its latest version before saving line changes")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
     if row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
 
     page = payload.line_items
     if len(page) > _PAGE_LIMIT_MAX:
-        raise HTTPException(status_code=400, detail=f"A saved page cannot exceed {_PAGE_LIMIT_MAX} lines")
+        raise HTTPException(status_code=400, detail=t("documents.err_page_too_many_lines", max=_PAGE_LIMIT_MAX))
     _normalize_line_item_ids(page)
     stored = list(row.state.get("line_items") or [])
     offset = payload.offset
@@ -6062,7 +6056,7 @@ async def patch_list_line_page(
     if offset > len(stored) or offset + original_count > len(stored):
         raise HTTPException(
             status_code=409,
-            detail="This list was changed by someone else; reload to get the latest before saving")
+            detail=t("documents.err_list_changed"))
     # No positional id comparison: the page replaces the WHOLE window [offset:offset+original_count],
     # so a delete or insert legitimately shifts the surviving rows out of id-for-id alignment with
     # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by
@@ -6110,7 +6104,7 @@ async def finalize_list(
     row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     if state.get("status") != DRAFT:
-        raise HTTPException(status_code=409, detail="Only a draft list can be finalized")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_not_finalizable"))
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     milestone = behavior(lt).finalize_milestone
     now = datetime.now(timezone.utc).isoformat()
@@ -6154,7 +6148,7 @@ async def reserve_list_lines(
     # these items either sees the reservation or is seen by it.
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") not in (DRAFT, FINALIZED):
-        raise HTTPException(status_code=409, detail=f"Cannot reserve on a list in status '{row.state.get('status')}'")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_reserve_status"))
     return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
 
 
@@ -6171,7 +6165,7 @@ async def revert_list_to_draft(
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409,
-                            detail="Only a finalized list (before its terminal action) can be reverted to draft")
+                            detail=t("documents.err_list_revert"))
     event_data: dict = {"status": DRAFT, "reverted_by": str(user.id)}
     if payload.reason:
         event_data["reason"] = payload.reason
@@ -6192,9 +6186,9 @@ async def void_list(
     row = await _get_list_for_update(session, company_id, entity_id)
     status = row.state.get("status")
     if status == VOID:
-        raise HTTPException(status_code=409, detail="Already voided")
+        raise HTTPException(status_code=409, detail=t("documents.err_already_void"))
     if status == CLOSED:
-        raise HTTPException(status_code=409, detail="Cannot void a closed list; undo its terminal action first")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_void_closed"))
     entry = await _emit_list(session, company_id, entity_id, "list.voided",
                              payload.model_dump(exclude_none=True), user, payload.idempotency_key)
     await session.commit()
@@ -6211,7 +6205,7 @@ async def delete_list(
 ) -> dict:
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Only draft lists can be deleted")
+        raise HTTPException(status_code=409, detail=t("documents.err_list_delete_not_draft"))
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
     await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id))
@@ -6239,7 +6233,7 @@ async def convert_list(
         raise HTTPException(status_code=422, detail="target_type must be 'invoice' or 'memo'")
     if terminal_action(lt, f"convert-{payload.target_type}") is None:
         raise HTTPException(status_code=409,
-                            detail=f"{behavior(lt).label} lists cannot be converted to a sales document")
+                            detail=t("documents.err_list_convert_type"))
     if state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
 
@@ -6328,7 +6322,7 @@ async def add_list_note(
 ) -> dict:
     await _get_list(session, company_id, entity_id)
     if not payload.note.strip():
-        raise HTTPException(status_code=422, detail="Note text cannot be empty")
+        raise HTTPException(status_code=422, detail=t("documents.err_note_empty"))
     note_id = f"note:{uuid.uuid4()}"
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="list_note",
@@ -6361,7 +6355,7 @@ async def update_list_note(
     await _get_list(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
-        raise HTTPException(status_code=404, detail="Note not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="list_note",
         event_type="list.note_updated",
@@ -6385,7 +6379,7 @@ async def delete_list_note(
     await _get_list(session, company_id, entity_id)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
     if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
-        raise HTTPException(status_code=404, detail="Note not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_note_not_found"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=note_id, entity_type="list_note",
         event_type="list.note_removed",
@@ -6431,7 +6425,7 @@ async def import_list(
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
         if replay.event_type != "list.created" or replay.entity_id != body.entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
@@ -6577,7 +6571,7 @@ def _validate_line_entity_ids_subset(line_entity_ids: list[str], doc_state: dict
     if foreign:
         raise HTTPException(
             status_code=422,
-            detail=f"Item IDs not linked to this document: {', '.join(sorted(foreign))}",
+            detail=t("documents.err_items_not_on_doc"),
         )
 
 
@@ -6603,7 +6597,7 @@ async def _validate_revert_entity_ids_subset(
     if foreign:
         raise HTTPException(
             status_code=422,
-            detail=f"Item IDs not linked to this document: {', '.join(sorted(foreign))}",
+            detail=t("documents.err_items_not_on_doc"),
         )
 
 
@@ -6640,7 +6634,7 @@ async def _lock_item_sku_lots(
     locked = {row.entity_id: row for row in rows}
     for eid in ids:
         if eid not in locked:
-            raise HTTPException(status_code=409, detail="Inventory changed; retry.")
+            raise HTTPException(status_code=409, detail=t("documents.err_stock_changed"))
     return locked
 
 
@@ -6748,7 +6742,7 @@ async def _apply_split_plan(
         except ValueError as exc:
             raise HTTPException(
                 status_code=409,
-                detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
+                detail=t("documents.err_split_failed", sku=fetched[parent_eid].state.get("sku", ""), error=exc),
             )
         remap[parent_eid] = (child_eid, child_sku)
         fetched[child_eid] = await session.get(
@@ -6789,14 +6783,14 @@ async def _fulfill_lines_impl(
 
     allowed_statuses = FULFILLABLE_STATUSES.get(doc_type)
     if allowed_statuses is None:
-        raise HTTPException(status_code=422, detail=f"fulfill-lines is not supported for doc type: {doc_type}")
+        raise HTTPException(status_code=422, detail=t("documents.err_deliver_type"))
     if state.get("status") not in allowed_statuses:
-        raise HTTPException(status_code=409, detail=f"Cannot fulfill a {doc_type} in status '{state.get('status')}'")
+        raise HTTPException(status_code=409, detail=t("documents.err_deliver_status"))
 
     _validate_line_entity_ids_subset(body.line_entity_ids, state)
 
     if not body.line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("documents.err_no_lines_selected"))
 
     # Each line keyed by the item parcel it references (for qty + split measures).
     # Line indices are captured before any split remap: _apply_split_plan rewrites
@@ -6877,17 +6871,12 @@ async def _fulfill_lines_impl(
                                 "child_pieces": _take if is_pieces_unit(_lsb, _unit_map) else None,
                             }
                     continue
-            blocked.append(
-                f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
-            )
+            blocked.append(t("documents.err_frag_short", sku=sku, invoiced=f"{line_qty:g}", available=f"{available:g}"))
             continue
         # Split-on-fulfill is blocked only when splitting is explicitly disabled.
         # A missing/None allow_splitting (e.g. older imports) is treated as splittable.
         if line_qty + 1e-9 < available and not splitting_allowed(item_proj.state):
-            blocked.append(
-                f"{sku}: invoiced {line_qty:g} of {available:g} but 'Allow Splitting' is off — "
-                f"enable splitting or invoice the full quantity"
-            )
+            blocked.append(t("documents.err_frag_no_split", sku=sku, invoiced=f"{line_qty:g}", available=f"{available:g}"))
             continue
         _line = line_by_eid.get(item_eid, {})
         _sb = item_proj.state.get("sell_by")
@@ -6903,9 +6892,8 @@ async def _fulfill_lines_impl(
                          if p is not None and v is not None and abs(float(v) - float(p)) > 1e-9), None)
             if _bad:
                 _n, _p, _v = _bad
-                blocked.append(
-                    f"{sku}: invoicing the whole quantity must take all {float(_p):g} {_n} (got {float(_v):g})"
-                )
+                blocked.append(t("documents.err_frag_whole_pieces" if _n == "pcs" else "documents.err_frag_whole_weight",
+                                 sku=sku, expected=f"{float(_p):g}", got=f"{float(_v):g}"))
                 continue
         fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
@@ -6920,13 +6908,13 @@ async def _fulfill_lines_impl(
 
     # A shortage or a non-splittable partial prohibits the whole fulfill.
     if blocked:
-        raise HTTPException(status_code=409, detail="Cannot fulfill: " + "; ".join(blocked))
+        raise HTTPException(status_code=409, detail=t("documents.err_deliver_blocked", items="; ".join(blocked)))
 
     if errors and not to_fulfill and not service_eids:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
     if not to_fulfill and not service_eids:
-        raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
+        raise HTTPException(status_code=422, detail=t("documents.err_none_deliverable"))
 
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -7077,7 +7065,7 @@ async def _expand_invoice_line_allocations(
     for item_eid in list(item_ids):
         idx = await auto_je.doc_line_of_lot(session, company_id, doc_id, doc_state, item_eid, fetched[item_eid].state or {})
         if idx is None:
-            raise HTTPException(status_code=409, detail="Cannot safely identify the invoice line for this legacy fulfillment.")
+            raise HTTPException(status_code=409, detail=t("documents.err_legacy_delivery"))
         requested_indices.add(idx)
     requested_skus = {
         str((doc_state.get("line_items") or [])[idx].get("sku") or "").strip()
@@ -7087,7 +7075,7 @@ async def _expand_invoice_line_allocations(
         idx = await auto_je.doc_line_of_lot(session, company_id, doc_id, doc_state, item.entity_id, item.state or {})
         if idx is None:
             if item.entity_id not in item_ids and str((item.state or {}).get("sku") or "").strip() in requested_skus:
-                raise HTTPException(status_code=409, detail="Cannot safely identify every lot in this legacy invoice fulfillment.")
+                raise HTTPException(status_code=409, detail=t("documents.err_legacy_delivery"))
             continue
         if idx in requested_indices and item.entity_id not in fetched:
             fetched[item.entity_id] = item
@@ -7235,12 +7223,12 @@ async def revert_lines(
     doc_type = state.get("doc_type", "")
 
     if FULFILLABLE_STATUSES.get(doc_type) is None:
-        raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
+        raise HTTPException(status_code=422, detail=t("documents.err_undo_delivery_type"))
 
     await _validate_revert_entity_ids_subset(session, company_id, entity_id, state, body.line_entity_ids)
 
     if not body.line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("documents.err_no_lines_selected"))
 
     _returned_qty = body.quantities or {}
     _unknown = [eid for eid in _returned_qty if eid not in body.line_entity_ids]
@@ -7297,7 +7285,7 @@ async def revert_lines(
         raise HTTPException(status_code=422, detail={"errors": errors})
 
     if not to_revert and not partial_plan:
-        raise HTTPException(status_code=422, detail="No revertible items in the provided line_entity_ids")
+        raise HTTPException(status_code=422, detail=t("documents.err_none_revertible"))
 
     now = datetime.now(timezone.utc).isoformat()
     cid = uuid.UUID(str(company_id))
@@ -7324,7 +7312,7 @@ async def revert_lines(
             except ValueError as exc:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Cannot return part of {_sku}: {exc}",
+                    detail=t("documents.err_return_part_failed", sku=_sku, error=exc),
                 )
             returned_brief.append({"item_id": child_eid, "sku": _sku, "quantity": qty_back})
 
@@ -7361,7 +7349,7 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
     state = row.state
     _validate_line_entity_ids_subset(line_entity_ids, state)
     if not line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("documents.err_no_lines_selected"))
 
     # Each line keyed by the item parcel it references, so a partial reserve can carve
     # only the invoiced portion (the same measures the fulfill split uses).
@@ -7415,16 +7403,15 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             _carve = _plan_line_carve(line_by_eid.get(eid, {}), proj.state, unit_map)
             if _carve is not None:
                 if not splitting_allowed(proj.state):
-                    blocked.append(
-                        f"{sku}: invoiced {line_qty_by_eid.get(eid, 0):g} of "
-                        f"{float(proj.state.get('quantity', 0)):g} but 'Allow Splitting' is off; "
-                        f"enable splitting or reserve the full quantity")
+                    blocked.append(t("documents.err_frag_no_split_reserve", sku=sku,
+                                     invoiced=f"{line_qty_by_eid.get(eid, 0):g}",
+                                     available=f"{float(proj.state.get('quantity', 0)):g}"))
                     continue
                 split_plan[eid] = _carve
         projs[eid] = proj
 
     if blocked:
-        raise HTTPException(status_code=409, detail="Cannot reserve: " + "; ".join(blocked))
+        raise HTTPException(status_code=409, detail=t("documents.err_reserve_blocked", items="; ".join(blocked)))
     if errors:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
@@ -7490,9 +7477,9 @@ async def reserve_lines(
     doc_type = row.state.get("doc_type", "")
     allowed = RESERVABLE_DOC_STATUSES.get(doc_type)
     if allowed is None:
-        raise HTTPException(status_code=422, detail=f"reserve-lines is not supported for doc type: {doc_type}")
+        raise HTTPException(status_code=422, detail=t("documents.err_reserve_type"))
     if row.state.get("status") not in allowed:
-        raise HTTPException(status_code=409, detail=f"Cannot reserve on a {doc_type} in status '{row.state.get('status')}'")
+        raise HTTPException(status_code=409, detail=t("documents.err_reserve_status"))
     return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
 
 
@@ -7536,11 +7523,11 @@ async def receive_return(
         return done
     state = row.state
     if state.get("doc_type") != "credit_note":
-        raise HTTPException(status_code=409, detail="receive-return is only valid for credit notes")
+        raise HTTPException(status_code=409, detail=t("documents.err_return_cn_only"))
     if state.get("status") in ("draft", "void"):
-        raise HTTPException(status_code=409, detail="Cannot receive return on a draft or voided credit note")
+        raise HTTPException(status_code=409, detail=t("documents.err_return_cn_finalize"))
     if not payload.items:
-        raise HTTPException(status_code=422, detail="At least one item is required")
+        raise HTTPException(status_code=422, detail=t("documents.err_items_required"))
 
     # Validate return quantities against CN line item sell_by precision
     sell_by_map = await _get_item_sell_by_map(session, company_id)
@@ -7591,7 +7578,7 @@ async def receive_return(
     # --- Validate quantities before touching anything ---
     for it in payload.items:
         if it.quantity <= 0:
-            raise HTTPException(status_code=422, detail=f"Quantity must be positive for SKU '{it.sku}'")
+            raise HTTPException(status_code=422, detail=t("error.qty_positive", label=it.sku))
         # Sold inventory is best-effort enrichment; no hard gate on its existence.
         # If sold records exist, validate available quantity.
         if it.sku in sold_map:
@@ -7599,7 +7586,7 @@ async def receive_return(
             if available < it.quantity:
                 raise HTTPException(
                     status_code=422,
-                    detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found in inventory; {it.quantity:g} requested.",
+                    detail=t("documents.err_return_over_sold", available=f"{available:g}", sku=it.sku, qty=f"{it.quantity:g}"),
                 )
 
     # --- Allocate a fresh barcode per returned parcel ---
@@ -7651,11 +7638,7 @@ async def receive_return(
         if missing:
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    f"Cannot receive return for SKU '{it.sku}': missing required field(s) {missing}. "
-                    f"No sold inventory record and no matching line item in the original invoice were found. "
-                    f"Ensure the credit note is linked to an invoice or that the item was sold through this system."
-                ),
+                detail=t("documents.err_return_origin_unknown", sku=it.sku),
             )
 
         item_data = {
@@ -7755,10 +7738,10 @@ async def undo_receive_return(
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "credit_note":
-        raise HTTPException(status_code=409, detail="undo-receive-return is only valid for credit notes")
+        raise HTTPException(status_code=409, detail=t("documents.err_undo_return_cn_only"))
     received_items = state.get("return_received_items") or []
     if not received_items:
-        raise HTTPException(status_code=409, detail="No received return to undo")
+        raise HTTPException(status_code=409, detail=t("documents.err_undo_return_none"))
 
     now = datetime.now(timezone.utc).isoformat()
     item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
@@ -7775,19 +7758,15 @@ async def undo_receive_return(
         for iid in item_ids:
             item_state = item_rows.get(iid)
             if item_state is None:
-                blocked.append(f"{iid} (not found - may have already been removed)")
+                blocked.append(t("documents.err_frag_gone", item=iid))
             elif item_state.get("status") != "available":
                 sku = item_state.get("sku") or iid
                 status = item_state.get("status") or "unknown"
-                blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
+                blocked.append(t("documents.err_frag_unavailable", sku=sku, status=item_status_label(status)))
         if blocked:
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "Cannot revert return stock: one or more returned items are no longer available. "
-                    f"Blocked items: {'; '.join(blocked)}. "
-                    "You may need to manually correct the inventory before reverting."
-                ),
+                detail=t("documents.err_undo_return_blocked", items="; ".join(blocked)),
             )
 
     # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
@@ -7857,19 +7836,17 @@ async def undo_receive(
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "bill":
-        raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
+        raise HTTPException(status_code=409, detail=t("documents.err_undo_receive_bill_only"))
     received_item_ids = state.get("received_item_ids") or []
     added = _lot_additions(state)
     if not received_item_ids and not added:
-        raise HTTPException(status_code=409, detail="No received goods to revert")
+        raise HTTPException(status_code=409, detail=t("documents.err_undo_receive_none"))
     stock_lines = sum(1 for x in state.get("received_items") or []
                       if (x.get("receive_as") or "stock") == "stock" and "lot_quantity_added" not in x)
     if stock_lines != len(received_item_ids):
         raise HTTPException(
             status_code=409,
-            detail=("Some goods on this document were added to stock already on hand by an earlier "
-                    "version, so the receipt cannot be reverted here. Correct those quantities with a "
-                    "stock adjustment."),
+            detail=t("documents.err_undo_receive_legacy"),
         )
     from celerp_inventory.services import goods_basis
 
@@ -7882,24 +7859,21 @@ async def undo_receive(
     for iid in received_item_ids:
         item_state = item_rows.get(iid)
         if item_state is None:
-            blocked.append(f"{iid} (not found - may have already been removed)")
+            blocked.append(t("documents.err_frag_gone", item=iid))
         elif item_state.get("status") != "available":
             sku = item_state.get("sku") or iid
             status = item_state.get("status") or "unknown"
-            blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
+            blocked.append(t("documents.err_frag_unavailable", sku=sku, status=item_status_label(status)))
     for lot, (qty, _) in added.items():
         lot_state = item_rows.get(lot) or {}
         on_hand = float(lot_state.get("quantity") or 0)
         if str(lot_state.get("status") or "").lower() in _NOT_ON_HAND_STATUSES or on_hand + 1e-9 < qty:
-            blocked.append(f"SKU '{lot_state.get('sku') or lot}' has {on_hand:g} on hand, {qty:g} came in on this document")
+            blocked.append(t("documents.err_frag_lot_short", sku=lot_state.get("sku") or lot, qty=f"{qty:g}",
+                             on_hand=f"{on_hand:g}"))
     if blocked:
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Cannot revert goods received: one or more items are no longer available. "
-                f"Blocked items: {'; '.join(blocked)}. "
-                "You may need to manually correct the inventory before reverting."
-            ),
+            detail=t("documents.err_undo_receive_blocked", items="; ".join(blocked)),
         )
 
     undo_suffix = str(uuid.uuid4())
@@ -7963,7 +7937,7 @@ async def undo_receive(
 def _get_doc_file(files: list[dict], file_id: str) -> dict:
     match = next((f for f in files if f.get("id") == file_id), None)
     if match is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=t("contacts.err_file_not_found"))
     return match
 
 
@@ -8015,7 +7989,7 @@ async def download_doc_file(
 
     dest = local_attachment_url_path(str(company_id), url)
     if dest is None:
-        raise HTTPException(status_code=404, detail="File missing from disk")
+        raise HTTPException(status_code=404, detail=t("documents.err_file_missing"))
 
     return FileResponse(
         path=str(dest),
@@ -8157,7 +8131,7 @@ class ListCountBody(BaseModel):
 async def _get_audit(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
     row = await (_get_list_for_update if for_update else _get_list)(session, company_id, entity_id)
     if row.state.get("list_type") != "audit":
-        raise HTTPException(status_code=404, detail="Audit not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_audit_not_found"))
     return row
 
 
@@ -8296,7 +8270,7 @@ async def create_audit_list(
     ref_id = next_doc_ref(company, "audit")
     entity_id = f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
-        raise HTTPException(status_code=409, detail=f"Audit number '{ref_id}' already exists")
+        raise HTTPException(status_code=409, detail=t("documents.err_audit_number_taken", number=ref_id))
     data = {"list_type": "audit", "location_id": payload.location_id, "status": DRAFT,
             "ref_id": ref_id, "line_items": lines, "adjust_count": 0,
             "currency": company.settings.get("currency", "USD")}
@@ -8338,18 +8312,18 @@ async def scan_list(
     # resolve is collected in `failed` and reported, never aborting the codes that did resolve.
     codes = [c.strip() for c in (payload.barcode or "").split(",") if c.strip()]
     if not codes:
-        raise HTTPException(status_code=422, detail="Empty scan")
+        raise HTTPException(status_code=422, detail=t("documents.err_scan_empty"))
     if len(codes) > MAX_SCAN_BATCH:
         raise HTTPException(status_code=422,
-                            detail=f"Too many codes in one scan ({len(codes)}); the limit is {MAX_SCAN_BATCH}")
+                            detail=t("documents.err_scan_too_many", count=len(codes), max=MAX_SCAN_BATCH))
     if any(len(c) > MAX_CODE_LEN for c in codes):
         raise HTTPException(status_code=422,
-                            detail=f"A scanned code exceeds {MAX_CODE_LEN} characters")
+                            detail=t("documents.err_scan_code_long", max=MAX_CODE_LEN))
     if status not in (DRAFT, FINALIZED):
-        raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
+        raise HTTPException(status_code=409, detail=t("documents.err_scan_closed"))
     scan_mode = behavior(lt).scan_finalized if status == FINALIZED else None
     if status == FINALIZED and scan_mode != "count":
-        raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
+        raise HTTPException(status_code=409, detail=t("documents.err_scan_finalized"))
 
     # A retry of one Add click carries the same run_key AND the same batch still sitting in the field.
     # The key alone is not enough: if the response is lost, the user could edit the field to a new
@@ -8367,7 +8341,7 @@ async def scan_list(
                     from fastapi.responses import JSONResponse
                     return JSONResponse(status_code=409, content={
                         "code": "scan_run_conflict",
-                        "detail": "This scan key was already used for a different batch"})
+                        "detail": t("documents.err_scan_conflict")})
                 return {"scanned": rec.get("scanned", 0), "results": [],
                         "failed": rec.get("failed", []), "duplicate": True}
 
@@ -8489,11 +8463,11 @@ async def set_audit_count(
     """Set a line's physical count. Editable only while the audit is finalized (counting stage)."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Counts can only be entered on a finalized audit")
+        raise HTTPException(status_code=409, detail=t("documents.err_count_finalize_first"))
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item_id), None)
     if idx is None:
-        raise HTTPException(status_code=404, detail="Item is not on this audit")
+        raise HTTPException(status_code=404, detail=t("documents.err_count_item_missing"))
     cq = payload.counted_qty
     lines[idx]["counted_qty"] = float(cq) if cq is not None else None
     await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
@@ -8517,7 +8491,7 @@ async def set_scanned(
     rows, or none for every line. The highlight otherwise persists indefinitely."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Counting happens on a finalized audit")
+        raise HTTPException(status_code=409, detail=t("documents.err_count_finalize_first"))
     targets = set(payload.item_ids)
     stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -8634,7 +8608,7 @@ async def undo_audit_adjust(
     """Undo only while stock still equals the quantity this audit applied."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "stock_adjusted":
-        raise HTTPException(status_code=409, detail="This audit has no adjustment to undo")
+        raise HTTPException(status_code=409, detail=t("documents.err_audit_no_undo"))
     cycle = int(row.state.get("adjust_count") or 1) - 1
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     audit_location = str(row.state.get("location_id") or "")
@@ -8662,28 +8636,25 @@ async def undo_audit_adjust(
                 or (audit_location and item_location != audit_location)):
             raise HTTPException(
                 status_code=409,
-                detail=f"{l.get('sku') or item_id or 'Item'} changed after this audit; its adjustment cannot be undone safely.",
+                detail=t("documents.err_audit_undo_changed", sku=l.get("sku") or item_id),
             )
         if abs(float(item.state.get("quantity") or 0) - float(applied)) > 1e-9:
             raise HTTPException(
                 status_code=409,
-                detail=f"{l.get('sku') or item_id}: stock changed after this audit; undo would overwrite later activity.",
+                detail=t("documents.err_audit_undo_stock", sku=l.get("sku") or item_id),
             )
         recorded_cost = l.get("adjustment_unit_cost")
         if recorded_cost is None:
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    f"{l.get('sku') or item_id}: this adjustment predates safe cost tracking; "
-                    "it cannot be undone automatically."
-                ),
+                detail=t("documents.err_audit_undo_legacy", sku=l.get("sku") or item_id),
             )
         current_cost = auto_je.lot_unit_cost(item.state)
         tolerance = 1e-9 * max(1.0, abs(float(recorded_cost)))
         if abs(current_cost - float(recorded_cost)) > tolerance:
             raise HTTPException(
                 status_code=409,
-                detail=f"{l.get('sku') or item_id}: item cost changed after this audit; undo would misstate inventory value.",
+                detail=t("documents.err_audit_undo_cost", sku=l.get("sku") or item_id),
             )
     for l in targets:
         item_id = str(l["item_id"])
@@ -8728,7 +8699,7 @@ class WriteoffLineBody(BaseModel):
 async def _get_writeoff(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
     row = await (_get_list_for_update if for_update else _get_list)(session, company_id, entity_id)
     if row.state.get("list_type") != "writeoff":
-        raise HTTPException(status_code=404, detail="Write-off not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_writeoff_not_found"))
     return row
 
 
@@ -8740,12 +8711,11 @@ async def _validate_writeoff_account(session, company_id, code: str) -> None:
     acc = (await session.execute(select(Account).where(
         Account.company_id == company_id, Account.code == code))).scalar_one_or_none()
     if acc is None:
-        raise HTTPException(status_code=422, detail=f"Account '{code}' is not in the chart of accounts")
+        raise HTTPException(status_code=422, detail=t("documents.err_writeoff_account_unknown", code=code))
     if acc.account_type not in _WRITEOFF_ACCOUNT_TYPES:
         raise HTTPException(
             status_code=422,
-            detail=f"Account '{code}' is a {acc.account_type} account; a write-off destination must be "
-                   "an expense, cogs, or equity account",
+            detail=t("documents.err_writeoff_account_type", code=code, type=acc.account_type),
         )
 
 
@@ -8780,11 +8750,11 @@ async def create_writeoff_list(
             continue  # non-item ids in the selection are skipped, never seeded as phantom lines
         lines.append(_writeoff_seed_line(item))
     if not lines:
-        raise HTTPException(status_code=422, detail="No inventory items in the selection")
+        raise HTTPException(status_code=422, detail=t("documents.err_writeoff_no_items"))
     ref_id = next_doc_ref(company, "writeoff")
     entity_id = f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
-        raise HTTPException(status_code=409, detail=f"Write-off number '{ref_id}' already exists")
+        raise HTTPException(status_code=409, detail=t("documents.err_writeoff_number_taken", number=ref_id))
     data = {"list_type": "writeoff", "status": DRAFT, "ref_id": ref_id, "line_items": lines,
             "adjust_count": 0, "currency": company.settings.get("currency", "USD")}
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
@@ -8807,16 +8777,16 @@ async def set_writeoff_line(
     level."""
     row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != DRAFT:
-        raise HTTPException(status_code=409, detail="Write-off lines are editable only while it is a draft")
+        raise HTTPException(status_code=409, detail=t("documents.err_writeoff_not_draft"))
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     if payload.line_id is not None:
         line = next((l for l in lines if l.get("line_id") == payload.line_id), None)
         if line is None:
-            raise HTTPException(status_code=404, detail="Line is not on this write-off")
+            raise HTTPException(status_code=404, detail=t("documents.err_writeoff_line_gone"))
     elif payload.item_id is not None:
         item = await session.get(Projection, {"company_id": company_id, "entity_id": payload.item_id})
         if item is None or item.entity_type != "item":
-            raise HTTPException(status_code=404, detail="Item not found")
+            raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
         line = _writeoff_seed_line(item)
         lines.insert(0, line)  # newest line to the top (GDR 2n)
     else:
@@ -8826,9 +8796,9 @@ async def set_writeoff_line(
         q = float(payload.qty_out)
         on_hand = float(line.get("quantity") or 0)
         if q <= 0:
-            raise HTTPException(status_code=422, detail="qty_out must be greater than 0")
+            raise HTTPException(status_code=422, detail=t("inv.quantity_must_be_greater_than_0"))
         if q > on_hand:
-            raise HTTPException(status_code=422, detail=f"qty_out {q} exceeds the on-hand quantity {on_hand}")
+            raise HTTPException(status_code=422, detail=t("documents.err_writeoff_over_stock", qty=q, on_hand=on_hand))
         line["qty_out"] = q
     if payload.account is not None:
         await _validate_writeoff_account(session, company_id, payload.account)
@@ -8860,10 +8830,10 @@ async def write_off_stock(
     # only reads status; the ledger effect here is why the write-off locks and the audit does not.
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.state.get("list_type") != "writeoff":
-        raise HTTPException(status_code=404, detail="Write-off not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_writeoff_not_found"))
     status = row.state.get("status")
     if status not in (DRAFT, FINALIZED):
-        raise HTTPException(status_code=409, detail="This write-off has already been processed")
+        raise HTTPException(status_code=409, detail=t("documents.err_writeoff_processed"))
     cycle = int(row.state.get("adjust_count") or 0)
     unit_map = await _get_unit_map(session, company_id)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -8886,7 +8856,7 @@ async def write_off_stock(
         await _validate_writeoff_account(session, company_id, account)
         qty_out = float(l.get("qty_out"))
         if qty_out <= 0:
-            raise HTTPException(status_code=422, detail=f"{name}: write-off quantity must be greater than 0")
+            raise HTTPException(status_code=422, detail=t("error.qty_positive", label=name))
         want_ids.add(l.get("item_id"))
     # Lock every distinct item projection FOR UPDATE in one deterministic (entity_id-sorted) batch: two
     # concurrent runs that share items acquire them in the same order (no deadlock), and each reads the
@@ -8910,7 +8880,7 @@ async def write_off_stock(
         name = l.get("name") or l.get("sku") or l.get("item_id") or "item"
         item = locked.get(l.get("item_id"))
         if item is None or item.entity_type != "item" or (item.state.get("status") or "available") != "available":
-            raise HTTPException(status_code=422, detail=f"{name}: item is no longer available to write off")
+            raise HTTPException(status_code=422, detail=t("documents.err_writeoff_item_gone", name=name))
         live_by_item[item.entity_id] = float(item.state.get("quantity") or 0)
         unit_cost_by_item.setdefault(item.entity_id, auto_je.lot_unit_cost(item.state))
         prepared.append((l, item, float(l.get("qty_out"))))
@@ -8925,7 +8895,7 @@ async def write_off_stock(
             name = locked[item_id].state.get("sku") or item_id
             raise HTTPException(
                 status_code=422,
-                detail=f"{name}: total write-off quantity {total_out} exceeds stock {live}",
+                detail=t("documents.err_writeoff_total_over", name=name, total=total_out, live=live),
             )
     skipped = len(lines) - len(intended)  # untouched (no-qty) lines, reported alongside the write-off
     # Single step: a draft write-off is finalized inline here, after validation passes, so the manager
@@ -8965,7 +8935,7 @@ async def write_off_stock(
             # A weight/piece-tracked parcel needs the discarded weight/pieces to carve; without them the
             # split cannot proceed. Roll back the whole terminal so nothing is disposed and no JE posts.
             await session.rollback()
-            raise HTTPException(status_code=409, detail=f"Cannot write off {sku}: {exc}")
+            raise HTTPException(status_code=409, detail=t("documents.err_writeoff_failed", sku=sku, error=exc))
         await emit_event(
             session, company_id=company_id, entity_id=disposed_eid, entity_type="item",
             event_type="item.written_off",
@@ -9008,7 +8978,7 @@ async def undo_write_off(
     # array back (read-modify-write), so it must serialize against a concurrent re-run/undo.
     row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "written_off":
-        raise HTTPException(status_code=409, detail="This write-off has no removal to undo")
+        raise HTTPException(status_code=409, detail=t("documents.err_writeoff_no_undo"))
     cycle = int(row.state.get("adjust_count") or 1) - 1
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     for l in lines:
@@ -9054,7 +9024,7 @@ async def change_list_type(
     status = state.get("status")
     if status not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409,
-                            detail="A list's type can only be changed while it is a draft or issued")
+                            detail=t("documents.err_list_type_locked"))
     fields: dict = {"list_type": new_type}
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
@@ -9136,11 +9106,11 @@ async def move_transfer(
     event). Repeatable — the transfer stays finalized so it can be moved again."""
     row = await _get_list_for_update(session, company_id, entity_id)
     if (row.state.get("list_type") or "") != "transfer":
-        raise HTTPException(status_code=409, detail="Only transfers can move stock")
+        raise HTTPException(status_code=409, detail=t("documents.err_transfer_only"))
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Issue the transfer before moving its items")
     if not payload.to_location_id:
-        raise HTTPException(status_code=422, detail="A destination location is required")
+        raise HTTPException(status_code=422, detail=t("documents.err_transfer_destination"))
     moved = 0
     for l in (row.state.get("line_items") or []):
         item_id = l.get("item_id") or l.get("entity_id")

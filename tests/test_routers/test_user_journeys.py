@@ -27,6 +27,7 @@ from datetime import date, timedelta
 import pytest
 
 from test_helpers import import_sent_po
+from ui.i18n import t
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -505,7 +506,7 @@ async def test_crud_invoice_duplicate_ref_id_rejected(client):
         "subtotal": 20, "total": 20,
     })
     assert r2.status_code == 409
-    assert "already exists" in r2.json()["detail"]
+    assert r2.json()["detail"] == t("documents.err_doc_number_taken", "en", number="DUP-001")
 
 
 @pytest.mark.asyncio

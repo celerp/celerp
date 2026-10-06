@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from test_helpers import grant_permission, perm_setup
 from celerp.services.permissions import missing_permission_text
+from ui.i18n import t
 
 
 def _h(token: str) -> dict:
@@ -405,7 +406,7 @@ async def test_contact_and_lines_in_one_patch_is_refused(client, resource):
     entity_id = await (_doc if resource == "docs" else _list)(client, h, item_id)
     r = await _select(client, h, resource, entity_id, cid, line_items=[_line(item_id)])
     assert r.status_code == 422, r.text
-    assert "separate saves" in r.text
+    assert r.json()["detail"] == t("documents.err_contact_and_lines" if resource == "docs" else "documents.err_customer_and_lines", "en")
 
 
 # Two users select different customers at the same version, through separate committed

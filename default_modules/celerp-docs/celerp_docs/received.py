@@ -39,6 +39,7 @@ from celerp.services.company_lock import lock_company
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
 from celerp_docs.doc_projections import _recalc_list_totals
+from ui.i18n import t
 
 ENTITY_TYPE = "received_document"
 
@@ -265,7 +266,7 @@ async def record_received(
         ):
             raise HTTPException(
                 status_code=422,
-                detail="This revision was received before with different content, so it was not imported.",
+                detail=t("documents.err_revision_conflict"),
             )
         position = f"v{source.revision}"
     else:
@@ -415,7 +416,7 @@ def _fits(state: dict, booked: dict, target: Projection) -> bool:
 async def _received_row(session: AsyncSession, company_id, rid: str) -> Projection:
     row = await session.get(Projection, (company_id, rid))
     if row is None or row.entity_type != ENTITY_TYPE:
-        raise HTTPException(status_code=404, detail="Received document not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_received_not_found"))
     return row
 
 
@@ -450,7 +451,7 @@ async def book(session: AsyncSession, company_id, rid: str, *, role: str, settin
     if target is None:
         raise HTTPException(
             status_code=422,
-            detail="This document type is kept in Received for review and cannot be booked.",
+            detail=t("documents.err_received_not_bookable"),
         )
     document = state.get("document") or {}
     if (reason := unrepresentable(document, target)) is not None:
@@ -479,13 +480,10 @@ async def book(session: AsyncSession, company_id, rid: str, *, role: str, settin
     return {"id": created["id"], "kind": target.kind}
 
 
-_NOT_DRAFT = "The booked document is no longer a draft. The new revision is kept here for review."
+_NOT_DRAFT = "documents.err_booked_not_draft"
 _NOT_UPDATABLE = {
-    NEEDS_RECONCILIATION: "The draft was edited here, so the new revision has to be reconciled by hand.",
-    SOURCE_CHANGED: (
-        "The new revision changed its type, currency or amounts in a way the draft cannot follow, "
-        "so it has to be reconciled by hand."
-    ),
+    NEEDS_RECONCILIATION: "documents.err_draft_edited",
+    SOURCE_CHANGED: "documents.err_revision_unfollowable",
     REVIEW_ONLY: _NOT_DRAFT,
 }
 
@@ -501,7 +499,7 @@ async def update_draft(session: AsyncSession, company_id, rid: str, *, role: str
     state = (await _received_row(session, company_id, rid)).state or {}
     booked = state.get("booked")
     if not booked:
-        raise HTTPException(status_code=409, detail="Book this document first.")
+        raise HTTPException(status_code=409, detail=t("documents.err_book_first"))
     result = {"id": booked["target_id"], "kind": booked["target_kind"]}
     seq, digest = state["current_seq"], state["current_digest"]
     if booked["revision_digest"] == digest:
@@ -514,7 +512,7 @@ async def update_draft(session: AsyncSession, company_id, rid: str, *, role: str
         target = await _fresh(session, company_id, booked["target_id"])
         status = revision_state(state, target)
         if status != UPDATE_AVAILABLE:
-            raise HTTPException(status_code=409, detail=_NOT_UPDATABLE.get(status, "Book this document first."))
+            raise HTTPException(status_code=409, detail=t(_NOT_UPDATABLE.get(status, "documents.err_book_first")))
         kind = BookTarget(booked["target_kind"], booked["target_type"])
         wanted = managed_fields(state.get("document") or {}, kind)
         current = target.state or {}
@@ -543,14 +541,14 @@ async def mark_reconciled(session: AsyncSession, company_id, rid: str, *, user) 
     state = (await _received_row(session, company_id, rid)).state or {}
     booked = state.get("booked")
     if not booked:
-        raise HTTPException(status_code=409, detail="Book this document first.")
+        raise HTTPException(status_code=409, detail=t("documents.err_book_first"))
     result = {"id": booked["target_id"], "kind": booked["target_kind"]}
     seq, digest = state["current_seq"], state["current_digest"]
     if booked["revision_digest"] == digest:
         return result
     target = await _fresh(session, company_id, booked["target_id"])
     if target is None or (target.state or {}).get("status") != "draft":
-        raise HTTPException(status_code=409, detail=_NOT_DRAFT)
+        raise HTTPException(status_code=409, detail=t(_NOT_DRAFT))
     await _emit(session, company_id, rid, "received_doc.reconciled",
                 {"revision_seq": seq, "revision_digest": digest, "target_version": target.version},
                 user, f"{rid}:reconciled:{seq}:{target.version}:{company_id}")

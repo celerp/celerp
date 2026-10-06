@@ -2058,7 +2058,7 @@ def setup_routes(app):
         contact_ids.discard("")
         if len(contact_ids) > 1:
             return Div(
-                P(t("doc._all_selected_documents_must_be_from_the_same_cont"), cls="flash flash--error"),
+                P(t("documents.err_selected_contacts_differ"), cls="flash flash--error"),
                 id="bulk-payment-panel",
             )
 
@@ -2405,7 +2405,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         # Resolve contact fields to display names
         if field in ("contact_id", "commission_contact_id"):
             display_value = _resolve_contact_display(doc, field)
@@ -2428,7 +2428,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         value = str(doc.get(field, "") or "")
 
         restore_url = f"/docs/{entity_id}/field/{field}/display"
@@ -4373,7 +4373,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         value = str(lst.get(field, "") or "")
         restore_url = f"/lists/{entity_id}/field/{field}/display"
         patch_url = f"/lists/{entity_id}/field/{field}"
@@ -4432,7 +4432,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         value = _resolve_contact_display(lst, field) if field == "contact_id" else lst.get(field)
         return _doc_display_cell(entity_id, field, value, "list")
 
@@ -4664,7 +4664,7 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _action_error(t("documents.session_expired"))
+            return _action_error(t("error.session_expired"))
         form = await request.form()
         barcode = str(form.get("barcode", "")).strip()
         price_list = str(form.get("price_list", "")).strip() or None
@@ -4713,7 +4713,7 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _action_error(t("documents.session_expired"))
+            return _action_error(t("error.session_expired"))
         form = await request.form()
         ids = [s for s in form.getlist("selected") if s]
         scanned = str(form.get("scanned", "1")).strip() not in ("0", "false", "")
@@ -4729,7 +4729,7 @@ celerpUpdateBulkAlloc();
         from ui.components.table import EMPTY as _EMPTY
         token = _token(request)
         if not token:
-            return _action_error(t("documents.session_expired"))
+            return _action_error(t("error.session_expired"))
         form = await request.form()
         raw = str(form.get("counted_qty", "")).strip()
         try:
@@ -4762,7 +4762,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         prefill = f"{float(counted):g}" if counted is not None else ""
@@ -4796,7 +4796,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         display_val = f"{float(counted):g}" if counted is not None else _EMPTY
@@ -4836,7 +4836,7 @@ celerpUpdateBulkAlloc();
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_editable_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -4893,7 +4893,7 @@ celerpUpdateBulkAlloc();
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -7319,7 +7319,7 @@ window._L = {_json.dumps({
     "scan_run_committed": t("documents.scan_run_committed"),
     "scan_reload_needed": t("documents.scan_reload_needed"),
     "scanned": t("documents.scanned_prefix"),
-    "not_found": t("documents.not_found_prefix"),
+    "scan_not_found": t("documents.scan_not_found"),
     "lookup_error": t("documents.lookup_error"),
     "view_item_details": t("documents.view_item_details"),
     "no_linked_item": t("documents.no_linked_item"),
@@ -7597,7 +7597,7 @@ function _celerpDocTypeParam() {{
                 scanStatus.textContent = '✓ ' + (data.sku || code);
                 scanStatus.className = 'scan-bar-status scan-bar-status--ok';
             }} else {{
-                scanStatus.textContent = '✗ ' + _L.not_found + code;
+                scanStatus.textContent = '✗ ' + _L.scan_not_found.replace('{{code}}', code);
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
         }} catch (err) {{
@@ -7981,7 +7981,7 @@ function celerpQtyBlur(input) {{
     const currentQty = parseFloat(input.value || 0);
     if (itemQty > 0 && currentQty !== itemQty) {{
         const eid = entityIdEl.value;
-        const msg = _L.allow_split_warn.replace('{{qty}}', itemQty).replace('{{eid}}', eid);
+        const msg = _L.allow_split_warn.replace('{{qty}}', itemQty);
         alert(msg);
         // Per UX rules: do NOT revert the value or make readonly - just warn
     }}
@@ -8694,7 +8694,7 @@ async function celerpCsvImport(input, entityId) {{
             alert(data.error || _L.import_failed);
         }}
     }} catch (err) {{
-        alert(_L.import_failed + ': ' + err.message);
+        alert(_L.import_failed);
     }}
     input.value = '';
 }}
@@ -9422,7 +9422,7 @@ async function celerpCsvImport(input, entityId) {{
         if currency != company_currency:
             _rate_val = doc.get("conversion_rate")
             _rate_display = str(_rate_val) if _rate_val else "--"
-            _contact_rows.append(Div(Div(t("doc.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
+            _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
             _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
 

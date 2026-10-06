@@ -100,12 +100,11 @@ async def require_online_deposit_account(session: AsyncSession, company_id, code
         if code != DEFAULT_DEPOSIT_ACCOUNT and (await session.execute(select(BankAccount.id).where(
                 BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
                 BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
-            raise HTTPException(status_code=422, detail="No active bank account uses it.")
+            raise HTTPException(status_code=422)
         await require_money_account(session, company_id, code)
-    except HTTPException as refused:
-        raise HTTPException(status_code=422, detail=(
-            f"Online payments can be deposited only to Cash ({DEFAULT_DEPOSIT_ACCOUNT}) or an active "
-            f"bank account; '{code}' is neither. {refused.detail}")) from None
+    except HTTPException:
+        raise HTTPException(status_code=422, detail=t(
+            "documents.err_deposit_account_refused", code=code, cash=DEFAULT_DEPOSIT_ACCOUNT)) from None
 
 
 _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")
@@ -194,7 +193,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             idempotency_key=idempotency_key or reference, books=(base, rate), commit=False,
         )
     except HTTPException as exc:
-        if exc.status_code == 409 and exc.detail == "Payment already recorded":
+        if exc.status_code == 409 and exc.detail == t("documents.err_payment_recorded"):
             return None
         raise
     if getattr(entry, "was_deduped", False):
@@ -355,17 +354,17 @@ _NOT_SET_UP = "Online payment is not set up for this invoice. Please contact the
 async def start_payment(token: str, session: AsyncSession = Depends(get_session)):
     company_id, entity_id, state = await _doc_for_token(session, token)
     if state is None:
-        raise HTTPException(status_code=404, detail="Payment link not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_pay_link_unknown"))
     if not pay.payments_enabled():
-        raise HTTPException(status_code=503, detail="Online payment is not available")
+        raise HTTPException(status_code=503, detail=t("documents.err_pay_unavailable"))
     if state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0:
-        raise HTTPException(status_code=409, detail="This document is not payable")
+        raise HTTPException(status_code=409, detail=t("documents.err_pay_not_payable"))
     currency = state.get("currency", "USD")
     ref = _doc_ref(state) or entity_id.split(":")[-1][:8]
     try:
         books = await payment_books(session, company_id, state)
     except ValueError:
-        raise HTTPException(status_code=409, detail="This document is not payable")
+        raise HTTPException(status_code=409, detail=t("documents.err_pay_not_payable"))
     try:
         amount = pay.to_stripe_amount(_outstanding(state), currency)
     except ValueError as exc:
@@ -383,9 +382,9 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
             generation=await pay.checkout_generation(), context=books,
         )
     except pay.CheckoutPaused:
-        raise HTTPException(status_code=409, detail=pay.PAUSED)
+        raise HTTPException(status_code=409, detail=t("documents.err_pay_paused"))
     if not _stripe_url(result):
-        raise HTTPException(status_code=502, detail="Could not start payment")
+        raise HTTPException(status_code=502, detail=t("documents.err_pay_start_failed"))
     return RedirectResponse(result["url"], status_code=303)
 
 
@@ -421,7 +420,7 @@ async def payments_connect() -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
     if not _stripe_url(result):
-        raise HTTPException(status_code=502, detail="Could not start Stripe connection")
+        raise HTTPException(status_code=502, detail=t("documents.err_stripe_connect_failed"))
     return {"url": result["url"]}
 
 

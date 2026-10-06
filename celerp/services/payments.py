@@ -108,9 +108,6 @@ def from_stripe_amount(api_amount: int, currency: str) -> Decimal:
 
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
-PAUSED = "Online payment is paused while recent payments are checked. Please try again shortly."
-
-
 class CheckoutPaused(Exception):
     """New online payments wait for a System Recovery restore Celerp Cloud has not
     confirmed: until it has, a payment the restore lost may not be recorded again yet,

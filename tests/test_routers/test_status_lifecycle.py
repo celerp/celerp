@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import t
 
 
 async def _register(client, email: str | None = None) -> str:
@@ -248,7 +249,7 @@ async def test_unvoid_blocked_when_no_pre_void_status(client):
     legacy_id = void_docs[0]["id"]
     r2 = await client.post(f"/docs/{legacy_id}/unvoid", headers=_h(token), json={})
     assert r2.status_code == 409
-    assert "pre_void_status" in r2.json()["detail"]
+    assert r2.json()["detail"] == t("documents.err_unvoid_legacy", "en")
 
 
 @pytest.mark.asyncio
