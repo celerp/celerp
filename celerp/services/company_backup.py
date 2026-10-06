@@ -227,14 +227,24 @@ def _declared(module: str) -> dict:
     return declared if isinstance(declared, dict) else {}
 
 
-async def _refusal(session: AsyncSession, table: str, owners: dict[str, str], *,
-                   restoring: bool = False) -> BackupError:
+def _unsupported(label: str, owner: str | None, *, restoring: bool) -> BackupError:
     status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "back up", _NOT_BACKED_UP)
-    label = await db_catalog.label(session, table)
-    if table in owners:
-        return BackupError(status, f"The {owners[table]} module keeps data in {label} in a form Celerp "
+    if owner:
+        return BackupError(status, f"The {owner} module keeps data in {label} in a form Celerp "
                                    f"cannot {verb} yet." + end)
     return BackupError(status, f"This company has data Celerp cannot {verb} yet: {label}." + end)
+
+
+async def _refusal(session: AsyncSession, table: str, owners: dict[str, str], *,
+                   restoring: bool = False) -> BackupError:
+    return _unsupported(await db_catalog.label(session, table), owners.get(table), restoring=restoring)
+
+
+async def _pin(session: AsyncSession, *, restoring: bool) -> None:
+    try:
+        await db_catalog.pin(session)
+    except db_catalog.TableElsewhere as exc:
+        raise _unsupported(exc.table, None, restoring=restoring) from None
 
 
 async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
@@ -499,7 +509,7 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
         if session.get_bind().dialect.name != "sqlite":
             await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
-            await db_catalog.pin(session)
+            await _pin(session, restoring=False)
         return await _export_company(session, company_id, out, provenance=provenance)
 
 
@@ -923,7 +933,7 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
     cannot carry, or rows that do not hold together. The session's transaction is held to
     Celerp's own tables and every row of them (``db_catalog.pin``) from here on."""
     _check_modules(backup.manifest)
-    await db_catalog.pin(session)
+    await _pin(session, restoring=True)
     plan = await _classify(session, strict=False)
     tables = backup.manifest["tables"]
     for name, meta in tables.items():

@@ -1212,11 +1212,10 @@ async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tabl
             await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
 
 
-async def test_a_reset_is_refused_while_row_security_hides_rows_of_a_table(real_client, real_engine):  # noqa: F811
+async def test_a_reset_is_refused_while_row_security_hides_rows_of_a_table(
+        real_client, real_engine, rules_bind):  # noqa: F811
     """Row security forced on a table holding Alpha's row hides it from every read and
-    delete. The reset is refused naming that table, and nothing is deleted. Where the rule
-    does not bind the role Celerp connects as, nothing is hidden and the row goes with the
-    rest of Alpha."""
+    delete. The reset is refused naming that table, and nothing is deleted."""
     from sqlalchemy import text
 
     ta, _ = await _two_companies(real_client)
@@ -1233,10 +1232,6 @@ async def test_a_reset_is_refused_while_row_security_hides_rows_of_a_table(real_
 
         r = await _reset(real_client, ta, "Alpha Co")
 
-        if not await rules_bind(real_engine):
-            assert r.status_code == 200, r.text
-            assert await count(real_engine, "ext_hidden", "company_id = :a", a=alpha) == 0
-            return
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
         assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
@@ -1275,6 +1270,34 @@ async def test_a_reset_reads_the_tables_beside_a_schema_named_after_the_database
         async with real_engine.begin() as conn:
             await conn.execute(text(f"DROP SCHEMA IF EXISTS {role} CASCADE"))
             await conn.execute(text("DROP TABLE IF EXISTS public.ext_par"))
+
+
+async def test_a_reset_is_refused_while_a_table_sits_in_a_schema_ahead_of_celerps(
+        real_client, real_engine):  # noqa: F811
+    """A schema named after the role Celerp connects as exists, and a table holding Alpha's
+    row is made after it, so the table lands there rather than beside Celerp's own. The
+    reset is refused naming that table, and nothing is deleted."""
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        role = (await conn.execute(text("SELECT quote_ident(current_user)"))).scalar_one()
+        await conn.execute(text(f"CREATE SCHEMA {role}"))
+        await conn.execute(text("CREATE TABLE ext_par (id uuid PRIMARY KEY, company_id uuid NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_par VALUES (gen_random_uuid(), :a)"), {"a": alpha})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
+                                                             {"table": f"{role}.ext_par"})
+        assert await count(real_engine, "public.companies", "id = :a", a=alpha) == 1
+        assert await count(real_engine, f"{role}.ext_par", "company_id = :a", a=alpha) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text(f"DROP SCHEMA IF EXISTS {role} CASCADE"))
 
 
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])

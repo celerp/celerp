@@ -1443,12 +1443,11 @@ async def _bk_whole(real_engine, real_client, tok, r, rows: int) -> None:
 
 @pytest.mark.parametrize("policy", list(_BK_POLICIES))
 async def test_a_carried_table_under_row_security_is_refused_whole(
-        real_engine, real_client, tmp_path, monkeypatch, policy):
+        real_engine, real_client, tmp_path, monkeypatch, rules_bind, policy):
     """Row security is forced on zz_gadgets, so a read of it returns only the rows a rule
     lets through. Whatever the rule, the backup is refused naming the table, with nothing
     written, and a backup made before the rule is refused on restore the same way, with
-    nothing restored. Where the rule does not bind the role Celerp connects as, nothing is
-    hidden and the backup carries every gadget."""
+    nothing restored."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={"zz_gadgets": "include"})
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
@@ -1464,8 +1463,6 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
 
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
-        if not await rules_bind(real_engine):
-            return await _bk_whole(real_engine, real_client, tok, r, 2)
         assert r.status_code == 409, r.text[:200]
         assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
                                       "back up yet. Nothing was backed up.")
@@ -1479,11 +1476,11 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
         await _bk_sql(real_engine, "DROP TABLE IF EXISTS ext_allow")
 
 
-async def test_row_security_forced_as_the_export_begins_stops_it(real_engine, real_client, tmp_path, monkeypatch):
+async def test_row_security_forced_as_the_export_begins_stops_it(
+        real_engine, real_client, tmp_path, monkeypatch, rules_bind):
     """Another connection forces row security on zz_gadgets, with a rule hiding every row,
     after the export has read the tables' shape. The export is refused naming the table,
-    with nothing written, and asks for another try. Where the rule does not bind the role
-    Celerp connects as, nothing is hidden and the backup carries the gadget."""
+    with nothing written, and asks for another try."""
     from celerp import db_catalog
 
     _bk_local(monkeypatch, tmp_path)
@@ -1503,8 +1500,6 @@ async def test_row_security_forced_as_the_export_begins_stops_it(real_engine, re
         monkeypatch.setattr(db_catalog, "hidden", then_hide)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
-        if not await rules_bind(real_engine):
-            return await _bk_whole(real_engine, real_client, tok, r, 1)
         assert r.status_code == 409, r.text[:200]
         assert r.json()["detail"] == ("The structure of zz_gadgets changed while it was being backed up. "
                                       "Nothing was backed up. Try again.")
@@ -1532,6 +1527,62 @@ async def test_a_schema_named_after_the_database_role_hides_no_table(real_engine
     finally:
         await _bk_sql(real_engine, f"DROP SCHEMA IF EXISTS {role} CASCADE")
         await _bk_drop(real_engine, "zz_gadgets")
+
+
+async def test_a_table_in_a_schema_ahead_of_celerps_stops_the_backup(real_engine, real_client, tmp_path, monkeypatch):
+    """A schema named after the role Celerp connects as exists, and a table holding the
+    company's row is made after it, so the table lands there rather than beside Celerp's
+    own. The backup is refused naming that table, with nothing written, and a backup made
+    before is refused on restore the same way, with nothing restored."""
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    role = await _bk_scalar(real_engine, "SELECT quote_ident(current_user)")
+    made = await real_client.get("/company-backups/download", headers=auth(tok))
+    assert made.status_code == 200, made.text[:200]
+    try:
+        await _bk_sql(real_engine, f"CREATE SCHEMA {role}")
+        await _bk_sql(real_engine, "CREATE TABLE ext_notes (id uuid primary key, company_id uuid not null)")
+        await _bk_sql(real_engine, "INSERT INTO ext_notes VALUES (gen_random_uuid(), :c)", c=cid)
+        companies = await _bk_scalar(real_engine, "SELECT count(*) FROM public.companies")
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text[:200]
+        assert r.json()["detail"] == (f"This company has data Celerp cannot back up yet: {role}.ext_notes. "
+                                      "Nothing was backed up.")
+        r = await restore(real_client, tok, made.content, mode="new_company")
+        assert r.status_code == 422, r.text[:200]
+        assert r.json()["detail"] == (f"This company has data Celerp cannot restore yet: {role}.ext_notes. "
+                                      "Nothing was restored.")
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM public.companies") == companies
+        assert await _bk_scalar(real_engine, f"SELECT count(*) FROM {role}.ext_notes") == 1
+    finally:
+        await _bk_sql(real_engine, f"DROP SCHEMA IF EXISTS {role} CASCADE")
+
+
+async def test_a_companies_table_ahead_of_celerps_stops_the_backup(real_engine, tmp_path, monkeypatch):
+    """A schema named after the role Celerp connects as holds a table named companies, so
+    that name reaches it rather than Celerp's own. The backup is refused naming one of
+    Celerp's tables beside it, and nothing is written."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, _ = await _bk_setup(real_engine)
+    role = await _bk_scalar(real_engine, "SELECT quote_ident(current_user)")
+    out = tmp_path / "bk-out" / "books.celerp-company"
+    out.parent.mkdir()
+    try:
+        await _bk_sql(real_engine, f"CREATE SCHEMA {role}")
+        await _bk_sql(real_engine, f"CREATE TABLE {role}.companies (LIKE public.companies)")
+
+        with pytest.raises(cb.BackupError) as err:
+            await cb.export_company_snapshot(cid, out)
+
+        assert err.value.status_code == 409
+        assert err.value.detail.startswith("This company has data Celerp cannot back up yet: public.")
+        assert err.value.detail.endswith("Nothing was backed up.")
+        assert list(out.parent.iterdir()) == []
+    finally:
+        await _bk_sql(real_engine, f"DROP SCHEMA IF EXISTS {role} CASCADE")
 
 
 _BK_ODD = ('CREATE TABLE "zz_Gadgets" (id uuid primary key, company_id uuid not null '

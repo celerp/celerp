@@ -163,11 +163,34 @@ _UNDER = (
 _OUT_OF_REACH = {"55P03", "42P01"}
 
 
+class TableElsewhere(Exception):
+    """A table this connection reaches by name sits outside the schema Celerp's tables
+    are in, so reading or deleting by name could miss it or reach it instead (``pin``)."""
+
+    def __init__(self, table: str):
+        super().__init__(table)
+        self.table = table
+
+
 async def pin(session: AsyncSession) -> None:
     """Hold this transaction to Celerp's own tables and every row of them. A table's name
     then reaches the table in the schema Celerp's tables are in, the one the catalog
     reads, even where a schema named after the connecting role comes first; and a read or
-    delete row security would cut short fails instead."""
+    delete row security would cut short fails instead.
+
+    Raises ``TableElsewhere``, naming it, while a table sits in another schema this
+    connection reaches tables by name in: a company's rows there would be left out of
+    what is read and deleted, and a table there named like one of Celerp's would stand
+    in for it."""
+    elsewhere = await session.scalar(text(
+        "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition "
+        "AND n.nspname = ANY(current_schemas(false)) "
+        "AND c.relnamespace <> (SELECT relnamespace FROM pg_class WHERE oid = to_regclass('companies')) "
+        "ORDER BY array_position(current_schemas(false), n.nspname::text), c.relname LIMIT 1"))
+    if elsewhere:
+        raise TableElsewhere(elsewhere)
     await session.execute(text(
         "SELECT set_config('search_path', quote_ident(n.nspname), true) FROM pg_class c "
         "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass('companies')"))

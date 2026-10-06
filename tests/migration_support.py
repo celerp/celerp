@@ -329,12 +329,44 @@ async def count(engine, table: str, where: str = "", **params) -> int:
         return (await conn.execute(text(sql), params)).scalar_one()
 
 
-async def rules_bind(engine) -> bool:
-    """Whether row security rules bind the role this database is reached as. A superuser
-    or a role allowed to bypass them reads and deletes every row whatever they say."""
-    async with engine.connect() as conn:
-        return not (await conn.execute(text(
-            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"))).scalar_one()
+@pytest_asyncio.fixture
+async def rules_bind(real_engine):
+    """Reach the database, for the test, as a role row security rules bind. A superuser or
+    a role allowed to bypass them reads and deletes every row whatever the rules say, so
+    where the database is reached as one, the test runs as a plain role made for it and
+    granted the schema's tables."""
+    from sqlalchemy import event
+
+    async def bypasses() -> bool:
+        async with real_engine.connect() as conn:
+            return (await conn.execute(text(
+                "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"))).scalar_one()
+
+    def as_role(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f"SET ROLE {role}")
+        cursor.close()
+
+    role = None
+    if await bypasses():
+        role = f"rules_bind_{uuid.uuid4().hex[:12]}"
+        async with real_engine.begin() as conn:
+            schema = (await conn.execute(text("SELECT quote_ident(current_schema())"))).scalar_one()
+            for sql in (f"CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS NOLOGIN",
+                        f"GRANT USAGE, CREATE ON SCHEMA {schema} TO {role}",
+                        f"GRANT ALL ON ALL TABLES IN SCHEMA {schema} TO {role}",
+                        f"GRANT ALL ON ALL SEQUENCES IN SCHEMA {schema} TO {role}"):
+                await conn.execute(text(sql))
+        event.listen(real_engine.sync_engine, "connect", as_role)
+    try:
+        assert not await bypasses()
+        yield
+    finally:
+        if role:
+            event.remove(real_engine.sync_engine, "connect", as_role)
+            async with real_engine.begin() as conn:
+                await conn.execute(text(f"DROP OWNED BY {role}"))
+                await conn.execute(text(f"DROP ROLE {role}"))
 
 
 async def staged_run(engine, *, spec: dict | None = None, decisions: dict | None = None,
