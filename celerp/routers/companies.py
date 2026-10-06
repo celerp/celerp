@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_session
+from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
@@ -1884,11 +1884,7 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     """True when a DROP was refused because an object outside the drop set still
     depends on a table in it (Postgres SQLSTATE 2BP01), so the caller can explain
     the refusal in plain words instead of leaking SQL."""
-    orig = getattr(exc, "orig", None)
-    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
-    if code == "2BP01":
-        return True
-    return "depend" in str(exc).lower()
+    return sqlstate(exc) == "2BP01" or "depend" in str(exc).lower()
 
 
 @router.post("/me/modules/{module_name}/purge-data", dependencies=[require_permission("manage_company_settings")])

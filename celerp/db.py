@@ -28,6 +28,16 @@ def mask_db_credentials(text: str) -> str:
     """Return text with any database URL password replaced by ``***``."""
     return _DB_CREDENTIALS_RE.sub(r"\1***\2", text)
 
+
+def sqlstate(exc: BaseException) -> str | None:
+    """The Postgres SQLSTATE behind a database error, or None when it carries none."""
+    orig = getattr(exc, "orig", None)
+    for candidate in (orig, getattr(orig, "__cause__", None)):
+        code = getattr(candidate, "sqlstate", None) or getattr(candidate, "pgcode", None)
+        if code:
+            return str(code)
+    return None
+
 # Request-connection timeouts (ms). One source of truth: the engine sets them in
 # server_settings, and lifecycle_timeouts_disabled restores exactly these values
 # after clearing them for startup work.

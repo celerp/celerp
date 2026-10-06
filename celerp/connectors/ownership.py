@@ -43,15 +43,6 @@ OWNER_LOCK_TIMEOUT_MS = 5000
 _LOCK_NOT_AVAILABLE = "55P03"
 
 
-def _sqlstate(exc: BaseException) -> str | None:
-    orig = getattr(exc, "orig", None)
-    for candidate in (orig, getattr(orig, "__cause__", None)):
-        code = getattr(candidate, "sqlstate", None) or getattr(candidate, "pgcode", None)
-        if code:
-            return str(code)
-    return None
-
-
 def _resolve_connector_owner(
     rows: list[ConnectorConfig], company_id
 ) -> ConnectorConfig | None:
@@ -173,7 +164,8 @@ async def lock_connector_key(
             sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), key
         )
     except DBAPIError as exc:
-        if _sqlstate(exc) == _LOCK_NOT_AVAILABLE:
+        from celerp.db import sqlstate
+        if sqlstate(exc) == _LOCK_NOT_AVAILABLE:
             raise ConnectorBusyError(
                 f"{connector} is busy syncing; try again in a moment"
             ) from exc

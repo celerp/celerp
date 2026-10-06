@@ -99,7 +99,7 @@ async def test_a_failure_part_way_leaves_both_companies_as_they_were(real_client
     wipe = system._company_deletes
     # The company row goes last, so the failure comes after every other table's delete.
     monkeypatch.setattr(system, "_company_deletes", lambda schema: [
-        *wipe(schema)[:-1], "DELETE FROM no_such_table WHERE company_id = CAST(:c AS uuid)"])
+        *wipe(schema)[:-1], ("no_such_table", "DELETE FROM no_such_table WHERE company_id = CAST(:c AS uuid)")])
     with pytest.raises(Exception):  # the in-process transport re-raises the server error
         await _reset(real_client, ta, "Alpha Co")
 
@@ -509,6 +509,61 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
         assert "committed" not in beta_write and "ext_links_item_id_fkey" in str(beta_write["error"])
         assert await count(real_engine, "ext_links") == 0
     finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
+
+
+async def test_a_reset_caught_in_a_deadlock_is_refused_and_deletes_nothing(real_client, real_engine):  # noqa: F811
+    """Beta is part way through a transaction that wrote ext_links when the reset starts
+    locking: the reset waits for ext_links while holding ext_items, and Beta then writes
+    ext_items. Postgres aborts the reset to break the deadlock. The reset is refused
+    naming ext_links, nothing of Alpha is deleted, and Beta's transaction commits."""
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from migration_support import DATABASE_URL
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        await conn.execute(text(_ITEMS))
+        await conn.execute(text(
+            "CREATE TABLE ext_links (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+            "item_id uuid REFERENCES ext_items(id), label text NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item')"), {"i": uuid.uuid4(), "c": alpha})
+    beta_engine = create_async_engine(DATABASE_URL)
+    try:
+        held = await _held(real_engine, alpha)
+        async with beta_engine.begin() as beta_conn:
+            await beta_conn.execute(text("INSERT INTO ext_links VALUES (:i, :c, NULL, 'beta link')"),
+                                    {"i": uuid.uuid4(), "c": beta})
+            reset = asyncio.create_task(_reset(real_client, ta, "Alpha Co"))
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                async with real_engine.connect() as conn:
+                    if await conn.scalar(text(
+                            "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation "
+                            "WHERE NOT l.granted AND c.relname = 'ext_links'")):
+                        break
+            else:
+                pytest.fail("the reset never waited for ext_links")
+            await beta_conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'beta item')"),
+                                    {"i": uuid.uuid4(), "c": beta})
+        r = await reset
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == (
+            "system.factory_reset.held_elsewhere", {"table": "ext_links"})
+        assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
+        assert await _held(real_engine, alpha) == held
+        assert await count(real_engine, "ext_items", "company_id = :c", c=alpha) == 1
+        assert await count(real_engine, "ext_items", "company_id = :c", c=beta) == 1
+        assert await count(real_engine, "ext_links", "company_id = :c", c=beta) == 1
+    finally:
+        await beta_engine.dispose()
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
 
