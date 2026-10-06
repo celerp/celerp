@@ -174,6 +174,7 @@ MAX_MODULE_ARCHIVE_BYTES = 50 * 1024 * 1024
 
 _GITHUB_REPO = re.compile(r"https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)")
 _STAGED_OWNER = re.compile(r"([A-Za-z0-9_-]+)-[0-9a-f]{40}")
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def _staging_dir() -> Path:
@@ -192,8 +193,9 @@ class DownloadRefused(ValueError):
 
 
 def _valid_commit(commit) -> bool:
-    """A full 40-character hex commit id; branch names, HEAD and short ids are not."""
-    return isinstance(commit, str) and len(commit) == 40 and all(c in "0123456789abcdefABCDEF" for c in commit)
+    """A full 40-character lowercase hex commit id; branch names, HEAD and short
+    ids are not."""
+    return isinstance(commit, str) and _COMMIT.fullmatch(commit) is not None
 
 
 def _valid_id(module_id: str) -> bool:
@@ -206,11 +208,11 @@ def _archive_url(repo_url, commit) -> str:
     """The GitHub archive of ``commit`` for a listing whose source is a GitHub
     repository, given exactly as https://github.com/<owner>/<repo>."""
     m = _GITHUB_REPO.fullmatch(repo_url) if isinstance(repo_url, str) else None
-    if m is None or m.group(2).strip(".") == "" or m.group(2).endswith(".git"):
+    if m is None or m.group(2).strip(".") == "" or m.group(2).lower().endswith(".git"):
         raise DownloadRefused("marketplace.download_not_github")
     if not _valid_commit(commit):
         raise DownloadRefused("marketplace.download_unpinned")
-    return f"https://codeload.github.com/{m.group(1)}/{m.group(2)}/zip/{commit.lower()}"
+    return f"https://codeload.github.com/{m.group(1)}/{m.group(2)}/zip/{commit}"
 
 
 async def download_community_archive(repo_url: str, commit: str, module_id: str) -> str:
@@ -232,7 +234,7 @@ async def download_community_archive(repo_url: str, commit: str, module_id: str)
                 buf.extend(chunk)
                 if len(buf) > MAX_MODULE_ARCHIVE_BYTES:
                     raise ValueError("Module archive is too large.")
-    return staged_downloads.stage(_staging_dir(), f"{module_id}-{commit.lower()}", bytes(buf))
+    return staged_downloads.stage(_staging_dir(), f"{module_id}-{commit}", bytes(buf))
 
 
 def _check_owner(module_id: str, token) -> None:

@@ -10536,6 +10536,37 @@ class TestMarketplaceUI:
         assert b"equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000" in r2.content
 
     @pytest.mark.asyncio
+    async def test_community_download_resume_keeps_installed_rows(self, ui_client):
+        """The zone-level download re-renders the listings with the user's own
+        session, so a module that is already installed still shows Installed."""
+        seen = []
+
+        async def get_modules(tok):
+            seen.append(tok)
+            return [{"name": "fleet-log"}]
+
+        download = "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-" + "0" * 32
+        installed = {**_CATALOG_FIXTURE[1], "id": "fleet-log", "name": "Fleet Log"}
+        session = _authed()
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog",
+                  new=AsyncMock(return_value=(_CATALOG_FIXTURE + [installed], False))),
+            patch("ui.api_client.get_modules", new=get_modules),
+            patch("ui.marketplace_catalog.download_community_archive",
+                  new=AsyncMock(return_value=download)),
+            patch("ui.api_client.account_status",
+                  new=AsyncMock(return_value={"email_verified": True})),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance", "zone": "1"},
+                                     cookies=session)
+        assert r.status_code == 200
+        assert seen and set(seen) == {session["celerp_token"]}
+        body = r.content.decode()
+        row = body[body.index("Fleet Log"):]
+        assert "Installed" in row[:2000]
+
+    @pytest.mark.asyncio
     async def test_community_download_gate_fails_open_when_relay_unreachable(self, ui_client):
         """A relay outage never blocks a free download - the account check is
         skipped and the download proceeds."""
