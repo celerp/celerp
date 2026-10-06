@@ -159,3 +159,15 @@ async def test_a_module_that_failed_to_load_is_explained_in_plain_words_before_t
         r = await ui_client.get("/modules", cookies=_cookies())
     lead = "Bad Mod could not start, so it is not running. Ask the module's author to fix it."
     assert f"{lead} Their detail: {reason}" in r.text
+
+
+def test_zero_priced_marketplace_module_reads_paid():
+    from fasthtml.common import to_xml
+
+    from ui.routes.modules_page import _marketplace_row
+    row = to_xml(_marketplace_row({"id": "zero-mod", "name": "Zero", "tier": "official",
+                                   "author": "A", "license": "Proprietary",
+                                   "price_monthly": 0.0},
+                                  "en", set(), set(), owner=True))
+    assert 'hx-post="/modules/buy?slug=zero-mod&amp;kind=monthly"' in row
+    assert "/modules/marketplace-download" not in row

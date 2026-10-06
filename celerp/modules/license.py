@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -212,37 +213,50 @@ def record_free_verdict(slug: str, cache_dir: Path) -> None:
     _write_verdict(_free_verdict_file(slug, cache_dir), slug, free=True)
 
 
+def _write_whole(path: Path, data: bytes) -> None:
+    """Write *path* whole or not at all, through a temp file of its own so
+    concurrent writers never collide. Raises OSError, leaving no temp file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def _write_verdict(path: Path, slug: str, *, free: bool) -> None:
     """Write a Marketplace verdict whole or not at all."""
-    tmp = path.with_name(path.name + ".tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"free": free, "cached_at": time.time()}))
-        os.replace(tmp, path)
+        _write_whole(path, json.dumps({"free": free, "cached_at": time.time()}).encode())
     except OSError as exc:
-        tmp.unlink(missing_ok=True)
         log.warning("Could not write the Marketplace verdict for %s: %s", slug, exc)
 
 
 def adopt_legacy_license_cache(data_dir: Path) -> None:
     """Copy licences kept under the old default data dir into *data_dir*'s
     cache, once: a file already in *data_dir* is never replaced, and only
-    licence entries are carried over."""
+    plain ``<slug>.json`` licence entries are carried over. An entry that
+    cannot be read is skipped without stopping the rest."""
     legacy = Path(os.environ.get("DATA_DIR", "/tmp/celerp-data")) / "license_cache"
     target = Path(data_dir) / "license_cache"
     try:
         if not legacy.is_dir() or legacy.resolve() == target.resolve():
             return
-        for src in legacy.glob("*.json"):
-            dest = target / src.name
-            if src.name.endswith(".free.json") or dest.exists():
-                continue
-            target.mkdir(parents=True, exist_ok=True)
-            tmp = dest.with_name(dest.name + ".tmp")
-            tmp.write_bytes(src.read_bytes())
-            os.replace(tmp, dest)
+        sources = sorted(legacy.glob("*.json"))
     except OSError as exc:
         log.warning("Could not carry over licences from %s: %s", legacy, exc)
+        return
+    for src in sources:
+        dest = target / src.name
+        if "." in src.stem or dest.exists():
+            continue
+        try:
+            _write_whole(dest, src.read_bytes())
+        except OSError as exc:
+            log.warning("Could not carry over the licence %s: %s", src, exc)
 
 
 def _free_verdict_file(slug: str, cache_dir: Path) -> Path:
