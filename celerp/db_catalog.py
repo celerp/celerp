@@ -254,21 +254,20 @@ async def reshaped(session: AsyncSession, names: list[str]) -> str | None:
     return None
 
 
-async def hold(session: AsyncSession, names: list[str]) -> str | None:
+async def _hold(session: AsyncSession, names: list[str], mode: str) -> str | None:
     """Lock ``names`` and every table this transaction's snapshot of the catalog holds
-    under them until the transaction ends, so none of their partitions can be detached
-    meanwhile, then return the first of them gone, replaced under the same name (dropped
-    and made again, emptied, rewritten or swapped for another) or ``reshaped``, named as
-    the catalog names it, or None. A table kept locked by another connection past the
-    lock timeout counts as reshaped, as does one row security was turned on for
-    (``hidden``). Rewriting a table's rows in place (VACUUM FULL, CLUSTER) stores them
-    anew, so it counts as replaced too, and trying again succeeds. Writes to their rows
-    go on; a table can still be joined to them, which only ``reshaped`` tells."""
+    under them in ``mode`` until the transaction ends, then return the first of them gone,
+    replaced under the same name (dropped and made again, emptied, rewritten or swapped
+    for another) or ``reshaped``, named as the catalog names it, or None. A table kept
+    locked by another connection past the lock timeout (or at once, with ``NOWAIT``)
+    counts as reshaped, as does one row security was turned on for (``hidden``).
+    Rewriting a table's rows in place (VACUUM FULL, CLUSTER) stores them anew, so it
+    counts as replaced too, and trying again succeeds."""
     for name in names:
         tables = ", ".join(f"ONLY {ident(ns)}.{ident(rel)}" for ns, rel in await _stored(session, name))
         try:
             async with session.begin_nested():
-                await session.execute(text(f"LOCK TABLE {tables} IN ACCESS SHARE MODE"))
+                await session.execute(text(f"LOCK TABLE {tables} IN {mode}"))
         except DBAPIError as exc:
             if sqlstate(exc) in _OUT_OF_REACH:
                 return await label(session, name)
@@ -285,6 +284,28 @@ async def hold(session: AsyncSession, names: list[str]) -> str | None:
                 {"t": name}):
             return await label(session, name)
     return await reshaped(session, names)
+
+
+async def hold(session: AsyncSession, names: list[str]) -> str | None:
+    """``_hold`` in ACCESS SHARE mode: none of the tables' partitions can be detached and
+    their columns cannot change until the transaction ends. Writes to their rows go on; a
+    table can still be joined to them, or a foreign key added to them, which only
+    ``fence`` keeps out."""
+    return await _hold(session, names, "ACCESS SHARE MODE")
+
+
+async def fence(session: AsyncSession, names: list[str]) -> str | None:
+    """``_hold`` in SHARE UPDATE EXCLUSIVE mode, refusing at once any table another
+    connection is changing: from here until the transaction ends no table can be joined
+    to them and no foreign key added to them. Writes to their rows still go on. Held only
+    for the short end of a long read, since it also waits out maintenance on the tables."""
+    return await _hold(session, names, "SHARE UPDATE EXCLUSIVE MODE NOWAIT")
+
+
+def changed_schema(expected: dict[str, Table], current: dict[str, Table], names: Collection[str]) -> str | None:
+    """The first of ``names`` whose columns, primary key or foreign keys in ``current``
+    differ from ``expected``, or that ``current`` no longer has, or None."""
+    return next((name for name in names if current.get(name) != expected[name]), None)
 
 
 async def partition_key(session: AsyncSession) -> str | None:

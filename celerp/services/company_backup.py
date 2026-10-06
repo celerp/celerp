@@ -513,13 +513,32 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
         return await _export_company(session, company_id, out, provenance=provenance)
 
 
+async def _committed_shape(plan: _Plan) -> str | None:
+    """The first table ``plan`` carries whose columns or keys, as now committed, differ
+    from those ``plan`` was made from, or None. Read through a connection of its own: the
+    backup's transaction reads the catalog as it was when the transaction began."""
+    async with AsyncSession(bind=celerp.db.engine) as session, session.begin():
+        await _pin(session, restoring=False)
+        return db_catalog.changed_schema(plan.schema, await db_catalog.read(session), plan.order)
+
+
+async def _unchanged(session: AsyncSession, plan: _Plan, lock) -> None:
+    """Lock the tables ``plan`` carries with ``lock`` (``db_catalog.hold`` or
+    ``db_catalog.fence``), then refuse the backup when any of them was replaced,
+    reshaped, or given other columns or keys since ``plan`` was made."""
+    changed = await lock(session, plan.order)
+    if changed is None and (name := await _committed_shape(plan)):
+        changed = await db_catalog.label(session, name)
+    if changed:
+        raise BackupError(409, RESHAPED.format(table=changed))
+
+
 async def _export_company(session: AsyncSession, company_id, out: Path, *, provenance: dict | None) -> dict:
     company = await session.get(Company, company_id)
     if company is None:
         raise BackupError(404, "Company not found.")
     plan = await _classify(session, strict=True)
-    if changed := await db_catalog.hold(session, plan.order):
-        raise BackupError(409, RESHAPED.format(table=changed))
+    await _unchanged(session, plan, db_catalog.hold)
     tables = []
     for name in plan.order:
         if name in plan.owners and not await session.scalar(text(
@@ -567,8 +586,6 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                             fh.write(body)
                         rows += len(batch)
                 manifest["tables"][name] = {"columns": table.insertable, "rows": rows, "sha256": digest.hexdigest()}
-            if changed := await db_catalog.reshaped(session, plan.order):
-                raise BackupError(409, RESHAPED.format(table=changed))
             names: dict[str, str] = {}
             for name in sorted(found):
                 backup_name = _backup_name(name, found[name], types)
@@ -593,6 +610,7 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
             if len(body) > MAX_MANIFEST_BYTES:
                 raise BackupError(409, TOO_LARGE_TO_BACK_UP)
             zf.writestr("manifest.json", body)
+        await _unchanged(session, plan, db_catalog.fence)
         # The same limits a restore applies, so no backup is made that restore would refuse.
         if not _within_limits(partial):
             raise BackupError(409, TOO_LARGE_TO_BACK_UP)

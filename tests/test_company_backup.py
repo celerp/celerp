@@ -1371,6 +1371,285 @@ async def test_a_carried_table_dropped_as_the_export_begins_stops_it(
         await _bk_drop(real_engine, "zz_gadgets")
 
 
+_BK_MADE_BY = "ALTER TABLE zz_widgets ADD FOREIGN KEY (made_by) REFERENCES zz_ext.makers(id)"
+_BK_MAKER = "20000000-0000-0000-0000-000000000002"
+
+
+async def _bk_defined(engine, cid, *, keyed: bool = True, partitioned: bool = False) -> None:
+    """zz_gadgets and zz_widgets, each with one row of the company. Each widget names a
+    maker in zz_ext.makers, a table no backup carries, by a key when ``keyed``; the
+    backup clears the value a key binds to a row it does not carry."""
+    await _bk_sql(engine, "CREATE SCHEMA zz_ext")
+    gadget = uuid.uuid4()
+    for sql in ("CREATE TABLE zz_ext.makers (id uuid primary key)", "INSERT INTO zz_ext.makers VALUES (:m)",
+                _BK_GADGETS, "INSERT INTO zz_gadgets VALUES (:g, :c)",
+                "CREATE TABLE zz_widgets (id uuid, company_id uuid not null references companies(id) "
+                "on delete cascade, gadget_id uuid references zz_gadgets(id), made_by uuid, note varchar(40), "
+                "seq integer not null, PRIMARY KEY (id))" + (" PARTITION BY RANGE (id)" if partitioned else ""),
+                *([f"CREATE TABLE zz_widgets_p0 PARTITION OF zz_widgets FOR VALUES FROM (MINVALUE) TO ('{_BK_SPLIT}')"]
+                  if partitioned else []),
+                *([_BK_MADE_BY] if keyed else []),
+                "INSERT INTO zz_widgets VALUES ('10000000-0000-0000-0000-000000000001', :c, :g, :m, 'first', 1)"):
+        await _bk_sql(engine, sql, c=cid, g=gadget, m=_BK_MAKER)
+
+
+async def _bk_export_refused(cid, out):
+    """The export's refusal; fails showing what the backup holds when it is written."""
+    cb = _bk_cb()
+    try:
+        made = await cb.export_company_snapshot(cid, out)
+    except cb.BackupError as exc:
+        assert not out.exists() and not out.with_name(out.name + ".partial").exists()
+        return exc
+    held = members(out.read_bytes())["tables/zz_widgets.jsonl"]
+    pytest.fail(f"backed up zz_widgets as columns {made['tables']['zz_widgets']['columns']} with rows {held}")
+
+
+def _bk_as_the_export_ends(monkeypatch, engine, statements: list[str], *, commit: bool = True) -> list:
+    """Run ``statements`` through another connection as the export writes the last member
+    of the backup, once every row is read. Uncommitted, the connection is returned open,
+    in the list, for the test to end."""
+    import psycopg2
+
+    opened: list = []
+    writestr = zipfile.ZipFile.writestr
+
+    def then_change(self, name, *args, **kwargs):
+        if name == "manifest.json" and self.mode == "w":
+            conn = psycopg2.connect(engine.url.set(drivername="postgresql").render_as_string(hide_password=False))
+            with conn.cursor() as cur:
+                cur.execute("SET lock_timeout = '1s'")
+                for sql in statements:
+                    cur.execute(sql)
+            if commit:
+                conn.commit()
+                conn.close()
+            else:
+                opened.append(conn)
+        return writestr(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "writestr", then_change)
+    return opened
+
+
+_BK_REDEFINED = {
+    "a foreign key dropped": ["ALTER TABLE zz_widgets DROP CONSTRAINT zz_widgets_made_by_fkey"],
+    "a column added": ["ALTER TABLE zz_widgets ADD COLUMN extra text DEFAULT 'late'"],
+    "a column dropped": ["ALTER TABLE zz_widgets DROP COLUMN note"],
+    "a column renamed": ["ALTER TABLE zz_widgets RENAME COLUMN note TO memo"],
+    "a column's type changed": ["ALTER TABLE zz_widgets ALTER COLUMN note TYPE text"],
+    "a column made generated": ["ALTER TABLE zz_widgets ALTER COLUMN seq ADD GENERATED ALWAYS AS IDENTITY"],
+    "the primary key changed": ["ALTER TABLE zz_widgets DROP CONSTRAINT zz_widgets_pkey",
+                                "ALTER TABLE zz_widgets ADD PRIMARY KEY (company_id, id)"],
+    "a key column made required": ["ALTER TABLE zz_widgets ALTER COLUMN made_by SET NOT NULL"],
+}
+
+
+@pytest.mark.parametrize("change", list(_BK_REDEFINED))
+async def test_a_carried_table_redefined_before_the_export_holds_it_stops_it(
+        real_engine, tmp_path, monkeypatch, change):
+    """Another connection changes the columns or keys of zz_widgets after the export has
+    read the tables' shape and before it holds them. The rows would be written under the
+    columns and keys read before the change, so the export is refused with nothing
+    written, and asks for another try."""
+    from celerp import db_catalog
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_defined(real_engine, cid)
+        hold = db_catalog.hold
+
+        async def change_then_hold(session, names):
+            await _bk_ddl(real_engine, _BK_REDEFINED[change])
+            return await hold(session, names)
+
+        monkeypatch.setattr(db_catalog, "hold", change_then_hold)
+        err = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
+
+        assert (err.status_code, err.detail) == (409, _BK_RESHAPED_DETAIL)
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+async def test_a_foreign_key_added_to_a_carried_table_while_it_is_read_stops_the_export(
+        real_engine, tmp_path, monkeypatch):
+    """Another connection adds a key binding zz_widgets.made_by to zz_ext.makers while the
+    export reads rows. The value would be carried as it is though it now names a row the
+    backup does not carry, so the export is refused with nothing written."""
+    from celerp.services import company_backup
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_defined(real_engine, cid, keyed=False)
+        batches = company_backup._batches
+
+        async def keyed_first(session, table, company_id, expr):
+            if table.name == "zz_gadgets":
+                await _bk_ddl(real_engine, [_BK_MADE_BY])
+            async for batch in batches(session, table, company_id, expr):
+                yield batch
+
+        monkeypatch.setattr(company_backup, "_batches", keyed_first)
+        err = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
+
+        assert (err.status_code, err.detail) == (409, _BK_RESHAPED_DETAIL)
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+async def test_a_partition_of_a_carried_table_detached_concurrently_while_it_is_read_is_backed_up_whole(
+        real_engine, tmp_path, monkeypatch):
+    """Another connection starts detaching a partition of zz_widgets concurrently while the
+    export reads rows. The detach finishes only once the export has ended, so the backup
+    holds both widgets."""
+    from celerp.services import company_backup
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    detaching: list[asyncio.Task] = []
+    try:
+        await _bk_defined(real_engine, cid, partitioned=True)
+        await _bk_sql(real_engine, f"CREATE TABLE zz_ext.p1 PARTITION OF zz_widgets {_BK_HIGH}")
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES (:late, :c, NULL, NULL, 'late', 2)",
+                      late=_BK_LATE[:-1] + "1", c=cid)
+        batches = company_backup._batches
+
+        async def detach():
+            async with real_engine.connect() as conn:
+                conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                await conn.execute(text("ALTER TABLE zz_widgets DETACH PARTITION zz_ext.p1 CONCURRENTLY"))
+
+        async def detach_first(session, table, company_id, expr):
+            if table.name == "zz_gadgets":
+                detaching.append(asyncio.create_task(detach()))
+                while not await _bk_scalar(real_engine, "SELECT count(*) FROM pg_inherits WHERE inhdetachpending"):
+                    await asyncio.sleep(0.05)
+            async for batch in batches(session, table, company_id, expr):
+                yield batch
+
+        monkeypatch.setattr(company_backup, "_batches", detach_first)
+        out = tmp_path / "out.celerp-company"
+        await company_backup.export_company_snapshot(cid, out)
+        await asyncio.wait_for(detaching.pop(), 10)
+
+        held = [json.loads(line)["note"] for line in members(out.read_bytes())["tables/zz_widgets.jsonl"].splitlines()]
+        assert held == ["first", "late"]
+        assert not await _bk_scalar(real_engine, "SELECT count(*) FROM pg_inherits WHERE inhdetachpending")
+    finally:
+        for task in detaching:
+            task.cancel()
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+_BK_LAST_CHANGE = {
+    "a foreign key added": (False, [_BK_MADE_BY]),
+    "a table made to inherit from a carried table": (False, [
+        "CREATE TABLE zz_ext.old (LIKE zz_widgets)", "ALTER TABLE zz_ext.old INHERIT zz_widgets"]),
+    "a table attached as a partition of a carried table": (True, [
+        "CREATE TABLE zz_ext.p1 (LIKE zz_widgets)", f"ALTER TABLE zz_widgets ATTACH PARTITION zz_ext.p1 {_BK_HIGH}"]),
+}
+
+
+@pytest.mark.parametrize("change", list(_BK_LAST_CHANGE))
+async def test_a_carried_table_changed_as_the_export_ends_stops_it(real_engine, tmp_path, monkeypatch, change):
+    """Another connection adds a key to zz_widgets, or joins a table to it, once the export
+    has read every row and before the backup is kept. The export is refused with nothing
+    written, and asks for another try."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    partitioned, statements = _BK_LAST_CHANGE[change]
+    try:
+        await _bk_defined(real_engine, cid, keyed=False, partitioned=partitioned)
+        _bk_as_the_export_ends(monkeypatch, real_engine, statements)
+
+        err = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
+
+        assert (err.status_code, err.detail) == (409, _BK_RESHAPED_DETAIL)
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+async def test_a_carried_table_being_changed_as_the_export_ends_stops_it(real_engine, tmp_path, monkeypatch):
+    """Another connection is adding a key to zz_widgets, not yet committed, when the
+    export has read every row. The export is refused at once with nothing written, and
+    the change then goes through."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    opened: list = []
+    try:
+        await _bk_defined(real_engine, cid, keyed=False)
+        opened = _bk_as_the_export_ends(monkeypatch, real_engine, [_BK_MADE_BY], commit=False)
+
+        err = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
+
+        assert (err.status_code, err.detail) == (409, _BK_RESHAPED_DETAIL)
+        opened.pop().commit()
+    finally:
+        for conn in opened:
+            conn.close()
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+async def test_rows_written_while_a_backup_is_made_go_through(real_engine, tmp_path, monkeypatch):
+    """Another connection adds and updates widgets while the export reads rows and again
+    once it has checked the tables at the end. Neither write waits for the export, the
+    backup holds the rows as they were when it began, and the writes are kept."""
+    from celerp.services import company_backup
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    gadget = str(uuid.uuid4())
+    writes = ["INSERT INTO zz_widgets SELECT gen_random_uuid(), company_id, gadget_id, made_by, 'added', 2 "
+              "FROM zz_widgets WHERE note = 'first'",
+              "UPDATE zz_widgets SET note = 'changed' WHERE note = 'first'"]
+    try:
+        await _bk_defined(real_engine, cid)
+        batches, within_limits = company_backup._batches, company_backup._within_limits
+
+        async def write_first(session, table, company_id, expr):
+            if table.name == "zz_gadgets":
+                await _bk_ddl(real_engine, writes)
+            async for batch in batches(session, table, company_id, expr):
+                yield batch
+
+        def write_then_check(path):
+            import psycopg2
+            conn = psycopg2.connect(real_engine.url.set(drivername="postgresql").render_as_string(hide_password=False))
+            with conn, conn.cursor() as cur:
+                cur.execute("SET lock_timeout = '1s'")
+                cur.execute("INSERT INTO zz_gadgets VALUES (%s, %s)", (gadget, str(cid)))
+                cur.execute("UPDATE zz_widgets SET note = 'late' WHERE note = 'added'")
+            conn.close()
+            return within_limits(path)
+
+        monkeypatch.setattr(company_backup, "_batches", write_first)
+        monkeypatch.setattr(company_backup, "_within_limits", write_then_check)
+        out = tmp_path / "out.celerp-company"
+        await company_backup.export_company_snapshot(cid, out)
+
+        held = [json.loads(line) for line in members(out.read_bytes())["tables/zz_widgets.jsonl"].splitlines()]
+        assert [(w["note"], w["seq"]) for w in held] == [("first", 1)]
+        assert len(members(out.read_bytes())["tables/zz_gadgets.jsonl"].splitlines()) == 1
+        assert await _bk_scalar(real_engine, "SELECT string_agg(note, ',' ORDER BY note) FROM zz_widgets") == "changed,late"
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM zz_gadgets WHERE id = :g", g=gadget) == 1
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
 @pytest.mark.parametrize("timeout, refused", [("lock_timeout", True), ("statement_timeout", False)])
 async def test_only_a_table_kept_out_of_reach_refuses_the_hold(real_engine, timeout, refused):
     """Another connection keeps zz_gadgets locked while it is changed. Waiting too long

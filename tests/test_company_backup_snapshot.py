@@ -184,8 +184,10 @@ async def test_export_snapshot_transaction_is_repeatable_read_read_only_utc(real
 @pytest.mark.parametrize("caller", _CALLERS)
 async def test_export_snapshot_reads_through_one_dedicated_session(real_engine, real_client, tmp_path, monkeypatch,
                                                                    caller):
-    """The company, its schema and every table are read through one session of the backup's own,
-    never the request session that authenticated the download."""
+    """The company, the schema the backup is made from and every table are read through one
+    session of the backup's own, never the request session that authenticated the download.
+    The schema is read again, once the tables are held and once every row is read, each
+    time through a short session of its own, to see it still holds."""
     from celerp.db import get_session
     from celerp.main import app
     from celerp.models.company import Company
@@ -228,11 +230,12 @@ async def test_export_snapshot_reads_through_one_dedicated_session(real_engine, 
     r = await real_client.get("/company-backups/download", params=params, headers=auth(tok))
     assert r.status_code == 200, r.text
     assert members(r.content)["attachments/photo.png"] == b"alpha-photo"
-    used = {id(s) for s in reads["schema"] + reads["rows"]}
+    [snapshot, *checks] = reads["schema"]
+    used = {id(s) for s in [snapshot, *reads["rows"]]}
     assert len(used) == 1 and reads["rows"], used
-    [snapshot] = reads["schema"][:1]
     assert any(s is snapshot for s in reads["company"])
-    assert request_sessions and not any(s is snapshot for s in request_sessions)
+    assert len({id(s) for s in checks}) == 2 and not used & {id(s) for s in checks}
+    assert request_sessions and not any(s is snapshot or s in checks for s in request_sessions)
 
 
 @pytest.mark.parametrize("failure", ["missing", "read_error"])
