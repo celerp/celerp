@@ -780,10 +780,11 @@ async def fetch_relay_auth(
 ) -> tuple[str, str | None]:
     """Authenticate this installation and return the response bearer and instance id."""
     from celerp.config import settings
+    from ui.i18n import t
 
     key = api_key or settings.gateway_token
     if not key:
-        raise RuntimeError("relay credential unavailable")
+        raise RuntimeError(t("error.relay_signed_out"))
     resp = await http_client.post(
         f"{relay_http_url()}/auth/token", json={"api_key": key})
     if resp.status_code != 200:

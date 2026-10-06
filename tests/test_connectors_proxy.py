@@ -224,7 +224,7 @@ async def test_failed_disconnect_offers_disconnect_anyway_with_a_warning(redirec
             )
 
     html = normal.content.decode()
-    assert "Disconnect failed. Nothing was changed" in html
+    assert "Nothing was disconnected or changed." in html
     assert "Disconnect anyway" in html
     escaped = redirect.replace("&", "&amp;")
     assert f'hx-delete="/settings/connectors/woocommerce/disconnect?force=1{escaped}"' in html
@@ -331,7 +331,7 @@ async def test_failed_reset_changes_nothing_and_offers_to_reset_anyway():
             )
 
     html = normal.content.decode()
-    assert "Disconnect failed. Nothing was changed" in html
+    assert "Nothing was disconnected or changed." in html
     assert 'hx-delete="/settings/connectors/woocommerce/reset?force=1"' in html
     assert 'hx-target="#connector-card-woocommerce"' in html
     assert reset.await_args_list[0].kwargs == {"force": False}

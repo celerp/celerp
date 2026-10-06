@@ -450,7 +450,8 @@ async def test_deactivation_rolls_back_when_detach_fails(client, session):
                AsyncMock(side_effect=RuntimeError("detach failed"))):
         r = await client.delete("/companies/me", headers=h)
     assert r.status_code == 503, r.text
-    assert r.json()["detail"].endswith("the company was not deactivated.")
+    from ui.i18n import t
+    assert r.json()["detail"] == t("error.deactivate_disconnect_failed", "en", service="Shopify")
     company_row = await session.get(Company, uuid.UUID(cid), populate_existing=True)
     assert company_row.is_active is True
     assert await session.scalar(sa.select(sa.func.count()).select_from(ConnectorConfig).where(

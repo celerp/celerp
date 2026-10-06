@@ -24,6 +24,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from ui.i18n import t
+
 log = logging.getLogger(__name__)
 
 
@@ -632,7 +634,7 @@ async def _reconcile_connectors() -> None:
             _write_marker(state)
     if state["connectors"]:
         names = ", ".join(sorted({e["connector"] for e in state["connectors"]}))
-        raise ConnectorRemoteCleanupError(f"Connections to other services could not be disconnected ({names})")
+        raise ConnectorRemoteCleanupError(t("error.restore_disconnect_failed", names=names))
 
 
 async def _clear_restored_connector_state(session) -> None:

@@ -2026,21 +2026,17 @@ async def _relay_creds() -> tuple[str, str]:
 
     api_key = _s.gateway_token
     if not api_key:
-        raise HTTPException(status_code=503,
-                            detail="Not signed in to Celerp - connect an account first.")
+        raise HTTPException(status_code=503, detail=t("error.connect_account_first"))
     relay_base = relay_http_url()
     try:
         async with httpx.AsyncClient(timeout=8.0) as c:
             token = await fetch_relay_bearer(c, api_key=api_key)
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Could not reach the Celerp relay.")
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable"))
     except RelayProtocolError:
-        raise HTTPException(
-            status_code=502,
-            detail="Relay returned an unexpected authentication response.")
+        raise HTTPException(status_code=502, detail=t("error.relay_bad_reply"))
     except Exception as exc:
-        raise HTTPException(status_code=502,
-                            detail=f"Could not authenticate with relay ({type(exc).__name__}).")
+        raise HTTPException(status_code=502, detail=t("error.relay_sign_in_failed")) from exc
     return relay_base, token
 
 
@@ -2202,9 +2198,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     except HTTPException:
         raise
     except httpx.HTTPError:
-        raise HTTPException(
-            status_code=502,
-            detail="Could not reach the Celerp relay. Check your connection and try again.")
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable"))
 
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
@@ -2345,6 +2339,7 @@ async def deactivate_company(
         ConnectorRemoteCleanupError,
         revoke_connector_remote_state,
     )
+    from celerp.connectors.registry import service_name
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 
     await lock_connector_maintenance(session)
@@ -2371,7 +2366,7 @@ async def deactivate_company(
             await session.rollback()
             raise HTTPException(
                 status_code=503,
-                detail=f"Could not disconnect {platform}; the company was not deactivated.",
+                detail=t("error.deactivate_disconnect_failed", service=service_name(platform)),
             ) from exc
     for config in configs:
         connector_name = config.connector
@@ -2386,10 +2381,7 @@ async def deactivate_company(
             await session.rollback()
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    f"Could not disconnect {connector_name}; "
-                    "the company was not deactivated."
-                ),
+                detail=t("error.deactivate_disconnect_failed", service=service_name(connector_name)),
             ) from exc
 
     company.is_active = False

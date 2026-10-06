@@ -26,6 +26,7 @@ from celerp.services.auth import (
 )
 from celerp.services.permissions import require_permission
 from celerp.services.system_health import get_system_health
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ async def cloud_billing_portal() -> dict:
     if not url:
         raise HTTPException(
             status_code=502,
-            detail="Could not open subscription management. Check that web access is connected, then try again.")
+            detail=t("error.billing_portal_failed"))
     return {"portal_url": url}
 
 

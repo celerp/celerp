@@ -857,7 +857,8 @@ async def test_disconnect_endpoint_502_when_cloud_does_not_answer(client, monkey
     tok = await _register(client)
     r = await client.post("/payments/disconnect", headers=_h(tok))
     assert r.status_code == 502
-    assert r.json()["detail"] == "Could not disconnect Stripe"
+    from ui.i18n import t
+    assert r.json()["detail"] == t("error.stripe_disconnect_failed", "en")
 
 
 @pytest.mark.asyncio

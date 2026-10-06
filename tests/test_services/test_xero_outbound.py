@@ -415,7 +415,7 @@ async def test_attempted_create_survives_disconnect_and_resumes_on_reconnect(rel
         rows = await _rows(company)
         assert len(rows) == 1 and rows[0].status == "blocked"
         assert rows[0].next_retry_at is None
-        assert rows[0].error_message == "Xero was disconnected while invoice creation was unresolved."
+        assert rows[0].error_message.startswith("Xero was disconnected before Celerp knew whether this invoice reached Xero.")
         assert json.loads(rows[0].payload_json) == frozen
 
         # The background queue leaves it parked.

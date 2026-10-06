@@ -236,7 +236,10 @@ _UNRESOLVED_CREATE = (
     OutboundQueue.entity_type == "invoice",
     OutboundQueue.payload_json.is_not(None),
 )
-_DISCONNECTED = "Xero was disconnected while invoice creation was unresolved."
+_DISCONNECTED = (
+    "Xero was disconnected before Celerp knew whether this invoice reached Xero. "
+    "Check Xero for the invoice; if it is missing, connect Xero again in Web Access and sync again."
+)
 
 
 async def _release_rows(session, *where, message: str = _DISCONNECTED) -> None:
