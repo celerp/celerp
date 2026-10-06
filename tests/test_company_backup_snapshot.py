@@ -389,3 +389,50 @@ async def test_export_snapshot_sqlite_dialect_uses_one_plain_transaction(tmp_pat
     assert seen["bind"] is engine.sync_engine and seen["in_transaction"]
     assert seen["args"] == ("company-1", out, _PROVENANCE)
     assert statements == ["SELECT 1"]
+
+
+@pytest.mark.parametrize("caller", _CALLERS)
+async def test_downloads_started_together_up_to_the_connection_ceiling_are_all_answered(
+        real_engine, real_client, tmp_path, monkeypatch, caller):
+    """As many downloads as the request pool's base size, started at the same moment
+    through a pool sized as in production, each get the backup or the answer to try
+    again; none waits for a connection until it fails."""
+    import celerp.db
+    from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
+    from celerp.db import get_session
+    from celerp.main import app
+
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    user, cid, tok = await _bk_setup(real_engine)
+    params = await _download_params(real_engine, user, cid, caller)
+    pooled = create_async_engine(real_engine.url, pool_size=REQUEST_DB_POOL_SIZE, max_overflow=REQUEST_DB_MAX_OVERFLOW,
+                                 pool_timeout=5, connect_args=celerp.db.REQUEST_CONNECT_ARGS)
+
+    async def session():
+        async with maker(pooled)() as s:
+            yield s
+
+    together = asyncio.Barrier(REQUEST_DB_POOL_SIZE)
+    export = cb.export_company_snapshot
+
+    async def export_together(*args, **kwargs):
+        await together.wait()
+        return await export(*args, **kwargs)
+
+    monkeypatch.setattr(celerp.db, "engine", pooled)
+    monkeypatch.setattr(cb, "export_company_snapshot", export_together)
+    monkeypatch.setitem(app.dependency_overrides, get_session, session)
+    try:
+        answers = await asyncio.wait_for(asyncio.gather(*(
+            real_client.get("/company-backups/download", params=params, headers=auth(tok))
+            for _ in range(REQUEST_DB_POOL_SIZE)), return_exceptions=True), timeout=25)
+    finally:
+        await pooled.dispose()
+
+    first, rest = cb.RESHAPED.split("{table}")
+    seen = [repr(r) if isinstance(r, Exception) else (r.status_code, r.text[:120]) for r in answers]
+    assert all(not isinstance(r, Exception) and r.status_code in (200, 409) for r in answers), seen
+    assert 200 in [r.status_code for r in answers], seen
+    assert all(r.json()["detail"].startswith(first) and r.json()["detail"].endswith(rest)
+               for r in answers if r.status_code == 409)
