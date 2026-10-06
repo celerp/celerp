@@ -110,6 +110,26 @@ class TestLocalState:
         assert mc.community_acked() is True
 
 
+PIN = "0123456789abcdef0123456789abcdef01234567"
+ZIP = b"PK\x05\x06" + b"\x00" * 18
+
+
+def _host(seen: list[str], respond=None):
+    """Stands in for the network: records every URL asked for and answers with
+    ``respond(request)`` (a small zip by default)."""
+    import httpx
+    from unittest.mock import patch
+
+    real = httpx.AsyncClient
+
+    def handler(request):
+        seen.append(str(request.url))
+        return respond(request) if respond else httpx.Response(200, content=ZIP)
+
+    return patch("ui.marketplace_catalog.httpx.AsyncClient",
+                 new=lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+
 class TestCommunityDownload:
     @pytest.fixture(autouse=True)
     def _data_dir(self, tmp_path, monkeypatch):
@@ -119,20 +139,123 @@ class TestCommunityDownload:
     @pytest.mark.asyncio
     async def test_download_rejects_bad_id(self):
         with pytest.raises(ValueError):
-            await mc.download_community_archive("https://github.com/a/b", "0" * 40, "bad id!")
+            await mc.download_community_archive("https://github.com/a/b", PIN, "bad id!")
 
     @pytest.mark.asyncio
-    async def test_download_rejects_non_https_repo(self):
-        with pytest.raises(ValueError):
-            await mc.download_community_archive("http://github.com/a/b", "0" * 40, "ok")
+    async def test_download_fetches_the_pinned_commit_from_codeload(self):
+        seen: list[str] = []
+        with _host(seen):
+            token = await mc.download_community_archive("https://github.com/a/b", PIN, "ok")
+        assert seen == [f"https://codeload.github.com/a/b/zip/{PIN}"]
+        assert mc.read_staged_archive("ok", token) == ZIP
 
-    def test_read_staged_rejects_path_outside_staging(self, _data_dir):
-        outside = _data_dir / "secret.zip"
-        outside.write_bytes(b"nope")
-        with pytest.raises(ValueError):
-            mc.read_staged_archive(str(outside))
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("repo", [
+        "http://github.com/a/b",
+        "https://gitlab.com/a/b",
+        "https://github.com.example.net/a/b",
+        "https://evilgithub.com/a/b",
+        "https://user@github.com/a/b",
+        "https://github.com:8443/a/b",
+        "https://github.com/a/b/tree/main",
+        "https://github.com/a/b/",
+        "https://github.com/a",
+        "https://github.com/a/..",
+        "https://github.com/a/b?x=1",
+        "https://github.com/a/b.git",
+    ], ids=["http", "other-host", "lookalike-suffix", "lookalike-prefix", "userinfo",
+            "port", "extra-path", "trailing-slash", "no-repo", "dot-dot", "query", "dot-git"])
+    async def test_download_refuses_a_repo_that_is_not_a_canonical_github_repo(self, repo):
+        seen: list[str] = []
+        with _host(seen), pytest.raises(mc.DownloadRefused) as exc:
+            await mc.download_community_archive(repo, PIN, "ok")
+        assert exc.value.key == "marketplace.download_not_github"
+        assert seen == []
 
-    def test_read_staged_reads_inside_staging(self, _data_dir):
-        staged = mc._staging_dir() / "ok.zip"
-        staged.write_bytes(b"payload")
-        assert mc.read_staged_archive(str(staged)) == b"payload"
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("commit", [None, "", "HEAD", "main", PIN[:12], PIN + "0", "g" * 40])
+    async def test_download_refuses_a_commit_that_is_not_40_hex(self, commit):
+        seen: list[str] = []
+        with _host(seen), pytest.raises(mc.DownloadRefused) as exc:
+            await mc.download_community_archive("https://github.com/a/b", commit, "ok")
+        assert exc.value.key == "marketplace.download_unpinned"
+        assert seen == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("location", [
+        "https://evil.example/a.zip",
+        "https://codeload.github.com.evil.example/a.zip",
+        f"https://github.com/a/b/archive/{PIN}.zip",
+    ])
+    async def test_download_refuses_a_redirect(self, location):
+        import httpx
+        seen: list[str] = []
+
+        def respond(request):
+            if request.url.host == "codeload.github.com":
+                return httpx.Response(302, headers={"Location": location})
+            return httpx.Response(200, content=ZIP)
+
+        with _host(seen, respond), pytest.raises(mc.DownloadRefused) as exc:
+            await mc.download_community_archive("https://github.com/a/b", PIN, "ok")
+        assert exc.value.key == "marketplace.download_redirected"
+        assert seen == [f"https://codeload.github.com/a/b/zip/{PIN}"]
+        assert list(mc._staging_dir().iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_a_second_download_does_not_change_what_the_first_imports(self):
+        import httpx
+        bodies = iter([b"first", b"second"])
+        with _host([], lambda r: httpx.Response(200, content=next(bodies))):
+            first = await mc.download_community_archive("https://github.com/a/b", PIN, "ok")
+            second = await mc.download_community_archive("https://github.com/a/b", PIN, "ok")
+        assert first != second
+        assert mc.read_staged_archive("ok", first) == b"first"
+        assert mc.read_staged_archive("ok", second) == b"second"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_downloads_do_not_collide(self):
+        import asyncio
+
+        import httpx
+
+        def respond(request):
+            return httpx.Response(200, content=request.headers["x-n"].encode())
+
+        real = httpx.AsyncClient
+        counter = iter(range(100))
+
+        def client(**kw):
+            n = str(next(counter))
+            return real(transport=httpx.MockTransport(respond), headers={"x-n": n}, **kw)
+
+        from unittest.mock import patch
+        with patch("ui.marketplace_catalog.httpx.AsyncClient", new=client):
+            tokens = await asyncio.gather(*(
+                mc.download_community_archive("https://github.com/a/b", PIN, "ok")
+                for _ in range(8)))
+        assert len(set(tokens)) == 8
+        assert sorted(mc.read_staged_archive("ok", t) for t in tokens) == sorted(
+            str(n).encode() for n in range(8))
+
+    @pytest.mark.parametrize("token", [
+        "", "ok", "../secret", f"ok-{PIN}-" + "0" * 32, f"other-{PIN}-" + "0" * 32,
+        f"ok-{PIN}-" + "0" * 31 + "/",
+    ], ids=["empty", "bare-id", "traversal", "unknown", "other-module", "bad-shape"])
+    def test_import_refuses_an_unknown_token(self, token, _data_dir):
+        (_data_dir / "secret.zip").write_bytes(b"nope")
+        with pytest.raises(mc.DownloadRefused) as exc:
+            mc.read_staged_archive("ok", token)
+        assert exc.value.key == "marketplace.import_expired"
+
+    @pytest.mark.asyncio
+    async def test_import_refuses_an_expired_token(self):
+        import os
+        with _host([]):
+            token = await mc.download_community_archive("https://github.com/a/b", PIN, "ok")
+        staged = mc._staging_dir() / f"{token}.zip"
+        old = staged.stat().st_mtime - mc.STAGED_DOWNLOAD_TTL_SECONDS - 1
+        os.utime(staged, (old, old))
+        with pytest.raises(mc.DownloadRefused) as exc:
+            mc.read_staged_archive("ok", token)
+        assert exc.value.key == "marketplace.import_expired"

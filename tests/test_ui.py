@@ -9902,12 +9902,12 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_community_download_stages_and_offers_import(self, ui_client):
         """Download stages the author's archive and swaps the row to a Downloaded
-        state with an Import button carrying the staged path."""
+        state with an Import button carrying that download's token."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.marketplace_catalog.download_community_archive",
-                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+                  new=AsyncMock(return_value="equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000")),
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
@@ -9916,7 +9916,7 @@ class TestMarketplaceUI:
         assert r.status_code == 200
         assert b">Downloaded<" in r.content
         assert b"/modules/community-import" in r.content
-        assert b"equipment-maintenance.zip" in r.content   # path passed to the importer
+        assert b"equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000" in r.content   # token passed to the importer
         assert b">Import<" in r.content
 
     @pytest.mark.asyncio
@@ -9933,8 +9933,8 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.post("/modules/community-download",
                                      data={"id": "equipment-maintenance"}, cookies=_authed())
-        assert seen == ["https://github.com/celerp/celerp-module-template/archive/"
-                        "0123456789abcdef0123456789abcdef01234567.zip"]
+        assert seen == ["https://codeload.github.com/celerp/celerp-module-template/zip/"
+                        "0123456789abcdef0123456789abcdef01234567"]
         assert b">Downloaded<" in r.content
 
     @pytest.mark.asyncio
@@ -9985,13 +9985,13 @@ class TestMarketplaceUI:
         Installed tab so the new module is immediately visible and enableable."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
-            patch("ui.marketplace_catalog.read_staged_archive", new=lambda p: b"zip-bytes"),
+            patch("ui.marketplace_catalog.read_staged_archive", new=lambda i, t: b"zip-bytes"),
             patch("ui.api_client.import_module_zip",
                   new=AsyncMock(return_value={"name": "equipment-maintenance", "display_name": "Equipment Maintenance"})),
         ):
             r = await ui_client.post("/modules/community-import",
                                      data={"id": "equipment-maintenance",
-                                           "path": "/data/community-downloads/equipment-maintenance.zip"},
+                                           "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"},
                                      cookies=_authed())
         assert r.status_code == 200
         assert r.headers.get("HX-Redirect") == "/modules?tab=local"
@@ -10004,18 +10004,39 @@ class TestMarketplaceUI:
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
-            patch("ui.marketplace_catalog.read_staged_archive", new=lambda p: b"zip-bytes"),
+            patch("ui.marketplace_catalog.read_staged_archive", new=lambda i, t: b"zip-bytes"),
             patch("ui.api_client.import_module_zip",
                   new=AsyncMock(side_effect=APIError(400, "A module named 'equipment-maintenance' already exists."))),
         ):
             r = await ui_client.post("/modules/community-import",
                                      data={"id": "equipment-maintenance",
-                                           "path": "/data/community-downloads/equipment-maintenance.zip"},
+                                           "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"},
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/community-import" in r.content   # Import still offered for retry
         trigger = r.headers.get("HX-Trigger", "")
         assert "celerpToast" in trigger and "already exists" in trigger   # error in the toast
+
+    @pytest.mark.asyncio
+    async def test_community_import_of_an_unknown_download_offers_download_again(
+            self, ui_client, tmp_path, monkeypatch):
+        """Import of a download that is gone or was never made installs nothing,
+        says so, and puts the Download button back."""
+        monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+        imported = AsyncMock()
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.import_module_zip", new=imported),
+        ):
+            r = await ui_client.post("/modules/community-import",
+                                     data={"id": "equipment-maintenance", "token": "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        imported.assert_not_awaited()
+        assert b"/modules/community-download" in r.content
+        assert b"/modules/community-import" not in r.content
+        assert "no longer available" in r.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_panel_requires_admin(self, ui_client):
@@ -10414,7 +10435,7 @@ class TestMarketplaceUI:
 
     @pytest.mark.asyncio
     async def test_community_download_gate_blocks_unverified_email(self, ui_client):
-        dl = AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")
+        dl = AsyncMock(return_value="equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000")
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10445,7 +10466,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.marketplace_catalog.download_community_archive",
-                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+                  new=AsyncMock(return_value="equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000")),
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
@@ -10482,7 +10503,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value=dict(self._VERIFIED_STATUS))),
             patch("ui.marketplace_catalog.download_community_archive",
-                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+                  new=AsyncMock(return_value="equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000")),
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email_verified": True})),
         ):
@@ -10491,7 +10512,7 @@ class TestMarketplaceUI:
                                       cookies=_authed())
         assert b'id="community-zone"' in r2.content
         assert b">Import<" in r2.content
-        assert b"equipment-maintenance.zip" in r2.content
+        assert b"equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000" in r2.content
 
     @pytest.mark.asyncio
     async def test_community_download_gate_fails_open_when_relay_unreachable(self, ui_client):
@@ -10503,7 +10524,7 @@ class TestMarketplaceUI:
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"error": "unreachable"})),
             patch("ui.marketplace_catalog.download_community_archive",
-                  new=AsyncMock(return_value="/data/community-downloads/equipment-maintenance.zip")),
+                  new=AsyncMock(return_value="equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000")),
             patch("ui.api_client.account_status",
                   new=AsyncMock(return_value={"email_verified": True})),
         ):

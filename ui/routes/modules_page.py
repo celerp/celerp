@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -918,7 +917,7 @@ def _community_module_cell(m: dict, lang: str) -> FT:
 
 
 def _community_row(m: dict, lang: str, installed: set[str], *,
-                   downloaded_path: str | None = None) -> FT:
+                   downloaded_token: str | None = None) -> FT:
     """One community listing. Three states drive the Status and action cells:
     installed (nothing to do), downloaded (offer Import), or fresh (offer
     Download). Download fetches the author's repo archive and swaps this row in
@@ -930,12 +929,12 @@ def _community_row(m: dict, lang: str, installed: set[str], *,
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
                        data_filter_value=t("settings.installed", lang))
         action_td = Td("--")
-    elif downloaded_path:
+    elif downloaded_token:
         status_td = Td(Span(t("marketplace.downloaded", lang), cls="badge badge--active"),
                        data_filter_value=t("marketplace.downloaded", lang))
         action_td = Td(Button(t("btn.import", lang),
             hx_post="/modules/community-import",
-            hx_vals=json.dumps({"id": m["id"], "path": downloaded_path}),
+            hx_vals=json.dumps({"id": m["id"], "token": downloaded_token}),
             hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
             cls="btn btn--sm btn--primary"))
     else:
@@ -1042,7 +1041,7 @@ def _community_table(community: list[dict], installed: set[str], lang: str,
                     Th(""),
                 )),
                 Tbody(*(_community_row(m, lang, installed,
-                                       downloaded_path=(downloaded or {}).get(m["id"]))
+                                       downloaded_token=(downloaded or {}).get(m["id"]))
                         for m in community)),
                 id="community-table",
                 cls="data-table js-table",
@@ -1325,9 +1324,9 @@ def setup_routes(app):
             return gate_modal_response(gate)
         m, installed = await _community_entry(token, module_id)
         try:
-            path = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
+            token = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
         except Exception as exc:
-            reason = t("marketplace.download_unpinned" if isinstance(exc, catalog.UnpinnedModule)
+            reason = t(exc.key if isinstance(exc, catalog.DownloadRefused)
                        else "marketplace.download_failed", lang)
             if zone:
                 community, installed = await _community_and_installed(token)
@@ -1336,8 +1335,8 @@ def setup_routes(app):
         if zone:
             community, installed = await _community_and_installed(token)
             return _community_table(community, installed, lang,
-                                    downloaded={module_id: path})
-        return _community_row(m, lang, installed, downloaded_path=path)
+                                    downloaded={module_id: token})
+        return _community_row(m, lang, installed, downloaded_token=token)
 
     @app.post("/modules/community-import")
     async def community_import(request: Request):
@@ -1347,24 +1346,26 @@ def setup_routes(app):
         lang = get_lang(request)
         form = await request.form()
         module_id = str(form.get("id", ""))
-        path = str(form.get("path", ""))
+        download = str(form.get("token", ""))
         m, installed = await _community_entry(token, module_id)
         try:
-            data = catalog.read_staged_archive(path)
+            data = catalog.read_staged_archive(module_id, download)
             await api.import_module_zip(token, f"{module_id}.zip", data, source="community")
+        except catalog.DownloadRefused as e:
+            return _toast(_community_row(m, lang, installed), t(e.key, lang))
         except APIError as e:
             return _toast(
-                _community_row(m, lang, installed, downloaded_path=path),
+                _community_row(m, lang, installed, downloaded_token=download),
                 e.detail or str(e))
         except (ValueError, OSError):
             return _toast(
-                _community_row(m, lang, installed, downloaded_path=path),
+                _community_row(m, lang, installed, downloaded_token=download),
                 t("marketplace.import_failed", lang))
         # Installed: drop the staged archive, then land on the Installed tab where
         # the new module's row sits with its Enable button - the next step in the
         # flow - rather than leaving the user on the catalog row.
         try:
-            Path(path).unlink(missing_ok=True)
+            catalog.discard_staged_archive(module_id, download)
         except OSError:
             pass
         return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
