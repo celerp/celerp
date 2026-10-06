@@ -269,6 +269,22 @@ async def test_ai_query_new_form_uses_the_active_connect_session(session, run_qu
 
 
 @pytest.mark.asyncio
+async def test_ai_query_refused_after_the_signed_request_ends(session, run_query):
+    """Once the signed request exits, its caller is gone from the session, so a
+    later query on the same session answers to no one."""
+    from celerp.services.auth import SIGNED_TOKEN
+
+    company_id, user_id = await seed_member(session)
+    async with signed_request(session, company_id, user_id):
+        assert (await api.ai_query("hello", str(company_id), db_session=session))["answer"] == "ok"
+    assert SIGNED_TOKEN not in session.info
+    with pytest.raises(HTTPException) as exc:
+        await api.ai_query("hello", str(company_id), db_session=session)
+    assert exc.value.status_code == 403
+    run_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_ai_query_new_form_refused_without_a_connect_session(session, run_query, monkeypatch):
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "")
     monkeypatch.setattr("celerp.config.settings.cloud_disconnected", True)
