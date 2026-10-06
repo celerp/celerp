@@ -70,11 +70,14 @@ def test_openapi_grouped_when_exposed(monkeypatch, caplog):
 def test_export_openapi_writes_valid_schema(tmp_path):
     # The release workflow runs this script to attach openapi.json as an asset;
     # the website renders the API reference from it. It must produce a complete,
-    # grouped 3.1 document without a running server.
+    # grouped 3.1 document without a running server. The workflow sets no MODULE_DIR.
     out = tmp_path / "openapi.json"
+    env = {k: v for k, v in os.environ.items() if k != "MODULE_DIR"}
+    env["CELERP_DATA_DIR"] = str(tmp_path / "data")
     subprocess.run(
         [sys.executable, "scripts/export_openapi.py", "--out", str(out)],
         cwd=_REPO_ROOT,
+        env=env,
         check=True,
     )
     schema = json.loads(out.read_text())

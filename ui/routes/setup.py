@@ -92,6 +92,10 @@ async def apply_company_setup(token: str, currency: str, timezone: str, vertical
     result = await api.set_business_type(token, vertical)
     if not result.get("restart_required"):
         return "/dashboard"
+    if not await api.installation_owner(token):
+        # Only the installation owner restarts Celerp; until then the dashboard says
+        # the new modules are waiting for it.
+        return "/dashboard?modules=pending"
     # The type's modules load on restart; the activating page waits for them. The
     # server may drop this request as it goes down, so its outcome is not a failure
     # of setup.

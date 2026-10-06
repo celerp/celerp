@@ -369,23 +369,10 @@ async def test_barcode_field_renders_larger_pdf(client: AsyncClient):
 class TestLabelsUiRoutes:
     """Verify that label UI routes are registered and reachable (no 404)."""
 
-    def test_setup_routes_alias_exists(self):
-        """celerp_labels.ui_routes must expose setup_routes (kernel app.py convention)."""
-        from celerp_labels import ui_routes
-        assert callable(getattr(ui_routes, "setup_routes", None)), (
-            "setup_routes alias missing from celerp_labels.ui_routes; "
-            "kernel _CONDITIONAL_UI cannot register label routes"
-        )
-
-    def test_setup_ui_routes_still_exists(self):
-        """setup_ui_routes must still exist for the module loader (loader.py convention)."""
+    def test_setup_ui_routes_exists(self):
+        """setup_ui_routes is what the module loader calls (loader.py convention)."""
         from celerp_labels import ui_routes
         assert callable(getattr(ui_routes, "setup_ui_routes", None))
-
-    def test_both_names_are_same_function(self):
-        """setup_routes and setup_ui_routes must be the same callable (DRY - single def)."""
-        from celerp_labels import ui_routes
-        assert ui_routes.setup_routes is ui_routes.setup_ui_routes
 
 
 # ── Column manager UI checks ───────────────────────────────────────────────────

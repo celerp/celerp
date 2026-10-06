@@ -16,7 +16,7 @@ test("app-main serves get-update-state from the updater it tracks",
     updater.emit("update-downloaded", { version: "2.0.1" });
     const state = handlers["get-update-state"]();
     expect([state.status, state.version]).toEqual(["downloaded", "2.0.1"]);
-    expect(state.log).toEqual(["Found v2.0.1, downloading...", "v2.0.1 ready. Click 'Restart to Install'"]);
+    expect(state.log).toEqual(["Found v2.0.1, downloading...", "v2.0.1 ready. Restart to install."]);
   });
 
 test("app-main's check-for-updates dismisses a failed download",

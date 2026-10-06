@@ -277,20 +277,24 @@ def _continue_vals(body: str) -> dict:
 
 # ── Installation-wide module metadata ────────────────────────────────────────
 
-async def test_required_installation_modules_unions_all_companies(real_engine):
-    """Every company's enabled modules count, not only the first company's."""
+async def test_load_set_unions_all_companies(code_config, real_engine):
+    """Every company's modules count, not only the first company's; a company that
+    has never chosen counts with whatever the installation loads."""
     from celerp.db import get_session_ctx
-    from celerp.services.backup_export import required_installation_modules
+    from celerp.modules.registry import load_set
+    _set_enabled(["celerp-inventory"])
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
     await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
     await company(real_engine, user, "Gamma Trading", "gamma")
     async with get_session_ctx() as session:
-        assert await required_installation_modules(session) == {"celerp-labels", "celerp-contacts"}
+        assert set(await load_set(session)) == set(
+            _closure(["celerp-contacts", "celerp-inventory", "celerp-labels"]))
 
 
 async def test_local_backup_meta_lists_every_company_module(rec, real_engine):
-    """A whole-installation backup lists the modules of every company in its metadata."""
+    """A whole-installation backup lists the modules of every company, with the
+    modules they need, in its metadata."""
     from celerp.services.backup_export import export_full
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
@@ -300,17 +304,18 @@ async def test_local_backup_meta_lists_every_company_module(rec, real_engine):
         meta = json.loads(_members(path)["meta.json"])
     finally:
         path.unlink(missing_ok=True)
-    assert sorted(meta["enabled_modules"]) == ["celerp-contacts", "celerp-labels"]
+    assert sorted(meta["enabled_modules"]) == sorted(_closure(["celerp-contacts", "celerp-labels"]))
 
 
 async def test_cloud_snapshot_meta_lists_every_company_module(rec, real_engine):
-    """A cloud recovery point lists the modules of every company in its metadata."""
+    """A cloud recovery point lists the modules of every company, with the modules
+    they need, in its metadata."""
     from celerp.services import backup_export
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
     await company(real_engine, user, "Beta Trading", "beta", settings={"enabled_modules": ["celerp-contacts"]})
     meta = await backup_export.archive_meta()
-    assert sorted(meta["enabled_modules"]) == ["celerp-contacts", "celerp-labels"]
+    assert sorted(meta["enabled_modules"]) == sorted(_closure(["celerp-contacts", "celerp-labels"]))
 
 
 async def test_old_backup_fallback_uses_every_company_module(rec, real_engine, tmp_path):
@@ -353,16 +358,6 @@ async def test_replace_enabled_modules_restart_on_removal(code_config):
     _set_enabled(["celerp-inventory", "celerp-labels"])
     assert replace_enabled_modules(["celerp-inventory"]) is True
     assert _enabled() == ["celerp-inventory"]
-
-
-async def test_set_enabled_modules_stays_additive(code_config):
-    """Enabling a module keeps every module already enabled."""
-    from celerp.config import set_enabled_modules
-    _set_enabled(["celerp-inventory", "celerp-contacts"])
-    assert set_enabled_modules(["celerp-labels"]) is True
-    assert set(_enabled()) == {"celerp-inventory", "celerp-contacts", "celerp-labels"}
-    assert set_enabled_modules(["celerp-inventory"]) is False
-    assert set(_enabled()) == {"celerp-inventory", "celerp-contacts", "celerp-labels"}
 
 
 async def test_recovery_removes_destination_only_module(rec, tmp_path):

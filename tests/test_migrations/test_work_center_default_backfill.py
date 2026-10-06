@@ -214,7 +214,7 @@ def test_sql_ascii_preserves_unrelated_company_settings(sql_ascii_fresh_db):
 
 
 def test_replay_after_notices_are_read_per_user(wc_db):
-    """The reconcile replays this migration after u8j9f0a1b2c3 dropped the shared
+    """The reconcile replays this migration after w1n2o3p4q5r6 dropped the shared
     read flag, so the notice it posts must not name that column."""
     with wc_db.begin() as conn:
         c1 = wc_mkcompany(conn, {"manufacturing": {"hours_per_day": 10}})

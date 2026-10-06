@@ -73,7 +73,7 @@ def _enabled() -> list[str]:
 
 def test_requirement_status_matrix(modules, monkeypatch):
     """Every state a needed module can be in maps to exactly one status."""
-    from celerp.config import set_enabled_modules
+    from celerp.config import replace_enabled_modules
     from celerp.modules import loader
     from celerp.modules.requirements import Status, plan_requirements
     _module(modules, "acme-ready", version="2.0.0")
@@ -84,7 +84,7 @@ def test_requirement_status_matrix(modules, monkeypatch):
     _module(modules, "acme-broken")
     _running(monkeypatch, "acme-ready", "2.0.0")
     _running(monkeypatch, "acme-old-running", "1.0.0")
-    set_enabled_modules(["acme-pending", "acme-broken"])
+    replace_enabled_modules(["acme-pending", "acme-broken"])
     monkeypatch.setitem(loader._load_errors, "acme-broken", "boom")
     plan = plan_requirements({
         "acme-ready": "2.0.0", "acme-off": None, "acme-pending": None, "acme-old-disk": "2.0.0",
@@ -131,12 +131,12 @@ def test_plan_labels_never_show_package_names_for_first_party(modules, monkeypat
 
 def test_prepare_turns_on_first_party_and_needs_restart(modules, monkeypatch):
     """A bundled module that is installed but off is turned on additively; a restart follows."""
-    from celerp.config import set_enabled_modules
+    from celerp.config import replace_enabled_modules
     from celerp.modules.requirements import plan_requirements, prepare
     _module(modules, "celerp-accounting")
     _module(modules, "celerp-sales-funnel")
     _first_party(monkeypatch, "celerp-accounting", "celerp-sales-funnel")
-    set_enabled_modules(["celerp-sales-funnel"])
+    replace_enabled_modules(["celerp-sales-funnel"])
     plan = plan_requirements({"celerp-accounting": None})
     assert [r.name for r in plan.preparable] == ["celerp-accounting"] and not plan.needs_consent
     assert prepare(plan) is True

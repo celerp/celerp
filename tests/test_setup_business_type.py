@@ -91,6 +91,7 @@ class TestSetupSubmit:
             "patch_company": patch_company or AsyncMock(return_value={}),
             "set_business_type": set_type or AsyncMock(return_value={"restart_required": False}),
             "restart_system": AsyncMock(return_value={"ok": True}),
+            "installation_owner": AsyncMock(return_value=True),
         }
         for name, mock in mocks.items():
             stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
@@ -251,9 +252,33 @@ class TestSetupRestart:
                                       new=AsyncMock(return_value={"restart_required": True})))
             stack.enter_context(patch("ui.api_client.restart_system",
                                       new=AsyncMock(side_effect=httpx.RemoteProtocolError("server closed"))))
+            stack.enter_context(patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)))
             r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
         assert r.status_code == 302
         assert r.headers["location"].endswith("/setup/activating")
+
+    @pytest.mark.asyncio
+    async def test_setup_by_someone_else_than_the_installation_owner_leaves_the_restart_to_them(
+            self, ui_client):
+        restart = AsyncMock(return_value={"ok": True})
+        with ExitStack() as stack:
+            stack.enter_context(patch("ui.api_client.patch_company", new=AsyncMock(return_value={})))
+            stack.enter_context(patch("ui.api_client.set_business_type",
+                                      new=AsyncMock(return_value={"restart_required": True})))
+            stack.enter_context(patch("ui.api_client.restart_system", new=restart))
+            stack.enter_context(patch("ui.api_client.installation_owner", new=AsyncMock(return_value=False)))
+            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+        assert r.status_code == 302
+        assert r.headers["location"] == "/dashboard?modules=pending"
+        restart.assert_not_awaited()
+
+    def test_the_page_after_setup_says_the_modules_wait_for_the_restart(self):
+        from starlette.requests import Request
+        from ui.components.shell import _redirect_notice
+        from ui.i18n import t
+        request = Request({"type": "http", "method": "GET", "path": "/dashboard", "headers": [],
+                           "query_string": b"modules=pending"})
+        assert t("setup.modules_pending", "en") in str(_redirect_notice(request, "en"))
 
 
 _CHANGES = {"categories_added": {"diamond": "Diamond", "ruby": "Ruby"}, "modules_enabled": ["Manufacturing"],

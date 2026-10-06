@@ -51,8 +51,8 @@ ROLES: list[Role] = [
 # floor_role: the lowest role an owner may set as a key's minimum. Every grantable
 # key floors at viewer, so the owner-editable matrix can grant any read or write down
 # to viewer. The one exception is manage_company_settings, whose floor is admin: it
-# reaches the module data purge, which drops tables, so no override may hand it below
-# admin. The floor also clamps every stored override up to at least the floor on read,
+# changes company-wide settings, including which modules the company uses, so no
+# override may hand it below admin. The floor also clamps every stored override up to at least the floor on read,
 # so the invariant holds for grandfathered overrides, not only at save time.
 PERMISSIONS: list[Permission] = [
     Permission("view_dashboards", "View dashboards", "viewer", True, "viewer"),
@@ -213,7 +213,7 @@ def end_request(session: AsyncSession, authority: RequestAuthority) -> None:
         session.info.pop(AUTHORITY, None)
 
 
-def _authority_for(session: AsyncSession, company_id) -> RequestAuthority | None:
+def request_authority(session: AsyncSession, company_id) -> RequestAuthority | None:
     authority = session.info.get(AUTHORITY)
     if authority is None or str(authority.company_id) != str(company_id):
         return None
@@ -272,7 +272,7 @@ async def get_current_company_settings(
     """
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
-    authority = _authority_for(session, company_id)
+    authority = request_authority(session, company_id)
     if authority is None:
         return settings
     view = AuthoritySettings(settings)
@@ -298,7 +298,7 @@ def require_permission(key: str):
     ) -> None:
         company = await session.get(Company, company_id)
         assert_role_permission(company.settings if company else {}, role, key)
-        authority = _authority_for(session, company_id)
+        authority = request_authority(session, company_id)
         if authority is not None and authority.role == role:
             authority.keys.add(key)
 

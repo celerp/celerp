@@ -54,9 +54,10 @@ def _scan(pkg: Path, dotted: str) -> set[str]:
 
 
 def _load(pkg: Path, name: str, *, trusted: bool = False) -> dict:
-    """Import a module the way load_all does after admission."""
+    """Admit and import a module the way load_all does."""
     from celerp.modules import loader
-    return _load_one(pkg, name, trusted=trusted, declared=loader._declared_manifest(pkg))
+    return _load_one(pkg, name, trusted=trusted,
+                     declared=loader._admission_checks(name, pkg).manifest)
 
 
 def _make_module(base: Path, name: str, manifest: str, extra_code: str = "") -> Path:
@@ -356,8 +357,32 @@ class TestPremiumLicenseGate:
 class TestBSLProtection:
     def test_protected_internals_set_is_complete(self):
         assert "celerp.session_gate" in _PROTECTED_BSL_INTERNALS
-        assert "celerp.ai.service" in _PROTECTED_BSL_INTERNALS
-        assert "celerp.ai.quota" in _PROTECTED_BSL_INTERNALS
+        assert "celerp.ai" in _PROTECTED_BSL_INTERNALS
+        assert not [n for n in _PROTECTED_BSL_INTERNALS if n.startswith("celerp.ai.")]
+
+    @pytest.mark.parametrize("source", [
+        "from celerp.ai.llm import call_llm\n",
+        "import celerp.ai.llm\n",
+        "from celerp.ai import memory\n",
+        "from celerp import ai\n",
+        "import importlib\nimportlib.import_module('celerp.ai.models')\n",
+    ])
+    def test_every_celerp_ai_module_is_protected(self, tmp_path, source):
+        pkg = tmp_path / "ai-reach"
+        inner = pkg / "ai_reach"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(source)
+        assert _scan(pkg, "ai_reach.routes") == {"celerp.ai"}
+
+    def test_module_importing_celerp_ai_llm_refused_at_load(self, tmp_path):
+        pkg = tmp_path / "llm-reach"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "from celerp.ai.llm import call_llm\n"
+            "PLUGIN_MANIFEST = {'name': 'llm-reach', 'version': '1.0'}"
+        )
+        with pytest.raises(ModuleLoadError, match="protected BSL internals"):
+            _load(pkg, "llm-reach")
 
     def test_module_importing_session_gate_rejected(self, tmp_path):
         pkg = tmp_path / "bad-session"
@@ -950,7 +975,7 @@ class TestElectronTrustedModuleDirs:
         )
         violations = _scan(pkg, "scan_test.routes")
         assert "celerp.session_gate" in violations
-        assert "celerp.ai.quota" in violations
+        assert "celerp.ai" in violations
 
     def test_ast_scan_catches_lazy_bsl_import_inside_function(self, tmp_path):
         """AST scan catches BSL imports nested inside function bodies (lazy imports)."""
@@ -989,7 +1014,7 @@ class TestElectronTrustedModuleDirs:
         (inner / "routes.py").write_text("from abs_test import helper\n")
         (inner / "helper.py").write_text("from celerp.ai.quota import check\n")
         violations = _scan(pkg, "abs_test.routes")
-        assert "celerp.ai.quota" in violations
+        assert "celerp.ai" in violations
 
     def test_ast_scan_catches_dynamic_importlib(self, tmp_path):
         """A dynamic importlib.import_module(...) with a string-literal target is
@@ -1004,7 +1029,7 @@ class TestElectronTrustedModuleDirs:
             "    return m\n"
         )
         violations = _scan(pkg, "dyn_test.routes")
-        assert "celerp.ai.quota" in violations
+        assert "celerp.ai" in violations
 
     def test_ast_scan_catches_dunder_import(self, tmp_path):
         """__import__('celerp.session_gate') is likewise flagged."""
@@ -1520,18 +1545,25 @@ class TestSearchProviderSlot:
                 "handler": "celerp.services.auth:get_current_user",
                 "result_key": "items", "permission": "view_inventory"})
 
-    def test_missing_handler_function_rejected_at_load(self, tmp_path):
-        with pytest.raises(ModuleLoadError, match="failed to resolve"):
+    def test_missing_handler_function_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="top-level def"):
             self._load(tmp_path, "good_module_sp_nofn", {
                 "handler": "good_module_sp_nofn:nope", "result_key": "items",
                 "permission": "view_inventory"})
 
     def test_non_callable_handler_rejected(self, tmp_path):
+        """Load proves what import returns, not what admission read: a source
+        that changes after admission to bind a non-callable is refused."""
+        from celerp.modules import loader
+        name = "good_module_sp_nc"
+        pkg = _sp_module(tmp_path, name, {
+            "handler": f"{name}:prov", "result_key": "items",
+            "permission": "view_inventory"})
+        declared = loader._admission_checks(name, pkg).manifest
+        init = pkg / "__init__.py"
+        init.write_text(init.read_text() + "prov = 'not a function'\n")
         with pytest.raises(ModuleLoadError, match="not callable"):
-            self._load(tmp_path, "good_module_sp_nc", {
-                "handler": "good_module_sp_nc:prov", "result_key": "items",
-                "permission": "view_inventory"},
-                handler_code="prov = 'not a function'\n")
+            _load_one(pkg, name, trusted=False, declared=declared)
 
     def test_sync_handler_rejected(self, tmp_path):
         with pytest.raises(ModuleLoadError, match="must be async"):

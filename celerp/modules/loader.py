@@ -49,6 +49,7 @@ import fnmatch
 import functools
 import hashlib
 import importlib
+import importlib.machinery
 import importlib.util
 import inspect
 import json
@@ -62,13 +63,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from celerp.modules.importer import (
-    _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _check_min_version,
-    _read_manifest as _read_literal_manifest, _validate_name, _validate_table_prefix,
+    _RESERVED_IMPORT_PREFIX, _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
+    _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix,
 )
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
-from celerp.modules.meta import META_FILENAME, read_meta
+from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
-    register as register_slot, resolve_handler, unregister_module as unregister_module_slots,
+    FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
+    register as register_slot, resolve_handler,
+    unregister_module as unregister_module_slots,
 )
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.permissions import is_permission_key
@@ -79,8 +82,7 @@ log = logging.getLogger(__name__)
 # (licensing boundary). Module authors use celerp.modules.api instead.
 _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.session_gate",
-    "celerp.ai.service",
-    "celerp.ai.quota",
+    "celerp.ai",
     "celerp.gateway",
     "celerp.connectors",
 })
@@ -145,14 +147,25 @@ def writable_module_dir() -> Path:
     return d
 
 
-def with_writable_module_dir(module_dir_env: str) -> str:
+def bundled_module_dirs(root: Path) -> list[Path]:
+    """The module trees shipped under the package root *root*: the default (core)
+    modules, then the premium (opt-in add-on) ones. Either may be absent."""
+    return [root / "default_modules", root / "premium_modules"]
+
+
+def with_writable_module_dir(module_dir_env: str | None) -> str:
     """Ensure a launch path's MODULE_DIR writes imports to a safe location.
 
-    The importer installs into MODULE_DIR.split(",")[0]. If that first entry is a
-    bundled/trusted dir (the dev/CLI footgun: MODULE_DIR=default_modules), a
-    writable data-dir drop-in is prepended so imports land there, with the bundled
-    dir kept on the path for default discovery. An already-safe first entry, or an
-    unset MODULE_DIR (module system off), is returned unchanged."""
+    An unset MODULE_DIR (None: a bare `uvicorn` dev run) means the bundled trees
+    that exist, as `celerp start` gives them; one set to "" means no module trees
+    and is returned as is. The importer installs into
+    MODULE_DIR.split(",")[0]. If that first entry is a bundled/trusted dir (the
+    dev/CLI footgun: MODULE_DIR=default_modules), a writable data-dir drop-in is
+    prepended so imports land there, with the bundled dir kept on the path for
+    default discovery. An already-safe first entry is returned unchanged."""
+    if module_dir_env is None:
+        module_dir_env = ",".join(
+            str(d) for d in bundled_module_dirs(BUNDLED_SOURCE_DIR.parent) if d.exists())
     entries = [e.strip() for e in module_dir_env.split(",") if e.strip()]
     if not entries or not is_bundled_dir(Path(entries[0])):
         return module_dir_env
@@ -327,7 +340,12 @@ def demoted_first_party(enabled: set[str]) -> list[str]:
 def _module_candidates(
     name: str, module_dir: str | Path | None = None,
 ) -> list[Path]:
-    """Installed copies of *name* in MODULE_DIR order."""
+    """Installed copies of *name* in MODULE_DIR order. A name that is not a plain module
+    name (a path, '.', '..') has none, so it can never resolve to a folder outside it."""
+    try:
+        _validate_name_chars(name)
+    except ModuleImportError:
+        return []
     raw = os.environ.get("MODULE_DIR", "") if module_dir is None else str(module_dir)
     out: list[Path] = []
     for entry in raw.split(","):
@@ -454,7 +472,8 @@ def _validated_manifest(raw) -> dict:
     read uses, so a malformed value is refused with its reason here instead of
     raising out of the load pass at some later raw read. ``slots`` is
     normalized to a dict (None means none) and ``depends_on`` to a list; the
-    contents of ``slots`` are checked by :func:`_validate_slots`.
+    contents of ``slots`` are checked by :func:`_check_slot_contracts` at admission
+    and :func:`_resolve_slot_callables` at load.
     """
     if not isinstance(raw, dict):
         raise ModuleLoadError(
@@ -564,18 +583,6 @@ class Admission:
         return Admission(admitted, refused)
 
 
-def _is_official_name(name: str, pkg_path: Path) -> bool:
-    """True when a module may carry the reserved ``celerp-`` name: the committed
-    lock claims it, the marketplace installed it, or it ships in a license-gated
-    premium tree. Anything else claiming the prefix is refused, exactly as the
-    importer refuses a sideload that claims it."""
-    if not name.startswith(_RESERVED_PREFIX):
-        return False
-    return (name in first_party_names()
-            or read_meta(pkg_path).get("source") == "marketplace"
-            or any(p.name == "premium_modules" for p in pkg_path.parents))
-
-
 def _inside(path: Path, root: Path) -> bool:
     """True when ``path`` resolves (symlinks and '..' collapsed) inside ``root``."""
     return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(root))
@@ -614,8 +621,9 @@ def module_migration_files(pkg_path: Path, migrations_pkg) -> list[Path]:
 def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:
     """Prove, without importing it, that the module's ``{kind}_routes`` names a
     source file inside the module that defines ``setup_{kind}_routes`` or
-    imports it from the module's own code. Registration later proves the
-    resolved callable itself (:func:`_check_owned_callable`)."""
+    imports it from the module's own code, as a plain top-level def that is not
+    async (_check_source_call_style). Registration later proves the resolved
+    callable itself (:func:`_check_owned_callable`)."""
     key = f"{kind}_routes"
     dotted = manifest.get(key)
     if not dotted:
@@ -628,14 +636,16 @@ def _check_route_source(pkg_path: Path, manifest: dict, kind: str) -> None:
     tree = _parse_source(source)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == setup:
-            return
+            break
         if isinstance(node, ast.ImportFrom) and any(
                 (alias.asname or alias.name) == setup for alias in node.names):
             if _resolve_local_import(pkg_path, source, node.module, node.level) is None:
                 raise ModuleLoadError(
                     f"{key} {dotted!r} takes {setup} from outside the module.")
-            return
-    raise ModuleLoadError(f"{key} {dotted!r} does not define {setup}.")
+            break
+    else:
+        raise ModuleLoadError(f"{key} {dotted!r} does not define {setup}.")
+    _check_source_call_style(pkg_path, source, f"{key} setup", f"{dotted}:{setup}", awaited=False)
 
 
 def _module_entry_files(pkg_path: Path, manifest: dict) -> list[Path]:
@@ -656,6 +666,99 @@ def _module_entry_files(pkg_path: Path, manifest: dict) -> list[Path]:
     if manifest.get("migrations"):
         files.extend(module_migration_files(pkg_path, manifest["migrations"]))
     return files
+
+
+def _handler_names(manifest: dict) -> set[str]:
+    """The names of every callable core will call in the module: its route
+    setup functions and each callable slot's function."""
+    names = {f"setup_{kind}_routes" for kind in ("api", "ui") if manifest.get(f"{kind}_routes")}
+    for slot_name, contribution in manifest["slots"].items():
+        if slot_name in _CALLABLE_SLOTS:
+            key = _CALLABLE_SLOTS[slot_name][0]
+            names |= {item[key].split(":")[1] for item in (
+                contribution if isinstance(contribution, list) else [contribution])
+                if isinstance(item, dict) and isinstance(item.get(key), str) and ":" in item[key]}
+    return names
+
+
+# Top-level package names Celerp itself ships. A celerp_ package belongs to the
+# celerp- module of the same name (celerp-inventory ships celerp_inventory); no
+# other module answers to it.
+_RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
+
+
+def _import_roots(name: str, pkg_path: Path) -> list[str]:
+    """Every top-level name the module answers to once its folder and the
+    folder's parent are on sys.path: its own name and each package or
+    importable file (source, compiled or extension) directly inside it."""
+    suffixes = importlib.machinery.all_suffixes()
+
+    def importable(entry: Path) -> str | None:
+        return next((entry.name[:-len(s)] for s in suffixes if entry.name.endswith(s)), None)
+
+    shipped = set()
+    for entry in pkg_path.iterdir():
+        if entry.is_dir():
+            if any((entry / f"__init__{s}").is_file() for s in suffixes):
+                shipped.add(entry.name)
+        elif (stem := importable(entry)) and stem != "__init__":
+            shipped.add(stem)
+    return sorted({name} | shipped)
+
+
+def _module_location(mod) -> str | None:
+    """Where an imported module's code lives, or None (built in)."""
+    return getattr(mod, "__file__", None) or next(iter(getattr(mod, "__path__", None) or []), None)
+
+
+def _declares_manifest(folder: Path) -> bool:
+    try:
+        _read_literal_manifest((folder / "__init__.py").read_text(encoding="utf-8"))
+    except (OSError, ModuleImportError):
+        return False
+    return True
+
+
+def _module_homes(pkg_path: Path) -> list[Path]:
+    return [pkg_path.parent, *(Path(e) for e in module_search_path().split(",") if e)]
+
+
+def _is_module_code(location: str | None, homes: list[Path]) -> bool:
+    """True when *location* is a Celerp module's own code: inside a module
+    directory, a module folder, or a package directly inside one."""
+    if not location:
+        return False
+    path = Path(location)
+    folder = path.parent if path.suffix else path
+    return (any(_inside(path, home) for home in homes)
+            or _declares_manifest(folder) or _declares_manifest(folder.parent))
+
+
+def _check_import_names(name: str, pkg_path: Path) -> None:
+    """Refuse a module that would answer to a package name the standard library,
+    Celerp or an installed package already uses: loading it would replace that
+    package for everything else in the process. Only another Celerp module may
+    already hold the name. Raises :class:`ModuleLoadError`."""
+    homes = _module_homes(pkg_path)
+    elsewhere = [p for p in sys.path if not any(_inside(Path(p or "."), h) for h in homes)]
+    # Marketplace names use '-' only, so a celerp_ package belongs to the one
+    # celerp- name without '_'.
+    own = (name.replace("-", "_")
+           if name.startswith(_RESERVED_PREFIX) and "_" not in name else None)
+    for root in _import_roots(name, pkg_path):
+        if root.startswith(_RESERVED_IMPORT_PREFIX) and root != own:
+            raise ModuleLoadError(
+                f"The package name {root!r} belongs to the celerp- module of that name; "
+                f"the module must use its own.")
+        if root in sys.modules:
+            taken = not _is_module_code(_module_location(sys.modules[root]), homes)
+        else:
+            spec = importlib.machinery.PathFinder.find_spec(root, elsewhere)
+            taken = bool(spec and spec.origin) and not _is_module_code(spec.origin, homes)
+        if taken or root in _RESERVED_IMPORT_NAMES or root in sys.stdlib_module_names:
+            raise ModuleLoadError(
+                f"The package name {root!r} is already used by Celerp, Python or an "
+                f"installed package; the module must use its own.")
 
 
 def _declared_manifest(pkg_path: Path) -> dict:
@@ -679,13 +782,16 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     if manifest["name"] != name:
         raise ModuleLoadError(
             f"Manifest name {manifest['name']!r} does not match its folder {name!r}.")
-    _validate_name(name, official=_is_official_name(name, pkg_path))
+    _validate_name_chars(name)
     _check_min_version(manifest)
     _validate_table_prefix(name, manifest)
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
-    entry_files = _module_entry_files(pkg_path, manifest)
     first_party = is_first_party(pkg_path)
+    _check_slot_contracts(pkg_path, manifest["slots"], first_party=first_party)
+    _check_import_names(name, pkg_path)
+    entry_files = _module_entry_files(pkg_path, manifest)
+    _check_dynamic_writes(pkg_path, entry_files, _handler_names(manifest) | {"PLUGIN_MANIFEST"})
     if not first_party:
         violations: set[str] = set()
         for entry in entry_files:
@@ -751,16 +857,65 @@ def _premium_credentials():
     return _resolve
 
 
+def _refuse_shared_import_names(candidates: dict[str, AdmittedModule],
+                                refused: dict[str, str]) -> None:
+    """Python holds one module per import name, so of two modules answering to
+    the same one, the second would run the first's code. First-party modules
+    claim their names first, then the rest in name order; a later module whose
+    names overlap a claimed one moves from *candidates* to *refused*."""
+    claimed: dict[str, str] = {}
+    for name in sorted(candidates, key=lambda n: (not candidates[n].first_party, n)):
+        roots = _import_roots(name, candidates[name].path)
+        owner = next((claimed[r] for r in roots if r in claimed), None)
+        if owner is not None:
+            shared = sorted(r for r in roots if claimed.get(r) == owner)
+            refused[name] = (f"Module {owner!r} also ships {', '.join(map(repr, shared))}; "
+                             f"each import name may belong to one module only.")
+            log.error("Module %r refused: %s", name, refused[name])
+            del candidates[name]
+            continue
+        claimed.update(dict.fromkeys(roots, name))
+
+
+def _refuse_overlapping_projection_prefixes(candidates: dict[str, AdmittedModule],
+                                            refused: dict[str, str]) -> None:
+    """The projection engine applies the first projection_handler prefix an
+    event type starts with, so two overlapping prefixes would leave one handler
+    unreachable. Core's own prefixes are claimed first, then first-party
+    modules', then the rest in name order; a later module with a prefix that
+    overlaps a claimed one moves from *candidates* to *refused*."""
+    claimed = dict.fromkeys(KERNEL_PROJECTION_PREFIXES, "Celerp")
+    for name in sorted(candidates, key=lambda n: (not candidates[n].first_party, n)):
+        prefixes = _projection_prefixes(
+            candidates[name].manifest["slots"].get("projection_handler", []))
+        clash = next(((p, c) for p in prefixes for c in claimed
+                      if projection_prefixes_overlap(p, c)), None)
+        if clash is not None:
+            refused[name] = (f"Projection prefix {clash[0]!r} overlaps {clash[1]!r}, which "
+                             f"{claimed[clash[1]]!r} already handles; each event type may "
+                             f"have one handler only.")
+            log.error("Module %r refused: %s", name, refused[name])
+            del candidates[name]
+            continue
+        claimed.update(dict.fromkeys(prefixes, name))
+
+
 def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     """Decide, without executing any module code, which enabled modules may run.
 
     The one preflight both the migration phase and the loader consume. Per
     enabled module (core-folded ones excepted) it reads the copy
     resolve_runtime_module_path picks and checks: the manifest is a literal
-    that validates; its name matches the folder; the importer's name rules
-    (reserved prefix); the Celerp version it needs; the table prefix contract;
-    that every route source lies inside the module and provides its setup
-    function; that the migrations package resolves inside the module; for a
+    that validates; its name matches the folder; the importer's name charset
+    rules; a celerp_ package only in the celerp- module of that name
+    (_check_import_names); the Celerp version it needs; the table prefix
+    contract; that no package name it answers to is already taken, by Python or by
+    another enabled module (_refuse_shared_import_names); that no
+    projection prefix it declares overlaps core's or another enabled module's
+    (_refuse_overlapping_projection_prefixes); that every route
+    source lies inside the module and provides its setup function; that no
+    code it would execute rebinds a callable core calls (_check_dynamic_writes);
+    that the migrations package resolves inside the module; for a
     module that is not first-party, that nothing it would execute imports a
     protected internal; and for a premium module, a valid license. Survivors are
     then put in dependency order, a module whose dependency is missing or
@@ -790,6 +945,8 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
             refused[name] = reason
             continue
         candidates[name] = module
+    _refuse_shared_import_names(candidates, refused)
+    _refuse_overlapping_projection_prefixes(candidates, refused)
     order = _dependency_order(
         {n: m.manifest["depends_on"] for n, m in candidates.items()},
         enabled, installed, refused)
@@ -998,16 +1155,77 @@ def load_all(
 @contextmanager
 def _recording_tables(pkg_name: str):
     """Attribute to *pkg_name* every table added to the shared metadata while the
-    block runs (its import, its route setup), whether or not the block fails."""
+    block runs (its import, its route setup), whether or not the block fails.
+
+    A table the module does not own (core's, another module's) must leave the
+    block as it entered: a change (extend_existing columns, constraints or
+    indexes, a removal) is undone and the block raises :class:`ModuleLoadError`,
+    so the module is taken out instead of reshaping a table it does not own."""
     from celerp.models.base import Base
 
     before = set(Base.metadata.tables)
+    own = _module_tables.get(pkg_name, set())
+    shapes = {key: _table_shape(table) for key, table in Base.metadata.tables.items()
+              if key not in own}
     try:
         yield
     finally:
         _module_tables.setdefault(pkg_name, set()).update(set(Base.metadata.tables) - before)
+        altered = sorted(key for key, shape in shapes.items()
+                         if _restore_table(Base.metadata, shape))
         if _removed_tables:
             _sweep_removed_tables()
+        if altered:
+            raise ModuleLoadError(
+                f"Changes table(s) it does not own: {', '.join(altered)}.")
+
+
+# What a query reads from each column, beyond the column object itself.
+_COLUMN_STATE = ("name", "key", "type", "nullable", "server_default", "primary_key",
+                 "default", "onupdate", "server_onupdate")
+
+
+def _table_shape(table) -> tuple:
+    return (table, (table.name, table.schema, table.fullname), list(table.columns),
+            [tuple(getattr(c, a) for a in _COLUMN_STATE) for c in table.columns],
+            set(table.constraints), set(table.indexes))
+
+
+def _restore_table(metadata, shape: tuple) -> bool:
+    """Put a table back on *metadata* exactly as :func:`_table_shape` saw it.
+    True when anything had changed."""
+    table, identity, columns, states, constraints, indexes = shape
+    changed = (table.name, table.schema, table.fullname) != identity
+    table.name, table.schema, table.fullname = identity
+    for key in [k for k, t in metadata.tables.items() if t is table and k != table.key]:
+        changed = True
+        dict.pop(metadata.tables, key)
+    if metadata.tables.get(table.key) is not table:
+        changed = True
+        metadata._add_table(table.name, table.schema, table)
+    for column, state in zip(columns, states):
+        if tuple(getattr(column, a) for a in _COLUMN_STATE) != state:
+            changed = True
+            for attr, value in zip(_COLUMN_STATE, state):
+                setattr(column, attr, value)
+    by_key = {c.key: c for c in columns}
+    kept = set(map(id, columns))
+    for column in [c for c in table.columns if id(c) not in kept]:
+        changed = True
+        if column.key in by_key:
+            table._columns.replace(by_key[column.key])
+        else:
+            table._columns.remove(column)
+    for column in columns:
+        if table.columns.get(column.key) is not column:
+            changed = True
+            table._columns.add(column)
+    for current, saved in ((table.constraints, constraints), (table.indexes, indexes)):
+        if current != saved:
+            changed = True
+            current.intersection_update(saved)
+            current.update(saved)
+    return changed
 
 
 def _drop_tables(names: set[str]) -> None:
@@ -1036,9 +1254,9 @@ def _sweep_removed_tables() -> None:
                     ", ".join(sorted(referencing)))
         _removed_tables.update(referencing)
     for key in _removed_tables:
-        table = Base.metadata.tables.get(key)
-        if table is not None:
-            Base.metadata.remove(table)
+        # By the key it was added under: remove() recomputes the key from the
+        # table's current name, which the module's code can change.
+        Base.metadata._remove_table(key, None)
 
 
 def _evict_module(pkg_name: str) -> None:
@@ -1059,6 +1277,9 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     Returns a copy of the declared manifest. Raises :class:`ModuleLoadError` on failure.
     """
     before = set(sys.modules.keys())
+    existing = sys.modules.get(pkg_name)
+    if existing is not None and not _is_module_code(_module_location(existing), _module_homes(pkg_path)):
+        raise ModuleLoadError(f"The package name {pkg_name!r} is already in use.")
 
     try:
         spec = importlib.util.spec_from_file_location(
@@ -1091,14 +1312,11 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
             candidate = getattr(val, "__name__", None) or getattr(
                 getattr(val, "__spec__", None), "name", None
             )
-            if candidate and candidate in _PROTECTED_BSL_INTERNALS:
-                violations.add(candidate)
             owner = getattr(val, "__module__", None)
-            if owner and owner in _PROTECTED_BSL_INTERNALS:
-                violations.add(owner)
+            violations |= {hit for hit in map(_protected_hit, (candidate, owner)) if hit}
 
         truly_new = set(sys.modules.keys()) - before
-        violations |= truly_new & _PROTECTED_BSL_INTERNALS
+        violations |= {hit for hit in map(_protected_hit, truly_new) if hit}
 
         if violations:
             _evict_module(pkg_name)
@@ -1112,7 +1330,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     # instead of first surfacing as a broken page, a link out of Celerp, an entry
     # shown to every role, or a hook bound to code the module does not own.
     try:
-        prepared_search_provider = _validate_slots(
+        prepared_search_provider = _resolve_slot_callables(
             pkg_name, pkg_path, slots_manifest, trusted=trusted)
     except ModuleLoadError:
         log.error("Module %r rejected: invalid slots", pkg_name)
@@ -1293,9 +1511,11 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
         route_mod_path = manifest.get(manifest_key)
         if not route_mod_path or not is_running(name):
             continue
-        routes = app.router.routes
-        existing = {k for r in routes for k in _route_keys(r)}
-        start = len(routes)
+        # Snapshot, then re-read app.router.routes after setup: FastHTML's
+        # add_route rebinds (and may replace into) the list, so a captured list
+        # or index goes stale.
+        before = list(app.router.routes)
+        existing = {k for r in before for k in _route_keys(r)}
         try:
             module = _admitted.get(name)
             if module is None:
@@ -1309,24 +1529,64 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
         except Exception as exc:
             failure: Exception = exc
         else:
+            kept = {id(r) for r in before}
+            added = [r for r in app.router.routes if id(r) not in kept]
             clashes = sorted({
-                path for r in routes[start:]
+                path for r in added
                 for (path, _method) in _route_keys(r) & existing
             })
             failure = RouteConflictError(
                 "route path(s) already registered: " + ", ".join(clashes)) if clashes else None
         if failure is None:
-            _module_routes[name] = list(routes[start:])
+            _module_routes.setdefault(name, []).extend(added)
             log.info("Module %r: %s routes registered", name, kind.upper())
             continue
-        del routes[start:]
+        app.router.routes[:] = before
         _route_failure(manifest, manifest_key, failure)
         _remove_routes(app, set(_module_routes) - {m["name"] for m in _loaded})
 
 
+def route_module(scope) -> str | None:
+    """The running module whose route serves this request, or None."""
+    from starlette.routing import Match
+    for name, routes in _module_routes.items():
+        if any(r.matches(scope)[0] is Match.FULL for r in routes):
+            return name
+    return None
+
+
 def register_api_routes(app, loaded: list[dict]) -> None:
-    """Register API routes from all loaded modules into the FastAPI app."""
+    """Register API routes from all loaded modules into the FastAPI app, then
+    take out any module whose code defined a table outside its table_prefix
+    (:func:`_stray_table_problem`). This is the last step before the API process
+    creates tables, so no such table is ever created. A first-party module's
+    tables are part of Celerp's own schema (importer.reserved_tables) and keep
+    their names."""
     _register_module_routes(app, loaded, "api")
+    for manifest in list(_loaded):
+        if manifest.get("first_party") or not is_running(manifest["name"]):
+            continue
+        problem = _stray_table_problem(manifest)
+        if problem is not None:
+            _route_failure(manifest, "tables", ModuleLoadError(problem))
+    _remove_routes(app, set(_module_routes) - {m["name"] for m in _loaded})
+
+
+def _stray_table_problem(manifest: dict) -> str | None:
+    """Why the tables a module's code defined (its import and route setup) do
+    not all carry its table_prefix, or None."""
+    from celerp.models.base import Base
+
+    prefix = manifest.get("table_prefix")
+    for key in sorted(_module_tables.get(manifest["name"], set())):
+        table = Base.metadata.tables.get(key)
+        if table is None:
+            continue
+        if not prefix:
+            return f"Defines table {table.name!r} but declares no table_prefix."
+        if table.schema is not None or not table.name.startswith(prefix):
+            return f"Defines table {table.name!r} outside its table_prefix {prefix!r}."
+    return None
 
 
 def register_ui_routes(app, loaded: list[dict]) -> None:
@@ -1336,6 +1596,8 @@ def register_ui_routes(app, loaded: list[dict]) -> None:
 
 def _protected_hit(name: str) -> str | None:
     """The protected internal `name` names/imports from, or None."""
+    if not isinstance(name, str):
+        return None
     for protected in _PROTECTED_BSL_INTERNALS:
         if name == protected or name.startswith(protected + "."):
             return protected
@@ -1432,49 +1694,229 @@ def _resolve_local_import(
     return None
 
 
+def _local_imports(pkg_path: Path, current: Path, node) -> list[Path]:
+    """The module's own source files an import statement in ``current`` loads."""
+    if isinstance(node, ast.Import):
+        targets = [(alias.name, 0) for alias in node.names]
+    elif isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        targets = [(t or None, node.level) for t in [module] + [
+            f"{module}.{alias.name}" if module else alias.name for alias in node.names]]
+    else:
+        return []
+    found = (_resolve_local_import(pkg_path, current, t, level) for t, level in targets)
+    return [f for f in found if f]
+
+
+def _reachable_sources(pkg_path: Path, entries: list[Path | None]) -> dict[Path, ast.Module]:
+    """Every source file of the module's own code that importing ``entries``
+    executes, parsed: each entry, the module's files they import, transitively,
+    and the package ``__init__.py`` files on the way to each of them. Fails
+    closed: a missing entry, or a reachable file that cannot be parsed, raises
+    :class:`ModuleLoadError`."""
+    if any(entry is None or not entry.is_file() for entry in entries):
+        raise ModuleLoadError("A module entry point has no source file to check.")
+    trees: dict[Path, ast.Module] = {}
+    queue: list[Path] = list(entries)
+    while queue:
+        f = queue.pop()
+        if f in trees:
+            continue
+        trees[f] = _parse_source(f)
+        parent = f.parent if f.name != "__init__.py" else f.parent.parent
+        if parent != pkg_path.parent and _inside(parent, pkg_path) and (parent / "__init__.py").is_file():
+            queue.append(parent / "__init__.py")
+        for node in ast.walk(trees[f]):
+            queue.extend(_local_imports(pkg_path, f, node))
+    return trees
+
+
 def _scan_protected_imports(pkg_path: Path, entry: Path | None) -> set[str]:
     """Protected internals reachable from ``entry`` by import.
 
-    Follows the module's own imports transitively and flags static imports of a
-    protected internal (including ``from celerp.ai import quota``) and dynamic
-    importlib.import_module / __import__ calls whose literal argument names one.
-    Static analysis is best-effort; the authoritative enforcement of paid
-    capabilities is server-side. Fails closed: a missing entry, or a reachable
-    file that cannot be parsed, raises :class:`ModuleLoadError`.
+    Follows the module's own imports transitively (_reachable_sources) and flags
+    static imports of a protected internal (including ``from celerp.ai import
+    quota``) and dynamic importlib.import_module / __import__ calls whose literal
+    argument names one. Static analysis is best-effort; the authoritative
+    enforcement of paid capabilities is server-side. Fails closed like
+    _reachable_sources.
     """
-    if entry is None or not entry.is_file():
-        raise ModuleLoadError("A module entry point has no source file to check.")
     violations: set[str] = set()
-    seen: set[Path] = set()
-    queue: list[Path] = [entry]
-    while queue:
-        f = queue.pop()
-        if f in seen:
-            continue
-        seen.add(f)
-        for node in ast.walk(_parse_source(f)):
+    for tree in _reachable_sources(pkg_path, [entry]).values():
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                for alias in node.names:
-                    hit = _protected_hit(alias.name)
-                    if hit:
-                        violations.add(hit)
-                    local = _resolve_local_import(pkg_path, f, alias.name, 0)
-                    if local:
-                        queue.append(local)
-            elif isinstance(node, ast.ImportFrom):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level:
                 module = node.module or ""
-                for target in [module] + [
-                        f"{module}.{alias.name}" if module else alias.name
-                        for alias in node.names]:
-                    hit = _protected_hit(target) if not node.level else None
-                    if hit:
-                        violations.add(hit)
-                    local = _resolve_local_import(pkg_path, f, target or None, node.level)
-                    if local:
-                        queue.append(local)
-            elif isinstance(node, ast.Call):
-                _flag_dynamic_import(node, violations)
+                targets = [module] + [f"{module}.{alias.name}" if module else alias.name
+                                      for alias in node.names]
+            else:
+                if isinstance(node, ast.Call):
+                    _flag_dynamic_import(node, violations)
+                continue
+            violations |= {hit for hit in map(_protected_hit, targets) if hit}
     return violations
+
+
+# Names whose use writes a module's namespace in a way its source cannot show:
+# the namespace mappings (also reached through a function's __globals__, a
+# frame, the garbage collector, or locals() called anywhere but directly in a
+# function's own frame, _function_frame_nodes), code built from strings, and attribute
+# writers reached through an attribute (builtins.setattr, object.__setattr__) or
+# by name (getattr(builtins, 'exec')). Writes to sys.modules, which replace a
+# whole module, are refused alongside them.
+_NAMESPACE_WRITERS = frozenset({"globals", "vars", "exec", "eval", "__builtins__"})
+_MAPPING_WRITERS = frozenset({
+    "update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__delitem__"})
+_NAMESPACE_WRITER_ATTRS = _NAMESPACE_WRITERS | {
+    "locals", "__dict__", "setattr", "delattr", "__setattr__", "__delattr__", "__getattribute__",
+    "__globals__", "f_globals", "f_locals", "get_referrers", "get_referents", "get_objects"}
+# Attribute access by a name held in a value: the call, and where its name
+# sits among the call's arguments (None: every argument is a name).
+_ATTR_BY_NAME = {"setattr": 1, "delattr": 1, "getattr": 1,
+                 "attrgetter": None, "methodcaller": 0}
+# Attributes that change what an existing def, or the module holding it, runs.
+_FUNCTION_INTERNALS = frozenset({"__code__", "__defaults__", "__kwdefaults__", "__class__"})
+
+
+def _module_values(tree: ast.Module) -> set[str]:
+    """Names in a source file that may hold a module object: every imported name
+    and every name assigned from sys.modules[...] or an import call."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names |= {(a.asname or a.name).split(".")[0] for a in node.names}
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and _is_module_value(node.value, names)
+                    and any(isinstance(t, ast.Name) and t.id not in names for t in node.targets)):
+                names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+                changed = True
+    return names
+
+
+def _is_module_value(node, names: set[str]) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in names
+    if isinstance(node, ast.Attribute):
+        return _is_module_value(node.value, names)
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.value, ast.Attribute) and node.value.attr == "modules"
+    if isinstance(node, ast.Call):
+        fn = node.func
+        return (fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)) in (
+            "import_module", "__import__", "reload")
+    return False
+
+
+def _function_frame_nodes(tree: ast.Module) -> set[int]:
+    """The ids of the nodes in ``tree`` that run in a function's own frame, where
+    locals() reads that function's names and nothing else. Only a def's or
+    lambda's body does. Its decorators, defaults, annotations and type
+    parameters run in the enclosing scope when the def runs, as do a class's
+    decorators, bases and keywords; a class body is a namespace, not a frame;
+    and a comprehension or generator runs in (or is evaluated from) the scope
+    around it, which at module level is the module itself."""
+    inside: set[int] = set()
+    stack = [(tree, False)]
+    while stack:
+        node, in_frame = stack.pop()
+        if in_frame:
+            inside.add(id(node))
+        frame: set[int] = set()
+        namespace: set[int] = set()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            frame = {id(n) for n in node.body}
+        elif isinstance(node, ast.Lambda):
+            frame = {id(node.body)}
+        elif isinstance(node, ast.ClassDef):
+            namespace = {id(n) for n in node.body}
+        stack.extend((n, id(n) in frame or (id(n) not in namespace and in_frame))
+                     for n in ast.iter_child_nodes(node))
+    return inside
+
+
+def _dynamic_write(tree: ast.Module, handlers: set[str]) -> str | None:
+    """The first construct in ``tree`` that may write one of ``handlers`` into a
+    module's namespace where the source cannot show it, or None. ``handlers``
+    holds PLUGIN_MANIFEST, which only its own literal in the package
+    ``__init__.py`` may name."""
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    called = {id(n.func) for n in calls}
+    guarded = handlers | _FUNCTION_INTERNALS
+    in_function = _function_frame_nodes(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _NAMESPACE_WRITERS:
+            return node.id
+        if isinstance(node, ast.Name) and node.id == "locals":
+            if id(node) not in in_function:
+                return "locals outside a function"
+            if id(node) not in called:
+                return "locals used as a value"
+        if (isinstance(node, ast.Name) and node.id in _ATTR_BY_NAME
+                and id(node) not in called):
+            return f"{node.id} used as a value"
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _NAMESPACE_WRITER_ATTRS | {"getattr", "PLUGIN_MANIFEST"}:
+                    return f"an import of {alias.name}"
+                if alias.name in _ATTR_BY_NAME and alias.asname:
+                    return f"{alias.name} imported as {alias.asname}"
+        if isinstance(node, ast.Attribute):
+            if node.attr in ("attrgetter", "methodcaller") and id(node) not in called:
+                return f"{node.attr} used as a value"
+            if node.attr in _NAMESPACE_WRITER_ATTRS:
+                return node.attr
+            if node.attr == "PLUGIN_MANIFEST":
+                return "PLUGIN_MANIFEST reached through a module"
+            if isinstance(node.ctx, (ast.Store, ast.Del)) and node.attr in guarded:
+                return f"an assignment to .{node.attr}"
+            if (isinstance(node.value, ast.Attribute) and node.value.attr == "modules"
+                    and node.attr in _MAPPING_WRITERS):
+                return f"modules.{node.attr}"
+        if (isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(node.value, ast.Attribute) and node.value.attr == "modules"):
+            return "a write to sys.modules"
+    refused = guarded | _NAMESPACE_WRITER_ATTRS
+    modules = None
+    for node in calls:
+        fn = node.func
+        by_target = isinstance(fn, ast.Name) and fn.id in ("setattr", "delattr", "getattr")
+        fn_name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
+        if not by_target and fn_name not in ("attrgetter", "methodcaller"):
+            continue
+        if any(isinstance(a, ast.Starred) for a in node.args) or node.keywords:
+            return f"{fn_name} with unpacked arguments"
+        at = _ATTR_BY_NAME[fn_name]
+        names = node.args if at is None else node.args[at:at + 1]
+        for attr in names or [None]:
+            if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                if set(attr.value.split(".")) & refused:
+                    return f"{fn_name} of {attr.value!r}"
+                continue
+            if not by_target:
+                return f"{fn_name} of a computed name"
+            modules = _module_values(tree) if modules is None else modules
+            if attr is None or _is_module_value(node.args[0], modules):
+                return f"{fn_name} of a computed name on a module"
+    return None
+
+
+def _check_dynamic_writes(pkg_path: Path, entries: list[Path], handlers: set[str]) -> None:
+    """Refuse a module whose own code may rebind a callable core will call, or
+    its manifest (``handlers``), at import, through globals(), vars(), __dict__, setattr,
+    exec or an attribute write: admission proves the call style from the source
+    (_check_source_call_style), so a name the source does not bind for good
+    would only be refused at load, after the module's migrations ran.
+    Raises :class:`ModuleLoadError`."""
+    for path, tree in _reachable_sources(pkg_path, entries).items():
+        found = _dynamic_write(tree, handlers)
+        if found:
+            raise ModuleLoadError(
+                f"{path.name!r} writes names dynamically ({found}), so the module's "
+                "source does not show what core will call.")
 
 
 def _bsl_violation_message(pkg_name: str, violations: set[str]) -> str:
@@ -1547,7 +1989,7 @@ def _validate_href_template(slot: str, item: dict, placeholders: frozenset[str])
         )
 
 
-def _validate_item_action(contribution) -> None:
+def _validate_item_action(pkg_path: Path, contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every item_action item is a dict with an
     app-local href_template whose only placeholder is {entity_id}."""
     for item in contribution if isinstance(contribution, list) else [contribution]:
@@ -1556,7 +1998,7 @@ def _validate_item_action(contribution) -> None:
         _validate_href_template(_ITEM_ACTION_SLOT, item, _ITEM_ACTION_PLACEHOLDERS)
 
 
-def _validate_pricing_action(contribution) -> None:
+def _validate_pricing_action(pkg_path: Path, contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every pricing_action item has only the
     known keys, an app-local href_template whose braces only wrap known
     placeholders, a show_on list of known traits that some row can carry, and no
@@ -1654,6 +2096,15 @@ _CALLABLE_SLOTS = {
     "doc_finalize_hook": ("handler", True),
     "on_doc_payment": ("handler", True),
     "projection_handler": ("handler", False),
+    "inventory_in_production": ("handler", True),
+    "item_lineage_guard": ("handler", True),
+}
+# Callable slots core calls with keyword arguments only, and those arguments. The
+# handler takes exactly these: no other parameter, none positional-only, and no
+# *args or **kwargs (lot_origin._in_production, events.engine._item_applied).
+_HANDLER_KEYWORDS = {
+    "inventory_in_production": ("session", "company_id"),
+    "item_lineage_guard": ("session", "entry", "transition"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
@@ -1671,39 +2122,167 @@ def _runtime_keys(pkg_name: str, trusted: bool) -> dict:
     return {"_module": pkg_name, "_first_party": trusted}
 
 
-def _validate_projection_handler(contribution) -> None:
-    """Raise :class:`ModuleLoadError` unless every projection_handler entry names
-    the event-type prefix it handles."""
+def _validate_bulk_action(pkg_path: Path, contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every bulk_action names an
+    action_type the inventory toolbar knows, when it names one."""
     for item in contribution if isinstance(contribution, list) else [contribution]:
-        prefix = item.get("prefix")
-        if not isinstance(prefix, str) or not prefix:
+        if item.get("action_type", "htmx") not in _BULK_ACTION_TYPES:
             raise ModuleLoadError(
-                "Slot 'projection_handler' needs a prefix: the event-type prefix it handles."
-            )
+                f"Slot 'bulk_action' action_type must be one of "
+                f"{sorted(_BULK_ACTION_TYPES)}, not {item['action_type']!r}.")
 
 
-# Per-slot checks beyond the generic entry rules.
+def _projection_prefixes(contribution) -> list[str]:
+    """The prefixes of a manifest's projection_handler contribution."""
+    return [item["prefix"] for item in
+            (contribution if isinstance(contribution, list) else [contribution])]
+
+
+def _validate_projection_prefixes(pkg_path: Path, contribution) -> None:
+    """Raise :class:`ModuleLoadError` if two of a module's projection_handler
+    prefixes overlap: the engine applies the first match, so the other handler
+    would never run."""
+    prefixes = _projection_prefixes(contribution)
+    for i, first in enumerate(prefixes):
+        for second in prefixes[i + 1:]:
+            if projection_prefixes_overlap(first, second):
+                raise ModuleLoadError(
+                    f"Slot 'projection_handler' prefixes {first!r} and {second!r} overlap; "
+                    f"each event type may have one handler only.")
+
+
+def _validate_category_schema(pkg_path: Path, contribution) -> None:
+    """Raise :class:`ModuleLoadError` unless every category_schema entry's fields
+    are field definitions: dicts with a key, and text label and type and a list
+    of options where given."""
+    for item in contribution if isinstance(contribution, list) else [contribution]:
+        for field in item["fields"]:
+            if (not isinstance(field, dict) or not isinstance(field.get("key"), str)
+                    or not field["key"]
+                    or any(not _is_type(field[k], types)
+                           for k, types in _CATEGORY_FIELD_KEYS.items() if k in field)):
+                raise ModuleLoadError(
+                    f"Slot 'category_schema' fields must be field definitions: a dict "
+                    f"with a text key, and text label and type and a list of options "
+                    f"where given, not {field!r}.")
+
+
+def _takes_exactly(params: list[tuple], keywords: tuple[str, ...]) -> bool:
+    """Whether a callable with these (name, kind) parameters can be called with
+    exactly ``keywords`` as keyword arguments and nothing else."""
+    return (sorted(name for name, _ in params) == sorted(keywords)
+            and all(kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                    for _, kind in params))
+
+
+def _source_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple]:
+    """A def's parameters as (name, kind), the way inspect.signature reports them."""
+    a, kind = node.args, inspect.Parameter
+    return ([(p.arg, kind.POSITIONAL_ONLY) for p in a.posonlyargs]
+            + [(p.arg, kind.POSITIONAL_OR_KEYWORD) for p in a.args]
+            + ([(a.vararg.arg, kind.VAR_POSITIONAL)] if a.vararg else [])
+            + [(p.arg, kind.KEYWORD_ONLY) for p in a.kwonlyargs]
+            + ([(a.kwarg.arg, kind.VAR_KEYWORD)] if a.kwarg else []))
+
+
+def _check_keywords(slot: str, dotted: str, params) -> None:
+    """Refuse a handler that cannot be called with exactly the slot's keywords."""
+    keywords = _HANDLER_KEYWORDS[slot]
+    if not _takes_exactly(params, keywords):
+        raise ModuleLoadError(
+            f"Slot {slot!r} callable {dotted!r} must take exactly the keyword arguments "
+            f"{', '.join(keywords)}; core calls it with those and nothing else.")
+
+
+def _keyword_validator(slot: str):
+    """The admission check for a slot in _HANDLER_KEYWORDS: each handler's
+    parameters, read from the module's source. A handler whose source does not
+    show them is already refused (_check_source_call_style); a class or lambda
+    handler is checked at load."""
+    def validate(pkg_path: Path, contribution) -> None:
+        for item in contribution if isinstance(contribution, list) else [contribution]:
+            dotted = item["handler"]
+            source = _owned_callable_source(pkg_path, f"Slot {slot!r}", dotted)
+            node = _source_callable(pkg_path, source, dotted.split(":")[1])
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _check_keywords(slot, dotted, _source_params(node))
+    return validate
+
+
+# Per-slot checks beyond the entry keys every slot declares (_SLOT_ENTRY_KEYS),
+# each called as validate(pkg_path, contribution) at admission.
 _SLOT_VALIDATORS = {
     **_LINK_SLOT_VALIDATORS,
-    "projection_handler": _validate_projection_handler,
+    "bulk_action": _validate_bulk_action,
+    "category_schema": _validate_category_schema,
+    "projection_handler": _validate_projection_prefixes,
+    **{slot: _keyword_validator(slot) for slot in _HANDLER_KEYWORDS},
 }
+
+_BULK_ACTION_TYPES = frozenset({"htmx", "navigate"})
+_CATEGORY_FIELD_KEYS = {"label": (str,), "type": (str,), "options": (list,)}
+_TEXT, _NUMBER = (str,), (int, float)
+_LABEL_KEYS = {"label": (_TEXT, False), "label_key": (_TEXT, False)}
+# What the code reading each slot takes from an entry: per key, the types it
+# reads the value as and whether the entry must carry it (a required text value
+# must not be empty). Callable keys are checked as callables (_CALLABLE_SLOTS),
+# destinations as paths (_DESTINATION_KEYS) and permissions as permission keys.
+_SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
+    "nav": {**_LABEL_KEYS, "key": (_TEXT, False), "group": ((str, type(None)), False),
+            "order": (_NUMBER, False)},
+    "bulk_action": {**_LABEL_KEYS, "action_type": (_TEXT, False)},
+    "send_to_targets": {**_LABEL_KEYS, "doc_type": (_TEXT, True)},
+    "catalog_channel": {**_LABEL_KEYS, "id": (_TEXT, True), "marker": (_TEXT, False),
+                        "can_create": ((bool,), False)},
+    "item_action": _LABEL_KEYS,
+    "pricing_action": _LABEL_KEYS,
+    "category_schema": {"category": (_TEXT, True), "fields": ((list,), True)},
+    "projection_handler": {"prefix": (_TEXT, True)},
+    "search_provider": {"result_key": (_TEXT, True)},
+    "doc_detail_actions": {},
+    "doc_detail_badges": {},
+    "on_company_created": {},
+    "on_modules_ready": {},
+    "doc_finalize_hook": {},
+    "on_doc_payment": {},
+    "inventory_in_production": {},
+    "item_lineage_guard": {},
+}
+_TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",
+               list: "a list", type(None): "None"}
+
+
+def _is_type(value, types: tuple[type, ...]) -> bool:
+    """isinstance, except that True and False are not numbers here."""
+    return isinstance(value, types) and (bool in types or not isinstance(value, bool))
 
 
 def _validate_slot_entry(slot: str, item) -> None:
     """The rules every slot entry follows, whatever its slot.
 
-    Raise :class:`ModuleLoadError` unless ``item`` is a dict; has a
-    "permission" / "write_permission", when present, that is a key from the
-    permission registry (a falsy or malformed value is refused, never read as
-    "ungated"); has a "requires_connector", when set, that is a connector id
-    string (an empty value means no connector is needed); and has every
-    destination its slot reads (_DESTINATION_KEYS) as an app-local path, with
-    the required ones present.
+    Raise :class:`ModuleLoadError` unless ``item`` is a dict; carries every key
+    its slot reads (_SLOT_ENTRY_KEYS) in the type it is read as, with the
+    required ones present; has a "permission" / "write_permission", when
+    present, that is a key from the permission registry (a falsy or malformed
+    value is refused, never read as "ungated"); has a "requires_connector" that
+    is None or a string, a connector id (None or "" means no connector is
+    needed); and has every destination its slot reads (_DESTINATION_KEYS) as an
+    app-local path, with the required ones present.
     """
     if not isinstance(item, dict):
         raise ModuleLoadError(
             f"Slot {slot!r} entries must be dicts, not {type(item).__name__}."
         )
+    for key, (types, required) in _SLOT_ENTRY_KEYS.get(slot, {}).items():
+        if key not in item:
+            if required:
+                raise ModuleLoadError(f"Slot {slot!r} needs a {key}.")
+            continue
+        if not _is_type(item[key], types):
+            names = " or ".join(dict.fromkeys(_TYPE_NAMES[t] for t in types))
+            raise ModuleLoadError(f"Slot {slot!r} {key} must be {names}, not {item[key]!r}.")
+        if required and types == _TEXT and not item[key]:
+            raise ModuleLoadError(f"Slot {slot!r} {key} must not be empty.")
     for key in _PERMISSION_ENTRY_KEYS:
         if key in item and not is_permission_key(item[key]):
             raise ModuleLoadError(
@@ -1712,12 +2291,10 @@ def _validate_slot_entry(slot: str, item) -> None:
                 f"closest existing key, or leave {key} out."
             )
     connector = item.get("requires_connector")
-    if connector:
-        if not isinstance(connector, str):
-            raise ModuleLoadError(
-                f"Slot {slot!r} requires_connector must be a connector id, "
-                f"not {connector!r}."
-            )
+    if connector is not None and not isinstance(connector, str):
+        raise ModuleLoadError(
+            f"Slot {slot!r} requires_connector must be a connector id, not {connector!r}."
+        )
     for key, required in _DESTINATION_KEYS.get(slot, {}).items():
         if key not in item:
             if required:
@@ -1730,35 +2307,95 @@ def _validate_slot_entry(slot: str, item) -> None:
             )
 
 
-def _validate_slots(
-    pkg_name: str, pkg_path: Path, slots_manifest: dict, *, trusted: bool
-) -> dict | None:
-    """Check a module's whole ``slots`` manifest before anything is registered.
+def _check_search_provider_descriptor(contribution) -> None:
+    """The search_provider slot takes exactly one dict: one module, one
+    provider, one results bucket, so a module can never overwrite its own search
+    bucket. The descriptor must carry exactly ``{handler, result_key,
+    permission}`` (extra keys are refused, never ignored, so a misspelling fails
+    loudly), and ``result_key`` is one of ``{items, entries}``."""
+    if not isinstance(contribution, dict):
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} takes exactly one descriptor dict, "
+            f"not a {type(contribution).__name__}."
+        )
+    keys = set(contribution)
+    if keys != set(_SEARCH_PROVIDER_KEYS):
+        missing = sorted(_SEARCH_PROVIDER_KEYS - keys)
+        extra = sorted(keys - _SEARCH_PROVIDER_KEYS, key=repr)
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} descriptor keys must be exactly "
+            f"{sorted(_SEARCH_PROVIDER_KEYS)} (missing={missing}, extra={extra})."
+        )
+    result_key = contribution["result_key"]
+    if not isinstance(result_key, str) or result_key not in _SEARCH_RESULT_KEYS:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} result_key {result_key!r} must be one "
+            f"of {sorted(_SEARCH_RESULT_KEYS)}."
+        )
 
-    Any module may fill any slot. Per slot: search_provider goes through its
-    stricter descriptor contract; every other entry follows the generic entry rules, has
-    its callable proven (_check_owned_callable) when the slot is callable, and
-    passes its slot's own validator. Returns the prepared search_provider
-    descriptor, or None. Raises :class:`ModuleLoadError` on any violation.
+
+def _check_slot_contracts(pkg_path: Path, slots_manifest: dict, *, first_party: bool) -> None:
+    """Every slot rule the manifest and the module's source decide, checked
+    before any of the module's code runs: the slot is one Celerp reads
+    (SLOT_NAMES) and, for a module that is not first-party, not one of
+    FIRST_PARTY_SLOTS; the search_provider descriptor, the entry rules (_validate_slot_entry), each slot's own validator, and for a
+    callable slot an in-module "module.path:function" whose source shows it
+    async exactly where core awaits it (_check_source_call_style). Load proves
+    the object importing actually returns (_resolve_slot_callables). Raises :class:`ModuleLoadError`.
     ``slots_manifest`` is already a dict (:func:`_validated_manifest`).
     """
-    prepared = None
     for slot_name, contribution in slots_manifest.items():
+        if slot_name not in SLOT_NAMES:
+            raise ModuleLoadError(
+                f"The manifest fills unknown slot {slot_name!r}; Celerp reads only "
+                f"{', '.join(sorted(SLOT_NAMES))}.")
+        if slot_name in FIRST_PARTY_SLOTS and not first_party:
+            raise ModuleLoadError(f"Slot {slot_name!r} is filled by Celerp's own modules only.")
         if slot_name == _SEARCH_PROVIDER_SLOT:
-            prepared = _prepare_search_provider(
-                pkg_name, pkg_path, contribution, trusted=trusted)
-            continue
-        items = contribution if isinstance(contribution, list) else [contribution]
-        for item in items:
+            _check_search_provider_descriptor(contribution)
+        for item in contribution if isinstance(contribution, list) else [contribution]:
             _validate_slot_entry(slot_name, item)
             if slot_name in _CALLABLE_SLOTS:
                 key, awaited = _CALLABLE_SLOTS[slot_name]
-                _check_owned_callable(
-                    pkg_name, pkg_path, f"Slot {slot_name!r}", item.get(key),
-                    awaited=awaited, trusted=trusted)
+                subject = f"Slot {slot_name!r}"
+                source = _owned_callable_source(pkg_path, subject, item.get(key))
+                _check_source_call_style(pkg_path, source, subject, item[key], awaited=awaited)
         validate = _SLOT_VALIDATORS.get(slot_name)
         if validate is not None:
-            validate(contribution)
+            validate(pkg_path, contribution)
+
+
+def _resolve_slot_callables(
+    pkg_name: str, pkg_path: Path, slots_manifest: dict, *, trusted: bool
+) -> dict | None:
+    """Prove every callable a module's slots name (_check_owned_callable) before
+    anything is registered. The rest of each entry passed admission
+    (_check_slot_contracts) and the manifest at import equals the one admitted.
+    Returns the search_provider descriptor to register, or None. Raises
+    :class:`ModuleLoadError` on any violation.
+    """
+    prepared = None
+    for slot_name, contribution in slots_manifest.items():
+        if slot_name not in _CALLABLE_SLOTS:
+            continue
+        key, awaited = _CALLABLE_SLOTS[slot_name]
+        for item in contribution if isinstance(contribution, list) else [contribution]:
+            func = _check_owned_callable(
+                pkg_name, pkg_path, f"Slot {slot_name!r}", item[key],
+                awaited=awaited, trusted=trusted)
+            if slot_name in _HANDLER_KEYWORDS:
+                try:
+                    params = [(p.name, p.kind) for p in inspect.signature(func).parameters.values()]
+                except (TypeError, ValueError):
+                    raise ModuleLoadError(
+                        f"Slot {slot_name!r} callable {item[key]!r} has no readable signature."
+                    ) from None
+                _check_keywords(slot_name, item[key], params)
+        if slot_name == _SEARCH_PROVIDER_SLOT:
+            # Runtime-owned trust metadata goes AFTER the manifest contribution,
+            # and the descriptor's closed key set already refuses a manifest that
+            # supplies _module / _first_party itself, so neither can be spoofed.
+            prepared = {**contribution, **_runtime_keys(pkg_name, trusted)}
     return prepared
 
 
@@ -1779,6 +2416,84 @@ def _owned_callable_source(pkg_path: Path, subject: str, dotted) -> Path:
             f"the module."
         )
     return source
+
+
+def _check_call_style(subject: str, dotted: str, is_async: bool, *, awaited: bool) -> None:
+    """Refuse a callable that is async where core calls it plainly, or plain
+    where core awaits it."""
+    if is_async == awaited:
+        return
+    if awaited:
+        raise ModuleLoadError(f"{subject} callable {dotted!r} must be async; core awaits it.")
+    raise ModuleLoadError(
+        f"{subject} callable {dotted!r} must not be async; core calls it without awaiting.")
+
+
+def _top_level_binding(tree: ast.Module, name: str):
+    """The one statement that binds ``name`` in a module, when that is the only
+    place the source binds (or deletes) it at all, it sits at the top level and
+    no later star import can rebind it; else None."""
+    bindings = [node for node in ast.walk(tree) if name in _bound_names(node)]
+    if len(bindings) != 1:
+        return None
+    (binding,) = bindings
+    if any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names)
+           and n.lineno > binding.lineno for n in tree.body):
+        return None  # a later star import may rebind it
+    if binding in tree.body:
+        return binding
+    owner = next((n for n in tree.body if isinstance(n, (ast.Assign, ast.AnnAssign))
+                  and binding in ast.walk(n)), None)
+    return owner
+
+
+def _source_callable(pkg_path: Path, source: Path, name: str, seen: set | None = None):
+    """The undecorated def, async def, class or lambda that ``name`` in ``source``
+    is, read from the module's own source without running it: followed through
+    plain aliases and imports of the module's own files. None when the source
+    alone cannot tell; loading then decides."""
+    seen = set() if seen is None else seen
+    if (source, name) in seen:
+        return None
+    seen.add((source, name))
+    try:
+        tree = _parse_source(source)
+    except ModuleLoadError:
+        return None
+    binding = _top_level_binding(tree, name)
+    if isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return None if binding.decorator_list else binding
+    if isinstance(binding, (ast.Assign, ast.AnnAssign)):
+        targets = binding.targets if isinstance(binding, ast.Assign) else [binding.target]
+        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+            return None
+        if isinstance(binding.value, ast.Lambda):
+            return binding.value
+        if isinstance(binding.value, ast.Name):
+            return _source_callable(pkg_path, source, binding.value.id, seen)
+        return None
+    if isinstance(binding, ast.ImportFrom):
+        alias = next(a for a in binding.names if (a.asname or a.name) == name)
+        target = _resolve_local_import(pkg_path, source, binding.module, binding.level)
+        if target is None:
+            return None
+        return _source_callable(pkg_path, target, alias.name, seen)
+    return None
+
+
+def _check_source_call_style(pkg_path: Path, source: Path, subject: str, dotted: str, *,
+                             awaited: bool) -> None:
+    """Refuse, before any of the module's code runs, a callable whose source does
+    not show how core may call it: ``dotted`` must name an undecorated def (or a
+    class or lambda) in the module's own code (_source_callable), async exactly
+    where core awaits it. A decorated or call-built callable could be either, and
+    refusing it only at load would come after its migrations ran."""
+    node = _source_callable(pkg_path, source, dotted.split(":")[1])
+    if node is None:
+        raise ModuleLoadError(
+            f"{subject} callable {dotted!r} must be a plain top-level def in the module's "
+            "own code, not decorated, rebound or built by a call.")
+    _check_call_style(subject, dotted, isinstance(node, ast.AsyncFunctionDef), awaited=awaited)
 
 
 def _check_owned_callable(
@@ -1814,15 +2529,7 @@ def _check_owned_callable(
         )
     if not callable(func):
         raise ModuleLoadError(f"{subject} callable {dotted!r} is not callable.")
-    if awaited and not inspect.iscoroutinefunction(func):
-        raise ModuleLoadError(
-            f"{subject} callable {dotted!r} must be async; core awaits it."
-        )
-    if not awaited and inspect.iscoroutinefunction(func):
-        raise ModuleLoadError(
-            f"{subject} callable {dotted!r} must not be async; core calls it "
-            f"without awaiting."
-        )
+    _check_call_style(subject, dotted, inspect.iscoroutinefunction(func), awaited=awaited)
     # Provenance: an on-disk file matching the dotted path is not proof of what
     # importlib actually resolved. A decoy source shipped inside the module's own
     # tree (e.g. a celerp/ai/service.py) satisfies the existence and AST checks
@@ -1852,48 +2559,3 @@ def _check_owned_callable(
                 f"module {pkg_name!r}'s own package tree."
             )
     return func
-
-
-def _prepare_search_provider(
-    pkg_name: str, pkg_path: Path, contribution, *, trusted: bool
-) -> dict:
-    """Validate a ``search_provider`` descriptor and resolve its handler at load
-    time, returning the runtime descriptor to register.
-
-    The slot takes exactly one dict: one module, one provider, one results
-    bucket, so a module can never overwrite its own search bucket. The descriptor
-    must carry exactly ``{handler, result_key, permission}`` (extra keys are
-    rejected, never ignored, so a misspelling fails loudly); ``result_key`` is one
-    of ``{items, entries}``; ``permission`` is a known key. The handler goes
-    through the callable-slot proof every callable slot uses
-    (_check_owned_callable): in-module source, no protected import (third-party
-    only), async, provenance. Raises :class:`ModuleLoadError` on any violation.
-    """
-    if not isinstance(contribution, dict):
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} takes exactly one descriptor dict, "
-            f"not a {type(contribution).__name__}."
-        )
-    keys = set(contribution)
-    if keys != set(_SEARCH_PROVIDER_KEYS):
-        missing = sorted(_SEARCH_PROVIDER_KEYS - keys)
-        extra = sorted(keys - _SEARCH_PROVIDER_KEYS, key=repr)
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} descriptor keys must be exactly "
-            f"{sorted(_SEARCH_PROVIDER_KEYS)} (missing={missing}, extra={extra})."
-        )
-    result_key = contribution["result_key"]
-    if not isinstance(result_key, str) or result_key not in _SEARCH_RESULT_KEYS:
-        raise ModuleLoadError(
-            f"Slot {_SEARCH_PROVIDER_SLOT!r} result_key {result_key!r} must be one "
-            f"of {sorted(_SEARCH_RESULT_KEYS)}."
-        )
-    _validate_slot_entry(_SEARCH_PROVIDER_SLOT, contribution)
-    key, awaited = _CALLABLE_SLOTS[_SEARCH_PROVIDER_SLOT]
-    _check_owned_callable(
-        pkg_name, pkg_path, f"Slot {_SEARCH_PROVIDER_SLOT!r}", contribution[key],
-        awaited=awaited, trusted=trusted)
-    # Runtime-owned trust metadata is injected AFTER the manifest contribution, and
-    # the closed key set above already rejects a manifest that tries to supply
-    # _module / _first_party itself, so neither can be spoofed.
-    return {**contribution, **_runtime_keys(pkg_name, trusted)}

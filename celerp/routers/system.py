@@ -17,9 +17,8 @@ from celerp.models.company import User
 from celerp.services.auth import (
     get_current_user, is_install_owner, require_install_owner,
 )
-from celerp.services.permissions import require_permission
 
-router = APIRouter(dependencies=[require_permission("manage_company_settings")])
+router = APIRouter()
 
 
 # ── Graceful restart ──────────────────────────────────────────────────────────
@@ -44,13 +43,13 @@ def _send_sigterm() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-@router.post("/restart")
+@router.post("/restart", dependencies=[Depends(require_install_owner)])
 async def restart_server(
     background_tasks: BackgroundTasks,
 ) -> dict:
     """Gracefully restart the server process (SIGTERM → process manager respawns).
 
-    Used by the setup wizard after applying a preset so new modules are loaded.
+    Restarting stops the whole installation, so only the installation owner may.
     Returns immediately; the restart happens ~200ms later in a background task.
     """
     background_tasks.add_task(_send_sigterm)
@@ -58,13 +57,21 @@ async def restart_server(
 
 
 # ── Updates ───────────────────────────────────────────────────────────────────
-# Installation-wide, so gated on the install owner rather than the company
-# permission the router above carries; reading the status needs only a login.
-
-update_router = APIRouter()
+# Installation-wide, so gated on the install owner; reading the status needs
+# only a login.
 
 
-@update_router.get("/update")
+@router.get("/installation-owner")
+async def installation_owner(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Whether this login is the installation owner, so pages offer
+    installation-wide controls only to them."""
+    return {"installation_owner": await is_install_owner(session, user.id)}
+
+
+@router.get("/update")
 async def update_status(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -74,7 +81,7 @@ async def update_status(
     return update.status(owner=await is_install_owner(session, user.id))
 
 
-@update_router.post("/update", status_code=202, dependencies=[Depends(require_install_owner)])
+@router.post("/update", status_code=202, dependencies=[Depends(require_install_owner)])
 async def install_update(background_tasks: BackgroundTasks) -> dict:
     """Install the newest version pip offers. The version is chosen here, never
     by the caller; Celerp restarts and is back in about a minute."""
@@ -87,7 +94,7 @@ async def install_update(background_tasks: BackgroundTasks) -> dict:
     return {"ok": True, "installing": target}
 
 
-@update_router.post("/update/check", dependencies=[Depends(require_install_owner)])
+@router.post("/update/check", dependencies=[Depends(require_install_owner)])
 async def check_for_update() -> dict:
     from celerp.services import update
     await asyncio.to_thread(update.refresh_check)
@@ -98,7 +105,7 @@ class UpdateSettings(BaseModel):
     auto: StrictBool
 
 
-@update_router.patch("/update/settings", dependencies=[Depends(require_install_owner)])
+@router.patch("/update/settings", dependencies=[Depends(require_install_owner)])
 async def update_settings(body: UpdateSettings) -> dict:
     """Turn automatic overnight updates on or off."""
     from celerp.services import update

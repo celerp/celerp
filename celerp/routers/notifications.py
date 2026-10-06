@@ -30,6 +30,8 @@ class NotificationOut(BaseModel):
     category: str
     title: str
     body: str
+    message_key: str | None
+    message_params: dict | None
     action_url: str | None
     priority: str
     read: bool
@@ -62,8 +64,7 @@ async def list_notifications(
             NotificationOut(
                 id=n.id,
                 category=n.category,
-                title=n.title,
-                body=n.body,
+                **notif_svc.readable(n.title, n.body),
                 action_url=n.action_url,
                 priority=n.priority,
                 read=read,

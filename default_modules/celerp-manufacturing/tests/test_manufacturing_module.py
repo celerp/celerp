@@ -541,9 +541,6 @@ class TestManufacturingDefaultModulesStructure:
     def test_projection_handler_py_exists(self):
         assert os.path.isfile(os.path.join(_MFG_SRC, "celerp_manufacturing", "projection_handler.py"))
 
-    def test_requirements_txt_exists(self):
-        assert os.path.isfile(os.path.join(_MFG_SRC, "requirements.txt"))
-
     def test_routes_has_setup_api_routes(self):
         from celerp_manufacturing import routes
         assert callable(getattr(routes, "setup_api_routes", None))

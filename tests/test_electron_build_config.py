@@ -461,6 +461,6 @@ def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
     wf = _workflow("packaged-upgrade-smoke.yml")
     triggers = wf[True]  # YAML 1.1 reads the bare key `on` as True
     assert set(triggers) == {"schedule", "workflow_dispatch"}
-    steps = [s["name"] for s in wf["jobs"]["upgrade"]["steps"]]
-    assert "Previous, candidate, downgrade, update (Linux, data)" in steps
-    assert "Previous, candidate, downgrade, update (Windows, install)" in steps
+    steps = [s.get("name") for s in wf["jobs"]["upgrade"]["steps"]]
+    assert "Previous, candidate, downgrade, reopen (Linux, data)" in steps
+    assert "Previous, candidate, downgrade, in-app update run (Windows, install)" in steps

@@ -45,6 +45,7 @@ from celerp.modules.outcome import NOT_REPORTED
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
+from ui.security import not_permitted_redirect, owner_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +73,13 @@ def _build_card(lang: str) -> FT:
     )
 
 
+def manages_modules(role: str) -> bool:
+    """Whether *role* may open the Modules page."""
+    return _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]
+
+
 def _is_admin(request: Request) -> bool:
-    return _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["admin"]
+    return manages_modules(_get_role(request))
 
 
 def _modules_dir_display() -> str:
@@ -98,26 +104,21 @@ def _license_upsell(lang: str) -> FT:
 
 
 def _restart_pending(modules: list[dict]) -> bool:
-    """Derived, not transient: a restart is pending whenever a module's desired
-    state (enabled) differs from its actual state (running). This covers both
-    directions - a newly enabled module not yet running, AND a just-disabled
-    module still loaded until the next restart (the disable case the old
-    enabled-and-not-running check missed).
-
-    Core-folded default modules (ai/backup/connectors) report running=True
-    regardless of the enabled flag, so an admin toggling one would otherwise
-    pin a false banner forever; they are excluded."""
-    return any(
-        not m.get("is_default") and bool(m.get("enabled")) != bool(m.get("running"))
-        for m in modules
-    )
+    """Derived, not transient: a restart is pending while a module the company turned
+    on is not running yet. Turning one off needs no restart (it is off for the company
+    at once), and a module Celerp refused stays refused whatever a restart does."""
+    return any(m.get("enabled") and not m.get("running") and not m.get("load_error")
+               for m in modules)
 
 
-def _restart_badge(lang: str) -> FT:
+def _restart_badge(lang: str, owner: bool) -> FT:
     """The row-level restart control shown while a toggle waits for a restart
     (enable pending load, or disable pending unload). A restart is impactful
     (it reloads the app), so it confirms first - the deliberate-action
-    exception to on-page editing, not routine data entry."""
+    exception to on-page editing, not routine data entry. Only the
+    installation owner restarts; anyone else sees the same state as a label."""
+    if not owner:
+        return Span(t("settings.restart_needed", lang), cls="badge badge--warning")
     return Button(t("settings.restart_needed", lang),
         hx_post="/modules/restart",
         hx_target="#local-modules-panel",
@@ -163,12 +164,18 @@ def _deps_cell(m: dict, name_map: dict[str, str] | None = None) -> FT:
     return Td(txt or "--", data_filter_value=txt)
 
 
+def _owner_note(lang: str) -> FT:
+    """Shown in place of the installation-wide controls to anyone who is not
+    the installation owner, so the missing controls are explained."""
+    return P(t("modules.owner_only", lang), cls="text-muted small mb-md module-owner-note")
+
+
 def _local_panel(modules: list[dict], lang: str = "en",
-                 flash_text: str | None = None, flash_error: bool = False) -> FT:
-    enabled_names = {m["name"] for m in modules if m.get("enabled") or m.get("running")}
+                 flash_text: str | None = None, flash_error: bool = False,
+                 owner: bool = False) -> FT:
     required_by: dict[str, list[str]] = {}
     for m in modules:
-        if not (m.get("enabled") or m.get("running")):
+        if not m.get("enabled"):
             continue
         for dep in (m.get("depends_on") or []):
             required_by.setdefault(dep, []).append(m.get("label") or m["name"])
@@ -177,16 +184,17 @@ def _local_panel(modules: list[dict], lang: str = "en",
     # below, live ones before off ones. Built with three stable passes, least
     # significant first (Python's sort is stable, so each pass preserves the
     # previous order among ties):
-    #   A. enabled/running first - the primary order among defaults and the
+    #   A. enabled first - the primary order among defaults and the
     #      tiebreaker among imports that share (or lack) an install time.
     #   B. newest installed_at first - ISO 8601 strings sort chronologically, so
     #      reverse gives newest first; defaults have no install time and tie here,
-    #      keeping pass A's order.
+    #      keeping pass A's order. A value that is not text counts as none.
     #   C. imports (non-default) before defaults - defaults re-seed on every
     #      desktop version bump, so their folder times are meaningless for "newest".
     # The shared table JS keeps this order until a header is clicked to sort.
-    modules = sorted(modules, key=lambda m: 0 if (m.get("enabled") or m.get("running")) else 1)
-    modules = sorted(modules, key=lambda m: m.get("installed_at") or "", reverse=True)
+    modules = sorted(modules, key=lambda m: 0 if m.get("enabled") else 1)
+    modules = sorted(modules, reverse=True, key=lambda m: (
+        m["installed_at"] if isinstance(m.get("installed_at"), str) else ""))
     modules = sorted(modules, key=lambda m: 1 if m.get("is_default") else 0)
     name_to_label = {m["name"]: (m.get("label") or m["name"]) for m in modules}
 
@@ -201,31 +209,24 @@ def _local_panel(modules: list[dict], lang: str = "en",
         enabled = bool(m.get("enabled"))
         running = bool(m.get("running"))
         load_error = m.get("load_error")
-        effectively_enabled = enabled or running
 
+        # The row follows the company's own choice: a module it turned off is off for
+        # it at once, though it stays loaded for any other company that uses it.
         status_parts = []
-        if running and (enabled or m.get("is_default")):
-            # Defaults keep the plain running badge even when toggled off:
-            # core-folded ones (ai/backup/connectors) report running=True
-            # regardless of the enabled flag, so a pending state would pin
-            # forever (same exclusion as _restart_pending).
+        if not enabled:
+            status_filter = t("modules.badge_disabled", lang)
+            status_parts.append(Span(status_filter, cls="badge badge--inactive"))
+        elif running:
             status_filter = t("modules.badge_running", lang)
             status_parts.append(Span(status_filter, cls="badge badge--active"))
-        elif running:
-            # Disable pressed, but the module stays loaded until the next
-            # restart: the status carries the restart control (same one as the
-            # enable-pending state), so the row shows the press took and names
-            # the next step.
-            status_filter = t("settings.restart_needed", lang)
-            status_parts.append(_restart_badge(lang))
-        elif enabled and load_error and "license" in load_error.lower():
+        elif load_error and "license" in load_error.lower():
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
             # rather than a dead red error - the moment-of-need conversion point.
             status_filter = t("settings.restart_needed", lang)
             status_parts.append(Span(status_filter, cls="badge badge--warning"))
             status_parts.append(_license_upsell(lang))
-        elif enabled and load_error:
+        elif load_error:
             # A broken module fails loudly, not silently: the row keeps the Failed
             # badge and the reason is surfaced as a corner toast, so a long error
             # (a migration traceback, say) never stretches the status column and
@@ -233,14 +234,11 @@ def _local_panel(modules: list[dict], lang: str = "en",
             status_filter = t("modules.badge_failed", lang)
             status_parts.append(Span(status_filter, cls="badge badge--danger"))
             load_error_toasts.append((name, label, load_error))
-        elif enabled:
+        else:
             # Enabled but not yet loaded: surface the restart as a control, not
             # a passive label, so the change can be applied from the row itself.
             status_filter = t("settings.restart_needed", lang)
-            status_parts.append(_restart_badge(lang))
-        else:
-            status_filter = t("modules.badge_disabled", lang)
-            status_parts.append(Span(status_filter, cls="badge badge--inactive"))
+            status_parts.append(_restart_badge(lang, owner))
 
         # A demoted default (named in the committed first-party lock, but its
         # content no longer matches, so it runs untrusted) carries the state on
@@ -255,18 +253,8 @@ def _local_panel(modules: list[dict], lang: str = "en",
             ))
 
         dependents = required_by.get(name, [])
-        if effectively_enabled:
-            if not enabled and not m.get("is_default"):
-                # Disable already pressed; it applies at the next restart. The
-                # button greys out so the press is visibly registered - pressing
-                # it again would change nothing. (Defaults are excluded for the
-                # same core-folded reason as the status branch above.)
-                toggle_btn = Button(t("btn.disable", lang),
-                    title=t("modules.disable_pending", lang),
-                    disabled=True,
-                    cls="btn btn--sm btn--disabled",
-                )
-            elif dependents:
+        if enabled:
+            if dependents:
                 toggle_btn = Button(t("btn.disable", lang),
                     title=t("modules.required_by", lang, names=", ".join(dependents)),
                     disabled=True,
@@ -289,9 +277,9 @@ def _local_panel(modules: list[dict], lang: str = "en",
                 cls="btn btn--sm btn--primary",
             )
 
-        # Provenance shield to the LEFT of the name (tags-left), gold for
-        # bundled defaults, trusted/community for their sources, nothing for a
-        # plain sideload or unknown origin (never a fabricated trust claim).
+        # Provenance shield to the LEFT of the name (tags-left): gold for
+        # bundled defaults, one for Marketplace installs, nothing for community,
+        # a plain sideload or an unknown origin.
         source_icon = _source_icon(m.get("source"), bool(m.get("is_default")), lang)
         # The leftmost Source column states the origin in words - always filled,
         # even for a plain sideload - alongside the shield beside the name.
@@ -301,7 +289,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
         # sits to the RIGHT of Enable (destructive control on the right) and only
         # appears once the module is off, so nothing that depends on it is live.
         action_parts = [toggle_btn]
-        if not effectively_enabled and not m.get("is_default"):
+        if owner and not enabled and not m.get("is_default"):
             # The X opens the delete dialog rather than deleting on a one-line
             # confirm. Deletion has two paths - keep the data or drop it too - and
             # the dialog is where that choice and its warning live, so the
@@ -321,14 +309,14 @@ def _local_panel(modules: list[dict], lang: str = "en",
             Td(Div(source_icon or "", Strong(label),
                    Div(description, cls="text-muted small") if description else "",
                    cls="module-name-cell"),
-               data_filter_value=label),
+               data_filter_value=label, cls="module-cell"),
             _deps_cell(m, name_to_label),
             Td(f"v{version}" if version and version != "unknown" else "--"),
             Td(author or "--"),
             Td(*status_parts, data_filter_value=status_filter),
             Td(*action_parts),
             # Disabled rows are shaded so their off state reads at a glance.
-            cls="data-row" if effectively_enabled else "data-row module-row--disabled",
+            cls="data-row" if enabled else "data-row module-row--disabled",
         ))
 
     # Derived restart banner, with a button that actually restarts.
@@ -341,7 +329,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
             hx_disabled_elt="this",
             cls="btn btn--sm btn--primary",
             style="margin-left:12px;",
-        ),
+        ) if owner else "",
         id="modules-restart-banner",
         cls="error-banner mb-md",
     ) if _restart_pending(modules) else Div(id="modules-restart-banner")
@@ -476,10 +464,10 @@ def _local_panel(modules: list[dict], lang: str = "en",
         load_error_js = ""
 
     return Div(
-        folder_row,
+        folder_row if owner else "",
         banner,
         flash_div,
-        import_section,
+        import_section if owner else _owner_note(lang),
         content,
         desktop_js,
         load_error_js,
@@ -562,10 +550,10 @@ def _trust_icon(tier: str, lang: str):
 def _source_icon(source: str | None, is_default: bool, lang: str):
     """The provenance shield shown to the left of a module name, or None.
 
-    Defaults are trusted by content (gold) and marketplace modules by their
-    vetting (trusted). Community, sideloaded, and unknown origins show no shield:
-    nothing vouched for them, and a badge would read as a trust claim. The Source
-    column still states the origin in words.
+    Defaults (gold) and Marketplace installs carry one. It states where the
+    module came from and changes nothing about what the module may do.
+    Community, sideloaded, and unknown origins show no shield. The Source column
+    still states the origin in words.
     """
     if is_default:
         tier, key = "default", "modules.source_default"
@@ -711,7 +699,10 @@ async def _build_marketplace_panel(token: str, lang: str) -> FT:
     if not trusted:
         children.append(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"))
     else:
-        children.append(_marketplace_table(trusted, installed, licensed, lang))
+        owner = await api.installation_owner(token)
+        if not owner:
+            children.append(_owner_note(lang))
+        children.append(_marketplace_table(trusted, installed, licensed, lang, owner))
     return Div(*children, id="marketplace-panel")
 
 
@@ -749,7 +740,7 @@ def _marketplace_module_cell(m: dict, lang: str) -> FT:
         links.append(A(t("marketplace.feedback", lang), href=m["feedback"],
                        target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
-    return Td(*parts, data_filter_value=m["name"])
+    return Td(*parts, data_filter_value=m["name"], cls="module-cell")
 
 
 def _checkout_consent(m: dict, lang: str) -> str:
@@ -766,20 +757,26 @@ def _checkout_consent(m: dict, lang: str) -> str:
     return "\n\n".join(lines)
 
 
-def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str], *,
-                     downloaded_token: str | None = None) -> FT:
+def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str],
+                     owner: bool, *, downloaded_token: str | None = None) -> FT:
     """One marketplace listing. The action cell follows ownership, matching the
     Community tab's Download then Install flow with a Buy step in front of paid
     modules: installed (nothing to do), paid-and-unowned (Buy), then - once free
     or owned - Download, then Install. Each Download/Install click swaps this row
     in place; a failure surfaces as a corner toast. The Price cell always states
-    the catalog price."""
+    the catalog price. Buying and installing are for the installation owner, so
+    anyone else gets no action buttons."""
     row_id = f"marketplace-row-{m['id']}"
     is_paid = bool(m.get("price_monthly") or m.get("price_once"))
     owned = m["id"] in licensed
     if m["id"] in installed:
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
                        data_filter_value=t("settings.installed", lang))
+        action_td = Td("--")
+    elif not owner:
+        status_td = (Td(Span(t("marketplace.owned", lang), cls="badge badge--active"),
+                        data_filter_value=t("marketplace.owned", lang))
+                     if owned else Td("--", data_filter_value="--"))
         action_td = Td("--")
     elif is_paid and not owned:
         # Paid, not yet owned: Buy button(s). The purchase disclosures (seller,
@@ -828,7 +825,7 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
 
 
 def _marketplace_table(trusted: list[dict], installed: set[str],
-                       licensed: set[str], lang: str) -> FT:
+                       licensed: set[str], lang: str, owner: bool) -> FT:
     """Marketplace listings, the same table schema as Installed Modules and the
     Community tab, with a Price column after Status (right-aligned over its
     figures, per the financial-statement convention)."""
@@ -846,7 +843,7 @@ def _marketplace_table(trusted: list[dict], installed: set[str],
                     sortable_th(t("th.price", lang), 5, right=True),
                     Th(""),
                 )),
-                Tbody(*(_marketplace_row(m, lang, installed, licensed) for m in trusted)),
+                Tbody(*(_marketplace_row(m, lang, installed, licensed, owner) for m in trusted)),
                 id="marketplace-table",
                 cls="data-table js-table",
             ),
@@ -907,28 +904,33 @@ def _community_module_cell(m: dict, lang: str) -> FT:
         parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
     parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
     links = []
+    if source := catalog.source_url(m):
+        links.append(A(t("marketplace.view_source", lang), href=source, target="_blank", rel="noopener noreferrer"))
     if m.get("repo"):
-        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank", rel="noopener noreferrer"))
-        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.report_bug", lang), href=m["repo"] + "/issues", target="_blank", rel="noopener noreferrer"))
     links.append(A(t("marketplace.feedback", lang),
                    href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
                    target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
-    return Td(*parts, data_filter_value=m["name"])
+    return Td(*parts, data_filter_value=m["name"], cls="module-cell")
 
 
-def _community_row(m: dict, lang: str, installed: set[str], *,
+def _community_row(m: dict, lang: str, installed: set[str], owner: bool, *,
                    downloaded_token: str | None = None) -> FT:
     """One community listing. Three states drive the Status and action cells:
     installed (nothing to do), downloaded (offer Import), or fresh (offer
     Download). Download fetches the author's repo archive and swaps this row in
     place; Import installs it and lands on the Installed tab, where enabling is
     the next step. A failed download or import surfaces as a corner toast (see
-    the routes), not inside the row."""
+    the routes), not inside the row. Installing is for the installation owner,
+    so anyone else gets no action buttons."""
     row_id = f"community-row-{m['id']}"
     if m["id"] in installed:
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
                        data_filter_value=t("settings.installed", lang))
+        action_td = Td("--")
+    elif not owner:
+        status_td = Td("--", data_filter_value="--")
         action_td = Td("--")
     elif downloaded_token:
         status_td = Td(Span(t("marketplace.downloaded", lang), cls="badge badge--active"),
@@ -1030,13 +1032,14 @@ def _delete_dialog(module_name: str, label: str, has_prefix: bool, lang: str) ->
 
 
 def _community_table(community: list[dict], installed: set[str], lang: str,
-                     downloaded: dict[str, str] | None = None) -> FT:
+                     owner: bool, downloaded: dict[str, str] | None = None) -> FT:
     """Community listings, same table schema as the Installed Modules table."""
     if not community:
         return Div(P(t("settings.no_modules_available_in_the_marketplace_yet", lang), cls="text-muted"),
                    id="community-zone")
     return Div(
         P(t("marketplace.community_unverified_note", lang), cls="text-muted small community-unverified-note"),
+        "" if owner else _owner_note(lang),
         Div(table_search("community-table", t("modules.search_placeholder", lang)),
             cls="table-toolbar"),
         Div(
@@ -1049,7 +1052,7 @@ def _community_table(community: list[dict], installed: set[str], lang: str,
                     filter_th(t("th.status", lang), 4, sortable=True),
                     Th(""),
                 )),
-                Tbody(*(_community_row(m, lang, installed,
+                Tbody(*(_community_row(m, lang, installed, owner,
                                        downloaded_token=(downloaded or {}).get(m["id"]))
                         for m in community)),
                 id="community-table",
@@ -1063,9 +1066,9 @@ def _community_table(community: list[dict], installed: set[str], lang: str,
     )
 
 
-async def _community_and_installed(token: str) -> tuple[list[dict], set[str]]:
-    """Fetch the catalog's community listings and the set of installed module
-    names. Fetching listing metadata carries no trust risk; only installing a
+async def _community_and_installed(token: str) -> tuple[list[dict], set[str], bool]:
+    """Fetch the catalog's community listings, the set of installed module
+    names, and whether this login owns the installation. Fetching listing metadata carries no trust risk; only installing a
     community module runs its code, and that stays behind the acknowledgment."""
     modules_list, _ = await catalog.fetch_catalog()
     community = [m for m in modules_list if m["tier"] == "community"]
@@ -1074,7 +1077,7 @@ async def _community_and_installed(token: str) -> tuple[list[dict], set[str]]:
         installed = {m["name"] for m in await api.get_modules(token)}
     except APIError:
         pass
-    return community, installed
+    return community, installed, await api.installation_owner(token)
 
 
 def setup_routes(app):
@@ -1084,7 +1087,7 @@ def setup_routes(app):
         if not token:
             return None, RedirectResponse("/login", status_code=302)
         if not _is_admin(request):
-            return None, RedirectResponse("/dashboard", status_code=302)
+            return None, not_permitted_redirect(request)
         return token, None
 
     @app.get("/modules")
@@ -1124,7 +1127,7 @@ def setup_routes(app):
             tab = "local"
             try:
                 modules = await api.get_modules(token)
-                content = _local_panel(modules, lang=lang)
+                content = _local_panel(modules, lang=lang, owner=await api.installation_owner(token))
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
@@ -1171,13 +1174,17 @@ def setup_routes(app):
             return redirect
         lang = get_lang(request)
         try:
-            await api.enable_module(token, module_name)
+            result = await api.enable_module(token, module_name)
             modules = await api.get_modules(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return _unavailable_panel(lang)
-        return _local_panel(modules, lang=lang)
+        labels = {m.get("name"): m.get("label") or m.get("name") for m in modules}
+        also = [labels.get(n, n) for n in result.get("also_enabled") or []]
+        notice = t("modules.also_enabled", lang, names=", ".join(also)) if also else None
+        return _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)),
+                      notice, error=False)
 
     @app.post("/modules/{module_name}/disable")
     async def module_disable(request: Request, module_name: str):
@@ -1185,17 +1192,25 @@ def setup_routes(app):
         if redirect:
             return redirect
         lang = get_lang(request)
+        refused = None
         try:
-            await api.disable_module(token, module_name)
+            try:
+                await api.disable_module(token, module_name)
+            except APIError as e:
+                if e.status != 409:
+                    raise
+                refused = e.detail
             modules = await api.get_modules(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return _unavailable_panel(lang)
-        return _local_panel(modules, lang=lang)
+        return _toast(_local_panel(modules, lang=lang, owner=await api.installation_owner(token)), refused)
 
     @app.get("/modules/{module_name}/delete-options")
     async def module_delete_options(request: Request, module_name: str):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1210,7 +1225,8 @@ def setup_routes(app):
         if module is None:
             # Gone already (a concurrent delete): refresh the panel and say why,
             # rather than opening a dialog over a row that no longer exists.
-            return _toast(_local_panel(modules, lang), t("modules.delete_failed", lang))
+            return _toast(_local_panel(modules, lang, owner=await api.installation_owner(token)),
+                          t("modules.delete_failed", lang))
         # Whether to offer the purge path is decided server-side from the manifest
         # prefix, never a client hint: the same fact the purge itself derives its
         # drop list from.
@@ -1221,6 +1237,8 @@ def setup_routes(app):
 
     @app.post("/modules/{module_name}/delete")
     async def module_delete(request: Request, module_name: str):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1251,11 +1269,14 @@ def setup_routes(app):
                 return _toast(_unavailable_panel(lang), flash_text)
         # Re-render the panel in place and tear the dialog down together.
         return (_local_panel(modules, lang=lang, flash_text=flash_text,
-                             flash_error=flash_error),
+                             flash_error=flash_error,
+                             owner=await api.installation_owner(token)),
                 _close_gate_host())
 
     @app.post("/modules/import")
     async def module_import(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1283,10 +1304,13 @@ def setup_routes(app):
             modules = await api.get_modules(token)
         except APIError:
             return _toast(_unavailable_panel(lang), flash_text, error=flash_error)
-        return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error)
+        return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error,
+                            owner=await api.installation_owner(token))
 
     @app.post("/modules/import-path")
     async def module_import_path(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1305,18 +1329,22 @@ def setup_routes(app):
             return _toast(_unavailable_panel(lang), flash_text, error=flash_error)
         # Return the panel fragment (not JSON) so the desktop folder-pick swaps
         # in place, matching the zip upload path - no full page reload.
-        return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error)
+        return _local_panel(modules, lang=lang, flash_text=flash_text, flash_error=flash_error,
+                            owner=await api.installation_owner(token))
 
-    async def _community_entry(token: str, module_id: str) -> tuple[dict, set[str]]:
-        """Resolve a community listing by id plus the current installed set.
-        Falls back to a minimal record so an unknown id still renders a row."""
-        community, installed = await _community_and_installed(token)
+    async def _community_entry(token: str, module_id: str) -> tuple[dict, set[str], bool]:
+        """Resolve a community listing by id plus the current installed set and
+        the owner flag. Falls back to a minimal record so an unknown id still
+        renders a row."""
+        community, installed, owner = await _community_and_installed(token)
         m = next((x for x in community if x["id"] == module_id), None)
-        return (m or {"id": module_id, "name": module_id, "license": "-"}), installed
+        return (m or {"id": module_id, "name": module_id, "license": "-"}), installed, owner
 
     @app.post("/modules/community-download")
     async def community_download(request: Request):
-        token, redirect = await _guard(request)
+        if refused := await owner_refusal(request):
+            return refused
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
@@ -1328,59 +1356,63 @@ def setup_routes(app):
         # Free downloads ask for the free account (the download itself is the
         # moment the account earns its keep), but a relay outage never blocks
         # one - the gate fails open.
-        gate = await account_gate(token, lang, f"community:{module_id}")
+        gate = await account_gate(session_token, lang, f"community:{module_id}")
         if gate is not None and gate is not GATE_UNREACHABLE:
             return gate_modal_response(gate)
-        m, installed = await _community_entry(token, module_id)
+        m, installed, owner = await _community_entry(session_token, module_id)
         try:
-            download = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
+            download_token = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
         except Exception as exc:
             reason = t(exc.key if isinstance(exc, catalog.DownloadRefused)
                        else "marketplace.download_failed", lang)
             if zone:
-                community, installed = await _community_and_installed(token)
-                return _toast(_community_table(community, installed, lang), reason)
-            return _toast(_community_row(m, lang, installed), reason)
+                community, installed, owner = await _community_and_installed(session_token)
+                return _toast(_community_table(community, installed, lang, owner), reason)
+            return _toast(_community_row(m, lang, installed, owner), reason)
         if zone:
-            community, installed = await _community_and_installed(token)
-            return _community_table(community, installed, lang,
-                                    downloaded={module_id: download})
-        return _community_row(m, lang, installed, downloaded_token=download)
+            community, installed, owner = await _community_and_installed(session_token)
+            return _community_table(community, installed, lang, owner,
+                                    downloaded={module_id: download_token})
+        return _community_row(m, lang, installed, owner, downloaded_token=download_token)
 
     @app.post("/modules/community-import")
     async def community_import(request: Request):
-        token, redirect = await _guard(request)
+        if refused := await owner_refusal(request):
+            return refused
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         module_id = str(form.get("id", ""))
-        download = str(form.get("token", ""))
-        m, installed = await _community_entry(token, module_id)
+        download_token = str(form.get("token", ""))
+        m, installed, owner = await _community_entry(session_token, module_id)
         try:
-            data = catalog.read_staged_archive(module_id, download)
-            await api.import_module_zip(token, f"{module_id}.zip", data, source="community")
+            data = catalog.read_staged_archive(module_id, download_token)
+            await api.import_module_zip(session_token, f"{module_id}.zip", data, source="community")
         except catalog.DownloadRefused as e:
-            return _toast(_community_row(m, lang, installed), t(e.key, lang))
+            return _toast(_community_row(m, lang, installed, owner), t(e.key, lang))
         except APIError as e:
             return _toast(
-                _community_row(m, lang, installed, downloaded_token=download),
+                _community_row(m, lang, installed, owner, downloaded_token=download_token),
                 e.detail or str(e))
         except (ValueError, OSError):
             return _toast(
-                _community_row(m, lang, installed, downloaded_token=download),
+                _community_row(m, lang, installed, owner, downloaded_token=download_token),
                 t("marketplace.import_failed", lang))
         # Installed: drop the staged archive, then land on the Installed tab where
         # the new module's row sits with its Enable button - the next step in the
         # flow - rather than leaving the user on the catalog row.
         try:
-            catalog.discard_staged_archive(module_id, download)
+            catalog.discard_staged_archive(module_id, download_token)
         except OSError:
             pass
         return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
 
     @app.post("/modules/restart")
     async def module_restart(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1409,7 +1441,8 @@ def setup_routes(app):
                 modules = await api.get_modules(token)
             except APIError:
                 pass
-            return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True)
+            return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True,
+                                owner=await api.installation_owner(token))
         resp = HTMLResponse(to_xml(_restarting_panel(lang, panel_id="local-modules-panel")))
         if new:
             set_session_cookies(resp, new[0], new[1], request)
@@ -1456,6 +1489,8 @@ def setup_routes(app):
     async def modules_buy(request: Request):
         """Start a module purchase: get the Stripe Checkout URL from the relay and
         return the waiting panel (opens Checkout in the browser, polls the license)."""
+        if refused := await owner_refusal(request):
+            return refused
         token, redirect = await _guard(request)
         if redirect:
             return redirect
@@ -1471,7 +1506,7 @@ def setup_routes(app):
             return _marketplace_error_panel(t("account.status_unreachable", lang), lang)
         if gate is not None:
             return gate_modal_response(gate)
-        m, _installed, _licensed = await _marketplace_entry(token, slug)
+        m, _installed, _licensed, _owner = await _marketplace_entry(token, slug)
         try:
             res = await api.buy_module(token, slug, kind, _checkout_consent(m, lang))
         except APIError as e:
@@ -1480,7 +1515,7 @@ def setup_routes(app):
 
     async def _marketplace_entry(token: str, slug: str):
         """Resolve a marketplace listing by slug plus the current installed and
-        licensed sets. Falls back to a minimal record so an unknown slug still
+        licensed sets and the owner flag. Falls back to a minimal record so an unknown slug still
         renders a row."""
         try:
             modules_list, _ = await catalog.fetch_catalog()
@@ -1498,27 +1533,29 @@ def setup_routes(app):
             licensed = set(await api.module_licenses(token))
         except APIError:
             pass
-        return m, installed, licensed
+        return m, installed, licensed, await api.installation_owner(token)
 
     @app.post("/modules/marketplace-download")
     async def modules_marketplace_download(request: Request):
         """Step one of installing a marketplace module: the local API fetches it
         from the relay and stages it. On success the row offers Install; a failure
         returns the row with a corner toast, so retrying is always possible."""
-        token, redirect = await _guard(request)
+        if refused := await owner_refusal(request):
+            return refused
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        m, installed, licensed = await _marketplace_entry(token, slug)
+        m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            res = await api.marketplace_download(token, slug)
+            download_token = (await api.marketplace_download(session_token, slug)).get("token")
         except APIError as e:
             return _toast(
-                _marketplace_row(m, lang, installed, licensed), e.detail or str(e))
-        return _marketplace_row(m, lang, installed, licensed,
-                                downloaded_token=res.get("token"))
+                _marketplace_row(m, lang, installed, licensed, owner), e.detail or str(e))
+        return _marketplace_row(m, lang, installed, licensed, owner,
+                                downloaded_token=download_token)
 
     @app.post("/modules/marketplace-install")
     async def modules_marketplace_install(request: Request):
@@ -1526,22 +1563,24 @@ def setup_routes(app):
         same as a community import - enabling and restarting are the deliberate
         steps in the Installed tab. A failure surfaces as a corner toast with the
         row intact."""
-        token, redirect = await _guard(request)
+        if refused := await owner_refusal(request):
+            return refused
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        download = str(form.get("token", ""))
-        m, installed, licensed = await _marketplace_entry(token, slug)
+        download_token = str(form.get("token", ""))
+        m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            await api.marketplace_install(token, download)
+            await api.marketplace_install(session_token, download_token)
         except APIError as e:
             # A download that is gone (expired or already used) offers Download
             # again; any other failure keeps Install for a retry.
-            kept = None if e.status == 410 else download
+            kept = None if e.status == 410 else download_token
             return _toast(
-                _marketplace_row(m, lang, installed, licensed, downloaded_token=kept),
+                _marketplace_row(m, lang, installed, licensed, owner, downloaded_token=kept),
                 e.detail or str(e))
         # Installed: land on the Installed tab where the new module's row sits
         # with its Enable button - the next step in the flow - rather than
@@ -1557,14 +1596,14 @@ def setup_routes(app):
             return Div(id="community-zone")
         lang = get_lang(request)
         try:
-            community, installed = await _community_and_installed(token)
+            community, installed, owner = await _community_and_installed(token)
         except Exception:
             return Div(P(t("marketplace.could_not_load", lang), cls="text-muted"), id="community-zone")
         if not community:
             return Div(P(t("settings.no_modules_available_in_the_marketplace_yet", lang),
                          cls="text-muted"), id="community-zone")
         if catalog.community_acked() and not request.query_params.get("prompt"):
-            return _community_table(community, installed, lang)
+            return _community_table(community, installed, lang, owner)
         return _community_reveal_prompt(len(community), lang)
 
     @app.post("/modules/community-ack")
@@ -1575,7 +1614,7 @@ def setup_routes(app):
         lang = get_lang(request)
         catalog.set_community_ack()
         try:
-            community, installed = await _community_and_installed(token)
+            community, installed, owner = await _community_and_installed(token)
         except Exception:
             return Div(P(t("marketplace.could_not_load", lang), cls="text-muted"), id="community-zone")
-        return _community_table(community, installed, lang)
+        return _community_table(community, installed, lang, owner)

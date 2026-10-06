@@ -1695,8 +1695,6 @@ def setup_ui_routes(app) -> None:
         templates = await _seed_presets_if_empty(request)
         return await _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
-
-
     @app.post("/labels/print-bulk/generate")
     async def labels_print_bulk_generate(request: Request):
         """Generate printable HTML label sheet and trigger window.print()."""
@@ -1732,11 +1730,6 @@ def setup_ui_routes(app) -> None:
         return _printable_label_sheet(items_data, template, unit_map)
 
     log.info("celerp-labels: UI routes registered")
-
-
-# Alias so kernel app.py (_CONDITIONAL_UI via setup_routes) and the external
-# module loader (setup_ui_routes) both work from the single definition above.
-setup_routes = setup_ui_routes
 
 
 def _parse_float(val) -> float | None:

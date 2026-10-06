@@ -18,6 +18,7 @@ from celerp.config_store import merge_packaged_config
 from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.i18n import t, get_lang
 from ui.config import get_role as _get_role
+from ui.security import owner_refusal
 
 from ui.routes.settings import (
     _check_permission,
@@ -701,12 +702,16 @@ def _grace_notice(state: dict, lang: str = "en") -> FT | None:
     return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
 
 
-def _infrastructure_tab(grace_notice: FT | None = None) -> FT:
+def _infrastructure_tab(grace_notice: FT | None = None, owner: bool = False) -> FT:
     """Team plan infrastructure config: external DB + S3 storage. The grace or
-    after-grace notice, when present, sits above the config sections."""
+    after-grace notice, when present, sits above the config sections. Only the
+    installation owner is offered the config sections."""
     children: list = []
     if grace_notice is not None:
         children.append(grace_notice)
+    if not owner:
+        children.append(P(t("settings_cloud.infra_owner_only"), cls="text-muted"))
+        return Div(*children, cls="settings-card")
     _packaged_infra = _packaged_infra_or_none()
     children.extend([_infra_db_section(_packaged_infra), _infra_storage_section(_packaged_infra)])
     return Div(*children, cls="settings-card")
@@ -983,7 +988,8 @@ def setup_routes(app):
         grace_notice = _grace_notice(get_local_infra_state(), lang=lang)
 
         if tab == "infrastructure" and has_team:
-            content = _infrastructure_tab(grace_notice=grace_notice)
+            content = _infrastructure_tab(grace_notice=grace_notice,
+                                          owner=await _api.installation_owner(token))
         elif tab in ("website", "accounting"):
             from ui.routes.settings_connectors import connectors_tab_content
             company = getattr(request.state, "auth_company", None)
@@ -1061,6 +1067,8 @@ def setup_routes(app):
         """HTMX: proxy to the API to accept a partner claim. Owner/admin only. On
         success the relay pushes the new commercial context, so the page reloads
         to reflect it."""
+        if refused := await owner_refusal(request):
+            return refused
         lang = get_lang(request)
         if _get_role(request) not in ("owner", "admin"):
             return _partner_claim_card(lang=lang)
@@ -1088,8 +1096,8 @@ def setup_routes(app):
         configured password when the field is left blank so testing does not
         force retyping a password that is already saved."""
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div()
         # RBAC alone is not enough: probing an external target establishes/
@@ -1150,8 +1158,8 @@ def setup_routes(app):
         currently configured secret key when the field is left blank so
         testing does not force retyping a secret that is already saved."""
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div()
         # As with test-db, probing external storage requires a live Team
@@ -1211,8 +1219,8 @@ def setup_routes(app):
         reload via SIGHUP.
         """
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div()
         # Saving external infra ESTABLISHES it, so it requires a live Team
@@ -1238,8 +1246,8 @@ def setup_routes(app):
         and relaunches Electron; self-hosted swaps config.toml and reloads.
         """
         token = _token(request)
-        # Infra changes (DB/storage endpoints) are admin/owner actions - the
-        # page is role-gated, so its fragments must be too.
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div()
         if not token:

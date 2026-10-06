@@ -38,7 +38,11 @@ async def require_session_token(request: Request) -> None:
     if supplied:
         validate_session_token(supplied)
         return
+    await require_active_session()
 
+
+async def require_active_session() -> None:
+    """Reject unless this installation has an active Connect session."""
     if get_session_token():
         return
 

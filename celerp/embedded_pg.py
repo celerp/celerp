@@ -191,6 +191,9 @@ def _start(pgdata: Path) -> tuple[str, int | None]:
 
     if not _is_running(pgdata):
         log = pgdata / "server.log"
+        # Owned before pg_ctl forks it: a stop that lands while pg_ctl start is
+        # still waiting must not leave the new postmaster running.
+        _own(pgdata)
         try:
             _run(
                 [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "60",
@@ -200,7 +203,6 @@ def _start(pgdata: Path) -> tuple[str, int | None]:
         except RuntimeError as e:
             tail = log.read_text()[-1200:] if log.exists() else "-"
             raise RuntimeError(f"{e}\nSERVERLOG: {tail}") from None
-        _own(pgdata)
     return host, port
 
 

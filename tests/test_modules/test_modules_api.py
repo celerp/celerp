@@ -10,9 +10,11 @@ Uses the standard test client + register pattern from conftest.
 """
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import uuid
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -65,7 +67,7 @@ class TestModulesAPIEndpoints:
 
     @pytest.mark.asyncio
     async def test_enable_module_unauthenticated(self, client):
-        r = await client.post("/companies/me/modules/gemstones/enable")
+        r = await client.post("/companies/me/modules/celerp-labels/enable")
         assert r.status_code == 401
 
     @pytest.mark.asyncio
@@ -77,34 +79,43 @@ class TestModulesAPIEndpoints:
     async def test_enable_module_persists_to_settings(self, client):
         """Enabling a module adds it to company.settings enabled_modules."""
         token = await _register(client)
-        r = await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
+        r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         assert r.status_code == 200
-        data = r.json()
-        assert data.get("restart_required") is True
-        assert "gemstones" in data.get("enabled_modules", [])
+        assert "celerp-labels" in r.json().get("enabled_modules", [])
+
+    @pytest.mark.asyncio
+    async def test_enable_module_that_is_not_installed_is_refused(self, client):
+        """A name that is not in the module directory is not a module: nothing is
+        turned on, and the company's choice is left as it was."""
+        token = await _register(client)
+        before = (await client.get("/companies/me", headers=_h(token))).json()["settings"]
+        r = await client.post("/companies/me/modules/never-imported-module/enable", headers=_h(token))
+        assert r.status_code == 404
+        after = (await client.get("/companies/me", headers=_h(token))).json()["settings"]
+        assert after.get("enabled_modules") == before.get("enabled_modules")
 
     @pytest.mark.asyncio
     async def test_disable_module_removes_from_settings(self, client):
         """Disabling a module removes it from company.settings enabled_modules."""
         token = await _register(client)
         # First enable it
-        await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
+        await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         # Then disable
-        r = await client.post("/companies/me/modules/gemstones/disable", headers=_h(token))
+        r = await client.post("/companies/me/modules/celerp-labels/disable", headers=_h(token))
         assert r.status_code == 200
         data = r.json()
-        assert "gemstones" not in data.get("enabled_modules", [])
+        assert "celerp-labels" not in data.get("enabled_modules", [])
 
     @pytest.mark.asyncio
     async def test_enable_then_disable_is_idempotent(self, client):
         """Double enable is safe; enabled set is a set (no duplicates)."""
         token = await _register(client)
-        await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
-        r = await client.post("/companies/me/modules/gemstones/enable", headers=_h(token))
+        await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
+        r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         assert r.status_code == 200
         data = r.json()
         enabled = data.get("enabled_modules", [])
-        assert enabled.count("gemstones") == 1  # No duplicate
+        assert enabled.count("celerp-labels") == 1  # No duplicate
 
     @pytest.mark.asyncio
     async def test_disable_not_enabled_module_is_safe(self, client):
@@ -116,26 +127,28 @@ class TestModulesAPIEndpoints:
         assert "nonexistent-module" not in data.get("enabled_modules", [])
 
     @pytest.mark.asyncio
-    async def test_enable_returns_restart_required(self, client):
-        """Enable response always includes restart_required: true."""
+    @pytest.mark.parametrize("running,expected", [(True, False), (False, True)])
+    async def test_enable_asks_for_restart_only_when_the_module_is_not_running(
+            self, client, running, expected):
         token = await _register(client)
-        r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
+        with patch("celerp.modules.loader.is_running", return_value=running), \
+                patch("celerp.modules.loader.restart_would_load", return_value=True):
+            r = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token))
         assert r.status_code == 200
-        assert r.json().get("restart_required") is True
+        assert r.json()["restart_required"] is expected
 
     @pytest.mark.asyncio
-    async def test_disable_returns_restart_required(self, client):
-        """Disable response always includes restart_required: true."""
+    async def test_disable_never_asks_for_restart(self, client):
         token = await _register(client)
         r = await client.post("/companies/me/modules/celerp-labels/disable", headers=_h(token))
         assert r.status_code == 200
-        assert r.json().get("restart_required") is True
+        assert r.json()["restart_required"] is False
 
     @pytest.mark.asyncio
     async def test_company_isolation_module_settings(self, client):
         """Module settings are per-company, not global.
         
-        Company A enables gemstones. Company B (created via POST /companies)
+        Company A enables celerp-labels. Company B (created via POST /companies)
         should start with default enabled set, not A's settings.
         """
         # Register company A (bootstrap)
@@ -149,20 +162,24 @@ class TestModulesAPIEndpoints:
         assert r_b.status_code == 200, r_b.text
         token_b = r_b.json()["access_token"]
 
-        # Company A enables gemstones
-        await client.post("/companies/me/modules/gemstones/enable", headers=_h(token_a))
+        # Company A enables celerp-labels
+        r_a = await client.post("/companies/me/modules/celerp-labels/enable", headers=_h(token_a))
+        assert r_a.status_code == 200, r_a.text
 
-        # Company B should NOT see gemstones in its settings (it has its own settings)
+        # Company B should NOT see celerp-labels in its settings (it has its own settings)
         r_b_list = await client.get("/companies/me/modules", headers=_h(token_b))
         assert r_b_list.status_code == 200
         # Verify companies have separate settings by checking enabled state
         r_b_disable = await client.post(
-            "/companies/me/modules/gemstones/disable", headers=_h(token_b)
+            "/companies/me/modules/celerp-labels/disable", headers=_h(token_b)
         )
         assert r_b_disable.status_code == 200
         data_b = r_b_disable.json()
-        # B's disable call should NOT return gemstones in the enabled list
-        assert "gemstones" not in data_b.get("enabled_modules", [])
+        # B's disable call should NOT return celerp-labels in the enabled list
+        assert "celerp-labels" not in data_b.get("enabled_modules", [])
+        # ...and B turning it off leaves A's choice alone.
+        settings_a = (await client.get("/companies/me", headers=_h(token_a))).json()["settings"]
+        assert "celerp-labels" in settings_a["enabled_modules"]
 
     @pytest.mark.asyncio
     async def test_list_modules_with_installed_module(self, client, tmp_path):
@@ -289,6 +306,9 @@ class TestModulesAPIEndpoints:
 _PKG_INIT = ('PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0.0", '
              '"display_name": "{disp}"}}\n')
 
+_RESERVED_NAMES = ("Names starting with 'celerp-' or 'celerp_', in any letter case, "
+                   "are reserved for Marketplace modules.")
+
 
 def _write_pkg(dirpath: Path, name: str) -> Path:
     pkg = dirpath / name
@@ -312,6 +332,113 @@ class TestModuleProvenanceAndDelete:
         row = next(m for m in r.json() if m["name"] == "acme-widgets")
         assert row["source"] == "community"
         assert row["installed_at"] == "2026-07-29T00:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_scan_reports_marketplace_install(self, client, tmp_path):
+        from celerp.modules.importer import install_from_zip
+
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("acme-listed/__init__.py", _PKG_INIT.format(name="acme-listed", disp="Listed"))
+            install_from_zip(buf.getvalue(), source="marketplace")
+            (module_dir / "acme-listed" / "extra.py").write_text("x = 1\n")
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "acme-listed")
+        assert row["source"] == "marketplace"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sidecar", ['{"source": "trusted"}', '{"source": null}', "{}", "[]",
+                                         '{"source": []}', '{"source": {}}'],
+                             ids=["unknown", "null", "empty", "not_an_object",
+                                  "source_list", "source_object"])
+    async def test_scan_reports_an_unknown_source_as_sideloaded(self, client, tmp_path, sidecar):
+        from celerp.modules.importer import install_from_zip
+        from celerp.modules.meta import META_FILENAME
+
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("acme-odd/__init__.py", _PKG_INIT.format(name="acme-odd", disp="Odd"))
+            install_from_zip(buf.getvalue(), source="community")
+            (module_dir / "acme-odd" / META_FILENAME).write_text(sidecar)
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "acme-odd")
+        assert row["source"] == "sideloaded"
+
+    @pytest.mark.asyncio
+    async def test_install_time_that_is_not_text_reads_as_unknown(self, client, tmp_path):
+        from celerp.modules.importer import install_from_zip
+        from celerp.modules.meta import META_FILENAME
+        from fasthtml.common import to_xml
+        from ui.routes.modules_page import _local_panel
+
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            for name in ("acme-odd", "acme-ok"):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as zf:
+                    zf.writestr(f"{name}/__init__.py", _PKG_INIT.format(name=name, disp=name))
+                install_from_zip(buf.getvalue(), source="community")
+            (module_dir / "acme-odd" / META_FILENAME).write_text(
+                '{"source": "community", "installed_at": 5}')
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        rows = [m for m in r.json() if m["name"] in ("acme-odd", "acme-ok")]
+        odd = next(m for m in rows if m["name"] == "acme-odd")
+        assert odd["source"] == "community"
+        assert isinstance(odd["installed_at"], str) and odd["installed_at"][:4].isdigit()
+        assert "acme-odd" in to_xml(_local_panel(rows, lang="en"))
+
+    @pytest.mark.asyncio
+    async def test_upload_cannot_claim_marketplace_source(self, client, tmp_path):
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("acme-up/__init__.py", _PKG_INIT.format(name="acme-up", disp="Up"))
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/import", headers=_h(token),
+                files={"file": ("acme-up.zip", buf.getvalue(), "application/zip")},
+                data={"source": "marketplace"})
+        assert r.status_code == 422, r.text
+        assert not (module_dir / "acme-up").exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["sideloaded", "community", None])
+    async def test_upload_of_a_celerp_name_is_refused(self, client, tmp_path, source):
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        package = tmp_path / "celerp-mine"
+        _write_pkg(tmp_path, "celerp-mine")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.write(package / "__init__.py", "celerp-mine/__init__.py")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            if source is None:
+                r = await client.post("/companies/me/modules/import-path", headers=_h(token),
+                                      json={"path": str(package)})
+            else:
+                r = await client.post(
+                    "/companies/me/modules/import", headers=_h(token),
+                    files={"file": ("celerp-mine.zip", buf.getvalue(), "application/zip")},
+                    data={"source": source})
+        assert r.status_code == 422, r.text
+        assert _RESERVED_NAMES in r.json()["detail"]
+        assert not (module_dir / "celerp-mine").exists()
 
     @pytest.mark.asyncio
     async def test_scan_reports_default_source_for_genuine_defaults(self, client):

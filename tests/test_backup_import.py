@@ -380,7 +380,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
     from contextlib import asynccontextmanager
 
     from celerp.config import settings
-    from celerp.services import backup_export, backup_import
+    from celerp.services import backup_import
 
     captured: dict = {}
     data = tmp_path / "data"
@@ -394,7 +394,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         return backup_import.SafetyResult(ok=True, path=tmp_path / "safety.celerp-backup")
 
     async def _every_company(session):
-        return set()
+        return []
 
     def _apply(modules):
         captured["modules"] = list(modules)
@@ -408,7 +408,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         monkeypatch.setattr(backup_import, name, _none)
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
     monkeypatch.setattr(backup_import, "_apply_modules", _apply)
-    monkeypatch.setattr(backup_export, "required_installation_modules", _every_company)
+    monkeypatch.setattr("celerp.modules.registry.load_set", _every_company)
     monkeypatch.setattr("celerp.connectors.ownership.connector_maintenance_guard", _guard)
     return captured
 

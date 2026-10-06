@@ -52,6 +52,14 @@ def make_test_token(
     return f"header.{payload_b64}.sig"
 
 
+def assert_not_permitted_redirect(response) -> None:
+    """A page the caller's role may not open redirects to the dashboard and hands
+    it the one-shot "no access" notice (ui.security.not_permitted_redirect)."""
+    assert response.status_code == 302, response.status_code
+    assert response.headers["location"] == "/dashboard"
+    assert "celerp_notice=not_permitted" in response.headers.get("set-cookie", "")
+
+
 def authed_cookies(role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token for the given role."""
     return {"celerp_token": make_test_token(role=role)}
@@ -97,6 +105,17 @@ async def ensure_company(session, company_id=None):
         session.add(Company(id=cid, name="Test Co", slug=f"test-{cid.hex}"))
         await session.flush()
     return cid
+
+
+async def seed_member(session, role: str = "operator", *, active: bool = True):
+    """Insert a company, a user and their membership with ``role``; return (company_id, user_id)."""
+    import uuid as _uuid
+    from celerp.models.accounting import UserCompany
+    company_id, user_id = await ensure_company(session), _uuid.uuid4()
+    await ensure_user(session, user_id)
+    session.add(UserCompany(user_id=user_id, company_id=company_id, role=role, is_active=active))
+    await session.flush()
+    return company_id, user_id
 
 
 async def clear_sample_items(session, company_id) -> None:

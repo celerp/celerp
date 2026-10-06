@@ -2821,6 +2821,14 @@ async def void_payment(token: str, entity_id: str, payment_index: int, void_reas
         })).json()
 
 
+async def delete_payment(token: str, entity_id: str, payment_index: int, delete_reason: str = "",
+                         idempotency_key: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.request("DELETE", f"/docs/{entity_id}/payments/{payment_index}", json={
+            "delete_reason": delete_reason, "idempotency_key": idempotency_key,
+        })).json()
+
+
 async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: float, date: str | None = None,
                             idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
@@ -2918,6 +2926,17 @@ async def get_payments_status(token: str) -> dict:
 async def get_unmatched_payments(token: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/payments/unmatched")).json()
+
+
+async def get_unmatched_invoices(token: str, reference: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/payments/unmatched/invoices", params={"reference": reference})).json()
+
+
+async def record_unmatched_payment(token: str, reference: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/payments/unmatched/record",
+                                   json={"reference": reference, "entity_id": entity_id})).json()
 
 
 async def get_payments_enabled(token: str) -> bool:
@@ -3220,6 +3239,19 @@ async def marketplace_install(token: str, download: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-install",
                                    json={"token": download})).json()
+
+
+async def installation_owner(token: str) -> bool:
+    """GET /system/installation-owner - whether this login owns the installation.
+
+    Any error reads as not the owner, so installation-wide controls are offered
+    only on a confirmed answer."""
+    try:
+        async with _api_client(token) as c:
+            r = _raise(await c.get("/system/installation-owner"))
+        return r.json().get("installation_owner") is True
+    except Exception:
+        return False
 
 
 async def restart_system(token: str) -> dict:

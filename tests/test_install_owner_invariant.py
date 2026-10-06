@@ -80,13 +80,11 @@ async def test_installation_owner_transfers_ownership_from_the_users_screen(clie
     admin_token = admin_h["Authorization"].split()[1]
     async with _ui_as(second_token) as ui:
         page = await ui.get("/settings/general?tab=users")
-        assert "/settings/users/installation-owner/edit" not in page.text
+        assert f"/settings/users/{admin_id}/installation-owner" not in page.text
     async with _ui_as(admin_token) as ui:
         page = await ui.get("/settings/general?tab=users")
-        assert "/settings/users/installation-owner/edit" in page.text
-        edit = await ui.get("/settings/users/installation-owner/edit")
-        assert f'value="{second_id}"' in edit.text
-        r = await ui.patch("/settings/users/installation-owner", data={"value": second_id})
+        assert f"/settings/users/{second_id}/installation-owner" in page.text
+        r = await ui.post(f"/settings/users/{second_id}/installation-owner")
     assert r.status_code == 200, r.text
     users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
     assert {u["id"]: u["is_install_owner"] for u in users} == {admin_id: False, second_id: True}
