@@ -9651,6 +9651,10 @@ _CATALOG_FIXTURE = [
 ]
 
 
+_DOWNLOAD_HANDLERS = {"community_download", "community_import",
+                      "modules_marketplace_download", "modules_marketplace_install"}
+
+
 def _archive_host(seen: list[str]):
     """Stands in for the module host's archive download: records each URL asked
     for and serves a small zip body, so a test sees exactly what was fetched."""
@@ -9838,6 +9842,58 @@ class TestMarketplaceUI:
         assert b"/modules/community-import" in r.content
         assert b"equipment-maintenance-0123456789abcdef0123456789abcdef01234567-00000000000000000000000000000000" in r.content   # token passed to the importer
         assert b">Import<" in r.content
+
+    def test_community_view_source_opens_the_pinned_commit(self):
+        from fasthtml.common import to_xml
+        from ui.routes.modules_page import _community_module_cell
+        html = to_xml(_community_module_cell(_CATALOG_FIXTURE[1], "en"))
+        pin = _CATALOG_FIXTURE[1]["commit"]
+        assert f'href="https://github.com/celerp/celerp-module-template/tree/{pin}"' in html
+        assert 'href="https://github.com/celerp/celerp-module-template/issues"' in html
+        assert 'href="https://github.com/celerp/celerp-module-template"' not in html
+
+    def test_community_download_keeps_the_session_and_download_tokens_apart(self):
+        """The signed-in session and the download each keep their own name in the
+        download, import and install handlers, so neither can stand in for the other."""
+        import ast
+        import inspect
+        import ui.routes.modules_page as page
+        tree = ast.parse(inspect.getsource(page))
+        handlers = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
+                    and n.name in _DOWNLOAD_HANDLERS}
+        assert set(handlers) == _DOWNLOAD_HANDLERS
+        for name, fn in handlers.items():
+            assigned = {t.id for n in ast.walk(fn) if isinstance(n, (ast.Assign, ast.AnnAssign))
+                        for t in ast.walk(n.targets[0] if isinstance(n, ast.Assign) else n.target)
+                        if isinstance(t, ast.Name)}
+            assert {"session_token", "download_token"} <= assigned, name
+            assert not {"token", "download"} & assigned, name
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("zone", ["", "1"], ids=["row", "resumed-zone"])
+    async def test_community_download_uses_the_session_after_the_download(self, ui_client, zone):
+        """After the download, the listing is read with the signed-in session and the
+        Import button carries the download, in the row flow and the resumed one."""
+        seen = []
+
+        async def get_modules(tok):
+            seen.append(tok)
+            return []
+
+        download = "equipment-maintenance-0123456789abcdef0123456789abcdef01234567-" + "1" * 32
+        session = _authed()
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=get_modules),
+            patch("ui.marketplace_catalog.download_community_archive", new=AsyncMock(return_value=download)),
+            patch("ui.api_client.account_status", new=AsyncMock(return_value={"email_verified": True})),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance", "zone": zone}, cookies=session)
+        assert r.status_code == 200
+        assert seen and set(seen) == {session["celerp_token"]}
+        assert download in r.content.decode()
+        assert b"/modules/community-import" in r.content
 
     @pytest.mark.asyncio
     async def test_community_download_fetches_the_commit_the_listing_pins(self, ui_client, tmp_path, monkeypatch):
