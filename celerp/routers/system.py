@@ -83,7 +83,7 @@ class FactoryReset(BaseModel):
 
 
 def _company_rows(schema: dict) -> dict[str, str]:
-    """Every table holding rows of the company bound as ``:c``, each before any it
+    """Every table holding rows of the company bound as ``:c``, each after the tables it
     references, with the condition that picks them: its company column, or else a
     foreign key to rows already picked (a conversation's messages, a run's entity maps).
     A key that clears on delete picks nothing: Postgres clears it. ``schema`` is the
