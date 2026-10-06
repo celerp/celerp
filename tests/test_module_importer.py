@@ -94,7 +94,7 @@ def test_repo_archive_with_two_modules_refused(module_dir):
 
 def test_zip_slip_refused(module_dir):
     data = _zip_bytes({"__init__.py": MANIFEST, "../evil.py": "boom"})
-    with pytest.raises(ModuleImportError, match="unsafe paths"):
+    with pytest.raises(ModuleImportError, match="something unsafe"):
         install_from_zip(data)
     assert not (module_dir.parent / "evil.py").exists()
 
@@ -106,29 +106,29 @@ def test_symlink_entry_refused(module_dir):
         info = zipfile.ZipInfo("link.py")
         info.external_attr = (0o120777 << 16)  # symlink mode
         zf.writestr(info, "/etc/passwd")
-    with pytest.raises(ModuleImportError, match="symlink"):
+    with pytest.raises(ModuleImportError, match="links to other files"):
         install_from_zip(buf.getvalue())
 
 
 def test_oversize_archive_refused(module_dir):
-    with pytest.raises(ModuleImportError, match="too large"):
+    with pytest.raises(ModuleImportError, match="larger than 50 MB"):
         install_from_zip(b"x" * (MAX_ARCHIVE_BYTES + 1))
 
 
 def test_not_a_zip_refused(module_dir):
-    with pytest.raises(ModuleImportError, match="not a valid zip"):
+    with pytest.raises(ModuleImportError, match="isn't a ZIP file"):
         install_from_zip(b"definitely not a zip")
 
 
 def test_missing_manifest_refused(module_dir):
     data = _zip_bytes({"__init__.py": "x = 1"})
-    with pytest.raises(ModuleImportError, match="PLUGIN_MANIFEST"):
+    with pytest.raises(ModuleImportError, match="isn't a Celerp module"):
         install_from_zip(data)
 
 
 def test_missing_init_refused(module_dir):
     data = _zip_bytes({"readme.md": "hello"})
-    with pytest.raises(ModuleImportError, match="__init__.py"):
+    with pytest.raises(ModuleImportError, match="isn't a Celerp module"):
         install_from_zip(data)
 
 
@@ -140,20 +140,20 @@ def test_reserved_prefix_refused(module_dir):
 
 def test_bad_name_chars_refused(module_dir):
     manifest = MANIFEST.replace("my-module", "my module!")
-    with pytest.raises(ModuleImportError, match="letters, digits"):
+    with pytest.raises(ModuleImportError, match="characters that aren't allowed"):
         install_from_zip(_zip_bytes({"__init__.py": manifest}))
 
 
 def test_collision_refused(module_dir):
     data = _zip_bytes({"__init__.py": MANIFEST})
     install_from_zip(data)
-    with pytest.raises(ModuleImportError, match="already exists"):
+    with pytest.raises(ModuleImportError, match="already installed"):
         install_from_zip(data)
 
 
 def test_non_literal_manifest_refused(module_dir):
     bad = "PLUGIN_MANIFEST = {'name': open('/etc/passwd').read()}"
-    with pytest.raises(ModuleImportError, match="literal"):
+    with pytest.raises(ModuleImportError, match="description is built incorrectly"):
         install_from_zip(_zip_bytes({"__init__.py": bad}))
 
 
@@ -185,20 +185,20 @@ def test_folder_symlink_refused(module_dir, tmp_path):
     src.mkdir()
     (src / "__init__.py").write_text(MANIFEST)
     os.symlink("/etc/passwd", src / "evil")
-    with pytest.raises(ModuleImportError, match="symlink"):
+    with pytest.raises(ModuleImportError, match="links to other files"):
         install_from_folder(src)
 
 
 def test_folder_not_a_dir_refused(module_dir, tmp_path):
     f = tmp_path / "file.txt"
     f.write_text("x")
-    with pytest.raises(ModuleImportError, match="not a folder"):
+    with pytest.raises(ModuleImportError, match="isn't a folder"):
         install_from_folder(f)
 
 
 def test_no_module_dir_configured(monkeypatch):
     monkeypatch.setenv("MODULE_DIR", "")
-    with pytest.raises(ModuleImportError, match="no module directory"):
+    with pytest.raises(ModuleImportError, match="set a module folder"):
         install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
 
 
@@ -299,7 +299,7 @@ def test_replace_onto_populated_target_reports_already_exists(module_dir, monkey
         raise OSError(_errno.ENOTEMPTY, "Directory not empty")
 
     monkeypatch.setattr(_os, "replace", _boom)
-    with pytest.raises(ModuleImportError, match="already exists"):
+    with pytest.raises(ModuleImportError, match="already installed"):
         install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
 
 
@@ -308,7 +308,7 @@ def test_replace_onto_populated_target_reports_already_exists(module_dir, monkey
 def test_zip_with_premium_marker_entry_refused(module_dir):
     from celerp.modules.importer import PREMIUM_MARKER
     data = _zip_bytes({"__init__.py": MANIFEST, PREMIUM_MARKER: ""})
-    with pytest.raises(ModuleImportError, match="reserved"):
+    with pytest.raises(ModuleImportError, match="file name that isn't allowed"):
         install_from_zip(data)
     assert not (module_dir / "my-module").exists()
 
@@ -319,7 +319,7 @@ def test_folder_with_premium_marker_file_refused(module_dir, tmp_path):
     src.mkdir()
     (src / "__init__.py").write_text(MANIFEST)
     (src / PREMIUM_MARKER).write_text("")
-    with pytest.raises(ModuleImportError, match="reserved"):
+    with pytest.raises(ModuleImportError, match="file name that isn't allowed"):
         install_from_folder(src)
     assert not (module_dir / "my-module").exists()
 
@@ -382,7 +382,7 @@ def test_remove_module_dir_removes_folder(module_dir):
 
 def test_remove_module_dir_raises_if_absent(module_dir):
     from celerp.modules.importer import remove_module_dir
-    with pytest.raises(ModuleImportError, match="not installed"):
+    with pytest.raises(ModuleImportError, match="isn't installed"):
         remove_module_dir("never-installed")
 
 
@@ -457,7 +457,7 @@ def test_module_dir_refuses_bundled_target(monkeypatch, tmp_path):
     bundled.mkdir()
     monkeypatch.setattr(loader, "_BUNDLED_MODULES_DIRS", (bundled,))
     monkeypatch.setenv("MODULE_DIR", str(bundled))
-    with pytest.raises(ModuleImportError, match="bundled"):
+    with pytest.raises(ModuleImportError, match="can't be written to"):
         importer._module_dir()
 
 
@@ -468,7 +468,7 @@ def test_install_into_bundled_dir_refused(monkeypatch, tmp_path):
     bundled.mkdir()
     monkeypatch.setattr(loader, "_BUNDLED_MODULES_DIRS", (bundled,))
     monkeypatch.setenv("MODULE_DIR", str(bundled))
-    with pytest.raises(ModuleImportError, match="bundled"):
+    with pytest.raises(ModuleImportError, match="can't be written to"):
         install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
     assert not (bundled / "my-module").exists()
 
@@ -554,7 +554,7 @@ def _migrations_manifest(name: str, *, prefix: str | None, migrations: bool = Tr
 
 def test_missing_table_prefix_with_migrations_declared_refused(module_dir):
     data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix=None)})
-    with pytest.raises(ModuleImportError, match="table_prefix"):
+    with pytest.raises(ModuleImportError, match="doesn't name the data it stores"):
         install_from_zip(data)
 
 
