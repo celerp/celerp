@@ -63,7 +63,6 @@ import shutil
 import sys
 import threading
 from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1330,29 +1329,47 @@ def admitted_module_root(import_name: str) -> Path | None:
     return next((m.path for m in _admitted.values() if top in _import_roots(m.name, m.path)), None)
 
 
-# The folder of the third-party module this thread is activating, and the
+# Each third-party module activating now, on any thread: its folder and the
 # protected internals its own code has tried to import meanwhile.
-_activation: ContextVar[tuple[Path, set[str]] | None] = ContextVar("module_activation", default=None)
-_guard_lock, _guard_depth = threading.Lock(), 0
+_activations: list[tuple[Path, set[str]]] = []
+_guard_lock = threading.Lock()
 _unguarded = (builtins.__import__, importlib.import_module, importlib.__import__)
 
 
+def _owned_by(filename: str, root: Path) -> bool:
+    """True when the file *filename* sits in the module folder *root*, by its own
+    path or by the file it links to."""
+    return Path(os.path.abspath(filename)).is_relative_to(os.path.abspath(root)) or _inside(Path(filename), root)
+
+
 def _charge_import(name: str, frame, package=None, fromlist=()) -> None:
-    """Refuse an import of a protected internal asked for by the activating module's own code."""
-    activation = _activation.get()
-    if activation is None:
+    """Refuse an import of a protected internal asked for by an activating module's
+    own code: the first caller outside the standard library is in its folder, or
+    only the standard library is calling, as on a worker thread it was handed to."""
+    activations = list(_activations)
+    if not activations:
         return
     name = importlib.util.resolve_name(name, package) if name.startswith(".") else name
-    hit = next(filter(None, map(_protected_hit, [name, *(f"{name}.{f}" for f in fromlist or ())])), None)
-    while hit and frame and frame.f_code.co_filename.startswith("<frozen "):
+    hit = next(filter(None, map(_protected_hit, [name, *(f"{name}.{f}" for f in fromlist)])), None)
+    if not hit:
+        return
+    while frame and str(frame.f_globals.get("__name__")).partition(".")[0] in sys.stdlib_module_names:
         frame = frame.f_back
-    if hit and frame and _inside(Path(frame.f_code.co_filename), activation[0]):
-        activation[1].add(hit)
+    charged = [attempted for root, attempted in activations
+               if frame is None or _owned_by(frame.f_code.co_filename, root)]
+    for attempted in charged:
+        attempted.add(hit)
+    if charged:
         raise ImportError(f"{hit} is not available to modules: {_MODULE_AI_API_URL}")
 
 
 def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-    _charge_import("." * level + name, sys._getframe(1), (globals or {}).get("__package__"), fromlist)
+    try:
+        fromlist = tuple(fromlist or ())
+    except Exception:
+        return _unguarded[0](name, globals, locals, fromlist, level)
+    package = globals.get("__package__") if isinstance(globals, dict) else None
+    _charge_import("." * level + name, sys._getframe(1), package, fromlist)
     return _unguarded[0](name, globals, locals, fromlist, level)
 
 
@@ -1365,28 +1382,26 @@ def _guarded_import_module(name, package=None):
 def _activating(pkg_name: str, pkg_path: Path, *, trusted: bool):
     """Run part of a third-party module's activation (its import, slot and route
     setup). A protected import its own code attempts meanwhile refuses the module."""
-    global _guard_depth, _unguarded
+    global _unguarded
     if trusted:
         yield
         return
-    attempted: set[str] = set()
-    token = _activation.set((pkg_path, attempted))
+    activation: tuple[Path, set[str]] = (pkg_path, set())
     with _guard_lock:
-        if _guard_depth == 0:
+        if not _activations:
             _unguarded = (builtins.__import__, importlib.import_module, importlib.__import__)
             builtins.__import__, importlib.import_module = _guarded_import, _guarded_import_module
             importlib.__import__ = _guarded_import
-        _guard_depth += 1
+        _activations.append(activation)
     try:
         yield
     finally:
         with _guard_lock:
-            _guard_depth -= 1
-            if _guard_depth == 0:
+            _activations[:] = [a for a in _activations if a is not activation]
+            if not _activations:
                 builtins.__import__, importlib.import_module, importlib.__import__ = _unguarded
-        _activation.reset(token)
-        if attempted:
-            raise ModuleLoadError(_bsl_violation_message(pkg_name, attempted))
+        if activation[1]:
+            raise ModuleLoadError(_bsl_violation_message(pkg_name, activation[1]))
 
 
 def _evict_module(pkg_name: str) -> None:

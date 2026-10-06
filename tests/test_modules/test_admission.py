@@ -1400,7 +1400,20 @@ _ACTIVATIONS = {
         "import importlib\nclass C:\n    llm = importlib.import_module('celerp.' + 'ai.llm')\n", {}, False),
     "computed-import-in-a-default": (
         "import importlib\ndef f(llm=importlib.import_module('celerp.' + 'ai.llm')):\n    return llm\n", {}, False),
+    "computed-import-on-a-thread": (
+        "import importlib, threading\nt = threading.Thread(target=lambda: importlib.import_module('celerp.' + 'ai.llm'))\n"
+        "t.start()\nt.join()\n", {}, False),
+    "computed-import-in-a-thread-pool": (
+        "import importlib\nfrom concurrent.futures import ThreadPoolExecutor\nwith ThreadPoolExecutor(1) as pool:\n"
+        "    try:\n        pool.submit(importlib.import_module, 'celerp.' + 'ai.llm').result()\n"
+        "    except ImportError:\n        pass\n", {}, False),
+    "computed-import-through-asyncio-to-thread": (
+        "import asyncio, importlib\ntry:\n    asyncio.run(asyncio.to_thread(importlib.import_module, 'celerp.' + 'ai.llm'))\n"
+        "except ImportError:\n    pass\n", {}, False),
     "own-submodule": ("from .helper import VALUE  # noqa: F401\n", {"helper.py": "VALUE = 1\n"}, True),
+    "unusual-import-arguments": (
+        "__import__('os', 5)\nclass F:\n    def __iter__(self):\n        raise RuntimeError('no names')\n"
+        "__import__('json.decoder', fromlist=F())\n", {}, True),
     "core-services": ("".join(f"import {s}  # noqa: F401\n" for s in _CORE_SERVICES), {}, True),
     "core-service-called": (
         "import asyncio\nfrom celerp.modules.api import ai_query\n"
@@ -1425,7 +1438,7 @@ if process == "preloaded":
 elif process == "api":
     import celerp.main  # noqa: F401
 elif process == "ui":
-    src = open("ui/app.py").read().split("# The API process decides which modules run.")[0]
+    src = open("ui/app.py").read().split("# Register UI routes from the loaded modules.")[0]
     app = types.ModuleType("ui.app")
     app.__file__ = "ui/app.py"
     sys.modules["ui.app"] = app
@@ -1434,12 +1447,13 @@ elif process == "ui":
 from pathlib import Path
 from celerp.modules import loader
 preloaded = bool([n for n in sys.modules if n.startswith("celerp.ai")])
+ui_routes = "celerp_ai.ui_routes" in sys.modules
 folders = set(json.loads(sys.argv[3]))
 loaded = {m["name"] for m in loader.load_all(sys.argv[1], folders)}
 errors = loader.load_errors()
 defaults = {p.name for p in Path("default_modules").iterdir() if (p / "__init__.py").exists()}
 loader.load_all("default_modules", defaults)
-print(json.dumps({"preloaded": preloaded, "loads": {f: f in loaded for f in folders}, "errors": errors,
+print(json.dumps({"preloaded": preloaded, "ui_routes": ui_routes, "loads": {f: f in loaded for f in folders}, "errors": errors,
                   "default_errors": loader.load_errors()}))
 """
 _PROCESSES = ("preloaded", "fresh", "api", "ui")
@@ -1463,8 +1477,12 @@ def test_module_gets_the_same_verdict_in_every_process(_modules, tmp_path):
         folders[folder] = case
     repo = Path(__file__).resolve().parents[2]
     # The licence-gated defaults ask the Marketplace; a relay address that refuses
-    # at once keeps every verdict independent of the network.
-    env = {**os.environ, "MODULE_DIR": str(_modules), "GATEWAY_HTTP_URL": "http://127.0.0.1:9", "GATEWAY_TOKEN": ""}
+    # at once keeps every verdict independent of the network. With no module
+    # enabled, the UI process sets up its own routes without waiting for an API.
+    config = tmp_path / "config.toml"
+    config.write_text("[modules]\nenabled = []\n")
+    env = {**os.environ, "MODULE_DIR": str(_modules), "GATEWAY_HTTP_URL": "http://127.0.0.1:9", "GATEWAY_TOKEN": "",
+           "CELERP_CONFIG": str(config), "ENABLED_MODULES": ""}
     logs = {p: (tmp_path / f"{p}.out", tmp_path / f"{p}.err") for p in _PROCESSES}
     runs = {}
     for p, (out, err) in logs.items():
@@ -1480,6 +1498,7 @@ def test_module_gets_the_same_verdict_in_every_process(_modules, tmp_path):
 
     assert results["preloaded"]["preloaded"] and results["api"]["preloaded"]
     assert not results["fresh"]["preloaded"]
+    assert results["ui"]["ui_routes"]
     expected = {case: loads for case, (_, _, loads) in _ACTIVATIONS.items()}
     for process, result in results.items():
         assert {folders[f]: v for f, v in result["loads"].items()} == expected, (process, result["errors"])
@@ -1514,6 +1533,21 @@ def test_core_import_on_another_thread_is_not_charged_to_an_activating_module(_m
         del builtins._acme_started, builtins._acme_release
 
     assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
+
+
+def test_protected_import_in_a_symlinked_own_file_refuses_the_module(_modules, tmp_path):
+    """A file in the module's folder is the module's own code even when it is a
+    link to a file kept elsewhere."""
+    folder = f"acme-{_uid()}"
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                        init_prelude="from . import linked  # noqa: F401\n")
+    (tmp_path / "linked.py").write_text("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n")
+    (pkg / "linked.py").symlink_to(tmp_path / "linked.py")
+
+    loader.load_all(str(_modules), {folder})
+
+    assert not loader.is_running(folder)
+    assert "celerp.ai" in loader.load_errors()[folder]
 
 
 def test_locale_file_outside_the_module_is_not_registered(_modules):
