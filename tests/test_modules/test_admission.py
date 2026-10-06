@@ -30,7 +30,6 @@ import pytest
 
 from celerp.modules import loader, slots
 from celerp.modules.importer import PREMIUM_MARKER, install_from_zip
-from celerp.modules.meta import write_meta
 
 
 @pytest.fixture(autouse=True)
@@ -2220,28 +2219,55 @@ def _marketplace_install(base: Path, name: str) -> Path:
     return pkg
 
 
-@pytest.mark.parametrize("sidecar", ["before_paid_was_kept", "paid_false"])
+# Sidecar contents a module folder might carry, from real installs and made up.
+_SIDECARS = {
+    "marketplace_legacy": {"source": "marketplace", "installed_at": "2026-09-01T00:00:00+00:00"},
+    "marketplace_paid_false": {"source": "marketplace", "installed_at": "2026-09-01T00:00:00+00:00",
+                               "paid": False},
+    "claims_free_official": {"source": "marketplace", "paid": False, "free": True,
+                             "is_official": True, "is_paid": False},
+    "community": {"source": "community"},
+    "sideloaded": {"source": "sideloaded"},
+    "none": None,
+}
+
+
+@pytest.mark.parametrize("sidecar", list(_SIDECARS))
 @pytest.mark.parametrize("activated", [True, False], ids=["activated", "never_activated"])
-def test_marketplace_install_loads_offline_before_its_verdict_is_recorded(
+def test_no_sidecar_lets_a_module_load_offline_without_a_verdict_or_licence(
         activated, sidecar, _modules, tmp_path, monkeypatch):
-    """An offline start never loses a free module the Marketplace installed: with
-    no verdict yet and the relay away it loads, and nothing is recorded until
-    the Marketplace answers."""
+    """Nothing in the module folder makes a celerp- module free: with no free
+    verdict kept, no licence and the relay away, it is refused whatever its
+    sidecar says, and no verdict is written."""
     data = tmp_path / "data"
     name = f"celerp-{_uid()}"
-    pkg = _marketplace_install(_modules, name)
-    if sidecar == "paid_false":
-        write_meta(pkg, source="marketplace", paid=False)
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    if _SIDECARS[sidecar] is not None:
+        (pkg / ".celerp-meta.json").write_text(json.dumps(_SIDECARS[sidecar]))
+    calls = _relay_identity(monkeypatch, data, activated=activated)
 
-    for _restart in range(2):
-        calls = _relay_identity(monkeypatch, data, activated=activated)
-        assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
-        assert calls["licence"] == []
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+    assert calls["licence"] == ([name] if activated else [])
     assert not (data / "license_cache" / f"{name}.free.json").exists()
 
-    _relay_identity(monkeypatch, data, _FREE, activated=activated)
+
+def test_marketplace_install_from_before_verdicts_needs_the_relay_once(
+        _modules, tmp_path, monkeypatch):
+    """A free module the Marketplace installed before verdicts were kept loads on
+    the first start that reaches the Marketplace, and offline from then on."""
+    data = tmp_path / "data"
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    _relay_identity(monkeypatch, data, _FREE, activated=False)
     assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
-    assert (data / "license_cache" / f"{name}.free.json").is_file()
+
+    calls = _relay_identity(monkeypatch, data, activated=False)
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert calls["detail"] == []
 
 
 @pytest.mark.parametrize("detail", [_PAID, {"is_official": False, "price_monthly": None}],
@@ -2309,22 +2335,6 @@ def test_marketplace_install_unknown_to_the_relay_takes_the_licence_check(
 
     assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
     assert calls["licence"] == [name]
-
-
-@pytest.mark.parametrize("source", [None, "sideloaded", "community"])
-def test_hand_copy_without_a_marketplace_sidecar_stays_refused_offline(
-        source, _modules, tmp_path, monkeypatch):
-    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
-    name = f"celerp-{_uid()}"
-    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
-    if source:
-        write_meta(pkg, source=source, paid=False)
-
-    admission = loader.admit_modules(_modules, {name})
-
-    assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
-    assert not (tmp_path / "data" / "license_cache" / f"{name}.free.json").exists()
 
 
 def test_unconfirmed_module_refusal_is_not_shown_as_a_licence_on_another_computer(
