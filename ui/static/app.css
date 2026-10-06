@@ -241,7 +241,7 @@ a:hover { text-decoration: underline; }
    share the second, so the search box keeps room to type and names show whole. */
 @media (max-width: 480px) {
   .topbar { flex-wrap: wrap; height: auto; row-gap: 6px; }
-  .topbar .global-search-wrap { order: 1; flex: 1 1 12rem; }
+  .topbar .global-search-wrap { order: 1; flex: 1 1 13rem; }
   .topbar .company-switcher-select { order: 1; max-width: 50%; }
   .topbar .lang-switcher-wrap { flex-shrink: 0; }
   .topbar .lang-switcher-wrap .combobox-input { max-width: 8rem; }
