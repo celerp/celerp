@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import re
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ from celerp.services.attachments import (
     resolve_preview_image_id,
     store_upload,
 )
+from ui.i18n import t
 
 
 # ── infer_attachment_type ─────────────────────────────────────────────────────
@@ -207,7 +209,7 @@ async def test_store_upload_rejects_oversized():
         filename="big.png",
         headers=Headers({"content-type": "image/png"}),
     )
-    with pytest.raises(ValueError, match="exceeds"):
+    with pytest.raises(ValueError, match=re.escape(t("error.file_too_large", "en", mb=50))):
         await store_upload("co-1", upload)
 
 
@@ -221,7 +223,7 @@ async def test_store_upload_rejects_bad_mime():
         filename="script.sh",
         headers=Headers({"content-type": "application/x-sh"}),
     )
-    with pytest.raises(ValueError, match="Unsupported"):
+    with pytest.raises(ValueError, match=re.escape(t("error.file_type_unsupported", "en", mime="application/x-sh"))):
         await store_upload("co-1", upload)
 
 
