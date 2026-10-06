@@ -2163,7 +2163,11 @@ def _read_staged_marketplace(path: str) -> tuple[bytes, bool, bool]:
         raise HTTPException(status_code=410,
                             detail="This download is unreadable. Download it again.")
     flags = flags if isinstance(flags, dict) else {}
-    return p.read_bytes(), bool(flags.get("is_official")), bool(flags.get("is_paid"))
+    is_official, is_paid = flags.get("is_official"), flags.get("is_paid")
+    if not isinstance(is_official, bool) or not isinstance(is_paid, bool):
+        raise HTTPException(status_code=410,
+                            detail="This download is unreadable. Download it again.")
+    return p.read_bytes(), is_official, is_paid
 
 
 @router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
@@ -2184,32 +2188,24 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     from celerp.gateway.state import relay_error_detail
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
-    from celerp.modules.license import marketplace_flags
 
     url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # Module metadata decides the official flag (which allows the reserved
-            # celerp- name) and the licence-gate marker.
-            m = await c.get(f"{url}/marketplace/modules/{body.slug}")
-            if m.status_code != 200:
-                raise HTTPException(
-                    status_code=404 if m.status_code == 404 else 502,
-                    detail=relay_error_detail(m, "This module is not available."))
-            meta = _json_dict(m)
-            if not meta:
-                raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
-            is_official, is_paid = marketplace_flags(meta)
-
+            # The install answer alone says whether the module is official (which
+            # allows the reserved celerp- name) and paid (the licence-gate marker).
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
                     detail=relay_error_detail(r, "The relay refused the download."))
-            token = str(_json_dict(r).get("token") or "")
-            if not token:
+            answer = _json_dict(r)
+            token = answer.get("token")
+            is_official, is_paid = answer.get("is_official"), answer.get("is_paid")
+            if (not isinstance(token, str) or not token
+                    or not isinstance(is_official, bool) or not isinstance(is_paid, bool)):
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
 
             d = await c.get(f"{url}/marketplace/download/{token}")

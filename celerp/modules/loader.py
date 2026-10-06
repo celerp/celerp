@@ -69,7 +69,7 @@ from celerp.modules.license import (
     PAID_MODULE_REFUSAL, adopt_legacy_license_cache, check_license, exchange_api_key_for_jwt,
     is_free_official, is_premium_path,
 )
-from celerp.modules.meta import META_FILENAME, read_meta
+from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
     FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
     register as register_slot, resolve_handler,
@@ -813,11 +813,8 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     every celerp- name that is not one of the defaults Celerp ships, wherever its
     folder came from: a celerp- module the Marketplace lists as free and official
     loads (that verdict is cached on this instance), any other needs a licence.
-    While the Marketplace cannot be asked, a module it has never answered for
-    loads if the Marketplace installed it without a price, and its verdict is
-    recorded on the next start that reaches it; once the Marketplace has said it
-    is not free, or for any other install, a licence is needed.
-    The name only ever adds this check; it grants nothing.
+    Nothing in the module folder counts: until the Marketplace has answered once,
+    only a licence loads it. The name only ever adds this check; it grants nothing.
 
     Checked on every instance, activated or not. The Marketplace listing is
     public, so a free verdict needs no relay identity. With no live JWT (never
@@ -832,8 +829,6 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     if by_name:
         free = is_free_official(module.name, relay_url, Path(data_dir))
         if free:
-            return None
-        if free is None and _marketplace_free_install(module.path):
             return None
         unconfirmed = free is None
     if check_license(
@@ -851,12 +846,6 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
         return "Not loaded: the Marketplace could not confirm it is free and there is no valid license here. Connect to the internet and restart."
     log.warning("Premium module %r skipped: no valid license", module.name)
     return PAID_MODULE_REFUSAL
-
-
-def _marketplace_free_install(pkg_path: Path) -> bool:
-    """The module's sidecar says the Marketplace installed it without a price."""
-    meta = read_meta(pkg_path)
-    return meta.get("source") == "marketplace" and meta.get("paid") is not True
 
 
 def _needs_licence_by_name(name: str, pkg_path: Path) -> bool:
