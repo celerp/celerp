@@ -345,7 +345,7 @@ async def test_not_signed_in_gives_clear_503(client, relay_env, monkeypatch):
     monkeypatch.setattr(_s, "gateway_token", "")
     dl = await _download(client, headers)
     assert dl.status_code == 503
-    assert "connect an account" in dl.json()["detail"]
+    assert "connect a Celerp account" in dl.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -369,4 +369,4 @@ async def test_token_exchange_200_without_access_token_gives_clear_502(client, r
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert "unexpected" in dl.json()["detail"].lower()
+    assert "couldn't read" in dl.json()["detail"].lower()
