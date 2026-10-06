@@ -978,12 +978,10 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # ESC: capture scroll position synchronously at keydown (before browser may reset it),
-    # then force-set _scrollSnap so the global htmx:afterSettle handler restores it.
+    # ESC: the restore request targets the cell, so the global htmx handler snapshots
+    # the table's scroll position before it and restores it when it settles.
     escape_js = (
         f"if(event.key==='Escape'){{"
-        f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"this._escaping=true;"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
@@ -993,8 +991,6 @@ def editable_cell(
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
-        f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
     )
@@ -2100,10 +2096,8 @@ function sendToTypeChanged(docType, docLabel){
   // the table or its scroll container (cell edits, sort, search, pagination, etc.):
   // its target holds the scroll container or sits inside it. Other requests (page
   // chrome refreshes) leave the position alone, even when they settle after the
-  // user scrolled. Saved on htmx:beforeRequest for that request, and exposed as
-  // window.__celerpScrollSnap so inline ESC handlers can set it synchronously before
-  // the browser resets scroll. Restored when that same request settles, using
-  // requestAnimationFrame to run after browser reflow.
+  // user scrolled. Saved on htmx:beforeRequest for that request and restored when
+  // that same request settles, using requestAnimationFrame to run after browser reflow.
   window.__celerpScrollSnap=null;
   document.body.addEventListener('htmx:beforeRequest',function(e){
     var sw=document.querySelector('.table-scroll-wrap'),t=e.detail.target;

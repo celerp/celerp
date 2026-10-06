@@ -2441,8 +2441,6 @@ function celerpPrintLabel(entityId, templateId) {
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
             escape_js = (
                 f"if(event.key==='Escape'){{"
-                f"var _sw=document.querySelector('.table-scroll-wrap');"
-                f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
                 f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
                 f"event.preventDefault();}}"
             )
