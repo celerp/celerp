@@ -905,9 +905,10 @@ def _community_module_cell(m: dict, lang: str) -> FT:
         parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
     parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
     links = []
+    if source := catalog.source_url(m):
+        links.append(A(t("marketplace.view_source", lang), href=source, target="_blank", rel="noopener noreferrer"))
     if m.get("repo"):
-        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank", rel="noopener noreferrer"))
-        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.report_bug", lang), href=m["repo"] + "/issues", target="_blank", rel="noopener noreferrer"))
     links.append(A(t("marketplace.feedback", lang),
                    href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
                    target="_blank", rel="noopener noreferrer"))
@@ -1336,7 +1337,7 @@ def setup_routes(app):
     async def community_download(request: Request):
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
@@ -1348,55 +1349,55 @@ def setup_routes(app):
         # Free downloads ask for the free account (the download itself is the
         # moment the account earns its keep), but a relay outage never blocks
         # one - the gate fails open.
-        gate = await account_gate(token, lang, f"community:{module_id}")
+        gate = await account_gate(session_token, lang, f"community:{module_id}")
         if gate is not None and gate is not GATE_UNREACHABLE:
             return gate_modal_response(gate)
-        m, installed, owner = await _community_entry(token, module_id)
+        m, installed, owner = await _community_entry(session_token, module_id)
         try:
-            download = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
+            download_token = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
         except Exception as exc:
             reason = t(exc.key if isinstance(exc, catalog.DownloadRefused)
                        else "marketplace.download_failed", lang)
             if zone:
-                community, installed, owner = await _community_and_installed(token)
+                community, installed, owner = await _community_and_installed(session_token)
                 return _toast(_community_table(community, installed, lang, owner), reason)
             return _toast(_community_row(m, lang, installed, owner), reason)
         if zone:
-            community, installed, owner = await _community_and_installed(token)
+            community, installed, owner = await _community_and_installed(session_token)
             return _community_table(community, installed, lang, owner,
-                                    downloaded={module_id: download})
-        return _community_row(m, lang, installed, owner, downloaded_token=download)
+                                    downloaded={module_id: download_token})
+        return _community_row(m, lang, installed, owner, downloaded_token=download_token)
 
     @app.post("/modules/community-import")
     async def community_import(request: Request):
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         module_id = str(form.get("id", ""))
-        download = str(form.get("token", ""))
-        m, installed, owner = await _community_entry(token, module_id)
+        download_token = str(form.get("token", ""))
+        m, installed, owner = await _community_entry(session_token, module_id)
         try:
-            data = catalog.read_staged_archive(module_id, download)
-            await api.import_module_zip(token, f"{module_id}.zip", data, source="community")
+            data = catalog.read_staged_archive(module_id, download_token)
+            await api.import_module_zip(session_token, f"{module_id}.zip", data, source="community")
         except catalog.DownloadRefused as e:
             return _toast(_community_row(m, lang, installed, owner), t(e.key, lang))
         except APIError as e:
             return _toast(
-                _community_row(m, lang, installed, owner, downloaded_token=download),
+                _community_row(m, lang, installed, owner, downloaded_token=download_token),
                 e.detail or str(e))
         except (ValueError, OSError):
             return _toast(
-                _community_row(m, lang, installed, owner, downloaded_token=download),
+                _community_row(m, lang, installed, owner, downloaded_token=download_token),
                 t("marketplace.import_failed", lang))
         # Installed: drop the staged archive, then land on the Installed tab where
         # the new module's row sits with its Enable button - the next step in the
         # flow - rather than leaving the user on the catalog row.
         try:
-            catalog.discard_staged_archive(module_id, download)
+            catalog.discard_staged_archive(module_id, download_token)
         except OSError:
             pass
         return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
@@ -1534,20 +1535,20 @@ def setup_routes(app):
         returns the row with a corner toast, so retrying is always possible."""
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        m, installed, licensed, owner = await _marketplace_entry(token, slug)
+        m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            res = await api.marketplace_download(token, slug)
+            download_token = (await api.marketplace_download(session_token, slug)).get("token")
         except APIError as e:
             return _toast(
                 _marketplace_row(m, lang, installed, licensed, owner), e.detail or str(e))
         return _marketplace_row(m, lang, installed, licensed, owner,
-                                downloaded_token=res.get("token"))
+                                downloaded_token=download_token)
 
     @app.post("/modules/marketplace-install")
     async def modules_marketplace_install(request: Request):
@@ -1557,20 +1558,20 @@ def setup_routes(app):
         row intact."""
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        download = str(form.get("token", ""))
-        m, installed, licensed, owner = await _marketplace_entry(token, slug)
+        download_token = str(form.get("token", ""))
+        m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            await api.marketplace_install(token, download)
+            await api.marketplace_install(session_token, download_token)
         except APIError as e:
             # A download that is gone (expired or already used) offers Download
             # again; any other failure keeps Install for a retry.
-            kept = None if e.status == 410 else download
+            kept = None if e.status == 410 else download_token
             return _toast(
                 _marketplace_row(m, lang, installed, licensed, owner, downloaded_token=kept),
                 e.detail or str(e))
