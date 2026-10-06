@@ -165,10 +165,11 @@ async def create_chart_account(
 async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -> str:
     """The next free bank code under 1110, with no limit on how many there are.
 
-    The first nine are 1111 to 1119. After those come 1119-010, 1119-011, ...: the
+    The first nine are 1111 to 1119. After those come 1119-0010, 1119-0011, ...: the
     leading number stays a bank code (range tests read it), and the zero-padded
     suffix keeps every bank code sorting in the order the accounts were added, all
-    before 1120."""
+    before 1120. Past 9,999 bank accounts the codes stay unique and valid but no
+    longer sort in that order."""
     used = set(
         (
             await session.execute(
@@ -187,7 +188,7 @@ async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -
 
 def _bank_code(n: int) -> str:
     """The *n*th automatic bank code (see next_bank_account_code)."""
-    return f"111{n}" if n < 10 else f"1119-{n:03d}"
+    return f"111{n}" if n < 10 else f"1119-{n:04d}"
 
 
 async def add_bank_account(

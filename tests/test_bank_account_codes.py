@@ -44,3 +44,11 @@ async def test_more_than_a_hundred_bank_accounts_get_valid_sorted_codes(client):
     assert all(chart[c]["parent_code"] == "1110" for c in codes)
     in_block = [code for code in chart if "1110" < code < "1120"]
     assert in_block == seeded + codes
+
+
+def test_codes_keep_sorting_in_the_order_added_past_a_thousand_bank_accounts():
+    from celerp_accounting.import_service import _bank_code
+    codes = [_bank_code(n) for n in range(1, 10000)]
+    assert len(set(codes)) == len(codes)
+    assert codes == sorted(codes)
+    assert all(c < "1120" for c in codes)
