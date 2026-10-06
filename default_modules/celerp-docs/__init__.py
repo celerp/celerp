@@ -44,6 +44,5 @@ PLUGIN_MANIFEST = {
         },
     },
     "migrations": None,
-    "requires": [],
     "default_enabled": True,
 }

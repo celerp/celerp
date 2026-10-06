@@ -107,12 +107,6 @@ class TestLabelsManifest:
         mod = _import_labels_pkg()
         assert "settings_tab" not in mod.PLUGIN_MANIFEST["slots"]
 
-    def test_requires_list(self):
-        mod = _import_labels_pkg()
-        reqs = mod.PLUGIN_MANIFEST["requires"]
-        assert isinstance(reqs, list)
-        assert any("reportlab" in r for r in reqs)
-
 
 # ── Label service tests ────────────────────────────────────────────────────────
 
