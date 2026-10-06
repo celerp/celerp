@@ -1324,7 +1324,7 @@ def setup_routes(app):
             return gate_modal_response(gate)
         m, installed = await _community_entry(token, module_id)
         try:
-            token = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
+            download = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
         except Exception as exc:
             reason = t(exc.key if isinstance(exc, catalog.DownloadRefused)
                        else "marketplace.download_failed", lang)
@@ -1335,8 +1335,8 @@ def setup_routes(app):
         if zone:
             community, installed = await _community_and_installed(token)
             return _community_table(community, installed, lang,
-                                    downloaded={module_id: token})
-        return _community_row(m, lang, installed, downloaded_token=token)
+                                    downloaded={module_id: download})
+        return _community_row(m, lang, installed, downloaded_token=download)
 
     @app.post("/modules/community-import")
     async def community_import(request: Request):

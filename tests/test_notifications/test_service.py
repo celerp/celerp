@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -12,7 +13,8 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from unittest.mock import AsyncMock, patch
 
 from celerp.models.company import Company, User
@@ -206,6 +208,48 @@ async def test_mark_read_wrong_company(session, company, company_b, user):
 async def test_mark_read_nonexistent(session, company, user):
     found = await svc.mark_read(session, uuid.uuid4(), company.id, user.id)
     assert found is False
+
+
+@pytest.mark.asyncio
+async def test_mark_read_of_a_notice_deleted_meanwhile_is_not_found(committed_engine):
+    """A notice deleted (pruned, or its company removed) while it is being marked
+    read is simply not found."""
+    mk = async_sessionmaker(committed_engine, expire_on_commit=False)
+    async with mk() as s:
+        co = Company(name="Race", slug="race", settings={})
+        s.add(co)
+        await s.flush()
+        u = User(email="race@test.com", name="U")
+        s.add(u)
+        await s.flush()
+        n = Notification(company_id=co.id, category="system", title="t", body="b")
+        s.add(n)
+        await s.commit()
+        cid, uid, nid = co.id, u.id, n.id
+
+    async with mk() as deleter:
+        await deleter.execute(text("DELETE FROM notifications WHERE id = :i"), {"i": nid})
+
+        async def reader():
+            async with mk() as s:
+                found = await svc.mark_read(s, nid, cid, uid)
+                await s.commit()
+                return found
+
+        task = asyncio.create_task(reader())
+        for _ in range(400):
+            if task.done():
+                break
+            async with committed_engine.connect() as conn:
+                waiting = (await conn.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                ))).scalar_one()
+            if waiting:
+                break
+            await asyncio.sleep(0.05)
+        await deleter.commit()
+    assert await asyncio.wait_for(task, timeout=30) is False
 
 
 # ── mark_all_read ────────────────────────────────────────────────────────────
