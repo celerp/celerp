@@ -193,7 +193,7 @@ async def test_deactivated_company_blocks_connector_operations(client: AsyncClie
     company.is_active = False
     await session.commit()
 
-    with pytest.raises(ConnectorOwnershipError, match="inactive"):
+    with pytest.raises(ConnectorOwnershipError, match="has been deactivated"):
         await lock_connector_operation(
             session, str(company_id), "woocommerce", require_owner=True
         )

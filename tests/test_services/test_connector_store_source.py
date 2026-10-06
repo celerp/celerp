@@ -134,7 +134,7 @@ async def test_an_unreachable_store_is_not_accepted(session):
     failing = patch.object(
         WooCommerceConnector, "_paginate", AsyncMock(side_effect=RuntimeError("timeout"))
     )
-    with failing, pytest.raises(ConnectorStoreChangedError, match="Could not read"):
+    with failing, pytest.raises(ConnectorStoreChangedError, match="couldn't reach"):
         await bind_connector_store(
             session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
         )
