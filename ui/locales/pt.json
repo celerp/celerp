@@ -2579,6 +2579,7 @@
   "settings.type_reset_prefix": "Digite ",
   "settings.type_reset_suffix": " para confirmar. Esta ação não pode ser desfeita.",
   "settings.delete_everything": "Excluir tudo",
+  "system.factory_reset.busy": "Os dados desta empresa mudaram enquanto ela era redefinida. Nada foi excluído. Tente novamente.",
   "system.factory_reset.held_elsewhere": "Esta empresa não pode ser redefinida porque registros em {table} que pertencem a outra empresa fazem referência aos dados dela. Nada foi excluído.",
   "system.factory_reset.name_mismatch": "Digite o nome da empresa exatamente como mostrado para redefinir esta empresa.",
   "system.factory_reset.reference_cycle": "As tabelas {tables} fazem referência umas às outras em ciclo, por isso esta empresa não pode ser redefinida. Nada foi excluído.",

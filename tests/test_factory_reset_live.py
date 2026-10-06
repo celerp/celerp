@@ -99,7 +99,7 @@ async def test_a_failure_part_way_leaves_both_companies_as_they_were(real_client
     wipe = system._company_deletes
     # The company row goes last, so the failure comes after every other table's delete.
     monkeypatch.setattr(system, "_company_deletes", lambda schema: [
-        *wipe(schema)[:-1], ("no_such_table", "DELETE FROM no_such_table WHERE company_id = CAST(:c AS uuid)")])
+        *wipe(schema)[:-1], "DELETE FROM no_such_table WHERE company_id = CAST(:c AS uuid)"])
     with pytest.raises(Exception):  # the in-process transport re-raises the server error
         await _reset(real_client, ta, "Alpha Co")
 
@@ -516,8 +516,9 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
 async def test_a_reset_caught_in_a_deadlock_is_refused_and_deletes_nothing(real_client, real_engine):  # noqa: F811
     """Beta is part way through a transaction that wrote ext_links when the reset starts
     locking: the reset waits for ext_links while holding ext_items, and Beta then writes
-    ext_items. Postgres aborts the reset to break the deadlock. The reset is refused
-    naming ext_links, nothing of Alpha is deleted, and Beta's transaction commits."""
+    ext_items. Postgres aborts the reset to break the deadlock. The reset is refused as
+    interrupted, without claiming another company holds the records, nothing of Alpha
+    is deleted, and Beta's transaction commits."""
     import uuid
 
     from sqlalchemy import text
@@ -555,8 +556,10 @@ async def test_a_reset_caught_in_a_deadlock_is_refused_and_deletes_nothing(real_
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == (
-            "system.factory_reset.held_elsewhere", {"table": "ext_links"})
+        assert detail["message_key"] == "system.factory_reset.busy", detail
+        assert detail["message"] == ("This company's data changed while it was being reset. "
+                                     "Nothing was deleted. Try again.")
+        assert in_language("de", detail) != detail["message"]
         assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
         assert await _held(real_engine, alpha) == held
         assert await count(real_engine, "ext_items", "company_id = :c", c=alpha) == 1

@@ -108,25 +108,16 @@ def _company_rows(schema: dict) -> dict[str, str]:
     return {name: rows(name) for name in owned}
 
 
-def _writers(schema: dict) -> list[str]:
-    """Every table whose rows can name a company's rows or a user, in the order the reset
-    locks them until it commits. Nothing written between the checks and the deletes can
-    then be deleted with the company: such a write waits, and fails on the row that is
-    gone. Concurrent resets take the locks in the same order, one after the other."""
-    from celerp.db_catalog import company_tables
+def _lock_writers(schema: dict) -> str:
+    """A lock on every table whose rows can name a company's rows or a user, held until
+    the reset commits. Nothing written between the checks and the deletes can then be
+    deleted with the company: such a write waits, and fails on the row that is gone.
+    Concurrent resets take it in the same order, one after the other."""
+    from celerp.db_catalog import company_tables, ident
 
     named = company_tables(schema, held=True) | {"users"}
-    return sorted(name for name, table in schema.items() if any(fk.target in named for fk in table.fks))
-
-
-def _held_elsewhere_refusal(table: str) -> HTTPException:
-    """The refusal of a reset that records of another company in ``table`` stand in."""
-    from celerp.accounting_roles import refusal
-
-    return HTTPException(status_code=409, detail=refusal(
-        "system.factory_reset.held_elsewhere",
-        f"This company cannot be reset because records in {table} that belong to another "
-        "company refer to its data. Nothing was deleted.", table=table))
+    writers = sorted(name for name, table in schema.items() if any(fk.target in named for fk in table.fks))
+    return f"LOCK TABLE {', '.join(map(ident, writers))} IN SHARE ROW EXCLUSIVE MODE"
 
 
 def _held_elsewhere(schema: dict) -> str:
@@ -165,9 +156,9 @@ def _held_elsewhere(schema: dict) -> str:
         f"(SELECT 1 FROM {ident(name)} WHERE {where}))" for name, where in checks) + " LIMIT 1"
 
 
-def _company_deletes(schema: dict) -> list[tuple[str, str]]:
-    """The tables and deletes that remove the company bound as ``:c``, each table before
-    any it references. Tables that refer to each other in a loop have no such order, so the
+def _company_deletes(schema: dict) -> list[str]:
+    """The deletes that remove the company bound as ``:c``, each table before any it
+    references. Tables that refer to each other in a loop have no such order, so the
     reset is refused naming them."""
     from celerp import db_catalog
     from celerp.accounting_roles import refusal
@@ -179,7 +170,7 @@ def _company_deletes(schema: dict) -> list[tuple[str, str]]:
             "system.factory_reset.reference_cycle",
             f"The tables {looped} refer to each other in a loop, so this company cannot be "
             "reset. Nothing was deleted.", tables=looped))
-    return [(name, f"DELETE FROM {db_catalog.ident(name)} WHERE {rows[name]}") for name in reversed(order)]
+    return [f"DELETE FROM {db_catalog.ident(name)} WHERE {rows[name]}" for name in reversed(order)]
 
 
 @router.post("/factory-reset")
@@ -208,27 +199,30 @@ async def factory_reset(
     await lock_connector_maintenance(session)
     schema = await db_catalog.read(session)
     # Another transaction writing these tables can lock in the opposite order. Postgres
-    # then aborts one of the two; when it is the reset, the table it was waiting on is
-    # named in the refusal and the rollback leaves everything as it was.
-    table = None
+    # then aborts one of the two; when it is the reset, the rollback leaves everything
+    # as it was and the owner is asked to try again.
     try:
-        for table in _writers(schema):
-            await session.execute(text(f"LOCK TABLE {db_catalog.ident(table)} IN SHARE ROW EXCLUSIVE MODE"))
+        await session.execute(text(_lock_writers(schema)))
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
         held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})
         if held:
-            raise _held_elsewhere_refusal(held)
-        for table, delete in _company_deletes(schema):
+            raise HTTPException(status_code=409, detail=refusal(
+                "system.factory_reset.held_elsewhere",
+                f"This company cannot be reset because records in {held} that belong to another "
+                "company refer to its data. Nothing was deleted.", table=held))
+        for delete in _company_deletes(schema):
             await session.execute(text(delete), {"c": str(company_id)})
-        table = "users"
         await session.execute(text(db_catalog.delete_users_left_without_a_company(schema)), {"members": members})
         await session.commit()
     except DBAPIError as exc:
         if sqlstate(exc) not in (_DEADLOCK, _SERIALIZATION_FAILURE):
             raise
         await session.rollback()
-        raise _held_elsewhere_refusal(table) from exc
+        raise HTTPException(status_code=409, detail=refusal(
+            "system.factory_reset.busy",
+            "This company's data changed while it was being reset. Nothing was deleted. "
+            "Try again.")) from exc
 
     # Bust the in-process nonce cache: a deleted user's stale token must not auto-create rows
     from celerp.services.session_tracker import _nonce_cache_bust_all

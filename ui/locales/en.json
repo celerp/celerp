@@ -2699,6 +2699,7 @@
   "settings.type_reset_prefix": "Type ",
   "settings.type_reset_suffix": " to confirm. This cannot be undone.",
   "settings.delete_everything": "Delete everything",
+  "system.factory_reset.busy": "This company's data changed while it was being reset. Nothing was deleted. Try again.",
   "system.factory_reset.held_elsewhere": "This company cannot be reset because records in {table} that belong to another company refer to its data. Nothing was deleted.",
   "system.factory_reset.name_mismatch": "Type the company name exactly as shown to reset this company.",
   "system.factory_reset.reference_cycle": "The tables {tables} refer to each other in a loop, so this company cannot be reset. Nothing was deleted.",
