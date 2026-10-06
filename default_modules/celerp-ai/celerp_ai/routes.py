@@ -45,50 +45,29 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai import memory as ai_memory
-from celerp.ai.batch import create_batch_job, get_batch_job, list_conversation_jobs, run_batch
-from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE, load_file, save_upload, upload_dir
-from celerp.ai.conversations import (
-    ERROR_MARKER,
-    add_message,
-    build_history_context,
-    claim_tool_call,
-    create_conversation,
-    delete_conversation,
-    dismiss_tool_call,
-    dismiss_tool_calls,
-    finalize_tool_call,
-    get_conversation,
-    get_message,
-    get_messages,
-    list_conversation_history,
-    list_conversations,
-    message_error,
-    pending_action_counts,
-    pending_actions,
-    record_credits,
-    rename_conversation,
-    tool_names,
-)
-from celerp.ai.memory import get_memory
-from celerp.ai.page_count import count_pages
-from celerp.ai.quota import get_quota_status
-from celerp.ai.service import PROPOSAL_TTL_S, AgentResult, run_agent
-from celerp.ai.tools import compile_agent_capabilities, execute_agent_capability
+from celerp.ai.conversations import ERROR_MARKER
+from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
+from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.ai import AIBatchJob
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
-from celerp.session_gate import require_session_token
 
 # AI-specific rate limiter: tighter than the global 60/min default.
 # LLM queries are expensive; uploads have file-size costs.
 _limiter = Limiter(key_func=get_remote_address)
 
+
+async def _require_session(request: Request) -> None:
+    """Refuse AI routes while this installation has no active Connect session."""
+    from celerp.session_gate import require_session_token
+    await require_session_token(request)
+
+
 router = APIRouter(
-    dependencies=[Depends(get_current_user), Depends(require_session_token), require_permission("use_ai_assistant")],
+    dependencies=[Depends(get_current_user), Depends(_require_session), require_permission("use_ai_assistant")],
 )
 
 # Settings endpoints are authenticated separately from AI execution routes.
@@ -146,6 +125,7 @@ class KVRequest(BaseModel):
 
 def _load_file_http(fid: str, company_id, user_id) -> tuple[bytes, dict]:
     """Wrap load_file with HTTP error mapping."""
+    from celerp.ai.files import load_file
     try:
         return load_file(fid, company_id, user_id)
     except FileNotFoundError:
@@ -188,6 +168,8 @@ async def ai_query(
     session: AsyncSession = Depends(get_session),
 ) -> QueryResponse:
     """Run a one-off read-only agent query against live canonical ERP APIs."""
+    from celerp.ai.memory import get_memory
+    from celerp.ai.service import AgentResult, run_agent
     memory = await get_memory(session, company_id)
     result: AgentResult = await run_agent(
         app=request.app,
@@ -222,6 +204,7 @@ async def estimate_credits(
     model request/file, so local estimates must not maintain a second pricing
     formula that can drift from the authoritative meter.
     """
+    from celerp.ai.page_count import count_pages
     file_estimates: list[FileEstimate] = []
     # Batch execution deduplicates repeated attachment IDs while preserving
     # order, so the estimate must use that same canonical file set.
@@ -249,6 +232,7 @@ async def ai_upload(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Upload files for AI batch processing. Returns list of file IDs."""
+    from celerp.ai.files import save_upload
     if len(files) > 20:
         raise HTTPException(status_code=400, detail="Maximum 20 files allowed per batch")
     for file in files:
@@ -279,6 +263,7 @@ async def ai_upload(
 @router.get("/file/{file_id}")
 async def ai_file(file_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user)):
     """Retrieve a previously uploaded file."""
+    from celerp.ai.files import upload_dir
     data, meta = _load_file_http(file_id, company_id, user.id)
     bin_path = upload_dir() / f"{file_id}.bin"
     return FileResponse(bin_path, media_type=meta.get("content_type"))
@@ -290,6 +275,7 @@ async def get_ai_memory(
     session: AsyncSession = Depends(get_session),
 ) -> MemoryResponse:
     """Return the per-company AI memory (notes and key-value facts)."""
+    from celerp.ai import memory as ai_memory
     mem = await ai_memory.get_memory(session, company_id)
     return MemoryResponse(
         notes=mem.get("notes", []),
@@ -304,6 +290,7 @@ async def clear_ai_memory(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Wipe all AI memory for this company."""
+    from celerp.ai import memory as ai_memory
     await ai_memory.clear_memory(session, company_id)
     await session.commit()
 
@@ -316,6 +303,7 @@ async def add_ai_memory_note(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Append a note to AI memory (max 50 notes, oldest trimmed)."""
+    from celerp.ai import memory as ai_memory
     await ai_memory.add_note(session, company_id, body.content)
     await session.commit()
     return {"ok": True}
@@ -329,6 +317,7 @@ async def set_ai_memory_kv(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set a key-value fact in AI memory (max 100 keys)."""
+    from celerp.ai import memory as ai_memory
     await ai_memory.set_kv(session, company_id, body.key, body.value)
     await session.commit()
     return {"ok": True}
@@ -343,6 +332,7 @@ async def quota_status() -> dict:
     Returns used/limit/topup/remaining/tier. Never raises - returns
     empty dict if gateway not configured (local install).
     """
+    from celerp.ai.quota import get_quota_status
     status = await get_quota_status()
     if not status:
         return {"local": True}
@@ -455,6 +445,7 @@ class ConversationDetail(ConversationOut):
 
 
 def _message_out(m) -> MessageOut:
+    from celerp.ai.conversations import message_error, pending_actions, tool_names
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         model_used=m.model_used, tools_called=tool_names(m.tools_called),
@@ -494,6 +485,7 @@ async def create_conv(
     session: AsyncSession = Depends(get_session),
 ) -> ConversationOut:
     """Create a new conversation."""
+    from celerp.ai.conversations import create_conversation
     conv = await create_conversation(session, company_id, user.id, title=body.title)
     await session.commit()
     await session.refresh(conv)
@@ -515,6 +507,7 @@ async def list_convs(
     session: AsyncSession = Depends(get_session),
 ) -> list[ConversationOut]:
     """List conversations, newest first, each with its count of open proposals."""
+    from celerp.ai.conversations import list_conversation_history, list_conversations, pending_action_counts
     if include_protected:
         if offset:
             raise HTTPException(status_code=400, detail="include_protected requires offset=0")
@@ -544,6 +537,8 @@ async def get_conv(
     session: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
     """Get a conversation with its messages and the reading jobs started from it."""
+    from celerp.ai.batch import list_conversation_jobs
+    from celerp.ai.conversations import get_conversation, get_messages
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -567,6 +562,8 @@ async def delete_conv(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Delete a conversation and all its messages."""
+    from celerp.ai.batch import list_conversation_jobs
+    from celerp.ai.conversations import delete_conversation
     jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
     if any(job.status in ("pending", "running") for job in jobs):
         raise _conflict("conversation_busy", "This conversation still has files being processed. Wait for the job to finish before deleting it.")
@@ -587,6 +584,7 @@ async def rename_conv(
     session: AsyncSession = Depends(get_session),
 ) -> ConversationOut:
     """Rename a conversation."""
+    from celerp.ai.conversations import rename_conversation
     conv = await rename_conversation(session, conversation_id, company_id, user.id, body.title)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -602,6 +600,7 @@ def _launch_batch(
     background_tasks: BackgroundTasks, job: AIBatchJob, company_id, user_id, query: str, file_ids: list[str],
 ) -> None:
     """Run the job after the response is sent; progress rides the notification stream."""
+    from celerp.ai.batch import run_batch
     from celerp.db import SessionLocal
     from celerp.notifications.sse import publish as sse_publish
 
@@ -646,6 +645,17 @@ async def query_in_conversation(
     changes come back as pending actions to confirm. A failed run is stored as
     an assistant message so the thread keeps its history.
     """
+    from celerp.ai.batch import create_batch_job
+    from celerp.ai.conversations import (
+        add_message,
+        build_history_context,
+        get_conversation,
+        get_messages,
+        record_credits,
+        tool_names,
+    )
+    from celerp.ai.memory import get_memory
+    from celerp.ai.service import AgentResult, run_agent
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -772,6 +782,7 @@ async def _resolved_action_arguments(
     This runs before the claim so an unmet dependency never consumes or fails the
     dependent proposal. Ownership is checked through the conversation itself.
     """
+    from celerp.ai.conversations import get_conversation, get_message
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return None, {"code": "action_not_pending", "message": "This action is no longer pending."}, None
@@ -816,6 +827,8 @@ async def _run_confirmed_action(
     The capability re-enters the app with the user's bearer token, so the target
     route enforces every module permission.
     """
+    from celerp.ai.conversations import claim_tool_call, finalize_tool_call
+    from celerp.ai.tools import execute_agent_capability
     resolved_arguments, dependency_error, dependency_record = await _resolved_action_arguments(
         session, conversation_id=conversation_id, message_id=message_id,
         tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
@@ -940,6 +953,7 @@ async def confirm_action(
     No model turn resumes after a write; the user asks the next question.
     An action that is no longer pending, or whose module is not enabled, is 409.
     """
+    from celerp.ai.tools import compile_agent_capabilities
     outcome = await _run_confirmed_action(
         request, session, compile_agent_capabilities(request.app, company_settings, role),
         conversation_id=conversation_id, message_id=body.message_id,
@@ -962,6 +976,7 @@ async def dismiss_action(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Persist dismissal of one proposal so it stays gone after reload."""
+    from celerp.ai.conversations import dismiss_tool_call
     dismissed = await dismiss_tool_call(
         session, conversation_id=conversation_id, message_id=body.message_id,
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
@@ -983,6 +998,7 @@ async def dismiss_all(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Persist dismissal of a selected proposal set under one message-row lock."""
+    from celerp.ai.conversations import dismiss_tool_calls
     dismissed = await dismiss_tool_calls(
         session, conversation_id=conversation_id, message_id=body.message_id,
         tool_call_ids=body.tool_call_ids, company_id=company_id, user_id=user.id,
@@ -1031,6 +1047,8 @@ async def confirm_all(
     action runs. Each action is claimed and finalized on its own, so one
     failure never rolls back the others; the reply lists the outcome per action.
     """
+    from celerp.ai.conversations import get_conversation, get_message, pending_actions
+    from celerp.ai.tools import compile_agent_capabilities
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1130,6 +1148,7 @@ class _Lookups:
 
     async def rows(self, name: str, query: dict) -> list[dict] | str:
         """Result rows of a list capability, or the error message when it failed."""
+        from celerp.ai.tools import execute_agent_capability
         result = await execute_agent_capability(
             self._app, self._authorization, self._capabilities[name],
             {"query": query}, f"lookup_{secrets.token_hex(8)}",
@@ -1351,6 +1370,9 @@ async def propose_from_job(
     vendor action and resolves its returned id only when confirmation executes. Nothing
     is written until the user confirms a card. Calling again returns the same proposals.
     """
+    from celerp.ai.batch import get_batch_job
+    from celerp.ai.conversations import add_message, get_conversation, get_message, pending_actions
+    from celerp.ai.tools import compile_agent_capabilities
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1510,6 +1532,7 @@ async def batch_status(
     session: AsyncSession = Depends(get_session),
 ) -> BatchJobOut:
     """Get batch job status and results."""
+    from celerp.ai.batch import get_batch_job
     job = await get_batch_job(session, job_id, company_id, user.id)
     if job is None:
         raise HTTPException(status_code=404, detail="Batch job not found")

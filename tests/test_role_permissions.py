@@ -1303,23 +1303,17 @@ def test_web_access_link_requires_integrations():
     assert "/settings/cloud" in to_xml(_sidebar("dashboard", role="admin", settings={}))
 
 
-async def test_ai_routes_require_permission(client, session):
+async def test_ai_routes_require_permission(client, session, monkeypatch):
     """An AI endpoint returns 403 for a viewer under default permissions; an
     operator (holding use_ai_assistant by default) is admitted. The AI router also
-    sits behind the Cloud+AI subscription gate (require_session_token); this test
-    isolates the permission gate by satisfying that subscription gate, so a plain
+    sits behind the Cloud+AI subscription gate (an active Connect session); this
+    test isolates the permission gate by seating a session, so a plain
     subscription pass cannot be mistaken for a permission pass."""
-    from celerp.main import app
-    from celerp.session_gate import require_session_token
-
     ctx = await perm_setup(client, session)
     viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
-    app.dependency_overrides[require_session_token] = lambda: None
-    try:
-        assert (await client.get("/ai/memory", headers=viewer_h)).status_code == 403
-        assert (await client.get("/ai/memory", headers=ctx["operator_h"])).status_code == 200
-    finally:
-        app.dependency_overrides.pop(require_session_token, None)
+    monkeypatch.setattr("celerp.gateway.state._session_token", "seated-session")
+    assert (await client.get("/ai/memory", headers=viewer_h)).status_code == 403
+    assert (await client.get("/ai/memory", headers=ctx["operator_h"])).status_code == 200
 
 
 async def test_accounting_reads_require_permission(client, session):

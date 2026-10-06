@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
+from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.db import get_session
 from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
@@ -3253,6 +3253,7 @@ async def import_recon_file(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp.ai.files import load_file
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     try:
         content, meta = load_file(payload.file_id, company_id, user.id)

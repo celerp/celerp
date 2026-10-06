@@ -145,6 +145,10 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
+# The `client` fixture patches celerp.gateway.state.get_session_token. The session
+# gate keeps its own reference from import time, so it is imported here, before any
+# patch is active, and checks the session a test actually seats.
+import celerp.session_gate  # noqa: E402,F401
 from ui.app import app as _ui_app
 
 import sys as _sys, os as _os
