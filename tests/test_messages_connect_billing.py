@@ -59,3 +59,18 @@ def test_no_relay_jargon_in_star_claim():
     for path in _LOCALES.glob("*.json"):
         data = json.loads(path.read_text(encoding="utf-8"))
         assert "relay" not in data["stars.claim_unavailable_body"].lower(), path.name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, path", [
+    ("post", "/connectors/nosuch/sync-plan"),
+    ("delete", "/connectors/nosuch/unassigned"),
+])
+async def test_unknown_connector_is_named_in_the_callers_language(client, monkeypatch, method, path):
+    import celerp.session_gate as gate
+    from test_helpers import register_admin
+    monkeypatch.setattr(gate, "get_session_token", lambda: "session")
+    h = {"Authorization": f"Bearer {await register_admin(client)}", "Accept-Language": "th"}
+    r = await getattr(client, method)(path, headers=h)
+    assert r.status_code == 404
+    assert r.json()["detail"] == t("connectors.unknown_connector", "th", platform="nosuch")
