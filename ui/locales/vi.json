@@ -2582,6 +2582,7 @@
   "system.factory_reset.busy": "Không thể đặt lại công ty này vì có các thay đổi khác đang được lưu cùng lúc. Không có gì bị xóa. Hãy thử lại.",
   "system.factory_reset.held_elsewhere": "Không thể đặt lại công ty này vì các bản ghi trong {table} thuộc về một công ty khác đang tham chiếu đến dữ liệu của công ty này. Không có gì bị xóa.",
   "system.factory_reset.name_mismatch": "Nhập tên công ty chính xác như hiển thị để đặt lại công ty này.",
+  "system.factory_reset.outside_reference": "Không thể đặt lại công ty này vì {table}, một bảng nằm ngoài Celerp, tham chiếu đến bản ghi của Celerp. Không có gì bị xóa.",
   "system.factory_reset.reference_cycle": "Các bảng {tables} tham chiếu lẫn nhau thành vòng, nên không thể đặt lại công ty này. Không có gì bị xóa.",
   "settings.click_to_edit": "Nhấp để chỉnh sửa",
   "settings.click_to_change": "Nhấp để thay đổi",

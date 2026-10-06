@@ -78,7 +78,8 @@ async def read(session: AsyncSession) -> dict[str, Table]:
             "k.confdeltype::text "
             "FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid "
             "JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_class f ON f.oid = k.confrelid "
-            "WHERE n.nspname = current_schema() AND k.contype IN ('p', 'f') "
+            # A key into another schema names a table this catalog does not hold.
+            "WHERE n.nspname = current_schema() AND (k.contype = 'p' OR k.contype = 'f' AND f.relnamespace = n.oid) "
             "ORDER BY c.relname, k.conname"))).all():
         table = tables.get(rel)
         if table is None:
@@ -88,6 +89,17 @@ async def read(session: AsyncSession) -> dict[str, Table]:
         else:
             table.fks.append(ForeignKey(tuple(cols), target, tuple(tcols), on_delete))
     return tables
+
+
+async def outside_referrer(session: AsyncSession) -> str | None:
+    """A table of another schema with a foreign key into this one, as ``schema.table``, or
+    None. Its rows are not in this catalog, so nothing reading it can tell whose they are."""
+    return await session.scalar(text(
+        "SELECT format('%s.%s', rn.nspname, r.relname) FROM pg_constraint k "
+        "JOIN pg_class r ON r.oid = k.conrelid JOIN pg_namespace rn ON rn.oid = r.relnamespace "
+        "JOIN pg_class f ON f.oid = k.confrelid JOIN pg_namespace fn ON fn.oid = f.relnamespace "
+        "WHERE k.contype = 'f' AND fn.nspname = current_schema() AND rn.oid <> fn.oid "
+        "ORDER BY 1 LIMIT 1"))
 
 
 def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], set[str]]:

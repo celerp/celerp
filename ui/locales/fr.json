@@ -2583,6 +2583,7 @@
   "system.factory_reset.busy": "Cette entreprise n'a pas pu être réinitialisée, car d'autres modifications étaient enregistrées en même temps. Rien n'a été supprimé. Réessayez.",
   "system.factory_reset.held_elsewhere": "Cette entreprise ne peut pas être réinitialisée, car des enregistrements de {table} qui appartiennent à une autre entreprise font référence à ses données. Rien n'a été supprimé.",
   "system.factory_reset.name_mismatch": "Saisissez le nom de l'entreprise exactement comme indiqué pour réinitialiser cette entreprise.",
+  "system.factory_reset.outside_reference": "Cette entreprise ne peut pas être réinitialisée, car {table}, une table extérieure à Celerp, fait référence à des enregistrements de Celerp. Rien n'a été supprimé.",
   "system.factory_reset.reference_cycle": "Les tables {tables} se référencent mutuellement en boucle, cette entreprise ne peut donc pas être réinitialisée. Rien n'a été supprimé.",
   "settings.click_to_edit": "Cliquer pour modifier",
   "settings.click_to_change": "Cliquer pour changer",

@@ -782,6 +782,76 @@ async def test_a_reset_is_refused_when_tables_refer_to_each_other_in_a_loop(real
             await conn.execute(text("DROP TABLE IF EXISTS ext_b, ext_a"))
 
 
+async def test_a_row_naming_a_table_in_another_schema_goes_with_the_company(real_client, real_engine):  # noqa: F811
+    """Alpha's and Beta's rows name a row of a table kept in another schema, which has the
+    name and the key of one of Alpha's tables in Celerp's own. Beta's row names nothing
+    of Alpha's: resetting Alpha deletes Alpha's rows only, and the row they named stays."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    thing = uuid.uuid4()
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE SCHEMA ext"))
+        await conn.execute(text("CREATE TABLE ext.things (id uuid PRIMARY KEY)"))
+        await conn.execute(text("CREATE TABLE things (id uuid PRIMARY KEY, company_id uuid NOT NULL "
+                                "REFERENCES companies(id))"))
+        await conn.execute(text("CREATE TABLE ext_refs (id uuid PRIMARY KEY, company_id uuid NOT NULL "
+                                "REFERENCES companies(id), thing_id uuid REFERENCES ext.things(id))"))
+        await conn.execute(text("INSERT INTO ext.things VALUES (:t)"), {"t": thing})
+        await conn.execute(text("INSERT INTO things VALUES (:t, :a)"), {"t": thing, "a": alpha})
+        await conn.execute(text("INSERT INTO ext_refs VALUES (gen_random_uuid(), :a, :t), (gen_random_uuid(), :b, :t)"),
+                           {"a": alpha, "b": beta, "t": thing})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "ext_refs", "company_id = :a", a=alpha) == 0
+        assert await count(real_engine, "ext_refs", "company_id = :b", b=beta) == 1
+        assert await count(real_engine, "things") == 0
+        assert await count(real_engine, "ext.things", "id = :t", t=thing) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_refs, things"))
+            await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
+
+
+async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tables(
+        real_client, real_engine):  # noqa: F811
+    """A table kept in another schema names Alpha by a key into Celerp's own tables. The
+    reset cannot see whose rows those are, so it is refused naming that table, and
+    nothing is deleted."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE SCHEMA ext"))
+        await conn.execute(text("CREATE TABLE ext.notes (id uuid PRIMARY KEY, "
+                                "company_id uuid NOT NULL REFERENCES public.companies(id))"))
+        await conn.execute(text("INSERT INTO ext.notes VALUES (:i, :c)"), {"i": uuid.uuid4(), "c": alpha})
+    try:
+        held = await _held(real_engine, alpha)
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert detail["message_key"] == "system.factory_reset.outside_reference", detail
+        assert detail["message"] == ("This company cannot be reset because ext.notes, a table outside "
+                                     "Celerp's own, refers to Celerp's records. Nothing was deleted.")
+        assert "ext.notes" in in_language("de", detail) != detail["message"]
+        assert await _held(real_engine, alpha) == held
+        assert await count(real_engine, "ext.notes") == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
+
+
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])
 async def test_reset_needs_the_exact_company_name(real_client, real_engine, typed):  # noqa: F811
     token = await _register(real_client, "Alpha Co")

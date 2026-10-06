@@ -213,6 +213,11 @@ async def factory_reset(
         if await db_catalog.read(session) != schema:  # a table or key added before the lock
             await session.rollback()
             raise _busy()
+        if outside := await db_catalog.outside_referrer(session):
+            raise HTTPException(status_code=409, detail=refusal(
+                "system.factory_reset.outside_reference",
+                f"This company cannot be reset because {outside}, a table outside Celerp's own, "
+                "refers to Celerp's records. Nothing was deleted.", table=outside))
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
         held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})
