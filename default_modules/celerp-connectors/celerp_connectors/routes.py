@@ -21,6 +21,7 @@ from celerp.services.auth import (
 )
 from celerp.services.permissions import require_permission
 from celerp.session_gate import require_session_token
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -113,12 +114,12 @@ async def trigger_sync(
         )
     )
     if config is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
     direction = SyncDirection(config.direction)
 
     ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
 
     # Route through run_sync so the manual path gets the same audit row, concurrency
     # guard, and incremental watermark as the scheduled/webhook paths.
@@ -131,7 +132,7 @@ async def trigger_sync(
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         log.exception("connector sync error: %s/%s", connector_name, payload.entity)
-        raise HTTPException(status_code=502, detail=f"Connector error: {exc}")
+        raise HTTPException(status_code=502, detail=t("error.connector_sync_error", service=connector.display_name, detail=exc))
 
     return SyncResponse(
         connector=connector_name,
@@ -166,12 +167,12 @@ async def trigger_sync_plan(
         )
     )
     if config is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
     direction = SyncDirection(config.direction)
 
     ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
 
     from celerp.connectors.sync_runner import run_connector_sync
     from celerp.services.background import spawn_background
@@ -743,7 +744,7 @@ async def set_item_sync(
             str(company_id), "woocommerce", ownership_session=session
         )
         if ctx is None:
-            raise HTTPException(status_code=409, detail="WooCommerce is connected but its credentials are not currently available")
+            raise HTTPException(status_code=409, detail=t("error.woocommerce_credentials"))
         for anchor_id, anchor in anchors.items():
             try:
                 await WooCommerceConnector().ensure_product_link(ctx, anchor_id, actor_id=user.id)

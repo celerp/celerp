@@ -513,7 +513,7 @@ async def test_choose_other_file_deletes_upload(ui, real_engine, real_client, tm
 
 
 OPENED = "This backup was already restored. Celerp opened the existing company; no duplicate was created."
-DISCONNECTED = "Integrations are disconnected and outbound sync is off until you turn it on again."
+DISCONNECTED = "Connections to other services, such as stores and accounting, are not restored from a backup. Connect each one again in Web Access."
 
 
 async def test_done_page_states_outcome_from_server(ui, real_engine, real_client):

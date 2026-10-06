@@ -31,6 +31,7 @@ import httpx
 from celerp.config import settings
 from celerp.gateway.state import fetch_relay_bearer, relay_http_url
 from celerp.services.backup import BackupResult, _parse_key, decrypt, dump_database, encrypt
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -61,10 +62,10 @@ def _hash_file(path: Path) -> tuple[str, int]:
 async def _relay():
     from celerp.services.cloud_entitlement import stored_api_key
     if settings.cloud_disconnected:
-        raise RuntimeError("Cloud is explicitly disconnected")
+        raise RuntimeError(t("error.cloud_backup_disconnected"))
     api_key = await stored_api_key()
     if not api_key:
-        raise RuntimeError("No Celerp cloud credential")
+        raise RuntimeError(t("error.cloud_backup_no_account"))
     async with httpx.AsyncClient(base_url=relay_http_url(), timeout=60) as client:
         jwt = await fetch_relay_bearer(client, api_key=api_key)
         client.headers["Authorization"] = f"Bearer {jwt}"
@@ -108,7 +109,7 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
     if not settings.backup_encryption_key:
         return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
     if settings.cloud_disconnected:
-        return BackupResult(ok=False, size_bytes=0, error="Cloud is explicitly disconnected")
+        return BackupResult(ok=False, size_bytes=0, error=t("error.cloud_backup_disconnected"))
 
     try:
         from celerp.services import backup_export

@@ -805,7 +805,7 @@ async def test_terminal_gateway_error_always_has_recovery(
             )
 
     assert r.status_code == 200
-    assert "Connection failed" in r.text
+    assert "The connection didn't work" in r.text
     assert 'id="cloud-connect-btn"' in r.text
     assert 'hx-post="/settings/cloud-disconnect"' in r.text
     assert ("Link subscription" in r.text) is (not entitlement_known)

@@ -30,6 +30,7 @@ from celerp.services.business_time import business_date_at, business_timezone
 from celerp.services.doc_balance import outstanding_balance
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate
 from celerp.services.permissions import require_permission
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -384,7 +385,7 @@ async def payments_disconnect() -> dict:
     """What Cloud did: disconnected, or disconnecting while existing payments finish."""
     result = await pay.disconnect()
     if result is None:
-        raise HTTPException(status_code=502, detail="Could not disconnect Stripe")
+        raise HTTPException(status_code=502, detail=t("error.stripe_disconnect_failed"))
     return result
 
 

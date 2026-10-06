@@ -279,7 +279,7 @@ async def test_a_reset_prepares_the_closing_then_closes_the_payments_once_the_co
     (httpx.Response(500, text="Internal Server Error"), 503, "could not confirm"),
     (httpx.Response(409, json={"detail": "payment_settling"}), 409, "still being processed."),
     (httpx.Response(409, json={"detail": "payment_unrecorded"}), 409, "has not reached Celerp"),
-    (httpx.Response(409, json={"detail": "reconnect_required"}), 409, "Reconnect this Stripe account"),
+    (httpx.Response(409, json={"detail": "reconnect_required"}), 409, "Celerp lost access to your Stripe account"),
     (httpx.Response(409, json={"detail": "update_required"}), 409, "Update Celerp"),
     (httpx.Response(409, json={"detail": "something else"}), 503, "could not confirm"),
     (httpx.Response(200, json={"company_id": "another-company", "operation_id": "x", "state": "prepared"}),
@@ -566,7 +566,8 @@ async def test_a_reset_refused_while_a_payment_settles_succeeds_once_it_has(real
     assert await _companies(real_engine) == {str(b)}
 
 
-RECONNECT = "Reconnect this Stripe account to finish checking payments already in progress. Nothing was deleted."
+RECONNECT = ("Celerp lost access to your Stripe account, so payments already in progress can't be checked. "
+             "Use Reconnect Stripe in Web Access, Online Payments to finish checking them. Nothing was deleted.")
 SETTLING = ("A payment on one of this company's invoices is still being processed. "
             "Try again once it has finished. Nothing was deleted.")
 

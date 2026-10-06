@@ -2999,15 +2999,15 @@ class TestDocumentPolish:
             assert "next=doc-send" in content
             # The failure now surfaces as a persistent lower-right toast that
             # stays until dismissed, not an inline hint beside Send. It keeps the
-            # message and the deep link to reconnect in Settings.
-            assert "Web access connection failed" in content
+            # message and the link to Web Access to connect again.
+            assert "Web Access refused this computer" in content
             assert "celerpToast(" in content
             assert "'error',true," in content
             assert "/settings/cloud" in content
-            assert "Reconnect in Settings" in content
+            assert "Open Web Access" in content
             # The message is carried by the toast call, not rendered inline as
             # element text beside Send (that inline hint is gone).
-            assert ">Web access connection failed" not in content
+            assert ">Web Access refused this computer" not in content
             assert 'hx-get="/docs/d:1/share"' not in content
         finally:
             documents._free_send_quota_cache.update(
@@ -3028,7 +3028,7 @@ class TestDocumentPolish:
         assert r.status_code == 200
         assert b"send-modal-d-1" in r.content
         assert b"next=doc-send" not in r.content
-        assert b"Web access connection failed" not in r.content
+        assert b"Web Access refused this computer" not in r.content
 
     @pytest.mark.asyncio
     async def test_list_send_hidden_when_relay_credential_rejected(self, ui_client):
@@ -3054,10 +3054,10 @@ class TestDocumentPolish:
         assert "send-modal-list-1" not in content
         # Same persistent lower-right toast fallback as the doc path, not an
         # inline hint: message plus the reconnect deep link, no inline anchor.
-        assert "Web access connection failed" in content
+        assert "Web Access refused this computer" in content
         assert "celerpToast(" in content
         assert "/settings/cloud" in content
-        assert ">Web access connection failed" not in content
+        assert ">Web Access refused this computer" not in content
 
     @pytest.mark.asyncio
     async def test_online_note_present(self, ui_client):
@@ -11187,7 +11187,7 @@ class TestPaymentsSettingsPage:
         with self._mocks(relay=True, enabled=False, state="revoked"):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "Reconnect this Stripe account to finish checking payments already in progress." in r.text
+        assert "Use Reconnect Stripe in Web Access, Online Payments to finish checking them." in r.text
         # One action: reconnect. No sales pitch, no disconnect, no deposit settings.
         assert r.text.count('action="/settings/payments/connect"') == 1
         assert "Reconnect Stripe" in r.text

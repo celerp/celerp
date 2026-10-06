@@ -36,6 +36,7 @@ from celerp.ai.tools import (
     compile_agent_capabilities,
     execute_agent_capability,
 )
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +91,6 @@ class AgentResult:
 # -- Error mapping ----------------------------------------------------------
 
 _RELAY_ERROR_TEXT = {
-    "no_session": "The AI service is not available right now. Sign in to Connect and try again.",
     "unexpected_reply": "The AI service returned an unexpected reply. Please try again.",
     "continuation_expired": "The conversation step expired, ask the question again.",
     "busy": "The AI service is temporarily busy. Please try again in a moment.",
@@ -111,6 +111,8 @@ def _user_error(exc: BaseException) -> str:
     if isinstance(exc, RelayError):
         if exc.code == "service_unavailable":
             return str(exc)
+        if exc.code == "no_session":
+            return t("error.ai_signed_out")
         return _RELAY_ERROR_TEXT[exc.code]
     if isinstance(exc, httpx.TimeoutException):
         return "The AI service took too long to respond. Please try again."
