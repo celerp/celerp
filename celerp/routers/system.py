@@ -135,29 +135,35 @@ def _held_elsewhere(schema: dict) -> str:
     from celerp.db_catalog import company_tables, ident
 
     rows = _company_rows(schema)
-
-    def naming(fk, mine: bool) -> str:
-        """The rows whose ``fk`` names a row of the company (``mine``) or of another."""
-        where = f" WHERE ({rows[fk.target]})" + ("" if mine else " IS NOT TRUE") if fk.target in rows else ""
-        return f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} " \
-               f"FROM {ident(fk.target)}{where})"
-
     company = company_tables(schema)
+
+    def naming(fk, mine: bool, seen: frozenset[str] = frozenset()) -> str:
+        """The rows whose ``fk`` names a row of the company (``mine``) or of another."""
+        if fk.target in rows:
+            where = f"({rows[fk.target]})" + ("" if mine else " IS NOT TRUE")
+        else:  # reached only through keys that clear: another company's when it names one
+            where = "FALSE" if fk.target in seen else others(fk.target, seen | {fk.target}) or "FALSE"
+        return f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} " \
+               f"FROM {ident(fk.target)} WHERE {where})"
+
+    def others(name: str, seen: frozenset[str]) -> str:
+        """The rows of ``name``, a table with no company column, that are another company's
+        too: those naming one of its rows."""
+        return " OR ".join(naming(fk, False, seen) for fk in schema[name].fks if fk.target in company)
+
     checks = []
     for name in sorted(company):
         table = schema[name]
-        # A row with no company column is another company's too when it names one of its rows.
-        others = "" if "company_id" in table.columns else " OR ".join(
-            naming(fk, mine=False) for fk in table.fks if fk.target in company)
+        theirs = "" if "company_id" in table.columns else others(name, frozenset())
         for fk in table.fks:
             if fk.target not in rows:
                 continue
             if name in rows:
                 checks.append((name, f"({rows[name]}) IS NOT TRUE AND {naming(fk, mine=True)}"))
-            elif others:
-                checks.append((name, f"{naming(fk, mine=True)} AND ({others})"))
-        if name in rows and others:
-            checks.append((name, f"({rows[name]}) AND ({others})"))
+            elif theirs:
+                checks.append((name, f"{naming(fk, mine=True)} AND ({theirs})"))
+        if name in rows and theirs:
+            checks.append((name, f"({rows[name]}) AND ({theirs})"))
     return " UNION ALL ".join(
         f"(SELECT '{name.replace(chr(39), chr(39) * 2)}' WHERE EXISTS "
         f"(SELECT 1 FROM {ident(name)} WHERE {where}))" for name, where in checks) + " LIMIT 1"

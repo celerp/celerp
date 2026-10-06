@@ -523,6 +523,48 @@ def _commit_elsewhere(*statements: str, **params):
     return writer, outcome
 
 
+@pytest.mark.parametrize("noted", ["alpha", "beta"])
+async def test_a_row_hanging_off_a_note_whose_key_clears_is_held_only_by_the_company_it_names(
+        real_client, real_engine, noted):  # noqa: F811
+    """A note (no company column) names an item by a key that clears, and a tag names
+    Alpha's item and that note. With the note naming Alpha's item too, everything is
+    Alpha's: the reset deletes the tag and keeps the note with its key cleared. With the
+    note naming Beta's item, the tag is Beta's as much as Alpha's: the reset is refused."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    mine, theirs, note = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with real_engine.begin() as conn:
+        await conn.execute(text(_ITEMS))
+        await conn.execute(text("CREATE TABLE ext_notes (id uuid PRIMARY KEY, "
+                                "item_id uuid REFERENCES ext_items(id) ON DELETE SET NULL)"))
+        await conn.execute(text("CREATE TABLE ext_note_tags (id uuid PRIMARY KEY, "
+                                "item_id uuid REFERENCES ext_items(id) ON DELETE CASCADE, "
+                                "note_id uuid REFERENCES ext_notes(id) ON DELETE CASCADE)"))
+        await conn.execute(text("INSERT INTO ext_items VALUES (:i, :a, 'alpha item'), (:j, :b, 'beta item')"),
+                           {"i": mine, "a": alpha, "j": theirs, "b": beta})
+        await conn.execute(text("INSERT INTO ext_notes VALUES (:n, :i)"),
+                           {"n": note, "i": mine if noted == "alpha" else theirs})
+        await conn.execute(text("INSERT INTO ext_note_tags VALUES (gen_random_uuid(), :i, :n)"), {"i": mine, "n": note})
+    try:
+        if noted == "beta":
+            await _refused_untouched(real_client, real_engine, ta, alpha,
+                                     ("ext_items", "ext_notes", "ext_note_tags"), "ext_note_tags")
+            return
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "ext_note_tags") == 0
+        assert await _rows(real_engine, "ext_notes") == [(note, None)]
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_note_tags, ext_notes, ext_items"))
+
+
 async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
         real_client, real_engine, monkeypatch):  # noqa: F811
     """Beta adds a row naming Alpha's item after the reset has checked for such rows and
