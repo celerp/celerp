@@ -14,16 +14,16 @@ missing, and the old flag is converted wherever it still exists. The DDL is plai
 on purpose: the stamp repair (celerp.migrations._auto_stamp) must never take a
 receipts table made at start as proof this revision ran.
 
-Revision ID: u8j9f0a1b2c3
-Revises: t7i8d9e0f1a2
+Revision ID: w1n2o3p4q5r6
+Revises: v0m1n2o3p4q5
 Create Date: 2026-10-06
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "u8j9f0a1b2c3"
-down_revision = "t7i8d9e0f1a2"
+revision = "w1n2o3p4q5r6"
+down_revision = "v0m1n2o3p4q5"
 branch_labels = None
 depends_on = None
 

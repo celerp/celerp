@@ -16,17 +16,17 @@ from sqlalchemy import create_engine, text
 
 from .conftest import run_migration_ops
 
-MODULE = "v9k0l1m2n3o4_company_modules_from_2_5"
+MODULE = "t7i8j9k0l1m2_company_modules_from_2_5"
 
 
-def test_revision_follows_per_user_notice_reads_on_a_single_head():
+def test_revision_follows_unmatched_refunds_on_a_single_head():
     from alembic.script import ScriptDirectory
 
     from celerp.alembic_config import build_alembic_config
 
     script = ScriptDirectory.from_config(build_alembic_config())
     assert len(script.get_heads()) == 1
-    assert script.get_revision("v9k0l1m2n3o4").down_revision == "u8j9f0a1b2c3"
+    assert script.get_revision("t7i8j9k0l1m2").down_revision == "s6h7c8d9e0f1"
 
 
 @pytest.fixture()
