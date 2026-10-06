@@ -64,6 +64,7 @@ from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, locked_company
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.provisioning import create_install_owner, provision_restored_company
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -1556,7 +1557,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 name = plan.destination_name if company_name is None else _chosen_name(company_name)
             else:
                 if mode == "start_company" and not await hold_companyless_login(session, user_id):
-                    raise BackupError(409, HAS_COMPANY)
+                    raise BackupError(409, t(HAS_COMPANY))
                 # One restore at a time per owner, so two cannot both take the same free name.
                 await session.execute(text("SELECT pg_advisory_xact_lock(:k)"),
                                       {"k": _lock_key(f"names:{user_id}")})

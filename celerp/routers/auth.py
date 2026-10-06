@@ -179,7 +179,7 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
     """The active login these credentials belong to; a neutral 401 otherwise."""
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
     return user
 
 
@@ -187,7 +187,7 @@ async def companyless_login(session: AsyncSession, email: str, password: str) ->
     """The login these credentials belong to, when it has no company left; 409 otherwise."""
     user = await authenticate(session, email, password)
     if await first_usable_company_link(session, user.id) is not None:
-        raise HTTPException(status_code=409, detail=HAS_COMPANY)
+        raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
     return user
 
 
@@ -253,7 +253,7 @@ async def start_company(request: Request, payload: StartCompanyRequest,
         raise HTTPException(status_code=422, detail="Company name required")
     await hold_direct_slot(session)
     if not await hold_companyless_login(session, user.id):
-        raise HTTPException(status_code=409, detail=HAS_COMPANY)
+        raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
     company = await provision_additional_company(session, user=user, company_name=name)
     return await issue_token_pair(session, user=user, company_id=company.id)
 
@@ -365,7 +365,7 @@ async def switch_company(
         )
     ).scalar_one_or_none()
     if not link:
-        raise HTTPException(status_code=403, detail="Access to this company not granted")
+        raise HTTPException(status_code=403, detail=t("auth.company_access_denied"))
     company = await session.get(Company, company_id)
     # An owner may enter their deactivated company, as at sign-in, to reactivate it.
     if company is None or (not company.is_active and link.role != "owner"):
@@ -456,16 +456,16 @@ async def password_reset_confirm(
         await session.execute(select(User).where(User.reset_token == token_digest))
     ).scalar_one_or_none()
     if not user or not user.reset_token_expires:
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+        raise HTTPException(status_code=400, detail=t("auth.reset_link_invalid"))
     expires = user.reset_token_expires
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > expires:
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+        raise HTTPException(status_code=400, detail=t("auth.reset_link_invalid"))
     try:
         validate_password(payload.new_password)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
     user.reset_token_expires = None
@@ -490,11 +490,11 @@ async def change_password(
 ) -> dict:
     """Change password for the currently authenticated user."""
     if not user.auth_hash or not verify_password(payload.current_password, user.auth_hash):
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
+        raise HTTPException(status_code=400, detail=t("auth.current_password_wrong"))
     try:
         validate_password(payload.new_password)
     except ValueError:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+        raise HTTPException(status_code=400, detail=t("auth.password_too_short"))
     user.auth_hash = hash_password(payload.new_password)
     # Rotate the user's nonce so every access and refresh token minted before the
     # change dies immediately, including the caller's current session.

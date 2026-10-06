@@ -24,6 +24,7 @@ from celerp.migrations.compatibility import running_version
 from company_backup_support import company, owner, token
 from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
 from test_company_backup_ui import RECOVER, _anchors, _link, _page, ui  # noqa: F401
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -217,7 +218,7 @@ async def test_system_recovery_api_install_owner_only(real_client, real_engine):
                          ("get", "/backup/export"), ("get", "/backup/export/snap-1")):
         r = await getattr(real_client, method)(path, headers=auth(tok))
         assert r.status_code == 403, path
-        assert r.json()["detail"] == "Installation owner access required"
+        assert r.json()["detail"] == t("auth.install_owner_required", "en")
 
 
 async def test_legacy_import_api_install_owner_only(real_client, real_engine, tmp_path, monkeypatch):

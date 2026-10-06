@@ -20,6 +20,7 @@ from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services.company_lock import hold_company
+from ui.i18n import t
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -271,7 +272,6 @@ async def validate_access_token(session: AsyncSession, token: str) -> AuthContex
     )
 
 
-STAGED_COMPANY = "This company is still being moved into Celerp. Finish or discard the migration first."
 # The only routes a staged company's own token reaches. Token refresh, logout and health
 # do not authenticate through this dependency, so they stay available as well.
 STAGED_ALLOWED_PREFIX = "/migrations/"
@@ -293,7 +293,7 @@ async def get_auth_context(
     """
     ctx = await validate_access_token(session, token)
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=STAGED_COMPANY)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.company_staged"))
     # The authority the request starts with is judged again under the company lock
     # (company_lock), so a write that waits there never runs on revoked access.
     from celerp.services.permissions import authorize_request, end_request
@@ -328,7 +328,7 @@ async def require_install_owner(
     if not await is_install_owner(session, user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Installation owner access required",
+            detail=t("auth.install_owner_required"),
         )
     return user
 
@@ -344,7 +344,8 @@ async def get_current_role(ctx: AuthContext = Depends(get_auth_context)) -> str:
 
 # Sign-in refusal for a login with no active company left.
 NO_COMPANY = "No active company membership"
-HAS_COMPANY = "This login already has a company. Sign in instead."
+# Locale key, translated where raised so the reader gets their own language.
+HAS_COMPANY = "auth.has_company"
 
 
 # The one rule for whether a login can work in a company: an active membership in an

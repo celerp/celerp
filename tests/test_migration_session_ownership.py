@@ -31,9 +31,10 @@ from migration_support import (
     staged_run,
 )
 from test_helpers import create_item, default_location_id, make_authed_token, register_admin
+from ui.i18n import t
 
 NOT_FOUND = "Migration not found."
-STAGED = "This company is still being moved into Celerp. Finish or discard the migration first."
+STAGED = t("auth.company_staged", "en")
 
 
 async def _company(session_or_engine, company_id):
