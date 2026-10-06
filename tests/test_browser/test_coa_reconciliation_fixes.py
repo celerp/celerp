@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from ui.i18n import t
+
 pytestmark = pytest.mark.browser
 
 OUT = Path("context/reviews/coa-reconciliation")
@@ -305,7 +307,7 @@ def test_match_endpoint_validates_book_entry(api, bank_account):
     r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[1]['id']}/match",
                  json={"je_id": je_id})
     assert r.status_code == 400, r.text
-    assert "already reconciled" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_recon_book_entry_matched", "en")
 
     # Re-matching the same line to its own entry stays idempotent.
     r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[0]['id']}/match",
