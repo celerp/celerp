@@ -55,7 +55,7 @@ from celerp.services.units import (
     validate_quantity,
 )
 from celerp_inventory.projections import is_core_item_key
-from ui.i18n import category_label_everywhere
+from ui.i18n import category_label_everywhere, t
 
 logger = logging.getLogger(__name__)
 
@@ -701,7 +701,7 @@ async def _assert_external_identity_available(
 ) -> None:
     product_id = str(link.get("product_id") or "")
     if not product_id:
-        raise ExternalLinkConflictError("External product identity is missing")
+        raise ExternalLinkConflictError(t("inventory.err_store_product_unknown"))
     variation_id = link.get(_external_variant_key(platform))
     rows = (await session.execute(
         _external_identity_candidates(uuid.UUID(str(company_id)), platform, product_id)
@@ -715,9 +715,7 @@ async def _assert_external_identity_available(
             product_id,
             str(variation_id) if variation_id not in (None, "") else None,
         ):
-            raise ExternalLinkConflictError(
-                f"{platform} product identity is already linked to another catalog item"
-            )
+            raise ExternalLinkConflictError(t("inventory.err_store_product_taken", platform=platform))
 
 
 def _is_structural_product_anchor_state(state: dict) -> bool:
@@ -940,9 +938,7 @@ async def upsert_external_product(
                 not selected_by_identity
                 and normalize_sku((row.state or {}).get("sku")) != normalize_sku(sku)
             ):
-                raise ExternalLinkConflictError(
-                    "Catalog SKU changed while the external product was being resolved"
-                )
+                raise ExternalLinkConflictError(t("inventory.err_sku_changed_while_running"))
 
         incoming_link = {
             "product_id": product_id,
@@ -1101,14 +1097,12 @@ async def set_external_link_state(
         with_for_update=True, populate_existing=True,
     )
     if row is None or row.entity_type != "item":
-        raise ValueError(f"Item {entity_id!r} not found")
+        raise ValueError(t("inventory.err_items_not_found"))
     current = external_link_for_state(row.state or {}, platform)
     if not current:
-        raise ValueError(f"Item {entity_id!r} is not linked to {platform}")
+        raise ValueError(t("inventory.err_store_not_linked", platform=platform))
     if expected_identity is not None and external_identity_key(platform, current) != expected_identity:
-        raise ExternalLinkConflictError(
-            "External product identity changed while the operation was running"
-        )
+        raise ExternalLinkConflictError(t("inventory.err_store_product_changed"))
     updated = dict(current)
     if sync_enabled is not None:
         updated["sync_enabled"] = bool(sync_enabled)
@@ -1137,23 +1131,17 @@ async def set_external_link(
         with_for_update=True, populate_existing=True,
     )
     if row is None or row.entity_type != "item":
-        raise ValueError(f"Item {entity_id!r} not found")
+        raise ValueError(t("inventory.err_items_not_found"))
     state = dict(row.state or {})
     if expected_sku is not None and normalize_sku(state.get("sku")) != normalize_sku(expected_sku):
-        raise ExternalLinkConflictError(
-            "Catalog SKU changed while the external product was being resolved"
-        )
+        raise ExternalLinkConflictError(t("inventory.err_sku_changed_while_running"))
     current = external_link_for_state(state, platform)
     if require_unlinked and current:
-        raise ExternalLinkConflictError(
-            "External product identity changed while the operation was running"
-        )
+        raise ExternalLinkConflictError(t("inventory.err_store_product_changed"))
     if expected_identity is not None and (
         not current or external_identity_key(platform, current) != expected_identity
     ):
-        raise ExternalLinkConflictError(
-            "External product identity changed while the operation was running"
-        )
+        raise ExternalLinkConflictError(t("inventory.err_store_product_changed"))
     links = dict(state.get("external_links") or {})
     normalized = dict(link)
     normalized["product_id"] = str(normalized["product_id"])
@@ -1251,7 +1239,7 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
     cid = uuid.UUID(str(company_id))
     row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise ValueError(f"Item {entity_id!r} not found")
+        raise ValueError(t("inventory.err_items_not_found"))
     state = row.state or {}
 
     catalog_item_id = state.get("catalog_item_id")
@@ -1264,7 +1252,7 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
             or parent.entity_type != "item"
             or not _is_structural_product_anchor_state(parent.state or {})
         ):
-            raise ValueError(f"Item {entity_id!r} references an invalid catalog product anchor")
+            raise ValueError(t("inventory.err_product_link_missing"))
         return parent
 
     parent_item_id = state.get("parent_item_id")
@@ -1297,8 +1285,8 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
 
     sku = normalize_sku(state.get("sku"))
     if not sku:
-        raise ValueError(f"Item {entity_id!r} has no catalog SKU to resolve")
-    raise ValueError(f"SKU {state.get('sku')!r} does not resolve to one catalog product anchor")
+        raise ValueError(t("inventory.err_no_sku_for_product"))
+    raise ValueError(t("inventory.err_sku_not_one_product", sku=state.get("sku")))
 
 
 def _is_explicit_catalog_anchor_state(state: dict) -> bool:

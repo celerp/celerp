@@ -185,6 +185,13 @@ def unit_label(name: str) -> str:
     return t(tkey) if tkey in _cached_load("en") else name
 
 
+def item_status_label(status: str, lang: str | None = None) -> str:
+    """Display name for an item status in the user's language; a status with no
+    catalog entry shows as stored, so a message never names a translation key."""
+    tkey = f"enum.item_status.{status}"
+    return t(tkey, lang) if tkey in _cached_load("en") else status
+
+
 @lru_cache(maxsize=1)
 def _field_label_keys() -> dict[str, str]:
     """English text -> translation key of every item field label in the catalog: the

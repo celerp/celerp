@@ -5000,7 +5000,7 @@ class TestSprint5ItemActions:
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
             r = await ui_client.post("/api/items/gc:123/split", data={"parts": "abc"}, cookies=_authed())
         assert r.status_code == 200
-        assert b"Invalid" in r.content
+        assert t("inv.invalid_quantities_use_commaseparated_numbers").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_split_item_route_too_few_parts(self, ui_client):
@@ -5073,7 +5073,7 @@ class TestSprint5ItemActions:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"required" in r.content.lower()
+        assert t("inv.source_items_and_target_selection_are_required").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_merge_items_route_missing_sources(self, ui_client):
@@ -5083,7 +5083,7 @@ class TestSprint5ItemActions:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"required" in r.content.lower()
+        assert t("inv.source_items_and_target_selection_are_required").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_merge_items_route_api_error(self, ui_client):
@@ -5654,7 +5654,7 @@ class TestItemActionRouteCompleteness:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"Invalid" in r.content
+        assert t("error.invalid_resulting_quantity").encode() in r.content
 
 
 class TestSplitCardLiveRefresh:
@@ -6600,7 +6600,7 @@ class TestBulkDuplicate:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"Duplicated: 1, failed: 1." in r.content
+        assert t("inventory.bulk_duplicated_partial", ok=1, failed=1).encode() in r.content
         assert b"flash--warning" in r.content
         assert create.call_count == 2
 
@@ -6621,8 +6621,8 @@ class TestBulkDuplicate:
             )
         assert r.status_code == 200
         assert b"flash--error" in r.content
-        assert b"Failed to duplicate" in r.content
-        assert b"duplicated." not in r.content
+        assert t("inventory.bulk_duplicate_failed", n=2).encode() in r.content
+        assert b"Duplicated:" not in r.content
         assert create.call_count == 2
 
     @pytest.mark.asyncio
@@ -6798,7 +6798,7 @@ class TestBulkActionsPhase1to5:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"Target item selection is required" in r.content
+        assert t("inv.target_item_selection_is_required").encode() in r.content
 
     # ── Phase 4: bulk split (simplified single-qty) ──────────────────────
 
@@ -6811,7 +6811,7 @@ class TestBulkActionsPhase1to5:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"exactly 1" in r.content
+        assert t("inv.select_exactly_1_item_to_split").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_split_rejects_invalid_qty(self, ui_client):
@@ -6822,7 +6822,7 @@ class TestBulkActionsPhase1to5:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"Invalid split quantity" in r.content
+        assert t("inv.invalid_split_quantity").encode() in r.content
 
     # ── Phase 5: bulk expire/archive ─────────────────────────────────────
 

@@ -15,6 +15,8 @@ import pytest
 import pytest_asyncio
 
 from celerp.services.permissions import missing_permission_text
+from celerp_inventory.routes import _field_name
+from ui.i18n import t
 
 
 def _roles_from(role: str) -> list[str]:
@@ -1511,7 +1513,7 @@ async def test_amount_edit_denied_without_permission(client, session, field):
     r = await client.patch(f"/items/{ctx['item_id']}", json=_amount_patch(field),
                            headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert field in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name(field))
 
 
 async def test_amount_edit_allowed_with_permission(client, session):
@@ -1594,7 +1596,7 @@ async def test_merge_override_denied_without_amount_permission(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert "quantity" in r.json()["detail"].lower()
+    assert r.json()["detail"] == missing_permission_text("edit_inventory_amounts")
 
 
 async def test_merge_negative_override_rejected(client, session):
@@ -1633,7 +1635,7 @@ async def test_sell_by_change_denied_without_amount_permission(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert "sell_by" in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name("sell_by"))
 
 
 async def test_sell_by_change_allowed_with_amount_permission(client, session):
@@ -1880,7 +1882,7 @@ async def test_create_negative_amount_rejected(client, session, field):
     body[field] = -5
     r = await client.post("/items", json=body, headers=ctx["admin_h"])
     assert r.status_code == 422, r.text
-    assert field in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_amount_negative", "en", field=_field_name(field))
 
 
 def test_guard_family_removed():

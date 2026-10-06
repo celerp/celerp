@@ -382,7 +382,7 @@ async def test_patch_item_rejects_derived_key(client):
         headers=h,
     )
     assert r.status_code == 422
-    assert "computed" in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_price_derived", "en", lists="Trade", base="Retail")
 
 
 @pytest.mark.asyncio
@@ -396,7 +396,7 @@ async def test_set_item_price_rejects_derived_key(client):
         headers=h,
     )
     assert r.status_code == 422
-    assert "computed" in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_price_derived", "en", lists="Trade", base="Retail")
 
 
 @pytest.mark.asyncio

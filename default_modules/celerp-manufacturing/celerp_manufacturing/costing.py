@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Callable
 
 from celerp.services.money import round_money, round_rate, to_decimal
+from ui.i18n import t
 
 MAX_RECIPE_DEPTH = 32
 
@@ -20,6 +21,17 @@ ItemLookup = Callable[[str], dict | None]
 
 class RecipeError(ValueError):
     """Raised on a cyclic or too-deeply-nested recipe graph."""
+
+
+def recipe_too_deep() -> RecipeError:
+    return RecipeError(t("manufacturing.err_recipe_too_deep"))
+
+
+def recipe_cycle(component_id: str, lookup: ItemLookup) -> RecipeError:
+    """The cycle names the component the way the user knows it: its SKU, else its name."""
+    state = lookup(component_id) or {}
+    return RecipeError(t("manufacturing.err_recipe_cycle",
+                         component=state.get("sku") or state.get("name") or component_id))
 
 
 def _labor_line_cost(line: dict) -> float:
@@ -61,13 +73,13 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, currency: str = "USD", _pa
     (round-once). Raises RecipeError on a cycle or nesting beyond MAX_RECIPE_DEPTH.
     """
     if _depth > MAX_RECIPE_DEPTH:
-        raise RecipeError("recipe nesting exceeds max depth")
+        raise recipe_too_deep()
 
     materials = 0.0
     for comp in recipe.get("components", []):
         cid = comp["item_id"]
         if cid in _path:
-            raise RecipeError(f"recipe cycle detected at {cid}")
+            raise recipe_cycle(cid, lookup)
         child_cost = unit_cost(lookup(cid), lookup, currency=currency, _path=_path | {cid}, _depth=_depth + 1)
         line = float(comp.get("quantity") or 0) * child_cost
         # Annotate the line in-place so the UI can show each component's catalog unit cost (a rate)
