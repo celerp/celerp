@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,9 +17,10 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from celerp.modules import api
+from celerp.modules import api, loader
 from celerp.services.permissions import authorize_request
 from test_helpers import seed_member
+from test_modules.test_admission import _clean_loader_state, _modules, _uid, _write_module  # noqa: F401
 
 
 # ── api_request ──────────────────────────────────────────────────────────────
@@ -104,6 +106,14 @@ async def test_api_request_sends_the_access_cookie_as_bearer(local_api):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("authorization", ["Bearer", "Bearer ", "Bearer    "])
+async def test_api_request_takes_an_empty_bearer_as_absent(local_api, authorization):
+    r = await api.api_request(_request({"Authorization": authorization, "Cookie": "celerp_token=cookie-jwt"}),
+                              "GET", "/companies/me")
+    assert r.json()["authorization"] == "Bearer cookie-jwt"
+
+
+@pytest.mark.asyncio
 async def test_api_request_does_not_follow_redirects(local_api):
     r = await api.api_request(_request({"Authorization": "Bearer abc"}), "GET", "/redirect")
     assert r.status_code == 302
@@ -135,56 +145,104 @@ async def test_api_request_takes_no_caller_headers(local_api):
 
 # ── read_resource ────────────────────────────────────────────────────────────
 
-def _module(tmp_path):
-    """A module folder whose own source calls read_resource, plus a file outside it."""
-    pkg = tmp_path / "mod"
-    (pkg / "templates").mkdir(parents=True)
-    (pkg / "templates" / "invoice.html").write_bytes(b"<p>invoice</p>")
+_READER = (
+    "from celerp.modules.api import read_resource\n"
+    "def read(relative, module_file=__file__):\n"
+    "    return read_resource(module_file, relative)\n"
+)
+
+
+def _module(base, tmp_path, prelude: str = ""):
+    """A module the loader admits, whose own code calls read_resource, plus a
+    file outside it. Returns the module folder and its loaded package."""
     (tmp_path / "secret.txt").write_bytes(b"secret")
-    src = pkg / "reader.py"
-    src.write_text(
-        "from celerp.modules.api import read_resource\n"
-        "def read(relative, module_file=__file__):\n"
-        "    return read_resource(module_file, relative)\n"
-    )
-    ns: dict = {"__file__": str(src)}
-    exec(compile(src.read_text(), str(src), "exec"), ns)
-    return pkg, ns["read"]
+    folder = f"reader-{_uid()}"
+    pkg = _write_module(base, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                        files={"templates/invoice.html": "<p>invoice</p>"},
+                        init_prelude=_READER + prelude)
+    loaded = loader.load_all(str(base), {folder})
+    assert folder in [m["name"] for m in loaded], loader.load_errors()
+    return pkg, sys.modules[folder]
 
 
-def test_read_resource_reads_a_file_shipped_with_the_module(tmp_path):
-    _, read = _module(tmp_path)
-    assert read("templates/invoice.html") == b"<p>invoice</p>"
+def test_read_resource_reads_a_file_shipped_with_the_module(_modules, tmp_path):
+    _, mod = _module(_modules, tmp_path)
+    assert mod.read("templates/invoice.html") == b"<p>invoice</p>"
+
+
+def test_read_resource_works_while_the_module_is_imported(_modules, tmp_path):
+    _, mod = _module(_modules, tmp_path, "PAGE = read('templates/invoice.html')\n")
+    assert mod.PAGE == b"<p>invoice</p>"
 
 
 @pytest.mark.parametrize("relative", ["../secret.txt", "templates/../../secret.txt"])
-def test_read_resource_refuses_a_path_leaving_the_module(tmp_path, relative):
-    _, read = _module(tmp_path)
+def test_read_resource_refuses_a_path_leaving_the_module(_modules, tmp_path, relative):
+    _, mod = _module(_modules, tmp_path)
     with pytest.raises(ValueError):
-        read(relative)
+        mod.read(relative)
 
 
-def test_read_resource_refuses_an_absolute_path(tmp_path):
-    _, read = _module(tmp_path)
+def test_read_resource_refuses_an_absolute_path(_modules, tmp_path):
+    _, mod = _module(_modules, tmp_path)
     with pytest.raises(ValueError):
-        read(str(tmp_path / "secret.txt"))
+        mod.read(str(tmp_path / "secret.txt"))
 
 
-def test_read_resource_refuses_a_symlink_out_of_the_module(tmp_path):
-    pkg, read = _module(tmp_path)
+def test_read_resource_refuses_a_symlink_out_of_the_module(_modules, tmp_path):
+    pkg, mod = _module(_modules, tmp_path)
     os.symlink(tmp_path / "secret.txt", pkg / "templates" / "link.html")
     with pytest.raises(ValueError):
-        read("templates/link.html")
+        mod.read("templates/link.html")
 
 
-def test_read_resource_refuses_a_module_file_that_is_not_the_caller(tmp_path):
+@pytest.mark.parametrize("relative", ["", ".", "templates"])
+def test_read_resource_refuses_a_folder(_modules, tmp_path, relative):
+    _, mod = _module(_modules, tmp_path)
+    with pytest.raises(ValueError):
+        mod.read(relative)
+
+
+def test_read_resource_refuses_a_module_file_that_is_not_the_caller(_modules, tmp_path):
     other = tmp_path / "other"
     other.mkdir()
     (other / "x.py").write_text("")
     (other / "data.txt").write_bytes(b"other")
-    _, read = _module(tmp_path)
+    _, mod = _module(_modules, tmp_path)
     with pytest.raises(ValueError):
-        read("data.txt", module_file=str(other / "x.py"))
+        mod.read("data.txt", module_file=str(other / "x.py"))
+
+
+def test_read_resource_refuses_a_caller_naming_another_file(_modules, tmp_path):
+    """A function whose code object claims to live in another folder reads
+    nothing there: the module's folder is the one the loader admitted."""
+    forge = (
+        "import types\n"
+        "def steal(target):\n"
+        "    code = read.__code__.replace(co_filename=target)\n"
+        "    scope = {'read_resource': read_resource, '__name__': __name__, '__file__': target}\n"
+        "    return types.FunctionType(code, scope)('secret.txt', target)\n"
+    )
+    _, mod = _module(_modules, tmp_path, forge)
+    with pytest.raises(ValueError):
+        mod.steal(str(tmp_path / "anything.py"))
+
+
+def test_read_resource_refuses_code_outside_any_loaded_module(tmp_path):
+    src = tmp_path / "reader.py"
+    src.write_text(_READER)
+    (tmp_path / "data.txt").write_bytes(b"data")
+    ns: dict = {"__file__": str(src), "__name__": "not_a_module.reader"}
+    exec(compile(src.read_text(), str(src), "exec"), ns)
+    with pytest.raises(ValueError):
+        ns["read"]("data.txt")
+
+
+def test_read_resource_refuses_a_standard_library_caller():
+    import concurrent.futures
+    import concurrent.futures.thread as thread
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        with pytest.raises(ValueError):
+            pool.submit(api.read_resource, thread.__file__, "__init__.py").result()
 
 
 def test_read_resource_has_no_write_counterpart():

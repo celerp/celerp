@@ -1300,6 +1300,79 @@ def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tm
     assert "celerp.ai" in loader.load_errors()[folder]
 
 
+_CORE_SERVICES = [
+    "celerp.services.company_files", "celerp.services.company_backup",
+    "celerp.services.company_backup_files", "celerp.services.company_reset",
+    "celerp.services.migrations", "celerp.routers.company_backup",
+]
+
+
+def _service_user(base: Path, service: str) -> str:
+    folder = f"acme-{_uid()}"
+    _write_module(base, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude=f"import {service}  # noqa: F401\n")
+    return folder
+
+
+@pytest.mark.parametrize("service", _CORE_SERVICES)
+def test_module_using_a_core_service_loads_where_core_has_imported_it(_modules, service):
+    """What a core service imports on its own behalf is not the module's import."""
+    import importlib
+
+    importlib.import_module(service)
+    folder = _service_user(_modules, service)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert folder in [m["name"] for m in loaded], loader.load_errors()
+
+
+@pytest.mark.parametrize("service", _CORE_SERVICES)
+def test_module_using_a_core_service_loads_in_a_fresh_process(_modules, service):
+    """The same module loads in a process that has imported neither the service
+    nor anything protected yet, as the UI process starts."""
+    import os
+    import subprocess
+
+    folder = _service_user(_modules, service)
+    repo = Path(__file__).resolve().parents[2]
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import json, sys\n"
+         "from celerp.modules import loader\n"
+         "fresh = not [n for n in sys.modules if n.startswith('celerp.ai')]\n"
+         f"loaded = loader.load_all({str(_modules)!r}, {{{folder!r}}})\n"
+         "print(json.dumps({'fresh': fresh, 'names': [m['name'] for m in loaded],"
+         " 'errors': loader.load_errors()}))"],
+        cwd=repo, env={**os.environ, "MODULE_DIR": str(_modules)},
+        capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result["fresh"]
+    assert folder in result["names"], result["errors"]
+
+
+@pytest.mark.parametrize("preloaded", [True, False], ids=["preloaded", "not-preloaded"])
+def test_protected_internal_bound_by_the_modules_own_submodule_is_refused(_modules, preloaded):
+    """A protected internal the module's own submodule binds at import refuses
+    the module, whether or not the process had imported it already."""
+    if preloaded:
+        import celerp.ai.llm  # noqa: F401
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  files={f"{inner}/__init__.py": "",
+                         f"{inner}/helper.py": ("import importlib\n"
+                                                "llm = importlib.import_module('celerp.' + 'ai.llm')\n"
+                                                "VALUE = 1\n")},
+                  init_prelude=f"from {inner}.helper import VALUE  # noqa: F401\n")
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert folder not in [m["name"] for m in loaded]
+    assert "celerp.ai" in loader.load_errors()[folder]
+
+
 def test_locale_file_outside_the_module_is_not_registered(_modules):
     from ui.i18n import t
 

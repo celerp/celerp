@@ -28,13 +28,14 @@ DDL signature is present in the live schema.
 DDL signatures handled:
   - create_table:  table exists in the schema
   - add_column:    column exists in the table
+  - drop_column:   column no longer exists in the table
   - create_index:  index name exists in the table's indexes
   - create_unique_constraint: treated as create_index (Postgres/SQLite
                               both implement unique constraints as indexes)
 
 DDL signatures NOT introspected (trusted via stamp):
   - alter_column: type/default changes are hard to verify; trust the stamp
-  - drop_column / drop_table: we don't run downgrades; ignore
+  - drop_table: a dropped table carries no evidence; ignore
   - op.execute: data backfills cannot be verified safely; trust the stamp
 """
 from __future__ import annotations
@@ -46,7 +47,7 @@ from typing import Iterable
 
 # Signatures that can be verified by introspecting the live schema.
 VERIFIABLE_KINDS = frozenset({
-    "create_table", "add_column", "create_index", "create_unique_constraint",
+    "create_table", "add_column", "drop_column", "create_index", "create_unique_constraint",
 })
 
 
@@ -54,9 +55,9 @@ VERIFIABLE_KINDS = frozenset({
 class RevisionSignature:
     """One DDL operation in a revision that can be checked against the live schema."""
     rev: str
-    kind: str           # "create_table" | "add_column" | "create_index" | "create_unique_constraint"
+    kind: str           # "create_table" | "add_column" | "drop_column" | "create_index" | "create_unique_constraint"
     table: str          # the table the op targets
-    column: str | None = None  # for add_column, the new column name
+    column: str | None = None  # for add_column / drop_column, the column name
     extra: str | None = None   # index / constraint name
     columns: tuple[str, ...] = ()  # index / unique-constraint columns when literal
 
@@ -111,7 +112,7 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
     Returns an empty list for files that:
       - cannot be parsed (syntax errors)
       - have no `def upgrade():` (e.g. helper modules)
-      - contain only unverifiable ops (alter_column, op.execute, drops)
+      - contain only unverifiable ops (alter_column, op.execute, drop_table)
 
     Never raises. The walker degrades gracefully.
     """
@@ -179,6 +180,16 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
                         table=table, column=column, extra=None,
                     ))
 
+            elif op_name == "drop_column":
+                # op.drop_column('notifications', 'read')
+                table = _first_string_arg(stmt)
+                column = _str_arg(stmt.args[1]) if len(stmt.args) >= 2 else None
+                if table and column:
+                    sigs.append(RevisionSignature(
+                        rev=rev_id, kind="drop_column",
+                        table=table, column=column, extra=None,
+                    ))
+
             elif op_name == "create_index":
                 # op.create_index('ix_users_email', 'users', ['email'])
                 index_name = _first_string_arg(stmt)
@@ -210,7 +221,7 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
                         table=table, column=None, extra=constraint_name, columns=columns,
                     ))
 
-            # alter_column, drop_*, op.execute: not verifiable — skipped
+            # alter_column, drop_table, drop_index, op.execute: not verifiable, skipped
     return sigs
 
 
@@ -284,7 +295,7 @@ def _metadata_has_index(metadata, sig: RevisionSignature, *, unique_only: bool =
 
 
 def _signature_expected(metadata, sig: RevisionSignature) -> bool:
-    """Whether this historical create/add operation is still kernel schema."""
+    """Whether this historical operation still describes the kernel schema."""
     if metadata is None:
         return True
     table = metadata.tables.get(sig.table)
@@ -292,6 +303,8 @@ def _signature_expected(metadata, sig: RevisionSignature) -> bool:
         return table is not None
     if sig.kind == "add_column":
         return table is not None and sig.column in table.c
+    if sig.kind == "drop_column":
+        return table is None or sig.column not in table.c
     if sig.kind == "create_index":
         return _metadata_has_index(metadata, sig)
     if sig.kind == "create_unique_constraint":
@@ -305,6 +318,8 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
         return _table_exists(inspector, sig.table)
     if sig.kind == "add_column":
         return _table_exists(inspector, sig.table) and _column_exists(inspector, sig.table, sig.column)
+    if sig.kind == "drop_column":
+        return not (_table_exists(inspector, sig.table) and _column_exists(inspector, sig.table, sig.column))
     if sig.kind == "create_index":
         return _table_exists(inspector, sig.table) and _index_exists(
             inspector, sig.table, sig.extra, sig.columns)

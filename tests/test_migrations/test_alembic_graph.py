@@ -247,4 +247,8 @@ def test_every_table_and_column_this_release_adds_is_placed_for_company_backups(
         if "company_id" in tables[table].c:
             assert (table in cb.PORTABLE_TABLES) != (table in cb.EXCLUDED_TABLES), table
         else:
-            assert table in OUTLIVES_ITS_COMPANY and table not in cb.PORTABLE_TABLES, table
+            # Without a company column a table is either one of those above or hangs
+            # off a table that stays with the installation (a notice's read receipts).
+            parents = {fk.column.table.name for fk in tables[table].foreign_keys}
+            assert table not in cb.PORTABLE_TABLES, table
+            assert table in OUTLIVES_ITS_COMPANY or parents & set(cb.EXCLUDED_TABLES), table

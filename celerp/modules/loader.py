@@ -1123,11 +1123,15 @@ def load_all(
         # Run the source just content-verified, never a stale/tampered .pyc that a
         # matching cache header would execute in preference (the digest omits *.pyc).
         _purge_pycache(pkg_path)
+        # Admitted before its code runs, so the module can read its own files
+        # while it is imported.
+        _admitted[pkg_name] = module
         try:
             with _recording_tables(pkg_name):
                 manifest = _load_one(pkg_path, pkg_name, trusted=module.first_party,
                                      declared=module.manifest)
         except ModuleLoadError as exc:
+            _admitted.pop(pkg_name, None)
             # A default module IS the product (a boot without documents is not
             # a working app): fail startup naming the module and error.
             # Third-party modules keep load-and-continue; their failure shows
@@ -1142,7 +1146,6 @@ def load_all(
         # it rather than recomputing (and re-hashing) per module.
         manifest["first_party"] = module.first_party
         _loaded.append(manifest)
-        _admitted[pkg_name] = module
 
     log.info(
         "Module loader complete: %d loaded, %d skipped/rejected",
@@ -1259,6 +1262,22 @@ def _sweep_removed_tables() -> None:
         Base.metadata._remove_table(key, None)
 
 
+def _own_code_modules(pkg_path: Path) -> list:
+    """Every imported module whose code ships in the module folder *pkg_path*."""
+    located = ((m, _module_location(m)) for m in list(sys.modules.values()))
+    return [m for m, location in located if location and _inside(Path(location), pkg_path)]
+
+
+def admitted_module_root(import_name: str) -> Path | None:
+    """The folder of the admitted module whose code answers to *import_name*
+    (a dotted ``__name__``), as admission recorded it; None for any other code."""
+    top = import_name.split(".", 1)[0]
+    module = _admitted.get(top)
+    if module is not None:
+        return module.path
+    return next((m.path for m in _admitted.values() if top in _import_roots(m.name, m.path)), None)
+
+
 def _evict_module(pkg_name: str) -> None:
     """Drop a refused module and its submodules from sys.modules."""
     for key in list(sys.modules.keys()):
@@ -1276,7 +1295,6 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
 
     Returns a copy of the declared manifest. Raises :class:`ModuleLoadError` on failure.
     """
-    before = set(sys.modules.keys())
     existing = sys.modules.get(pkg_name)
     if existing is not None and not _is_module_code(_module_location(existing), _module_homes(pkg_path)):
         raise ModuleLoadError(f"The package name {pkg_name!r} is already in use.")
@@ -1303,20 +1321,20 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
         raise ModuleLoadError(f"Failed to import ({type(exc).__name__}: {exc})")
 
     # Revenue protection, second stage: admission scanned the source statically;
-    # this checks what the import actually bound. Trusted (first-party bundled)
-    # modules are exempt — they ARE the internals.
+    # this checks what the module's own code actually bound. What core imports on
+    # its own behalf is not the module's import, so the verdict is the same in
+    # every process. Trusted (first-party bundled) modules are exempt: they ARE
+    # the internals.
     if not trusted:
         violations: set[str] = set()
 
-        for val in vars(mod).values():
-            candidate = getattr(val, "__name__", None) or getattr(
-                getattr(val, "__spec__", None), "name", None
-            )
-            owner = getattr(val, "__module__", None)
-            violations |= {hit for hit in map(_protected_hit, (candidate, owner)) if hit}
-
-        truly_new = set(sys.modules.keys()) - before
-        violations |= {hit for hit in map(_protected_hit, truly_new) if hit}
+        for own in _own_code_modules(pkg_path):
+            for val in vars(own).values():
+                candidate = getattr(val, "__name__", None) or getattr(
+                    getattr(val, "__spec__", None), "name", None
+                )
+                owner = getattr(val, "__module__", None)
+                violations |= {hit for hit in map(_protected_hit, (candidate, owner)) if hit}
 
         if violations:
             _evict_module(pkg_name)

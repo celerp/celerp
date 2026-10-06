@@ -40,7 +40,8 @@ async def api_request(
     if not is_app_local_path(path):
         raise ValueError(f"api_request takes a path inside Celerp, such as /companies/me, not {path!r}.")
     scheme, _, credential = request.headers.get("authorization", "").partition(" ")
-    token = credential.strip() if scheme.lower() == "bearer" else ui.config.get_token(request)
+    token = credential.strip() if scheme.lower() == "bearer" else ""
+    token = token or ui.config.get_token(request)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     async with httpx.AsyncClient(base_url=ui.config.API_BASE, timeout=_API_REQUEST_TIMEOUT,
                                  follow_redirects=False, trust_env=False) as client:
@@ -50,18 +51,27 @@ async def api_request(
 def read_resource(module_file: str, relative_path: str) -> bytes:
     """Read a file shipped with the calling module.
 
-    ``module_file`` is the caller's own ``__file__``; ``relative_path`` names a file
-    in that file's folder or below it, such as "templates/invoice.html". Raises
-    ValueError for any other file.
+    Call it from the module's own code. ``module_file`` is the caller's own
+    ``__file__``; ``relative_path`` names a file in that file's folder or below it,
+    such as "templates/invoice.html". Raises ValueError for any other file or caller.
     """
-    caller = Path(sys._getframe(1).f_code.co_filename).resolve()
-    if Path(module_file).resolve() != caller:
+    from celerp.modules.loader import admitted_module_root
+
+    frame = sys._getframe(1)
+    name = frame.f_globals.get("__name__")
+    root = admitted_module_root(name) if isinstance(name, str) else None
+    if root is None:
+        raise ValueError("read_resource reads files shipped with a loaded module only.")
+    caller = Path(frame.f_code.co_filename).resolve()
+    if Path(module_file).resolve() != caller or not caller.is_relative_to(root.resolve()):
         raise ValueError("read_resource takes the calling file's own __file__.")
     if Path(relative_path).is_absolute():
         raise ValueError(f"read_resource takes a path relative to the module, not {relative_path!r}.")
     target = (caller.parent / relative_path).resolve()
     if not target.is_relative_to(caller.parent):
         raise ValueError(f"{relative_path!r} is not inside the module.")
+    if not target.is_file():
+        raise ValueError(f"{relative_path!r} is not a file shipped with the module.")
     return target.read_bytes()
 
 

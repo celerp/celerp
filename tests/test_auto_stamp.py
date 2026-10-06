@@ -19,9 +19,10 @@ provably consistent with; alembic upgrade applies the rest.
 The walker recognises these DDL signatures:
   - create_table: table exists
   - add_column: column exists in the table
+  - drop_column: column no longer exists in the table
   - create_index: index exists on the table
   - create_unique_constraint: looks at indexes (unique impls differ)
-  - alter_column / drop_column / data backfills: cannot introspect
+  - alter_column / drop_table / data backfills: cannot introspect
     safely — we trust the stamp for these (caller skips the stamp repair
     and lets alembic run normally).
 
@@ -108,6 +109,23 @@ def downgrade():
         sigs = extract_signatures(mig)
         assert RevisionSignature(rev="abc123", kind="add_column",
                                  table="users", column="email") in sigs
+
+    def test_extracts_drop_column(self, tmp_path):
+        """op.drop_column in an upgrade yields a column-dropped signature;
+        the same call in a downgrade yields nothing."""
+        mig = tmp_path / "abc124_drop_flag.py"
+        mig.write_text('''
+revision = "abc124"
+down_revision = "abc123"
+
+def upgrade():
+    op.drop_column("notices", "read")
+
+def downgrade():
+    op.drop_column("notices", "seen")
+''')
+        assert extract_signatures(mig) == [
+            RevisionSignature(rev="abc124", kind="drop_column", table="notices", column="read")]
 
     def test_extracts_from_annotated_revision(self, tmp_path):
         """Newer alembic templates emit `revision: str = "..."` (AnnAssign).
@@ -241,9 +259,8 @@ def downgrade():
             assert isinstance(sigs, list)
             for s in sigs:
                 assert s.rev != ""
-                assert s.kind in ("add_column", "create_table",
-                                  "create_index", "create_unique_constraint",
-                                  "alter_column")
+                assert s.kind in ("add_column", "create_table", "drop_column",
+                                  "create_index", "create_unique_constraint")
 
 
 # ── find_safe_stamp ───────────────────────────────────────────────────────────
@@ -454,6 +471,46 @@ class TestFindSafeStamp:
                                         table="refunds", column="recorded_on")],
         }
         assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+
+
+    def test_a_column_still_present_stops_its_drop(self):
+        """A revision that drops a column is applied only once the column is
+        gone, even when the table it creates already exists."""
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(("notices", ["id", "read"]), ("notice_reads", ["notice_id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="notice_reads"),
+                     RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+
+    def test_a_dropped_column_is_applied_once_gone(self):
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(("notices", ["id"]), ("notice_reads", ["notice_id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="notice_reads"),
+                     RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev2"
+
+    def test_a_drop_of_a_column_the_kernel_still_has_is_no_evidence(self):
+        """A column dropped long ago and added back by the current models is not
+        expected to be absent."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+        metadata = sa.MetaData()
+        sa.Table("notices", metadata, sa.Column("id", sa.Integer), sa.Column("read", sa.Boolean))
+        inspector = self._make_inspector(("notices", ["id", "read"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev2"
 
 
 class TestRealMigrationsVsSchema:
