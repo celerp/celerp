@@ -2703,6 +2703,7 @@
   "system.factory_reset.held_elsewhere": "This company cannot be reset because records in {table} that belong to another company refer to its data. Nothing was deleted.",
   "system.factory_reset.name_mismatch": "Type the company name exactly as shown to reset this company.",
   "system.factory_reset.outside_reference": "This company cannot be reset because {table}, a table outside Celerp's own, refers to Celerp's records. Nothing was deleted.",
+  "system.partition_key": "This company cannot be deleted because a foreign key from or to {table} is set on that one partition instead of its whole table, so Celerp cannot tell whose records it reaches. Nothing was deleted.",
   "system.factory_reset.reference_cycle": "The tables {tables} refer to each other in a loop, so this company cannot be reset. Nothing was deleted.",
   "settings.click_to_edit": "Click to edit",
   "settings.click_to_change": "Click to change",

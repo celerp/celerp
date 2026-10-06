@@ -2684,6 +2684,7 @@
   "system.factory_reset.held_elsewhere": "በ{table} ውስጥ የሌላ ኩባንያ የሆኑ መዝገቦች የዚህን ኩባንያ ውሂብ ስለሚያመለክቱ ይህ ኩባንያ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
   "system.factory_reset.name_mismatch": "ይህን ኩባንያ ዳግም ለማስጀመር የኩባንያውን ስም ልክ እንደሚታየው ይተይቡ።",
   "system.factory_reset.outside_reference": "ከ Celerp ውጭ ያለው {table} ሰንጠረዥ የ Celerp መዝገቦችን ስለሚያመለክት ይህ ኩባንያ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
+  "system.partition_key": "ከ {table} ወይም ወደ እሱ ያለ የውጭ ቁልፍ በሙሉ ሰንጠረዡ ላይ ሳይሆን በዚያ አንድ ክፍልፋይ ላይ ብቻ ስለተቀመጠ Celerp የሚደርስባቸው መዝገቦች የማን እንደሆኑ ማወቅ አይችልም፤ ስለዚህ ይህ ኩባንያ ሊሰረዝ አይችልም። ምንም አልተሰረዘም።",
   "system.factory_reset.reference_cycle": "ሰንጠረዦቹ {tables} እርስ በርሳቸው በዙር ይጠቃቀሳሉ፣ ስለዚህ ይህ ኩባንያ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
   "settings.click_to_edit": "ለማርትዕ ጠቅ ያድርጉ",
   "settings.click_to_change": "ለመቀየር ጠቅ ያድርጉ",

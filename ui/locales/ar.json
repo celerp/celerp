@@ -2583,6 +2583,7 @@
   "system.factory_reset.held_elsewhere": "لا يمكن إعادة تعيين هذه الشركة لأن سجلات في {table} تخص شركة أخرى تشير إلى بياناتها. لم يُحذف أي شيء.",
   "system.factory_reset.name_mismatch": "اكتب اسم الشركة تمامًا كما هو معروض لإعادة تعيين هذه الشركة.",
   "system.factory_reset.outside_reference": "لا يمكن إعادة تعيين هذه الشركة لأن {table}، وهو جدول خارج Celerp، يشير إلى سجلات Celerp. لم يُحذف أي شيء.",
+  "system.partition_key": "لا يمكن حذف هذه الشركة لأن مفتاحًا خارجيًا من {table} أو إليه معرّف على هذا القسم وحده بدلًا من جدوله كاملًا، لذا لا يستطيع Celerp معرفة لمن تعود السجلات التي يصل إليها. لم يُحذف أي شيء.",
   "system.factory_reset.reference_cycle": "الجداول {tables} تشير إلى بعضها في حلقة، لذا لا يمكن إعادة تعيين هذه الشركة. لم يُحذف أي شيء.",
   "settings.click_to_edit": "انقر للتعديل",
   "settings.click_to_change": "انقر للتغيير",

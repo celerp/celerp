@@ -230,6 +230,8 @@ async def factory_reset(
                 "system.factory_reset.outside_reference",
                 f"This company cannot be reset because {outside}, a table outside Celerp's own, "
                 "refers to Celerp's records. Nothing was deleted.", table=outside))
+        if partition := await db_catalog.partition_key(session):
+            raise HTTPException(status_code=409, detail=db_catalog.partition_refusal(partition))
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
         held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})

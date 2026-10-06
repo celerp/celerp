@@ -28,7 +28,7 @@ from migration_support import (
     save_decisions,
     scan_upload,
 )
-from test_factory_reset_live import _PARTITIONED
+from test_factory_reset_live import _PARTITIONED, _PT
 from test_helpers import create_item, default_location_id, register_admin
 
 TASKS = "migration_cleanup_tasks"
@@ -279,6 +279,44 @@ async def test_bootstrap_discard_goes_through_a_cascading_key_into_a_partitioned
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_event_refs, ext_events"))
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_discard_is_refused_while_a_key_is_kept_on_one_partition(
+        real_client, real_engine, migration_env):
+    """A partition carries a key into users that its partitioned table does not, and another
+    company's row in it names the owner. The discard is refused naming the partition, and
+    the owner, the company and that row are all kept."""
+    from sqlalchemy import text
+
+    r = await scan_upload(real_client, fake_bytes())
+    assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
+    r = await real_client.post("/migrations/bootstrap/start", json={
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
+    assert r.status_code == 201, r.text
+    token, run_id = r.json()["access_token"], r.json()["run_id"]
+    other = uuid.uuid4()
+    async with real_engine.begin() as conn:
+        await conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                                "VALUES (:c, 'Other Co', 'other-co', '{}', true, now())"), {"c": other})
+        for statement in (_PT, "CREATE TABLE ext_pt_a PARTITION OF ext_pt FOR VALUES IN ('a')",
+                          "ALTER TABLE ext_pt_a ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+                          "INSERT INTO ext_pt SELECT gen_random_uuid(), 'a', :c, id FROM users"):
+            await conn.execute(text(statement), {"c": other})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("system.partition_key", {"table": "ext_pt_a"})
+        assert await count(real_engine, "users", "email = :e", e=OWNER_EMAIL) == 1
+        assert await count(real_engine, "companies", "name = 'Moved Co'") == 1
+        assert await count(real_engine, "ext_pt", "company_id = :c", c=other) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_pt"))
+            await conn.execute(text("DELETE FROM companies WHERE id = :c"), {"c": other})
 
 
 @pytest.mark.asyncio

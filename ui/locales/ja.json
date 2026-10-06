@@ -2583,6 +2583,7 @@
   "system.factory_reset.held_elsewhere": "{table} にある別の会社のレコードがこの会社のデータを参照しているため、この会社はリセットできません。何も削除されていません。",
   "system.factory_reset.name_mismatch": "この会社をリセットするには、表示どおりに会社名を正確に入力してください。",
   "system.factory_reset.outside_reference": "Celerp 外のテーブル {table} が Celerp のレコードを参照しているため、この会社はリセットできません。何も削除されていません。",
+  "system.partition_key": "{table} との間の外部キーがテーブル全体ではなくそのパーティションだけに設定されているため、Celerp はそのキーが参照するレコードの所有者を判断できず、この会社は削除できません。何も削除されていません。",
   "system.factory_reset.reference_cycle": "テーブル {tables} が互いに循環して参照しているため、この会社はリセットできません。何も削除されていません。",
   "settings.click_to_edit": "編集するにはクリック",
   "settings.click_to_change": "変更するにはクリック",

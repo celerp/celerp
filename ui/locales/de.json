@@ -2584,6 +2584,7 @@
   "system.factory_reset.held_elsewhere": "Diese Firma kann nicht zurückgesetzt werden, weil Datensätze in {table}, die zu einer anderen Firma gehören, auf ihre Daten verweisen. Es wurde nichts gelöscht.",
   "system.factory_reset.name_mismatch": "Geben Sie den Firmennamen genau wie angezeigt ein, um diese Firma zurückzusetzen.",
   "system.factory_reset.outside_reference": "Diese Firma kann nicht zurückgesetzt werden, weil {table}, eine Tabelle außerhalb von Celerp, auf Datensätze von Celerp verweist. Es wurde nichts gelöscht.",
+  "system.partition_key": "Diese Firma kann nicht gelöscht werden, weil ein Fremdschlüssel von oder zu {table} nur auf dieser einen Partition statt auf ihrer ganzen Tabelle gesetzt ist. Celerp kann daher nicht erkennen, wessen Datensätze er erreicht. Es wurde nichts gelöscht.",
   "system.factory_reset.reference_cycle": "Die Tabellen {tables} verweisen in einer Schleife aufeinander. Daher kann diese Firma nicht zurückgesetzt werden. Es wurde nichts gelöscht.",
   "settings.click_to_edit": "Zum Bearbeiten anklicken",
   "settings.click_to_change": "Zum Ändern anklicken",

@@ -104,6 +104,28 @@ async def outside_referrer(session: AsyncSession) -> str | None:
         "ORDER BY 1 LIMIT 1"))
 
 
+async def partition_key(session: AsyncSession) -> str | None:
+    """A partition with a foreign key of its own, or named by one, or None. The catalog holds
+    only the partitioned table, so nothing reading it can tell whose rows such a key reaches."""
+    return await session.scalar(text(
+        "SELECT CASE WHEN r.relispartition THEN r.relname ELSE f.relname END::text FROM pg_constraint k "
+        "JOIN pg_class r ON r.oid = k.conrelid JOIN pg_class f ON f.oid = k.confrelid "
+        "WHERE k.contype = 'f' AND k.conparentid = 0 AND (r.relispartition OR f.relispartition) "
+        "AND r.relnamespace = to_regnamespace(current_schema()) "
+        "AND f.relnamespace = r.relnamespace ORDER BY 1 LIMIT 1"))
+
+
+def partition_refusal(partition: str) -> dict:
+    """Why a company cannot be deleted while ``partition`` holds or is named by such a key."""
+    from celerp.accounting_roles import refusal
+
+    return refusal(
+        "system.partition_key",
+        f"This company cannot be deleted because a foreign key from or to {partition} is set on "
+        "that one partition instead of its whole table, so Celerp cannot tell whose records it "
+        "reaches. Nothing was deleted.", table=partition)
+
+
 def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], set[str]]:
     """Tables ordered so each follows every table it references, and the tables no such
     order exists for: those referencing themselves or in a reference cycle."""

@@ -1016,6 +1016,68 @@ async def test_a_cascading_key_into_a_partitioned_table_does_not_stop_the_reset(
             await conn.execute(text("DROP TABLE IF EXISTS ext_event_refs, ext_events"))
 
 
+_CLERK = "(SELECT id FROM users WHERE email = 'clerk@example.com')"
+_PT = ("CREATE TABLE ext_pt (id uuid NOT NULL, kind text NOT NULL, company_id uuid NOT NULL, "
+       "user_id uuid, PRIMARY KEY (id, kind)) PARTITION BY LIST (kind)")
+_PT_A = ("CREATE TABLE ext_pt_a (id uuid NOT NULL, kind text NOT NULL, company_id uuid NOT NULL, "
+         "user_id uuid REFERENCES users(id) ON DELETE CASCADE, PRIMARY KEY (id, kind))")
+_TOK = ("CREATE TABLE ext_tok (id int PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) "
+        "ON DELETE CASCADE) PARTITION BY RANGE (id)",
+        "CREATE TABLE ext_tok_0 PARTITION OF ext_tok FOR VALUES FROM (0) TO (100)")
+# A key Postgres keeps on one partition only, or naming one partition: each with Beta's
+# row that the key ties to Alpha, its clerk or its row, the table holding Beta's row, and
+# the partition the refusal names.
+_PARTITION_KEYS = {
+    "a key added to a partition": ((
+        _PT, "CREATE TABLE ext_pt_a PARTITION OF ext_pt FOR VALUES IN ('a')",
+        "ALTER TABLE ext_pt_a ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+        f"INSERT INTO ext_pt VALUES (gen_random_uuid(), 'a', :b, {_CLERK})"), "ext_pt", "ext_pt_a"),
+    "a table with a key attached as a partition": ((
+        _PT, _PT_A, "ALTER TABLE ext_pt ATTACH PARTITION ext_pt_a FOR VALUES IN ('a')",
+        f"INSERT INTO ext_pt VALUES (gen_random_uuid(), 'a', :b, {_CLERK})"), "ext_pt", "ext_pt_a"),
+    "a key naming a partition of a company table": ((
+        _PT, "CREATE TABLE ext_pt_a PARTITION OF ext_pt FOR VALUES IN ('a')",
+        "CREATE TABLE ext_pin (id uuid PRIMARY KEY, company_id uuid NOT NULL, pt uuid, kind text, "
+        "FOREIGN KEY (pt, kind) REFERENCES ext_pt_a(id, kind) ON DELETE CASCADE)",
+        "INSERT INTO ext_pt VALUES ('00000000-0000-0000-0000-000000000a11', 'a', :a)",
+        "INSERT INTO ext_pin VALUES (gen_random_uuid(), :b, '00000000-0000-0000-0000-000000000a11', 'a')"),
+        "ext_pin", "ext_pt_a"),
+    "a key naming a partition of a table users reach": ((
+        *_TOK, "CREATE TABLE ext_tok_log (id uuid PRIMARY KEY, company_id uuid NOT NULL, "
+        "tok int NOT NULL REFERENCES ext_tok_0(id))",
+        f"INSERT INTO ext_tok VALUES (7, {_CLERK})", "INSERT INTO ext_tok_log VALUES (gen_random_uuid(), :b, 7)"),
+        "ext_tok_log", "ext_tok_0"),
+}
+_PARTITION_TABLES = "ext_pin, ext_tok_log, ext_pt, ext_tok"
+
+
+@pytest.mark.parametrize("case", list(_PARTITION_KEYS))
+async def test_a_reset_is_refused_while_a_key_is_kept_on_one_partition(real_client, real_engine, case):  # noqa: F811
+    """A key kept on one partition, or naming one, is not on the table the catalog reads, so
+    nothing can tell whose rows it reaches. The reset is refused naming the partition, and
+    Beta's row, Alpha and its clerk are all kept."""
+    from sqlalchemy import text
+
+    statements, beta_table, partition = _PARTITION_KEYS[case]
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        for statement in statements:
+            await conn.execute(text(statement), {"a": alpha, "b": beta})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("system.partition_key", {"table": partition})
+        assert await count(real_engine, "companies", "id = :a", a=alpha) == 1
+        assert await count(real_engine, "users", "email = 'clerk@example.com'") == 1
+        assert await count(real_engine, beta_table, "company_id = :b", b=beta) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text(f"DROP TABLE IF EXISTS {_PARTITION_TABLES}"))
+
+
 async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tables(
         real_client, real_engine):  # noqa: F811
     """A table kept in another schema names Alpha by a key into Celerp's own tables. The

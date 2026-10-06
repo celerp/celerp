@@ -2583,6 +2583,7 @@
   "system.factory_reset.held_elsewhere": "Perusahaan ini tidak dapat diatur ulang karena catatan di {table} milik perusahaan lain merujuk ke datanya. Tidak ada yang dihapus.",
   "system.factory_reset.name_mismatch": "Ketik nama perusahaan persis seperti yang ditampilkan untuk mengatur ulang perusahaan ini.",
   "system.factory_reset.outside_reference": "Perusahaan ini tidak dapat diatur ulang karena {table}, tabel di luar Celerp, merujuk ke catatan Celerp. Tidak ada yang dihapus.",
+  "system.partition_key": "Perusahaan ini tidak dapat dihapus karena kunci asing dari atau ke {table} hanya dipasang pada satu partisi itu, bukan pada seluruh tabelnya, sehingga Celerp tidak dapat mengetahui milik siapa catatan yang dijangkaunya. Tidak ada yang dihapus.",
   "system.factory_reset.reference_cycle": "Tabel {tables} saling merujuk dalam satu lingkaran, jadi perusahaan ini tidak dapat diatur ulang. Tidak ada yang dihapus.",
   "settings.click_to_edit": "Klik untuk mengedit",
   "settings.click_to_change": "Klik untuk mengubah",

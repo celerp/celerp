@@ -2584,6 +2584,7 @@
   "system.factory_reset.held_elsewhere": "Questa azienda non può essere reimpostata perché alcuni record in {table} che appartengono a un'altra azienda fanno riferimento ai suoi dati. Non è stato eliminato nulla.",
   "system.factory_reset.name_mismatch": "Digita il nome dell'azienda esattamente come mostrato per reimpostare questa azienda.",
   "system.factory_reset.outside_reference": "Questa azienda non può essere reimpostata perché {table}, una tabella esterna a Celerp, fa riferimento a record di Celerp. Non è stato eliminato nulla.",
+  "system.partition_key": "Questa azienda non può essere eliminata perché una chiave esterna da o verso {table} è definita solo su quella partizione e non sull'intera tabella, quindi Celerp non può sapere a chi appartengono i record che raggiunge. Non è stato eliminato nulla.",
   "system.factory_reset.reference_cycle": "Le tabelle {tables} si richiamano a vicenda in un ciclo, quindi questa azienda non può essere reimpostata. Non è stato eliminato nulla.",
   "settings.click_to_edit": "Clicca per modificare",
   "settings.click_to_change": "Clicca per cambiare",

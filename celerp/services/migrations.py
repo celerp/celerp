@@ -950,6 +950,8 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         raise MigrationError(409, NO_UNFINISHED)
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)
+    if partition := await db_catalog.partition_key(session):
+        raise MigrationError(409, db_catalog.partition_refusal(partition))
     for table in await company_tables(session):
         if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue
