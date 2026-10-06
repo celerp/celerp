@@ -442,6 +442,26 @@ def _reset_hot_path_caches():
 
 
 @pytest.fixture(autouse=True)
+def _forget_temp_imports(tmp_path_factory):
+    """Drop every package a test imported from a pytest temp directory.
+
+    Module fixtures live in temp directories. Once imported, a package stays in
+    sys.modules, and admission treats an imported name as taken by its folder,
+    so a later test's module of the same name in a fresh directory would be
+    refused. Forgetting them keeps each test's modules its own.
+    """
+    before = set(_sys.modules)
+    yield
+    root = _os.path.realpath(tmp_path_factory.getbasetemp())
+    for key in set(_sys.modules) - before:
+        mod = _sys.modules.get(key)
+        location = (getattr(mod, "__file__", None)
+                    or next(iter(getattr(mod, "__path__", None) or []), None))
+        if location and _os.path.realpath(location).startswith(root + _os.sep):
+            _sys.modules.pop(key, None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_gateway_state():
     """Restore the gateway-state module globals around each test.
 

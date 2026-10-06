@@ -3136,7 +3136,6 @@
   "modules.not_verified_tip": "โมดูลที่มาพร้อมระบบนี้ถูกแก้ไขบนเครื่องนี้ จึงทำงานในฐานะโมดูลบุคคลภายนอกที่ยังไม่น่าเชื่อถือ แต่ยังคงทำงานได้ตามปกติ หากคุณไม่ได้แก้ไข ให้ติดตั้ง Celerp ใหม่เพื่อคืนค่าไฟล์เดิม",
   "modules.restart_confirm": "รีสตาร์ท Celerp ตอนนี้เพื่อใช้การเปลี่ยนแปลงโมดูลหรือไม่? แอปจะโหลดใหม่",
   "modules.source_default": "โมดูลเริ่มต้นที่มาพร้อมกับ Celerp",
-  "modules.source_marketplace": "ติดตั้งจากมาร์เก็ตเพลสของ Celerp",
   "modules.src_community": "ชุมชน",
   "modules.src_default": "ค่าเริ่มต้น",
   "modules.src_marketplace": "มาร์เก็ตเพลส",

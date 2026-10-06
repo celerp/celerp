@@ -3136,7 +3136,6 @@
   "modules.not_verified_tip": "تم تغيير هذه الوحدة المدمجة على هذا الكمبيوتر، لذا فهي تعمل الآن كوحدة تابعة لجهة خارجية غير موثوق بها. وتستمر في العمل. إذا لم تقم بتغييرها، فأعد تثبيت Celerp لاستعادة النسخة الأصلية.",
   "modules.restart_confirm": "هل تريد إعادة تشغيل Celerp الآن لتطبيق تغييرات الوحدة النمطية؟ سيتم إعادة تحميل التطبيق.",
   "modules.source_default": "الوحدة النمطية الافتراضية، مدمجة مع Celerp",
-  "modules.source_marketplace": "تم تثبيتها من سوق Celerp",
   "modules.src_community": "المجتمع",
   "modules.src_default": "تقصير",
   "modules.src_marketplace": "السوق",

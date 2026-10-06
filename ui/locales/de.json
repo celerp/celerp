@@ -3137,7 +3137,6 @@
   "modules.not_verified_tip": "Dieses gebündelte Modul wurde auf diesem Computer geändert und wird daher nun als nicht vertrauenswürdiges Modul eines Drittanbieters ausgeführt. Es funktioniert weiterhin. Wenn Sie keine Änderungen vorgenommen haben, installieren Sie Celerp neu, um die ursprüngliche Version wiederherzustellen.",
   "modules.restart_confirm": "Celerp jetzt neu starten, um die Moduländerungen zu übernehmen? Die App wird neu geladen.",
   "modules.source_default": "Standardmodul, im Lieferumfang von Celerp enthalten",
-  "modules.source_marketplace": "Vom Celerp-Marktplatz installiert",
   "modules.src_community": "Community",
   "modules.src_default": "Standard",
   "modules.src_marketplace": "Marktplatz",

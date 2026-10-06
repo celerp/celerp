@@ -2156,8 +2156,11 @@ def _read_staged_marketplace(download: str) -> tuple[str, bytes, bool, bool]:
     if flags is None:
         raise HTTPException(status_code=410,
                             detail="This download has expired. Download it again.")
-    return (staged_downloads.owner_of(download), data,
-            bool(flags.get("is_official")), bool(flags.get("is_paid")))
+    is_official, is_paid = flags.get("is_official"), flags.get("is_paid")
+    if not isinstance(is_official, bool) or not isinstance(is_paid, bool):
+        raise HTTPException(status_code=410,
+                            detail="This download is unreadable. Download it again.")
+    return staged_downloads.owner_of(download), data, is_official, is_paid
 
 
 @router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
@@ -2183,35 +2186,19 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # Module metadata decides the official flag (which allows the reserved
-            # celerp- name) and the licence-gate marker.
-            m = await c.get(f"{url}/marketplace/modules/{body.slug}")
-            if m.status_code != 200:
-                raise HTTPException(
-                    status_code=404 if m.status_code == 404 else 502,
-                    detail=relay_error_detail(m, "This module is not available."))
-            meta = _json_dict(m)
-            if not meta:
-                raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
-            is_official = bool(meta.get("is_official"))
-            # Type-safe: only a real, positive number counts as paid. A string or
-            # other truthy-but-wrong type must not misclassify a free module as
-            # paid (which would wrongly gate it behind a license check forever).
-            price_monthly = meta.get("price_monthly")
-            price_once = meta.get("price_once")
-            is_paid = any(
-                isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
-                for v in (price_monthly, price_once)
-            )
-
+            # The install answer alone says whether the module is official (which
+            # allows the reserved celerp- name) and paid (the licence-gate marker).
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
                     detail=relay_error_detail(r, "The relay refused the download."))
-            token = str(_json_dict(r).get("token") or "")
-            if not token:
+            answer = _json_dict(r)
+            token = answer.get("token")
+            is_official, is_paid = answer.get("is_official"), answer.get("is_paid")
+            if (not isinstance(token, str) or not token
+                    or not isinstance(is_official, bool) or not isinstance(is_paid, bool)):
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
 
             d = await c.get(f"{url}/marketplace/download/{token}")
@@ -2281,6 +2268,13 @@ async def marketplace_install(
         raise HTTPException(
             status_code=422,
             detail="The downloaded package does not match the requested module.")
+
+    if is_official and not is_paid:
+        # Install is online by definition: keep the free verdict now, so the
+        # module never needs the relay to load.
+        from celerp.config import settings
+        from celerp.modules.license import record_free_verdict
+        record_free_verdict(slug, settings.data_dir)
 
     # Landed on disk: drop the staged download.
     staged_downloads.discard(_marketplace_staging_dir(), body.token)

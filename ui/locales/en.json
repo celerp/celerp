@@ -1079,7 +1079,6 @@
   "modules.restarting": "Restarting Celerp… this page will reload when it is back.",
   "modules.search_placeholder": "Search modules…",
   "modules.source_default": "Default module, bundled with Celerp",
-  "modules.source_marketplace": "Installed from the Celerp marketplace",
   "modules.src_community": "Community",
   "modules.src_default": "Default",
   "modules.src_marketplace": "Marketplace",

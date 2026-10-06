@@ -3136,7 +3136,6 @@
   "modules.not_verified_tip": "このバンドルされたモジュールはこのコンピュータ上で変更されたため、現在は信頼されていないサードパーティ製モジュールとして実行されています。機能自体は維持されます。変更していない場合は、Celerpを再インストールして元の状態に戻してください。",
   "modules.restart_confirm": "モジュールの変更を適用するために、今すぐ Celerp を再起動しますか？ アプリが再読み込みされます。",
   "modules.source_default": "Celerp にバンドルされているデフォルトのモジュール",
-  "modules.source_marketplace": "Celerp マーケットプレイスからインストール済み",
   "modules.src_community": "コミュニティ",
   "modules.src_default": "デフォルト",
   "modules.src_marketplace": "マーケットプレイス",

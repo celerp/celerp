@@ -31,6 +31,8 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from celerp.modules.license import PAID_MODULE_REFUSAL, marketplace_flags
+
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
 from ui.api_client import APIError, refresh_access_token
@@ -218,7 +220,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
         elif running:
             status_filter = t("modules.badge_running", lang)
             status_parts.append(Span(status_filter, cls="badge badge--active"))
-        elif load_error and "license" in load_error.lower():
+        elif load_error == PAID_MODULE_REFUSAL:
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
             # rather than a dead red error - the moment-of-need conversion point.
@@ -277,9 +279,8 @@ def _local_panel(modules: list[dict], lang: str = "en",
             )
 
         # Provenance shield to the LEFT of the name (tags-left): gold for
-        # bundled defaults, one for Marketplace installs, nothing for community,
-        # a plain sideload or an unknown origin.
-        source_icon = _source_icon(m.get("source"), bool(m.get("is_default")), lang)
+        # bundled defaults, nothing for any other origin.
+        source_icon = _source_icon(bool(m.get("is_default")), lang)
         # The leftmost Source column states the origin in words - always filled,
         # even for a plain sideload - alongside the shield beside the name.
         source_label = _source_label(m.get("source"), bool(m.get("is_default")), lang)
@@ -548,23 +549,18 @@ def _trust_icon(tier: str, lang: str):
                 title=tip, aria_label=tip, role="img")
 
 
-def _source_icon(source: str | None, is_default: bool, lang: str):
-    """The provenance shield shown to the left of a module name, or None.
+def _source_icon(is_default: bool, lang: str):
+    """The gold shield shown to the left of a default module's name, or None.
 
-    Defaults (gold) and Marketplace installs carry one. It states where the
-    module came from and changes nothing about what the module may do.
-    Community, sideloaded, and unknown origins show no shield. The Source column
-    still states the origin in words.
+    Only the defaults Celerp ships carry one. Every other origin, Marketplace
+    included, shows no shield: the install sidecar that records an origin is
+    advisory. The Source column still states the origin in words.
     """
-    if is_default:
-        tier, key = "default", "modules.source_default"
-    elif source == "marketplace":
-        tier, key = "trusted", "modules.source_marketplace"
-    else:
+    if not is_default:
         return None
-    tip = t(key, lang)
+    tip = t("modules.source_default", lang)
     return Span(NotStr(_SHIELD_SVG),
-                cls=f"module-source-icon trust-icon trust-icon--{tier}",
+                cls="module-source-icon trust-icon trust-icon--default",
                 title=tip, aria_label=tip, role="img")
 
 
@@ -584,9 +580,9 @@ def _source_label(source: str | None, is_default: bool, lang: str) -> str:
 
 
 def _catalog_price(m: dict, lang: str) -> str:
-    if m.get("price_monthly"):
+    if m.get("price_monthly") is not None:
         return f"${m['price_monthly']:g}/mo"
-    if m.get("price_once"):
+    if m.get("price_once") is not None:
         return f"${m['price_once']:g}"
     return t("marketplace.free", lang)
 
@@ -768,7 +764,7 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
     the catalog price. Buying and installing are for the installation owner, so
     anyone else gets no action buttons."""
     row_id = f"marketplace-row-{m['id']}"
-    is_paid = bool(m.get("price_monthly") or m.get("price_once"))
+    _, is_paid = marketplace_flags(m)
     owned = m["id"] in licensed
     if m["id"] in installed:
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
@@ -784,9 +780,9 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
         # data-sharing, and licensing terms) sit on the Checkout page, where the
         # buyer consents and pays - see _checkout_consent - not in this table.
         buys = []
-        if m.get("price_monthly"):
+        if m.get("price_monthly") is not None:
             buys.append(_buy_btn(m["id"], "monthly", f"${m['price_monthly']:g}/mo", lang))
-        if m.get("price_once"):
+        if m.get("price_once") is not None:
             buys.append(_buy_btn(m["id"], "once", f"${m['price_once']:g} " + t("marketplace.once", lang), lang))
         status_td = Td("--", data_filter_value="--")
         action_td = Td(Div(*buys, style="display:flex;gap:8px;flex-wrap:wrap;"))

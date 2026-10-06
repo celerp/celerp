@@ -24,7 +24,6 @@ import pytest
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 LABELS_DIR = Path(__file__).parent.parent  # default_modules/celerp-labels
-INVENTORY_DIR = Path(__file__).parent.parent.parent / "celerp-inventory"
 
 
 def _import_labels_pkg() -> ModuleType:
@@ -223,17 +222,14 @@ class TestLabelsLoaderIntegration:
                     and key != "celerp_labels.models":
                 sys.modules.pop(key)
 
-    def test_labels_module_loads_via_loader(self, tmp_path):
+    def test_labels_module_loads_via_loader(self):
         """Loader picks up celerp-labels and registers all 4 slots."""
-        import shutil
         from celerp.modules.loader import load_all
         from celerp.modules.slots import get
 
-        # Copy both celerp-labels and its dependency celerp-inventory into tmp module dir
-        shutil.copytree(LABELS_DIR, tmp_path / "celerp-labels")
-        shutil.copytree(INVENTORY_DIR, tmp_path / "celerp-inventory")
-
-        loaded = load_all(str(tmp_path), {"celerp-labels", "celerp-inventory"})
+        # The shipped folders, beside the dependency celerp-inventory. A copy
+        # elsewhere would not load: celerp_inventory is already imported from here.
+        loaded = load_all(str(LABELS_DIR.parent), {"celerp-labels", "celerp-inventory"})
         labels_manifests = [m for m in loaded if m["name"] == "celerp-labels"]
         assert len(labels_manifests) == 1
         assert labels_manifests[0]["name"] == "celerp-labels"
@@ -246,16 +242,12 @@ class TestLabelsLoaderIntegration:
         # No item_action: printing is inline in item detail
         assert get("item_action") == []
 
-    def test_labels_module_not_bsl_violation(self, tmp_path):
+    def test_labels_module_not_bsl_violation(self):
         """celerp-labels does not import any protected BSL internals."""
-        import shutil
         from celerp.modules.loader import load_all
 
-        shutil.copytree(LABELS_DIR, tmp_path / "celerp-labels")
-        shutil.copytree(INVENTORY_DIR, tmp_path / "celerp-inventory")
-
         # Should load without raising BSL violation
-        loaded = load_all(str(tmp_path), {"celerp-labels", "celerp-inventory"})
+        loaded = load_all(str(LABELS_DIR.parent), {"celerp-labels", "celerp-inventory"})
         labels_manifests = [m for m in loaded if m["name"] == "celerp-labels"]
         assert len(labels_manifests) == 1
 

@@ -88,8 +88,15 @@ class TestParse:
 class TestLocalState:
     @pytest.fixture(autouse=True)
     def _data_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+        from celerp.config import settings
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
         return tmp_path
+
+    def test_local_state_lives_in_the_app_data_dir(self, _data_dir, tmp_path, monkeypatch):
+        monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path / "elsewhere"))
+        monkeypatch.setenv("DATA_DIR", str(tmp_path / "elsewhere"))
+        assert mc._cache_path() == _data_dir / "marketplace-catalog.json"
+        assert mc._ack_path().parent == _data_dir
 
     def test_read_cached_none_when_absent(self):
         assert mc.read_cached() is None
@@ -134,7 +141,8 @@ def _host(seen: list[str], respond=None):
 class TestCommunityDownload:
     @pytest.fixture(autouse=True)
     def _data_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+        from celerp.config import settings
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
         return tmp_path
 
     @pytest.mark.asyncio

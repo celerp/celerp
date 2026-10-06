@@ -67,9 +67,12 @@ from pathlib import Path
 
 from celerp.modules.importer import (
     _RESERVED_IMPORT_PREFIX, _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
-    _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix,
+    _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix, is_reserved_name,
 )
-from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
+from celerp.modules.license import (
+    PAID_MODULE_REFUSAL, adopt_legacy_license_cache, check_license, exchange_api_key_for_jwt,
+    is_free_official, is_premium_path,
+)
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
     FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
@@ -739,9 +742,11 @@ def _is_module_code(location: str | None, homes: list[Path]) -> bool:
 
 def _check_import_names(name: str, pkg_path: Path) -> None:
     """Refuse a module that would answer to a package name the standard library,
-    Celerp or an installed package already uses: loading it would replace that
-    package for everything else in the process. Only another Celerp module may
-    already hold the name. Raises :class:`ModuleLoadError`."""
+    Celerp, an installed package or another module already uses: loading it would
+    replace that package for everything else in the process. A name already
+    imported counts as taken unless it was imported from this module's own
+    folder; one not yet imported may be held by another Celerp module, which
+    _refuse_shared_import_names settles. Raises :class:`ModuleLoadError`."""
     homes = _module_homes(pkg_path)
     elsewhere = [p for p in sys.path if not any(_inside(Path(p or "."), h) for h in homes)]
     # Marketplace names use '-' only, so a celerp_ package belongs to the one
@@ -754,7 +759,8 @@ def _check_import_names(name: str, pkg_path: Path) -> None:
                 f"The package name {root!r} belongs to the celerp- module of that name; "
                 f"the module must use its own.")
         if root in sys.modules:
-            taken = not _is_module_code(_module_location(sys.modules[root]), homes)
+            location = _module_location(sys.modules[root])
+            taken = not (location and _inside(Path(location), pkg_path))
         else:
             spec = importlib.machinery.PathFinder.find_spec(root, elsewhere)
             taken = bool(spec and spec.origin) and not _is_module_code(spec.origin, homes)
@@ -807,19 +813,28 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
 def _license_refusal(module: AdmittedModule, creds) -> str | None:
     """Why a premium module may not load on this instance, or None.
 
-    Only checked when this instance has a relay identity (it has activated / been
-    given a GATEWAY_TOKEN). It verifies even when the live token exchange failed
-    (no JWT): check_license still decides from the offline lifetime JWT and the
-    grace cache, so a transient startup failure falls back to cached state rather
-    than skipping the check. Only a never-activated install skips it.
+    Checked for a module in a premium tree or carrying the paid marker, and for
+    every celerp- name that is not one of the defaults Celerp ships, wherever its
+    folder came from: a celerp- module the Marketplace lists as free and official
+    loads (that verdict is cached on this instance), any other needs a licence.
+    Nothing in the module folder counts: until the Marketplace has answered once,
+    only a licence loads it. The name only ever adds this check; it grants nothing.
+
+    Checked on every instance, activated or not. The Marketplace listing is
+    public, so a free verdict needs no relay identity. With no live JWT (never
+    activated, or the token exchange failed) check_license decides from the
+    offline lifetime JWT and the grace cache alone.
     """
-    if not is_premium_path(module.path):
+    by_name = _needs_licence_by_name(module.name, module.path)
+    if not by_name and not is_premium_path(module.path):
         return None
     relay_url, instance_jwt, data_dir, instance_id = creds()
-    if not relay_url:
-        log.debug("Premium module %r: no relay identity (never activated) - "
-                  "skipping license check (dev mode)", module.name)
-        return None
+    unconfirmed = False
+    if by_name:
+        free = is_free_official(module.name, relay_url, Path(data_dir))
+        if free:
+            return None
+        unconfirmed = free is None
     if check_license(
         slug=module.name,
         relay_url=relay_url,
@@ -829,8 +844,41 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
         offline_only=instance_jwt is None,
     ):
         return None
+    if unconfirmed:
+        log.warning("Module %r not loaded: the Marketplace could not confirm it is free "
+                    "and there is no valid license", module.name)
+        return "Not loaded: the Marketplace could not confirm it is free and there is no valid license here. Connect to the internet and restart."
     log.warning("Premium module %r skipped: no valid license", module.name)
-    return "Premium module: no valid license."
+    return PAID_MODULE_REFUSAL
+
+
+def _needs_licence_by_name(name: str, pkg_path: Path) -> bool:
+    """A celerp- module that is not a default and not in a premium tree: it
+    loads on a free official verdict or a licence."""
+    return (is_reserved_name(name) and name not in first_party_names()
+            and not is_premium_path(pkg_path))
+
+
+def fetch_missing_free_verdicts(module_dir: str) -> None:
+    """Fetch the Marketplace verdict for every installed module that is licence
+    checked by name and has none kept yet, enabled or not, so it loads later
+    without the relay. Run at startup in the background; offline it records
+    nothing and admission decides as usual."""
+    from celerp.config import settings as _settings
+    from celerp.gateway.state import relay_http_url
+    relay_url = relay_http_url()
+    seen: set[str] = set()
+    for entry in module_dir.split(","):
+        root = Path(entry.strip())
+        if not entry.strip() or not root.is_dir():
+            continue
+        for pkg_path in sorted(root.iterdir()):
+            name = pkg_path.name
+            if name in seen or not (pkg_path / "__init__.py").is_file():
+                continue
+            seen.add(name)
+            if _needs_licence_by_name(name, pkg_path):
+                is_free_official(name, relay_url, _settings.data_dir)
 
 
 def _premium_credentials():
@@ -838,8 +886,9 @@ def _premium_credentials():
     computed lazily and ONCE per admission: the JWT is the same for every
     module, and there must be no network call at all when no premium module is
     present. gateway_token (GATEWAY_TOKEN / GATEWAY_URL on a hosted deploy; set
-    by /auth/activate on desktop) is exchanged for a short-lived JWT via
-    /auth/token, the same pattern celerp.routers.health uses."""
+    by /auth/activate on desktop), when there is one, is exchanged for a
+    short-lived JWT via /auth/token, the same pattern celerp.routers.health uses.
+    The relay URL comes from the gateway settings either way."""
     cache: dict = {}
 
     def _resolve() -> tuple[str, str | None, str, str]:
@@ -847,11 +896,12 @@ def _premium_credentials():
             from celerp.config import ensure_instance_id, settings as _settings
             from celerp.gateway.state import relay_http_url
             api_key = _settings.gateway_token
-            relay_url = relay_http_url() if api_key else ""
+            relay_url = relay_http_url()
+            adopt_legacy_license_cache(_settings.data_dir)
             cache["creds"] = (
                 relay_url,
                 exchange_api_key_for_jwt(relay_url, api_key) if api_key else None,
-                os.environ.get("DATA_DIR", "/tmp/celerp-data"),
+                str(_settings.data_dir),
                 # The instance's own canonical id (offline-available): a lifetime
                 # license is validated against this via its `sub` claim.
                 ensure_instance_id(),
@@ -912,18 +962,21 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     that validates; its name matches the folder; the importer's name charset
     rules; a celerp_ package only in the celerp- module of that name
     (_check_import_names); the Celerp version it needs; the table prefix
-    contract; that no package name it answers to is already taken, by Python or by
-    another enabled module (_refuse_shared_import_names); that no
+    contract; that no package name it answers to is already taken, by Python, by
+    code imported from elsewhere (_check_import_names) or by another enabled
+    module (_refuse_shared_import_names); that no
     projection prefix it declares overlaps core's or another enabled module's
     (_refuse_overlapping_projection_prefixes); that every route
     source lies inside the module and provides its setup function; that no
     code it would execute rebinds a callable core calls (_check_dynamic_writes);
     that the migrations package resolves inside the module; for a
     module that is not first-party, that nothing it would execute imports a
-    protected internal; and for a premium module, a valid license. Survivors are
-    then put in dependency order, a module whose dependency is missing or
-    refused being refused too. A first-party module that fails a rule stops
-    startup, as a default module is the product.
+    protected internal; for a premium module, a valid license; and for a
+    celerp- name that is not a default, a free official verdict or a valid
+    license (_license_refusal). Survivors are then put in dependency order, a
+    module whose dependency is missing or refused being refused too. A
+    first-party module that fails a rule stops startup, as a default module is
+    the product.
     """
     refused: dict[str, str] = {}
     candidates: dict[str, AdmittedModule] = {}

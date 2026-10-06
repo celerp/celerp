@@ -3136,7 +3136,6 @@
   "modules.not_verified_tip": "Este módulo incluido se ha modificado en este ordenador, por lo que ahora se ejecuta como un módulo de terceros no fiable. Sigue funcionando. Si no lo has modificado tú, reinstala Celerp para restaurar el original.",
   "modules.restart_confirm": "¿Reiniciar Celerp ahora para aplicar los cambios en el módulo? La aplicación se recargará.",
   "modules.source_default": "Módulo predeterminado, incluido con Celerp",
-  "modules.source_marketplace": "Instalado desde el marketplace de Celerp",
   "modules.src_community": "Comunidad",
   "modules.src_default": "Por defecto",
   "modules.src_marketplace": "Mercado",
