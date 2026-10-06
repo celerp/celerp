@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from celerp.config import settings
+from ui.i18n import t
 
 _NONCE_BYTES = 12
 
@@ -128,11 +129,9 @@ def _parse_key(b64_key: str) -> bytes:
     try:
         key = base64.b64decode(b64_key)
     except Exception as exc:
-        raise ValueError(f"BACKUP_ENCRYPTION_KEY is not valid base64: {exc}") from exc
+        raise ValueError(t("error.backup_key_invalid")) from exc
     if len(key) != 32:
-        raise ValueError(
-            f"BACKUP_ENCRYPTION_KEY must decode to exactly 32 bytes, got {len(key)}"
-        )
+        raise ValueError(t("error.backup_key_invalid"))
     return key
 
 
@@ -151,12 +150,12 @@ def dump_database(database_url: str, *, runner=None) -> bytes:
             timeout=300,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("pg_dump not found in PATH — cannot create backup") from exc
+        raise RuntimeError(t("error.backup_tool_missing")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("pg_dump timed out after 300 seconds") from exc
+        raise RuntimeError(t("error.backup_timed_out")) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"pg_dump failed (exit {result.returncode}): {stderr}")
+        raise RuntimeError(t("error.backup_failed_detail", detail=stderr))
     return result.stdout
 
 
@@ -207,13 +206,13 @@ def _run_pg_restore(dump_path: Path, database_url: str, clean_schema: bool, runn
         command.append(str(dump_path))
         result = runner(command, capture_output=True, timeout=600)
     except FileNotFoundError as exc:
-        raise RuntimeError("pg_restore not found in PATH") from exc
+        raise RuntimeError(t("error.restore_tool_missing")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("pg_restore timed out after 600 seconds") from exc
+        raise RuntimeError(t("error.restore_timed_out")) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
         if clean_schema or "ERROR" in stderr.upper():
-            raise RuntimeError(f"pg_restore failed (exit {result.returncode}): {stderr}")
+            raise RuntimeError(t("error.restore_failed_detail", detail=stderr))
 
 
 def _restore_command(database_url: str, mode: list[str]) -> list[str]:

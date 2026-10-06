@@ -179,7 +179,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             try:
                 taxes = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+                return P(e.detail, cls="cell-error")
             tax = taxes[idx] if idx < len(taxes) else {}
             val = str(tax.get(field, "") or "")
             if field == "tax_type":
@@ -289,7 +289,7 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
             try:
                 terms = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+                return P(e.detail, cls="cell-error")
             term = terms[idx] if idx < len(terms) else {}
             val = str(term.get(field, "") or "")
             input_type = "number" if field == "days" else "text"
@@ -402,7 +402,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
             try:
                 price_lists = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+                return P(e.detail, cls="cell-error")
             pl = price_lists[idx] if idx < len(price_lists) else {}
             val = str(pl.get(field, "") or "")
             if field == "multiplier":
@@ -715,7 +715,7 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         current = str(company.get(key, "") or "")
         lang = get_lang(request)
         if key == "docs_default_preset":
@@ -838,7 +838,7 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         val = str(company.get(field, "") or "")
 
         if field == "phone":
@@ -976,7 +976,7 @@ def setup_routes(app):
         try:
             company = await api.get_company(token)
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         return _company_display_cell(field, company.get(field))
 
     @app.patch("/settings/company/{field}")
@@ -1003,7 +1003,7 @@ def setup_routes(app):
             try:
                 _zi.ZoneInfo(value)
             except (_zi.ZoneInfoNotFoundError, KeyError):
-                return P(t("error.invalid_timezone", value=repr(value)), cls="cell-error")
+                return P(t("error.invalid_timezone", value=value), cls="cell-error")
 
         if field == "vertical":
             if value not in dict(business_type_options()):
@@ -1042,7 +1042,7 @@ def setup_routes(app):
         try:
             users = (await api.get_users(token)).get("items", [])
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         user = next((u for u in users if u.get("id") == user_id), {})
         val = str(user.get(field, "") or "")
         if field == "role":
@@ -1315,7 +1315,7 @@ def setup_routes(app):
         try:
             schema = await api.get_item_schema(token)
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         sorted_schema = sorted(schema, key=lambda x: x.get("position", 0))
         f = sorted_schema[idx] if idx < len(sorted_schema) else {}
         val = str(f.get(field, "") or "")
@@ -1404,7 +1404,7 @@ def setup_routes(app):
         try:
             fields = await api.get_category_schema(token, category)
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         sorted_fields = _load_cat_schema_sorted(fields)
         f = sorted_fields[idx] if idx < len(sorted_fields) else {}
         return _cat_schema_display_cell(category, idx, field, f)
@@ -1418,7 +1418,7 @@ def setup_routes(app):
         try:
             fields = await api.get_category_schema(token, category)
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         sorted_fields = _load_cat_schema_sorted(fields)
         f = sorted_fields[idx] if idx < len(sorted_fields) else {}
         # Key is auto-managed - clicking the hidden key cell should never open an editor
@@ -1593,7 +1593,7 @@ def setup_routes(app):
         try:
             locations = (await api.get_locations(token)).get("items", [])
         except APIError as e:
-            return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+            return P(e.detail, cls="cell-error")
         loc = next((l for l in locations if l.get("id") == location_id), {})
         val = str(loc.get(field, "") or "")
 
@@ -2389,7 +2389,7 @@ def setup_routes(app):
             async with api._local_client(token, timeout=60.0, follow_redirects=False) as c:
                 r = await c.post("/companies/me/reset", json={"company_name": str(form.get("company_name", ""))})
         except Exception as exc:
-            return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
+            return Div(t("api.unreachable"), cls="flash flash--error")
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         if r.status_code != 200:
             detail = body.get("detail")
@@ -2419,7 +2419,7 @@ def setup_routes(app):
             if r.status_code != 200:
                 return Div(r.json().get("detail", t("settings.deactivation_failed")), cls="flash flash--error")
         except Exception as exc:
-            return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
+            return Div(t("api.unreachable"), cls="flash flash--error")
         from starlette.responses import RedirectResponse
         # Check if the user has other active companies
         try:
@@ -3512,7 +3512,7 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
             try:
                 templates = await getattr(api, gname)(token)
             except APIError as e:
-                return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
+                return P(e.detail, cls="cell-error")
             tmpl = templates[idx] if idx < len(templates) else {}
 
             if field == "doc_types":

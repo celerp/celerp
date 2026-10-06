@@ -153,7 +153,7 @@ def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
-            detail=f"This document has no usable exchange rate. {exc}. Base-currency documents use rate 1; foreign-currency documents require a stored rate. Set the exchange rate to continue.",
+            detail=str(exc),
         ) from exc
 
 

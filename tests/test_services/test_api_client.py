@@ -48,7 +48,7 @@ async def test_api_client_timeout_raises_504():
                 pass  # pragma: no cover
 
     assert exc_info.value.status == 504
-    assert "timed out" in exc_info.value.detail.lower()
+    assert "took too long" in exc_info.value.detail.lower()
 
 
 @pytest.mark.asyncio

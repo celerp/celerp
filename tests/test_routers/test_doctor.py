@@ -1135,4 +1135,4 @@ async def test_doctor_reports_missing_foreign_rate_as_blocked_instead_of_posting
     assert finding["auto_fixable"] is False
     detail = next(d for d in finding["details"] if d["doc_id"] == entity_id)
     assert "rate" in detail["blocked_reason"].lower()
-    assert "set the document exchange rate" in detail["blocked_reason"].lower()
+    assert "enter the exchange rate" in detail["blocked_reason"].lower()

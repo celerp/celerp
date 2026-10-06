@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
+from ui.i18n import t
 
 # Units sold by weight/volume/length allow fractional quantities.
 # "piece" (decimals=0) enforces positive integers.
@@ -100,7 +101,7 @@ def validate_quantity(qty: float, decimals: int, *, label: str = "Quantity") -> 
     if exceeds_precision(qty, decimals):
         raise HTTPException(
             status_code=422,
-            detail=f"{label}: quantity {qty} exceeds allowed precision ({decimals} decimal places for this unit)",
+            detail=t("error.qty_precision", label=label, qty=qty, decimals=decimals),
         )
 
 
@@ -109,7 +110,7 @@ def validate_positive(qty: float, *, label: str = "Quantity") -> None:
     if qty <= 0:
         raise HTTPException(
             status_code=422,
-            detail=f"{label}: quantity must be greater than zero, got {qty}",
+            detail=t("error.qty_positive", label=label),
         )
 
 

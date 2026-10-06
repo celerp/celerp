@@ -1404,7 +1404,7 @@ def setup_ui_routes(app) -> None:
         tpl = next((x for x in templates if x["id"] == tmpl_id), None)
         if not tpl:
             return await base_shell(
-                _label_settings_root(templates, flash="Template not found.", flash_kind="error"),
+                _label_settings_root(templates, flash=t("labels.err_template_not_found"), flash_kind="error"),
                 title="Label Templates - Celerp",
                 nav_active="labels",
                 request=request,
@@ -1426,7 +1426,7 @@ def setup_ui_routes(app) -> None:
         name = (form.get("name") or "").strip()
         if not name:
             templates = await _fetch_templates(request)
-            return _label_settings_root(templates, flash="Template name required.", flash_kind="error")
+            return _label_settings_root(templates, flash=t("labels.err_template_name_required"), flash_kind="error")
         try:
             async with httpx.AsyncClient(timeout=5) as c:
                 r = await c.post(
@@ -1443,11 +1443,14 @@ def setup_ui_routes(app) -> None:
                         editor=_editor_panel(new_t, global_extra, category_attrs),
                         flash=f"Created '{name}'.",
                     )
-                error = r.json().get("detail", "Unknown error")
-        except Exception as exc:
-            error = str(exc)
+                detail = r.json().get("detail")
+                error = (t("labels.err_template_create", error=detail) if isinstance(detail, str)
+                         else t("labels.err_template_create_unknown"))
+        except Exception:
+            log.exception("Label template create failed")
+            error = t("labels.err_template_create_unknown")
         templates = await _fetch_templates(request)
-        return _label_settings_root(templates, flash=f"Could not create: {error}", flash_kind="error")
+        return _label_settings_root(templates, flash=error, flash_kind="error")
 
     @app.delete("/settings/labels/{tmpl_id}")
     async def label_settings_delete(request: Request, tmpl_id: str):

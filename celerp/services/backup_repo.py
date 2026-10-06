@@ -98,7 +98,7 @@ async def _get_blob(client: httpx.AsyncClient, blob_hash: str, key: bytes) -> by
         dl.raise_for_status()
     plaintext = await asyncio.to_thread(decrypt, dl.content, key)
     if hashlib.sha256(plaintext).hexdigest() != blob_hash:
-        raise RuntimeError(f"Blob {blob_hash[:12]} failed integrity check")
+        raise RuntimeError(t("error.backup_damaged"))
     return plaintext
 
 
@@ -180,7 +180,7 @@ async def reassemble_snapshot(snapshot_id: str) -> Path:
         r.raise_for_status()
         snap = next((s for s in r.json()["items"] if s["id"] == snapshot_id), None)
         if snap is None:
-            raise RuntimeError(f"Snapshot {snapshot_id} not found")
+            raise RuntimeError(t("error.backup_snapshot_missing"))
 
         manifest = json.loads(await _get_blob(client, snap["manifest_hash"], key))
 

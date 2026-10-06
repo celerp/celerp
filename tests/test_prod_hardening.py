@@ -54,7 +54,7 @@ async def test_rate_limit_on_login(client: AsyncClient) -> None:
             last = await client.post("/auth/login", json={"email": "nobody@example.com", "password": "bad"})
         assert last is not None
         assert last.status_code == 429
-        assert last.json() == {"detail": "Rate limit exceeded"}
+        assert last.json() == {"detail": t("error.rate_limited")}
     finally:
         auth_limiter.enabled = False
         auth_limiter._storage.reset()

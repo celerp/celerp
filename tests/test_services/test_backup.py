@@ -49,13 +49,13 @@ def test_parse_key_valid():
 
 
 def test_parse_key_bad_base64():
-    with pytest.raises(ValueError, match="not valid base64"):
+    with pytest.raises(ValueError, match="backup encryption key is set up wrong"):
         _parse_key("not!!base64$$")
 
 
 def test_parse_key_wrong_length():
     short = base64.b64encode(b"tooshort").decode()
-    with pytest.raises(ValueError, match="32 bytes"):
+    with pytest.raises(ValueError, match="backup encryption key is set up wrong"):
         _parse_key(short)
 
 
@@ -101,7 +101,7 @@ def test_dump_database_not_found(monkeypatch):
         raise FileNotFoundError("pg_dump")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="pg_dump not found"):
+    with pytest.raises(RuntimeError, match="database tool is missing"):
         dump_database("postgresql+asyncpg://u:p@localhost/db")
 
 
@@ -110,7 +110,7 @@ def test_dump_database_nonzero_exit(monkeypatch):
         return subprocess.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"connection refused")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="pg_dump failed"):
+    with pytest.raises(RuntimeError, match=r"couldn't be made.*connection refused"):
         dump_database("postgresql+asyncpg://u:p@localhost/db")
 
 
@@ -119,7 +119,7 @@ def test_dump_database_timeout(monkeypatch):
         raise subprocess.TimeoutExpired(cmd, timeout=300)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="timed out"):
+    with pytest.raises(RuntimeError, match="longer than 5 minutes"):
         dump_database("postgresql+asyncpg://u:p@localhost/db")
 
 
@@ -185,7 +185,7 @@ def test_restore_database_not_found(monkeypatch):
         raise FileNotFoundError("pg_restore")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="pg_restore not found"):
+    with pytest.raises(RuntimeError, match="database tool is missing"):
         restore_database_file(Path("database.dump"), "postgresql+asyncpg://u:p@localhost/db")
 
 
@@ -195,7 +195,7 @@ def test_restore_database_error(monkeypatch):
         return subprocess.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"ERROR: relation does not exist")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="pg_restore failed"):
+    with pytest.raises(RuntimeError, match=r"couldn't be restored.*relation does not exist"):
         restore_database_file(Path("database.dump"), "postgresql+asyncpg://u:p@localhost/db")
 
 

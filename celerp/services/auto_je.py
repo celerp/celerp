@@ -23,6 +23,7 @@ from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_me
 from celerp.services.units import is_non_stock_line
 from sqlalchemy import or_
 from sqlalchemy import select as _select
+from ui.i18n import t
 
 # Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
 # COGS relief, audit adjustment, landed-cost capitalisation - posts here so the asset account and its
@@ -135,7 +136,7 @@ async def _emit_auto_posted_je(
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:
         raise UnbalancedJournalEntry(
-            f"{memo}: debits {debits} and credits {credits} {currency} do not balance"
+            t("error.auto_je_unbalanced", memo=memo, debits=debits, credits=credits, currency=currency)
         )
     payload = {"memo": memo, "entries": entries}
     if ts:
@@ -871,7 +872,7 @@ async def create_for_bill_conversion(
         lines.append(("6950", total_d))
     if sum((a for _, a in lines), _Dec(0)) != total_d:
         raise UnbalancedJournalEntry(
-            f"Bill {doc_id}: its lines, tax and shipping do not add up to its total of {total_d} {currency}"
+            t("error.bill_lines_mismatch", doc_id=doc_id, total=total_d, currency=currency)
         )
 
     # AP is the bill total in base; the debits are converted line by line, and the unit
@@ -1310,7 +1311,7 @@ async def reconcile_doc_cogs(
     for lot in await _lots_out_on_doc(session, company_id, doc_id):
         idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
         if idx is None:
-            raise ValueError("cannot safely identify the invoice line of every shipped lot")
+            raise ValueError(t("error.cogs_line_unknown"))
         shipped[idx] = shipped.get(idx, 0.0) + lot_cost_of_sale(lot.state or {})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
     repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)

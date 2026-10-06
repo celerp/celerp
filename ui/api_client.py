@@ -317,7 +317,7 @@ async def _bulk_api_client(token: str, timeout: float | httpx.Timeout = 10.0):
 
 def _raise(r: httpx.Response) -> httpx.Response:
     if r.is_redirect:
-        raise APIError(r.status_code, f"Unexpected redirect to {r.headers.get('location', '?')}")
+        raise APIError(r.status_code, t("error.unexpected_redirect"))
     if r.is_error:
         try:
             body = r.json()
@@ -332,6 +332,13 @@ def _raise(r: httpx.Response) -> httpx.Response:
             # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
             data = detail
             detail = detail.get("message") or r.text
+        elif isinstance(detail, list):
+            # A request validation error: name the rejected fields in a sentence and
+            # carry the original list on APIError.data.
+            data = body
+            fields = ", ".join(dict.fromkeys(
+                str(e["loc"][-1]) for e in detail if isinstance(e, dict) and e.get("loc")))
+            detail = t("error.invalid_input_fields", fields=fields) if fields else t("error.invalid_input")
         elif isinstance(body, dict) and set(body) - {"detail"}:
             # An error body carrying structured fields beyond `detail` (a top-level
             # machine "code" like scan_run_conflict, with a plain-string detail):

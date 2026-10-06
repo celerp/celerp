@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -32,9 +33,8 @@ _CHARS_PER_TOKEN = 4  # conservative estimate
 # as retryable: every agent mutation is compiled only after proving canonical
 # idempotency, so the same tool-call id can be retried safely.
 EXECUTING_STALE_S = 5 * 60
-UNFINISHED_ACTION_TEXT = (
-    "The previous attempt did not return a definite result. Retry safely to check or finish it."
-)
+def unfinished_action_text() -> str:
+    return t("ai.action_unfinished")
 
 
 async def _protected_conversation_ids(
@@ -425,7 +425,7 @@ def pending_actions(tools_called: list | None) -> list[dict]:
         elif isinstance(record, dict) and record.get("status") == "retryable":
             out.append(record)
         elif _stale_executing(record, now):
-            out.append({**record, "status": "retryable", "error": UNFINISHED_ACTION_TEXT})
+            out.append({**record, "status": "retryable", "error": unfinished_action_text()})
     return out
 
 

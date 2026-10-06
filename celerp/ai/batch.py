@@ -35,6 +35,7 @@ from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError, call_llm
 from celerp.ai.models import BULK_EXTRACTION
 from celerp.models.ai import AIBatchJob
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ log = logging.getLogger(__name__)
 BATCH_CONCURRENCY = 3
 MAX_BATCH_FILES = 100
 
-INTERRUPTED_ERROR = "This job was interrupted by a restart. Completed file results were kept; resend only files that did not finish."
+def interrupted_error() -> str:
+    return t("ai.job_interrupted")
 
 _BATCH_SYSTEM_PROMPT = """\
 You are reading one business document: a receipt, a supplier invoice, a bank or \
@@ -137,7 +139,7 @@ async def _process_single_file(
                 "file_id": file_id,
                 "filename": file_id,
                 "status": "error",
-                "error": "This file is no longer available. Attach it again and resend.",
+                "error": t("error.file_gone"),
             }
 
         filename = file["filename"]
@@ -179,7 +181,7 @@ async def create_batch_job(
     if not file_ids:
         raise ValueError("Attach at least one file")
     if len(file_ids) > MAX_BATCH_FILES:
-        raise ValueError(f"Maximum {MAX_BATCH_FILES} files per batch")
+        raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
 
     job = AIBatchJob(
         company_id=company_id,
@@ -273,7 +275,7 @@ async def run_batch(
             job.credits_consumed = credits
             job.completed_at = datetime.now(timezone.utc)
             if all_failed:
-                job.error = "None of the files could be read."
+                job.error = t("ai.job_failed")
             session.add(job)
             await session.commit()
 
@@ -314,7 +316,7 @@ async def fail_interrupted_jobs(session: AsyncSession) -> int:
     now = datetime.now(timezone.utc)
     for job in rows:
         job.status = "failed"
-        job.error = INTERRUPTED_ERROR
+        job.error = interrupted_error()
         job.completed_at = now
         session.add(job)
     return len(rows)
