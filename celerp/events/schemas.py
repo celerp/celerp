@@ -1062,6 +1062,14 @@ class AccPeriodReopened(BaseModel):
     period: str
 
 
+class AccReconciliationReopened(BaseModel):
+    """A completed bank reconciliation put back in progress. Only the reconciliation
+    changes; the books do not."""
+    bank_account_id: str
+    statement_date: str
+    completed_at: str | None = None
+
+
 # -----------------
 # System
 # -----------------
@@ -1367,6 +1375,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "acc.journal_entry.voided": AccJournalEntryVoided,
     "acc.period.closed": AccPeriodClosed,
     "acc.period.reopened": AccPeriodReopened,
+    "acc.reconciliation.reopened": AccReconciliationReopened,
 
     # System
     "sys.company.created": SysCompanyCreated,

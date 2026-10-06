@@ -38,6 +38,7 @@ from celerp.services.money import (
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
+from ui.i18n import t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -2928,7 +2929,7 @@ async def match_reconciliation(
 ) -> dict:
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
-        raise HTTPException(status_code=409, detail="Session already completed")
+        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
 
     existing = set(recon.reconciled_je_ids or [])
     existing.update(payload.je_ids)
@@ -2963,6 +2964,49 @@ async def complete_reconciliation(
 
     recon.status = "completed"
     recon.completed_at = datetime.now(timezone.utc)
+    await db.commit()
+    return _recon_to_dict(recon)
+
+
+@router.post(
+    "/reconciliation/{session_id}/reopen",
+    summary="Put a completed reconciliation back in progress",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
+async def reopen_reconciliation(
+    session_id: uuid.UUID,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reopen a completed reconciliation so its matches can be changed. Its matches stay
+    as they are and no journal entry is written; the reopening is recorded as an event.
+    Reopening one that is already in progress changes nothing."""
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
+    if recon.status != "completed":
+        return _recon_to_dict(recon)
+    # One open reconciliation per statement (start_reconciliation): reopening this one
+    # while another of the same statement is open would make two.
+    other = (await db.execute(select(ReconciliationSession.id).where(
+        ReconciliationSession.company_id == company_id,
+        ReconciliationSession.bank_account_id == recon.bank_account_id,
+        ReconciliationSession.statement_date == recon.statement_date,
+        ReconciliationSession.status == "open",
+    ).limit(1))).scalar_one_or_none()
+    if other is not None:
+        raise HTTPException(status_code=409, detail=t("error.recon_reopen_other_open"))
+    completed_at = recon.completed_at.isoformat() if recon.completed_at else None
+    await emit_event(
+        db, company_id=company_id, entity_id=f"recon:{recon.id}", entity_type="reconciliation",
+        event_type="acc.reconciliation.reopened",
+        data={"bank_account_id": str(recon.bank_account_id), "statement_date": recon.statement_date,
+              "completed_at": completed_at},
+        actor_id=user.id, location_id=None, source="reconciliation",
+        idempotency_key=f"recon:{recon.id}:reopened:{completed_at}", metadata_={},
+    )
+    recon.status = "open"
+    recon.completed_at = None
     await db.commit()
     return _recon_to_dict(recon)
 
@@ -3106,7 +3150,7 @@ async def _import_statement_lines(
     from celerp_accounting.csv_parser import parse_bank_csv
 
     if recon.status == "completed":
-        raise HTTPException(status_code=409, detail="Session already completed")
+        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
     try:
         parsed = parse_bank_csv(content, col_map)
     except TabularError as e:
@@ -3297,7 +3341,7 @@ async def auto_match_recon(
 
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
-        raise HTTPException(status_code=409, detail="Session already completed")
+        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
 
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
@@ -3729,7 +3773,7 @@ async def bulk_confirm_recon(
     """Confirm all 'suggested' matches (make them fully matched)."""
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
-        raise HTTPException(status_code=409, detail="Session already completed")
+        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
 
     lines = (await db.execute(
         select(BankStatementLine).where(
@@ -3770,7 +3814,7 @@ async def write_off_difference(
 
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
-        raise HTTPException(status_code=409, detail="Session already completed")
+        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
     je_id = f"je:recon:writeoff:{session_id}"
@@ -3926,7 +3970,7 @@ async def _get_recon_and_line(
 ) -> tuple[ReconciliationSession, BankStatementLine]:
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
-        raise HTTPException(status_code=409, detail="Session already completed")
+        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
     sl = (await db.execute(
         select(BankStatementLine).where(
             BankStatementLine.id == line_id,

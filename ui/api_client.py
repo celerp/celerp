@@ -1722,6 +1722,11 @@ async def complete_reconciliation(token: str, session_id: str) -> dict:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/complete")).json()
 
 
+async def reopen_reconciliation(token: str, session_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/reopen")).json()
+
+
 async def import_recon_csv(token: str, session_id: str, content: bytes, filename: str, column_map: dict | None = None) -> dict:
     import json as _json
     async with _bulk_api_client(token) as c:

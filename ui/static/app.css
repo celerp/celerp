@@ -1970,6 +1970,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 /* ─── Bank Reconciliation Workspace (phase 9) ─────────────────────────────── */
 .recon-workspace { display: flex; flex-direction: column; gap: 12px; max-width: 1400px; }
+.recon-completed { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .recon-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 16px 0; border-bottom: 1px solid var(--c-border); }
 .recon-title { margin: 0; font-size: 20px; font-weight: 700; }
 .recon-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 0; }

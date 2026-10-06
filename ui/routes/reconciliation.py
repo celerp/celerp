@@ -441,7 +441,22 @@ def _workspace_view(
         cls="recon-panel recon-panel--book",
     )
 
+    # A completed reconciliation still shows every action: each one explains that it
+    # must be reopened first (GDR 2e), and Reopen sits right here.
+    completed = Div(
+        Span(t("recon.completed_banner", date=(recon.get("completed_at") or "")[:10] or EMPTY)),
+        Button(
+            t("btn.reopen"),
+            hx_post=f"/accounting/reconcile/{session_id}/reopen",
+            hx_target="#recon-workspace",
+            hx_swap="outerHTML",
+            cls="btn btn--secondary btn--sm",
+        ),
+        cls="flash flash--success recon-completed",
+    ) if recon.get("status") == "completed" else None
+
     return Div(
+        completed,
         header,
         toolbar,
         Div(
@@ -951,12 +966,27 @@ def setup_routes(app):
                   cls="success-banner"),
                 A(t("btn._back_to_accounting"), href="/settings/accounting?tab=bank-accounts",
                   cls="btn btn--primary"),
+                A(t("recon.view_completed"), href=f"/accounting/reconcile/{session_id}",
+                  cls="btn btn--secondary"),
                 cls="settings-card",
             ),
             title=page_title("recon.complete_title"),
             nav_active="accounting",
             request=request,
         )
+
+    @app.post("/accounting/reconcile/{session_id}/reopen")
+    async def reopen_recon(request: Request, session_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="error-banner")
+        try:
+            await api.reopen_reconciliation(token, session_id)
+        except APIError as e:
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/write-off")
     async def trigger_write_off(request: Request, session_id: str):
