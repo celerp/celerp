@@ -514,6 +514,122 @@ async def test_discard_goes_ahead_beside_a_table_it_cannot_read_that_holds_no_co
 
 
 @pytest.mark.asyncio
+async def test_discard_goes_ahead_beside_tables_it_cannot_read_keyed_only_to_each_other(
+        real_client, real_engine, migration_env, rules_bind):
+    """The role Celerp connects as has no rights on two tables whose only key names the
+    other, with no company column and no key to a company's table or to users, so
+    discarding reaches neither. The staged company is discarded and both are left as they
+    were."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.begin() as conn:
+        for statement in ("CREATE TABLE ext_shelf (id serial PRIMARY KEY, label text)",
+                          "CREATE TABLE ext_bin (id serial PRIMARY KEY, shelf int NOT NULL REFERENCES ext_shelf(id))",
+                          "INSERT INTO ext_shelf (label) VALUES ('kept')",
+                          "INSERT INTO ext_bin (shelf) SELECT id FROM ext_shelf",
+                          "REVOKE ALL ON ext_shelf, ext_bin FROM CURRENT_USER"):
+            await conn.execute(text(statement))
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "companies", "id = :c", c=company_id) == 0
+        async with real_engine.begin() as conn:
+            await conn.execute(text("GRANT ALL ON ext_shelf, ext_bin TO CURRENT_USER"))
+        assert await count(real_engine, "ext_shelf", "label = 'kept'") == 1
+        assert await count(real_engine, "ext_bin", "TRUE") == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_bin, ext_shelf"))
+
+
+@pytest.mark.asyncio
+async def test_discard_is_refused_while_a_table_naming_the_company_by_a_key_cannot_be_read(
+        real_client, real_engine, migration_env, rules_bind):
+    """The role Celerp connects as has no rights on a table with no company column whose
+    key names the staged company. The discard is refused naming that table, and the
+    company and the row are kept."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.begin() as conn:
+        for statement in ("CREATE TABLE ext_link (id uuid PRIMARY KEY, owner uuid NOT NULL REFERENCES companies(id))",
+                          "INSERT INTO ext_link VALUES (gen_random_uuid(), :c)",
+                          "REVOKE ALL ON ext_link FROM CURRENT_USER"):
+            await conn.execute(text(statement), {"c": company_id})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key", {"table": "ext_link"})
+        assert await count(real_engine, "companies", "id = :c", c=company_id) == 1
+        async with real_engine.begin() as conn:
+            await conn.execute(text("GRANT ALL ON ext_link TO CURRENT_USER"))
+        assert await count(real_engine, "ext_link", "owner = :c", c=company_id) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_link"))
+
+
+# Tables naming the owner, each with the one of them the role Celerp connects as has no
+# rights on: one the owner's deletion cascades into, one naming such a table, and one
+# naming the owner by a key that does not cascade.
+_UNREADABLE_BESIDE_THE_OWNER = {
+    "a table deleting the owner cascades into": "ext_sess",
+    "a table naming one the owner's deletion cascades into": "ext_sess_note",
+    "a table naming the owner by a key that does not cascade": "ext_ref",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", list(_UNREADABLE_BESIDE_THE_OWNER))
+async def test_bootstrap_discard_is_refused_while_a_table_naming_the_owner_cannot_be_read(
+        real_client, real_engine, migration_env, rules_bind, shape):
+    """The tables hold no company column and no key to a company's table, but deleting the
+    first-run owner reads or deletes their rows. The discard is refused naming the table
+    discard cannot read, and the owner, the company and every row are kept."""
+    from sqlalchemy import text
+
+    hidden = _UNREADABLE_BESIDE_THE_OWNER[shape]
+    r = await scan_upload(real_client, fake_bytes())
+    assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
+    r = await real_client.post("/migrations/bootstrap/start", json={
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
+    assert r.status_code == 201, r.text
+    token, run_id = r.json()["access_token"], r.json()["run_id"]
+    async with real_engine.begin() as conn:
+        for statement in (
+                "CREATE TABLE ext_sess (id uuid PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) "
+                "ON DELETE CASCADE)",
+                "CREATE TABLE ext_sess_note (id uuid PRIMARY KEY, sess uuid NOT NULL REFERENCES ext_sess(id) "
+                "ON DELETE CASCADE)",
+                "CREATE TABLE ext_ref (id uuid PRIMARY KEY, user_id uuid REFERENCES users(id))",
+                "INSERT INTO ext_sess SELECT gen_random_uuid(), id FROM users",
+                "INSERT INTO ext_sess_note SELECT gen_random_uuid(), id FROM ext_sess",
+                "INSERT INTO ext_ref VALUES (gen_random_uuid(), NULL)",
+                f"REVOKE ALL ON {hidden} FROM CURRENT_USER"):
+            await conn.execute(text(statement))
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key", {"table": hidden})
+        assert await count(real_engine, "users", "email = :e", e=OWNER_EMAIL) == 1
+        assert await count(real_engine, "companies", "name = 'Moved Co'") == 1
+        async with real_engine.begin() as conn:
+            await conn.execute(text(f"GRANT ALL ON {hidden} TO CURRENT_USER"))
+        for table in ("ext_sess", "ext_sess_note", "ext_ref"):
+            assert await count(real_engine, table, "TRUE") == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_sess_note, ext_sess, ext_ref"))
+
+
+@pytest.mark.asyncio
 async def test_discard_reads_the_tables_beside_a_schema_named_after_the_database_role(
         real_client, real_engine, migration_env):
     """A schema named after the role Celerp connects as exists and holds none of Celerp's

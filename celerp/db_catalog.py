@@ -362,26 +362,41 @@ def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], se
     return order, unordered | set(parents)
 
 
+def _reach(schema: dict[str, Table], tables: set[str], follows) -> set[str]:
+    """``tables`` and every table with a foreign key ``follows`` (given the table holding
+    it and the key) naming one of them, and on into theirs: the tables a delete of rows
+    of ``tables`` can go on into."""
+    reached = set(tables)
+    while grown := {name for name, table in schema.items() if name not in reached
+                    and any(fk.target in reached and follows(name, fk) for fk in table.fks)}:
+        reached |= grown
+    return reached
+
+
 def company_tables(schema: dict[str, Table], *, held: bool = False) -> set[str]:
     """Every table whose rows name a company: ``companies``, each table with a company
     column, and each table with a foreign key to one of those (a conversation's
     messages, a run's entity maps). ``held`` follows only keys that do not clear on
     delete: a row reached only through a clearing key outlives the company, so it is
     not the company's to delete."""
-    owned = {"companies"}
-    while grown := {name for name, table in schema.items() if name not in owned
-                    and ("company_id" in table.columns
-                         or any(fk.target in owned and not (held and fk.clears) for fk in table.fks))}:
-        owned |= grown
-    return owned
+    return _reach(schema, {"companies"} | {name for name, table in schema.items() if "company_id" in table.columns},
+                  lambda name, fk: not (held and fk.clears))
+
+
+def _user_cascade(schema: dict[str, Table]) -> set[str]:
+    """``users`` and the tables outside any company that deleting a user cascades into."""
+    company = company_tables(schema)
+    return _reach(schema, {"users"}, lambda name, fk: fk.cascades and name not in company and fk.target not in company)
 
 
 def keyed(schema: dict[str, Table]) -> set[str]:
-    """The tables a delete of a company's rows or of its users can reach: each with a
-    company column, a foreign key, or named by one. A table with none of these holds no
-    company's rows and nothing deleting them touches it."""
-    named = {fk.target for table in schema.values() for fk in table.fks}
-    return {name for name, table in schema.items() if "company_id" in table.columns or table.fks or name in named}
+    """The tables a discard reads or deletes rows of: those deleting a company's rows
+    reaches (``company_tables``), and those deleting a user left without a company reads
+    or deletes (``delete_users_left_without_a_company``): the tables the user's deletion
+    cascades into and each table with a foreign key naming one of them."""
+    cascade = _user_cascade(schema)
+    return company_tables(schema) | cascade | {name for name, table in schema.items()
+                                               if any(fk.target in cascade for fk in table.fks)}
 
 
 def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
@@ -393,7 +408,6 @@ def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
     other row names one of those: a row of a company, another user, or a row naming it
     by a key that does not cascade. Deleting the user would cascade into, change or trip
     over that row."""
-    company = company_tables(schema)
     # The users being deleted are named by an alias no table of the schema has, so no
     # table a condition reads can hide it.
     user = "u"
@@ -404,14 +418,11 @@ def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
         return (f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
                 f"FROM {ident(fk.target)} WHERE {condition})")
 
-    # The tables outside any company that deleting a user cascades into.
-    reached = {"users"}
+    company = company_tables(schema)
+    reached = _user_cascade(schema)
 
     def carries(fk: ForeignKey) -> bool:
         return fk.cascades and fk.target in reached and fk.target not in company
-
-    while grown := {name for name in set(schema) - company - reached if any(map(carries, schema[name].fks))}:
-        reached |= grown
 
     def going(name: str, seen: frozenset[str]) -> str:
         """The condition picking the rows of ``name`` deleted with the user. Rows reached
