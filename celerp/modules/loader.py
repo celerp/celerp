@@ -63,8 +63,7 @@ from pathlib import Path
 
 from celerp.modules.importer import (
     _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
-    _read_manifest as _read_literal_manifest, _validate_name, _validate_name_chars,
-    _validate_table_prefix, marketplace_installs,
+    _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix,
 )
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME
@@ -583,27 +582,6 @@ class Admission:
         return Admission(admitted, refused)
 
 
-def _is_official_name(name: str, pkg_path: Path) -> bool:
-    """True when a module may carry the reserved ``celerp-`` name: the committed
-    lock claims it, it ships in a license-gated premium tree, or the Marketplace
-    installed it and its content is unchanged since. Anything else claiming the
-    prefix is refused, exactly as the importer refuses a sideload that claims
-    it."""
-    if not name.startswith(_RESERVED_PREFIX):
-        return False
-    return (name in first_party_names()
-            or any(p.name == "premium_modules" for p in pkg_path.parents)
-            or installed_from_marketplace(pkg_path))
-
-
-def installed_from_marketplace(pkg_path: Path) -> bool:
-    """True when the Marketplace installed this module folder and its content is
-    unchanged since (importer.marketplace_installs, a record kept beside the
-    modules, never inside one)."""
-    recorded = marketplace_installs(pkg_path.parent).get(pkg_path.name)
-    return recorded is not None and recorded == module_content_digest(pkg_path)
-
-
 def _inside(path: Path, root: Path) -> bool:
     """True when ``path`` resolves (symlinks and '..' collapsed) inside ``root``."""
     return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(root))
@@ -703,7 +681,8 @@ def _handler_names(manifest: dict) -> set[str]:
 
 
 # Top-level package names Celerp itself ships, and the prefix of the packages
-# inside official modules (celerp_inventory, ...): no other module answers to them.
+# inside celerp- modules (celerp_inventory, ...): a module named without the
+# celerp- prefix does not answer to them.
 _RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
 _RESERVED_IMPORT_PREFIX = "celerp_"
 
@@ -746,7 +725,7 @@ def _is_module_code(location: str | None, homes: list[Path]) -> bool:
             or _declares_manifest(folder) or _declares_manifest(folder.parent))
 
 
-def _check_import_names(name: str, pkg_path: Path, *, official: bool) -> None:
+def _check_import_names(name: str, pkg_path: Path) -> None:
     """Refuse a module that would answer to a package name the standard library,
     Celerp or an installed package already uses: loading it would replace that
     package for everything else in the process. Only another Celerp module may
@@ -760,7 +739,8 @@ def _check_import_names(name: str, pkg_path: Path, *, official: bool) -> None:
             spec = importlib.machinery.PathFinder.find_spec(root, elsewhere)
             taken = bool(spec and spec.origin) and not _is_module_code(spec.origin, homes)
         if (taken or root in _RESERVED_IMPORT_NAMES or root in sys.stdlib_module_names
-                or (root.startswith(_RESERVED_IMPORT_PREFIX) and not official)):
+                or (root.startswith(_RESERVED_IMPORT_PREFIX)
+                    and not name.startswith(_RESERVED_PREFIX))):
             raise ModuleLoadError(
                 f"The package name {root!r} is already used by Celerp, Python or an "
                 f"installed package; the module must use its own.")
@@ -779,12 +759,6 @@ def _declared_manifest(pkg_path: Path) -> dict:
     return _validated_manifest(raw)
 
 
-_NOT_FROM_MARKETPLACE = (
-    "Celerp has no record of installing this module from the Marketplace. Turn it off, "
-    "delete it (keeping its data), then install it again from the Marketplace. A module "
-    "of your own needs a name without the 'celerp-' prefix.")
-
-
 def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     """Every static rule a module must pass before any of its code runs.
     Raises :class:`ModuleLoadError` (or the importer's ModuleImportError) with
@@ -793,17 +767,14 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     if manifest["name"] != name:
         raise ModuleLoadError(
             f"Manifest name {manifest['name']!r} does not match its folder {name!r}.")
-    official = _is_official_name(name, pkg_path)
-    if name.startswith(_RESERVED_PREFIX) and not official:
-        raise ModuleLoadError(_NOT_FROM_MARKETPLACE)
-    _validate_name(name, official=official)
+    _validate_name_chars(name)
     _check_min_version(manifest)
     _validate_table_prefix(name, manifest)
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
     first_party = is_first_party(pkg_path)
     _check_slot_contracts(pkg_path, manifest["slots"], first_party=first_party)
-    _check_import_names(name, pkg_path, official=official)
+    _check_import_names(name, pkg_path)
     entry_files = _module_entry_files(pkg_path, manifest)
     _check_dynamic_writes(pkg_path, entry_files, _handler_names(manifest) | {"PLUGIN_MANIFEST"})
     if not first_party:

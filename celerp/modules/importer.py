@@ -13,7 +13,7 @@ Both funnel through the same checks, so the security posture cannot drift
 between surfaces:
   - manifest must parse (PLUGIN_MANIFEST with a valid "name")
   - the installed folder name IS the manifest name (id = folder = manifest)
-  - the "celerp-" prefix is reserved for first-party modules
+  - the "celerp-" prefix is reserved for Marketplace modules
   - size caps, zip-slip guards, symlink rejection
   - min_celerp_version gate against the running app
   - collision refusal (existing module of the same name must be removed first)
@@ -27,7 +27,6 @@ import ast
 import contextlib
 import errno
 import functools
-import json
 import logging
 import os
 import shutil
@@ -54,13 +53,6 @@ _NAME_MAX = 64
 # at load without needing a second module dir.
 PREMIUM_MARKER = ".celerp-premium"
 
-# The Marketplace installs in a module directory, kept beside the modules and
-# never inside one: module name -> its content digest when the Marketplace
-# installed it. Only the Marketplace install writes an entry. A module counts as
-# a Marketplace install only while this record names it with its current content
-# (loader.installed_from_marketplace).
-MARKETPLACE_RECORD = ".celerp-marketplace.json"
-
 
 class ModuleImportError(Exception):
     """User-facing import failure. Message is safe to show in the UI."""
@@ -71,7 +63,7 @@ def _validate_name_chars(name: str) -> None:
 
     Delete resolves a folder from a caller-supplied name, so it needs the same
     charset guard as install (no separators, no traversal) without the celerp-
-    prefix trust rule, which only governs where a NEW package may install.
+    prefix rule, which only governs how a NEW package may install.
     """
     if not name or len(name) > _NAME_MAX:
         raise ModuleImportError("Module name missing or too long.")
@@ -84,13 +76,12 @@ def _validate_name_chars(name: str) -> None:
 
 def _validate_name(name: str, *, official: bool = False) -> None:
     _validate_name_chars(name)
-    # The celerp- prefix is the trust boundary: sideloads may never claim it, and
-    # the marketplace-download path (official=True, relay-authenticated) may ONLY
-    # install under it - so neither path can impersonate the other.
+    # The celerp- names are reserved for Marketplace modules: an upload or folder
+    # import may not use one, and an official Marketplace install uses only them.
     if official != name.startswith(_RESERVED_PREFIX):
         raise ModuleImportError(
-            "The 'celerp-' name prefix is reserved for official modules. Install this "
-            "module from the Marketplace, or rename it without the 'celerp-' prefix."
+            "The 'celerp-' name prefix is reserved for Marketplace modules. A module of "
+            "your own needs a name without the 'celerp-' prefix."
             if not official else
             "Official module packages must use the 'celerp-' name prefix."
         )
@@ -397,8 +388,8 @@ def _module_dir() -> Path:
     if not first:
         raise ModuleImportError("This install has no module directory configured.")
     d = Path(first)
-    # A sideload must never land in a bundled/trusted dir: a package written there
-    # would inherit first-party trust by name. Refuse rather than write into it.
+    # A sideload must never land in a bundled dir, which holds the default
+    # modules. Refuse rather than write into it.
     from celerp.modules.loader import is_bundled_dir
     if is_bundled_dir(d):
         raise ModuleImportError(
@@ -450,7 +441,6 @@ def remove_module_dir(name: str) -> None:
                 continue
             if is_first_party(target):
                 continue
-            _forget_install(base, name)
             grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
             try:
                 os.replace(target, grave)
@@ -460,33 +450,6 @@ def remove_module_dir(name: str) -> None:
             removed = True
     if not removed:
         raise ModuleImportError(f"Module '{name}' is not installed.")
-
-
-def marketplace_installs(base: Path) -> dict[str, str]:
-    """The modules in *base* the Marketplace installed: name -> content digest at
-    install. A missing or unreadable record names nothing."""
-    try:
-        record = json.loads((base / MARKETPLACE_RECORD).read_text())
-    except (OSError, ValueError):
-        return {}
-    return record if isinstance(record, dict) else {}
-
-
-def _write_record(base: Path, record: dict[str, str]) -> None:
-    staged = base / f".{MARKETPLACE_RECORD}.{uuid.uuid4().hex}"
-    staged.write_text(json.dumps(record, sort_keys=True))
-    os.replace(staged, base / MARKETPLACE_RECORD)
-
-
-def _forget_install(base: Path, name: str) -> None:
-    """Drop *name* from *base*'s record (the caller holds the install lock)."""
-    record = marketplace_installs(base)
-    if name in record:
-        del record[name]
-        try:
-            _write_record(base, record)
-        except OSError as exc:
-            raise ModuleImportError(f"Could not remove the module: {exc}")
 
 
 @contextlib.contextmanager
@@ -570,15 +533,6 @@ def _land(staged: Path, manifest: dict, name: str, *, premium: bool, source: str
                 f"A module named '{name}' already exists. Remove it first, then import."
             )
         raise ModuleImportError(f"Could not write the module to disk: {exc}")
-    if source == "marketplace":
-        from celerp.modules.loader import module_content_digest
-        try:
-            record = marketplace_installs(target.parent)
-            record[name] = module_content_digest(target)
-            _write_record(target.parent, record)
-        except OSError as exc:
-            shutil.rmtree(target, ignore_errors=True)
-            raise ModuleImportError(f"Could not record the module install: {exc}")
     return {
         "name": name,
         "version": str(manifest.get("version", "")),

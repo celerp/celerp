@@ -551,10 +551,10 @@ def _trust_icon(tier: str, lang: str):
 def _source_icon(source: str | None, is_default: bool, lang: str):
     """The provenance shield shown to the left of a module name, or None.
 
-    Defaults are trusted by content (gold) and marketplace modules by their
-    vetting (trusted). Community, sideloaded, and unknown origins show no shield:
-    nothing vouched for them, and a badge would read as a trust claim. The Source
-    column still states the origin in words.
+    Defaults (gold) and Marketplace installs carry one. It states where the
+    module came from and changes nothing about what the module may do.
+    Community, sideloaded, and unknown origins show no shield. The Source column
+    still states the origin in words.
     """
     if is_default:
         tier, key = "default", "modules.source_default"

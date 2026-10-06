@@ -330,28 +330,22 @@ class TestModuleProvenanceAndDelete:
         assert row["installed_at"] == "2026-07-29T00:00:00+00:00"
 
     @pytest.mark.asyncio
-    async def test_scan_reports_marketplace_only_for_recorded_installs(self, client, tmp_path):
+    async def test_scan_reports_marketplace_install(self, client, tmp_path):
         from celerp.modules.importer import install_from_zip
 
         token = await _register(client)
         module_dir = tmp_path / "modules"
         module_dir.mkdir()
-        claimed = _write_pkg(module_dir, "acme-claimed")
-        (claimed / ".celerp-meta.json").write_text(
-            '{"source": "marketplace", "installed_at": "2026-07-29T00:00:00+00:00"}')
         with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
-            for name in ("acme-listed", "acme-edited"):
-                buf = io.BytesIO()
-                with zipfile.ZipFile(buf, "w") as zf:
-                    zf.writestr(f"{name}/__init__.py", _PKG_INIT.format(name=name, disp=name))
-                install_from_zip(buf.getvalue(), source="marketplace")
-            (module_dir / "acme-edited" / "extra.py").write_text("x = 1\n")
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("acme-listed/__init__.py", _PKG_INIT.format(name="acme-listed", disp="Listed"))
+            install_from_zip(buf.getvalue(), source="marketplace")
+            (module_dir / "acme-listed" / "extra.py").write_text("x = 1\n")
             r = await client.get("/companies/me/modules", headers=_h(token))
         assert r.status_code == 200, r.text
-        source = {m["name"]: m["source"] for m in r.json()}
-        assert source["acme-listed"] == "marketplace"
-        assert source["acme-claimed"] == "sideloaded"
-        assert source["acme-edited"] == "sideloaded"
+        row = next(m for m in r.json() if m["name"] == "acme-listed")
+        assert row["source"] == "marketplace"
 
     @pytest.mark.asyncio
     async def test_upload_cannot_claim_marketplace_source(self, client, tmp_path):
@@ -368,6 +362,30 @@ class TestModuleProvenanceAndDelete:
                 data={"source": "marketplace"})
         assert r.status_code == 422, r.text
         assert not (module_dir / "acme-up").exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["sideloaded", "community", None])
+    async def test_upload_of_a_celerp_name_is_refused(self, client, tmp_path, source):
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        package = tmp_path / "celerp-mine"
+        _write_pkg(tmp_path, "celerp-mine")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.write(package / "__init__.py", "celerp-mine/__init__.py")
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            if source is None:
+                r = await client.post("/companies/me/modules/import-path", headers=_h(token),
+                                      json={"path": str(package)})
+            else:
+                r = await client.post(
+                    "/companies/me/modules/import", headers=_h(token),
+                    files={"file": ("celerp-mine.zip", buf.getvalue(), "application/zip")},
+                    data={"source": source})
+        assert r.status_code == 422, r.text
+        assert "The 'celerp-' name prefix is reserved for Marketplace modules" in r.json()["detail"]
+        assert not (module_dir / "celerp-mine").exists()
 
     @pytest.mark.asyncio
     async def test_scan_reports_default_source_for_genuine_defaults(self, client):
