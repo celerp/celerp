@@ -136,6 +136,25 @@ def _busy() -> HTTPException:
         "same time. Nothing was deleted. Try again."))
 
 
+def _changed_outside(kind: str, table: str) -> dict:
+    """The refusal for a table changed outside Celerp (``db_catalog.changed_outside``)."""
+    from celerp.accounting_roles import refusal
+
+    if kind == "outside_reference":
+        return refusal(
+            "system.factory_reset.outside_reference",
+            f"This company cannot be reset because the table {table}, which was added outside "
+            "Celerp (by an installed module or a direct database change), refers to Celerp's "
+            "records. Nothing was deleted. Ask whoever installed that module or changed the "
+            "database to remove that reference.", table=table)
+    return refusal(
+        "system.factory_reset.partition_key",
+        f"This company cannot be reset because the table {table} was changed outside Celerp "
+        "(by an installed module or a direct database change) in a way the reset cannot safely "
+        "handle. Nothing was deleted. Ask whoever installed that module or changed the database "
+        "to fix it.", table=table)
+
+
 def _held_elsewhere(schema: dict) -> str:
     """A query naming a table whose rows the reset of the company bound as ``:c`` would
     delete, change or trip over though they are not only that company's: a row outside
@@ -225,20 +244,8 @@ async def factory_reset(
         if await db_catalog.read(session) != schema:  # a table or key added before the lock
             await session.rollback()
             raise _busy()
-        if outside := await db_catalog.outside_referrer(session):
-            raise HTTPException(status_code=409, detail=refusal(
-                "system.factory_reset.outside_reference",
-                f"This company cannot be reset because the table {outside}, which was added outside "
-                "Celerp (by an installed module or a direct database change), refers to Celerp's "
-                "records. Nothing was deleted. Ask whoever installed that module or changed the "
-                "database to remove that reference.", table=outside))
-        if partition := await db_catalog.partition_key(session):
-            raise HTTPException(status_code=409, detail=refusal(
-                "system.factory_reset.partition_key",
-                f"This company cannot be reset because the table {partition} was changed outside Celerp "
-                "(by an installed module or a direct database change) in a way the reset cannot safely "
-                "handle. Nothing was deleted. Ask whoever installed that module or changed the database "
-                "to fix it.", table=partition))
+        if changed := await db_catalog.changed_outside(session):
+            raise HTTPException(status_code=409, detail=_changed_outside(*changed))
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
         keys = db_catalog.own_keys(schema)

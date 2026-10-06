@@ -3406,6 +3406,7 @@
   "migration.discard": "Discard migration",
   "migration.discard_confirm": "Discard the migration into {company}? The imported data and the uploaded file will be deleted.",
   "migration.discard_partition_key": "This migration cannot be discarded because the table {table} was changed outside Celerp (by an installed module or a direct database change) in a way discarding cannot safely handle. Nothing was deleted. Ask whoever installed that module or changed the database to fix it.",
+  "migration.discard_outside_reference": "This migration cannot be discarded because the table {table}, which was added outside Celerp (by an installed module or a direct database change), refers to Celerp's records. Nothing was deleted. Ask whoever installed that module or changed the database to remove that reference.",
   "migration.discard_unsafe_data": "This migration cannot be discarded because the table {table} holds records of this company that are not part of the migration, so discarding cannot safely remove them. They usually come from an installed module or a direct database change. Nothing was deleted. Ask whoever installed that module or changed the database to remove those records, then discard again.",
   "migration.phase.company_settings": "Company and settings",
   "migration.phase.currencies_taxes_accounts": "Accounting masters",

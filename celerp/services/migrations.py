@@ -940,6 +940,23 @@ async def company_tables(session: AsyncSession) -> list[str]:
         "ORDER BY c.table_name"))).all())
 
 
+def _changed_outside(kind: str, table: str) -> dict:
+    """The refusal for a table changed outside Celerp (``db_catalog.changed_outside``)."""
+    if kind == "outside_reference":
+        return refusal(
+            "migration.discard_outside_reference",
+            f"This migration cannot be discarded because the table {table}, which was added outside "
+            "Celerp (by an installed module or a direct database change), refers to Celerp's "
+            "records. Nothing was deleted. Ask whoever installed that module or changed the "
+            "database to remove that reference.", table=table)
+    return refusal(
+        "migration.discard_partition_key",
+        f"This migration cannot be discarded because the table {table} was changed outside "
+        "Celerp (by an installed module or a direct database change) in a way discarding cannot "
+        "safely handle. Nothing was deleted. Ask whoever installed that module or changed the "
+        "database to fix it.", table=table)
+
+
 async def discard(session: AsyncSession, run: MigrationRun) -> str:
     """Delete a staged company and its runs, then their files; returns where the user goes next.
 
@@ -951,13 +968,8 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         raise MigrationError(409, NO_UNFINISHED)
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)
-    if partition := await db_catalog.partition_key(session):
-        raise MigrationError(409, refusal(
-            "migration.discard_partition_key",
-            f"This migration cannot be discarded because the table {partition} was changed outside "
-            "Celerp (by an installed module or a direct database change) in a way discarding cannot "
-            "safely handle. Nothing was deleted. Ask whoever installed that module or changed the "
-            "database to fix it.", table=partition))
+    if changed := await db_catalog.changed_outside(session):
+        raise MigrationError(409, _changed_outside(*changed))
     for table in await company_tables(session):
         if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue

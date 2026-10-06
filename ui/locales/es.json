@@ -3406,6 +3406,7 @@
   "migration.discard": "Descartar migración",
   "migration.discard_confirm": "¿Descartar la migración hacia {company}? Se eliminarán los datos importados y el archivo subido.",
   "migration.discard_partition_key": "Esta migración no se puede descartar porque la tabla {table} se modificó fuera de Celerp (por un módulo instalado o un cambio directo en la base de datos) de una forma que el descarte no puede manejar con seguridad. No se eliminó nada. Pida a quien instaló ese módulo o modificó la base de datos que lo corrija.",
+  "migration.discard_outside_reference": "Esta migración no se puede descartar porque la tabla {table}, creada fuera de Celerp (por un módulo instalado o un cambio directo en la base de datos), hace referencia a registros de Celerp. No se eliminó nada. Pida a quien instaló ese módulo o modificó la base de datos que quite esa referencia.",
   "migration.discard_unsafe_data": "Esta migración no se puede descartar porque la tabla {table} contiene registros de esta empresa que no forman parte de la migración, así que el descarte no puede eliminarlos con seguridad. Suelen provenir de un módulo instalado o de un cambio directo en la base de datos. No se eliminó nada. Pida a quien instaló ese módulo o modificó la base de datos que elimine esos registros y vuelva a descartar la migración.",
   "migration.phase.company_settings": "Empresa y ajustes",
   "migration.phase.currencies_taxes_accounts": "Datos maestros contables",

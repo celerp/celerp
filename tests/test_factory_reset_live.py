@@ -1088,15 +1088,31 @@ _PARTITION_KEYS = {
         "tok int NOT NULL REFERENCES ext_tok_0(id))",
         f"INSERT INTO ext_tok VALUES (7, {_CLERK})", "INSERT INTO ext_tok_log VALUES (gen_random_uuid(), :b, 7)"),
         "ext_tok_log", "ext_tok_0"),
+    **{f"a key naming a partition of a company table kept in another schema, {action}": ((
+        "CREATE SCHEMA ext", _PT, "CREATE TABLE ext.ext_pt_a PARTITION OF ext_pt FOR VALUES IN ('a')",
+        "CREATE TABLE ext_pin (id uuid PRIMARY KEY, company_id uuid NOT NULL, pt uuid, kind text, "
+        f"FOREIGN KEY (pt, kind) REFERENCES ext.ext_pt_a(id, kind) ON DELETE {action})",
+        "INSERT INTO ext_pt VALUES ('00000000-0000-0000-0000-000000000a11', 'a', :a)",
+        "INSERT INTO ext_pin VALUES (gen_random_uuid(), :b, '00000000-0000-0000-0000-000000000a11', 'a')"),
+        "ext_pin", "ext.ext_pt_a") for action in ("CASCADE", "NO ACTION")},
+    **{f"a key naming a table inheriting from a company table in another schema, {action}": ((
+        "CREATE SCHEMA ext", "CREATE TABLE ext_par (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+        "CREATE TABLE ext.ext_kid (PRIMARY KEY (id)) INHERITS (ext_par)",
+        "CREATE TABLE ext_pin (id uuid PRIMARY KEY, company_id uuid NOT NULL, "
+        f"kid uuid REFERENCES ext.ext_kid(id) ON DELETE {action})",
+        "INSERT INTO ext.ext_kid VALUES ('00000000-0000-0000-0000-000000000a12', :a)",
+        "INSERT INTO ext_pin VALUES (gen_random_uuid(), :b, '00000000-0000-0000-0000-000000000a12')"),
+        "ext_pin", "ext.ext_kid") for action in ("CASCADE", "NO ACTION")},
 }
-_PARTITION_TABLES = "ext_pin, ext_tok_log, ext_pt, ext_tok"
+_PARTITION_TABLES = "ext_pin, ext_tok_log, ext_pt, ext_tok, ext_par"
 
 
 @pytest.mark.parametrize("case", list(_PARTITION_KEYS))
 async def test_a_reset_is_refused_while_a_key_is_kept_on_one_partition(real_client, real_engine, case):  # noqa: F811
-    """A key kept on one partition, or naming one, is not on the table the catalog reads, so
-    nothing can tell whose rows it reaches. The reset is refused naming the partition, and
-    Beta's row, Alpha and its clerk are all kept."""
+    """A key kept on one partition, or naming one or a table inheriting from a company
+    table, wherever it is kept, is not on the table the catalog reads, so nothing can tell
+    whose rows it reaches. The reset is refused naming that table, and Beta's row, Alpha
+    and its clerk are all kept."""
     from sqlalchemy import text
 
     statements, beta_table, partition = _PARTITION_KEYS[case]
@@ -1116,7 +1132,8 @@ async def test_a_reset_is_refused_while_a_key_is_kept_on_one_partition(real_clie
         assert await count(real_engine, beta_table, "company_id = :b", b=beta) == 1
     finally:
         async with real_engine.begin() as conn:
-            await conn.execute(text(f"DROP TABLE IF EXISTS {_PARTITION_TABLES}"))
+            await conn.execute(text(f"DROP TABLE IF EXISTS {_PARTITION_TABLES} CASCADE"))
+            await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
 
 
 async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tables(

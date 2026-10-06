@@ -281,14 +281,41 @@ async def test_bootstrap_discard_goes_through_a_cascading_key_into_a_partitioned
             await conn.execute(text("DROP TABLE IF EXISTS ext_event_refs, ext_events"))
 
 
+# A table changed outside Celerp whose row of another company names the owner, each with
+# the table holding that row, and the refusal naming the table discard cannot read.
+_OUTSIDE_SHAPES = {
+    "a key added to a partition": ((
+        _PT, "CREATE TABLE ext_pt_a PARTITION OF ext_pt FOR VALUES IN ('a')",
+        "ALTER TABLE ext_pt_a ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+        "INSERT INTO ext_pt SELECT gen_random_uuid(), 'a', :c, id FROM users"),
+        "ext_pt", ("migration.discard_partition_key", "ext_pt_a")),
+    "a partition in another schema of a table naming users": ((
+        "CREATE SCHEMA ext", "CREATE TABLE ext_tok (id int PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) "
+        "ON DELETE CASCADE) PARTITION BY RANGE (id)",
+        "CREATE TABLE ext.ext_tok_0 PARTITION OF ext_tok FOR VALUES FROM (0) TO (100)",
+        "CREATE TABLE ext_tok_log (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+        "tok int NOT NULL REFERENCES ext.ext_tok_0(id) ON DELETE CASCADE)",
+        "INSERT INTO ext_tok SELECT 7, id FROM users",
+        "INSERT INTO ext_tok_log VALUES (gen_random_uuid(), :c, 7)"),
+        "ext_tok_log", ("migration.discard_outside_reference", "ext.ext_tok_0")),
+    "a table in another schema naming users": ((
+        "CREATE SCHEMA ext", "CREATE TABLE ext.notes (id uuid PRIMARY KEY, company_id uuid NOT NULL, "
+        "user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE)",
+        "INSERT INTO ext.notes SELECT gen_random_uuid(), :c, id FROM users"),
+        "ext.notes", ("migration.discard_outside_reference", "ext.notes")),
+}
+
+
 @pytest.mark.asyncio
-async def test_bootstrap_discard_is_refused_while_a_key_is_kept_on_one_partition(
-        real_client, real_engine, migration_env):
-    """A partition carries a key into users that its partitioned table does not, and another
-    company's row in it names the owner. The discard is refused naming the partition, and
-    the owner, the company and that row are all kept."""
+@pytest.mark.parametrize("shape", list(_OUTSIDE_SHAPES))
+async def test_bootstrap_discard_is_refused_while_a_table_changed_outside_celerp_names_the_owner(
+        real_client, real_engine, migration_env, shape):
+    """Another company's row in a table changed outside Celerp names the owner, through a key
+    discard cannot read. The discard is refused naming that table, and the owner, the
+    company and that row are all kept."""
     from sqlalchemy import text
 
+    statements, other_table, (key, table) = _OUTSIDE_SHAPES[shape]
     r = await scan_upload(real_client, fake_bytes())
     assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
     r = await real_client.post("/migrations/bootstrap/start", json={
@@ -300,22 +327,22 @@ async def test_bootstrap_discard_is_refused_while_a_key_is_kept_on_one_partition
     async with real_engine.begin() as conn:
         await conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
                                 "VALUES (:c, 'Other Co', 'other-co', '{}', true, now())"), {"c": other})
-        for statement in (_PT, "CREATE TABLE ext_pt_a PARTITION OF ext_pt FOR VALUES IN ('a')",
-                          "ALTER TABLE ext_pt_a ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
-                          "INSERT INTO ext_pt SELECT gen_random_uuid(), 'a', :c, id FROM users"):
+        for statement in statements:
             await conn.execute(text(statement), {"c": other})
     try:
         r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key", {"table": "ext_pt_a"})
+        assert (detail["message_key"], detail["params"]) == (key, {"table": table})
+        assert table in in_language("de", detail) != detail["message"]
         assert await count(real_engine, "users", "email = :e", e=OWNER_EMAIL) == 1
         assert await count(real_engine, "companies", "name = 'Moved Co'") == 1
-        assert await count(real_engine, "ext_pt", "company_id = :c", c=other) == 1
+        assert await count(real_engine, other_table, "company_id = :c", c=other) == 1
     finally:
         async with real_engine.begin() as conn:
-            await conn.execute(text("DROP TABLE IF EXISTS ext_pt"))
+            await conn.execute(text("DROP TABLE IF EXISTS ext_tok_log, ext_tok, ext_pt CASCADE"))
+            await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
             await conn.execute(text("DELETE FROM companies WHERE id = :c"), {"c": other})
 
 

@@ -104,8 +104,9 @@ async def read(session: AsyncSession) -> dict[str, Table]:
 def own_keys(schema: dict[str, Table]) -> dict[str, Table]:
     """The catalog with each table keeping only the keys declared on it into this schema:
     the ones a reset or discard follows to find whose rows are whose. A key into another
-    schema leaves this schema's rows as they are, and a key one partition holds makes
-    them refuse (``partition_key``)."""
+    schema leaves this schema's rows as they are. A key one partition holds, or one
+    naming a partition or a table inheriting rows, makes them refuse
+    (``changed_outside``)."""
     return {name: Table(name, table.columns, table.pk, [fk for fk in table.fks if fk.own])
             for name, table in schema.items()}
 
@@ -122,14 +123,35 @@ async def outside_referrer(session: AsyncSession) -> str | None:
 
 
 async def partition_key(session: AsyncSession) -> str | None:
-    """A partition with a foreign key of its own, or named by one, or None. The catalog holds
-    only the partitioned table, so nothing reading it can tell whose rows such a key reaches."""
+    """A table holding rows of a table of this schema without being read as one, with a
+    foreign key of its own or named by one, or None: a partition, or a table of another
+    schema inheriting from it. It is named as ``schema.table`` when in another schema. The
+    catalog holds only the table it adds rows to, so nothing reading it can tell whose
+    rows such a key reaches."""
     return await session.scalar(text(
-        "SELECT CASE WHEN r.relispartition THEN r.relname ELSE f.relname END::text FROM pg_constraint k "
-        "JOIN pg_class r ON r.oid = k.conrelid JOIN pg_class f ON f.oid = k.confrelid "
-        "WHERE k.contype = 'f' AND k.conparentid = 0 AND (r.relispartition OR f.relispartition) "
-        "AND r.relnamespace = to_regnamespace(current_schema()) "
-        "AND f.relnamespace = r.relnamespace ORDER BY 1 LIMIT 1"))
+        "WITH RECURSIVE up(d, a) AS (SELECT inhrelid, inhparent FROM pg_inherits "
+        "  UNION SELECT up.d, i.inhparent FROM up JOIN pg_inherits i ON i.inhrelid = up.a), "
+        "here AS (SELECT to_regnamespace(current_schema()) AS ns), "
+        "hidden AS (SELECT DISTINCT d.oid, d.relnamespace, d.relname FROM up "
+        "  JOIN pg_class d ON d.oid = up.d JOIN pg_class a ON a.oid = up.a, here "
+        "  WHERE (d.relispartition OR d.relnamespace <> here.ns) "
+        "  AND (d.relnamespace = here.ns OR a.relnamespace = here.ns)) "
+        "SELECT CASE WHEN h.relnamespace = here.ns THEN h.relname::text "
+        "  ELSE format('%s.%s', hn.nspname, h.relname) END FROM pg_constraint k "
+        "JOIN hidden h ON h.oid IN (k.conrelid, k.confrelid) "
+        "JOIN pg_namespace hn ON hn.oid = h.relnamespace, here "
+        "WHERE k.contype = 'f' AND k.conparentid = 0 ORDER BY 1 LIMIT 1"))
+
+
+async def changed_outside(session: AsyncSession) -> tuple[str, str] | None:
+    """Why a reset or discard cannot tell whose rows a key reaches, as ``(kind, table)``
+    with kind ``outside_reference`` (``outside_referrer``) or ``partition_key``
+    (``partition_key``), or None when every key is one the catalog reads."""
+    if table := await outside_referrer(session):
+        return "outside_reference", table
+    if table := await partition_key(session):
+        return "partition_key", table
+    return None
 
 
 def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], set[str]]:
