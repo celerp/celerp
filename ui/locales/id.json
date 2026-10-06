@@ -3132,7 +3132,6 @@
   "modules.not_verified_tip": "Modul yang disertakan ini telah diubah di komputer ini, sehingga kini berjalan sebagai modul pihak ketiga yang tidak tepercaya. Modul ini tetap berfungsi. Jika Anda tidak mengubahnya, instal ulang Celerp untuk mengembalikan ke versi aslinya.",
   "modules.restart_confirm": "Mulai ulang Celerp sekarang untuk menerapkan perubahan modul? Aplikasi akan dimuat ulang.",
   "modules.source_default": "Modul default, disertakan dalam paket Celerp",
-  "modules.source_marketplace": "Diinstal dari pasar Celerp",
   "modules.src_community": "Komunitas",
   "modules.src_default": "Bawaan",
   "modules.src_marketplace": "Marketplace",

@@ -3133,7 +3133,6 @@
   "modules.not_verified_tip": "Questo modulo integrato è stato modificato su questo computer, pertanto ora viene eseguito come modulo di terze parti non attendibile. Continua a funzionare. Se non l’hai modificato, reinstalla Celerp per ripristinare la versione originale.",
   "modules.restart_confirm": "Riavviare Celerp ora per applicare le modifiche al modulo? L’app verrà ricaricata.",
   "modules.source_default": "Modulo predefinito, incluso con Celerp",
-  "modules.source_marketplace": "Installato dal marketplace di Celerp",
   "modules.src_community": "Comunità",
   "modules.src_default": "Predefinito",
   "modules.src_marketplace": "Marketplace",

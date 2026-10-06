@@ -76,6 +76,12 @@ def _validate_name_chars(name: str) -> None:
         )
 
 
+def is_reserved_name(name: str) -> bool:
+    """True for a name in the Marketplace namespace: ``celerp-`` or ``celerp_``,
+    in any letter case."""
+    return name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX))
+
+
 def _validate_name(name: str, *, official: bool = False) -> None:
     _validate_name_chars(name)
     # The celerp- names, in any letter case and in the celerp_ spelling, are
@@ -83,7 +89,7 @@ def _validate_name(name: str, *, official: bool = False) -> None:
     # one, and an official Marketplace install uses only the celerp- form.
     if official and not name.startswith(_RESERVED_PREFIX):
         raise ModuleImportError("Official module packages must use the 'celerp-' name prefix.")
-    if not official and name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX)):
+    if not official and is_reserved_name(name):
         raise ModuleImportError(
             "Names starting with 'celerp-' or 'celerp_', in any letter case, are reserved "
             "for Marketplace modules. A module of your own needs a different name."

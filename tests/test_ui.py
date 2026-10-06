@@ -9260,7 +9260,9 @@ class TestModulesUI:
         assert body.index("Import A") < body.index("Default Mod")
 
     @pytest.mark.asyncio
-    async def test_source_shield_renders_for_marketplace_and_default(self, ui_client):
+    async def test_source_shield_renders_for_defaults_only(self, ui_client):
+        """A Marketplace install carries no shield: its recorded origin is
+        advisory, so only the defaults Celerp ships are marked."""
         rows = [
             {"name": "market-mod", "label": "Market Mod", "version": "1.0", "author": "X",
              "enabled": False, "running": False, "is_default": False,
@@ -9271,7 +9273,7 @@ class TestModulesUI:
         ]
         body = await self._render_modules(ui_client, rows)
         assert "trust-icon--default" in body            # gold default shield
-        assert body.count("module-source-icon") == 2    # one per row, none elsewhere
+        assert body.count("module-source-icon") == 1    # the default row only
 
     @pytest.mark.asyncio
     async def test_source_shield_absent_for_sideloaded(self, ui_client):
@@ -9301,10 +9303,9 @@ class TestModulesUI:
     @pytest.mark.asyncio
     async def test_source_column_shows_label_and_shields_defaults_only(self, ui_client):
         """The Local Modules table carries a leftmost Source column with an
-        explicit text label per row (never blank). Shields mark verified
-        provenance only (bundled defaults, marketplace); community and
-        sideloaded rows carry no shield - the Source column already states
-        their origin in words."""
+        explicit text label per row (never blank). Only bundled defaults carry
+        a shield; community and sideloaded rows carry none - the Source column
+        already states their origin in words."""
         rows = [
             {"name": "comm-mod", "label": "Community Mod", "version": "1.0", "author": "X",
              "enabled": False, "running": False, "is_default": False,
@@ -9321,7 +9322,7 @@ class TestModulesUI:
         assert 'data-filter-value="Community"' in body
         assert 'data-filter-value="Sideloaded"' in body
         assert 'data-filter-value="Default"' in body
-        # Only the verified-provenance shield renders; community rows carry none.
+        # Only the default shield renders; community rows carry none.
         assert "trust-icon--community" not in body
         assert "trust-icon--default" in body
 

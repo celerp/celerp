@@ -207,6 +207,70 @@ def _case_unlicensed_premium(base, marker, monkeypatch):
     return pkg, "license"
 
 
+def _relay_identity(monkeypatch, data_dir: Path, detail: dict | None = None,
+                    licensed: bool = False) -> dict:
+    """An activated instance whose relay answers the Marketplace module-detail
+    request with *detail* (unreachable when None) and the licence check with
+    *licensed*. Returns the licence checks and detail requests made."""
+    from celerp.config import settings
+    import celerp.config
+
+    calls: dict = {"licence": [], "detail": []}
+
+    class _Reply(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _urlopen(url, timeout=None):
+        calls["detail"].append(str(url))
+        if detail is None:
+            raise OSError("unreachable")
+        return _Reply(json.dumps(detail).encode())
+
+    def _check_license(**kw):
+        calls["licence"].append(kw["slug"])
+        return licensed
+
+    monkeypatch.setattr(settings, "gateway_token", "test-gateway-token")
+    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.invalid")
+    monkeypatch.setattr(celerp.config, "ensure_instance_id", lambda: "instance-1")
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+    monkeypatch.setattr(loader, "exchange_api_key_for_jwt", lambda *a, **k: "jwt")
+    monkeypatch.setattr(loader, "check_license", _check_license)
+    return calls
+
+
+def _case_celerp_name_without_a_licence(base, marker, monkeypatch):
+    pkg = _migrating_module(base, f"celerp-{_uid()}", marker)
+    _relay_identity(monkeypatch, base.parent / "data")
+    return pkg, "license"
+
+
+def _case_package_of_a_core_module(root):
+    def case(base, marker, monkeypatch):
+        assert root in sys.modules
+        return _migrating_module(base, f"celerp-{_uid()}", marker,
+                                 code={f"../{root}/__init__.py": ""}), repr(root)
+    case.__name__ = f"_case_package_of_{root}"
+    return case
+
+
+def _case_package_imported_from_another_module(base, marker, monkeypatch):
+    import importlib
+
+    root = f"acme_loaded_{_uid()}"
+    other = _write_module(base.parent / "elsewhere", f"acme-{_uid()}",
+                          {"name": "other", "version": "1.0.0"}, {f"{root}/__init__.py": ""})
+    monkeypatch.syspath_prepend(str(other))
+    importlib.import_module(root)
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             code={f"../{root}/__init__.py": ""}), "already used"
+
+
 def _case_async_api_setup(base, marker, monkeypatch):
     return _migrating_module(base, f"acme-{_uid()}", marker, api_routes="{inner}.api",
                              code={"api.py": "async def setup_api_routes(app):\n    pass\n"}), "async"
@@ -772,6 +836,11 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_protected_import_in_migration,
     _case_protected_import_in_init,
     _case_unlicensed_premium,
+    _case_celerp_name_without_a_licence,
+    _case_package_of_a_core_module("celerp_ai"),
+    _case_package_of_a_core_module("celerp_backup"),
+    _case_package_of_a_core_module("celerp_connectors"),
+    _case_package_imported_from_another_module,
 ], ids=lambda c: c.__name__.removeprefix("_case_"))
 async def test_refused_module_runs_no_migration_and_is_reported(
         case, _db_engine, _modules, tmp_path, monkeypatch):
@@ -1957,3 +2026,145 @@ async def test_api_serves_no_module_route_until_the_ui_has_reported(
             fence.release()
         assert (await client.get(f"/{inner}/api")).status_code == 200
     assert outcome.ui_report_applied()
+
+
+# ── A7: a celerp- module that is not a default is licence-checked by name ────
+
+
+def _premium_zip(name: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"{name}/__init__.py",
+                    f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n")
+    return buf.getvalue()
+
+
+_PAID = {"is_official": True, "price_monthly": 15}
+_FREE = {"is_official": True, "price_monthly": 0, "price_once": None}
+
+
+def test_paid_module_without_its_marker_needs_a_licence(_modules, tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data", _PAID)
+    name = f"celerp-{_uid()}"
+    install_from_zip(_premium_zip(name), official=True, premium=True, source="marketplace")
+    (_modules / name / PREMIUM_MARKER).unlink()
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+    assert calls["licence"] == [name]
+
+
+def test_premium_tree_module_copied_to_the_module_dir_needs_a_licence(
+        _modules, tmp_path, monkeypatch):
+    import shutil
+
+    _relay_identity(monkeypatch, tmp_path / "data", _PAID)
+    name = f"celerp-{_uid()}"
+    premium = tmp_path / "premium_modules"
+    _write_module(premium, name, {"name": name, "version": "1.0.0"})
+    shutil.copytree(premium / name, _modules / name)
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+
+
+def test_celerp_module_with_no_verdict_is_refused_while_the_relay_is_away(
+        _modules, tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data")
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+    assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
+
+
+def test_unofficial_free_listing_still_needs_a_licence(_modules, tmp_path, monkeypatch):
+    _relay_identity(monkeypatch, tmp_path / "data", {"is_official": False, "price_monthly": 0})
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert "no valid license" in admission.refused[name]
+
+
+def test_free_official_module_loads_from_its_cached_verdict(_modules, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    calls = _relay_identity(monkeypatch, data, _FREE)
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert calls["licence"] == []
+    assert (data / "license_cache" / f"{name}.free.json").is_file()
+
+    # The relay going away later changes nothing: the verdict is kept.
+    calls = _relay_identity(monkeypatch, data)
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert calls == {"licence": [], "detail": []}
+
+
+def test_premium_tree_module_is_not_freed_by_a_free_listing(_modules, tmp_path, monkeypatch):
+    """Control: a premium-tree module always takes the licence check."""
+    calls = _relay_identity(monkeypatch, tmp_path / "data", _FREE)
+    name = f"celerp-{_uid()}"
+    premium = tmp_path / "premium_modules"
+    _write_module(premium, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(premium, {name})
+
+    assert "no valid license" in admission.refused[name]
+    assert calls["licence"] == [name]
+
+
+def test_default_names_are_not_licence_checked(tmp_path):
+    """Control: the defaults Celerp ships load without a relay round trip."""
+    def _no_relay():
+        raise AssertionError("a default module asked for relay credentials")
+
+    for name in sorted(loader.first_party_names()):
+        module = loader.AdmittedModule(name, tmp_path / name, {}, False)
+        assert loader._license_refusal(module, _no_relay) is None
+
+
+async def test_celerp_module_restored_from_a_backup_needs_a_licence(tmp_path, monkeypatch):
+    import asyncio
+    import tarfile
+
+    from celerp import __version__
+    from celerp.config import settings
+    from celerp.services import backup_import
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    modules = tmp_path / "modules"
+    monkeypatch.setenv("MODULE_DIR", str(modules))
+    _relay_identity(monkeypatch, tmp_path / "data", _PAID)
+    name = f"celerp-{_uid()}"
+    meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
+                       "created_at": "2026-10-06T00:00:00Z", "company_name": "T"}).encode()
+    init = f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n".encode()
+    archive = tmp_path / "backup.celerp-backup"
+    with tarfile.open(archive, mode="w:gz") as tar:
+        for member, body in [("database.dump", b"PGDMP"), ("meta.json", meta),
+                             (f"modules/{name}/__init__.py", init)]:
+            info = tarfile.TarInfo(member)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    prepared = await backup_import.prepare_recovery(archive)
+    try:
+        await asyncio.to_thread(backup_import._swap_roots, prepared)
+    finally:
+        backup_import._remove_staging(prepared.root)
+    assert (modules / name / "__init__.py").is_file()
+
+    admission = loader.admit_modules(modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]

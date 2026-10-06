@@ -3,7 +3,8 @@
 """License verification for premium modules.
 
 Called by the module loader at startup for every module loaded from the
-``premium_modules/`` directory.  Uses the relay's ``/marketplace/license/verify``
+``premium_modules/`` directory or carrying the paid marker, and for every
+``celerp-`` module that is not one of the defaults Celerp ships.  Uses the relay's ``/marketplace/license/verify``
 endpoint and caches the result locally to allow a 7-day offline grace period.
 
 Public API
@@ -13,6 +14,9 @@ Public API
 
 ``is_premium_path(pkg_path) -> bool``
     True when the module lives inside a ``premium_modules/`` parent directory.
+
+``is_free_official(slug, relay_url, cache_dir) -> bool``
+    True when the Marketplace lists *slug* as a free official module (cached).
 """
 from __future__ import annotations
 
@@ -149,6 +153,48 @@ def check_license(
 
     # ── 2. Offline grace (subscriptions only) ────────────────────────────────
     return _read_cache(cache_file, slug)
+
+
+def marketplace_flags(meta: dict) -> tuple[bool, bool]:
+    """``(is_official, is_paid)`` from a Marketplace module-detail response.
+
+    Only a real, positive number counts as a price: a string or other
+    truthy-but-wrong type must not misclassify a free module as paid."""
+    is_paid = any(
+        isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+        for v in (meta.get("price_monthly"), meta.get("price_once")))
+    return bool(meta.get("is_official")), is_paid
+
+
+def is_free_official(slug: str, relay_url: str, cache_dir: Path) -> bool:
+    """True when the Marketplace lists *slug* as a free official module.
+
+    A free answer is kept in ``cache_dir/license_cache/{slug}.free.json`` and
+    reused from then on without a network call. Any other answer, or none (relay
+    unreachable, unknown module, malformed reply), is False and is not cached, so
+    the caller falls through to :func:`check_license`."""
+    cache_file = Path(cache_dir) / "license_cache" / f"{slug}.free.json"
+    cached = _cache_data(cache_file)
+    if isinstance(cached, dict) and cached.get("free") is True:
+        return True
+    url = relay_url.rstrip("/") + f"/marketplace/modules/{slug}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            meta = json.loads(resp.read())
+    except Exception as exc:
+        log.info("Module %r: Marketplace details unavailable (%s)", slug, exc)
+        return False
+    if not isinstance(meta, dict):
+        return False
+    is_official, is_paid = marketplace_flags(meta)
+    if not is_official or is_paid:
+        return False
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({"free": True, "cached_at": time.time()}))
+    except OSError as exc:
+        log.debug("Could not write the free verdict for %s: %s", slug, exc)
+    return True
 
 
 def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:

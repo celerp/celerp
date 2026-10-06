@@ -2184,6 +2184,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     from celerp.gateway.state import relay_error_detail
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
+    from celerp.modules.license import marketplace_flags
 
     url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
@@ -2199,16 +2200,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             meta = _json_dict(m)
             if not meta:
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
-            is_official = bool(meta.get("is_official"))
-            # Type-safe: only a real, positive number counts as paid. A string or
-            # other truthy-but-wrong type must not misclassify a free module as
-            # paid (which would wrongly gate it behind a license check forever).
-            price_monthly = meta.get("price_monthly")
-            price_once = meta.get("price_once")
-            is_paid = any(
-                isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
-                for v in (price_monthly, price_once)
-            )
+            is_official, is_paid = marketplace_flags(meta)
 
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
