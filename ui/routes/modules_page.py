@@ -276,9 +276,9 @@ def _local_panel(modules: list[dict], lang: str = "en",
                 cls="btn btn--sm btn--primary",
             )
 
-        # Provenance shield to the LEFT of the name (tags-left), gold for
-        # bundled defaults, trusted/community for their sources, nothing for a
-        # plain sideload or unknown origin (never a fabricated trust claim).
+        # Provenance shield to the LEFT of the name (tags-left): gold for
+        # bundled defaults, one for Marketplace installs, nothing for community,
+        # a plain sideload or an unknown origin.
         source_icon = _source_icon(m.get("source"), bool(m.get("is_default")), lang)
         # The leftmost Source column states the origin in words - always filled,
         # even for a plain sideload - alongside the shield beside the name.

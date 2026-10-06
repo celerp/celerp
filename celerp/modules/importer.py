@@ -45,6 +45,7 @@ MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 MAX_UNPACKED_BYTES = 200 * 1024 * 1024
 
 _RESERVED_PREFIX = "celerp-"
+_RESERVED_IMPORT_PREFIX = "celerp_"
 _NAME_MAX = 64
 
 # Marker file the marketplace installer drops inside a PAID module's directory.
@@ -76,14 +77,15 @@ def _validate_name_chars(name: str) -> None:
 
 def _validate_name(name: str, *, official: bool = False) -> None:
     _validate_name_chars(name)
-    # The celerp- names are reserved for Marketplace modules: an upload or folder
-    # import may not use one, and an official Marketplace install uses only them.
-    if official != name.startswith(_RESERVED_PREFIX):
+    # The celerp- names, in any letter case and in the celerp_ spelling, are
+    # reserved for Marketplace modules: an upload or folder import may not use
+    # one, and an official Marketplace install uses only the celerp- form.
+    if official and not name.startswith(_RESERVED_PREFIX):
+        raise ModuleImportError("Official module packages must use the 'celerp-' name prefix.")
+    if not official and name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX)):
         raise ModuleImportError(
             "The 'celerp-' name prefix is reserved for Marketplace modules. A module of "
             "your own needs a name without the 'celerp-' prefix."
-            if not official else
-            "Official module packages must use the 'celerp-' name prefix."
         )
 
 

@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from celerp.modules.importer import (
-    _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
+    _RESERVED_IMPORT_PREFIX, _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
     _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix,
 )
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
@@ -680,11 +680,10 @@ def _handler_names(manifest: dict) -> set[str]:
     return names
 
 
-# Top-level package names Celerp itself ships, and the prefix of the packages
-# inside celerp- modules (celerp_inventory, ...): a module named without the
-# celerp- prefix does not answer to them.
+# Top-level package names Celerp itself ships. A celerp_ package belongs to the
+# celerp- module of the same name (celerp-inventory ships celerp_inventory); no
+# other module answers to it.
 _RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_modules"})
-_RESERVED_IMPORT_PREFIX = "celerp_"
 
 
 def _import_roots(name: str, pkg_path: Path) -> list[str]:
@@ -732,15 +731,18 @@ def _check_import_names(name: str, pkg_path: Path) -> None:
     already hold the name. Raises :class:`ModuleLoadError`."""
     homes = _module_homes(pkg_path)
     elsewhere = [p for p in sys.path if not any(_inside(Path(p or "."), h) for h in homes)]
+    own = name.replace("-", "_") if name.startswith(_RESERVED_PREFIX) else None
     for root in _import_roots(name, pkg_path):
+        if root.startswith(_RESERVED_IMPORT_PREFIX) and root != own:
+            raise ModuleLoadError(
+                f"The package name {root!r} belongs to the celerp- module of that name; "
+                f"the module must use its own.")
         if root in sys.modules:
             taken = not _is_module_code(_module_location(sys.modules[root]), homes)
         else:
             spec = importlib.machinery.PathFinder.find_spec(root, elsewhere)
             taken = bool(spec and spec.origin) and not _is_module_code(spec.origin, homes)
-        if (taken or root in _RESERVED_IMPORT_NAMES or root in sys.stdlib_module_names
-                or (root.startswith(_RESERVED_IMPORT_PREFIX)
-                    and not name.startswith(_RESERVED_PREFIX))):
+        if taken or root in _RESERVED_IMPORT_NAMES or root in sys.stdlib_module_names:
             raise ModuleLoadError(
                 f"The package name {root!r} is already used by Celerp, Python or an "
                 f"installed package; the module must use its own.")

@@ -1668,7 +1668,7 @@ async def list_modules(
         first_party_names, is_core_folded, is_first_party, is_running, load_errors,
         loaded_modules, read_manifest_metadata,
     )
-    from celerp.modules.meta import read_meta
+    from celerp.modules.meta import SOURCES, read_meta
     from celerp.modules.registry import company_modules
 
     company = await session.get(Company, company_id)
@@ -1717,6 +1717,8 @@ async def list_modules(
                 else:
                     meta = read_meta(pkg_path)
                     source = meta.get("source")
+                    if source not in SOURCES:
+                        source = "sideloaded"
                     installed_at = meta.get("installed_at")
                     if installed_at is None:
                         ctime = pkg_path.stat().st_ctime
@@ -2189,8 +2191,8 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # Module metadata drives the trust decision (celerp- prefix required
-            # for official, forbidden for third-party) and the license-gate marker.
+            # Module metadata decides the official flag (which allows the reserved
+            # celerp- name) and the licence-gate marker.
             m = await c.get(f"{url}/marketplace/modules/{body.slug}")
             if m.status_code != 200:
                 raise HTTPException(
