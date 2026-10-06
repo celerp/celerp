@@ -492,19 +492,47 @@ async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
             await conn.execute(text("DROP TABLE IF EXISTS ext_pairs, ext_items"))
 
 
+def _commit_elsewhere(*statements: str, **params):
+    """Start committing ``statements`` on a connection of its own, in another thread. The
+    returned dict gets ``committed``, or the ``error`` the commit raised."""
+    import threading
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from migration_support import DATABASE_URL
+
+    outcome: dict = {}
+
+    def run():
+        async def go():
+            engine = create_async_engine(DATABASE_URL)
+            try:
+                async with engine.begin() as conn:
+                    for statement in statements:
+                        await conn.execute(text(statement), params)
+                outcome["committed"] = True
+            except Exception as exc:  # noqa: BLE001 - the outcome under test
+                outcome["error"] = exc
+            finally:
+                await engine.dispose()
+        asyncio.run(go())
+
+    writer = threading.Thread(target=run)
+    writer.start()
+    return writer, outcome
+
+
 async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
         real_client, real_engine, monkeypatch):  # noqa: F811
     """Beta adds a row naming Alpha's item after the reset has checked for such rows and
     before it deletes. Beta's write waits for the reset and then fails on the missing
     item; it never commits only to be deleted with Alpha."""
-    import threading
     import uuid
 
     from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
 
     from celerp.routers import system
-    from migration_support import DATABASE_URL
 
     ta, tb = await _two_companies(real_client)
     alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
@@ -515,34 +543,20 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
             "CREATE TABLE ext_links (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
             "item_id uuid REFERENCES ext_items(id) ON DELETE CASCADE, label text NOT NULL)"))
         await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item')"), {"i": item, "c": alpha})
-    beta_write: dict = {}
-
-    def add_beta_link():
-        async def go():
-            engine = create_async_engine(DATABASE_URL)
-            try:
-                async with engine.begin() as conn:
-                    await conn.execute(text("INSERT INTO ext_links VALUES (:i, :c, :t, 'beta link')"),
-                                       {"i": uuid.uuid4(), "c": beta, "t": item})
-                beta_write["committed"] = True
-            except Exception as exc:  # noqa: BLE001 - the outcome under test
-                beta_write["error"] = exc
-            finally:
-                await engine.dispose()
-        asyncio.run(go())
-
-    writer = threading.Thread(target=add_beta_link)
     deletes = system._company_deletes
+    started: dict = {}
 
     def after_the_check(schema):
-        writer.start()
-        writer.join(timeout=3)
+        started["writer"], started["outcome"] = _commit_elsewhere(
+            "INSERT INTO ext_links VALUES (gen_random_uuid(), :c, :t, 'beta link')", c=beta, t=item)
+        started["writer"].join(timeout=3)
         return deletes(schema)
 
     monkeypatch.setattr(system, "_company_deletes", after_the_check)
     try:
         r = await _reset(real_client, ta, "Alpha Co")
-        writer.join()
+        started["writer"].join()
+        beta_write = started["outcome"]
 
         assert r.status_code == 200, r.text
         assert "committed" not in beta_write and "ext_links_item_id_fkey" in str(beta_write["error"])
@@ -550,6 +564,88 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
+
+
+async def test_a_table_added_before_the_reset_locks_is_refused_as_busy(
+        real_client, real_engine, monkeypatch):  # noqa: F811
+    """A module adds a table naming Alpha's items after the reset read the tables and
+    before it locked them, and Beta links one of Alpha's items. The reset no longer
+    knows every table, so it is refused as busy and Beta's link stays."""
+    import uuid
+
+    from sqlalchemy import text
+
+    from celerp.routers import system
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    item = uuid.uuid4()
+    async with real_engine.begin() as conn:
+        await conn.execute(text(_ITEMS))
+        await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item')"), {"i": item, "c": alpha})
+    lock = system._lock_writers
+
+    def before_the_locks(schema):
+        writer, _ = _commit_elsewhere(
+            "CREATE TABLE ext_links (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
+            "item_id uuid REFERENCES ext_items(id) ON DELETE CASCADE)",
+            "INSERT INTO ext_links VALUES (gen_random_uuid(), :b, :t)", b=beta, t=item)
+        writer.join()
+        return lock(schema)
+
+    monkeypatch.setattr(system, "_lock_writers", before_the_locks)
+    try:
+        held = await _held(real_engine, alpha)
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        _refused_busy(r)
+        assert await _held(real_engine, alpha) == held
+        assert await count(real_engine, "ext_links", "company_id = :b AND item_id = :t", b=beta, t=item) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
+
+
+@pytest.mark.parametrize("table, key, names", [
+    ("ext_partners", "partner_id uuid REFERENCES companies(id) ON DELETE CASCADE", "alpha"),
+    ("ext_seats", "user_id uuid REFERENCES users(id) ON DELETE CASCADE", "clerk")], ids=["company", "user"])
+async def test_a_table_added_while_the_reset_holds_its_locks_waits_for_it(
+        real_client, real_engine, monkeypatch, table, key, names):  # noqa: F811
+    """While the reset holds its locks, a module adds a table whose key names Alpha or
+    the clerk, Alpha's only user, and Beta writes a row naming them. The new table waits
+    for the reset; Beta's row then fails on the row that is gone and is never deleted
+    with Alpha."""
+    from sqlalchemy import text
+
+    from celerp.routers import system
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+    check = system._held_elsewhere
+    started: dict = {}
+
+    def after_the_locks(schema):
+        started["writer"], started["outcome"] = _commit_elsewhere(
+            f"CREATE TABLE {table} (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), {key})",
+            f"INSERT INTO {table} VALUES (gen_random_uuid(), :b, :n)", b=beta,
+            n={"alpha": alpha, "clerk": clerk}[names])
+        started["writer"].join(timeout=3)
+        return check(schema)
+
+    monkeypatch.setattr(system, "_held_elsewhere", after_the_locks)
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+        started["writer"].join()
+
+        assert r.status_code == 200, r.text
+        assert "committed" not in started["outcome"], started["outcome"]
+        assert "violates foreign key constraint" in str(started["outcome"]["error"])
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
 
 
 def _refused_busy(r) -> None:

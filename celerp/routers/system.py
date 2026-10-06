@@ -109,15 +109,22 @@ def _company_rows(schema: dict) -> dict[str, str]:
 
 
 def _lock_writers(schema: dict) -> str:
-    """A lock on every table whose rows can name a company's rows or a user, held until
-    the reset commits. Nothing written between the checks and the deletes can then be
-    deleted with the company: such a write waits, and fails on the row that is gone.
-    Concurrent resets take it in the same order, one after the other."""
-    from celerp.db_catalog import company_tables, ident
+    """A lock on every table, held until the reset commits. Nothing written between the
+    checks and the deletes can then be deleted with the company, and no table or key can
+    be added that the reset does not know about: such a write waits, and fails on the
+    row that is gone. Concurrent resets take it in the same order, one after the other."""
+    from celerp.db_catalog import ident
 
-    named = company_tables(schema, held=True) | {"users"}
-    writers = sorted(name for name, table in schema.items() if any(fk.target in named for fk in table.fks))
-    return f"LOCK TABLE {', '.join(map(ident, writers))} IN SHARE ROW EXCLUSIVE MODE"
+    return f"LOCK TABLE {', '.join(map(ident, sorted(schema)))} IN SHARE ROW EXCLUSIVE MODE"
+
+
+def _busy() -> HTTPException:
+    from celerp.accounting_roles import refusal
+
+    return HTTPException(status_code=409, detail=refusal(
+        "system.factory_reset.busy",
+        "This company could not be reset because other changes were being saved at the "
+        "same time. Nothing was deleted. Try again."))
 
 
 def _held_elsewhere(schema: dict) -> str:
@@ -203,6 +210,9 @@ async def factory_reset(
     # way the rollback leaves everything as it was and the owner is asked to try again.
     try:
         await session.execute(text(_lock_writers(schema)))
+        if await db_catalog.read(session) != schema:  # a table or key added before the lock
+            await session.rollback()
+            raise _busy()
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
         held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})
@@ -219,10 +229,7 @@ async def factory_reset(
         if sqlstate(exc) not in _BUSY:
             raise
         await session.rollback()
-        raise HTTPException(status_code=409, detail=refusal(
-            "system.factory_reset.busy",
-            "This company could not be reset because other changes were being saved at the "
-            "same time. Nothing was deleted. Try again.")) from exc
+        raise _busy() from exc
 
     # Bust the in-process nonce cache: a deleted user's stale token must not auto-create rows
     from celerp.services.session_tracker import _nonce_cache_bust_all
