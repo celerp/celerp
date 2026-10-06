@@ -135,12 +135,25 @@ async def inheriting(session: AsyncSession) -> dict[str, str]:
     """Each table of this schema another table inherits rows from other than as a
     partition, with the first such table (``schema.table`` when in another schema).
     Reading or deleting the table's rows reaches that table's too, which none of the
-    table's keys bind, so nothing reading the catalog can tell whose they are."""
+    table's keys bind, so nothing reading the catalog can tell whose they are. Another
+    connection's temporary tables are never reached, so they are left out."""
     return dict((await session.execute(text(
         _INHERITS + "SELECT DISTINCT ON (a.relname) a.relname::text, " + _LABEL.format(t="d", n="dn") + " FROM up "
         "JOIN pg_class d ON d.oid = up.d JOIN pg_namespace dn ON dn.oid = d.relnamespace "
         "JOIN pg_class a ON a.oid = up.a, here "
-        "WHERE NOT d.relispartition AND a.relnamespace = here.ns ORDER BY a.relname, 2"))).all())
+        "WHERE NOT d.relispartition AND d.relpersistence <> 't' AND a.relnamespace = here.ns "
+        "ORDER BY a.relname, 2"))).all())
+
+
+def stored_in(name: str, alias: str) -> str:
+    """A condition on rows read as ``alias`` from ``name``: true only for rows stored in
+    that table or in one of its partitions as this transaction sees the catalog. A read
+    also reaches tables joined to ``name`` (by inheritance or as a partition) after the
+    transaction began, so a repeatable-read transaction filters them out with this."""
+    table = "'" + ident(name).replace("'", "''") + "'"
+    return (f"{alias}.tableoid IN (WITH RECURSIVE down(oid) AS (SELECT CAST({table} AS regclass)::oid "
+            "UNION SELECT i.inhrelid FROM down JOIN pg_inherits i ON i.inhparent = down.oid "
+            "JOIN pg_class p ON p.oid = i.inhrelid AND p.relispartition) SELECT oid FROM down)")
 
 
 async def partition_key(session: AsyncSession) -> str | None:

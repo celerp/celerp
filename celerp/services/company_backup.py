@@ -393,6 +393,7 @@ async def _batches(session: AsyncSession, table: db_catalog.Table, company_id, e
     ordered = ", ".join(f"o{i}" for i in range(len(table.pk)))
     order = ", ".join(f"t.{db_catalog.ident(c)}" for c in table.pk)
     company = f"CAST(CAST(:c AS text) AS {db_catalog.ident(table.columns['company_id'].udt)})"
+    held = db_catalog.stored_in(table.name, "t")
     after = (f" AND ({order}) > ("
              + ", ".join(f"CAST(CAST(:k{i} AS text) AS {db_catalog.ident(udt[c])})" for i, c in enumerate(table.pk)) + ")")
     params: dict = {"c": str(company_id), "n": BATCH_ROWS, "b": BATCH_BYTES}
@@ -402,7 +403,7 @@ async def _batches(session: AsyncSession, table: db_catalog.Table, company_id, e
             f"SELECT {picked}, j, fetched FROM (SELECT s.*, count(*) OVER () AS fetched, "
             f"sum(octet_length(s.j)) OVER (ORDER BY {ordered} ROWS UNBOUNDED PRECEDING) "
             f"- octet_length(s.j) AS before FROM ("
-            f"SELECT {keys}, {natives}, ({expr})::text AS j FROM {q} t WHERE t.company_id = {company}"
+            f"SELECT {keys}, {natives}, ({expr})::text AS j FROM {q} t WHERE t.company_id = {company} AND {held}"
             f"{'' if first else after} ORDER BY {order} LIMIT :n) s) w "
             f"WHERE w.before < :b ORDER BY {ordered}"), params)).all()
         if not rows:
@@ -475,7 +476,8 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
     Everything the backup holds is read through its own session in one read-only
     repeatable-read transaction, so the company, its settings, every table and every
     attachment reference come from the same moment: a write committed meanwhile is either
-    wholly in the backup or wholly absent from it. Writers are never blocked. SQLite has one
+    wholly in the backup or wholly absent from it, and rows of a table joined to a carried
+    one meanwhile are left out. Writers are never blocked. SQLite has one
     writer at a time, so there one plain transaction reads the same moment.
 
     Refused, with nothing written, when the company holds data Celerp cannot back up."""
@@ -494,8 +496,9 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
     tables = []
     for name in plan.order:
         if name in plan.owners and not await session.scalar(text(
-                f"SELECT 1 FROM {db_catalog.ident(name)} WHERE company_id = "
-                f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
+                f"SELECT 1 FROM {db_catalog.ident(name)} t WHERE t.company_id = "
+                f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) "
+                f"AND {db_catalog.stored_in(name, 't')} LIMIT 1"),
                 {"c": str(company_id)}):
             continue
         tables.append(name)

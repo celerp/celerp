@@ -1147,6 +1147,35 @@ async def test_a_reset_is_refused_while_a_key_is_kept_on_one_partition(real_clie
             await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
 
 
+async def test_a_temporary_table_of_another_connection_does_not_stop_a_reset(real_client, real_engine):  # noqa: F811
+    """Another connection holds a temporary table inheriting from a company table. A reset
+    never reaches another connection's temporary tables, so it goes ahead, and that
+    connection's rows and Beta's row are kept."""
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE ext_par (id uuid PRIMARY KEY, company_id uuid NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_par VALUES (gen_random_uuid(), :a), (gen_random_uuid(), :b)"),
+                           {"a": alpha, "b": beta})
+    try:
+        async with real_engine.connect() as other:
+            await other.execute(text("CREATE TEMP TABLE tmp_kid () INHERITS (ext_par)"))
+            await other.execute(text("INSERT INTO tmp_kid VALUES (gen_random_uuid(), :a)"), {"a": alpha})
+            await other.commit()
+
+            r = await _reset(real_client, ta, "Alpha Co")
+
+            assert r.status_code == 200, r.text
+            assert (await other.execute(text("SELECT count(*) FROM ONLY tmp_kid"))).scalar_one() == 1
+        assert await count(real_engine, "companies", "id = :a", a=alpha) == 0
+        assert await count(real_engine, "ext_par", "company_id = :b", b=beta) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_par CASCADE"))
+
+
 async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tables(
         real_client, real_engine):  # noqa: F811
     """A table kept in another schema names Alpha by a key into Celerp's own tables. The

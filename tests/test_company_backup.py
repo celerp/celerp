@@ -1095,6 +1095,97 @@ async def test_a_table_inheriting_from_a_carried_table_stops_the_export(
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
 
+_BK_WIDGETS = ("CREATE TABLE zz_widgets (id uuid primary key, company_id uuid not null "
+               "references companies(id) on delete cascade, gadget_id uuid references zz_gadgets(id))")
+_BK_JOINED = {
+    "a table made to inherit from a carried table": ((
+        _BK_GADGETS, _BK_WIDGETS,
+        "CREATE TABLE zz_ext.old (id uuid primary key, company_id uuid not null, gadget_id uuid)",
+        "INSERT INTO zz_ext.old VALUES (:late, :c, gen_random_uuid())"),
+        "ALTER TABLE zz_ext.old INHERIT zz_widgets", "ALTER TABLE zz_ext.old NO INHERIT zz_widgets"),
+    "a table with a key of its own attached as a partition of a carried table": ((
+        _BK_GADGETS, "CREATE TABLE zz_widgets (id uuid primary key, company_id uuid not null "
+        "references companies(id) on delete cascade, gadget_id uuid) PARTITION BY RANGE (id)",
+        "CREATE TABLE zz_widgets_p0 PARTITION OF zz_widgets DEFAULT",
+        "CREATE TABLE zz_ext.p1 (id uuid primary key, company_id uuid not null, gadget_id uuid)",
+        "INSERT INTO zz_ext.p1 VALUES (:late, :c, :g)"),
+        f"ALTER TABLE zz_widgets ATTACH PARTITION zz_ext.p1 FOR VALUES FROM ('{_BK_SPLIT}') TO (MAXVALUE)",
+        "ALTER TABLE zz_widgets DETACH PARTITION zz_ext.p1"),
+}
+
+
+@pytest.mark.parametrize("shape", list(_BK_JOINED))
+async def test_rows_joined_to_a_carried_table_during_the_export_are_not_exported(
+        real_engine, real_client, tmp_path, monkeypatch, shape):
+    """Another connection joins a table holding a row of the company to a carried table,
+    by inheritance or as a partition, after the export has checked the tables' shape. The
+    backup holds the company as it was when the export began, without that row, and
+    restores."""
+    from celerp import db_catalog
+
+    statements, join, split = _BK_JOINED[shape]
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    gadget, late = uuid.uuid4(), "f0000000-0000-0000-0000-000000000001"
+    try:
+        await _bk_sql(real_engine, "CREATE SCHEMA zz_ext")
+        for sql in statements:
+            await _bk_sql(real_engine, sql, g=gadget, c=cid, late=late)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (:g, :c)", g=gadget, c=cid)
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES ('10000000-0000-0000-0000-000000000001', :c, :g)",
+                      g=gadget, c=cid)
+        inheriting = db_catalog.inheriting
+
+        async def then_join(session):
+            found = await inheriting(session)
+            await _bk_sql(real_engine, join)
+            return found
+
+        monkeypatch.setattr(db_catalog, "inheriting", then_join)
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+        monkeypatch.setattr(db_catalog, "inheriting", inheriting)
+        await _bk_sql(real_engine, split)
+
+        assert r.status_code == 200, r.text
+        rows = [json.loads(line) for line in members(r.content)["tables/zz_widgets.jsonl"].splitlines()]
+        assert [row["gadget_id"] for row in rows] == [str(gadget)], rows
+        new = await _bk_restore_new(real_client, tok, r.content)
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM zz_widgets w JOIN zz_gadgets g ON g.id = w.gadget_id "
+                                             "WHERE w.company_id = :c AND g.company_id = :c", c=uuid.UUID(new)) == 1
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+async def test_a_temporary_table_of_another_connection_does_not_stop_the_export(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """Another connection holds a temporary table inheriting from a carried table. A read
+    of the carried table never reaches another connection's temporary tables, so the
+    export goes ahead with the carried table's own rows."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    gadget = uuid.uuid4()
+    try:
+        await _bk_sql(real_engine, _BK_GADGETS)
+        await _bk_sql(real_engine, _BK_WIDGETS)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (:g, :c)", g=gadget, c=cid)
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES (gen_random_uuid(), :c, :g)", g=gadget, c=cid)
+        async with real_engine.connect() as other:
+            await other.execute(text("CREATE TEMP TABLE tmp_kid () INHERITS (zz_widgets)"))
+            await other.execute(text("INSERT INTO tmp_kid VALUES (gen_random_uuid(), :c, NULL)"), {"c": cid})
+            await other.commit()
+
+            r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 200, r.text
+        rows = [json.loads(line) for line in members(r.content)["tables/zz_widgets.jsonl"].splitlines()]
+        assert [row["gadget_id"] for row in rows] == [str(gadget)], rows
+    finally:
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
 def _bk_naming_outside(data: bytes, lookup, version: int) -> bytes:
     """The backup as a Celerp of format ``version`` wrote it when it kept each widget's
     lookup_id, naming a row of another schema the backup does not carry."""
