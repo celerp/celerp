@@ -55,6 +55,7 @@ from celerp.services.auth import (
 )
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import create_install_owner, provision_migration_company
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -429,7 +430,7 @@ def _start_company_owner(scan_token: str) -> store.ScanOwner:
 async def start_company_scan(request: Request, credentials: HTTPBasicCredentials | None = Depends(_basic),
                              session: AsyncSession = Depends(get_session)) -> dict:
     if credentials is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
     user_id = (await companyless_login(session, credentials.username, credentials.password)).id
     await session.rollback()  # nothing is held while the upload streams in
     scan = await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id))
@@ -459,7 +460,7 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
         user = await companyless_login(session, payload.email, payload.password)
         await hold_direct_slot(session)
         if not await hold_companyless_login(session, user.id):
-            raise HTTPException(status_code=409, detail=HAS_COMPANY)
+            raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
         if await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token)) is not None:
             raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
         scan = store.load_scan(payload.scan_token, owner=(START_COMPANY, user.id))

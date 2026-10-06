@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 
 from celerp.models.migration import MigrationStatus
 from test_helpers import make_test_token
+from ui.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +453,6 @@ async def test_setup_registers_and_applies_without_migration_state(ui, router, s
 
 @pytest.mark.asyncio
 async def test_setup_failure_states_keep_typed_values(ui, router, session):
-    from ui.i18n import t
 
     router.overrides[("GET", "/auth/bootstrap-status")] = _raise(httpx.ConnectError)
     r = await ui.get("/setup")
@@ -492,7 +492,6 @@ async def test_setup_failure_states_keep_typed_values(ui, router, session):
 @pytest.mark.asyncio
 async def test_setup_password_mismatch_shown_at_confirm_field(ui, router, session):
     """A mismatch marks the confirm field and says so under it, not at the top of the form."""
-    from ui.i18n import t
 
     r = await ui.post("/setup", data={**_GOOD_SETUP, "confirm_password": "different-horse-9"})
     assert r.status_code == 200
@@ -510,7 +509,6 @@ async def test_setup_password_mismatch_shown_at_confirm_field(ui, router, sessio
 
 @pytest.mark.asyncio
 async def test_setup_restore_errors_rerender_form_with_back(ui, router, session):
-    from ui.i18n import t
 
     upload = lambda content: {"backup_file": ("backup.tar.gz", content, "application/gzip")}  # noqa: E731
 
@@ -907,7 +905,7 @@ async def test_staged_session_lands_on_its_migration_run(ui, router, fake_api):
     every landing page sends them to that run instead of ERP pages the API refuses."""
     _owner(ui)
     run_id = fake_api.add_run("preparing")
-    staged = "This company is still being moved into Celerp. Finish or discard the migration first."
+    staged = t("auth.company_staged", "en")
     router.overrides[("GET", "/companies/me")] = lambda request: _json(403, {"detail": staged})
     router.overrides[("GET", "/migrations/staged")] = lambda request: _json(200, fake_api.runs[run_id])
     for path in ("/", "/login"):

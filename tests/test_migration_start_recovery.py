@@ -31,8 +31,9 @@ from migration_support import (
     scan_upload,
 )
 from test_helpers import register_admin
+from ui.i18n import t
 
-STAGED = "This company is still being moved into Celerp. Finish or discard the migration first."
+STAGED = t("auth.company_staged", "en")
 
 
 class Crash(Exception):

@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ui.i18n import t
+
 
 async def _register(client, email="reset@example.com", password="securepass"):
     r = await client.post(
@@ -169,7 +171,7 @@ async def test_stored_digest_is_not_a_usable_bearer_token(client, session):
         json={"token": stored, "new_password": "newpassword1"},
     )
     assert r.status_code == 400
-    assert "expired" in r.json()["detail"].lower() or "invalid" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t("auth.reset_link_invalid", "en")
 
 
 @pytest.mark.asyncio
@@ -180,7 +182,7 @@ async def test_password_reset_confirm_wrong_token(client):
         json={"token": "totally-wrong-token", "new_password": "newpassword1"},
     )
     assert r.status_code == 400
-    assert "expired" in r.json()["detail"].lower() or "invalid" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t("auth.reset_link_invalid", "en")
 
 
 @pytest.mark.asyncio
@@ -202,7 +204,7 @@ async def test_password_reset_confirm_expired_token(client, session):
         json={"token": raw, "new_password": "newpassword1"},
     )
     assert r.status_code == 400
-    assert "expired" in r.json()["detail"].lower() or "invalid" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t("auth.reset_link_invalid", "en")
 
 
 @pytest.mark.asyncio

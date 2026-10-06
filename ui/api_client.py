@@ -2162,7 +2162,7 @@ async def export_items_csv(token: str, params: dict | None = None) -> bytes:
 async def export_docs_csv(token: str, params: dict | None = None):
     """GET /docs/export/csv, streamed on the bulk transport. Returns (iter, headers)."""
     return await _stream_get(token, "/docs/export/csv", params=params,
-                             timeout_message="The export timed out.")
+                             timeout_message=t("api.export_timed_out"))
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
@@ -2410,7 +2410,7 @@ async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
 async def export_lists_csv(token: str, params: dict | None = None):
     """GET /lists/export/csv, streamed. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, "/lists/export/csv", params=params,
-                             timeout_message="The export timed out.")
+                             timeout_message=t("api.export_timed_out"))
 
 
 # ---------------------------------------------------------------------------
@@ -3366,7 +3366,7 @@ async def export_backup(token: str, backup_id: str | None = None):
     url = f"/backup/export/{backup_id}" if backup_id else "/backup/export"
     return await _stream_get(
         token, url,
-        timeout_message="Backup timed out. The archive took too long to build.")
+        timeout_message=t("api.backup_timed_out"))
 
 
 async def disconnect_relay(token: str) -> dict:

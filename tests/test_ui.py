@@ -36,6 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from celerp.services.import_stage import read_stage, write_stage
 from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
+from ui.i18n import t
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
@@ -8526,7 +8527,7 @@ class TestInviteUser:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"required" in r.content.lower()
+        assert t("error.name_email_password_required", "en").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_invite_user_post_api_error_shows_message(self, ui_client):
@@ -10331,7 +10332,7 @@ class TestMarketplaceUI:
         assert r.status_code == 200
         assert buy.await_count == 0
         assert b"flash--error" in r.content
-        assert b"Could not check" in r.content
+        assert t("account.status_unreachable", "en").encode() in r.content
         assert b"/modules/marketplace-panel" in r.content     # way back to the catalog
 
     @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from test_company_backup_ui import (  # noqa: F401
     ui,
 )
 from test_company_reset import SOLO_EMAIL, SOLO_PASSWORD, _local_files
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,7 +34,7 @@ RESTORE = "/company-backups/start-company/restore"
 START = "/setup/start-company"
 BASE = "/setup/start-company/restore-backup"
 NAME = "Harbor Goods Ltd"
-HAS_COMPANY = "This login already has a company. Sign in instead."
+HAS_COMPANY = t("auth.has_company", "en")
 
 
 async def _reset_last_company(client, engine):
@@ -94,8 +95,8 @@ async def test_wrong_credentials_restore_nothing(real_client, real_engine, monke
     bad_read = await _read(real_client, data, password="wrong-password")
     bad_restore = await real_client.post(RESTORE, json=_confirm(preview, password="wrong-password"))
 
-    assert bad_read.status_code == 401 and bad_read.json()["detail"] == "Invalid credentials"
-    assert bad_restore.status_code == 401 and bad_restore.json()["detail"] == "Invalid credentials"
+    assert bad_read.status_code == 401 and bad_read.json()["detail"] == t("auth.invalid_credentials", "en")
+    assert bad_restore.status_code == 401 and bad_restore.json()["detail"] == t("auth.invalid_credentials", "en")
     assert await count(real_engine, "companies") == 0
     assert {t: rows for t, rows in (await snapshot(real_engine)).items() if t not in ("user_auth_state",)} == \
         {t: rows for t, rows in before.items() if t not in ("user_auth_state",)}
@@ -186,11 +187,11 @@ async def test_start_company_restore_shows_errors_on_the_page(ui, real_client, r
 
     r = await ui.post(f"{BASE}/read", files={"file": ("harbor.celerp-company", data, "application/octet-stream")},
                       data={"email": OWNER_EMAIL, "password": "wrong-password"})
-    assert r.status_code == 401 and "Invalid credentials" in _page(r)
+    assert r.status_code == 401 and t("auth.invalid_credentials", "en") in _page(r)
 
     r = await _upload_and_preview(ui, BASE, data, email=OWNER_EMAIL, password=OWNER_PASSWORD)
     r = await ui.post(f"{BASE}/restore", data={**_hidden(_page(r)), "email": OWNER_EMAIL,
                                                 "password": "wrong-password"})
-    assert r.status_code == 200 and "Invalid credentials" in _page(r)
+    assert r.status_code == 200 and t("auth.invalid_credentials", "en") in _page(r)
     assert 'name="password"' in _page(r)  # corrected on the preview, the upload kept
     assert await count(real_engine, "companies") == 0

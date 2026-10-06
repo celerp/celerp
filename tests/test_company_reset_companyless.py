@@ -19,6 +19,7 @@ from company_backup_support import company, download, member, owner, token
 from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, migration_env, real_client, real_engine  # noqa: F401
 from test_company_reset import _local_files
 from test_company_reset_migration import _ready_scan, _start as _move_in
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -26,7 +27,7 @@ NAME = "Harbor Goods Ltd"
 START = "/auth/start-company"
 READ = "/company-backups/start-company/read"
 RESTORE = "/company-backups/start-company/restore"
-HAS_COMPANY = "This login already has a company. Sign in instead."
+HAS_COMPANY = t("auth.has_company", "en")
 
 
 def _relay(monkeypatch):
