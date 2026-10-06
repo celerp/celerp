@@ -472,7 +472,7 @@ async def test_download_uses_celerp_company_extension(real_engine, real_client, 
     assert re.search(r'filename="?[^";]+\.celerp-company"?', disposition), disposition
     assert cb.EXTENSION == ".celerp-company"
     m = manifest(r.content)
-    assert (m["format"], m["format_version"]) == (cb.FORMAT, cb.FORMAT_VERSION) == ("celerp-company-backup", 1)
+    assert (m["format"], m["format_version"]) == (cb.FORMAT, cb.FORMAT_VERSION) == ("celerp-company-backup", 2)
 
 
 async def test_migration_download_carries_provenance(real_engine, real_client, tmp_path, monkeypatch):
@@ -977,6 +977,116 @@ async def test_reference_outside_the_backup_is_cleared(real_engine, real_client,
         new = await _bk_restore_new(real_client, tok, data)
         assert await _bk_scalar(real_engine, "SELECT count(*) FROM zz_widgets WHERE company_id = :c "
                                              "AND lookup_id IS NULL", c=uuid.UUID(new)) == 4
+    finally:
+        await _bk_drop(real_engine, "zz_widgets")
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+
+
+_BK_SPLIT = "80000000-0000-0000-0000-000000000000"
+_BK_GADGETS = ("CREATE TABLE zz_gadgets (id uuid primary key, "
+               "company_id uuid not null references companies(id) on delete cascade)")
+
+
+async def test_a_key_one_partition_holds_into_a_carried_table_stops_the_export(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """Only one partition of zz_widgets holds its key to zz_gadgets, so in the other
+    partition the same column is plain data naming no gadget. A backup cannot tell the
+    two apart, so the export is refused naming the module and table, rather than writing
+    a file that could never be restored."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        for sql in (_BK_GADGETS,
+                    "CREATE TABLE zz_widgets (id uuid primary key, company_id uuid not null "
+                    "references companies(id) on delete cascade, gadget_id uuid) PARTITION BY RANGE (id)",
+                    f"CREATE TABLE zz_widgets_p0 PARTITION OF zz_widgets FOR VALUES FROM (MINVALUE) TO ('{_BK_SPLIT}')",
+                    f"CREATE TABLE zz_widgets_p1 PARTITION OF zz_widgets FOR VALUES FROM ('{_BK_SPLIT}') TO (MAXVALUE)",
+                    "ALTER TABLE zz_widgets_p0 ADD FOREIGN KEY (gadget_id) REFERENCES zz_gadgets(id)"):
+            await _bk_sql(real_engine, sql)
+        gadget = uuid.uuid4()
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (:g, :c)", g=gadget, c=cid)
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES ('10000000-0000-0000-0000-000000000001', :c, :g)",
+                      c=cid, g=gadget)
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES ('f0000000-0000-0000-0000-000000000001', :c, :g)",
+                      c=cid, g=uuid.uuid4())
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_widgets in a form Celerp cannot "
+                                      "back up yet. Nothing was backed up.")
+    finally:
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+async def test_a_key_naming_a_partition_of_a_carried_table_stops_the_export(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """zz_widgets names a gadget through one partition of the carried zz_gadgets. A
+    restored gadget gets a new id, which can fall in another partition, so the key could
+    not hold; the export is refused naming the module and table, rather than clearing the
+    value or writing a file that could never be restored."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    gadget = "10000000-0000-0000-0000-000000000001"
+    try:
+        for sql in ("CREATE TABLE zz_gadgets (id uuid primary key, company_id uuid not null "
+                    "references companies(id) on delete cascade) PARTITION BY RANGE (id)",
+                    f"CREATE TABLE zz_gadgets_p0 PARTITION OF zz_gadgets FOR VALUES FROM (MINVALUE) TO ('{_BK_SPLIT}')",
+                    f"CREATE TABLE zz_gadgets_p1 PARTITION OF zz_gadgets FOR VALUES FROM ('{_BK_SPLIT}') TO (MAXVALUE)",
+                    "CREATE TABLE zz_widgets (id uuid primary key, company_id uuid not null "
+                    "references companies(id) on delete cascade, gadget_id uuid references zz_gadgets_p0(id))"):
+            await _bk_sql(real_engine, sql)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (:g, :c)", g=gadget, c=cid)
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets VALUES (gen_random_uuid(), :c, :g)", c=cid, g=gadget)
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_widgets in a form Celerp cannot "
+                                      "back up yet. Nothing was backed up.")
+    finally:
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+def _bk_naming_outside(data: bytes, lookup, version: int) -> bytes:
+    """The backup as a Celerp of format ``version`` wrote it when it kept each widget's
+    lookup_id, naming a row of another schema the backup does not carry."""
+    parts = members(data)
+    name = "tables/zz_widgets.jsonl"
+    rows = [json.loads(line) for line in parts[name].splitlines()]
+    parts[name] = b"".join(json.dumps({**row, "lookup_id": str(lookup)}).encode() + b"\n" for row in rows)
+    m = json.loads(parts["manifest.json"])
+    m["format_version"] = version
+    m["tables"]["zz_widgets"]["sha256"] = sha256(parts[name])
+    parts["manifest.json"] = json.dumps(m).encode()
+    return rezip(parts)
+
+
+@pytest.mark.parametrize("older", [True, False])
+async def test_a_backup_naming_a_row_outside_it_is_refused_plainly(
+        real_engine, real_client, tmp_path, monkeypatch, older):
+    """An older Celerp kept a value naming a row of another schema. Restoring that backup
+    here is refused saying it was made by an older version; the same value in a backup of
+    this version can only mean the file was changed. Nothing is written either way."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    user, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        for sql in _BK_OUTSIDE_KEYS["other_schema"]:
+            await _bk_sql(real_engine, sql)
+        lookup = uuid.uuid4()
+        await _bk_sql(real_engine, "INSERT INTO zz_ext.lookup (id) VALUES (:i)", i=lookup)
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id, lookup_id) VALUES (:i, :c, :l)",
+                      i=uuid.uuid4(), c=cid, l=lookup)
+        data = _bk_naming_outside(await download(real_client, tok), lookup,
+                                  cb.FORMAT_VERSION - 1 if older else cb.FORMAT_VERSION)
+
+        message = ("This company backup was made by an older version of Celerp and cannot be restored here."
+                   if older else "damaged or was changed")
+        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, message)
     finally:
         await _bk_drop(real_engine, "zz_widgets")
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")

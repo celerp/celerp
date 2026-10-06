@@ -65,7 +65,7 @@ from celerp.services.provisioning import create_install_owner, provision_restore
 logger = logging.getLogger(__name__)
 
 FORMAT = "celerp-company-backup"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 EXTENSION = ".celerp-company"
 
 # The core and bundled-module company tables a backup carries.
@@ -134,6 +134,7 @@ SYSTEM_BACKUP = "This is a whole-installation backup. Use System Recovery instea
 DAMAGED = "This company backup is damaged or was changed after it was made." + _NOT_RESTORED
 NEWER = ("This company backup was made by a newer version of Celerp. Update Celerp, then try again."
          + _NOT_RESTORED)
+OLDER = "This company backup was made by an older version of Celerp and cannot be restored here." + _NOT_RESTORED
 TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
 TOO_LARGE_TO_BACK_UP = "This company holds more data than a company backup can restore." + _NOT_BACKED_UP
@@ -265,9 +266,14 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         changed = False
         keep = set(carried)
         order, unordered = db_catalog.fk_order(carried, schema)
+        # A key one partition holds binds only that partition's rows, so the other rows'
+        # values in its columns name nothing a restore could check them against.
         for name in list(carried):
-            if name in unordered or any(schema[name].columns[c].notnull for fk in schema[name].fks
-                                        if fk.target != "companies" and fk.target not in keep for c in fk.cols):
+            fks = schema[name].fks
+            if (name in unordered
+                    or any(fk.partial for fk in fks if fk.target == "companies" or fk.target in keep)
+                    or any(schema[name].columns[c].notnull for fk in fks
+                           if fk.target != "companies" and fk.target not in keep for c in fk.cols)):
                 if strict:
                     raise _refusal(name, owners)
                 carried.remove(name)
@@ -785,6 +791,12 @@ def _lines(zf: zipfile.ZipFile, name: str):
                 yield line
 
 
+def _older(m: dict) -> bool:
+    """Whether the backup was written in a format this Celerp no longer writes, so it may
+    hold what this Celerp has since stopped backing up."""
+    return m["format_version"] < FORMAT_VERSION
+
+
 def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[str], dict[str, int], set[str]]:
     """Check every row before anything is written: its shape, its keys, and that every
     reference points at the backup's own company, at a row the backup carries, or nowhere.
@@ -794,6 +806,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
     m = backup.manifest
     source = m["company"]["id"]
     carried = set(order)
+    unreadable = OLDER if _older(m) else DAMAGED
     files = {f["url"] for f in m["attachments"]}
 
     def check_files(value) -> None:
@@ -847,7 +860,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
                     elif target in carried:
                         refs.setdefault((target, tcols), set()).add(values)
                     else:
-                        raise BackupError(422, DAMAGED)
+                        raise BackupError(422, unreadable)
                 total += _row_digest(row)
             digests[name] = total % (1 << 256)
     for key, values in refs.items():
@@ -886,8 +899,10 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
     plan = await _classify(session, strict=False)
     tables = backup.manifest["tables"]
     for name, meta in tables.items():
-        if name not in plan.order or not set(meta["columns"]) <= set(plan.schema[name].insertable):
+        if name not in plan.schema or not set(meta["columns"]) <= set(plan.schema[name].insertable):
             raise BackupError(422, NEWER)
+        if name not in plan.order:
+            raise BackupError(422, OLDER if _older(backup.manifest) else NEWER)
     order = [t for t in plan.order if t in tables]
     ids, digests, others = await asyncio.to_thread(_scan_rows, backup, order, plan)
     await _check_foreign(session, plan, backup.manifest["company"]["id"], others)
