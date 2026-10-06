@@ -739,6 +739,15 @@ async def switch_company(token: str, company_id: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
+async def reactivate_company(token: str, company_id: str) -> dict:
+    """Reactivate one of the user's deactivated companies. The API reactivates the
+    session's company, so the call runs on a token for that company; the caller's own
+    session stays in the company it is working in."""
+    access, _ = await switch_company(token, company_id)
+    async with _api_client(access) as c:
+        return _raise(await c.post("/companies/me/reactivate")).json()
+
+
 # ---------------------------------------------------------------------------
 # Company / settings
 # ---------------------------------------------------------------------------
