@@ -168,10 +168,9 @@ async def test_lifetime_only_module_is_marked_premium(client, relay_env):
 
 
 @pytest.mark.asyncio
-async def test_string_price_does_not_misclassify_free_module_as_paid(client, relay_env):
-    """A relay response with price fields as strings (or any non-numeric truthy
-    value) must NOT be treated as paid - bare Python truthiness would make
-    bool("0") == True and wrongly license-gate a free module forever."""
+async def test_any_listed_price_marks_the_module_paid(client, relay_env):
+    """A module with any price listed is paid, as the relay sells it: only a
+    listing with no price at all is free."""
     headers = await _register(client)
     fake = _fake_relay(meta=_FakeResp(200, {"is_official": True, "price_monthly": "0",
                                             "price_once": None}))
@@ -180,7 +179,7 @@ async def test_string_price_does_not_misclassify_free_module_as_paid(client, rel
     r = await _install(client, headers, dl.json()["path"])
     assert r.status_code == 200, r.text
     from celerp.modules.importer import PREMIUM_MARKER
-    assert not (relay_env / "celerp-budgeting" / PREMIUM_MARKER).exists()
+    assert (relay_env / "celerp-budgeting" / PREMIUM_MARKER).exists()
 
 
 @pytest.mark.asyncio
@@ -380,7 +379,7 @@ async def test_install_of_a_free_official_module_keeps_it_loading_offline(
     from celerp.modules import loader
 
     headers = await _register(client)
-    fake = _fake_relay(meta=_FakeResp(200, {"is_official": True, "price_monthly": 0,
+    fake = _fake_relay(meta=_FakeResp(200, {"is_official": True, "price_monthly": None,
                                             "price_once": None}))
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)

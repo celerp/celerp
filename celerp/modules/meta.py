@@ -5,8 +5,9 @@
 The importer writes one of these into every module folder at install time. It
 records where the module came from and when it landed, and it is the single
 source for two user-facing features on the modules page: the source label and
-shield next to each module name, and the newest-imported-first ordering. Both are
-display only; nothing reads the sidecar to decide what a module may do.
+shield next to each module name, and the newest-imported-first ordering. The
+loader also reads it while the Marketplace cannot be reached: a celerp- module
+the Marketplace installed without a price loads until the Marketplace answers.
 
 The sidecar is advisory: a folder without one (a pre-existing import, or a
 default module re-seeded by the desktop app) is simply treated as unknown
@@ -29,20 +30,22 @@ IMPORT_SOURCES = {"community", "sideloaded"}
 SOURCES = IMPORT_SOURCES | {"marketplace"}
 
 
-def write_meta(pkg_dir: Path, *, source: str) -> None:
+def write_meta(pkg_dir: Path, *, source: str, paid: bool) -> None:
     """Write the provenance sidecar into an installed module folder.
 
     ``installed_at`` is always a UTC ISO 8601 string so the ordering code can
-    compare timestamps without type juggling.
+    compare timestamps without type juggling; ``paid`` records whether the
+    module was installed as a paid one.
     """
     installed_at = datetime.now(timezone.utc).isoformat()
-    payload = {"source": source, "installed_at": installed_at}
+    payload = {"source": source, "installed_at": installed_at, "paid": paid}
     (Path(pkg_dir) / META_FILENAME).write_text(json.dumps(payload))
 
 
 def read_meta(pkg_dir: Path) -> dict:
     """Return the sidecar's fields that hold a value of the right type: ``source``
-    when it is one of :data:`SOURCES`, ``installed_at`` when it is a string. Any
+    when it is one of :data:`SOURCES`, ``installed_at`` when it is a string,
+    ``paid`` when it is a bool (sidecars written before it was kept have none). Any
     other field or value is left out, as is the whole file when it is missing,
     unreadable or not a JSON object."""
     path = Path(pkg_dir) / META_FILENAME
@@ -57,4 +60,6 @@ def read_meta(pkg_dir: Path) -> dict:
         fields["source"] = meta["source"]
     if isinstance(meta.get("installed_at"), str):
         fields["installed_at"] = meta["installed_at"]
+    if isinstance(meta.get("paid"), bool):
+        fields["paid"] = meta["paid"]
     return fields

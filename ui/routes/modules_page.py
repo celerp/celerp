@@ -32,6 +32,8 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from celerp.modules.license import PAID_MODULE_REFUSAL
+
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
 from ui.api_client import APIError, refresh_access_token
@@ -219,7 +221,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
         elif running:
             status_filter = t("modules.badge_running", lang)
             status_parts.append(Span(status_filter, cls="badge badge--active"))
-        elif load_error and "license" in load_error.lower():
+        elif load_error == PAID_MODULE_REFUSAL:
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
             # rather than a dead red error - the moment-of-need conversion point.

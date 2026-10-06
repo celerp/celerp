@@ -15,11 +15,15 @@ Public API
 ``is_premium_path(pkg_path) -> bool``
     True when the module lives inside a ``premium_modules/`` parent directory.
 
-``is_free_official(slug, relay_url, cache_dir) -> bool``
-    True when the Marketplace lists *slug* as a free official module (cached).
+``is_free_official(slug, relay_url, cache_dir) -> bool | None``
+    True when the Marketplace lists *slug* as a free official module (cached);
+    None when the Marketplace could not be asked.
 
 ``record_free_verdict(slug, cache_dir)``
     Keeps that verdict, without expiry; also written at Marketplace install.
+
+``adopt_legacy_license_cache(data_dir)``
+    Carries licences kept under the old default data dir into *data_dir*.
 """
 from __future__ import annotations
 
@@ -34,6 +38,9 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _OFFLINE_GRACE_SECONDS: int = 7 * 24 * 3600  # 7 days
+
+# Why a paid module does not load here: the modules page offers to move it.
+PAID_MODULE_REFUSAL = "Premium module: no valid license."
 
 # ES256 public key for verifying LIFETIME module licenses OFFLINE. The relay
 # holds the matching private key. A lifetime license is an ES256 JWT the relay
@@ -161,35 +168,39 @@ def check_license(
 def marketplace_flags(meta: dict) -> tuple[bool, bool]:
     """``(is_official, is_paid)`` from a Marketplace module-detail response.
 
-    Only a real, positive number counts as a price: a string or other
-    truthy-but-wrong type must not misclassify a free module as paid."""
-    is_paid = any(
-        isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
-        for v in (meta.get("price_monthly"), meta.get("price_once")))
-    return bool(meta.get("is_official")), is_paid
+    Read as the relay sells the module: any price listed, in any form, makes it
+    paid, and only a literal ``True`` makes it official."""
+    is_paid = any(meta.get(k) is not None for k in ("price_monthly", "price_once"))
+    return meta.get("is_official") is True, is_paid
 
 
-def is_free_official(slug: str, relay_url: str, cache_dir: Path) -> bool:
-    """True when the Marketplace lists *slug* as a free official module.
+def is_free_official(slug: str, relay_url: str, cache_dir: Path) -> bool | None:
+    """Whether the Marketplace lists *slug* as a free official module.
 
     A free answer is kept in ``cache_dir/license_cache/{slug}.free.json`` and
-    reused from then on without a network call. Any other answer, or none (relay
-    unreachable, unknown module, malformed reply), is False and is not cached, so
-    the caller falls through to :func:`check_license`."""
+    reused from then on without a network call. Any other answer (paid,
+    unofficial, unknown module) is False and is kept as ``{slug}.not-free.json``.
+    When the Marketplace cannot be asked (unreachable, failing, or an unreadable
+    reply) the kept answer stands: False after a not-free answer, else None."""
     cached = _cache_data(_free_verdict_file(slug, cache_dir))
     if isinstance(cached, dict) and cached.get("free") is True:
         return True
     url = relay_url.rstrip("/") + f"/marketplace/modules/{slug}"
+    meta = None
     try:
         with urllib.request.urlopen(url, timeout=5) as resp:
             meta = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        log.info("Module %r: Marketplace details unavailable (%s)", slug, exc)
+        if exc.code == 404:
+            meta = {}
     except Exception as exc:
         log.info("Module %r: Marketplace details unavailable (%s)", slug, exc)
-        return False
     if not isinstance(meta, dict):
-        return False
+        return False if _not_free_file(slug, cache_dir).is_file() else None
     is_official, is_paid = marketplace_flags(meta)
     if not is_official or is_paid:
+        _write_verdict(_not_free_file(slug, cache_dir), slug, free=False)
         return False
     record_free_verdict(slug, cache_dir)
     return True
@@ -198,16 +209,48 @@ def is_free_official(slug: str, relay_url: str, cache_dir: Path) -> bool:
 def record_free_verdict(slug: str, cache_dir: Path) -> None:
     """Keep the Marketplace's free official verdict for *slug* on this instance.
     It does not expire: a module once listed free stays loadable offline."""
-    cache_file = _free_verdict_file(slug, cache_dir)
+    _write_verdict(_free_verdict_file(slug, cache_dir), slug, free=True)
+
+
+def _write_verdict(path: Path, slug: str, *, free: bool) -> None:
+    """Write a Marketplace verdict whole or not at all."""
+    tmp = path.with_name(path.name + ".tmp")
     try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"free": True, "cached_at": time.time()}))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({"free": free, "cached_at": time.time()}))
+        os.replace(tmp, path)
     except OSError as exc:
-        log.warning("Could not write the free verdict for %s: %s", slug, exc)
+        tmp.unlink(missing_ok=True)
+        log.warning("Could not write the Marketplace verdict for %s: %s", slug, exc)
+
+
+def adopt_legacy_license_cache(data_dir: Path) -> None:
+    """Copy licences kept under the old default data dir into *data_dir*'s
+    cache, once: a file already in *data_dir* is never replaced, and only
+    licence entries are carried over."""
+    legacy = Path(os.environ.get("DATA_DIR", "/tmp/celerp-data")) / "license_cache"
+    target = Path(data_dir) / "license_cache"
+    try:
+        if not legacy.is_dir() or legacy.resolve() == target.resolve():
+            return
+        for src in legacy.glob("*.json"):
+            dest = target / src.name
+            if src.name.endswith(".free.json") or dest.exists():
+                continue
+            target.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".tmp")
+            tmp.write_bytes(src.read_bytes())
+            os.replace(tmp, dest)
+    except OSError as exc:
+        log.warning("Could not carry over licences from %s: %s", legacy, exc)
 
 
 def _free_verdict_file(slug: str, cache_dir: Path) -> Path:
     return Path(cache_dir) / "license_cache" / f"{slug}.free.json"
+
+
+def _not_free_file(slug: str, cache_dir: Path) -> Path:
+    return Path(cache_dir) / "license_cache" / f"{slug}.not-free.json"
 
 
 def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:
@@ -215,8 +258,8 @@ def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:
     POST /auth/token - same pattern as celerp.routers.health's async relay
     calls, but synchronous since the module loader runs at process startup
     before the event loop is serving requests. Returns None on any failure
-    (network error, invalid key, malformed response) so the caller can fall
-    back to skipping the license check rather than crashing startup."""
+    (network error, invalid key, malformed response) so the caller decides from
+    the offline lifetime licence and grace cache rather than crashing startup."""
     if not relay_url or not api_key:
         return None
     url = relay_url.rstrip("/") + "/auth/token"

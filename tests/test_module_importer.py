@@ -378,6 +378,16 @@ def test_folder_install_defaults_to_sideloaded_source(module_dir, tmp_path):
     assert json.loads(sidecar.read_text())["source"] == "sideloaded"
 
 
+@pytest.mark.parametrize("premium", [True, False])
+def test_install_records_whether_the_module_was_paid(premium, module_dir):
+    from celerp.modules.meta import read_meta
+    name = "celerp-sidecar-paid"
+    install_from_zip(_zip_bytes({"__init__.py": f"PLUGIN_MANIFEST = {{'name': {name!r}, "
+                                                 "'version': '1.0.0'}\n"}, root=f"{name}/"),
+                     official=True, premium=premium, source="marketplace")
+    assert read_meta(module_dir / name)["paid"] is premium
+
+
 def test_read_meta_returns_empty_on_missing_file(tmp_path):
     from celerp.modules.meta import read_meta
     assert read_meta(tmp_path) == {}

@@ -19,6 +19,7 @@ import ast
 import io
 import json
 import sys
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
@@ -29,6 +30,7 @@ import pytest
 
 from celerp.modules import loader, slots
 from celerp.modules.importer import PREMIUM_MARKER, install_from_zip
+from celerp.modules.meta import write_meta
 
 
 @pytest.fixture(autouse=True)
@@ -2052,7 +2054,7 @@ def _premium_zip(name: str) -> bytes:
 
 
 _PAID = {"is_official": True, "price_monthly": 15}
-_FREE = {"is_official": True, "price_monthly": 0, "price_once": None}
+_FREE = {"is_official": True, "price_monthly": None, "price_once": None}
 
 
 def test_paid_module_without_its_marker_needs_a_licence(_modules, tmp_path, monkeypatch):
@@ -2209,20 +2211,213 @@ def test_licence_cache_lives_in_the_celerp_data_dir(_modules, tmp_path, monkeypa
     assert calls["detail"] == []
 
 
-def test_first_offline_start_without_a_verdict_refuses_until_the_relay_answers(
-        _modules, tmp_path, monkeypatch):
-    """A free official module installed before verdicts were recorded, first
-    started offline: there is no verdict to trust, so it is refused with the
-    licence reason; the next start that reaches the Marketplace loads it."""
-    data = tmp_path / "data"
-    _relay_identity(monkeypatch, data, activated=False)
-    name = f"celerp-{_uid()}"
-    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+def _marketplace_install(base: Path, name: str) -> Path:
+    """A free official module as the Marketplace installed it before verdicts
+    were recorded: the folder and its install sidecar, no verdict anywhere."""
+    pkg = _write_module(base, name, {"name": name, "version": "1.0.0"})
+    (pkg / ".celerp-meta.json").write_text(json.dumps(
+        {"source": "marketplace", "installed_at": "2026-09-01T00:00:00+00:00"}))
+    return pkg
 
+
+@pytest.mark.parametrize("sidecar", ["before_paid_was_kept", "paid_false"])
+@pytest.mark.parametrize("activated", [True, False], ids=["activated", "never_activated"])
+def test_marketplace_install_loads_offline_before_its_verdict_is_recorded(
+        activated, sidecar, _modules, tmp_path, monkeypatch):
+    """An offline start never loses a free module the Marketplace installed: with
+    no verdict yet and the relay away it loads, and nothing is recorded until
+    the Marketplace answers."""
+    data = tmp_path / "data"
+    name = f"celerp-{_uid()}"
+    pkg = _marketplace_install(_modules, name)
+    if sidecar == "paid_false":
+        write_meta(pkg, source="marketplace", paid=False)
+
+    for _restart in range(2):
+        calls = _relay_identity(monkeypatch, data, activated=activated)
+        assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+        assert calls["licence"] == []
+    assert not (data / "license_cache" / f"{name}.free.json").exists()
+
+    _relay_identity(monkeypatch, data, _FREE, activated=activated)
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert (data / "license_cache" / f"{name}.free.json").is_file()
+
+
+@pytest.mark.parametrize("detail", [_PAID, {"is_official": False, "price_monthly": None}],
+                         ids=["paid", "unofficial"])
+def test_marketplace_install_takes_the_licence_check_once_the_relay_says_not_free(
+        detail, _modules, tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data", detail)
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+    assert calls["licence"] == [name]
+
+
+def test_marketplace_install_stays_on_the_licence_check_offline_once_the_relay_said_not_free(
+        _modules, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+    _relay_identity(monkeypatch, data, _PAID, activated=False)
     assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
 
-    _relay_identity(monkeypatch, data, _FREE, activated=False)
-    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    _relay_identity(monkeypatch, data, activated=False)
+    assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
+    assert not (data / "license_cache" / f"{name}.free.json").exists()
+
+
+@pytest.mark.parametrize("copy", ["marker_deleted", "copied_without_marker"])
+def test_paid_marketplace_install_without_its_marker_is_refused_offline(
+        copy, _modules, tmp_path, monkeypatch):
+    import shutil
+
+    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    name = f"celerp-{_uid()}"
+    install_from_zip(_premium_zip(name), official=True, premium=True, source="marketplace")
+    modules = _modules
+    if copy == "marker_deleted":
+        (_modules / name / PREMIUM_MARKER).unlink()
+    else:
+        modules = tmp_path / "other-install"
+        shutil.copytree(_modules / name, modules / name,
+                        ignore=shutil.ignore_patterns(PREMIUM_MARKER))
+
+    admission = loader.admit_modules(modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+
+
+def test_marketplace_install_unknown_to_the_relay_takes_the_licence_check(
+        _modules, tmp_path, monkeypatch):
+    import urllib.error
+
+    calls = _relay_identity(monkeypatch, tmp_path / "data")
+
+    def _not_found(url, timeout=None):
+        raise urllib.error.HTTPError(str(url), 404, "Not Found", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", _not_found)
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
+    assert calls["licence"] == [name]
+
+
+@pytest.mark.parametrize("source", [None, "sideloaded", "community"])
+def test_hand_copy_without_a_marketplace_sidecar_stays_refused_offline(
+        source, _modules, tmp_path, monkeypatch):
+    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    name = f"celerp-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    if source:
+        write_meta(pkg, source=source, paid=False)
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+    assert not (tmp_path / "data" / "license_cache" / f"{name}.free.json").exists()
+
+
+def test_unconfirmed_module_refusal_is_not_shown_as_a_licence_on_another_computer(
+        _modules, tmp_path, monkeypatch):
+    """The modules page keeps its move-your-licence prompt for paid modules; a
+    module the Marketplace could not yet confirm as free gets a plain reason."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.modules_page import _local_panel
+
+    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    refusal = loader.admit_modules(_modules, {name}).refused[name]
+
+    row = {"name": name, "label": name, "version": "1.0.0", "author": "",
+           "enabled": True, "running": False, "is_default": False, "load_error": refusal}
+    html = to_xml(_local_panel([row], "en", owner=True))
+
+    assert "module-license-upsell" not in html
+    assert "bought it on" not in html
+
+
+def _legacy_licence(legacy: Path, slug: str, entry: dict) -> None:
+    (legacy / "license_cache").mkdir(parents=True, exist_ok=True)
+    (legacy / "license_cache" / f"{slug}.json").write_text(json.dumps(entry))
+
+
+@pytest.mark.parametrize("kind", ["lifetime", "grace"])
+def test_paid_licence_kept_in_the_old_cache_dir_still_loads_offline(
+        kind, _modules, tmp_path, monkeypatch):
+    """Licences kept in the old default data dir are carried into the data dir,
+    so a paid module still loads on the first offline start after the update."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from jose import jwt as jose_jwt
+
+    from celerp.modules import license as lic
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                             serialization.NoEncryption()).decode()
+    monkeypatch.setattr(lic, "_LICENSE_PUBLIC_KEY", key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode())
+    data, legacy = tmp_path / "data", tmp_path / "legacy"
+    slug = f"celerp-{_uid()}"
+    pkg = _write_module(_modules, slug, {"name": slug, "version": "1.0.0"})
+    (pkg / PREMIUM_MARKER).write_text("")
+    if kind == "lifetime":
+        token = jose_jwt.encode({"kind": "lifetime", "mod": slug, "sub": "instance-1",
+                                 "iss": "celerp-relay"}, priv, algorithm="ES256")
+        entry = {"licensed": True, "status": "active", "cached_at": 0,
+                 "license_kind": "lifetime", "license_jwt": token}
+    else:
+        entry = {"licensed": True, "status": "active", "cached_at": time.time(),
+                 "license_kind": "subscription", "license_jwt": ""}
+    _legacy_licence(legacy, slug, entry)
+    _relay_identity(monkeypatch, data, activated=False)
+    monkeypatch.setenv("DATA_DIR", str(legacy))
+
+    admission = loader.admit_modules(_modules, {slug})
+
+    assert [m.name for m in admission.admitted] == [slug], admission.refused
+    assert json.loads((data / "license_cache" / f"{slug}.json").read_text()) == entry
+
+
+def test_old_cache_dir_never_replaces_a_licence_already_in_the_data_dir(
+        _modules, tmp_path, monkeypatch):
+    data, legacy = tmp_path / "data", tmp_path / "legacy"
+    slug = f"celerp-{_uid()}"
+    pkg = _write_module(_modules, slug, {"name": slug, "version": "1.0.0"})
+    (pkg / PREMIUM_MARKER).write_text("")
+    _legacy_licence(legacy, slug, {"licensed": True, "status": "active",
+                                   "cached_at": time.time()})
+    current = {"licensed": False, "status": "cancelled", "cached_at": time.time()}
+    _legacy_licence(data, slug, current)
+    _relay_identity(monkeypatch, data, activated=False)
+    monkeypatch.setenv("DATA_DIR", str(legacy))
+
+    assert "no valid license" in loader.admit_modules(_modules, {slug}).refused[slug]
+    assert json.loads((data / "license_cache" / f"{slug}.json").read_text()) == current
+
+
+def test_old_cache_dir_carries_no_free_verdict(_modules, tmp_path, monkeypatch):
+    data, legacy = tmp_path / "data", tmp_path / "legacy"
+    slug = f"celerp-{_uid()}"
+    _write_module(_modules, slug, {"name": slug, "version": "1.0.0"})
+    _legacy_licence(legacy, f"{slug}.free", {"free": True})
+    _relay_identity(monkeypatch, data, activated=False)
+    monkeypatch.setenv("DATA_DIR", str(legacy))
+
+    assert "no valid license" in loader.admit_modules(_modules, {slug}).refused[slug]
+    assert not (data / "license_cache" / f"{slug}.free.json").exists()
 
 
 def test_startup_fetches_missing_verdicts_for_installed_celerp_modules(

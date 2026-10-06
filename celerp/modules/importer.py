@@ -516,7 +516,7 @@ def _land(staged: Path, manifest: dict, name: str, *, premium: bool, source: str
     # Record provenance and install time in the staged tree so the sidecar
     # travels into the landing dir with the rest of the package (one atomic
     # replace, no second write into the live module dir).
-    write_meta(staged, source=source)
+    write_meta(staged, source=source, paid=premium)
     target = _target_for(name)
     # Land atomically: copy into a temp dir on the SAME filesystem as the module
     # dir (staged lives under /tmp, often a different device, where shutil.move
