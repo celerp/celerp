@@ -2096,22 +2096,26 @@ function sendToTypeChanged(docType, docLabel){
   // Guard: register body-level htmx handlers only once per page load
   if(!window.__celerpHtmxHandlers){
     window.__celerpHtmxHandlers=true;
-  // Preserve horizontal scroll position across any HTMX request that may replace
-  // the table or its scroll container (cell edits, sort, search, pagination, etc.).
-  // Save on htmx:beforeRequest AND eagerly exposed as window.__celerpScrollSnap so
-  // inline ESC handlers can set it synchronously before the browser resets scroll.
-  // Restore on htmx:afterSettle using requestAnimationFrame to run after browser reflow.
+  // Preserve horizontal scroll position across an HTMX request that may replace
+  // the table or its scroll container (cell edits, sort, search, pagination, etc.):
+  // its target holds the scroll container or sits inside it. Other requests (page
+  // chrome refreshes) leave the position alone, even when they settle after the
+  // user scrolled. Saved on htmx:beforeRequest for that request, and exposed as
+  // window.__celerpScrollSnap so inline ESC handlers can set it synchronously before
+  // the browser resets scroll. Restored when that same request settles, using
+  // requestAnimationFrame to run after browser reflow.
   window.__celerpScrollSnap=null;
   document.body.addEventListener('htmx:beforeRequest',function(e){
-    var sw=document.querySelector('.table-scroll-wrap');
-    if(sw){window.__celerpScrollSnap=sw.scrollLeft;}
+    var sw=document.querySelector('.table-scroll-wrap'),t=e.detail.target;
+    if(sw&&t&&(t.contains(sw)||sw.contains(t))){window.__celerpScrollSnap={xhr:e.detail.xhr,left:sw.scrollLeft};}
   });
   document.body.addEventListener('htmx:afterSettle',function(e){
-    if(window.__celerpScrollSnap!=null){
-      var s=window.__celerpScrollSnap;window.__celerpScrollSnap=null;
+    var snap=window.__celerpScrollSnap;
+    if(snap&&snap.xhr===e.detail.xhr){
+      window.__celerpScrollSnap=null;
       requestAnimationFrame(function(){
         var sw=document.querySelector('.table-scroll-wrap');
-        if(sw)sw.scrollLeft=s;
+        if(sw)sw.scrollLeft=snap.left;
       });
     }
   });
