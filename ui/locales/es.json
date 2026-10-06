@@ -3113,6 +3113,7 @@
   "marketplace.community_ack": "Mostrar módulos de la comunidad ({n}): Entiendo que un módulo de la comunidad es un software de terceros que se ejecuta con el mismo acceso que el propio Celerp, incluidos todos los datos empresariales. Se recomienda leer el código fuente o asegurarse de que se confía en el autor antes de instalarlo. Realice primero una copia de seguridad.",
   "marketplace.community_unverified_note": "Toda la información proporcionada en los módulos de la comunidad ha sido declarada por los propios autores y no ha sido verificada.",
   "marketplace.download_failed": "No se ha podido descargar el módulo. Comprueba tu conexión e inténtalo de nuevo.",
+  "marketplace.download_unpinned": "La ficha de este módulo no fija una versión, por lo que no se puede descargar. Pida a su autor que actualice el índice de la comunidad.",
   "marketplace.downloaded": "Descargado",
   "marketplace.import_failed": "No se ha podido importar el módulo. Consulta el mensaje para obtener más detalles y vuelve a intentarlo.",
   "marketplace.view_page": "Ver página",

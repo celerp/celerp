@@ -92,6 +92,10 @@ def _clean(entry) -> dict | None:
         ]
         if clean_deps:
             out["depends_on"] = clean_deps[:50]
+    # The commit a community listing pins: downloads fetch exactly this code.
+    commit = entry.get("commit")
+    if _valid_commit(commit):
+        out["commit"] = commit
     return out
 
 
@@ -173,22 +177,33 @@ def _staging_dir() -> Path:
     return d
 
 
+class UnpinnedModule(ValueError):
+    """The listing does not name the exact commit to download."""
+
+
+def _valid_commit(commit) -> bool:
+    """A full 40-character hex commit id; branch names, HEAD and short ids are not."""
+    return isinstance(commit, str) and len(commit) == 40 and all(c in "0123456789abcdefABCDEF" for c in commit)
+
+
 def _valid_id(module_id: str) -> bool:
     return bool(module_id) and all(
         c.isascii() and (c.isalnum() or c in "-_") for c in module_id
     )
 
 
-async def download_community_archive(repo_url: str, module_id: str) -> str:
-    """Download a community module's repo archive to a staged .zip and return
-    its path. The repo is public, author-controlled source; the bytes stay
-    untrusted - only the module importer installs them, behind its zip-slip,
-    symlink, size, manifest, and reserved-prefix guards."""
+async def download_community_archive(repo_url: str, commit: str, module_id: str) -> str:
+    """Download the commit a community listing pins from the module's repo to a
+    staged .zip and return its path. The repo is public, author-controlled source;
+    the bytes stay untrusted - only the module importer installs them, behind its
+    zip-slip, symlink, size, manifest, and reserved-prefix guards."""
     if not _valid_id(module_id):
         raise ValueError("Invalid module id.")
     if not repo_url.startswith("https://"):
         raise ValueError("Module repository URL is not https.")
-    archive_url = repo_url.rstrip("/") + "/archive/HEAD.zip"
+    if not _valid_commit(commit):
+        raise UnpinnedModule("The listing does not pin a commit to download.")
+    archive_url = f"{repo_url.rstrip('/')}/archive/{commit}.zip"
     buf = bytearray()
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
         async with c.stream("GET", archive_url) as r:

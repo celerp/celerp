@@ -946,6 +946,7 @@
   "marketplace.could_not_load": "ካታሎጉን መጫን አልተቻለም። ግንኙነትዎን ያረጋግጡ እና እንደገና ይሞክሩ።",
   "marketplace.data_access": "የመረጃ መዳረሻ",
   "marketplace.download_failed": "ሞጁሉን ማውረድ አልተቻለም። ግንኙነትዎን ያረጋግጡ እና እንደገና ይሞክሩ።",
+  "marketplace.download_unpinned": "የዚህ ሞጁል ዝርዝር ስሪት አይገልጽም፣ ስለዚህ ማውረድ አይቻልም። ደራሲውን የማህበረሰብ መረጃ ጠቋሚውን እንዲያዘምን ይጠይቁ።",
   "marketplace.downloaded": "ወርዷል",
   "marketplace.feedback": "አስተያየት",
   "marketplace.free": "ነጻ",

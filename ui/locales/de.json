@@ -3114,6 +3114,7 @@
   "marketplace.community_ack": "Community-Module anzeigen ({n}): Mir ist bewusst, dass es sich bei einem Community-Modul um Software eines Drittanbieters handelt, die mit denselben Zugriffsrechten wie Celerp selbst ausgeführt wird, einschließlich aller Geschäftsdaten. Es wird empfohlen, vor der Installation den Quellcode zu lesen oder sich zu vergewissern, dass Sie dem Autor vertrauen. Erstellen Sie zunächst ein Backup.",
   "marketplace.community_unverified_note": "Alle in den Community-Modulen bereitgestellten Informationen stammen aus Selbstauskünften der Autoren und sind nicht überprüft.",
   "marketplace.download_failed": "Das Modul konnte nicht heruntergeladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+  "marketplace.download_unpinned": "Der Eintrag dieses Moduls legt keine Version fest, daher kann es nicht heruntergeladen werden. Bitten Sie den Autor, den Community-Index zu aktualisieren.",
   "marketplace.downloaded": "Heruntergeladen",
   "marketplace.import_failed": "Das Modul konnte nicht importiert werden. Weitere Informationen finden Sie in der Meldung. Versuchen Sie es anschließend erneut.",
   "marketplace.view_page": "Seite anzeigen",

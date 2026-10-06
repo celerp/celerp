@@ -3113,6 +3113,7 @@
   "marketplace.community_ack": "Tampilkan Modul Komunitas ({n}): Saya memahami bahwa modul komunitas adalah perangkat lunak pihak ketiga yang berjalan dengan akses yang sama seperti Celerp itu sendiri, termasuk semua data bisnis. Disarankan untuk membaca kode sumbernya, atau memastikan Anda mempercayai pengembangnya sebelum menginstalnya. Lakukan pencadangan terlebih dahulu.",
   "marketplace.community_unverified_note": "Semua informasi yang disediakan dalam modul komunitas merupakan pernyataan dari pengembang dan belum diverifikasi.",
   "marketplace.download_failed": "Modul tidak dapat diunduh. Periksa koneksi Anda dan coba lagi.",
+  "marketplace.download_unpinned": "Daftar modul ini tidak menetapkan versi, jadi modul tidak dapat diunduh. Minta pembuatnya memperbarui indeks komunitas.",
   "marketplace.downloaded": "Telah diunduh",
   "marketplace.import_failed": "Modul tidak dapat diimpor. Lihat pesan untuk detailnya, lalu coba lagi.",
   "marketplace.view_page": "Lihat halaman",

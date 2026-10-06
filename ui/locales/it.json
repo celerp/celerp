@@ -3114,6 +3114,7 @@
   "marketplace.community_ack": "Mostra moduli della community ({n}): Sono consapevole che un modulo della community è un software di terze parti che opera con gli stessi diritti di accesso di Celerp stesso, inclusi tutti i dati aziendali. Si raccomanda di leggere il codice sorgente o di assicurarsi di fidarsi dell’autore prima dell’installazione. Eseguire prima un backup.",
   "marketplace.community_unverified_note": "Tutte le informazioni fornite nei moduli della community sono autodichiarate dagli autori e non verificate.",
   "marketplace.download_failed": "Impossibile scaricare il modulo. Controlla la connessione e riprova.",
+  "marketplace.download_unpinned": "La scheda di questo modulo non fissa una versione, quindi non può essere scaricato. Chiedi all'autore di aggiornare l'indice della community.",
   "marketplace.downloaded": "Scaricato",
   "marketplace.import_failed": "Impossibile importare il modulo. Consultare il messaggio per i dettagli, quindi riprovare.",
   "marketplace.view_page": "Visualizza pagina",
