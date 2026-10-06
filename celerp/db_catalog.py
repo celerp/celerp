@@ -17,6 +17,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.db import sqlstate
+
 
 @dataclass(frozen=True)
 class Column:
@@ -151,20 +153,37 @@ async def inheriting(session: AsyncSession) -> dict[str, str]:
         "ORDER BY a.relname, 2"))).all())
 
 
+# ``:t``, a table of this schema, and each table under it, as this transaction's snapshot
+# of the catalog holds them.
+_UNDER = (
+    "WITH RECURSIVE down(oid) AS (SELECT c.oid FROM pg_class c "
+    "  WHERE c.relname = :t AND c.relnamespace = to_regnamespace(current_schema()) "
+    "  UNION SELECT i.inhrelid FROM down JOIN pg_inherits i ON i.inhparent = down.oid) ")
+# Lock timeout and undefined table: a table being changed or gone.
+_OUT_OF_REACH = {"55P03", "42P01"}
+
+
+async def label(session: AsyncSession, name: str) -> str:
+    """A table of this schema named as the catalog names it, quoted where it must be."""
+    return await session.scalar(text("SELECT quote_ident(:t)"), {"t": name})
+
+
 async def _stored(session: AsyncSession, name: str) -> dict[tuple[str, str], bool]:
     """``name`` and each table under it as this transaction's snapshot of the catalog
     holds them, as (schema, table), each with whether it stores rows of its own (a
     partitioned table stores none)."""
     rows = await session.execute(text(
-        "WITH RECURSIVE down(oid) AS (SELECT CAST(:t AS regclass)::oid "
-        "  UNION SELECT i.inhrelid FROM down JOIN pg_inherits i ON i.inhparent = down.oid) "
-        "SELECT n.nspname::text, c.relname::text, c.relkind <> 'p' FROM down JOIN pg_class c ON c.oid = down.oid "
-        "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE " + _REACHED.format(t="c")), {"t": ident(name)})
+        _UNDER + "SELECT n.nspname::text, c.relname::text, c.relkind <> 'p' FROM down JOIN pg_class c ON c.oid = down.oid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE " + _REACHED.format(t="c")), {"t": name})
     return {(ns, rel): stores for ns, rel, stores in rows}
 
 
 def _scans(plan, found: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    """The tables ``plan`` reads rows of, leaving out those only a subquery of it reads
+    (such as one a row security rule names)."""
     if isinstance(plan, dict):
+        if plan.get("Parent Relationship") in ("InitPlan", "SubPlan"):
+            return found
         if "Relation Name" in plan:
             found.add((plan["Schema"], plan["Relation Name"]))
         for value in plan.values():
@@ -177,31 +196,44 @@ def _scans(plan, found: set[tuple[str, str]]) -> set[tuple[str, str]]:
 
 async def reshaped(session: AsyncSession, names: list[str]) -> str | None:
     """The first of ``names`` a read now reaches other tables of than this transaction's
-    snapshot of the catalog holds under it, or None. A repeatable-read transaction reads
-    rows as they were when it began, but a read reaches the tables joined to the one
-    read (by inheritance or as a partition) as they are now; once a table is joined,
-    detached or swapped meanwhile, the rows read are no longer the rows the table held."""
+    snapshot of the catalog holds under it, named as the catalog names it, or None. A
+    repeatable-read transaction reads rows as they were when it began, but a read reaches
+    the tables joined to the one read (by inheritance or as a partition) as they are now;
+    once a table is joined, detached or swapped meanwhile, the rows read are no longer
+    the rows the table held."""
     for name in names:
         plan = await session.scalar(text(f"EXPLAIN (VERBOSE, FORMAT JSON) SELECT 1 FROM {ident(name)}"))
         held = {table for table, stores in (await _stored(session, name)).items() if stores}
         if _scans(json.loads(plan) if isinstance(plan, str) else plan, set()) != held:
-            return name
+            return await label(session, name)
     return None
 
 
 async def hold(session: AsyncSession, names: list[str]) -> str | None:
     """Lock ``names`` and every table this transaction's snapshot of the catalog holds
     under them until the transaction ends, so none of their partitions can be detached
-    meanwhile, then return the first of them ``reshaped`` (or one dropped), or None.
-    Writes to their rows go on; a table can still be joined to them, which only
-    ``reshaped`` tells."""
+    meanwhile, then return the first of them gone, replaced under the same name (dropped
+    and made again, emptied, rewritten or swapped for another) or ``reshaped``, named as
+    the catalog names it, or None. A table kept locked by another connection past the
+    lock timeout counts as reshaped. Writes to their rows go on; a table can still be
+    joined to them, which only ``reshaped`` tells."""
     for name in names:
         tables = ", ".join(f"ONLY {ident(ns)}.{ident(rel)}" for ns, rel in await _stored(session, name))
         try:
             async with session.begin_nested():
                 await session.execute(text(f"LOCK TABLE {tables} IN ACCESS SHARE MODE"))
-        except DBAPIError:
-            return name
+        except DBAPIError as exc:
+            if sqlstate(exc) in _OUT_OF_REACH:
+                return await label(session, name)
+            raise
+        # The snapshot's row of each table against the table its name reaches now: another
+        # table, or the same one with its rows stored anew, holds none of the rows read.
+        if await session.scalar(text(
+                _UNDER + "SELECT 1 FROM down JOIN pg_class c ON c.oid = down.oid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE " + _REACHED.format(t="c") + " AND ("
+                "to_regclass(format('%I.%I', n.nspname, c.relname)) IS DISTINCT FROM c.oid "
+                "OR pg_relation_filenode(c.oid) IS DISTINCT FROM NULLIF(c.relfilenode, 0)) LIMIT 1"), {"t": name}):
+            return await label(session, name)
     return await reshaped(session, names)
 
 

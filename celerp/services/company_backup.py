@@ -227,12 +227,14 @@ def _declared(module: str) -> dict:
     return declared if isinstance(declared, dict) else {}
 
 
-def _refusal(table: str, owners: dict[str, str], *, restoring: bool = False) -> BackupError:
+async def _refusal(session: AsyncSession, table: str, owners: dict[str, str], *,
+                   restoring: bool = False) -> BackupError:
     status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "back up", _NOT_BACKED_UP)
+    label = await db_catalog.label(session, table)
     if table in owners:
-        return BackupError(status, f"The {owners[table]} module keeps data in {table} in a form Celerp "
+        return BackupError(status, f"The {owners[table]} module keeps data in {label} in a form Celerp "
                                    f"cannot {verb} yet." + end)
-    return BackupError(status, f"This company has data Celerp cannot {verb} yet: {table}." + end)
+    return BackupError(status, f"This company has data Celerp cannot {verb} yet: {label}." + end)
 
 
 async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
@@ -268,7 +270,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         if ok and name not in inherited:
             carried.append(name)
         elif strict:
-            raise _refusal(name, owners)
+            raise await _refusal(session, name, owners)
         else:
             refused.add(name)
     changed = True
@@ -285,7 +287,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
                     or any(schema[name].columns[c].notnull for fk in fks
                            if fk.target != "companies" and fk.target not in keep for c in fk.cols)):
                 if strict:
-                    raise _refusal(name, owners)
+                    raise await _refusal(session, name, owners)
                 carried.remove(name)
                 refused.add(name)
                 changed = True
@@ -920,7 +922,7 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
         if name not in plan.schema or not set(meta["columns"]) <= set(plan.schema[name].insertable):
             raise BackupError(422, NEWER)
         if name in plan.refused:
-            raise _refusal(name, plan.owners, restoring=True)
+            raise await _refusal(session, name, plan.owners, restoring=True)
         if name not in plan.order:
             raise BackupError(422, OLDER if _older(backup.manifest) else NEWER)
     order = [t for t in plan.order if t in tables]
