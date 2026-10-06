@@ -1297,6 +1297,33 @@ async def test_a_temporary_table_of_the_same_connection_counts_as_inheriting(rea
         await _bk_drop(real_engine, "zz_parent")
 
 
+_BK_ODD_NAMES = {
+    "a table inheriting from one of this schema": (
+        'CREATE TABLE "zz q"."kid.q" () INHERITS (zz_parent)', ("partition_key", '"zz q"."kid.q"')),
+    "a table naming one of this schema": (
+        'CREATE TABLE "zz q"."kid.q" (id uuid REFERENCES companies(id))', ("outside_reference", '"zz q"."kid.q"')),
+}
+
+
+@pytest.mark.parametrize("shape", list(_BK_ODD_NAMES))
+async def test_a_table_of_another_schema_is_named_unambiguously(real_engine, shape):
+    """A table of another schema is named as schema and table, each quoted where its name
+    holds a dot, a space or capitals, so the name reads one way only."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from celerp import db_catalog
+
+    sql, expected = _BK_ODD_NAMES[shape]
+    try:
+        for statement in ("CREATE TABLE zz_parent (id int primary key, company_id uuid)", 'CREATE SCHEMA "zz q"', sql):
+            await _bk_sql(real_engine, statement)
+        async with AsyncSession(bind=real_engine) as session:
+            assert await db_catalog.changed_outside(session) == expected
+    finally:
+        await _bk_sql(real_engine, 'DROP SCHEMA IF EXISTS "zz q" CASCADE')
+        await _bk_drop(real_engine, "zz_parent")
+
+
 async def test_a_temporary_table_of_another_connection_does_not_stop_the_export(
         real_engine, real_client, tmp_path, monkeypatch):
     """Another connection holds a temporary table inheriting from a carried table. A read

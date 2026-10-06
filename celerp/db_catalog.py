@@ -117,7 +117,7 @@ async def outside_referrer(session: AsyncSession) -> str | None:
     """A table of another schema with a foreign key into this one, as ``schema.table``, or
     None. Its rows are not in this catalog, so nothing reading it can tell whose they are."""
     return await session.scalar(text(
-        "SELECT format('%s.%s', rn.nspname, r.relname) FROM pg_constraint k "
+        "SELECT format('%I.%I', rn.nspname, r.relname) FROM pg_constraint k "
         "JOIN pg_class r ON r.oid = k.conrelid JOIN pg_namespace rn ON rn.oid = r.relnamespace "
         "JOIN pg_class f ON f.oid = k.confrelid JOIN pg_namespace fn ON fn.oid = f.relnamespace "
         "WHERE k.contype = 'f' AND fn.nspname = current_schema() AND rn.oid <> fn.oid "
@@ -132,7 +132,8 @@ _INHERITS = (
     "here AS (SELECT to_regnamespace(current_schema()) AS ns) ")
 # A table this connection's reads reach: any but another connection's temporary table.
 _REACHED = "({t}.relpersistence <> 't' OR {t}.relnamespace = pg_my_temp_schema())"
-_LABEL = "CASE WHEN {t}.relnamespace = here.ns THEN {t}.relname::text ELSE format('%s.%s', {n}.nspname, {t}.relname) END"
+# A table's name, with its schema's when another; each quoted where it must be to read one way.
+_LABEL = "CASE WHEN {t}.relnamespace = here.ns THEN quote_ident({t}.relname) ELSE format('%I.%I', {n}.nspname, {t}.relname) END"
 
 
 async def inheriting(session: AsyncSession) -> dict[str, str]:

@@ -352,6 +352,53 @@ async def test_bootstrap_discard_is_refused_while_a_table_changed_outside_celerp
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_discard_is_refused_when_a_table_inherits_from_users_after_the_check(
+        real_client, real_engine, migration_env, monkeypatch):
+    """Another connection makes a table holding a row naming the owner inherit from users
+    after the discard has checked for tables changed outside Celerp, so deleting the owner
+    would delete that row too. The discard is refused naming that table, and the owner,
+    the company and that row are all kept."""
+    from sqlalchemy import text
+
+    from celerp import db_catalog
+
+    r = await scan_upload(real_client, fake_bytes())
+    assert (await save_decisions(real_client, r.json()["scan_token"])).status_code == 200
+    r = await real_client.post("/migrations/bootstrap/start", json={
+        "scan_token": r.json()["scan_token"], "company_name": "Moved Co", "name": "Owner",
+        "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
+    assert r.status_code == 201, r.text
+    token, run_id = r.json()["access_token"], r.json()["run_id"]
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE ext_user_copy (LIKE users INCLUDING CONSTRAINTS)"))
+        await conn.execute(text("INSERT INTO ext_user_copy SELECT * FROM users WHERE email = :e"), {"e": OWNER_EMAIL})
+    changed_outside = db_catalog.changed_outside
+
+    async def then_inherit(session):
+        found = await changed_outside(session)
+        monkeypatch.setattr(db_catalog, "changed_outside", changed_outside)
+        async with real_engine.begin() as conn:
+            await conn.execute(text("SET LOCAL lock_timeout = '1s'"))
+            await conn.execute(text("ALTER TABLE ext_user_copy INHERIT users"))
+        return found
+
+    monkeypatch.setattr(db_catalog, "changed_outside", then_inherit)
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key",
+                                                             {"table": "ext_user_copy"})
+        assert await count(real_engine, "ONLY users", "email = :e", e=OWNER_EMAIL) == 1
+        assert await count(real_engine, "companies", "name = 'Moved Co'") == 1
+        assert await count(real_engine, "ext_user_copy", "email = :e", e=OWNER_EMAIL) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_user_copy"))
+
+
+@pytest.mark.asyncio
 async def test_discard_is_refused_while_the_company_has_records_discard_does_not_remove(
         real_client, real_engine, migration_env):
     """A table discard does not know holds a row of the staged company. The discard is

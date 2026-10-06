@@ -957,6 +957,11 @@ def _changed_outside(kind: str, table: str) -> dict:
         "database to fix it.", table=table)
 
 
+async def _refuse_changed_outside(session: AsyncSession) -> None:
+    if changed := await db_catalog.changed_outside(session):
+        raise MigrationError(409, _changed_outside(*changed))
+
+
 async def discard(session: AsyncSession, run: MigrationRun) -> str:
     """Delete a staged company and its runs, then their files; returns where the user goes next.
 
@@ -968,8 +973,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         raise MigrationError(409, NO_UNFINISHED)
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)
-    if changed := await db_catalog.changed_outside(session):
-        raise MigrationError(409, _changed_outside(*changed))
+    await _refuse_changed_outside(session)
     for table in await company_tables(session):
         if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue
@@ -1001,6 +1005,10 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
             db_catalog.own_keys(await db_catalog.read(session)))), {"members": [owner_id]})
         if gone.rowcount:
             redirect = "/setup"
+    # A table changed outside Celerp after the first check is reached by the deletes and
+    # kept from changing back until the commit, so checking again finds it; the deletes
+    # are then rolled back with the refusal.
+    await _refuse_changed_outside(session)
     await session.commit()
     task_id = task.id
     session.expunge_all()
