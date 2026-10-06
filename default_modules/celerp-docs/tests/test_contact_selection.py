@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from test_helpers import grant_permission, perm_setup
+from celerp.services.permissions import missing_permission_text
 
 
 def _h(token: str) -> dict:
@@ -214,7 +215,7 @@ async def test_selection_without_view_contacts_changes_nothing(client, session, 
     before = await _get(client, admin, resource, entity_id)
     r = await _select(client, operator, resource, entity_id, cid)
     assert r.status_code == 403, r.text
-    assert "view_contacts" in r.text
+    assert r.json()["detail"] == missing_permission_text("view_contacts")
     await _assert_unchanged(client, admin, resource, entity_id, before)
 
 

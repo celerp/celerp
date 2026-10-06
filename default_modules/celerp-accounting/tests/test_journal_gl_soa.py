@@ -27,6 +27,7 @@ import uuid
 import pytest
 
 from ui.i18n import t
+from celerp.services.permissions import missing_permission_text
 
 
 async def _reg(client) -> str:
@@ -472,7 +473,7 @@ async def test_bulk_void_requires_manage_accounting(client, session):
 
     r = await _bulk_void(client, reader, [je_id], reason="Not mine to void")
     assert r.status_code == 403, r.text
-    assert "manage_accounting" in r.json()["detail"]
+    assert r.json()["detail"] == missing_permission_text("manage_accounting")
     entry = [e for e in (await _journal(client, admin))["entries"] if e["je_id"] == je_id][0]
     assert entry["status"] == "posted"
 
