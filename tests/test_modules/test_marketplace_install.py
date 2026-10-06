@@ -12,7 +12,7 @@ The relay is faked at the httpx boundary for the download half; the importer, th
 premium marker, the official-prefix gate, and every error path run for real. The
 never-stuck property under test: a download failure stages nothing and can be
 retried; the official/paid verdict is captured server-side at download time and
-cannot be forged by the Install caller, which only hands back an opaque path.
+cannot be forged by the Install caller, which only hands back the download's token.
 
 Credentials: _relay_creds() exchanges settings.gateway_token (the permanent
 API key set by a successful /auth/activate) for a short-lived JWT via
@@ -119,9 +119,14 @@ async def _download(client, headers, slug="celerp-budgeting"):
                              json={"slug": slug}, headers=headers)
 
 
-async def _install(client, headers, path):
+async def _install(client, headers, download):
     return await client.post("/companies/me/modules/marketplace-install",
-                             json={"path": path}, headers=headers)
+                             json={"token": download}, headers=headers)
+
+
+def _staged(relay_env) -> list:
+    """The archives waiting in the marketplace staging area."""
+    return sorted((relay_env.parent / "marketplace-downloads").glob("*.zip"))
 
 
 @pytest.mark.asyncio
@@ -130,14 +135,15 @@ async def test_download_stages_then_install_marks_premium_and_lands_disabled(cli
     with patch("httpx.AsyncClient", _fake_relay()):
         dl = await _download(client, headers)
     assert dl.status_code == 200, dl.text
-    path = dl.json()["path"]
+    download = dl.json()["token"]
+    assert "path" not in dl.json()
     # Staged, not yet installed: the module is not on disk until Install runs.
-    from pathlib import Path
-    assert Path(path).is_file()
-    assert Path(path).with_suffix(".json").is_file()
+    staged = _staged(relay_env)
+    assert [p.stem for p in staged] == [download]
+    assert staged[0].with_suffix(".json").is_file()
     assert not (relay_env / "celerp-budgeting").exists()
 
-    r = await _install(client, headers, path)
+    r = await _install(client, headers, download)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["name"] == "celerp-budgeting"
@@ -147,8 +153,8 @@ async def test_download_stages_then_install_marks_premium_and_lands_disabled(cli
     assert (relay_env / "celerp-budgeting" / "__init__.py").exists()
     assert (relay_env / "celerp-budgeting" / PREMIUM_MARKER).exists()
     # The staged archive and its sidecar are cleaned up once installed.
-    assert not Path(path).exists()
-    assert not Path(path).with_suffix(".json").exists()
+    assert _staged(relay_env) == []
+    assert not list((relay_env.parent / "marketplace-downloads").glob("*.json"))
 
 
 @pytest.mark.asyncio
@@ -161,7 +167,7 @@ async def test_lifetime_only_module_is_marked_premium(client, relay_env):
                                             "price_once": 79.0}))
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
-    r = await _install(client, headers, dl.json()["path"])
+    r = await _install(client, headers, dl.json()["token"])
     assert r.status_code == 200, r.text
     from celerp.modules.importer import PREMIUM_MARKER
     assert (relay_env / "celerp-budgeting" / PREMIUM_MARKER).exists()
@@ -177,7 +183,7 @@ async def test_string_price_does_not_misclassify_free_module_as_paid(client, rel
                                             "price_once": None}))
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
-    r = await _install(client, headers, dl.json()["path"])
+    r = await _install(client, headers, dl.json()["token"])
     assert r.status_code == 200, r.text
     from celerp.modules.importer import PREMIUM_MARKER
     assert not (relay_env / "celerp-budgeting" / PREMIUM_MARKER).exists()
@@ -191,7 +197,7 @@ async def test_relay_refusal_passes_through_and_stages_nothing(client, relay_env
         dl = await _download(client, headers)
     assert dl.status_code == 402
     assert "requires purchase" in dl.json()["detail"]
-    assert not (relay_env.parent / "marketplace-downloads" / "celerp-budgeting.zip").exists()
+    assert _staged(relay_env) == []
 
 
 @pytest.mark.asyncio
@@ -201,12 +207,12 @@ async def test_download_failure_is_recoverable(client, relay_env):
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert not (relay_env.parent / "marketplace-downloads" / "celerp-budgeting.zip").exists()
+    assert _staged(relay_env) == []
     # Retry with a healthy relay stages, then installs - nothing was left behind.
     with patch("httpx.AsyncClient", _fake_relay()):
         dl = await _download(client, headers)
     assert dl.status_code == 200
-    r = await _install(client, headers, dl.json()["path"])
+    r = await _install(client, headers, dl.json()["token"])
     assert r.status_code == 200
 
 
@@ -251,7 +257,7 @@ async def test_null_token_gives_502_and_never_requests_a_download(client, relay_
     with patch("httpx.AsyncClient", _Fake):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert not (relay_env.parent / "marketplace-downloads" / "celerp-budgeting.zip").exists()
+    assert _staged(relay_env) == []
     # A null token is caught before any download is fired - no pointless GET,
     # and certainly no "/None" in a URL.
     assert not any("/marketplace/download/" in u for u in requested_urls)
@@ -290,7 +296,7 @@ async def test_mismatched_package_name_removed_and_refused(client, relay_env):
     fake = _fake_relay(download=_FakeResp(200, content=_zip_bytes(wrong)))
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
-    r = await _install(client, headers, dl.json()["path"])
+    r = await _install(client, headers, dl.json()["token"])
     assert r.status_code == 422
     assert "does not match" in r.json()["detail"]
     assert not (relay_env / "celerp-imposter").exists()
@@ -307,35 +313,83 @@ async def test_third_party_package_may_not_claim_celerp_prefix(client, relay_env
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 200
-    r = await _install(client, headers, dl.json()["path"])
+    r = await _install(client, headers, dl.json()["token"])
     assert r.status_code == 422
     assert not (relay_env / "celerp-budgeting").exists()
 
 
 @pytest.mark.asyncio
-async def test_install_rejects_a_path_outside_the_staging_dir(client, relay_env, tmp_path):
-    """The Install caller only ever hands back a staged path; a path pointing
-    anywhere else (an attempt to read an arbitrary file) is refused outright."""
+@pytest.mark.parametrize("slug", ["../celerp-budgeting", "celerp/budgeting", "celerp budgeting", ""])
+async def test_download_of_a_slug_that_is_not_a_module_id_gives_404(client, relay_env, slug):
     headers = await _register(client)
-    outside = tmp_path / "elsewhere.zip"
-    outside.write_bytes(_zip_bytes())
-    r = await _install(client, headers, str(outside))
-    assert r.status_code == 400
+    with patch("httpx.AsyncClient", _fake_relay()):
+        dl = await _download(client, headers, slug)
+    assert dl.status_code == 404
+    assert not list(relay_env.parent.rglob("*.zip"))
+
+
+@pytest.mark.asyncio
+async def test_second_download_does_not_change_the_first(client, relay_env):
+    """Each Download is a file of its own: downloading again (a newer package,
+    or the same click twice) never replaces the bytes an earlier row's Install
+    imports."""
+    headers = await _register(client)
+    with patch("httpx.AsyncClient", _fake_relay()):
+        first = (await _download(client, headers)).json()["token"]
+    newer = _MANIFEST.replace('"1.0.0"', '"2.0.0"')
+    with patch("httpx.AsyncClient", _fake_relay(download=_FakeResp(200, content=_zip_bytes(newer)))):
+        second = (await _download(client, headers)).json()["token"]
+    assert first != second
+    assert len(_staged(relay_env)) == 2
+
+    r = await _install(client, headers, first)
+    assert r.status_code == 200, r.text
+    assert r.json()["version"] == "1.0.0"
+    assert '"1.0.0"' in (relay_env / "celerp-budgeting" / "__init__.py").read_text()
+    # The later download is still there, untouched, for its own Install.
+    assert [p.stem for p in _staged(relay_env)] == [second]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("download", [
+    "celerp-budgeting",
+    "celerp-budgeting-" + "0" * 32,
+    "celerp-budgeting-" + "A" * 32,
+    "../celerp-budgeting-" + "0" * 32,
+    "/etc/passwd",
+    "",
+])
+async def test_install_of_an_unknown_download_gives_410(client, relay_env, download):
+    """A token Download never issued (made up, malformed, or a file path) reads
+    nothing and tells the user to download again."""
+    headers = await _register(client)
+    with patch("httpx.AsyncClient", _fake_relay()):
+        await _download(client, headers)
+    r = await _install(client, headers, download)
+    assert r.status_code == 410
+    assert "download it again" in r.json()["detail"].lower()
     assert not (relay_env / "celerp-budgeting").exists()
 
 
 @pytest.mark.asyncio
-async def test_install_of_a_missing_staged_archive_gives_410(client, relay_env):
-    """A staged path that no longer exists (already installed, or swept) tells
-    the user to download again rather than 500-ing on a missing file."""
+async def test_install_of_an_expired_download_gives_410(client, relay_env):
+    """A download left past its lifetime is refused and removed; Download again
+    stages a fresh one."""
+    import os
+
+    from celerp.services import staged_downloads
+
     headers = await _register(client)
-    from celerp.config import settings as _s
-    from pathlib import Path
-    ghost = Path(_s.data_dir) / "marketplace-downloads" / "celerp-budgeting.zip"
-    ghost.parent.mkdir(parents=True, exist_ok=True)
-    r = await _install(client, headers, str(ghost))
+    with patch("httpx.AsyncClient", _fake_relay()):
+        download = (await _download(client, headers)).json()["token"]
+    staged = _staged(relay_env)[0]
+    old = staged.stat().st_mtime - staged_downloads.TTL_SECONDS - 1
+    os.utime(staged, (old, old))
+    r = await _install(client, headers, download)
     assert r.status_code == 410
     assert "download it again" in r.json()["detail"].lower()
+    assert _staged(relay_env) == []
+    assert not (relay_env / "celerp-budgeting").exists()
 
 
 @pytest.mark.asyncio

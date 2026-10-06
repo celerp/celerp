@@ -2105,46 +2105,38 @@ class _MarketplaceDownloadBody(BaseModel):
 
 
 class _MarketplaceInstallBody(BaseModel):
-    path: str
+    token: str
 
 
 def _marketplace_staging_dir() -> "Path":
-    """Where a licensed marketplace archive waits between Download and Install.
-    Server-owned; the client only ever sees an opaque path into it."""
+    """Where a licensed marketplace archive waits between Download and Install."""
     from pathlib import Path
 
     from celerp.config import settings as _s
 
-    d = Path(_s.data_dir) / "marketplace-downloads"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return Path(_s.data_dir) / "marketplace-downloads"
 
 
-def _read_staged_marketplace(path: str) -> tuple[bytes, bool, bool]:
-    """Read a staged archive and the trust flags the server recorded beside it,
-    refusing any path outside the staging directory so a client-supplied path
-    cannot read arbitrary files. official/premium come from the server-written
-    sidecar, never from the client: the client only hands back the opaque path,
-    so it cannot promote a third-party module to official or a paid one to free.
+def _read_staged_marketplace(download: str) -> tuple[str, bytes, bool, bool]:
+    """The slug, bytes and trust flags of the download ``download`` names.
+    official/premium come from what the server recorded at download time, never
+    from the client: the client only hands back the download's token, so it
+    cannot promote a third-party module to official or a paid one to free.
     """
-    import json
-    from pathlib import Path
+    from celerp.services import staged_downloads
 
-    base = _marketplace_staging_dir().resolve()
-    p = Path(path).resolve()
-    if base not in p.parents:
-        raise HTTPException(status_code=400, detail="Staged archive path is invalid.")
-    sidecar = p.with_suffix(".json")
-    if not p.is_file() or not sidecar.is_file():
-        raise HTTPException(status_code=410,
-                            detail="This download has expired. Download it again.")
     try:
-        flags = json.loads(sidecar.read_text())
-    except (ValueError, OSError):
+        data, flags = staged_downloads.read(_marketplace_staging_dir(), download)
+    except staged_downloads.StagedDownloadUnreadable:
         raise HTTPException(status_code=410,
                             detail="This download is unreadable. Download it again.")
-    flags = flags if isinstance(flags, dict) else {}
-    return p.read_bytes(), bool(flags.get("is_official")), bool(flags.get("is_paid"))
+    except staged_downloads.StagedDownloadMissing:
+        flags = None
+    if flags is None:
+        raise HTTPException(status_code=410,
+                            detail="This download has expired. Download it again.")
+    return (staged_downloads.owner_of(download), data,
+            bool(flags.get("is_official")), bool(flags.get("is_paid")))
 
 
 @router.post("/me/modules/marketplace-download", dependencies=[require_permission("manage_company_settings")])
@@ -2158,14 +2150,14 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     download interrupted - is fully recoverable by clicking Download again. The
     bytes land in the staging area only; nothing is installed until Install.
     """
-    import json
-    from pathlib import Path
-
     import httpx
 
     from celerp.gateway.state import relay_error_detail
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
+    from celerp.services import staged_downloads
 
+    if not staged_downloads.valid_owner(body.slug):
+        raise HTTPException(status_code=404, detail="This module is not available.")
     url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
@@ -2217,14 +2209,13 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
 
-    # Stage the bytes plus a server-owned sidecar carrying the relay's trust
-    # verdict, so Install imports with the right official/paid flags without
-    # trusting the client or re-contacting the relay.
-    dest = _marketplace_staging_dir() / f"{body.slug}.zip"
-    dest.write_bytes(data)
-    dest.with_suffix(".json").write_text(
-        json.dumps({"is_official": is_official, "is_paid": is_paid}))
-    return {"ok": True, "path": str(dest)}
+    # Stage the bytes with the relay's trust verdict, so Install imports with
+    # the right official/paid flags without trusting the client or re-contacting
+    # the relay.
+    download = staged_downloads.stage(
+        _marketplace_staging_dir(), body.slug, data,
+        {"is_official": is_official, "is_paid": is_paid})
+    return {"ok": True, "token": download}
 
 
 @router.post("/me/modules/marketplace-install", dependencies=[require_permission("manage_company_settings")])
@@ -2239,13 +2230,13 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     is left behind, so Install can always be retried.
     """
     import asyncio
-    from pathlib import Path
 
     from celerp.modules.importer import (
         ModuleImportError, install_from_zip, remove_module_dir,
     )
+    from celerp.services import staged_downloads
 
-    data, is_official, is_paid = _read_staged_marketplace(body.path)
+    slug, data, is_official, is_paid = _read_staged_marketplace(body.token)
     try:
         info = await asyncio.to_thread(
             install_from_zip, data, official=is_official, premium=is_paid,
@@ -2253,8 +2244,6 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    staged = Path(body.path).resolve()
-    slug = staged.stem
     if info["name"] != slug:
         # A package whose manifest name differs from the catalog slug must not
         # stay installed (it would dodge the slug's license/scan identity).
@@ -2266,9 +2255,8 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
             status_code=422,
             detail="The downloaded package does not match the requested module.")
 
-    # Landed on disk: drop the staged archive and its sidecar.
-    staged.unlink(missing_ok=True)
-    staged.with_suffix(".json").unlink(missing_ok=True)
+    # Landed on disk: drop the staged download.
+    staged_downloads.discard(_marketplace_staging_dir(), body.token)
     return {"ok": True, **info}
 
 
