@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -12,7 +13,8 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from unittest.mock import AsyncMock, patch
 
 from celerp.models.company import Company, User
@@ -84,7 +86,6 @@ async def test_create_notification(session, company, user):
     assert n.body == "5 files processed"
     assert n.action_url == "/ai"
     assert n.priority == "high"
-    assert n.read is False
     assert n.company_id == company.id
     assert n.user_id == user.id
 
@@ -157,7 +158,7 @@ async def test_list_notifications_newest_first(session, company, user):
         await svc.create(session, company.id, "ai", "Second", "B2", user_id=user.id)
         await session.commit()
 
-    items = await svc.list_notifications(session, company.id, user.id)
+    items = [n for n, _ in await svc.list_notifications(session, company.id, user.id)]
     assert len(items) == 2
     assert items[0].title == "Second"
     assert items[1].title == "First"
@@ -170,8 +171,8 @@ async def test_list_notifications_pagination(session, company, user):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
         await session.commit()
 
-    page1 = await svc.list_notifications(session, company.id, user.id, limit=2, offset=0)
-    page2 = await svc.list_notifications(session, company.id, user.id, limit=2, offset=2)
+    page1 = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=2, offset=0)]
+    page2 = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=2, offset=2)]
     assert len(page1) == 2
     assert len(page2) == 2
     assert page1[0].id != page2[0].id
@@ -185,7 +186,7 @@ async def test_mark_read(session, company, user):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
 
-    found = await svc.mark_read(session, n.id, company.id)
+    found = await svc.mark_read(session, n.id, company.id, user.id)
     await session.commit()
     assert found is True
 
@@ -199,14 +200,56 @@ async def test_mark_read_wrong_company(session, company, company_b, user):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
 
-    found = await svc.mark_read(session, n.id, company_b.id)
+    found = await svc.mark_read(session, n.id, company_b.id, user.id)
     assert found is False
 
 
 @pytest.mark.asyncio
-async def test_mark_read_nonexistent(session, company):
-    found = await svc.mark_read(session, uuid.uuid4(), company.id)
+async def test_mark_read_nonexistent(session, company, user):
+    found = await svc.mark_read(session, uuid.uuid4(), company.id, user.id)
     assert found is False
+
+
+@pytest.mark.asyncio
+async def test_mark_read_of_a_notice_deleted_meanwhile_is_not_found(committed_engine):
+    """A notice deleted (pruned, or its company removed) while it is being marked
+    read is simply not found."""
+    mk = async_sessionmaker(committed_engine, expire_on_commit=False)
+    async with mk() as s:
+        co = Company(name="Race", slug="race", settings={})
+        s.add(co)
+        await s.flush()
+        u = User(email="race@test.com", name="U")
+        s.add(u)
+        await s.flush()
+        n = Notification(company_id=co.id, category="system", title="t", body="b")
+        s.add(n)
+        await s.commit()
+        cid, uid, nid = co.id, u.id, n.id
+
+    async with mk() as deleter:
+        await deleter.execute(text("DELETE FROM notifications WHERE id = :i"), {"i": nid})
+
+        async def reader():
+            async with mk() as s:
+                found = await svc.mark_read(s, nid, cid, uid)
+                await s.commit()
+                return found
+
+        task = asyncio.create_task(reader())
+        for _ in range(400):
+            if task.done():
+                break
+            async with committed_engine.connect() as conn:
+                waiting = (await conn.execute(text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                ))).scalar_one()
+            if waiting:
+                break
+            await asyncio.sleep(0.05)
+        await deleter.commit()
+    assert await asyncio.wait_for(task, timeout=30) is False
 
 
 # ── mark_all_read ────────────────────────────────────────────────────────────
@@ -236,7 +279,7 @@ async def test_retention_100_per_company(session, company, user):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
         await session.commit()
 
-    items = await svc.list_notifications(session, company.id, user.id, limit=200)
+    items = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=200)]
     assert len(items) <= 100
 
 
@@ -249,8 +292,8 @@ async def test_isolation_between_companies(session, company, company_b, user, us
         await svc.create(session, company_b.id, "ai", "CoB", "B", user_id=user_b_co.id)
         await session.commit()
 
-    items_a = await svc.list_notifications(session, company.id, user.id)
-    items_b = await svc.list_notifications(session, company_b.id, user_b_co.id)
+    items_a = [n for n, _ in await svc.list_notifications(session, company.id, user.id)]
+    items_b = [n for n, _ in await svc.list_notifications(session, company_b.id, user_b_co.id)]
     assert len(items_a) == 1
     assert items_a[0].title == "CoA"
     assert len(items_b) == 1
@@ -277,14 +320,14 @@ async def test_list_notifications_stable_order_when_created_at_ties(session, com
     )
     await session.commit()
 
-    listed = await svc.list_notifications(session, company.id, user.id, limit=100)
+    listed = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=100)]
     assert [n.id for n in listed] == sorted(ids, reverse=True), \
         "created_at-tied notifications are not deterministically ordered by id (no tiebreaker)"
 
     # And a paged walk over the tie covers every row exactly once.
     paged = []
     for off in range(0, len(ids), 2):
-        page = await svc.list_notifications(session, company.id, user.id, limit=2, offset=off)
+        page = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=2, offset=off)]
         paged += [n.id for n in page]
     assert sorted(paged) == sorted(ids)
     assert len(paged) == len(set(paged))

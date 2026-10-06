@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
 import httpx
 
+from celerp.services import staged_downloads
 from ui.config import RELAY_URL
 
 CATALOG_SOURCES = (
@@ -92,6 +94,10 @@ def _clean(entry) -> dict | None:
         ]
         if clean_deps:
             out["depends_on"] = clean_deps[:50]
+    # The commit a community listing pins: downloads fetch exactly this code.
+    commit = entry.get("commit")
+    if _valid_commit(commit):
+        out["commit"] = commit
     return out
 
 
@@ -166,11 +172,30 @@ def set_community_ack() -> None:
 
 MAX_MODULE_ARCHIVE_BYTES = 50 * 1024 * 1024
 
+_GITHUB_REPO = re.compile(r"https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)")
+_STAGED_OWNER = re.compile(r"([A-Za-z0-9_-]+)-[0-9a-f]{40}")
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+
 
 def _staging_dir() -> Path:
     d = _data_dir() / "community-downloads"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+class DownloadRefused(ValueError):
+    """A download or import Celerp will not carry out; ``key`` names the message
+    the user is shown."""
+
+    def __init__(self, key: str):
+        super().__init__(key)
+        self.key = key
+
+
+def _valid_commit(commit) -> bool:
+    """A full 40-character lowercase hex commit id; branch names, HEAD and short
+    ids are not."""
+    return isinstance(commit, str) and _COMMIT.fullmatch(commit) is not None
 
 
 def _valid_id(module_id: str) -> bool:
@@ -179,34 +204,58 @@ def _valid_id(module_id: str) -> bool:
     )
 
 
-async def download_community_archive(repo_url: str, module_id: str) -> str:
-    """Download a community module's repo archive to a staged .zip and return
-    its path. The repo is public, author-controlled source; the bytes stay
+def _archive_url(repo_url, commit) -> str:
+    """The GitHub archive of ``commit`` for a listing whose source is a GitHub
+    repository, given exactly as https://github.com/<owner>/<repo>."""
+    m = _GITHUB_REPO.fullmatch(repo_url) if isinstance(repo_url, str) else None
+    if m is None or m.group(2).strip(".") == "" or m.group(2).lower().endswith(".git"):
+        raise DownloadRefused("marketplace.download_not_github")
+    if not _valid_commit(commit):
+        raise DownloadRefused("marketplace.download_unpinned")
+    return f"https://codeload.github.com/{m.group(1)}/{m.group(2)}/zip/{commit}"
+
+
+async def download_community_archive(repo_url: str, commit: str, module_id: str) -> str:
+    """Download the commit a community listing pins from the module's GitHub repo
+    and return the token of that download, which Import names to install exactly
+    these bytes. The repo is public, author-controlled source; the bytes stay
     untrusted - only the module importer installs them, behind its zip-slip,
     symlink, size, manifest, and reserved-prefix guards."""
     if not _valid_id(module_id):
         raise ValueError("Invalid module id.")
-    if not repo_url.startswith("https://"):
-        raise ValueError("Module repository URL is not https.")
-    archive_url = repo_url.rstrip("/") + "/archive/HEAD.zip"
+    archive_url = _archive_url(repo_url, commit)
     buf = bytearray()
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as c:
         async with c.stream("GET", archive_url) as r:
+            if r.is_redirect:
+                raise DownloadRefused("marketplace.download_redirected")
             r.raise_for_status()
             async for chunk in r.aiter_bytes():
                 buf.extend(chunk)
                 if len(buf) > MAX_MODULE_ARCHIVE_BYTES:
                     raise ValueError("Module archive is too large.")
-    dest = _staging_dir() / f"{module_id}.zip"
-    dest.write_bytes(bytes(buf))
-    return str(dest)
+    return staged_downloads.stage(_staging_dir(), f"{module_id}-{commit}", bytes(buf))
 
 
-def read_staged_archive(path: str) -> bytes:
-    """Read a previously staged archive, refusing any path outside the staging
-    directory so a client-supplied path cannot read arbitrary files."""
-    p = Path(path).resolve()
-    base = _staging_dir().resolve()
-    if p != base and base not in p.parents:
-        raise ValueError("Staged archive path is outside the staging directory.")
-    return p.read_bytes()
+def _check_owner(module_id: str, token) -> None:
+    try:
+        m = _STAGED_OWNER.fullmatch(staged_downloads.owner_of(token))
+    except staged_downloads.StagedDownloadMissing:
+        m = None
+    if m is None or m.group(1) != module_id:
+        raise DownloadRefused("marketplace.import_expired")
+
+
+def read_staged_archive(module_id: str, token) -> bytes:
+    """The bytes of the download ``token`` names, for module ``module_id``."""
+    _check_owner(module_id, token)
+    try:
+        return staged_downloads.read(_staging_dir(), token)[0]
+    except staged_downloads.StagedDownloadMissing:
+        raise DownloadRefused("marketplace.import_expired")
+
+
+def discard_staged_archive(module_id: str, token) -> None:
+    """Remove the download ``token`` names, once it is installed."""
+    _check_owner(module_id, token)
+    staged_downloads.discard(_staging_dir(), token)

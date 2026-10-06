@@ -87,11 +87,16 @@ def upgrade() -> None:
         )
 
     if conn.execute(sa.text("SELECT to_regclass('notifications')")).scalar() is not None:
-        conn.execute(sa.text("""
+        # The shared read flag exists until u8j9f0a1b2c3 moves read state to per-user
+        # receipts; the reconcile replays this after it, when the column is gone.
+        flag = conn.execute(sa.text(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+            "AND table_name = 'notifications' AND column_name = 'read'")).first() is not None
+        conn.execute(sa.text(f"""
             INSERT INTO notifications
-                (id, company_id, user_id, category, title, body, action_url, priority, read, created_at)
+                (id, company_id, user_id, category, title, body, action_url, priority{", read" if flag else ""}, created_at)
             SELECT gen_random_uuid(), w.company_id, NULL, 'manufacturing', :title, :body,
-                   '/settings/manufacturing', 'high', false, NOW()
+                   '/settings/manufacturing', 'high'{", false" if flag else ""}, NOW()
             FROM work_centers w
             WHERE w.is_default
               AND w.name = 'Default'

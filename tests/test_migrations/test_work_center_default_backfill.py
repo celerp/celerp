@@ -211,3 +211,18 @@ def test_sql_ascii_preserves_unrelated_company_settings(sql_ascii_fresh_db):
             assert _default_hours(conn, cid) == 6.5
     finally:
         engine.dispose()
+
+
+def test_replay_after_notices_are_read_per_user(wc_db):
+    """The reconcile replays this migration after u8j9f0a1b2c3 dropped the shared
+    read flag, so the notice it posts must not name that column."""
+    with wc_db.begin() as conn:
+        c1 = wc_mkcompany(conn, {"manufacturing": {"hours_per_day": 10}})
+        conn.execute(sa.text("ALTER TABLE notifications DROP COLUMN read"))
+
+    run_migration_ops(wc_db, _SCHEMA_MIGRATION)
+    run_migration_ops(wc_db, _DATA_MIGRATION)
+    run_migration_ops(wc_db, _DATA_MIGRATION)  # replay
+
+    with wc_db.connect() as conn:
+        assert _notice_count(conn, c1) == 1
