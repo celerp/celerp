@@ -163,6 +163,27 @@ _UNDER = (
 _OUT_OF_REACH = {"55P03", "42P01"}
 
 
+async def pin(session: AsyncSession) -> None:
+    """Hold this transaction to Celerp's own tables and every row of them. A table's name
+    then reaches the table in the schema Celerp's tables are in, the one the catalog
+    reads, even where a schema named after the connecting role comes first; and a read or
+    delete row security would cut short fails instead."""
+    await session.execute(text(
+        "SELECT set_config('search_path', quote_ident(n.nspname), true) FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass('companies')"))
+    await session.execute(text("SET LOCAL row_security = off"))
+
+
+async def hidden(session: AsyncSession) -> list[str]:
+    """The tables of this schema row security keeps rows of from this connection, by
+    name. Reading one returns only the rows a rule lets through, and deleting from one
+    skips the others, so none of them can be backed up, reset or discarded whole."""
+    return list((await session.scalars(text(
+        "SELECT c.relname::text FROM pg_class c WHERE c.relnamespace = to_regnamespace(current_schema()) "
+        "AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND row_security_active(c.oid) "
+        "ORDER BY 1"))).all())
+
+
 async def label(session: AsyncSession, name: str) -> str:
     """A table of this schema named as the catalog names it, quoted where it must be."""
     return await session.scalar(text("SELECT quote_ident(:t)"), {"t": name})
@@ -179,11 +200,8 @@ async def _stored(session: AsyncSession, name: str) -> dict[tuple[str, str], boo
 
 
 def _scans(plan, found: set[tuple[str, str]]) -> set[tuple[str, str]]:
-    """The tables ``plan`` reads rows of, leaving out those only a subquery of it reads
-    (such as one a row security rule names)."""
+    """The tables ``plan`` reads rows of."""
     if isinstance(plan, dict):
-        if plan.get("Parent Relationship") in ("InitPlan", "SubPlan"):
-            return found
         if "Relation Name" in plan:
             found.add((plan["Schema"], plan["Relation Name"]))
         for value in plan.values():
@@ -215,8 +233,10 @@ async def hold(session: AsyncSession, names: list[str]) -> str | None:
     meanwhile, then return the first of them gone, replaced under the same name (dropped
     and made again, emptied, rewritten or swapped for another) or ``reshaped``, named as
     the catalog names it, or None. A table kept locked by another connection past the
-    lock timeout counts as reshaped. Writes to their rows go on; a table can still be
-    joined to them, which only ``reshaped`` tells."""
+    lock timeout counts as reshaped, as does one row security was turned on for
+    (``hidden``). Rewriting a table's rows in place (VACUUM FULL, CLUSTER) stores them
+    anew, so it counts as replaced too, and trying again succeeds. Writes to their rows
+    go on; a table can still be joined to them, which only ``reshaped`` tells."""
     for name in names:
         tables = ", ".join(f"ONLY {ident(ns)}.{ident(rel)}" for ns, rel in await _stored(session, name))
         try:
@@ -228,11 +248,14 @@ async def hold(session: AsyncSession, names: list[str]) -> str | None:
             raise
         # The snapshot's row of each table against the table its name reaches now: another
         # table, or the same one with its rows stored anew, holds none of the rows read.
+        # Row security on the table itself is checked under the lock, which keeps it as it is.
         if await session.scalar(text(
                 _UNDER + "SELECT 1 FROM down JOIN pg_class c ON c.oid = down.oid "
                 "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE " + _REACHED.format(t="c") + " AND ("
                 "to_regclass(format('%I.%I', n.nspname, c.relname)) IS DISTINCT FROM c.oid "
-                "OR pg_relation_filenode(c.oid) IS DISTINCT FROM NULLIF(c.relfilenode, 0)) LIMIT 1"), {"t": name}):
+                "OR pg_relation_filenode(c.oid) IS DISTINCT FROM NULLIF(c.relfilenode, 0) "
+                "OR (c.relname = :t AND n.nspname = current_schema() AND row_security_active(c.oid))) LIMIT 1"),
+                {"t": name}):
             return await label(session, name)
     return await reshaped(session, names)
 
@@ -256,11 +279,14 @@ async def changed_outside(session: AsyncSession) -> tuple[str, str] | None:
     """Why a reset or discard cannot tell whose rows a key or a delete reaches, as
     ``(kind, table)`` with kind ``outside_reference`` (``outside_referrer``) or
     ``partition_key`` (``partition_key``, or a table ``inheriting``), or None when every
-    row they reach is one the catalog reads."""
+    row they reach is one the catalog reads. A table row security keeps rows of
+    (``hidden``) counts as ``partition_key`` too: a delete skips the rows it hides."""
     if table := await outside_referrer(session):
         return "outside_reference", table
     if table := await partition_key(session):
         return "partition_key", table
+    if tables := await hidden(session):
+        return "partition_key", await label(session, tables[0])
     if tables := await inheriting(session):
         return "partition_key", min(tables.values())
     return None

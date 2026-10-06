@@ -1313,10 +1313,6 @@ _BK_STEADY = {
         f"CREATE TABLE zz_ext.p1b PARTITION OF zz_ext.p1 FOR VALUES FROM ('{_BK_LATE}') TO (MAXVALUE)"),
     "a partition whose name must be quoted": (
         f'CREATE TABLE zz_ext."Ğ1 ""x"".y" PARTITION OF zz_widgets {_BK_HIGH}',),
-    "row security whose rule reads another table": (
-        f"CREATE TABLE zz_ext.p1 PARTITION OF zz_widgets {_BK_HIGH}",
-        "ALTER TABLE zz_widgets ENABLE ROW LEVEL SECURITY", "ALTER TABLE zz_widgets FORCE ROW LEVEL SECURITY",
-        "CREATE POLICY zz_known ON zz_widgets USING (company_id IN (SELECT id FROM companies))"),
 }
 
 
@@ -1324,8 +1320,8 @@ _BK_STEADY = {
 async def test_a_carried_table_of_a_steady_shape_is_backed_up_whole(
         real_engine, real_client, tmp_path, monkeypatch, shape):
     """zz_widgets is partitioned in a shape nothing changes while the export runs: a
-    default partition, a partition split again with an empty part, a partition with an
-    odd name, or row security whose rule reads another table. The backup holds both widgets and restores them."""
+    default partition, a partition split again with an empty part, or a partition with
+    an odd name. The backup holds both widgets and restores them."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
@@ -1345,37 +1341,34 @@ async def test_a_carried_table_of_a_steady_shape_is_backed_up_whole(
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
 
-@pytest.mark.parametrize("table", ["zz_gadgets", "zz_Gadgets"])
 async def test_a_carried_table_dropped_as_the_export_begins_stops_it(
-        real_engine, real_client, tmp_path, monkeypatch, table):
+        real_engine, real_client, tmp_path, monkeypatch):
     """Another connection drops a carried table after the export has read the tables'
-    shape. The export is refused naming the table as the catalog does, quoted where its
-    name must be, with nothing written, and asks for another try."""
+    shape. The export is refused naming the table, with nothing written, and asks for
+    another try."""
     from celerp import db_catalog
 
     _bk_local(monkeypatch, tmp_path)
-    _bk_fake_module(tmp_path, monkeypatch, backup={table: "include"})
+    _bk_fake_module(tmp_path, monkeypatch, backup={"zz_gadgets": "include"})
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
-    quoted = db_catalog.ident(table)
     try:
-        await _bk_sql(real_engine, f"CREATE TABLE {quoted} (id uuid primary key, company_id uuid not null)")
-        await _bk_sql(real_engine, f"INSERT INTO {quoted} VALUES (gen_random_uuid(), :c)", c=cid)
+        await _bk_sql(real_engine, "CREATE TABLE zz_gadgets (id uuid primary key, company_id uuid not null)")
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (gen_random_uuid(), :c)", c=cid)
         inheriting = db_catalog.inheriting
 
         async def then_drop(session):
             found = await inheriting(session)
-            await _bk_ddl(real_engine, [f"DROP TABLE {quoted}"])
+            await _bk_ddl(real_engine, ["DROP TABLE zz_gadgets"])
             return found
 
         monkeypatch.setattr(db_catalog, "inheriting", then_drop)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        label = table if table.islower() else quoted
-        assert r.json()["detail"] == (f"The structure of {label} changed while it was being backed up. "
+        assert r.json()["detail"] == ("The structure of zz_gadgets changed while it was being backed up. "
                                       "Nothing was backed up. Try again.")
     finally:
-        await _bk_drop(real_engine, table)
+        await _bk_drop(real_engine, "zz_gadgets")
 
 
 @pytest.mark.parametrize("timeout, refused", [("lock_timeout", True), ("statement_timeout", False)])
@@ -1425,6 +1418,150 @@ async def test_a_refusal_names_a_carried_table_as_the_catalog_does(
                                       "back up yet. Nothing was backed up.")
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_Gadgets")
+
+
+_BK_POLICIES = {
+    "a rule reading a table that names no company": (
+        "CREATE TABLE ext_allow (cid uuid)",
+        "CREATE POLICY zz_rule ON zz_gadgets USING (company_id IN (SELECT cid FROM ext_allow))"),
+    "a rule reading the row alone": ("CREATE POLICY zz_rule ON zz_gadgets USING (id::text LIKE 'x%')",),
+    "a rule letting every row through": (
+        "CREATE POLICY zz_rule ON zz_gadgets USING (company_id IN (SELECT id FROM companies))",),
+}
+_BK_FORCED = ("ALTER TABLE zz_gadgets ENABLE ROW LEVEL SECURITY", "ALTER TABLE zz_gadgets FORCE ROW LEVEL SECURITY")
+
+
+@pytest.mark.parametrize("policy", list(_BK_POLICIES))
+async def test_a_carried_table_under_row_security_is_refused_whole(
+        real_engine, real_client, tmp_path, monkeypatch, policy):
+    """Row security is forced on zz_gadgets, so a read of it returns only the rows a rule
+    lets through. Whatever the rule, the backup is refused naming the table, with nothing
+    written, and a backup made before the rule is refused on restore the same way, with
+    nothing restored."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch, backup={"zz_gadgets": "include"})
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_sql(real_engine, _BK_GADGETS)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (gen_random_uuid(), :c), (gen_random_uuid(), :c)",
+                      c=cid)
+        made = await real_client.get("/company-backups/download", headers=auth(tok))
+        assert made.status_code == 200, made.text[:200]
+        for sql in (*_BK_FORCED, *_BK_POLICIES[policy]):
+            await _bk_sql(real_engine, sql)
+        companies = await _bk_scalar(real_engine, "SELECT count(*) FROM companies")
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text[:200]
+        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
+                                      "back up yet. Nothing was backed up.")
+        r = await restore(real_client, tok, made.content, mode="new_company")
+        assert r.status_code == 422, r.text[:200]
+        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
+                                      "restore yet. Nothing was restored.")
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM companies") == companies
+    finally:
+        await _bk_drop(real_engine, "zz_gadgets")
+        await _bk_sql(real_engine, "DROP TABLE IF EXISTS ext_allow")
+
+
+async def test_row_security_forced_as_the_export_begins_stops_it(real_engine, real_client, tmp_path, monkeypatch):
+    """Another connection forces row security on zz_gadgets, with a rule hiding every row,
+    after the export has read the tables' shape. The export is refused naming the table,
+    with nothing written, and asks for another try."""
+    from celerp import db_catalog
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch, backup={"zz_gadgets": "include"})
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_sql(real_engine, _BK_GADGETS)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (gen_random_uuid(), :c)", c=cid)
+        hidden = db_catalog.hidden
+
+        async def then_hide(session):
+            found = await hidden(session)
+            await _bk_ddl(real_engine, [*_BK_FORCED, "CREATE POLICY zz_rule ON zz_gadgets USING (id::text LIKE 'x%')"])
+            return found
+
+        monkeypatch.setattr(db_catalog, "hidden", then_hide)
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text[:200]
+        assert r.json()["detail"] == ("The structure of zz_gadgets changed while it was being backed up. "
+                                      "Nothing was backed up. Try again.")
+    finally:
+        await _bk_drop(real_engine, "zz_gadgets")
+
+
+async def test_a_schema_named_after_the_database_role_hides_no_table(real_engine, real_client, tmp_path, monkeypatch):
+    """A schema named after the role Celerp connects as exists and holds none of Celerp's
+    tables, so a name not given its schema is looked up there first. The backup still
+    carries every gadget, and restoring it brings them all back."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch, backup={"zz_gadgets": "include"})
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    role = await _bk_scalar(real_engine, "SELECT quote_ident(current_user)")
+    try:
+        await _bk_sql(real_engine, _BK_GADGETS)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (gen_random_uuid(), :c), (gen_random_uuid(), :c)",
+                      c=cid)
+        await _bk_sql(real_engine, f"CREATE SCHEMA {role}")
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 200, r.text[:200]
+        assert len(members(r.content)["tables/zz_gadgets.jsonl"].splitlines()) == 2
+        new = await _bk_restore_new(real_client, tok, r.content)
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM zz_gadgets WHERE company_id = :c",
+                                c=uuid.UUID(new)) == 2
+    finally:
+        await _bk_sql(real_engine, f"DROP SCHEMA IF EXISTS {role} CASCADE")
+        await _bk_drop(real_engine, "zz_gadgets")
+
+
+_BK_ODD = ('CREATE TABLE "zz_Gadgets" (id uuid primary key, company_id uuid not null '
+           'references companies(id) on delete cascade, note text)')
+
+
+async def test_a_module_table_not_declared_is_named_as_the_catalog_does(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """The module keeps "zz_Gadgets" without saying whether it belongs in a backup. The
+    refusal names it quoted, as the catalog names tables."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch, backup={})
+    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_sql(real_engine, _BK_ODD)
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text[:200]
+        assert r.json()["detail"] == ('The zz-widgets module has not said whether "zz_Gadgets" belongs in a '
+                                      "company backup. Nothing was backed up.")
+    finally:
+        await _bk_drop(real_engine, "zz_Gadgets")
+
+
+async def test_a_carried_table_a_restore_cannot_name_is_refused(real_engine, real_client, tmp_path, monkeypatch):
+    """The module keeps its records in "zz_Gadgets", a name a restore does not take. The
+    backup is refused naming the table, with nothing written, rather than written for a
+    restore to call damaged."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch, backup={"zz_Gadgets": "include"})
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_sql(real_engine, _BK_ODD)
+        await _bk_sql(real_engine, """INSERT INTO "zz_Gadgets" VALUES (gen_random_uuid(), :c, 'kept')""", c=cid)
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text[:200]
+        assert r.json()["detail"] == ('The zz-widgets module keeps data in "zz_Gadgets" in a form Celerp cannot '
+                                      "back up yet. Nothing was backed up.")
+    finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 
 

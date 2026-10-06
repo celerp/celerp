@@ -426,6 +426,65 @@ async def test_discard_is_refused_while_the_company_has_records_discard_does_not
 
 
 @pytest.mark.asyncio
+async def test_discard_is_refused_while_row_security_hides_records_of_the_company(
+        real_client, real_engine, migration_env):
+    """Row security forced on a table discard does not know hides its row of the staged
+    company from every read and delete. The discard is refused naming that table, and the
+    company and the row are kept."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.begin() as conn:
+        for statement in ("CREATE TABLE ext_notes (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+                          "INSERT INTO ext_notes VALUES (gen_random_uuid(), :c)",
+                          "ALTER TABLE ext_notes ENABLE ROW LEVEL SECURITY",
+                          "ALTER TABLE ext_notes FORCE ROW LEVEL SECURITY",
+                          "CREATE POLICY ext_rule ON ext_notes USING (false)"):
+            await conn.execute(text(statement), {"c": company_id})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key", {"table": "ext_notes"})
+        assert await count(real_engine, "companies", "id = :c", c=company_id) == 1
+        async with real_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE ext_notes NO FORCE ROW LEVEL SECURITY"))
+        assert await count(real_engine, "ext_notes", "company_id = :c", c=company_id) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
+
+
+@pytest.mark.asyncio
+async def test_discard_reads_the_tables_beside_a_schema_named_after_the_database_role(
+        real_client, real_engine, migration_env):
+    """A schema named after the role Celerp connects as exists and holds none of Celerp's
+    tables. Discard still finds the staged company's row in a table it does not know, is
+    refused naming that table, and keeps the company and the row."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.begin() as conn:
+        role = (await conn.execute(text("SELECT quote_ident(current_user)"))).scalar_one()
+        await conn.execute(text(f"CREATE SCHEMA {role}"))
+        await conn.execute(text("CREATE TABLE public.ext_notes (id uuid PRIMARY KEY, company_id uuid NOT NULL)"))
+        await conn.execute(text("INSERT INTO public.ext_notes VALUES (gen_random_uuid(), :c)"), {"c": company_id})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_unsafe_data", {"table": "ext_notes"})
+        assert await count(real_engine, "companies", "id = :c", c=company_id) == 1
+        assert await count(real_engine, "public.ext_notes", "company_id = :c", c=company_id) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text(f"DROP SCHEMA IF EXISTS {role} CASCADE"))
+            await conn.execute(text("DROP TABLE IF EXISTS public.ext_notes"))
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_discard_keeps_an_owner_whose_sessions_another_row_names(
         real_client, real_engine, migration_env):
     """The owner has a session in a per-user table that cascades from users, and an audit

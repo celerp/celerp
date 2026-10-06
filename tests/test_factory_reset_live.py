@@ -1212,6 +1212,65 @@ async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tabl
             await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
 
 
+async def test_a_reset_is_refused_while_row_security_hides_rows_of_a_table(real_client, real_engine):  # noqa: F811
+    """Row security forced on a table holding Alpha's row hides it from every read and
+    delete. The reset is refused naming that table, and nothing is deleted."""
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        for statement in ("CREATE TABLE ext_hidden (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+                          "INSERT INTO ext_hidden VALUES (gen_random_uuid(), :a)",
+                          "ALTER TABLE ext_hidden ENABLE ROW LEVEL SECURITY",
+                          "ALTER TABLE ext_hidden FORCE ROW LEVEL SECURITY",
+                          "CREATE POLICY ext_rule ON ext_hidden USING (false)"):
+            await conn.execute(text(statement), {"a": alpha})
+    try:
+        held = await _held(real_engine, alpha)
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
+                                                             {"table": "ext_hidden"})
+        assert await _held(real_engine, alpha) == held
+        async with real_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE ext_hidden NO FORCE ROW LEVEL SECURITY"))
+        assert await count(real_engine, "ext_hidden", "company_id = :a", a=alpha) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_hidden"))
+
+
+async def test_a_reset_reads_the_tables_beside_a_schema_named_after_the_database_role(
+        real_client, real_engine):  # noqa: F811
+    """A schema named after the role Celerp connects as exists and holds none of Celerp's
+    tables. The reset still deletes every record of Alpha, and Beta's rows stay."""
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        role = (await conn.execute(text("SELECT quote_ident(current_user)"))).scalar_one()
+        await conn.execute(text(f"CREATE SCHEMA {role}"))
+        await conn.execute(text("CREATE TABLE public.ext_par (id uuid PRIMARY KEY, company_id uuid NOT NULL)"))
+        await conn.execute(text("INSERT INTO public.ext_par VALUES (gen_random_uuid(), :a), (gen_random_uuid(), :b)"),
+                           {"a": alpha, "b": beta})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "companies", "id = :a", a=alpha) == 0
+        assert await count(real_engine, "public.ext_par", "company_id = :a", a=alpha) == 0
+        assert await count(real_engine, "public.ext_par", "company_id = :b", b=beta) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text(f"DROP SCHEMA IF EXISTS {role} CASCADE"))
+            await conn.execute(text("DROP TABLE IF EXISTS public.ext_par"))
+
+
 @pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])
 async def test_reset_needs_the_exact_company_name(real_client, real_engine, typed):  # noqa: F811
     token = await _register(real_client, "Alpha Co")

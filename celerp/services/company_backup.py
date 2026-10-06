@@ -242,6 +242,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     table it cannot carry; otherwise (restore) such tables are simply not carried."""
     schema = await db_catalog.read(session)
     inherited = await db_catalog.inheriting(session)
+    hidden = set(await db_catalog.hidden(session))
     prefixes = installed_table_prefixes("")
     declarations = {module: _declared(module) for module in prefixes}
     owners: dict[str, str] = {}
@@ -259,15 +260,18 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
             owners[name] = owner
             if how != INCLUDE:
                 if strict:
-                    raise BackupError(409, f"The {owner} module has not said whether {name} belongs in a company "
+                    raise BackupError(409, f"The {owner} module has not said whether "
+                                           f"{await db_catalog.label(session, name)} belongs in a company "
                                            f"backup." + _NOT_BACKED_UP)
                 continue
             ok = _module_shape_ok(table)
         else:
             ok = name in PORTABLE_TABLES and bool(table.pk)
         # Reading a table another inherits from reads that table's rows too, which none of
-        # its keys bind and which a key can name apart from it.
-        if ok and name not in inherited:
+        # its keys bind and which a key can name apart from it. Reading one under row
+        # security reads only the rows a rule lets through, and a restore takes only the
+        # tables a backup can name.
+        if ok and name not in inherited and name not in hidden and _TABLE_NAME.fullmatch(name):
             carried.append(name)
         elif strict:
             raise await _refusal(session, name, owners)
@@ -495,6 +499,7 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
         if session.get_bind().dialect.name != "sqlite":
             await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+            await db_catalog.pin(session)
         return await _export_company(session, company_id, out, provenance=provenance)
 
 
@@ -544,7 +549,8 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                         for line in batch:
                             body = line.encode()
                             if len(body) > MAX_ROW_BYTES or _row_too_large(body):
-                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(table=name))
+                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(
+                                    table=await db_catalog.label(session, name)))
                             _collect_urls(json.loads(line), company_id, found, types)
                             body += b"\n"
                             digest.update(body)
@@ -914,8 +920,10 @@ async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values
 async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
     """Refuse a backup this installation cannot restore exactly: a missing or older
     module, a table or column it does not have, a table it holds in a form a backup
-    cannot carry, or rows that do not hold together."""
+    cannot carry, or rows that do not hold together. The session's transaction is held to
+    Celerp's own tables and every row of them (``db_catalog.pin``) from here on."""
     _check_modules(backup.manifest)
+    await db_catalog.pin(session)
     plan = await _classify(session, strict=False)
     tables = backup.manifest["tables"]
     for name, meta in tables.items():
@@ -1183,7 +1191,7 @@ async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, comp
                 total += _row_digest(remap(_parse_row(line), back))
             rows += len(batch)
         if rows != meta["rows"] or total % (1 << 256) != checked.digests[name]:
-            raise BackupError(422, MISMATCH.format(table=name))
+            raise BackupError(422, MISMATCH.format(table=await db_catalog.label(session, name)))
 
 
 async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination: Company, source: str) -> int:

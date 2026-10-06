@@ -235,6 +235,7 @@ async def factory_reset(
     # Signing in has already read on this session, so the wipe runs in the request's own
     # transaction and is committed in one step.
     await lock_connector_maintenance(session)
+    await db_catalog.pin(session)
     schema = await db_catalog.read(session)
     # Another transaction writing these tables can hold them for longer than a request
     # may wait, or lock in the opposite order so Postgres aborts one of the two. Either
