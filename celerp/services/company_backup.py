@@ -235,6 +235,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     """The tables a backup carries, parents first. Strict (export) refuses any company
     table it cannot carry; otherwise (restore) such tables are simply not carried."""
     schema = await db_catalog.read(session)
+    inherited = await db_catalog.inheriting(session)
     prefixes = installed_table_prefixes("")
     declarations = {module: _declared(module) for module in prefixes}
     owners: dict[str, str] = {}
@@ -257,7 +258,9 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
             ok = _module_shape_ok(table)
         else:
             ok = name in PORTABLE_TABLES and bool(table.pk)
-        if ok:
+        # Reading a table another inherits from reads that table's rows too, which none of
+        # its keys bind and which a key can name apart from it.
+        if ok and name not in inherited:
             carried.append(name)
         elif strict:
             raise _refusal(name, owners)

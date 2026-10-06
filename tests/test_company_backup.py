@@ -1050,6 +1050,51 @@ async def test_a_key_naming_a_partition_of_a_carried_table_stops_the_export(
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
 
+_BK_INHERITED = {
+    "a table inheriting from a carried table": ("zz_widgets", (
+        _BK_GADGETS, "CREATE TABLE zz_widgets (id uuid primary key, company_id uuid not null "
+        "references companies(id) on delete cascade, gadget_id uuid references zz_gadgets(id))",
+        "CREATE TABLE zz_ext.kid (PRIMARY KEY (id)) INHERITS (zz_widgets)",
+        "INSERT INTO zz_gadgets VALUES (:g, :c)",
+        "INSERT INTO zz_widgets VALUES (gen_random_uuid(), :c, :g)",
+        "INSERT INTO zz_ext.kid VALUES (gen_random_uuid(), :c, gen_random_uuid())")),
+    "a key naming a table inheriting from a carried table": ("zz_gadgets", (
+        _BK_GADGETS, "CREATE TABLE zz_ext.kidg (PRIMARY KEY (id)) INHERITS (zz_gadgets)",
+        "CREATE TABLE zz_widgets (id uuid primary key, company_id uuid not null "
+        "references companies(id) on delete cascade, gadget_id uuid references zz_ext.kidg(id))",
+        "INSERT INTO zz_ext.kidg VALUES (:g, :c)",
+        "INSERT INTO zz_widgets VALUES (gen_random_uuid(), :c, :g)")),
+}
+
+
+@pytest.mark.parametrize("shape", list(_BK_INHERITED))
+async def test_a_table_inheriting_from_a_carried_table_stops_the_export(
+        real_engine, real_client, tmp_path, monkeypatch, shape):
+    """A table in another schema inherits from a carried table, so reading the carried
+    table also reads its rows, which no key of the carried table binds and which a key can
+    name apart from it. A backup cannot carry them faithfully, so the export is refused
+    naming the module and the carried table, rather than writing values naming rows it
+    does not carry or clearing a key it does."""
+    table, statements = _BK_INHERITED[shape]
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_sql(real_engine, "CREATE SCHEMA zz_ext")
+        gadget = uuid.uuid4()
+        for sql in statements:
+            await _bk_sql(real_engine, sql, g=gadget, c=cid)
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == (f"The zz-widgets module keeps data in {table} in a form Celerp cannot "
+                                      "back up yet. Nothing was backed up.")
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
 def _bk_naming_outside(data: bytes, lookup, version: int) -> bytes:
     """The backup as a Celerp of format ``version`` wrote it when it kept each widget's
     lookup_id, naming a row of another schema the backup does not carry."""

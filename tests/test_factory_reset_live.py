@@ -1103,16 +1103,27 @@ _PARTITION_KEYS = {
         "INSERT INTO ext.ext_kid VALUES ('00000000-0000-0000-0000-000000000a12', :a)",
         "INSERT INTO ext_pin VALUES (gen_random_uuid(), :b, '00000000-0000-0000-0000-000000000a12')"),
         "ext_pin", "ext.ext_kid") for action in ("CASCADE", "NO ACTION")},
+    **{f"a table with no keys inheriting from a table the reset reaches, {where}": ((
+        "CREATE SCHEMA ext", "CREATE TABLE ext_item (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+        "CREATE TABLE ext_note (id uuid PRIMARY KEY, "
+        "item_id uuid NOT NULL REFERENCES ext_item(id) ON DELETE CASCADE)",
+        f"CREATE TABLE {schema}ext_note_b (company_id uuid NOT NULL) INHERITS (ext_note)",
+        "INSERT INTO ext_item VALUES ('00000000-0000-0000-0000-000000000a13', :a)",
+        "INSERT INTO ext_note VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000a13')",
+        f"INSERT INTO {schema}ext_note_b VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000a13', :b)"),
+        f"{schema}ext_note_b", f"{schema}ext_note_b") for where, schema in (("in this schema", ""),
+                                                                            ("in another schema", "ext."))},
 }
-_PARTITION_TABLES = "ext_pin, ext_tok_log, ext_pt, ext_tok, ext_par"
+_PARTITION_TABLES = "ext_pin, ext_tok_log, ext_pt, ext_tok, ext_par, ext_note, ext_item"
 
 
 @pytest.mark.parametrize("case", list(_PARTITION_KEYS))
 async def test_a_reset_is_refused_while_a_key_is_kept_on_one_partition(real_client, real_engine, case):  # noqa: F811
     """A key kept on one partition, or naming one or a table inheriting from a company
     table, wherever it is kept, is not on the table the catalog reads, so nothing can tell
-    whose rows it reaches. The reset is refused naming that table, and Beta's row, Alpha
-    and its clerk are all kept."""
+    whose rows it reaches. A table inheriting from one the reset reaches holds rows the
+    reset would reach without telling whose they are. The reset is refused naming that
+    table, and Beta's row, Alpha and its clerk are all kept."""
     from sqlalchemy import text
 
     statements, beta_table, partition = _PARTITION_KEYS[case]

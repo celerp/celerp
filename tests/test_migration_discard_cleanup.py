@@ -303,6 +303,11 @@ _OUTSIDE_SHAPES = {
         "user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE)",
         "INSERT INTO ext.notes SELECT gen_random_uuid(), :c, id FROM users"),
         "ext.notes", ("migration.discard_outside_reference", "ext.notes")),
+    "a table with no keys inheriting from a table naming users": ((
+        "CREATE TABLE ext_note (id uuid PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE)",
+        "CREATE TABLE ext_note_b (company_id uuid NOT NULL) INHERITS (ext_note)",
+        "INSERT INTO ext_note_b SELECT gen_random_uuid(), id, :c FROM users"),
+        "ext_note_b", ("migration.discard_partition_key", "ext_note_b")),
 }
 
 
@@ -341,7 +346,7 @@ async def test_bootstrap_discard_is_refused_while_a_table_changed_outside_celerp
         assert await count(real_engine, other_table, "company_id = :c", c=other) == 1
     finally:
         async with real_engine.begin() as conn:
-            await conn.execute(text("DROP TABLE IF EXISTS ext_tok_log, ext_tok, ext_pt CASCADE"))
+            await conn.execute(text("DROP TABLE IF EXISTS ext_tok_log, ext_tok, ext_pt, ext_note CASCADE"))
             await conn.execute(text("DROP SCHEMA IF EXISTS ext CASCADE"))
             await conn.execute(text("DELETE FROM companies WHERE id = :c"), {"c": other})
 
