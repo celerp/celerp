@@ -66,9 +66,10 @@ from celerp.modules.importer import (
     _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix, is_reserved_name,
 )
 from celerp.modules.license import (
-    check_license, exchange_api_key_for_jwt, is_free_official, is_premium_path,
+    PAID_MODULE_REFUSAL, adopt_legacy_license_cache, check_license, exchange_api_key_for_jwt,
+    is_free_official, is_premium_path,
 )
-from celerp.modules.meta import META_FILENAME
+from celerp.modules.meta import META_FILENAME, read_meta
 from celerp.modules.slots import (
     FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
     register as register_slot, resolve_handler,
@@ -811,22 +812,30 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     Checked for a module in a premium tree or carrying the paid marker, and for
     every celerp- name that is not one of the defaults Celerp ships, wherever its
     folder came from: a celerp- module the Marketplace lists as free and official
-    loads (that verdict is cached on this instance), any other needs a licence,
-    so one with no verdict and no licence is refused. The name only ever adds
-    this check; it grants nothing.
+    loads (that verdict is cached on this instance), any other needs a licence.
+    While the Marketplace cannot be asked, a module it has never answered for
+    loads if the Marketplace installed it without a price, and its verdict is
+    recorded on the next start that reaches it; once the Marketplace has said it
+    is not free, or for any other install, a licence is needed.
+    The name only ever adds this check; it grants nothing.
 
     Checked on every instance, activated or not. The Marketplace listing is
     public, so a free verdict needs no relay identity. With no live JWT (never
     activated, or the token exchange failed) check_license decides from the
-    offline lifetime JWT and the grace cache alone, so a module with neither is
-    refused.
+    offline lifetime JWT and the grace cache alone.
     """
     by_name = _needs_licence_by_name(module.name, module.path)
     if not by_name and not is_premium_path(module.path):
         return None
     relay_url, instance_jwt, data_dir, instance_id = creds()
-    if by_name and is_free_official(module.name, relay_url, Path(data_dir)):
-        return None
+    unconfirmed = False
+    if by_name:
+        free = is_free_official(module.name, relay_url, Path(data_dir))
+        if free:
+            return None
+        if free is None and _marketplace_free_install(module.path):
+            return None
+        unconfirmed = free is None
     if check_license(
         slug=module.name,
         relay_url=relay_url,
@@ -837,7 +846,15 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     ):
         return None
     log.warning("Premium module %r skipped: no valid license", module.name)
-    return "Premium module: no valid license."
+    if unconfirmed:
+        return "Not loaded: the Marketplace could not confirm it is free and there is no valid license here. Connect to the internet and restart."
+    return PAID_MODULE_REFUSAL
+
+
+def _marketplace_free_install(pkg_path: Path) -> bool:
+    """The module's sidecar says the Marketplace installed it without a price."""
+    meta = read_meta(pkg_path)
+    return meta.get("source") == "marketplace" and meta.get("paid") is not True
 
 
 def _needs_licence_by_name(name: str, pkg_path: Path) -> bool:
@@ -885,6 +902,7 @@ def _premium_credentials():
             from celerp.gateway.state import relay_http_url
             api_key = _settings.gateway_token
             relay_url = relay_http_url()
+            adopt_legacy_license_cache(_settings.data_dir)
             cache["creds"] = (
                 relay_url,
                 exchange_api_key_for_jwt(relay_url, api_key) if api_key else None,

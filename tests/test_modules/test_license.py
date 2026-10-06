@@ -331,3 +331,51 @@ def test_is_premium_path_marker_file(tmp_path):
     assert not is_premium_path(mod)
     (mod / PREMIUM_MARKER).write_text("")
     assert is_premium_path(mod)
+
+
+# ── is_free_official / record_free_verdict ───────────────────────────────────
+
+def _listing(monkeypatch, detail):
+    class _Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps(detail).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _Reply())
+
+
+@pytest.mark.parametrize("detail", [
+    {"is_official": True, "price_monthly": 0, "price_once": None},
+    {"is_official": True, "price_monthly": "19.0", "price_once": None},
+    {"is_official": True, "price_monthly": None, "price_once": "49"},
+    {"is_official": "false", "price_monthly": None, "price_once": None},
+    {"is_official": 1, "price_monthly": None, "price_once": None},
+], ids=["zero_price", "price_monthly_str", "price_once_str", "official_str", "official_int"])
+def test_listing_not_plainly_free_and_official_records_no_verdict(tmp_path, monkeypatch, detail):
+    from celerp.modules.license import is_free_official
+    _listing(monkeypatch, detail)
+    assert not is_free_official("celerp-x", "https://relay.example.com", tmp_path)
+    assert not (tmp_path / "license_cache" / "celerp-x.free.json").exists()
+
+
+def test_listing_free_and_official_records_its_verdict(tmp_path, monkeypatch):
+    from celerp.modules.license import is_free_official
+    _listing(monkeypatch, {"is_official": True, "price_monthly": None, "price_once": None})
+    assert is_free_official("celerp-x", "https://relay.example.com", tmp_path)
+    assert (tmp_path / "license_cache" / "celerp-x.free.json").is_file()
+
+
+def test_interrupted_free_verdict_write_leaves_no_verdict(tmp_path, monkeypatch):
+    import celerp.modules.license as lic
+
+    def _fail(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(lic.os, "replace", _fail)
+    lic.record_free_verdict("celerp-x", tmp_path)
+    assert list((tmp_path / "license_cache").iterdir()) == []
