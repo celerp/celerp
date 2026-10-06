@@ -52,6 +52,14 @@ def make_test_token(
     return f"header.{payload_b64}.sig"
 
 
+def assert_not_permitted_redirect(response) -> None:
+    """A page the caller's role may not open redirects to the dashboard and hands
+    it the one-shot "no access" notice (ui.security.not_permitted_redirect)."""
+    assert response.status_code == 302, response.status_code
+    assert response.headers["location"] == "/dashboard"
+    assert "celerp_notice=not_permitted" in response.headers.get("set-cookie", "")
+
+
 def authed_cookies(role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token for the given role."""
     return {"celerp_token": make_test_token(role=role)}

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -24,9 +26,10 @@ def _client(monkeypatch, handler, token="tok"):
 
     monkeypatch.setattr(system_update.api, "_local_client", local_client)
     monkeypatch.setattr(system_update, "_token", lambda request: token)
+    monkeypatch.setattr(system_update.api, "installation_owner", AsyncMock(return_value=True))
     app = FastAPI()
     system_update.setup_routes(app)
-    return TestClient(app), seen
+    return TestClient(app, cookies={"celerp_token": token} if token else None), seen
 
 
 @pytest.mark.parametrize("method,path,body", [

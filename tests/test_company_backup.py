@@ -3027,6 +3027,22 @@ async def test_enabled_but_uninstalled_module_not_a_backup_requirement(real_engi
     await _bk_restore_new(real_client, tok, data)
 
 
+@pytest.mark.parametrize("copied", [["zz-absent"], ["."], ["celerp-labels", "../outside"]])
+async def test_restored_company_uses_only_the_checked_module_list(real_engine, real_client, tmp_path, monkeypatch, copied):
+    """The restored company turns on exactly the modules the restore checked, never names carried in
+    the backup's copy of its settings."""
+    from celerp.modules.registry import get_enabled
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": ["celerp-labels"]})
+
+    def change(m):
+        m["company"]["settings"]["enabled_modules"] = copied
+    data = _bk_edit_manifest(await download(real_client, tok), change)
+    checked = set(manifest(data)["modules"]["enabled"])
+    new = await _bk_restore_new(real_client, tok, data)
+    assert get_enabled(await _bk_settings(real_engine, new)) == checked
+
+
 # ── Restore lineage: team carry, deactivated destinations and reactivation ───
 
 _LN_SLUG_SUFFIX = re.compile(r"-deactivated-\d+$")

@@ -10,8 +10,9 @@ the lifespan — not the CLI — because rebuild needs every projection handler
 
 Gated by the `projection_version` marker so it runs once per version. Before
 rebuilding it pre-checks that every `event_type` in the ledger is a known event
-(with modules loaded); an unknown type means a downgrade or a missing module, so
-we skip the rebuild rather than silently fold those events into wrong state.
+whose module handler is running (`unhandled_event_types`); anything else means a
+downgrade or a missing module, so we skip the rebuild rather than silently fold
+those events into wrong state.
 
 The data-backfill half of the reconcile runs earlier, at `celerp migrate` time
 (`cli._reconcile_after_migrate`), where no handlers are needed.
@@ -25,16 +26,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
-
-
-async def unknown_event_types(session: "AsyncSession") -> set[str]:
-    """Ledger event types that are not in the (modules-loaded) event catalog."""
-    from sqlalchemy import text
-
-    from celerp.events.schemas import EVENT_SCHEMA_MAP
-
-    rows = await session.execute(text("SELECT DISTINCT event_type FROM ledger"))
-    return {r[0] for r in rows} - set(EVENT_SCHEMA_MAP.keys())
 
 
 def _is_dev_version(v: str) -> bool:
@@ -71,7 +62,7 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
         get_meta,
         set_meta,
     )
-    from celerp.projections.engine import ProjectionEngine
+    from celerp.projections.engine import ProjectionEngine, unhandled_event_types
 
     conn = await session.connection()
     marker = await conn.run_sync(lambda c: get_meta(c, PROJECTION_VERSION_KEY))
@@ -80,7 +71,7 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
 
     rebuilt = False
     if _should_rebuild(marker):
-        unknown = await unknown_event_types(session)
+        unknown = await unhandled_event_types(session)
         if unknown:
             # Downgrade or missing module: replaying these events would produce
             # wrong state. Skip the rebuild and leave the marker as-is so a later

@@ -192,10 +192,10 @@ async def test_restart_required_until_modules_running(client, monkeypatch):
     monkeypatch.setenv("MODULE_DIR", _DEFAULT_MODULES)
     monkeypatch.delenv("ENABLED_MODULES", raising=False)
     h = await _owner(client)
-    with patch("celerp.services.business_type.is_running", return_value=False):
+    with patch("celerp.modules.loader.is_running", return_value=False):
         assert (await _set(client, h, "gemstones")).json()["restart_required"] is True
         assert (await _set(client, h, "gemstones")).json()["restart_required"] is True
-    with patch("celerp.services.business_type.is_running", return_value=True):
+    with patch("celerp.modules.loader.is_running", return_value=True):
         assert (await _set(client, h, "gemstones")).json()["restart_required"] is False
 
 
@@ -455,8 +455,8 @@ async def test_supervised_restart_rereads_the_config(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retry_after_failed_db_step_still_requires_restart(client, monkeypatch):
-    """Config written, then the company update fails: the retry finds the config
-    already holding the modules and must still ask for the restart that loads them."""
+    """The company update fails: nothing is written, and the retry asks for the
+    restart that loads the type's modules."""
     monkeypatch.setenv("MODULE_DIR", _DEFAULT_MODULES)
     monkeypatch.delenv("ENABLED_MODULES", raising=False)
     h = await _owner(client)
@@ -464,7 +464,7 @@ async def test_retry_after_failed_db_step_still_requires_restart(client, monkeyp
                side_effect=RuntimeError("database step failed")):
         with pytest.raises(RuntimeError):
             await _set(client, h, "gemstones")
-    assert "celerp-inventory" in read_config()["modules"]["enabled"], "the config step ran first"
+    assert "celerp-inventory" not in (read_config().get("modules") or {}).get("enabled", [])
     assert (await _settings(client, h)).get("vertical") is None, "the company update rolled back"
     r = await _set(client, h, "gemstones")
     assert r.status_code == 200, r.text
