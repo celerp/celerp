@@ -1392,6 +1392,7 @@ _ACTIVATIONS = {
     "direct-import": ("import celerp.ai.llm  # noqa: F401\n", {}, False),
     "computed-import": ("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n", {}, False),
     "computed-builtin-import": ("__import__('celerp.' + 'ai.llm')\n", {}, False),
+    "computed-importlib-import": ("import importlib\nimportlib.__import__('celerp.' + 'ai.llm')\n", {}, False),
     "computed-import-in-own-submodule": (
         "from .reach import VALUE  # noqa: F401\n",
         {"reach.py": "import importlib\nllm = importlib.import_module('celerp.' + 'ai.llm')\nVALUE = 1\n"}, False),

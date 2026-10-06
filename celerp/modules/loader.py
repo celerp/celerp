@@ -1333,7 +1333,8 @@ def admitted_module_root(import_name: str) -> Path | None:
 # The folder of the third-party module this thread is activating, and the
 # protected internals its own code has tried to import meanwhile.
 _activation: ContextVar[tuple[Path, set[str]] | None] = ContextVar("module_activation", default=None)
-_guard_lock, _guard_depth, _unguarded = threading.Lock(), 0, (builtins.__import__, importlib.import_module)
+_guard_lock, _guard_depth = threading.Lock(), 0
+_unguarded = (builtins.__import__, importlib.import_module, importlib.__import__)
 
 
 def _charge_import(name: str, frame, package=None, fromlist=()) -> None:
@@ -1372,8 +1373,9 @@ def _activating(pkg_name: str, pkg_path: Path, *, trusted: bool):
     token = _activation.set((pkg_path, attempted))
     with _guard_lock:
         if _guard_depth == 0:
-            _unguarded = (builtins.__import__, importlib.import_module)
+            _unguarded = (builtins.__import__, importlib.import_module, importlib.__import__)
             builtins.__import__, importlib.import_module = _guarded_import, _guarded_import_module
+            importlib.__import__ = _guarded_import
         _guard_depth += 1
     try:
         yield
@@ -1381,7 +1383,7 @@ def _activating(pkg_name: str, pkg_path: Path, *, trusted: bool):
         with _guard_lock:
             _guard_depth -= 1
             if _guard_depth == 0:
-                builtins.__import__, importlib.import_module = _unguarded
+                builtins.__import__, importlib.import_module, importlib.__import__ = _unguarded
         _activation.reset(token)
         if attempted:
             raise ModuleLoadError(_bsl_violation_message(pkg_name, attempted))
