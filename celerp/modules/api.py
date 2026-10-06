@@ -84,20 +84,21 @@ async def ai_query(
     """Run an AI query for a company through the active Celerp service.
 
     ``db_session`` is the database session of the request the query is made for;
-    the query runs only for that request's company and for a user allowed to use
-    the AI assistant. ``session_token`` is optional: without it, the installation's
+    the query runs only for that request's company and for the user its signed
+    access token names, who must be allowed to use the AI assistant. ``session_token`` is optional: without it, the installation's
     own Celerp Connect session is used.
     """
-    from celerp.services.permissions import assert_role_permission, read_authority, request_authority
+    from celerp.services.auth import signed_request_context
+    from celerp.services.permissions import assert_role_permission, read_authority
     from celerp.session_gate import require_active_session, validate_session_token
 
-    authority = request_authority(db_session, company_id) if db_session is not None else None
-    if authority is None:
+    caller = await signed_request_context(db_session) if db_session is not None else None
+    if caller is None or str(caller.company_id) != str(company_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="AI queries run only for the company of the signed-in request.",
         )
-    role, settings = await read_authority(db_session, authority.company_id, authority.user_id)
+    role, settings = await read_authority(db_session, caller.company_id, caller.user.id)
     assert_role_permission(settings, role, "use_ai_assistant")
     if session_token is None:
         await require_active_session()
@@ -109,7 +110,7 @@ async def ai_query(
     result: AIResponse = await run_query(
         query=query,
         session=db_session,
-        company_id=authority.company_id,
+        company_id=caller.company_id,
     )
     return {
         "answer": result.answer,

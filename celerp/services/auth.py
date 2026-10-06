@@ -271,6 +271,8 @@ STAGED_COMPANY = "This company is still being moved into Celerp. Finish or disca
 # do not authenticate through this dependency, so they stay available as well.
 STAGED_ALLOWED_PREFIX = "/migrations/"
 MODULE_OFF = "This module is turned off for your company."
+# The signed access token a request was authenticated with, kept on its session.
+SIGNED_TOKEN = "celerp_signed_access_token"
 
 
 async def get_auth_context(
@@ -302,10 +304,20 @@ async def get_auth_context(
     # (company_lock), so a write that waits there never runs on revoked access.
     from celerp.services.permissions import authorize_request, end_request
     authority = authorize_request(session, ctx.company_id, ctx.user.id, ctx.role)
+    session.info[SIGNED_TOKEN] = token
     try:
         yield ctx
     finally:
         end_request(session, authority)
+        if session.info.get(SIGNED_TOKEN) is token:
+            session.info.pop(SIGNED_TOKEN, None)
+
+
+async def signed_request_context(session: AsyncSession) -> AuthContext | None:
+    """The caller of the request *session* serves, validated again from the signed
+    access token get_auth_context accepted; None when there is no such request."""
+    token = session.info.get(SIGNED_TOKEN)
+    return await validate_access_token(session, token) if isinstance(token, str) else None
 
 
 async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:

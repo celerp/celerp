@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -79,6 +80,24 @@ async def make_authed_token(session, user_id: str, company_id: str, role: str) -
     snonce = await get_nonce(session, str(user_id))
     token, _ = create_access_token(str(user_id), str(company_id), role, snonce=snonce)
     return token
+
+
+@asynccontextmanager
+async def signed_request(session, company_id, user_id, role: str = "operator"):
+    """Run the body as a request *user_id* signed with its own access token: the
+    real get_auth_context dependency, entered on *session*."""
+    from starlette.requests import Request
+
+    from celerp.services.auth import get_auth_context
+    token = await make_authed_token(session, str(user_id), str(company_id), role)
+    request = Request({"type": "http", "method": "POST", "path": "/module/route", "headers": [],
+                       "query_string": b""})
+    dependency = get_auth_context(request, token, session)
+    await dependency.__anext__()
+    try:
+        yield
+    finally:
+        await dependency.aclose()
 
 
 async def ensure_user(session, user_id) -> None:

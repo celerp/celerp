@@ -19,7 +19,7 @@ from starlette.requests import Request
 
 from celerp.modules import api, loader
 from celerp.services.permissions import authorize_request
-from test_helpers import seed_member
+from test_helpers import seed_member, signed_request
 from test_modules.test_admission import _clean_loader_state, _modules, _uid, _write_module  # noqa: F401
 
 
@@ -262,8 +262,8 @@ def run_query(monkeypatch):
 @pytest.mark.asyncio
 async def test_ai_query_new_form_uses_the_active_connect_session(session, run_query):
     company_id, user_id = await seed_member(session)
-    authorize_request(session, company_id, user_id, "operator")
-    result = await api.ai_query("hello", str(company_id), db_session=session)
+    async with signed_request(session, company_id, user_id):
+        result = await api.ai_query("hello", str(company_id), db_session=session)
     assert result == {"answer": "ok", "model_used": "m", "tools_called": []}
     assert str(run_query.await_args.kwargs["company_id"]) == str(company_id)
 
@@ -273,9 +273,9 @@ async def test_ai_query_new_form_refused_without_a_connect_session(session, run_
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "")
     monkeypatch.setattr("celerp.config.settings.cloud_disconnected", True)
     company_id, user_id = await seed_member(session)
-    authorize_request(session, company_id, user_id, "operator")
-    with pytest.raises(HTTPException) as exc:
-        await api.ai_query("hello", str(company_id), db_session=session)
+    async with signed_request(session, company_id, user_id):
+        with pytest.raises(HTTPException) as exc:
+            await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 401
     run_query.assert_not_awaited()
 
@@ -283,14 +283,14 @@ async def test_ai_query_new_form_refused_without_a_connect_session(session, run_
 @pytest.mark.asyncio
 async def test_ai_query_legacy_positional_call_still_checks_authority(session, run_query):
     company_id, user_id = await seed_member(session)
-    authorize_request(session, company_id, user_id, "operator")
-    assert (await api.ai_query("hello", str(company_id), "session-1", session))["answer"] == "ok"
-    with pytest.raises(HTTPException) as exc:
-        await api.ai_query("hello", str(company_id), "wrong", session)
-    assert exc.value.status_code == 401
-    with pytest.raises(HTTPException) as exc:
-        await api.ai_query("hello", str(uuid.uuid4()), "session-1", session)
-    assert exc.value.status_code == 403
+    async with signed_request(session, company_id, user_id):
+        assert (await api.ai_query("hello", str(company_id), "session-1", session))["answer"] == "ok"
+        with pytest.raises(HTTPException) as exc:
+            await api.ai_query("hello", str(company_id), "wrong", session)
+        assert exc.value.status_code == 401
+        with pytest.raises(HTTPException) as exc:
+            await api.ai_query("hello", str(uuid.uuid4()), "session-1", session)
+        assert exc.value.status_code == 403
     assert run_query.await_count == 1
 
 
@@ -298,9 +298,9 @@ async def test_ai_query_legacy_positional_call_still_checks_authority(session, r
 async def test_ai_query_refused_for_another_company(session, run_query):
     company_id, user_id = await seed_member(session)
     other_id, _ = await seed_member(session)
-    authorize_request(session, company_id, user_id, "operator")
-    with pytest.raises(HTTPException) as exc:
-        await api.ai_query("hello", str(other_id), db_session=session)
+    async with signed_request(session, company_id, user_id):
+        with pytest.raises(HTTPException) as exc:
+            await api.ai_query("hello", str(other_id), db_session=session)
     assert exc.value.status_code == 403
     run_query.assert_not_awaited()
 
@@ -308,9 +308,9 @@ async def test_ai_query_refused_for_another_company(session, run_query):
 @pytest.mark.asyncio
 async def test_ai_query_refused_without_the_ai_permission(session, run_query):
     company_id, user_id = await seed_member(session, "viewer")
-    authorize_request(session, company_id, user_id, "viewer")
-    with pytest.raises(HTTPException) as exc:
-        await api.ai_query("hello", str(company_id), db_session=session)
+    async with signed_request(session, company_id, user_id, "viewer"):
+        with pytest.raises(HTTPException) as exc:
+            await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 403
     assert "use_ai_assistant" in exc.value.detail
     run_query.assert_not_awaited()
@@ -318,19 +318,67 @@ async def test_ai_query_refused_without_the_ai_permission(session, run_query):
 
 @pytest.mark.asyncio
 async def test_ai_query_judges_the_membership_as_it_is_now(session, run_query):
-    company_id, user_id = await seed_member(session, active=False)
-    authorize_request(session, company_id, user_id, "operator")
+    from sqlalchemy import update
+
+    from celerp.models.accounting import UserCompany
+
+    company_id, user_id = await seed_member(session)
+    async with signed_request(session, company_id, user_id):
+        await session.execute(update(UserCompany).where(UserCompany.user_id == user_id).values(is_active=False))
+        with pytest.raises(HTTPException) as exc:
+            await api.ai_query("hello", str(company_id), db_session=session)
+    assert exc.value.status_code == 401
+    run_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_session", [True, False], ids=["session-without-a-request", "no-session"])
+async def test_ai_query_refused_without_a_signed_request(session, run_query, with_session):
+    company_id, _ = await seed_member(session)
     with pytest.raises(HTTPException) as exc:
-        await api.ai_query("hello", str(company_id), db_session=session)
+        await api.ai_query("hello", str(company_id), "session-1", session if with_session else None)
     assert exc.value.status_code == 403
     run_query.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("with_session", [True, False], ids=["session-without-authority", "no-session"])
-async def test_ai_query_refused_without_a_request_authority(session, run_query, with_session):
-    company_id, _ = await seed_member(session)
+@pytest.mark.parametrize("signed", [False, True], ids=["no-signed-request", "signed-by-a-member-without-ai"])
+async def test_ai_query_ignores_authority_registered_by_module_code(session, run_query, signed):
+    """Module code can register request authority for another member who may use
+    the assistant; the query still answers only to the signed caller."""
+    company_id, viewer_id = await seed_member(session, "viewer")
+    _, other_id = await seed_member(session)
+    from celerp.models.accounting import UserCompany
+    session.add(UserCompany(user_id=other_id, company_id=company_id, role="operator", is_active=True))
+    await session.flush()
+
+    async def forge_and_ask():
+        authorize_request(session, company_id, other_id, "operator")
+        return await api.ai_query("hello", str(company_id), db_session=session)
+
     with pytest.raises(HTTPException) as exc:
-        await api.ai_query("hello", str(company_id), "session-1", session if with_session else None)
+        if signed:
+            async with signed_request(session, company_id, viewer_id, "viewer"):
+                await forge_and_ask()
+        else:
+            await forge_and_ask()
     assert exc.value.status_code == 403
+    run_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ai_query_refuses_a_token_it_did_not_sign(session, run_query):
+    """Module code that places an access token of its own making on the session
+    gets nothing: the token is validated again, signature included."""
+    from jose import jwt
+
+    from celerp.services.auth import SIGNED_TOKEN, validate_access_token
+
+    company_id, user_id = await seed_member(session)
+    async with signed_request(session, company_id, user_id):
+        claims = (await validate_access_token(session, session.info[SIGNED_TOKEN])).claims
+    session.info[SIGNED_TOKEN] = jwt.encode(claims, "not-the-key", algorithm="HS256")
+    with pytest.raises(HTTPException) as exc:
+        await api.ai_query("hello", str(company_id), db_session=session)
+    assert exc.value.status_code == 401
     run_query.assert_not_awaited()
