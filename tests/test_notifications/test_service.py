@@ -84,7 +84,6 @@ async def test_create_notification(session, company, user):
     assert n.body == "5 files processed"
     assert n.action_url == "/ai"
     assert n.priority == "high"
-    assert n.read is False
     assert n.company_id == company.id
     assert n.user_id == user.id
 
@@ -157,7 +156,7 @@ async def test_list_notifications_newest_first(session, company, user):
         await svc.create(session, company.id, "ai", "Second", "B2", user_id=user.id)
         await session.commit()
 
-    items = await svc.list_notifications(session, company.id, user.id)
+    items = [n for n, _ in await svc.list_notifications(session, company.id, user.id)]
     assert len(items) == 2
     assert items[0].title == "Second"
     assert items[1].title == "First"
@@ -170,8 +169,8 @@ async def test_list_notifications_pagination(session, company, user):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
         await session.commit()
 
-    page1 = await svc.list_notifications(session, company.id, user.id, limit=2, offset=0)
-    page2 = await svc.list_notifications(session, company.id, user.id, limit=2, offset=2)
+    page1 = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=2, offset=0)]
+    page2 = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=2, offset=2)]
     assert len(page1) == 2
     assert len(page2) == 2
     assert page1[0].id != page2[0].id
@@ -185,7 +184,7 @@ async def test_mark_read(session, company, user):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
 
-    found = await svc.mark_read(session, n.id, company.id)
+    found = await svc.mark_read(session, n.id, company.id, user.id)
     await session.commit()
     assert found is True
 
@@ -199,13 +198,13 @@ async def test_mark_read_wrong_company(session, company, company_b, user):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
 
-    found = await svc.mark_read(session, n.id, company_b.id)
+    found = await svc.mark_read(session, n.id, company_b.id, user.id)
     assert found is False
 
 
 @pytest.mark.asyncio
-async def test_mark_read_nonexistent(session, company):
-    found = await svc.mark_read(session, uuid.uuid4(), company.id)
+async def test_mark_read_nonexistent(session, company, user):
+    found = await svc.mark_read(session, uuid.uuid4(), company.id, user.id)
     assert found is False
 
 
@@ -236,7 +235,7 @@ async def test_retention_100_per_company(session, company, user):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
         await session.commit()
 
-    items = await svc.list_notifications(session, company.id, user.id, limit=200)
+    items = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=200)]
     assert len(items) <= 100
 
 
@@ -249,8 +248,8 @@ async def test_isolation_between_companies(session, company, company_b, user, us
         await svc.create(session, company_b.id, "ai", "CoB", "B", user_id=user_b_co.id)
         await session.commit()
 
-    items_a = await svc.list_notifications(session, company.id, user.id)
-    items_b = await svc.list_notifications(session, company_b.id, user_b_co.id)
+    items_a = [n for n, _ in await svc.list_notifications(session, company.id, user.id)]
+    items_b = [n for n, _ in await svc.list_notifications(session, company_b.id, user_b_co.id)]
     assert len(items_a) == 1
     assert items_a[0].title == "CoA"
     assert len(items_b) == 1
@@ -277,14 +276,14 @@ async def test_list_notifications_stable_order_when_created_at_ties(session, com
     )
     await session.commit()
 
-    listed = await svc.list_notifications(session, company.id, user.id, limit=100)
+    listed = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=100)]
     assert [n.id for n in listed] == sorted(ids, reverse=True), \
         "created_at-tied notifications are not deterministically ordered by id (no tiebreaker)"
 
     # And a paged walk over the tie covers every row exactly once.
     paged = []
     for off in range(0, len(ids), 2):
-        page = await svc.list_notifications(session, company.id, user.id, limit=2, offset=off)
+        page = [n for n, _ in await svc.list_notifications(session, company.id, user.id, limit=2, offset=off)]
         paged += [n.id for n in page]
     assert sorted(paged) == sorted(ids)
     assert len(paged) == len(set(paged))
