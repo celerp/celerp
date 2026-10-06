@@ -3098,6 +3098,7 @@
   "doc.share_off_tip": "Non condiviso",
   "error.invalid_value": "Valore non valido",
   "error.install_owner_deactivate": "Questa persona è il proprietario dell'installazione, quindi non può essere disattivata in nessuna azienda. Il proprietario dell'installazione può cedere il ruolo a un'altra persona in Configurazione globale, Utenti; dopodiché potrà essere disattivata.",
+  "error.books_currency_changed": "Questo pagamento è stato incassato quando la valuta dell'azienda era {base}; ora è {current}. Registrarlo mescolerebbe due valute nei conti, quindi non è stato registrato. Registra invece una scrittura di rettifica in Contabilità, Giornale.",
   "field.tooltip.batch_no": "Numero di lotto o batch per questa scorta fisica. Testo libero; più lotti possono condividere uno stesso SKU.",
   "field.tooltip.pick_method": "Quale lotto fisico prelevare per primo al momento della vendita: FIFO (il più vecchio tra quelli ricevuti), FEFO (il primo a scadere) o LIFO (il più recente). L’opzione “Predefinito” utilizza l’impostazione aziendale. Il metodo LIFO è previsto solo dagli US-GAAP (non consentito dagli IFRS).",
   "field.tooltip.preferred_supplier": "Fornitore predefinito per questo articolo. Testo libero; utilizzato per raggruppare una selezione di riordini in un’unica bozza di ordine di acquisto per fornitore.",

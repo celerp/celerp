@@ -3097,6 +3097,7 @@
   "doc.share_off_tip": "Chưa được chia sẻ",
   "error.invalid_value": "Giá trị không hợp lệ",
   "error.install_owner_deactivate": "Người này là chủ sở hữu bản cài đặt nên không thể bị vô hiệu hóa ở bất kỳ công ty nào. Chủ sở hữu bản cài đặt có thể chuyển vai trò đó cho người khác trong Cấu hình chung, Người dùng; sau đó mới có thể vô hiệu hóa người này.",
+  "error.books_currency_changed": "Khoản thanh toán này được nhận khi tiền tệ của công ty là {base}; hiện nay là {current}. Ghi sổ khoản này sẽ trộn hai loại tiền trong sổ sách, nên nó chưa được ghi sổ. Hãy ghi một bút toán điều chỉnh trong Kế toán, Nhật ký thay vào đó.",
   "field.tooltip.batch_no": "Số lô hoặc số đợt cho hàng tồn kho thực tế này. Nhập văn bản tự do; nhiều lô có thể chia sẻ chung một mã SKU.",
   "field.tooltip.pick_method": "Lô hàng thực tế nào sẽ được rút ra trước tiên khi bán: FIFO (nhận hàng cũ nhất), FEFO (hết hạn sớm nhất) hoặc LIFO (nhận hàng mới nhất). 'Mặc định' sử dụng cài đặt của công ty. LIFO chỉ áp dụng theo US-GAAP (không được phép theo IFRS).",
   "field.tooltip.preferred_supplier": "Nhà cung cấp mặc định cho mặt hàng này. Nhập văn bản tự do; được sử dụng để nhóm các lựa chọn đặt hàng lại thành một bản nháp đơn đặt hàng cho mỗi nhà cung cấp.",
