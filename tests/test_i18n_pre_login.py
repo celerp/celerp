@@ -20,7 +20,6 @@ from httpx import ASGITransport, AsyncClient
 from celerp.main import app
 from ui import i18n
 from ui.app import app as ui_app
-from ui.components.currency import currency_label
 
 _ALLOWLIST = json.loads((Path(__file__).parent / "i18n_source_identical_allowlist.json").read_text())
 _LANGS = sorted(i18n._DISK_LANGS - {"en"})
@@ -68,8 +67,12 @@ def _same_in(lang: str) -> set[str]:
     name, so a name that is the same leaves the whole label the same."""
     en = i18n._cached_load("en")
     keys = [k for k in _ALLOWLIST.get(lang, ()) if k in en]
-    return {en[k] for k in keys} | {currency_label(k.removeprefix("currency.name."))
-                                    for k in keys if k.startswith("currency.name.")}
+    same = {en[k] for k in keys}
+    codes = [k.removeprefix("currency.name.") for k in keys if k.startswith("currency.name.")]
+    if codes:
+        from ui.components.currency import currency_label
+        same |= {currency_label(code) for code in codes}
+    return same
 
 
 def _in_process(tok=None, *, timeout=10.0, follow_redirects=True, bulk=False, headers=None):
