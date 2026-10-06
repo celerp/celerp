@@ -12,6 +12,8 @@ import tarfile
 
 import pytest
 
+from ui.i18n import t
+
 pytestmark = pytest.mark.browser
 
 _WAIT_MS = 30_000
@@ -66,8 +68,7 @@ def test_system_recovery_safety_failure_confirm_browser(page, ui_server, api, tm
         button = page.locator('button:has-text("Restore without safety copy")')
         button.wait_for(timeout=_WAIT_MS)
         flash = page.locator("#backup-flash").inner_text()
-        assert "A safety backup could not be made before restoring." in flash
-        assert "No space left on device" in flash
+        assert t("system_recovery.safety_failed", "en", detail="No space left on device") in flash
         assert "Nothing has been changed" in flash
         assert restored == []
         assert not (tmp_path / "data" / "static" / "attachments").exists()
