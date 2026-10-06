@@ -1481,6 +1481,36 @@ async def test_a_carried_table_redefined_before_the_export_holds_it_stops_it(
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
 
+async def test_an_unchanged_catalog_reads_the_same_through_two_connections(real_engine, tmp_path, monkeypatch):
+    """Rows written, a table rewritten in place and its statistics gathered leave every
+    table's columns and keys as they were, so two reads compare equal."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from celerp import db_catalog
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+
+    async def catalog():
+        async with AsyncSession(bind=real_engine) as session:
+            return await db_catalog.read(session)
+
+    try:
+        await _bk_defined(real_engine, cid, partitioned=True)
+        before = await catalog()
+        await _bk_ddl(real_engine, ["UPDATE zz_widgets SET note = 'second', seq = seq + 1",
+                                    "ALTER TABLE zz_gadgets ALTER COLUMN id SET STATISTICS 50",
+                                    "CLUSTER zz_gadgets USING zz_gadgets_pkey", "ANALYZE zz_widgets"])
+        after = await catalog()
+
+        assert db_catalog.changed_schema(before, after, before) is None
+        assert [col.num for col in after["zz_widgets"].columns.values()] == [1, 2, 3, 4, 5, 6]
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
 async def test_a_carried_table_held_by_the_export_cannot_have_a_column_made_again(
         real_engine, tmp_path, monkeypatch):
     """Once the export holds zz_widgets, another connection dropping a column and adding it
