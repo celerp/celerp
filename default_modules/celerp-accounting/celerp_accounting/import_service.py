@@ -162,21 +162,31 @@ async def create_chart_account(
 
 
 async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -> str:
-    """Find next available account code under 1110 (1111, 1112, ...)."""
-    rows = (
-        await session.execute(
-            select(Account.code).where(
-                Account.company_id == company_id,
-                Account.code.like("111%"),
+    """The next free bank code under 1110, with no limit on how many there are.
+
+    The first nine are 1111 to 1119. After those come 1119-010, 1119-011, ...: the
+    leading number stays a bank code (range tests read it), and the zero-padded
+    suffix keeps every bank code sorting in the order the accounts were added, all
+    before 1120."""
+    used = set(
+        (
+            await session.execute(
+                select(Account.code).where(
+                    Account.company_id == company_id,
+                    Account.code.like("111%"),
+                )
             )
-        )
-    ).scalars().all()
-    used = set(rows)
-    for i in range(1, 100):
-        code = f"111{i}"
-        if code not in used:
-            return code
-    raise HTTPException(status_code=400, detail="No available account codes under 1110")
+        ).scalars().all()
+    )
+    n = 1
+    while _bank_code(n) in used:
+        n += 1
+    return _bank_code(n)
+
+
+def _bank_code(n: int) -> str:
+    """The *n*th automatic bank code (see next_bank_account_code)."""
+    return f"111{n}" if n < 10 else f"1119-{n:03d}"
 
 
 async def add_bank_account(
