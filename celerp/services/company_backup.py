@@ -138,6 +138,7 @@ OLDER = "This company backup was made by an older version of Celerp and cannot b
 TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
 TOO_LARGE_TO_BACK_UP = "This company holds more data than a company backup can restore." + _NOT_BACKED_UP
+RESHAPED = "The structure of {table} changed while it was being backed up." + _NOT_BACKED_UP + " Try again."
 ROW_TOO_LARGE_TO_BACK_UP = "One record in {table} is too large for a company backup to restore." + _NOT_BACKED_UP
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
@@ -189,6 +190,8 @@ class _Plan:
     order: list[str]
     schema: dict[str, db_catalog.Table]
     owners: dict[str, str]
+    # Company tables not carried because of their shape here.
+    refused: set[str]
 
     def outside_fks(self, table: str) -> list[tuple[str, ...]]:
         """Foreign keys of ``table`` pointing at a table the backup does not carry."""
@@ -224,11 +227,12 @@ def _declared(module: str) -> dict:
     return declared if isinstance(declared, dict) else {}
 
 
-def _refusal(table: str, owners: dict[str, str]) -> BackupError:
+def _refusal(table: str, owners: dict[str, str], *, restoring: bool = False) -> BackupError:
+    status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "back up", _NOT_BACKED_UP)
     if table in owners:
-        return BackupError(409, f"The {owners[table]} module keeps data in {table} in a form Celerp "
-                                f"cannot back up yet." + _NOT_BACKED_UP)
-    return BackupError(409, f"This company has data Celerp cannot back up yet: {table}." + _NOT_BACKED_UP)
+        return BackupError(status, f"The {owners[table]} module keeps data in {table} in a form Celerp "
+                                   f"cannot {verb} yet." + end)
+    return BackupError(status, f"This company has data Celerp cannot {verb} yet: {table}." + end)
 
 
 async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
@@ -240,6 +244,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
     declarations = {module: _declared(module) for module in prefixes}
     owners: dict[str, str] = {}
     carried: list[str] = []
+    refused: set[str] = set()
     for name in sorted(schema):
         table = schema[name]
         owner = _owner(name, prefixes)
@@ -264,6 +269,8 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
             carried.append(name)
         elif strict:
             raise _refusal(name, owners)
+        else:
+            refused.add(name)
     changed = True
     while changed:
         changed = False
@@ -280,8 +287,9 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
                 if strict:
                     raise _refusal(name, owners)
                 carried.remove(name)
+                refused.add(name)
                 changed = True
-    return _Plan(order=order, schema=schema, owners=owners)
+    return _Plan(order=order, schema=schema, owners=owners, refused=refused)
 
 
 async def classify(session: AsyncSession) -> list[str]:
@@ -393,7 +401,6 @@ async def _batches(session: AsyncSession, table: db_catalog.Table, company_id, e
     ordered = ", ".join(f"o{i}" for i in range(len(table.pk)))
     order = ", ".join(f"t.{db_catalog.ident(c)}" for c in table.pk)
     company = f"CAST(CAST(:c AS text) AS {db_catalog.ident(table.columns['company_id'].udt)})"
-    held = db_catalog.stored_in(table.name, "t")
     after = (f" AND ({order}) > ("
              + ", ".join(f"CAST(CAST(:k{i} AS text) AS {db_catalog.ident(udt[c])})" for i, c in enumerate(table.pk)) + ")")
     params: dict = {"c": str(company_id), "n": BATCH_ROWS, "b": BATCH_BYTES}
@@ -403,7 +410,7 @@ async def _batches(session: AsyncSession, table: db_catalog.Table, company_id, e
             f"SELECT {picked}, j, fetched FROM (SELECT s.*, count(*) OVER () AS fetched, "
             f"sum(octet_length(s.j)) OVER (ORDER BY {ordered} ROWS UNBOUNDED PRECEDING) "
             f"- octet_length(s.j) AS before FROM ("
-            f"SELECT {keys}, {natives}, ({expr})::text AS j FROM {q} t WHERE t.company_id = {company} AND {held}"
+            f"SELECT {keys}, {natives}, ({expr})::text AS j FROM {q} t WHERE t.company_id = {company}"
             f"{'' if first else after} ORDER BY {order} LIMIT :n) s) w "
             f"WHERE w.before < :b ORDER BY {ordered}"), params)).all()
         if not rows:
@@ -476,8 +483,9 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
     Everything the backup holds is read through its own session in one read-only
     repeatable-read transaction, so the company, its settings, every table and every
     attachment reference come from the same moment: a write committed meanwhile is either
-    wholly in the backup or wholly absent from it, and rows of a table joined to a carried
-    one meanwhile are left out. Writers are never blocked. SQLite has one
+    wholly in the backup or wholly absent from it. Writers are never blocked, but a
+    carried table's partitions cannot be detached until the backup is written; a carried
+    table joined to another or changed meanwhile refuses the backup. SQLite has one
     writer at a time, so there one plain transaction reads the same moment.
 
     Refused, with nothing written, when the company holds data Celerp cannot back up."""
@@ -493,12 +501,13 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
     if company is None:
         raise BackupError(404, "Company not found.")
     plan = await _classify(session, strict=True)
+    if changed := await db_catalog.hold(session, plan.order):
+        raise BackupError(409, RESHAPED.format(table=changed))
     tables = []
     for name in plan.order:
         if name in plan.owners and not await session.scalar(text(
                 f"SELECT 1 FROM {db_catalog.ident(name)} t WHERE t.company_id = "
-                f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) "
-                f"AND {db_catalog.stored_in(name, 't')} LIMIT 1"),
+                f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
                 {"c": str(company_id)}):
             continue
         tables.append(name)
@@ -540,6 +549,8 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
                             fh.write(body)
                         rows += len(batch)
                 manifest["tables"][name] = {"columns": table.insertable, "rows": rows, "sha256": digest.hexdigest()}
+            if changed := await db_catalog.reshaped(session, plan.order):
+                raise BackupError(409, RESHAPED.format(table=changed))
             names: dict[str, str] = {}
             for name in sorted(found):
                 backup_name = _backup_name(name, found[name], types)
@@ -900,13 +911,16 @@ async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values
 
 async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
     """Refuse a backup this installation cannot restore exactly: a missing or older
-    module, a table or column it does not have, or rows that do not hold together."""
+    module, a table or column it does not have, a table it holds in a form a backup
+    cannot carry, or rows that do not hold together."""
     _check_modules(backup.manifest)
     plan = await _classify(session, strict=False)
     tables = backup.manifest["tables"]
     for name, meta in tables.items():
         if name not in plan.schema or not set(meta["columns"]) <= set(plan.schema[name].insertable):
             raise BackupError(422, NEWER)
+        if name in plan.refused:
+            raise _refusal(name, plan.owners, restoring=True)
         if name not in plan.order:
             raise BackupError(422, OLDER if _older(backup.manifest) else NEWER)
     order = [t for t in plan.order if t in tables]

@@ -9,10 +9,12 @@ has rows in (a backup, a factory reset) reads it here rather than from the ORM."
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -128,6 +130,8 @@ _INHERITS = (
     "WITH RECURSIVE up(d, a) AS (SELECT inhrelid, inhparent FROM pg_inherits "
     "  UNION SELECT up.d, i.inhparent FROM up JOIN pg_inherits i ON i.inhrelid = up.a), "
     "here AS (SELECT to_regnamespace(current_schema()) AS ns) ")
+# A table this connection's reads reach: any but another connection's temporary table.
+_REACHED = "({t}.relpersistence <> 't' OR {t}.relnamespace = pg_my_temp_schema())"
 _LABEL = "CASE WHEN {t}.relnamespace = here.ns THEN {t}.relname::text ELSE format('%s.%s', {n}.nspname, {t}.relname) END"
 
 
@@ -136,24 +140,68 @@ async def inheriting(session: AsyncSession) -> dict[str, str]:
     partition, with the first such table (``schema.table`` when in another schema).
     Reading or deleting the table's rows reaches that table's too, which none of the
     table's keys bind, so nothing reading the catalog can tell whose they are. Another
-    connection's temporary tables are never reached, so they are left out."""
+    connection's temporary tables are never reached, so they are left out; this
+    connection's own count."""
     return dict((await session.execute(text(
         _INHERITS + "SELECT DISTINCT ON (a.relname) a.relname::text, " + _LABEL.format(t="d", n="dn") + " FROM up "
         "JOIN pg_class d ON d.oid = up.d JOIN pg_namespace dn ON dn.oid = d.relnamespace "
         "JOIN pg_class a ON a.oid = up.a, here "
-        "WHERE NOT d.relispartition AND d.relpersistence <> 't' AND a.relnamespace = here.ns "
+        "WHERE NOT d.relispartition AND " + _REACHED.format(t="d") + " AND a.relnamespace = here.ns "
         "ORDER BY a.relname, 2"))).all())
 
 
-def stored_in(name: str, alias: str) -> str:
-    """A condition on rows read as ``alias`` from ``name``: true only for rows stored in
-    that table or in one of its partitions as this transaction sees the catalog. A read
-    also reaches tables joined to ``name`` (by inheritance or as a partition) after the
-    transaction began, so a repeatable-read transaction filters them out with this."""
-    table = "'" + ident(name).replace("'", "''") + "'"
-    return (f"{alias}.tableoid IN (WITH RECURSIVE down(oid) AS (SELECT CAST({table} AS regclass)::oid "
-            "UNION SELECT i.inhrelid FROM down JOIN pg_inherits i ON i.inhparent = down.oid "
-            "JOIN pg_class p ON p.oid = i.inhrelid AND p.relispartition) SELECT oid FROM down)")
+async def _stored(session: AsyncSession, name: str) -> dict[tuple[str, str], bool]:
+    """``name`` and each table under it as this transaction's snapshot of the catalog
+    holds them, as (schema, table), each with whether it stores rows of its own (a
+    partitioned table stores none)."""
+    rows = await session.execute(text(
+        "WITH RECURSIVE down(oid) AS (SELECT CAST(:t AS regclass)::oid "
+        "  UNION SELECT i.inhrelid FROM down JOIN pg_inherits i ON i.inhparent = down.oid) "
+        "SELECT n.nspname::text, c.relname::text, c.relkind <> 'p' FROM down JOIN pg_class c ON c.oid = down.oid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE " + _REACHED.format(t="c")), {"t": ident(name)})
+    return {(ns, rel): stores for ns, rel, stores in rows}
+
+
+def _scans(plan, found: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    if isinstance(plan, dict):
+        if "Relation Name" in plan:
+            found.add((plan["Schema"], plan["Relation Name"]))
+        for value in plan.values():
+            _scans(value, found)
+    elif isinstance(plan, list):
+        for value in plan:
+            _scans(value, found)
+    return found
+
+
+async def reshaped(session: AsyncSession, names: list[str]) -> str | None:
+    """The first of ``names`` a read now reaches other tables of than this transaction's
+    snapshot of the catalog holds under it, or None. A repeatable-read transaction reads
+    rows as they were when it began, but a read reaches the tables joined to the one
+    read (by inheritance or as a partition) as they are now; once a table is joined,
+    detached or swapped meanwhile, the rows read are no longer the rows the table held."""
+    for name in names:
+        plan = await session.scalar(text(f"EXPLAIN (VERBOSE, FORMAT JSON) SELECT 1 FROM {ident(name)}"))
+        held = {table for table, stores in (await _stored(session, name)).items() if stores}
+        if _scans(json.loads(plan) if isinstance(plan, str) else plan, set()) != held:
+            return name
+    return None
+
+
+async def hold(session: AsyncSession, names: list[str]) -> str | None:
+    """Lock ``names`` and every table this transaction's snapshot of the catalog holds
+    under them until the transaction ends, so none of their partitions can be detached
+    meanwhile, then return the first of them ``reshaped`` (or one dropped), or None.
+    Writes to their rows go on; a table can still be joined to them, which only
+    ``reshaped`` tells."""
+    for name in names:
+        tables = ", ".join(f"ONLY {ident(ns)}.{ident(rel)}" for ns, rel in await _stored(session, name))
+        try:
+            async with session.begin_nested():
+                await session.execute(text(f"LOCK TABLE {tables} IN ACCESS SHARE MODE"))
+        except DBAPIError:
+            return name
+    return await reshaped(session, names)
 
 
 async def partition_key(session: AsyncSession) -> str | None:
