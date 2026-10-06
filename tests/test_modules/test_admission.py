@@ -1424,7 +1424,7 @@ if process == "preloaded":
 elif process == "api":
     import celerp.main  # noqa: F401
 elif process == "ui":
-    src = open("ui/app.py").read().split("# Register UI routes from the loaded modules.")[0]
+    src = open("ui/app.py").read().split("# The API process decides which modules run.")[0]
     app = types.ModuleType("ui.app")
     app.__file__ = "ui/app.py"
     sys.modules["ui.app"] = app
