@@ -6,7 +6,18 @@ from __future__ import annotations
 
 from fasthtml.common import *
 
-from celerp.services.currencies import CURRENCIES, currency_label
+from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
+from ui.i18n import t
+
+
+def currency_label(code: str) -> str:
+    """"USD – US Dollar" in the user's language, or the code itself if unknown."""
+    return f"{code} – {t(f'currency.name.{code}')}" if code in CURRENCY_CODES else code
+
+
+def currency_options() -> list[tuple[str, str]]:
+    """(code, label) for every supported currency, in display order."""
+    return [(code, currency_label(code)) for code in CURRENCIES]
 
 
 def currency_combobox_td(
@@ -28,7 +39,6 @@ def currency_combobox_td(
         target: HTMX swap target for both buttons (default "closest td").
         include: CSS selector for hx_include on save (default f"#{hidden_id}").
     """
-    from ui.i18n import t
     display_val = currency_label(value)
     _include = include or f"#{hidden_id}"
     return Td(
@@ -40,11 +50,11 @@ def currency_combobox_td(
             Input(type="hidden", name="value", value=value, id=hidden_id),
             Div(
                 *[Div(
-                    Span(f"{code} – {lbl.split('–', 1)[-1].strip()}"),
+                    Span(lbl),
                     cls="combobox-option",
                     data_value=code,
                     data_search=f"{code} {lbl}".lower(),
-                ) for code, lbl in CURRENCIES],
+                ) for code, lbl in currency_options()],
                 cls="combobox-list",
             ),
             cls="combobox-wrap",
