@@ -1375,10 +1375,11 @@ def test_protected_internal_bound_by_the_modules_own_submodule_is_refused(_modul
 
 _REACH_LLM = "importlib.import_module('celerp.' + 'ai.llm')"
 
-# What a module's own code binds while it activates, and whether the module loads.
-# A protected object in the namespace or inside a plain container (dict keys and
-# values, list, tuple, set, frozenset) refuses it; classes, functions and other
-# objects are not examined by the rule, and sys.modules is never entered.
+# What a module's own code does while it activates, and whether the module loads.
+# The values it holds, directly or in plain containers (dict keys and values, list,
+# tuple, set, frozenset), are examined for a protected object; source that looks a
+# protected internal up among what is already loaded is refused before it runs; a
+# value that cannot be examined refuses the module.
 _BINDINGS = {
     "in-a-list": ("HOLD = [LLM]\n", False),
     "dict-value": ("HOLD = {'m': LLM}\n", False),
@@ -1386,26 +1387,53 @@ _BINDINGS = {
     "nested-in-a-frozenset": ("HOLD = frozenset({(1, (LLM,))})\n", False),
     "list-holding-itself": ("HOLD = [LLM]\nHOLD.append(HOLD)\n", False),
     "plain-data-holding-itself": ("HOLD = {'a': [1, (2, frozenset({3}))], 'b': {4}}\nHOLD['c'] = HOLD\n", True),
-    "class-attribute": ("class Box:\n    llm = LLM\n", True),
-    "default-argument": ("def f(m=LLM):\n    return m\n", True),
-    "holds-sys-modules": ("import sys\nHOLD = [sys.modules]\n", True),
+    "holds-sys-modules": ("import sys\nHOLD = [sys.modules]\n", False),
+    "loaded-internals-from-sys-modules": (
+        "import sys\nHOLD = [m for n, m in sys.modules.items() if n.startswith('celerp.' + 'ai')]\n", False),
+    "sys-modules-lookup": ("import sys\nX = sys.modules.get('celerp.' + 'ai.llm')\n", False),
+    "sys-modules-through-an-alias": ("import sys as s\nX = s.modules.get('celerp.ai.llm')\n", False),
+    "sys-modules-imported-by-name": ("from sys import modules\nX = modules.get('celerp.ai.llm')\n", False),
+    "sys-modules-by-getattr": ("import sys\nX = getattr(sys, 'modules')\n", False),
+    "internal-by-attribute": ("import celerp\ntry:\n    X = celerp.ai\nexcept AttributeError:\n    X = None\n", False),
+    "internal-by-attribute-in-a-list": (
+        "import celerp\ntry:\n    HOLD = [celerp.ai.llm]\nexcept AttributeError:\n    HOLD = []\n", False),
+    "internal-by-getattr": ("import celerp\nX = getattr(celerp, 'ai', None)\n", False),
+    "internal-by-attribute-of-an-alias": ("import celerp as c\npkg = c\nX = getattr(pkg, 'ai', None)\n", False),
+    "attribute-lookup-raises": ("class G:\n    def __getattr__(self, n):\n        raise RuntimeError('no context')\n"
+                                "X = G()\n", False),
+    "attribute-lookup-raises-in-a-list": ("class G:\n    def __getattr__(self, n):\n"
+                                          "        raise RuntimeError('no context')\nHOLD = [G()]\n", False),
+    "object-claiming-to-be-a-list": ("class F:\n    __class__ = property(lambda s: list)\nHOLD = [F()]\n", False),
 }
 
+# The process states modules load in: the API and UI processes as they start, a
+# process that imported a protected internal first, and one that imported nothing.
 _VERDICT = """
-import json, sys
-if sys.argv[2] == "preloaded":
-    import celerp.ai.llm  # noqa: F401  (as the API process)
+import json, sys, types
+process = sys.argv[2]
+if process == "preloaded":
+    import celerp.ai.llm  # noqa: F401
+elif process == "api":
+    import celerp.main  # noqa: F401
+elif process == "ui":
+    src = open("ui/app.py").read().split("# Register UI routes from the loaded modules.")[0]
+    app = types.ModuleType("ui.app")
+    app.__file__ = "ui/app.py"
+    sys.modules["ui.app"] = app
+    import ui  # noqa: F401
+    exec(compile(src, "ui/app.py", "exec"), app.__dict__)
 from celerp.modules import loader
-fresh = not [n for n in sys.modules if n.startswith("celerp.ai")]
+preloaded = bool([n for n in sys.modules if n.startswith("celerp.ai")])
 loaded = [m["name"] for m in loader.load_all(sys.argv[1], {sys.argv[3]})]
-print(json.dumps({"fresh": fresh, "loads": sys.argv[3] in loaded, "errors": loader.load_errors()}))
+print(json.dumps({"preloaded": preloaded, "loads": sys.argv[3] in loaded, "errors": loader.load_errors()}))
 """
+_PROCESSES = ("preloaded", "fresh", "api", "ui")
 
 
 @pytest.mark.parametrize("binding", list(_BINDINGS))
 def test_module_gets_the_same_verdict_whether_core_was_loaded_first_or_not(_modules, binding):
     """The API process has imported protected internals before modules load; the UI
-    process has not. A module's verdict depends only on what its own code binds."""
+    process has imported others. A module's verdict depends only on its own code."""
     import os
     import subprocess
 
@@ -1415,15 +1443,16 @@ def test_module_gets_the_same_verdict_whether_core_was_loaded_first_or_not(_modu
                   init_prelude="import importlib\n" + body.replace("LLM", _REACH_LLM))
     repo = Path(__file__).resolve().parents[2]
     results = {}
-    for process in ("preloaded", "fresh"):
+    for process in _PROCESSES:
         out = subprocess.run([sys.executable, "-c", _VERDICT, str(_modules), process, folder],
                              cwd=repo, env={**os.environ, "MODULE_DIR": str(_modules)},
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, timeout=180)
         assert out.returncode == 0, out.stderr[-2000:]
         results[process] = json.loads(out.stdout.strip().splitlines()[-1])
 
-    assert [r["fresh"] for r in results.values()] == [False, True]
-    assert {p: r["loads"] for p, r in results.items()} == {"preloaded": loads, "fresh": loads}, results
+    assert results["preloaded"]["preloaded"] and results["api"]["preloaded"]
+    assert not results["fresh"]["preloaded"]
+    assert {p: r["loads"] for p, r in results.items()} == dict.fromkeys(_PROCESSES, loads), results
 
 
 def test_locale_file_outside_the_module_is_not_registered(_modules):

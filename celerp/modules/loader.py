@@ -15,11 +15,12 @@ runs nothing.
 Protected internals
 -------------------
 An admission and licensing rule, not a sandbox: code a third-party module ships
-must not statically import protected BSL internals (_PROTECTED_BSL_INTERNALS),
-and must not bind a protected object into its own namespace while it activates.
-The verdict is the same whether core modules were loaded first or not. A module
-that breaks the rule is rejected with a clear error that names the violation and
-links to the license and the sanctioned alternative.
+must not import protected BSL internals (_PROTECTED_BSL_INTERNALS) or reach them
+through an imported module or the interpreter's module table, and must not bind a
+protected object into its own namespace while it activates. The verdict is the
+same whether core modules were loaded first or not. A module that breaks the rule
+is rejected with a clear error that names the violation and links to the license
+and the sanctioned alternative.
 
 Module authors who need AI should use celerp.modules.api (public, BSL) —
 NOT celerp.ai.* directly.
@@ -1274,11 +1275,10 @@ _PLAIN_CONTAINERS = (dict, list, tuple, set, frozenset)
 
 
 def _held_values(namespace: dict) -> list:
-    """Every value in *namespace* and every value nested in it through plain
-    containers (dict keys and values, list, tuple, set, frozenset). Nothing else is
-    entered: not classes, functions, other objects or other modules. Each container
-    is entered once, so a container that holds itself ends the walk. sys.modules is
-    not entered: what it holds depends on what the process loaded before."""
+    """Every value in *namespace*, directly or in plain containers (dict keys and
+    values, list, tuple, set, frozenset). Each container is entered once, so a
+    container that holds itself ends the walk. sys.modules belongs to the
+    interpreter, not to the module."""
     held, entered, queue = [], {id(sys.modules)}, list(namespace.values())
     while queue:
         val = queue.pop()
@@ -1343,24 +1343,25 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
         sys.modules.pop(pkg_name, None)
         raise ModuleLoadError(f"Failed to import ({type(exc).__name__}: {exc})")
 
-    # Admission rule, second stage: admission scanned the module's source for
-    # imports of protected internals; this checks that the module's own code did
-    # not bind a protected object into its namespace during activation, directly
-    # or inside a plain container. It is a licensing rule, not a sandbox. Only
-    # code shipped in the module folder is examined, and what core imports on its
-    # own behalf is not the module's binding, so the verdict is the same whether
-    # core modules were loaded first or not. Trusted (first-party bundled)
-    # modules are exempt: they ARE the internals.
+    # Admission rule, second stage: admission refused source that imports a
+    # protected internal or looks one up among what is already loaded; this checks
+    # the values held by the module's own code, directly or in plain containers,
+    # for a protected object bound during activation. It is a licensing rule, not
+    # a sandbox. A value that cannot be examined refuses the module. Trusted
+    # (first-party bundled) modules are exempt: they ARE the internals.
     if not trusted:
         violations: set[str] = set()
-
-        for own in _own_code_modules(pkg_path):
-            for val in _held_values(vars(own)):
-                candidate = getattr(val, "__name__", None) or getattr(
-                    getattr(val, "__spec__", None), "name", None
-                )
-                owner = getattr(val, "__module__", None)
-                violations |= {hit for hit in map(_protected_hit, (candidate, owner)) if hit}
+        try:
+            for own in _own_code_modules(pkg_path):
+                for val in _held_values(vars(own)):
+                    candidate = getattr(val, "__name__", None) or getattr(
+                        getattr(val, "__spec__", None), "name", None
+                    )
+                    owner = getattr(val, "__module__", None)
+                    violations |= {hit for hit in map(_protected_hit, (candidate, owner)) if hit}
+        except Exception as exc:
+            _evict_module(pkg_name)
+            raise ModuleLoadError(f"Failed admission check ({type(exc).__name__}: {exc})")
 
         if violations:
             _evict_module(pkg_name)
@@ -1775,18 +1776,82 @@ def _reachable_sources(pkg_path: Path, entries: list[Path | None]) -> dict[Path,
     return trees
 
 
+def _import_aliases(tree: ast.Module) -> dict[str, str]:
+    """The dotted module path each imported name in ``tree`` stands for, and each
+    name assigned from one: ``import sys as s`` gives s -> sys, ``import celerp.x``
+    gives celerp -> celerp, ``from sys import modules`` gives modules -> sys.modules."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases |= {a.asname or a.name.split(".")[0]: a.name if a.asname else a.name.split(".")[0]
+                        for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            aliases |= {a.asname or a.name: f"{node.module}.{a.name}" for a in node.names}
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            ref = _dotted_reference(node.value, aliases) if isinstance(node, ast.Assign) else None
+            for target in node.targets if ref else []:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases[target.id] = ref
+                    changed = True
+    return aliases
+
+
+def _dotted_reference(node, aliases: dict[str, str]) -> str | None:
+    """The dotted path an expression reaches through imported names, attributes,
+    ``getattr(<module>, '<name>')`` and import calls with a literal name, or None."""
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id)
+    if isinstance(node, ast.Attribute):
+        base = _dotted_reference(node.value, aliases)
+        return f"{base}.{node.attr}" if base else None
+    if not isinstance(node, ast.Call) or not node.args:
+        return None
+    fn = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+    names = [a.value if isinstance(a, ast.Constant) and isinstance(a.value, str) else None
+             for a in node.args[:2]]
+    if fn in ("import_module", "__import__"):
+        return names[0]
+    base = _dotted_reference(node.args[0], aliases) if fn == "getattr" and len(names) > 1 else None
+    return f"{base}.{names[1]}" if base and names[1] else None
+
+
+def _check_loaded_lookups(path: Path, tree: ast.Module, violations: set[str]) -> None:
+    """Add to ``violations`` each protected internal ``tree`` reaches as an attribute
+    of an imported module rather than by importing it, and refuse a read of the
+    interpreter's module table. Either only finds what the process loaded before,
+    so the check is made on the source. Raises :class:`ModuleLoadError`."""
+    aliases = _import_aliases(tree)
+    refs = [*aliases.values(), *(_dotted_reference(node, aliases) for node in ast.walk(tree)
+                                 if isinstance(node, (ast.Attribute, ast.Call)))]
+    for ref in filter(None, refs):
+        if ref.split(".")[-2:] == ["sys", "modules"]:
+            raise ModuleLoadError(
+                f"{path.name!r} reads the interpreter's module table (sys.modules). Modules "
+                f"reach Celerp through celerp.modules.api: {_MODULE_AI_API_URL}")
+        hit = _protected_hit(ref)
+        if hit:
+            violations.add(hit)
+
+
 def _scan_protected_imports(pkg_path: Path, entry: Path | None) -> set[str]:
     """Protected internals reachable from ``entry`` by import.
 
     Follows the module's own imports transitively (_reachable_sources) and flags
     static imports of a protected internal (including ``from celerp.ai import
     quota``) and dynamic importlib.import_module / __import__ calls whose literal
-    argument names one. Static analysis is best-effort; the authoritative
+    argument names one. Source that reads the interpreter's module table, or reaches
+    a protected internal through an attribute of an imported module, is refused
+    outright, so the verdict does not depend on what was loaded first. Static
+    analysis is best-effort; the authoritative
     enforcement of paid capabilities is server-side. Fails closed like
     _reachable_sources.
     """
     violations: set[str] = set()
-    for tree in _reachable_sources(pkg_path, [entry]).values():
+    for path, tree in _reachable_sources(pkg_path, [entry]).items():
+        _check_loaded_lookups(path, tree, violations)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 targets = [alias.name for alias in node.names]
