@@ -14,6 +14,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -34,7 +35,7 @@ class StartBatchBody(BaseModel):
 
 
 @router.post("/scan")
-async def scan_once(payload: ScanBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def scan_once(payload: ScanBody, _: None = require_permission("edit_inventory"), company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entity_id = f"scan:{uuid.uuid4()}"
     try:
         location_uuid = uuid.UUID(payload.location_id) if payload.location_id else None
@@ -50,7 +51,7 @@ async def scan_once(payload: ScanBody, company_id=Depends(get_current_company_id
 
 
 @router.post("/scan/batch")
-async def scan_batch(payload: ScanBatchBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def scan_batch(payload: ScanBatchBody, _: None = require_permission("edit_inventory"), company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     created = 0
     for s in payload.scans:
         try:
@@ -120,7 +121,7 @@ async def resolve_scan(code: str, company_id=Depends(get_current_company_id), se
 
 
 @router.post("/batch")
-async def start_batch(payload: StartBatchBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def start_batch(payload: StartBatchBody, _: None = require_permission("edit_inventory"), company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     batch_id = f"scan-batch:{uuid.uuid4()}"
     try:
         location_uuid = uuid.UUID(payload.location_id) if payload.location_id else None
@@ -136,7 +137,7 @@ async def start_batch(payload: StartBatchBody, company_id=Depends(get_current_co
 
 
 @router.post("/batch/{batch_id}/complete")
-async def complete_batch(batch_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def complete_batch(batch_id: str, _: None = require_permission("edit_inventory"), company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await emit_event(
         session, company_id=company_id, entity_id=batch_id, entity_type="scan", event_type="scan.nfc",
         data={"code": batch_id, "raw": {"action": "complete"}}, actor_id=user.id, location_id=None, source="api",
