@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, download, manifest, members, owner, read, rezip, token
 from migration_support import code_config, count, real_client, real_engine  # noqa: F401
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -601,7 +602,7 @@ async def test_lost_response_before_commit_retry_restores_once(routed_ui, real_e
 
     router.overrides[("POST", "/company-backups/restore")] = unreachable
     page = _page(await ui.post(f"{base}/restore", data=_hidden(preview)))
-    assert "Celerp could not reach its local service." in page and "http://" not in page
+    assert t("api.unreachable", "en") in page and "http://" not in page
     assert len(await _company_ids(real_engine)) == 1
 
     del router.overrides[("POST", "/company-backups/restore")]
