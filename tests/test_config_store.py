@@ -373,3 +373,38 @@ def test_write_still_fails_when_the_file_stays_held(tmp_path, monkeypatch):
 
     assert path.read_text() == "old"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["update_state.json"]
+@pytest.mark.parametrize("where", ["before_write", "during_fsync", "after_refresher_start"])
+def test_stop_while_taking_the_lock_gives_it_back(tmp_path, monkeypatch, where):
+    """A stop signal's SystemExit raised anywhere between creating the lock file
+    and handing back `release` removes the lock, so the next start does not wait
+    for it to go stale."""
+    lock = str(tmp_path / "update.lock")
+    real_write, real_fsync = os.write, os.fsync
+    real_start = config_store.threading.Thread.start
+
+    def write(fd, data):
+        if where == "before_write":
+            raise SystemExit(0)
+        return real_write(fd, data)
+
+    def fsync(fd):
+        real_fsync(fd)
+        if where == "during_fsync":
+            raise SystemExit(0)
+
+    def start(thread):
+        real_start(thread)
+        if where == "after_refresher_start" and thread.name == "lock-refresh":
+            raise SystemExit(0)
+
+    monkeypatch.setattr(config_store.os, "write", write)
+    monkeypatch.setattr(config_store.os, "fsync", fsync)
+    monkeypatch.setattr(config_store.threading.Thread, "start", start)
+    with pytest.raises(SystemExit):
+        config_store.hold_lock(lock, 0.1)
+    monkeypatch.undo()
+
+    assert not os.path.exists(lock)
+    again = config_store.hold_lock(lock, 0.1)
+    assert again is not None
+    again()

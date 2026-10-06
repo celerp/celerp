@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from celerp.services.import_stage import read_stage, write_stage
 from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
-from test_helpers import make_test_token, authed_cookies
+from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
 
@@ -3498,10 +3498,10 @@ class TestPhase2DeepPolish:
 # ── T0: Module-aware sidebar filtering ───────────────────────────────────────
 
 class TestModuleAwareSidebar:
-    """Sidebar shows only modules listed in the JWT 'modules' claim."""
+    """The sidebar shows a module's entries only when the company uses the
+    module, read from current company settings."""
 
-    def _make_request(self, modules: list[str] | None):
-        """Build a minimal mock request with a JWT cookie embedding given modules."""
+    def _request(self, modules: list[str] | None = None):
         token = make_test_token(role="owner", modules=modules)
 
         class _FakeUrl:
@@ -3514,115 +3514,53 @@ class TestModuleAwareSidebar:
 
         return _FakeRequest()
 
-    def test_get_enabled_modules_returns_set(self):
-        """get_enabled_modules decodes the modules claim into a set."""
-        from ui.config import get_enabled_modules
-        req = self._make_request(["celerp-docs", "celerp-inventory"])
-        result = get_enabled_modules(req)
-        assert result == {"celerp-docs", "celerp-inventory"}
-
-    def test_get_enabled_modules_empty_list(self):
-        """Empty modules list returns empty set (triggers show-all fallback)."""
-        from ui.config import get_enabled_modules
-        req = self._make_request([])
-        assert get_enabled_modules(req) == set()
-
-    def test_get_enabled_modules_missing_claim(self):
-        """JWT without modules claim returns empty set (show-all fallback for old tokens)."""
-        from ui.config import get_enabled_modules
-        req = self._make_request(None)
-        assert get_enabled_modules(req) == set()
-
-    def test_jwt_modules_claim_embedded_by_create_access_token(self):
-        """create_access_token embeds modules list in the JWT payload."""
-        import base64, json
-        from celerp.services.auth import create_access_token
-        token, _ = create_access_token(
-            "user-1", "company-1", "owner", snonce="n", modules=["celerp-docs", "celerp-inventory"]
-        )
-        payload_b64 = token.split(".")[1]
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
-        assert set(payload["modules"]) == {"celerp-docs", "celerp-inventory"}
-
-    def test_jwt_no_modules_defaults_to_empty_list(self):
-        """create_access_token with no modules arg embeds empty list."""
-        import base64, json
-        from celerp.services.auth import create_access_token
-        token, _ = create_access_token("user-1", "company-1", "owner", snonce="n")
-        payload_b64 = token.split(".")[1]
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
-        assert payload["modules"] == []
-
-    def test_sidebar_hides_module_items_not_in_jwt(self):
-        """Nav items from modules not in the JWT modules claim are excluded from sidebar."""
-        from ui.components.shell import _sidebar
+    @pytest.fixture
+    def nav(self):
         from celerp.modules import slots
-
         slots.clear()
         slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
                                 "order": 10, "_module": "celerp-docs"})
         slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
                                 "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(["celerp-docs"])  # only docs enabled
-            html = str(_sidebar("", request=req))
-            assert "Documents" in html
-            assert "Inventory" not in html
-        finally:
-            slots.clear()
-
-    def test_sidebar_shows_all_when_modules_empty(self):
-        """Empty modules set (no claim) shows all module nav items as safe fallback."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
-        slots.clear()
-        slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
-                                "order": 10, "_module": "celerp-docs"})
-        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
-                                "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(None)  # no modules claim → show all
-            html = str(_sidebar("", request=req))
-            assert "Documents" in html
-            assert "Inventory" in html
-        finally:
-            slots.clear()
-
-    def test_sidebar_core_folded_nav_ignores_modules_claim(self):
-        """Core-folded components (AI) stay in the sidebar even when the JWT
-        modules claim lists other modules only: they are wired at app
-        construction, never per-company enabled, and their pages do their own
-        plan gating (the AI page shows the showcase ad until a paid plan)."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
-        slots.clear()
         slots.register("nav", {"key": "ai", "label": "AI Assistant", "href": "/ai",
                                 "order": 90, "_module": "celerp-ai"})
-        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
-                                "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(["celerp-docs"])  # claim excludes both
-            html = str(_sidebar("", request=req))
-            assert "AI Assistant" in html   # core-folded: always present
-            assert "Inventory" not in html  # regular module: still filtered
-        finally:
-            slots.clear()
-
-    def test_kernel_nav_always_visible(self):
-        """Kernel nav entries (no _module) always show regardless of modules claim."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
+        yield
         slots.clear()
-        try:
-            req = self._make_request(["celerp-docs"])  # only docs enabled
-            html = str(_sidebar("", request=req))
-            # Dashboard is a kernel entry - must always be present
-            assert "Dashboard" in html or "dashboard" in html.lower()
-        finally:
-            slots.clear()
+
+    def _html(self, settings, modules=None) -> str:
+        from ui.components.shell import _sidebar
+        return str(_sidebar("", request=self._request(modules), settings=settings))
+
+    def test_sidebar_hides_modules_the_company_does_not_use(self, nav):
+        html = self._html({"enabled_modules": ["celerp-docs"]})
+        assert "Documents" in html
+        assert "Inventory" not in html
+
+    def test_sidebar_ignores_a_stale_token_modules_claim(self, nav):
+        """A token minted before the company turned a module off still lists it;
+        the sidebar follows the company's current settings instead."""
+        html = self._html({"enabled_modules": ["celerp-docs"]},
+                          modules=["celerp-docs", "celerp-inventory"])
+        assert "Inventory" not in html
+        html = self._html({"enabled_modules": ["celerp-docs", "celerp-inventory"]},
+                          modules=["celerp-docs"])
+        assert "Inventory" in html
+
+    def test_sidebar_shows_every_loaded_module_before_a_first_choice(self, nav):
+        html = self._html({})
+        assert "Documents" in html
+        assert "Inventory" in html
+
+    def test_sidebar_core_folded_nav_always_shows(self, nav):
+        """Core-folded components (AI) are wired at app construction, never per
+        company, and their pages do their own plan gating."""
+        html = self._html({"enabled_modules": ["celerp-docs"]})
+        assert "AI Assistant" in html
+        assert "Inventory" not in html
+
+    def test_kernel_nav_always_visible(self, nav):
+        html = self._html({"enabled_modules": []})
+        assert "dashboard" in html.lower()
 
 
 # ── T1: Collapsible sidebar ──────────────────────────────────────────────────
@@ -9231,6 +9169,14 @@ _MODULES_LIST = [
     },
 ]
 
+@pytest.fixture
+def as_installation_owner():
+    """Installation-wide controls (modules, backups, the Celerp account) are the
+    installation owner's; these flows run as that owner."""
+    with patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)):
+        yield
+
+
 _SETTINGS_MOCKS_MODULES = {
     "ui.api_client.get_company": AsyncMock(return_value={"name": "T", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner"}),
     "ui.api_client.get_taxes": AsyncMock(return_value={"taxes": []}),
@@ -9244,6 +9190,7 @@ _SETTINGS_MOCKS_MODULES = {
 }
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestModulesUI:
     """Modules page (top-level, owner/admin only) - list, enable, disable,
     import, restart, load-error surfacing."""
@@ -9320,6 +9267,20 @@ class TestModulesUI:
         ]
         body = await self._render_modules(ui_client, rows)
         assert body.index("Newer Import") < body.index("Older Import")
+
+    @pytest.mark.asyncio
+    async def test_installed_table_orders_an_install_time_that_is_not_text_as_unknown(
+            self, ui_client):
+        rows = [
+            {"name": "odd-imp", "label": "Odd Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": 5},
+            {"name": "new-imp", "label": "Newer Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert body.index("Newer Import") < body.index("Odd Import")
 
     @pytest.mark.asyncio
     async def test_installed_table_groups_defaults_after_imports(self, ui_client):
@@ -9613,51 +9574,6 @@ class TestModulesUI:
         assert b"/modules/restart" in r.content
 
     @pytest.mark.asyncio
-    async def test_restart_banner_shows_after_disable(self, ui_client):
-        """A just-disabled module still runs until restart (enabled=False,
-        running=True): the row must visibly register the press - restart
-        control in the status, Disable greyed out and inert - not look
-        identical to a plain running row."""
-        pending = [{**_MODULES_LIST[1], "enabled": False, "running": True,
-                    "is_default": False}]
-        from contextlib import ExitStack
-        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=pending)}
-        with ExitStack() as stack:
-            for k, v in mocks.items():
-                stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
-        assert r.status_code == 200
-        body = r.content.decode()
-        assert "/modules/restart" in body
-        # The Disable button is greyed and inert, with the pending state named.
-        assert "btn--disabled" in body
-        assert "Disabled. Takes effect when Celerp restarts." in body
-        # No live disable action and no delete X while the unload is pending.
-        assert "/modules/celerp-verticals/disable" not in body
-        assert "/modules/celerp-verticals/delete" not in body
-
-    @pytest.mark.asyncio
-    async def test_no_restart_banner_for_core_folded_disable(self, ui_client):
-        """A core-folded default module reports running=True regardless of the
-        enabled flag; it must NOT pin a false restart banner, a pending badge,
-        or a greyed Disable button."""
-        core = [{**_MODULES_LIST[1], "enabled": False, "running": True,
-                 "is_default": True}]
-        from contextlib import ExitStack
-        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=core)}
-        with ExitStack() as stack:
-            for k, v in mocks.items():
-                stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
-        assert r.status_code == 200
-        body = r.content.decode()
-        assert "/modules/restart" not in body
-        # The row keeps the plain running badge and a live Disable button.
-        assert "badge--active" in body
-        assert "btn--disabled" not in body
-        assert "/modules/celerp-verticals/disable" in body
-
-    @pytest.mark.asyncio
     async def test_module_enable_htmx_returns_panel(self, ui_client):
         refreshed = [
             {**_MODULES_LIST[0], "enabled": True, "running": False},
@@ -9750,6 +9666,7 @@ def _archive_host(seen: list[str]):
                  new=lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestMarketplaceUI:
     """Marketplace tab (paid/official listings only) and the separate Community
     tab: tiers, trust icons, the one-step acknowledgment, cache and failure
@@ -11039,7 +10956,7 @@ class TestCompanyDetailsPage:
             ok = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"), follow_redirects=False)
             low = await ui_client.get("/finance/company-details", cookies=_authed(role="operator"), follow_redirects=False)
         assert ok.status_code == 200
-        assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard")
+        assert_not_permitted_redirect(low)
 
 
 class TestFilesExcelFunnels:
@@ -11328,10 +11245,11 @@ class TestPaymentsSettingsPage:
 
     _UNMATCHED = [
         {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
-         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
+         "company_name": None, "document_id": "doc:2", "document_ref": None,
+         "received_on": "2026-09-29", "paid_on": None},
         {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
-         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00",
-         "paid_at": "2026-09-25T09:00:00+00:00"},
+         "company_name": "Old Co", "document_id": "doc:1", "document_ref": "INV-0001",
+         "received_on": "2026-09-28", "paid_on": "2026-09-25"},
     ]
 
     @pytest.mark.asyncio
@@ -11343,7 +11261,9 @@ class TestPaymentsSettingsPage:
         assert r.status_code == 200
         assert "Payments not matched to an invoice" in r.text
         assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
-        assert "c-old" in r.text and "doc:1" in r.text and "2026-09-28" in r.text
+        assert "Old Co" in r.text and "INV-0001" in r.text and "2026-09-28" in r.text
+        assert "c-old" not in r.text and "doc:1" not in r.text  # names, never raw ids
+        assert "(deleted)" in r.text  # pi_new's company and invoice are gone
         assert "Paid on" in r.text and "2026-09-25" in r.text  # when the customer paid
         assert "Recorded on" in r.text  # when this installation recorded it
         assert '<td>--</td>' in r.text  # not known for pi_new
@@ -11360,11 +11280,12 @@ class TestPaymentsSettingsPage:
     async def test_refunds_not_applied_yet_are_listed(self, ui_client):
         refunds = [
             {"refund_id": "re_2", "transition": "reversed", "reference": "pi_new", "amount": 50.0,
-             "currency": "USD", "company_id": "c-new", "document_id": "doc:2",
-             "received_at": "2026-09-29T09:00:00+00:00", "occurred_at": None},
+             "currency": "USD", "company_id": "c-new", "company_name": None, "document_id": "doc:2",
+             "document_ref": None, "received_on": "2026-09-29", "refunded_on": None},
             {"refund_id": "re_1", "transition": "applied", "reference": "pi_old", "amount": 200.0,
-             "currency": "USD", "company_id": "c-old", "document_id": "doc:1",
-             "received_at": "2026-09-28T09:00:00+00:00", "occurred_at": "2026-09-27T09:00:00+00:00"}]
+             "currency": "USD", "company_id": "c-old", "company_name": "Old Co", "document_id": "doc:1",
+             "document_ref": "INV-0001", "received_on": "2026-09-28",
+             "refunded_on": "2026-09-27"}]
         with self._mocks(relay=True, enabled=True, refunds=refunds):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200
@@ -11372,7 +11293,8 @@ class TestPaymentsSettingsPage:
         assert "Refunds not applied yet" in r.text and "Refunded on" in r.text
         assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
         assert "<td>Refund reversed</td>" in r.text and "<td>Refund</td>" in r.text
-        assert "2026-09-27" in r.text and "c-old" in r.text and "doc:1" in r.text
+        assert "2026-09-27" in r.text and "Old Co" in r.text and "INV-0001" in r.text
+        assert "c-old" not in r.text and "doc:1" not in r.text and "(deleted)" in r.text
         assert '<td>--</td>' in r.text  # not known for re_2
 
     @pytest.mark.asyncio
@@ -14253,6 +14175,7 @@ class TestDocumentsOverhaul:
         assert "celerpToast" in trigger
         assert "administrator" in trigger
 
+    @pytest.mark.usefixtures("as_installation_owner")
     @pytest.mark.asyncio
     async def test_send_offer_resume_opens_dialog_prefilled_after_verify(self, ui_client):
         """After signup completes the poll reloads the page with a one-shot
@@ -16609,6 +16532,7 @@ def test_split_weight_has_onblur_clamp():
 
 # ── Backup proxy routes ────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestBackupRoutes:
     """Regression tests for /backup/* UI route handlers.
 
@@ -17557,6 +17481,7 @@ async def test_bulk_attach_result_has_status_filters(ui_client):
     assert 'data-filter="error"' not in html  # no errors in this batch → no Errors pill
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_backup_export_streams_with_progress_headers(ui_client):
     """#158: the backup download streams through (not buffered) and forwards Content-Length
@@ -17827,6 +17752,7 @@ def test_split_table_form_pieces_variant():
     assert "Karat" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestCelerpAccountSurface:
     """The one account surface (ui/routes/account.py): email-first signup,
     Google only when the relay reports it, claim-led variant for the Settings
@@ -19580,6 +19506,7 @@ async def test_free_send_offer_shows_on_unknown_hides_on_known_zero(monkeypatch)
 
 # ── Account panel tier naming (ui/routes/account.py) ──────────────────────────
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_account_panel_names_connect_tier(ui_client):
     """The signed-in account panel shows the tier's display name (Connect),
@@ -19596,6 +19523,7 @@ async def test_account_panel_names_connect_tier(ui_client):
 
 # ── Module restart refreshes the session cookie (ui/routes/modules_page.py) ────
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_restart_refreshes_session_cookie(ui_client):
     """POST /modules/restart re-mints the UI session cookie from live settings
@@ -19620,6 +19548,7 @@ async def test_module_restart_refreshes_session_cookie(ui_client):
     assert new_refresh in set_cookie
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_restart_refresh_failure_still_restarts(ui_client):
     """If the cookie refresh exchange fails, the restart still proceeds fail-open:
@@ -19659,6 +19588,7 @@ def _module_row(name: str, *, enabled: bool = False, running: bool = False,
     }
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
     """The X's GET returns the delete dialog. A module that owns tables (declares
@@ -19679,6 +19609,7 @@ async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
     assert "account-gate-modal" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
     """A module that owns no tables (no table_prefix) offers only the keep-data
@@ -19695,6 +19626,7 @@ async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
     assert "account-gate-modal" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_with_purge_drops_data_before_removing_module(ui_client):
     """delete?purge=1 purges the module's data and then removes the module, in

@@ -457,7 +457,11 @@ def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     after = snapshot(url)
     assert after["alembic_version"] == [(_head(),)]
     assert after["sentinel"] == [(1, "sentinel-before")]
-    assert after["instance_meta"] == [(OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
+    # A data-only revision one behind head has no schema of its own to find, so the
+    # restamp lands below it and it replays, leaving the marker that makes it run once.
+    replayed = {"company_modules_chosen_per_company"}
+    assert [m for m in after["instance_meta"] if m[0] not in replayed] == [
+        (OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
 
 
 def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypatch):

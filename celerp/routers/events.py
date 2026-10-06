@@ -37,13 +37,12 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
     are all rejected with 401 before any subscription is opened. That validation
     runs in a short-lived DB session that is closed before streaming begins, so
     the stream never holds a DB connection for its lifetime; the live stream
-    keeps polling the nonce cache-first for revocation and drain.
+    keeps polling the nonce for revocation and drain.
     """
     from celerp.db import SessionLocal as AsyncSessionLocal
     from celerp.services.session_tracker import (
         get_nonce as _get_nonce,
         pop_evicted_by_ip as _pop_ip,
-        get_nonce_from_cache as _get_nonce_from_cache,
     )
     from celerp.services.runtime_state import is_draining as _is_draining
 
@@ -97,16 +96,12 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
                 # avoiding a busy poll loop.
                 next_tick = loop.time() + _STREAM_TICK_SECONDS
 
-                # Nonce poll, cache-first with a DB read on a miss: a rotated nonce
-                # means the session was revoked elsewhere and the stream is evicted.
-                # The token always carries a nonce here (validate_access_token
-                # rejects a missing-nonce token before the stream opens).
-                cached_nonce = _get_nonce_from_cache(user_id_str)
-                if cached_nonce is not None:
-                    current_nonce = cached_nonce
-                else:
-                    async with AsyncSessionLocal() as s:
-                        current_nonce = await _get_nonce(s, user_id_str)
+                # Nonce poll: a rotated nonce means the session was revoked elsewhere
+                # and the stream is evicted. The token always carries a nonce here
+                # (validate_access_token rejects a missing-nonce token before the
+                # stream opens).
+                async with AsyncSessionLocal() as s:
+                    current_nonce = await _get_nonce(s, user_id_str)
                 if current_nonce != token_nonce:
                     async with AsyncSessionLocal() as s:
                         evicted_ip = await _pop_ip(s, user_id_str) or ""

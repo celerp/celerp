@@ -84,13 +84,15 @@ async def hold_company(session: AsyncSession, company_id) -> bool:
     return held is not None
 
 
-async def lock_company_for_deletion(session: AsyncSession, company_id) -> None:
+async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:
     """Take the company FOR UPDATE ahead of deleting it, waiting for every holder.
+    False when the company is no longer there once the lock is free.
 
     Taken before any other lock on the company: a deleter that first held FOR NO KEY
     UPDATE and then asked for FOR UPDATE would deadlock with a holder (``hold_company``,
     or any ledger insert) that goes on to take ``lock_company`` for its own write."""
-    await session.execute(select(Company.id).where(Company.id == company_id).with_for_update())
+    return (await session.execute(
+        select(Company.id).where(Company.id == company_id).with_for_update())).first() is not None
 
 
 async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:

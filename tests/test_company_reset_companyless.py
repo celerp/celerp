@@ -43,21 +43,20 @@ async def _waiting_on_a_lock(engine) -> bool:
 
 def _check_together(monkeypatch, engine):
     """Hold each request just past the companyless check until the other request has
-    passed it as well, or is blocked by the database inside it."""
+    passed it as well, or is blocked by the database (inside the check, or before it
+    while a restore holds the modules it turns on)."""
     from celerp.routers import auth as auth_router
     from celerp.routers import migrations as migrations_router
     from celerp.services import company_backup
     from celerp.services.auth import hold_companyless_login as real
-    entered: list[int] = []
     passed: list[int] = []
 
     async def hold(session, user_id):
-        entered.append(1)
         out = await real(session, user_id)
         passed.append(1)
 
         async def other_settled():
-            while len(passed) < 2 and not (len(entered) >= 2 and await _waiting_on_a_lock(engine)):
+            while len(passed) < 2 and not await _waiting_on_a_lock(engine):
                 await asyncio.sleep(0.02)
 
         await asyncio.wait_for(other_settled(), 20)

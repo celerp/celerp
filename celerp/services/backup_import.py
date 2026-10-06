@@ -749,8 +749,8 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
     from celerp.config import settings
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
+    from celerp.modules.registry import load_set
     from celerp.services import payments, session_tracker
-    from celerp.services.backup_export import required_installation_modules
 
     await _dispose_engine()
     await _run_pg_restore(prepared.dump, settings.database_url)
@@ -762,7 +762,7 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
         # every payment it ever recorded is delivered again.
         payments.record_recovery(session, (await session.scalars(sa.select(Company.id))).all())
         # Backups without module metadata take the set from every restored company.
-        modules = prepared.meta.enabled_modules or sorted(await required_installation_modules(session))
+        modules = prepared.meta.enabled_modules or await load_set(session)
         # No session from before the replacement stays valid; this also
         # commits the connector cleanup and the recorded restore.
         await session_tracker.end_all_sessions(session)

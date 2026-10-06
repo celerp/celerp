@@ -221,6 +221,23 @@ def test_official_install_requires_celerp_prefix(module_dir):
         install_from_zip(_zip_bytes({"__init__.py": MANIFEST}), official=True)
 
 
+@pytest.mark.parametrize("name", ["Celerp-mine", "CELERP-mine", "cElErP-mine",
+                                  "celerp_mine", "CELERP_mine"])
+@pytest.mark.parametrize("source", ["sideloaded", "community"])
+def test_upload_refuses_the_reserved_prefix_in_any_case(module_dir, name, source):
+    with pytest.raises(ModuleImportError, match="'celerp-' or 'celerp_', in any letter case, are reserved for Marketplace modules"):
+        install_from_zip(_zip_bytes({"__init__.py": MANIFEST.replace("my-module", name)}),
+                         source=source)
+    assert not (module_dir / name).exists()
+
+
+@pytest.mark.parametrize("name", ["Celerp-warehousing", "celerp_warehousing"])
+def test_official_install_requires_the_exact_celerp_prefix(module_dir, name):
+    with pytest.raises(ModuleImportError, match="celerp-"):
+        install_from_zip(_zip_bytes({"__init__.py": MANIFEST.replace("my-module", name)}),
+                         official=True)
+
+
 def test_premium_install_writes_license_marker(module_dir):
     from celerp.modules.importer import PREMIUM_MARKER
     install_from_zip(
@@ -380,6 +397,35 @@ def test_remove_module_dir_removes_folder(module_dir):
     assert not (module_dir / "my-module").exists()
 
 
+def test_remove_module_dir_waits_for_an_install_in_progress(module_dir):
+    """An install checks names and prefixes against what is on disk; a removal
+    landing in the middle of it would change that under it."""
+    import threading
+
+    from celerp.modules.importer import _one_install_at_a_time, remove_module_dir
+    install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+    held, release = threading.Event(), threading.Event()
+
+    def install_in_progress():
+        with _one_install_at_a_time():
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=install_in_progress)
+    holder.start()
+    assert held.wait(10)
+    remover = threading.Thread(target=remove_module_dir, args=("my-module",))
+    remover.start()
+    remover.join(0.5)
+    still_there = (module_dir / "my-module").exists()
+    release.set()
+    holder.join(10)
+    remover.join(10)
+
+    assert still_there
+    assert not (module_dir / "my-module").exists()
+
+
 def test_remove_module_dir_raises_if_absent(module_dir):
     from celerp.modules.importer import remove_module_dir
     with pytest.raises(ModuleImportError, match="not installed"):
@@ -494,8 +540,19 @@ def test_with_writable_module_dir_leaves_safe_first_entry(tmp_path):
     assert loader.with_writable_module_dir(safe) == safe
 
 
+def test_with_writable_module_dir_defaults_an_unset_dir_to_the_bundled_trees(monkeypatch, tmp_path):
+    """No module dir given (a bare `uvicorn` dev run) searches what `celerp start`
+    gives a launch: the writable drop-in first, then the bundled trees that exist."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "writable_module_dir", lambda: tmp_path / "modules")
+    root = loader.BUNDLED_SOURCE_DIR.parent
+    bundled = [str(d) for d in loader.bundled_module_dirs(root) if d.exists()]
+    assert loader.with_writable_module_dir(None).split(",") == [str(tmp_path / "modules"), *bundled]
+    assert str(root / "default_modules") in bundled
+
+
 def test_with_writable_module_dir_empty_unchanged():
-    """No module dir configured stays off - the helper never invents one."""
+    """A module dir set to empty means no module trees - the helper never invents one."""
     from celerp.modules import loader
     assert loader.with_writable_module_dir("") == ""
 
@@ -638,6 +695,50 @@ def test_model_only_table_prefix_overlapping_installed_module_refused(module_dir
     with pytest.raises(ModuleImportError, match="acme_"):
         install_from_zip(data)
     assert not (module_dir / "second-mod").exists()
+
+
+@pytest.mark.parametrize("second", ["zip", "folder"])
+def test_overlapping_modules_installed_at_once_only_one_lands(module_dir, tmp_path, monkeypatch, second):
+    """Two installs whose prefixes overlap, started together: exactly one lands."""
+    import threading
+    import time
+
+    from celerp.modules import importer
+
+    real_write_meta = importer.write_meta
+
+    def slow_write_meta(*args, **kwargs):
+        time.sleep(0.3)
+        return real_write_meta(*args, **kwargs)
+
+    monkeypatch.setattr(importer, "write_meta", slow_write_meta)
+    src = tmp_path / "src" / "second-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("second-mod", prefix="acme_sub_"))
+    installs = [
+        lambda: install_from_zip(_zip_bytes(
+            {"__init__.py": _migrations_manifest("first-mod", prefix="acme_")})),
+        (lambda: install_from_zip(_zip_bytes({"__init__.py": src.joinpath("__init__.py").read_text()})))
+        if second == "zip" else (lambda: install_from_folder(src)),
+    ]
+    outcomes: list = []
+
+    def run(install):
+        try:
+            outcomes.append(install()["name"])
+        except ModuleImportError as exc:
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=run, args=(install,)) for install in installs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    landed = sorted(p.name for p in module_dir.iterdir() if not p.name.startswith("."))
+    assert len(landed) == 1, (landed, outcomes)
+    refused = [o for o in outcomes if isinstance(o, ModuleImportError)]
+    assert len(refused) == 1 and "overlaps" in str(refused[0]), outcomes
 
 
 def test_model_only_module_without_table_prefix_installs(module_dir):

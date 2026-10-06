@@ -515,7 +515,7 @@ def test_start_respawns_api_on_sentinel(tmp_path):
             self.returncode = code
         def poll(self): return self.returncode if self._dead else None
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
@@ -575,7 +575,7 @@ def test_start_exits_without_sentinel(tmp_path):
             self.returncode = code
         def poll(self): return self.returncode if self._dead else None
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
@@ -614,7 +614,7 @@ def test_start_points_the_ui_at_the_configured_api_port(valid_cfg, tmp_path, mon
         returncode = 1
         def poll(self): return 1
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         envs["api" if _is_api_cmd(cmd) else "ui"] = env
@@ -893,3 +893,20 @@ def test_output_sent_to_a_legacy_code_page_file_still_prints(monkeypatch):
     legacy.flush()
     assert raw.getvalue().decode("utf-8") == "✓ ready\n"
 
+
+
+def test_command_line_messages_have_no_em_dash():
+    """What the command line prints is user-facing copy, which never uses an em dash."""
+    import ast
+    import inspect
+
+    import celerp.cli as cli
+
+    found = []
+    for node in ast.walk(ast.parse(inspect.getsource(cli))):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", "")) in (
+                "echo", "secho", "ClickException", "UsageError", "Abort", "print"):
+            for part in ast.walk(node):
+                if isinstance(part, ast.Constant) and isinstance(part.value, str) and "—" in part.value:
+                    found.append(f"line {part.lineno}: {part.value!r}")
+    assert found == []

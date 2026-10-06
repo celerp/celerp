@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select
@@ -68,6 +69,49 @@ def _get_module_handlers() -> dict[str, object]:
         if fn is not None:
             handlers[prefix] = fn
     return handlers
+
+
+def _declared_prefixes() -> set[str]:
+    """Every projection_handler prefix an installed module declares, running or not."""
+    from celerp.modules.loader import module_search_path, read_manifest
+
+    prefixes: set[str] = set()
+    for entry in module_search_path().split(","):
+        root = Path(entry)
+        for pkg in (sorted(root.iterdir()) if entry and root.is_dir() else ()):
+            contributions = ((read_manifest(pkg).get("slots") or {}).get("projection_handler")
+                             if pkg.is_dir() else None)
+            for c in contributions if isinstance(contributions, list) else ():
+                if isinstance(c, dict) and isinstance(c.get("prefix"), str) and c["prefix"]:
+                    prefixes.add(c["prefix"])
+    return prefixes
+
+
+class UnhandledEventsError(Exception):
+    """The ledger holds events a replay cannot apply as written."""
+
+    def __init__(self, event_types: set[str]):
+        self.event_types = sorted(event_types)
+        super().__init__(
+            "Rebuild stopped before changing anything: the ledger has records no running module "
+            f"can read ({', '.join(self.event_types)}). Turn on the module that wrote them, "
+            "restart Celerp, then rebuild.")
+
+
+async def unhandled_event_types(session, company_id=None) -> set[str]:
+    """Ledger event types a replay cannot apply as written: not in the event catalog, or
+    owned by a module whose handler is not running, which would fold them into records as
+    raw data."""
+    from celerp.events.schemas import EVENT_SCHEMA_MAP, RETIRED_EVENT_TYPES
+
+    query = select(LedgerEntry.event_type).distinct()
+    if company_id:
+        query = query.where(LedgerEntry.company_id == company_id)
+    types = set((await session.execute(query)).scalars())
+    running = _get_module_handlers()
+    declared = _declared_prefixes()
+    return {t for t in types if (t not in EVENT_SCHEMA_MAP and t not in RETIRED_EVENT_TYPES)
+            or (not any(t.startswith(p) for p in running) and any(t.startswith(p) for p in declared))}
 
 
 class ProjectionEngine:
@@ -224,6 +268,11 @@ class ProjectionEngine:
 
     @staticmethod
     async def rebuild(session, company_id=None) -> None:
+        """Replay the ledger into fresh projections. Refused, with nothing changed, while
+        any event in it cannot be applied as written (UnhandledEventsError)."""
+        unhandled = await unhandled_event_types(session, company_id)
+        if unhandled:
+            raise UnhandledEventsError(unhandled)
         await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
         query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
         if company_id:

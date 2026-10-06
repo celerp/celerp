@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import datetime
 import logging
+import uuid
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,10 +27,10 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import payments as pay
-from celerp.services.auth import get_current_user, require_install_owner
+from celerp.services.auth import get_current_company_id, get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone
 from celerp.services.doc_balance import outstanding_balance
-from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate
+from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
 
 log = logging.getLogger(__name__)
@@ -138,9 +140,12 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
 
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 reference: str, amount_minor: int, currency: str,
-                                paid_at: datetime.datetime | None, context, managed: bool):
+                                paid_at: datetime.datetime | None, context, managed: bool,
+                                idempotency_key: str | None = None):
     """Record a confirmed online charge as a payment on its invoice. Only
-    ``payments.receive_payment`` calls it.
+    ``payments.receive_payment`` calls it, and ``payments.record_unmatched_payment``
+    for one a person records on an invoice from the unmatched payments, under an
+    *idempotency_key* of its own (each recording is one; the charge is *reference*).
 
     A *managed* payment is Stripe's to manage (``stripe_receipt_references``): it is
     recorded on *context*, the books its payment page opened with
@@ -185,7 +190,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         entry, _amount = await apply_doc_payment(
             session, company_id, entity_id, body,
             source="stripe", actor_id=await _company_owner_id(session, company_id),
-            idempotency_key=reference, books=(base, rate), commit=False,
+            idempotency_key=idempotency_key or reference, books=(base, rate), commit=False,
         )
     except HTTPException as exc:
         if exc.status_code == 409 and exc.detail == "Payment already recorded":
@@ -194,6 +199,40 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if getattr(entry, "was_deduped", False):
         return None
     return entry
+
+
+async def recorded_payment_books(session, company_id, row: Projection, reference: str) -> dict | None:
+    """The books the online payment *reference* was recorded on, on the document
+    *row*, as a payment page carries them (``payment_books``): the books a refund of
+    it gives the money back on. None when the payment is not on the document."""
+    payment = next((p for p in row.state.get("payments", [])
+                    if p.get("reference") == reference and p.get("status") == "active"), None)
+    if payment is None:
+        return None
+    company = await session.get(Company, company_id)
+    settings = (company.settings or {}) if company else {}
+    return {"deposit_account": payment.get("bank_account"),
+            "timezone": business_timezone(settings.get("timezone")).key,
+            "base_currency": (payment.get("books") or {}).get("base_currency") or books_currency(settings),
+            "rate": str(payment.get("conversion_rate"))}
+
+
+def unmatched_refusal(state: dict, amount: Decimal, currency: str) -> str | None:
+    """Why the document *state* cannot take a whole payment of *amount* in *currency*
+    (``pay.unmatched_refused_<reason>``), or None when it can: the checks
+    apply_doc_payment makes, so the unmatched payments offer only invoices that take
+    the payment and refuse the others with the reason."""
+    from celerp_docs.routes import PAYABLE_STATUSES
+    if state.get("doc_type") not in _PAYABLE_TYPES:
+        return "not_invoice"
+    if state.get("status") not in PAYABLE_STATUSES:
+        return "status"
+    if str(state.get("currency") or "USD").upper() != currency.upper():
+        return "currency"
+    outstanding = round_money(_outstanding(state), currency.upper())
+    if outstanding <= 0:
+        return "paid"
+    return "too_small" if outstanding < amount else None
 
 
 REFUND_TRANSITIONS = ("applied", "reversed")
@@ -297,7 +336,7 @@ async def record_stripe_release(session, company_id, row: Projection, *, referen
         actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
         idempotency_key=f"stripe-release:{reference}")
     if not getattr(entry, "was_deduped", False):
-        ref = row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id
+        ref = _doc_ref(row.state) or row.entity_id
         await notif_service.create(
             session, company_id, "connector", "A payment is no longer linked to Stripe",
             f"Stripe is disconnected, so the online payment on {ref} is no longer linked to it. "
@@ -321,7 +360,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     if state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0:
         raise HTTPException(status_code=409, detail="This document is not payable")
     currency = state.get("currency", "USD")
-    ref = state.get("ref_id") or state.get("doc_number") or entity_id.split(":")[-1][:8]
+    ref = _doc_ref(state) or entity_id.split(":")[-1][:8]
     try:
         books = await payment_books(session, company_id, state)
     except ValueError:
@@ -344,7 +383,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
         )
     except pay.CheckoutPaused:
         raise HTTPException(status_code=409, detail=pay.PAUSED)
-    if not result or not result.get("url"):
+    if not _stripe_url(result):
         raise HTTPException(status_code=502, detail="Could not start payment")
     return RedirectResponse(result["url"], status_code=303)
 
@@ -365,6 +404,12 @@ async def payments_enabled_flag(user=Depends(get_current_user)) -> dict:
     return {"enabled": pay.payments_enabled()}
 
 
+def _stripe_url(result) -> bool:
+    """Cloud answered with an https address to send the user to."""
+    url = result.get("url") if isinstance(result, dict) else None
+    return isinstance(url, str) and url.startswith("https://")
+
+
 @router.get("/payments/status")
 async def payments_status(user=Depends(get_current_user)) -> dict:
     return await pay.connect_status()
@@ -374,7 +419,7 @@ async def payments_status(user=Depends(get_current_user)) -> dict:
 async def payments_connect() -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
-    if not result or not result.get("url"):
+    if not _stripe_url(result):
         raise HTTPException(status_code=502, detail="Could not start Stripe connection")
     return {"url": result["url"]}
 
@@ -389,18 +434,128 @@ async def payments_disconnect() -> dict:
 
 
 @router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)])
-async def payments_unmatched(session: AsyncSession = Depends(get_session)) -> dict:
+async def payments_unmatched(company_id=Depends(get_current_company_id),
+                             session: AsyncSession = Depends(get_session)) -> dict:
     """Online payments received for a company or invoice that no longer exists, or
     that the invoice refused, and the refunds of online payments kept until their
-    payment is on its invoice, each newest first."""
+    payment is on its invoice, each newest first. Each date is a business day in the
+    timezone of the company the row books in: its own company while that exists,
+    else this one, which recording it from here books it on; none when that
+    timezone is not usable."""
+    payments, refunds = await pay.unmatched_payments(session), await pay.unmatched_refunds(session)
+    names, books_company = await _names_still_here(session, [*payments, *refunds])
+    here = await session.get(Company, company_id)
+
+    def day(row, instant: datetime.datetime | None) -> str | None:
+        company = books_company(row) or here
+        try:
+            timezone = business_timezone(((company.settings or {}) if company else {}).get("timezone")).key
+        except ValueError:
+            return None
+        return business_date_at(instant, timezone) if instant else None
+
     return {"items": [{
         "reference": p.reference, "amount": float(pay.stripe_amount(p.amount_minor, p.currency)),
-        "currency": p.currency, "company_id": p.former_company, "document_id": p.document,
-        "received_at": p.received_at.isoformat(),
-        "paid_at": p.paid_at.isoformat() if p.paid_at else None,
-    } for p in await pay.unmatched_payments(session)], "refunds": [{
+        "currency": p.currency, **names(p), "received_on": day(p, p.received_at), "paid_on": day(p, p.paid_at),
+    } for p in payments], "refunds": [{
         "refund_id": r.refund_id, "cycle": r.cycle, "transition": r.transition, "reference": r.reference,
         "amount": float(pay.stripe_amount(r.amount_minor, r.currency)), "currency": r.currency,
-        "company_id": r.former_company, "document_id": r.document, "received_at": r.received_at.isoformat(),
-        "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
-    } for r in await pay.unmatched_refunds(session)]}
+        **names(r), "received_on": day(r, r.received_at), "refunded_on": day(r, r.occurred_at),
+    } for r in refunds]}
+
+
+# Why an unmatched payment was not recorded on the chosen invoice
+# (``pay.UnmatchedRefused``); the web app shows them in the user's language.
+UNMATCHED_REFUSALS = {
+    "gone": "This payment is no longer with the unmatched payments.",
+    "other_company": "This payment was made to another company. Switch to that company to record it there.",
+    "missing": "This invoice no longer exists.",
+    "not_invoice": "Only an invoice can take this payment.",
+    "status": "This invoice cannot take a payment in its current status.",
+    "currency": "This invoice is in another currency than the payment.",
+    "paid": "This invoice is already paid.",
+    "too_small": "This invoice owes less than the payment.",
+    "refused": "This invoice cannot take this payment.",
+}
+
+
+class UnmatchedRecordBody(BaseModel):
+    reference: str
+    entity_id: str
+
+
+_UNMATCHED_RECORDERS = [Depends(require_install_owner), require_permission("record_payments")]
+
+
+def _unmatched_refused(reason: str) -> HTTPException:
+    return HTTPException(status_code=409, detail={"message": UNMATCHED_REFUSALS[reason], "reason": reason})
+
+
+@router.get("/payments/unmatched/invoices", dependencies=_UNMATCHED_RECORDERS)
+async def payments_unmatched_invoices(reference: str, company_id=Depends(get_current_company_id),
+                                      session: AsyncSession = Depends(get_session)) -> dict:
+    """The invoices of the current company the unmatched payment *reference* can be
+    recorded on: open, in its currency, owing at least the whole payment
+    (``unmatched_refusal``), by reference."""
+    kept = await pay.unmatched_payment(session, reference)
+    if kept is None:
+        raise _unmatched_refused("gone")
+    try:
+        await pay.refuse_other_company(session, kept, company_id)
+    except pay.UnmatchedRefused as refused:
+        raise _unmatched_refused(refused.reason) from None
+    amount = pay.unmatched_amount(kept)
+    rows = (await session.scalars(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string().in_(_PAYABLE_TYPES)))).all()
+    items = [{"id": r.entity_id, "ref": _doc_ref(r.state) or r.entity_id,
+              "contact_name": r.state.get("contact_name"), "outstanding": float(_outstanding(r.state)),
+              "currency": kept.currency}
+             for r in rows if unmatched_refusal(r.state, amount, kept.currency) is None]
+    return {"items": sorted(items, key=lambda i: i["ref"])}
+
+
+@router.post("/payments/unmatched/record", dependencies=_UNMATCHED_RECORDERS)
+async def payments_unmatched_record(body: UnmatchedRecordBody, company_id=Depends(get_current_company_id),
+                                    session: AsyncSession = Depends(get_session)) -> dict:
+    """Record the unmatched payment on an invoice of the current company
+    (``payments.record_unmatched_payment``): 409 with the reason when it cannot be,
+    and nothing is recorded. Recording it on the same invoice again changes nothing."""
+    try:
+        await pay.record_unmatched_payment(session, company_id, body.reference, body.entity_id)
+    except pay.UnmatchedRefused as refused:
+        raise _unmatched_refused(refused.reason) from None
+    await session.commit()
+    return {"reference": body.reference, "entity_id": body.entity_id}
+
+
+def _doc_ref(state: dict) -> str | None:
+    """The reference a person knows a document by, when it has one."""
+    return state.get("ref_id") or state.get("doc_number")
+
+
+async def _names_still_here(session: AsyncSession, rows: list):
+    """For unmatched *rows*: a function giving each row's company and document ids
+    with the company's name and the document's reference, each None once it no
+    longer exists here (the rows outlive both), and one giving the row's Company
+    while it exists."""
+    ids = {}
+    for row in rows:
+        try:
+            ids[row.former_company] = uuid.UUID(row.former_company)
+        except ValueError:
+            pass
+    companies, docs = {}, {}
+    if ids:
+        companies = {c.id: c for c in (await session.scalars(
+            select(Company).where(Company.id.in_(ids.values())))).all()}
+        docs = {(d.company_id, d.entity_id): _doc_ref(d.state) or d.entity_id for d in (await session.scalars(
+            select(Projection).where(Projection.company_id.in_(ids.values()),
+                                     Projection.entity_id.in_({row.document for row in rows})))).all()}
+
+    def names(row) -> dict:
+        cid = ids.get(row.former_company)
+        company = companies.get(cid)
+        return {"company_id": row.former_company, "company_name": company.name if company else None,
+                "document_id": row.document, "document_ref": docs.get((cid, row.document))}
+    return names, lambda row: companies.get(ids.get(row.former_company))

@@ -181,6 +181,28 @@ async def test_a_payment_of_a_hundredth_of_an_idr_invoice_does_not_mark_it_paid(
     assert doc["amount_outstanding"] == 99000
 
 
+@pytest.mark.parametrize("change", [{"amount_minor": 107000.9}, {"amount_minor": True}, {"amount_minor": "107000"},
+                                    {"amount_minor": -107000}, {"amount_minor": 0}, {"amount_minor": None},
+                                    {"currency": None}, {"currency": ""}, {"currency": 840}],
+                         ids=lambda c: repr(c))
+@pytest.mark.asyncio
+async def test_a_delivery_without_a_whole_amount_and_a_currency_records_nothing(client, session, payments_on,
+                                                                               change):
+    """Like a refund, a payment is recorded only from a whole positive amount in a named
+    currency, as Stripe reports it: never read as some other amount or as dollars."""
+    from celerp.services.payments import receive_payment
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    delivery = {"company_id": _company_id(tok), "entity_id": eid, "reference": "pi_malformed",
+                "amount_minor": 107000, "currency": "usd", "paid_at": PAID.isoformat(),
+                "context": dict(BOOKS), "managed": True, **change}
+
+    assert await receive_payment(delivery) is False
+
+    assert not (await _doc_state(client, tok, eid)).get("payments")
+    assert (await client.get("/payments/unmatched", headers=_h(tok))).json()["items"] == []
+
+
 @pytest.mark.asyncio
 async def test_a_stripe_amount_the_books_cannot_hold_is_kept_among_the_unmatched(client, session, payments_on):
     """100,000.50 IDR cannot be recorded on books that keep IDR in whole rupiah: the
@@ -560,6 +582,18 @@ async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_defau
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
+@pytest.mark.parametrize("value", [1110, 0, False, True, [], ["1110"], {}, {"code": "1110"}, 1110.0])
+@pytest.mark.asyncio
+async def test_the_online_deposit_setting_refuses_a_value_that_is_not_an_account_code(client, key, value):
+    tok = await _register(client)
+    r = await client.patch("/companies/me", json={"settings": {key: value}}, headers=_h(tok))
+    assert r.status_code == 422, (value, r.status_code, r.text)
+    assert "account code" in r.json()["detail"]
+    stored = (await client.get("/companies/me", headers=_h(tok))).json().get("settings", {})
+    assert key not in stored
+
+
 # ── the whole journey, end to end ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -824,6 +858,28 @@ async def test_connect_endpoint_returns_oauth_url(client, monkeypatch):
     assert r.json()["url"] == "https://connect.stripe.test/oauth"
 
 
+_NOT_HTTPS = ["javascript:alert(1)", "http://stripe.test/cs_1", "//evil.test/x", 7, ["https://stripe.test/cs_1"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", _NOT_HTTPS)
+async def test_a_checkout_address_that_is_not_https_is_never_followed(client, payments_on, monkeypatch, url):
+    monkeypatch.setattr("celerp.services.payments.create_checkout", lambda **kw: _async({"url": url}))
+    tok = await _register(client)
+    _, token = await _idr_invoice(client, tok)
+    r = await client.get(f"/pay/{token}", follow_redirects=False)
+    assert r.status_code == 502
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", _NOT_HTTPS)
+async def test_a_connect_address_that_is_not_https_is_never_returned(client, monkeypatch, url):
+    monkeypatch.setattr("celerp.services.payments.connect_start", lambda: _async({"url": url}))
+    tok = await _register(client)
+    r = await client.post("/payments/connect", headers=_h(tok))
+    assert r.status_code == 502
+
+
 @pytest.mark.asyncio
 async def test_connect_endpoint_502_when_cloud_unavailable(client, monkeypatch):
     monkeypatch.setattr("celerp.services.payments.connect_start", lambda: _async(None))
@@ -878,12 +934,149 @@ async def test_unmatched_payments_are_listed_newest_first(client, session):
 
     assert r.status_code == 200
     assert r.json() == {"items": [
-        {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
-         "document_id": "doc:2", "received_at": "2026-09-29T09:00:00+00:00", "paid_at": None},
-        {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
-         "document_id": "doc:1", "received_at": "2026-09-28T09:00:00+00:00",
-         "paid_at": "2026-09-25T09:00:00+00:00"},
+        {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new", "company_name": None,
+         "document_id": "doc:2", "document_ref": None, "received_on": "2026-09-29", "paid_on": None},
+        {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old", "company_name": None,
+         "document_id": "doc:1", "document_ref": None, "received_on": "2026-09-28", "paid_on": "2026-09-25"},
     ], "refunds": []}
+
+
+# 20:30 UTC on Oct 4 is 03:30 on Oct 5 in Bangkok (UTC+7).
+_PAID_LATE = datetime.datetime(2026, 10, 4, 20, 30, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_unmatched_dates_are_the_company_business_day(client, session, payments_on):
+    """The unmatched tables date a payment and a refund on the company's calendar,
+    the day the same payment is booked on, never the UTC day."""
+    import re
+    from fasthtml.common import to_xml
+    from sqlalchemy import update
+    from celerp.models.payment_closure import UnmatchedPayment, UnmatchedRefund
+    from celerp.services.payments import receive_payment
+    from ui.routes.settings_payments import _unmatched
+    tok = await _register(client)
+    assert (await client.patch("/companies/me", json={"settings": {"timezone": "Asia/Bangkok"}},
+                               headers=_h(tok))).status_code == 200
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    bkk = dict(BOOKS, timezone="Asia/Bangkok")
+    for entity, reference in ((eid, "pi_booked"), ("doc:gone", "pi_unmatched")):
+        assert await receive_payment({"company_id": cid, "entity_id": entity, "reference": reference,
+                                      "amount_minor": 100, "currency": "usd", "paid_at": _PAID_LATE.isoformat(),
+                                      "context": bkk, "managed": True})
+    # Arrival is stamped with the current time; pin it to the same late-evening instant.
+    await session.execute(update(UnmatchedPayment).where(UnmatchedPayment.reference == "pi_unmatched")
+                          .values(received_at=_PAID_LATE))
+    session.add(UnmatchedRefund(refund_id="re_late", cycle=1, transition="applied", reference="pi_x",
+                                amount_minor=100, currency="USD", former_company=cid, document="doc:gone",
+                                received_at=_PAID_LATE, occurred_at=_PAID_LATE))
+    await session.commit()
+    booked_day = (await _doc_state(client, tok, eid))["payments"][0]["payment_date"]
+
+    body = (await client.get("/payments/unmatched", headers=_h(tok))).json()
+
+    assert booked_day == "2026-10-05"
+    [payment] = body["items"]
+    [refund] = body["refunds"]
+    assert (payment["received_on"], payment["paid_on"]) == (booked_day, booked_day)
+    assert (refund["received_on"], refund["refunded_on"]) == (booked_day, booked_day)
+    cells = re.findall(r"<td[^>]*>([^<]*)</td>", to_xml(_unmatched(body)))
+    assert cells.count(booked_day) == 4 and "2026-10-04" not in cells
+
+
+# 02:00 UTC on Oct 5 is still Oct 4 in New York, and already Oct 5 in Bangkok.
+_PAID_NY_EVENING = datetime.datetime(2026, 10, 5, 2, 0, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_unmatched_rows_are_dated_in_their_own_company(client, session, payments_on):
+    """The list shows every company's rows. Each is dated on its own company's
+    calendar, the day it books on there, whichever company it is viewed from."""
+    from celerp.models.payment_closure import UnmatchedRefund
+    from celerp.services.payments import receive_payment
+    tok_a = await _register(client)
+    assert (await client.patch("/companies/me", json={"settings": {"timezone": "Asia/Bangkok"}},
+                               headers=_h(tok_a))).status_code == 200
+    r = await client.post("/companies", json={"name": "Second Co"}, headers=_h(tok_a))
+    assert r.status_code == 200, r.text
+    tok_b = r.json()["access_token"]
+    assert (await client.patch("/companies/me", json={"settings": {"timezone": "America/New_York"}},
+                               headers=_h(tok_b))).status_code == 200
+    cid_b = _company_id(tok_b)
+    assert await receive_payment({"company_id": cid_b, "entity_id": "doc:gone", "reference": "pi_ny",
+                                  "amount_minor": 100, "currency": "usd",
+                                  "paid_at": _PAID_NY_EVENING.isoformat(),
+                                  "context": dict(BOOKS, timezone="America/New_York"), "managed": True})
+    session.add(UnmatchedRefund(refund_id="re_ny", cycle=1, transition="applied", reference="pi_x",
+                                amount_minor=100, currency="USD", former_company=cid_b, document="doc:gone",
+                                received_at=_PAID_NY_EVENING, occurred_at=_PAID_NY_EVENING))
+    await session.commit()
+    eid, _ = await _payable_invoice(client, tok_b)
+    viewed = {}
+    for viewer, tok in (("own company", tok_b), ("other company", tok_a)):
+        body = (await client.get("/payments/unmatched", headers=_h(tok))).json()
+        [payment] = [p for p in body["items"] if p["reference"] == "pi_ny"]
+        [refund] = [x for x in body["refunds"] if x["refund_id"] == "re_ny"]
+        viewed[viewer] = (payment["paid_on"], refund["received_on"], refund["refunded_on"])
+
+    rec = await client.post("/payments/unmatched/record", headers=_h(tok_b),
+                            json={"reference": "pi_ny", "entity_id": eid})
+    assert rec.status_code == 200, rec.text
+    booked_day = (await _doc_state(client, tok_b, eid))["payments"][0]["payment_date"]
+
+    assert booked_day == "2026-10-04"
+    assert viewed == {"own company": (booked_day,) * 3, "other company": (booked_day,) * 3}
+
+
+@pytest.mark.asyncio
+async def test_unmatched_payments_name_their_company_and_invoice_while_they_exist(client, session):
+    """The table shows names a person knows, not ids: the company's name and the
+    invoice's reference while they exist here, and None once they are gone."""
+    import datetime
+    import uuid
+    from celerp.models.payment_closure import UnmatchedPayment, UnmatchedRefund
+    tok = await _register(client)
+    eid, _ = await _payable_invoice(client, tok)
+    cid = _company_id(tok)
+    ref = (await _doc_state(client, tok, eid)).get("ref_id")
+    name = (await client.get("/companies/me", headers=_h(tok))).json()["name"]
+    gone = str(uuid.uuid4())
+    at = datetime.datetime(2026, 9, 28, 9, 0, tzinfo=datetime.timezone.utc)
+    session.add_all([
+        UnmatchedPayment(reference="pi_here", amount_minor=107000, currency="USD", former_company=cid,
+                         document=eid, received_at=at + datetime.timedelta(days=1)),
+        UnmatchedPayment(reference="pi_gone", amount_minor=107000, currency="USD", former_company=gone,
+                         document=eid, received_at=at),
+        UnmatchedRefund(refund_id="re_here", cycle=1, transition="applied", reference="pi_here",
+                        amount_minor=100, currency="USD", former_company=cid, document="doc:deleted",
+                        received_at=at),
+    ])
+    await session.commit()
+
+    body = (await client.get("/payments/unmatched", headers=_h(tok))).json()
+
+    assert ref and name
+    assert [(p["reference"], p["company_name"], p["document_ref"]) for p in body["items"]] == [
+        ("pi_here", name, ref), ("pi_gone", None, None)]
+    assert [(r["company_name"], r["document_ref"]) for r in body["refunds"]] == [(name, None)]
+
+
+def test_the_unmatched_table_shows_names_and_marks_what_was_deleted():
+    from fasthtml.common import to_xml
+    from ui.routes.settings_payments import _unmatched
+    row = {"received_on": "2026-10-04", "paid_on": None, "reference": "pi_1", "amount": 10.0,
+           "currency": "USD", "company_id": "0b9c2e7a-1111-4c1e-9f00-aaaaaaaaaaaa", "company_name": "Acme Ltd",
+           "document_id": "6f1d2c3b-2222-4d2e-8e11-bbbbbbbbbbbb", "document_ref": None}
+
+    html = to_xml(_unmatched({"items": [row], "refunds": [{**row, "transition": "applied", "refunded_on": None}]}))
+
+    assert row["company_id"] not in html and row["document_id"] not in html
+    assert html.count("<td>Acme Ltd</td>") == 2
+    # The payment's invoice cell is "--", click-to-edit to record it on an invoice; the
+    # refund's stays marked deleted.
+    assert html.count("(deleted)") == 1
+    assert 'hx-get="/settings/payments/unmatched/pi_1/invoice/edit"' in html
 
 
 @pytest.mark.asyncio

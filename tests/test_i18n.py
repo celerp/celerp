@@ -872,3 +872,37 @@ def test_import_where_line_names_no_side():
              for code, words in _SIDE_WORDS.items()
              if any(w in _load_locale(code)["dashboard.getting_started_where"].lower() for w in words)}
     assert not sided, sided
+_NOUN_LABELS = [
+    *[("fr", k, "Contact") for k in ("label.contact", "page.contact_detail", "th.contact",
+                                     "field.contact_name", "field.contact_id",
+                                     "contacts.contact_name_fallback")],
+    ("fr", "th.code", "Code"),
+    *[("ja", k, "連絡先") for k in ("label.contact", "page.contact_detail", "th.contact",
+                                   "field.contact_name", "field.contact_id",
+                                   "contacts.contact_name_fallback")],
+    *[("th", k, "ผู้ติดต่อ") for k in ("label.contact", "page.contact_detail", "th.contact")],
+    ("fr", "doc.contact", "Contact\u00a0:"),
+    ("ja", "doc.contact", "連絡先："),
+    ("th", "doc.contact", "ผู้ติดต่อ:"),
+    ("fr", "page.contact_people", "Personnes de contact"),
+    ("es", "page.contact_people", "Personas de contacto"),
+    ("pt", "page.contact_people", "Pessoas de contato"),
+    ("id", "page.contact_people", "Orang kontak"),
+    ("vi", "page.contact_people", "Người liên hệ"),
+    ("th", "page.contact_people", "ผู้ติดต่อ"),
+    ("ar", "page.contact_people", "جهات الاتصال"),
+    ("fr", "documents.contact_placeholder", "Contact…"),
+    ("es", "documents.contact_placeholder", "Contacto..."),
+    ("pt", "documents.contact_placeholder", "Contato..."),
+    ("it", "documents.contact_placeholder", "Contatto..."),
+    ("de", "documents.contact_placeholder", "Kontakt..."),
+    ("ar", "documents.contact_placeholder", "جهة الاتصال..."),
+]
+
+
+@pytest.mark.parametrize("lang,key,noun", _NOUN_LABELS)
+def test_labels_naming_a_thing_are_nouns(lang, key, noun):
+    """Column headers and labels name a thing; a verb ("Documenter", "Contacter",
+    "Coder", Thai "to contact") or a wrong sense (Japanese "physical touch") reads
+    as a broken translation."""
+    assert t(key, lang) == noun

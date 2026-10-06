@@ -9,6 +9,15 @@ from conftest_support import is_own_test_config, resolve_worker_config
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
+# The suite wires the module routes it needs onto the apps itself, so the apps load no
+# module trees of their own (an unset MODULE_DIR would mean the bundled trees).
+os.environ.setdefault("MODULE_DIR", "")
+# CELERP_DATA_DIR is also the packaged-build switch (ui/routes/settings_cloud.py), so an
+# inherited one would run every test as the desktop build. Keep the data location under
+# its plain name; the tests of packaged behavior set CELERP_DATA_DIR themselves.
+_inherited_data_dir = os.environ.pop("CELERP_DATA_DIR", None)
+if _inherited_data_dir:
+    os.environ.setdefault("DATA_DIR", _inherited_data_dir)
 
 # Point config.toml at a per-worker temp file. Otherwise every xdist worker shares
 # ~/.config/celerp/config.toml, which ensure_instance_id() reads+writes on the
@@ -206,10 +215,6 @@ from celerp_accounting.ui_routes import setup_ui_routes as _setup_accounting_ui
 _setup_accounting(app)
 _setup_accounting_ui(_ui_app)
 
-# Register reconciliation UI routes onto the test app.
-from ui.routes.reconciliation import setup_routes as _setup_recon_ui
-_setup_recon_ui(_ui_app)
-
 # Register subscriptions module routes onto the test app.
 _subs_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-subscriptions")
 if _os.path.abspath(_subs_src) not in [_os.path.abspath(p) for p in _sys.path]:
@@ -240,7 +245,9 @@ _dash_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp
 if _os.path.abspath(_dash_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_dash_src))
 from celerp_dashboard.setup import setup_api_routes as _setup_dashboard
+from celerp_dashboard.ui_routes import setup_ui_routes as _setup_dashboard_ui
 _setup_dashboard(app)
+_setup_dashboard_ui(_ui_app)
 
 # Register AI module routes onto the test app.
 _ai_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-ai")
@@ -422,18 +429,15 @@ def _ensure_slots() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
-    """Bust the in-process nonce and drain caches before each test.
+    """Bust the in-process drain cache before each test.
 
-    These module-level caches are correct at runtime (single process, explicit
-    bust on mutation).  In tests, each test rolls back its database changes, so
-    the cache must be cleared to avoid leaking state between tests.
+    The module-level cache is correct at runtime (single process, explicit bust
+    on mutation).  In tests, each test rolls back its database changes, so the
+    cache must be cleared to avoid leaking state between tests.
     """
-    from celerp.services.session_tracker import _nonce_cache_bust_all
     from celerp.services.runtime_state import _drain_cache_bust
-    _nonce_cache_bust_all()
     _drain_cache_bust()
     yield
-    _nonce_cache_bust_all()
     _drain_cache_bust()
 
 
@@ -547,6 +551,19 @@ def _ensure_slot_registration():
 
 
 @pytest.fixture(autouse=True)
+def _restore_import_path():
+    """Restore sys.path after each test.
+
+    Loading a module puts its folder on sys.path. Tests that load modules from
+    temporary folders left hundreds of dead entries behind on a worker, and every
+    later import then searched them all.
+    """
+    before = list(_sys.path)
+    yield
+    _sys.path[:] = before
+
+
+@pytest.fixture(autouse=True)
 def _mock_get_modules_default():
     """Default get_modules mock — returns empty list so settings page always has a valid response."""
     from unittest.mock import patch, AsyncMock
@@ -558,11 +575,13 @@ def _mock_get_modules_default():
 def _reset_loaded_modules(request):
     """Clear the loader's in-process registry around each unit test. A test (or
     a test module's import) that calls load_all() populates
-    celerp.modules.loader._loaded AND registers every module's lifecycle hooks
-    into celerp.modules.slots._slots; without resetting both they leak into
+    celerp.modules.loader._loaded and _module_routes AND registers every
+    module's lifecycle hooks into celerp.modules.slots._slots; without
+    resetting them they leak into
     later tests in the same worker (e.g. a module shows running=True, or the
     manufacturing on_company_created hook seeds a default work center for a test
-    that expects none), which surfaces under xdist's test distribution.
+    that expects none, or a later UI request is answered by the per-company
+    module gate), which surfaces under xdist's test distribution.
 
     The slot registry is snapshotted and restored around the test rather than
     cleared, so the canonical unit-harness contributions (_ensure_slots) survive
@@ -575,12 +594,16 @@ def _reset_loaded_modules(request):
     if request.node.get_closest_marker("browser"):
         yield
         return
-    from celerp.modules.loader import _loaded
+    from celerp.modules.loader import _loaded, _module_routes
+    from celerp.modules import outcome as _outcome
     from celerp.modules import slots as _slots_mod
     _loaded.clear()
+    _module_routes.clear()
     _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
     yield
     _loaded.clear()
+    _module_routes.clear()
+    _outcome._awaiting_ui = False  # a lifespan that loaded modules waits for a UI
     _slots_mod._slots.clear()
     _slots_mod._slots.update({k: list(v) for k, v in _slot_snapshot.items()})
 
