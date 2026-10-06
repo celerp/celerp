@@ -1265,7 +1265,7 @@ async def connector_authorize_url(
     try:
         connector = get_connector(platform)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=platform)) from exc
 
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (

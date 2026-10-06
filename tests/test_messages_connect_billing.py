@@ -74,3 +74,14 @@ async def test_unknown_connector_is_named_in_the_callers_language(client, monkey
     r = await getattr(client, method)(path, headers=h)
     assert r.status_code == 404
     assert r.json()["detail"] == t("connectors.unknown_connector", "th", platform="nosuch")
+
+
+@pytest.mark.asyncio
+async def test_unknown_connector_authorize_url_names_it_in_the_callers_language(client, monkeypatch):
+    from celerp.config import settings
+    from test_helpers import register_admin
+    monkeypatch.setattr(settings, "gateway_token", "relay")
+    h = {"Authorization": f"Bearer {await register_admin(client)}", "Accept-Language": "de"}
+    r = await client.get("/settings/connectors/nosuch/authorize-url", headers=h)
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == t("connectors.unknown_connector", "de", platform="nosuch")
