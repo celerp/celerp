@@ -1442,6 +1442,13 @@ _BK_REDEFINED = {
     "the primary key changed": ["ALTER TABLE zz_widgets DROP CONSTRAINT zz_widgets_pkey",
                                 "ALTER TABLE zz_widgets ADD PRIMARY KEY (company_id, id)"],
     "a key column made required": ["ALTER TABLE zz_widgets ALTER COLUMN made_by SET NOT NULL"],
+    "a column dropped and added again": ["ALTER TABLE zz_widgets DROP COLUMN note",
+                                         "ALTER TABLE zz_widgets ADD COLUMN note varchar(40)",
+                                         "UPDATE zz_widgets SET note = 'second'"],
+    "a column copied, dropped and renamed back": ["ALTER TABLE zz_widgets ADD COLUMN note_new varchar(40)",
+                                                  "UPDATE zz_widgets SET note_new = note",
+                                                  "ALTER TABLE zz_widgets DROP COLUMN note",
+                                                  "ALTER TABLE zz_widgets RENAME COLUMN note_new TO note"],
 }
 
 
@@ -1469,6 +1476,41 @@ async def test_a_carried_table_redefined_before_the_export_holds_it_stops_it(
         err = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
 
         assert (err.status_code, err.detail) == (409, _BK_RESHAPED_DETAIL)
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+async def test_a_carried_table_held_by_the_export_cannot_have_a_column_made_again(
+        real_engine, tmp_path, monkeypatch):
+    """Once the export holds zz_widgets, another connection dropping a column and adding it
+    again under the same name waits for the export to end, so the backup is made whole."""
+    from sqlalchemy.exc import DBAPIError
+
+    from celerp.services import company_backup as cb
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_defined(real_engine, cid)
+        committed = cb._committed_shape
+        waited = []
+
+        async def remake_then_compare(plan):
+            if not waited:
+                with pytest.raises(DBAPIError) as caught:
+                    await _bk_ddl(real_engine, _BK_REDEFINED["a column dropped and added again"])
+                waited.append(caught.value.orig.sqlstate)
+            return await committed(plan)
+
+        monkeypatch.setattr(cb, "_committed_shape", remake_then_compare)
+        out = tmp_path / "out.celerp-company"
+        await cb.export_company_snapshot(cid, out)
+
+        assert waited == ["55P03"]
+        held = [json.loads(line)["note"] for line in members(out.read_bytes())["tables/zz_widgets.jsonl"].splitlines()]
+        assert held == ["first"]
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
