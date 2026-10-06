@@ -9,6 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from ui.i18n import t
+
+_CHECK_FAILED = t("shell.update_check_failed", "en")
+
 pytestmark = pytest.mark.browser
 
 # Debug screenshots are opt-in: set CELERP_SCREENSHOT_DIR to capture them.
@@ -172,8 +176,8 @@ def test_member_sees_the_update_but_cannot_install(page, ui_server):
     assert not page.locator(".update-card__auto").is_visible()
     assert not page.locator(".update-card__check-btn").is_visible()
     assert not page.locator(".update-card__upgrade-cmd").is_visible()
-    assert page.locator(".update-card__release").text_content() == (
-        "Your administrator can install this update.")
+    assert page.locator(".update-card__release").text_content() == t(
+        "shell.update_blocked_administrator", "en")
     _capture(page, "member-update-available")
 
 
@@ -375,7 +379,7 @@ def test_error_state_replays_on_page_load(page, ui_server):
     """A failed check before this page loaded still shows the failure and its reason."""
     _fake_electron(page, [_ERROR])
     seen = _open(page, f"{ui_server}/")
-    assert seen["state"] == "Update check failed"
+    assert seen["state"] == _CHECK_FAILED
     assert "getaddrinfo ENOTFOUND github.com" in page.locator(".update-card__log").text_content()
     assert seen["check"] is True
     assert seen["restart"] is False
@@ -405,7 +409,7 @@ def test_failed_check_clears_to_the_next_result(page, ui_server, result, state):
     has a result; the card then shows that result and the log keeps the failure."""
     _fake_electron(page, [_ERROR])
     failed = _open(page, f"{ui_server}/")
-    assert failed["state"] == "Update check failed"
+    assert failed["state"] == _CHECK_FAILED
     assert _reloaded(page) == failed
     _emit(page, _CHECKING, result)
     seen = page.evaluate(_VISIBLE_STATE_JS)
@@ -419,7 +423,7 @@ def test_failed_download_survives_background_checks(page, ui_server):
     app's own checks and reloads, until the user checks again."""
     _fake_electron(page, [_FOUND, _PROGRESS, ("error", {"message": "sha512 checksum mismatch"})])
     failed = _open(page, f"{ui_server}/")
-    assert (failed["state"], failed["badge"], failed["check"]) == ("Update check failed", "1", True)
+    assert (failed["state"], failed["badge"], failed["check"]) == (_CHECK_FAILED, "1", True)
     _emit(page, _CHECKING, _UP_TO_DATE, _CHECKING, _FOUND, _PROGRESS)
     assert page.evaluate(_VISIBLE_STATE_JS) == failed
     assert _reloaded(page) == failed

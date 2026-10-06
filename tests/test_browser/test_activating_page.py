@@ -18,6 +18,8 @@ Run locally with:
 import pytest
 from playwright.sync_api import Page
 
+from ui.i18n import t
+
 pytestmark = pytest.mark.browser
 
 
@@ -185,11 +187,12 @@ def test_activating_page_error_on_stuck_loading(page, ui_server):
 
     status_el = page.locator("#activating-status")
     # Wait for error text to appear
+    expected = t("setup.modules_failed_to_start", "en")
     page.wait_for_function(
-        "() => document.getElementById('activating-status').textContent.includes('failed')",
-        timeout=5000,
+        "(msg) => document.getElementById('activating-status').textContent.includes(msg)",
+        arg=expected, timeout=5000,
     )
     text = status_el.inner_text()
-    assert "failed" in text.lower(), f"Expected error message, got: {text!r}"
+    assert expected in text, f"Expected error message, got: {text!r}"
     _assert_failure_links(page)
     assert "/setup/activating" in page.url, "Should not redirect on module failure"
