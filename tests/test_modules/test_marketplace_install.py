@@ -319,7 +319,8 @@ async def test_third_party_package_may_not_claim_celerp_prefix(client, relay_env
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("slug", ["../celerp-budgeting", "celerp/budgeting", "celerp budgeting", ""])
+@pytest.mark.parametrize("slug", ["../celerp-budgeting", "celerp/budgeting", "celerp budgeting", "",
+                                  "x" * 5000])
 async def test_download_of_a_slug_that_is_not_a_module_id_gives_404(client, relay_env, slug):
     headers = await _register(client)
     with patch("httpx.AsyncClient", _fake_relay()):

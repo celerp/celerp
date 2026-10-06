@@ -22,8 +22,8 @@ from pathlib import Path
 # A download is imported within this long, or downloaded again.
 TTL_SECONDS = 24 * 60 * 60
 
-_OWNER = re.compile(r"[A-Za-z0-9_-]+")
-_TOKEN = re.compile(r"([A-Za-z0-9_-]+)-[0-9a-f]{32}")
+_OWNER = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_TOKEN = re.compile(r"([A-Za-z0-9_-]{1,128})-[0-9a-f]{32}")
 
 
 class StagedDownloadMissing(LookupError):
@@ -36,7 +36,8 @@ class StagedDownloadUnreadable(StagedDownloadMissing):
 
 
 def valid_owner(owner) -> bool:
-    """Whether ``owner`` can name downloads: letters, digits, '-' and '_'."""
+    """Whether ``owner`` can name downloads: up to 128 letters, digits, '-' and
+    '_'."""
     return isinstance(owner, str) and _OWNER.fullmatch(owner) is not None
 
 

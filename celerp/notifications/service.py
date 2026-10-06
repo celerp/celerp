@@ -16,6 +16,7 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy import delete, exists, func, literal, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.notification import Notification, NotificationRead
@@ -207,11 +208,16 @@ async def mark_read(
     )).first()
     if found is None:
         return False
-    await session.execute(
-        pg_insert(NotificationRead)
-        .values(notification_id=notification_id, user_id=user_id)
-        .on_conflict_do_nothing()
-    )
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                pg_insert(NotificationRead)
+                .values(notification_id=notification_id, user_id=user_id)
+                .on_conflict_do_nothing()
+            )
+    except IntegrityError:
+        # The notice was deleted after it was found.
+        return False
     return True
 
 

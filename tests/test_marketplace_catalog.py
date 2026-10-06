@@ -164,8 +164,11 @@ class TestCommunityDownload:
         "https://github.com/a/..",
         "https://github.com/a/b?x=1",
         "https://github.com/a/b.git",
+        "https://github.com/a/b.GIT",
+        "https://github.com/a/b.Git",
     ], ids=["http", "other-host", "lookalike-suffix", "lookalike-prefix", "userinfo",
-            "port", "extra-path", "trailing-slash", "no-repo", "dot-dot", "query", "dot-git"])
+            "port", "extra-path", "trailing-slash", "no-repo", "dot-dot", "query", "dot-git",
+            "dot-git-upper", "dot-git-mixed"])
     async def test_download_refuses_a_repo_that_is_not_a_canonical_github_repo(self, repo):
         seen: list[str] = []
         with _host(seen), pytest.raises(mc.DownloadRefused) as exc:
@@ -174,7 +177,8 @@ class TestCommunityDownload:
         assert seen == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("commit", [None, "", "HEAD", "main", PIN[:12], PIN + "0", "g" * 40])
+    @pytest.mark.parametrize("commit", [None, "", "HEAD", "main", PIN[:12], PIN + "0", "g" * 40,
+                                        PIN.upper(), PIN.replace("a", "A")])
     async def test_download_refuses_a_commit_that_is_not_40_hex(self, commit):
         seen: list[str] = []
         with _host(seen), pytest.raises(mc.DownloadRefused) as exc:
@@ -202,6 +206,13 @@ class TestCommunityDownload:
         assert exc.value.key == "marketplace.download_redirected"
         assert seen == [f"https://codeload.github.com/a/b/zip/{PIN}"]
         assert list(mc._staging_dir().iterdir()) == []
+
+    def test_the_longest_listing_id_can_be_downloaded(self):
+        """Download names hold a listing id (up to 64 characters) and its commit;
+        anything longer is refused."""
+        longest = "m" * mc._STR_LIMITS["id"] + "-" + PIN
+        assert staged_downloads.valid_owner(longest)
+        assert not staged_downloads.valid_owner("m" * 129)
 
     @pytest.mark.asyncio
     async def test_a_second_download_does_not_change_what_the_first_imports(self):
