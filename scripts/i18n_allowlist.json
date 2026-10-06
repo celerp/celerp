@@ -17,11 +17,6 @@
       "reason": "brand name"
     },
     {
-      "file": "ui/routes/auth.py",
-      "text": "you@example.com",
-      "reason": "example email input value"
-    },
-    {
       "file": "ui/routes/documents.py",
       "text": "CN {...}",
       "reason": "document number code prefix (identifier, not prose)"

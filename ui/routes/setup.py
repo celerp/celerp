@@ -24,9 +24,10 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import auth_shell, client_scripts, flash, page_title
+from ui.components.currency import currency_options
 from ui.components.table import searchable_select
 from celerp.services.business_time import business_timezone
-from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
+from celerp.services.currencies import CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
@@ -124,7 +125,7 @@ def company_choice_fields(currency: str = "", vertical: str = "") -> list:
         ),
         Div(
             Label(t("th.currency"), cls="form-label"),
-            searchable_select("currency", [(code, label) for code, label in CURRENCIES],
+            searchable_select("currency", currency_options(),
                               value=currency if currency in CURRENCY_CODES else "",
                               placeholder=t("setup.currency_search_placeholder"),
                               aria_label=t("th.currency")),

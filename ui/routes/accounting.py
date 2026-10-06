@@ -21,8 +21,9 @@ from starlette.responses import HTMLResponse, RedirectResponse, PlainTextRespons
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.currency import currency_options
 from ui.components.shell import base_shell, page_header, page_title
-from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
+from celerp.services.currencies import CURRENCY_CODES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
     href as _href, journal_totals as _journal_totals,
@@ -451,7 +452,7 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]],
         Td(Input(type="number", name=f"credit_{idx}", value=line.get("credit", ""), step="any",
                  min="0", cls="cell-input", oninput="celerpJeTotals()",
                  onkeydown=esc), cls="cell--number"),
-        Td(searchable_select(f"currency_{idx}", CURRENCIES, value=line.get("currency", ""),
+        Td(searchable_select(f"currency_{idx}", currency_options(), value=line.get("currency", ""),
                              placeholder=t("acct.currency_base_hint"), cls_extra="cell-input",
                              onchange="celerpJeFxFill(this)"),
            cls="je-fx-col"),
