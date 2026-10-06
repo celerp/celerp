@@ -208,7 +208,8 @@ async def _refresh_bearer_validated(token: str) -> str | None:
 
     Fails closed: any DB or validation error yields no refreshed token.
     """
-    from celerp.services.auth import validate_access_token, issue_token_pair
+    from celerp.credentials import issue_token_pair
+    from celerp.services.auth import validate_access_token
     from fastapi import HTTPException
 
     try:

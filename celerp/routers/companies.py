@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.credentials import issue_token_pair
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
@@ -26,7 +27,6 @@ from celerp.services.auth import (
     get_current_user,
     get_current_role,
     hash_password,
-    issue_token_pair,
     require_install_owner,
     MIN_PASSWORD_LENGTH,
     normalize_role,

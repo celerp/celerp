@@ -35,6 +35,7 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.credentials import issue_token_pair
 from celerp.db import get_session
 from celerp.importers.adapters.registry import list_adapters
 from celerp.models.company import Company, User
@@ -50,7 +51,6 @@ from celerp.services.auth import (
     AuthContext,
     get_auth_context,
     hold_companyless_login,
-    issue_token_pair,
     validate_password,
 )
 from celerp.services.permissions import role_has_permission

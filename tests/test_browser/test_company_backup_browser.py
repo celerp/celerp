@@ -87,7 +87,7 @@ def _token_for(user_id: str, company_id: str) -> str:
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
         from celerp.models.company import Company, User
-        from celerp.services.auth import issue_token_pair
+        from celerp.credentials import issue_token_pair
         engine = create_async_engine(os.environ["DATABASE_URL"])
         try:
             async with AsyncSession(engine, expire_on_commit=False) as s:

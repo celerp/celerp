@@ -75,7 +75,7 @@ async def make_authed_token(session, user_id: str, company_id: str, role: str) -
     going through the login gate (which allows only one active session per user).
     The user, its ``UserCompany`` membership and the company must already exist.
     """
-    from celerp.services.auth import create_access_token
+    from celerp.credentials import create_access_token
     from celerp.services.session_tracker import get_nonce
     snonce = await get_nonce(session, str(user_id))
     token, _ = create_access_token(str(user_id), str(company_id), role, snonce=snonce)

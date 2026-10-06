@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.credentials import issue_token_pair
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
@@ -33,7 +34,6 @@ from celerp.services.auth import (
     get_current_company_id,
     get_current_user,
     hash_password,
-    issue_token_pair,
     lock_issuance_company,
     usable_company_link,
     oauth2_scheme_optional,
@@ -158,22 +158,6 @@ limiter = Limiter(key_func=get_remote_address)
 _PICK_ATTEMPTS = 3
 
 
-async def _issue_login_tokens(session: AsyncSession, user: User) -> dict:
-    """Sign *user* in to the company ``first_usable_company_link`` picks.
-
-    A company removed between the pick and the issuance issues nothing; the pick is
-    made again from what is left."""
-    for _ in range(_PICK_ATTEMPTS):
-        link = await first_usable_company_link(session, user.id)
-        if link is None:
-            raise HTTPException(status_code=401, detail=NO_COMPANY)
-        try:
-            return await issue_token_pair(session, user=user, company_id=link.company_id)
-        except CompanyUnavailable:
-            continue
-    raise CompanyUnavailable()
-
-
 async def authenticate(session: AsyncSession, email: str, password: str) -> User:
     """The active login these credentials belong to; a neutral 401 otherwise."""
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
@@ -212,7 +196,18 @@ async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) 
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     user = await authenticate(session, payload.email, payload.password)
     await hold_direct_slot(session)
-    return await _issue_login_tokens(session, user)
+    # Signs in to the company first_usable_company_link picks. A company removed
+    # between the pick and the issuance issues nothing; the pick is made again
+    # from what is left.
+    for _ in range(_PICK_ATTEMPTS):
+        link = await first_usable_company_link(session, user.id)
+        if link is None:
+            raise HTTPException(status_code=401, detail=NO_COMPANY)
+        try:
+            return await issue_token_pair(session, user=user, company_id=link.company_id)
+        except CompanyUnavailable:
+            continue
+    raise CompanyUnavailable()
 
 
 @router.post("/login-force")

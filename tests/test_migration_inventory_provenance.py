@@ -55,7 +55,7 @@ async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0], sour
     from celerp.models.company import Company, User
     from celerp.models.migration import MigrationRun
     from celerp.services import migrations
-    from celerp.services.auth import issue_token_pair
+    from celerp.credentials import issue_token_pair
 
     run, rejected = await migrate(real_engine, source.read_bytes(), source.name, decisions, monkeypatch, tmp_path)
     assert rejected == []

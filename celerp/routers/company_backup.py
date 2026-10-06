@@ -28,8 +28,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
+from celerp.credentials import issue_token_pair_by_id
 from celerp.db import get_session
-from celerp.models.company import User
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.modules import requirements
 from celerp.modules.importer import MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip
@@ -38,7 +38,7 @@ from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, us
 from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services import company_backup_files as files
-from celerp.services.auth import AuthContext, issue_token_pair
+from celerp.services.auth import AuthContext
 
 logger = logging.getLogger(__name__)
 
@@ -202,15 +202,9 @@ async def _import_module(file: UploadFile, session: AsyncSession, owner: str, to
     return await _staged(session, owner, token, ctx, mode)
 
 
-async def _tokens(session: AsyncSession, user_id, company_id) -> dict:
-    """A session for the user on the company, with their active role there."""
-    user = await session.get(User, uuid.UUID(str(user_id)))
-    return await issue_token_pair(session, user=user, company_id=uuid.UUID(str(company_id)))
-
-
 async def _signed_in(session: AsyncSession, result: cb.RestoreResult) -> JSONResponse:
     """The restore response, with a session for the company it opened."""
-    tokens = await _tokens(session, result.user_id, result.company_id)
+    tokens = await issue_token_pair_by_id(session, result.user_id, result.company_id)
     return JSONResponse(status_code=201 if result.outcome == cb.CREATED else 200, content={
         "company_id": result.company_id, "company_name": result.company_name, "outcome": result.outcome,
         "backup_created_at": result.backup_created_at, "team_members": result.team_members,
@@ -314,7 +308,7 @@ async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(use
         files.finish_stage(stage, done.company_id)
         company_id, name, reconnect = done.company_id, done.company_name, done.connectors_to_reconnect
         outcome = cb.REACTIVATED if done.reactivated else cb.OPENED_EXISTING
-    tokens = await _tokens(session, ctx.user.id, company_id)
+    tokens = await issue_token_pair_by_id(session, ctx.user.id, company_id)
     return {"company_id": str(company_id), "company_name": name, "outcome": outcome,
             "connectors_to_reconnect": reconnect, **tokens}
 
