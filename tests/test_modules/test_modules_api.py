@@ -348,6 +348,27 @@ class TestModuleProvenanceAndDelete:
         assert row["source"] == "marketplace"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("sidecar", ['{"source": "trusted"}', '{"source": null}', "{}", "[]"],
+                             ids=["unknown", "null", "empty", "not_an_object"])
+    async def test_scan_reports_an_unknown_source_as_sideloaded(self, client, tmp_path, sidecar):
+        from celerp.modules.importer import install_from_zip
+        from celerp.modules.meta import META_FILENAME
+
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("acme-odd/__init__.py", _PKG_INIT.format(name="acme-odd", disp="Odd"))
+            install_from_zip(buf.getvalue(), source="community")
+            (module_dir / "acme-odd" / META_FILENAME).write_text(sidecar)
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        row = next(m for m in r.json() if m["name"] == "acme-odd")
+        assert row["source"] == "sideloaded"
+
+    @pytest.mark.asyncio
     async def test_upload_cannot_claim_marketplace_source(self, client, tmp_path):
         token = await _register(client)
         module_dir = tmp_path / "modules"

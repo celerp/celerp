@@ -25,6 +25,9 @@ META_FILENAME = ".celerp-meta.json"
 # loader), never by a sidecar.
 IMPORT_SOURCES = {"community", "sideloaded"}
 
+# Every source the module list reports; any other sidecar value reads as "sideloaded".
+SOURCES = IMPORT_SOURCES | {"marketplace"}
+
 
 def write_meta(pkg_dir: Path, *, source: str) -> None:
     """Write the provenance sidecar into an installed module folder.
@@ -38,9 +41,11 @@ def write_meta(pkg_dir: Path, *, source: str) -> None:
 
 
 def read_meta(pkg_dir: Path) -> dict:
-    """Return the sidecar contents, or ``{}`` if it is missing or unreadable."""
+    """Return the sidecar contents, or ``{}`` if it is missing, unreadable or not
+    a JSON object."""
     path = Path(pkg_dir) / META_FILENAME
     try:
-        return json.loads(path.read_text())
+        meta = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
+    return meta if isinstance(meta, dict) else {}

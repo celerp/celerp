@@ -921,11 +921,13 @@ def test_kernel_projection_prefixes_cover_the_core_folded_modules():
     assert slots.KERNEL_PROJECTION_PREFIXES == {"sys."} | declared
 
 
-def _official_zip(name: str) -> bytes:
+def _official_zip(name: str, files: dict[str, str] | None = None) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(f"{name}/__init__.py",
                     f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n")
+        for rel, body in (files or {}).items():
+            zf.writestr(f"{name}/{rel}", body)
     return buf.getvalue()
 
 
@@ -939,7 +941,8 @@ def test_marketplace_install_keeps_reserved_prefix(_modules):
 
 
 def test_celerp_module_copied_in_by_hand_loads(_modules):
-    name, inner = f"celerp-{_uid()}", f"celerp_{_uid()}"
+    name = f"celerp-{_uid()}"
+    inner = name.replace("-", "_")
     _write_module(_modules, name, {"name": name, "version": "1.0.0", "api_routes": f"{inner}.api"},
                   {f"{inner}/__init__.py": "", f"{inner}/api.py": "def setup_api_routes(app):\n    pass\n"})
 
@@ -975,7 +978,35 @@ def test_celerp_module_copied_in_by_hand_cannot_take_a_default_modules_package(_
     admission = loader.admit_modules(module_dir, {name, "celerp-inventory"})
 
     assert [a.name for a in admission.admitted] == ["celerp-inventory"]
-    assert "'celerp-inventory' also ships 'celerp_inventory'" in admission.refused[name]
+    assert _NOT_ITS_PACKAGE.format("celerp_inventory") in admission.refused[name]
+
+
+_NOT_ITS_PACKAGE = "The package name '{}' belongs to the celerp- module of that name"
+
+
+def test_celerp_module_copied_in_by_hand_cannot_take_a_marketplace_modules_package(_modules):
+    u = _uid()
+    real, copy, package = f"celerp-zzz{u}", f"celerp-aaa{u}", f"celerp_zzz{u}"
+    install_from_zip(_official_zip(real, {f"{package}/__init__.py": ""}),
+                     official=True, source="marketplace")
+    _write_module(_modules, copy, {"name": copy, "version": "1.0.0"},
+                  {f"{package}/__init__.py": ""})
+
+    admission = loader.admit_modules(str(_modules), {real, copy})
+
+    assert [a.name for a in admission.admitted] == [real]
+    assert _NOT_ITS_PACKAGE.format(package) in admission.refused[copy]
+
+
+def test_celerp_module_cannot_take_the_package_of_a_module_not_installed(_modules):
+    name, package = f"celerp-aaa{_uid()}", f"celerp_other{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"},
+                  {f"{package}/__init__.py": ""})
+
+    admission = loader.admit_modules(str(_modules), {name})
+
+    assert admission.admitted == []
+    assert _NOT_ITS_PACKAGE.format(package) in admission.refused[name]
 
 
 # ── A1 at load: a refused module's own code never runs ───────────────────────
