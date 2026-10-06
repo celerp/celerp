@@ -188,3 +188,24 @@ async def test_subscription_actions_follow_document_permissions(client, session)
         assert (await client.post(url, headers=_h(viewer))).status_code == 403, action
         r = await client.post(url, headers=_h(operator))
         assert r.status_code == 200, (action, r.text)
+
+
+@pytest.mark.asyncio
+async def test_item_reads_by_post_follow_view_inventory(client, session):
+    """Reading items through the bulk metadata route or a printed label needs
+    view_inventory, like opening the item. Red statement: with view_inventory taken
+    from viewers, the item page answered 403 while these three answered 200."""
+    admin = await _admin(client)
+    viewer = await _user_with_role(client, session, admin, "viewer")
+    item = (await client.post("/items", headers=_h(admin), json={
+        "status": "available", "sku": "VR-2", "name": "Widget", "quantity": 1, "sell_by": "piece"})).json()["id"]
+    reads = (("/items/metadata", {"entity_ids": [item]}), (f"/api/labels/print/{item}", None),
+             ("/api/labels/bulk-print", {"entity_ids": [item]}))
+    for url, body in reads:
+        assert (await client.post(url, headers=_h(viewer), json=body)).status_code == 200, url
+    r = await client.patch("/companies/me/role-permissions", headers=_h(admin),
+                           json={"perm_key": "view_inventory", "role_key": "viewer", "granted": False})
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/items/{item}", headers=_h(viewer))).status_code == 403
+    for url, body in reads:
+        assert (await client.post(url, headers=_h(viewer), json=body)).status_code == 403, url
