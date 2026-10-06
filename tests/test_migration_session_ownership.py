@@ -33,7 +33,7 @@ from migration_support import (
 from test_helpers import create_item, default_location_id, make_authed_token, register_admin
 from ui.i18n import t
 
-NOT_FOUND = "Migration not found."
+NOT_FOUND = t("migration.err_not_found", "en")
 STAGED = t("auth.company_staged", "en")
 
 

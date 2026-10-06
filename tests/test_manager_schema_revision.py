@@ -14,6 +14,7 @@ import pytest
 from fixtures.manager_io import specs
 from fixtures.manager_io.encoder import SCHEMA_GUID, write_manager_file
 from fixtures.manager_io.support import BASIC, adapter, artifact, ref
+from ui.i18n import t
 from migration_support import (
     load_run,
     maker,
@@ -112,7 +113,7 @@ async def test_manager_newer_revision_refused(client, migration_env, tmp_path):
     far_newer = _book(tmp_path / "far.manager", TESTED_REVISION + 40)
     for path in (newer, far_newer):
         message = _refused_everywhere(path)[0]
-        assert "newer version of Manager" in message
+        assert message == t("migration.err_newer_revision", "en")
         assert await _scan_refusals(client, path) == {message}
 
 

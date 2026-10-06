@@ -46,6 +46,7 @@ from celerp.importers.adapters.base import (
     SourceScan,
 )
 from celerp.importers.schema import CIFCoverageEntry, CIFMode
+from ui.i18n import t
 
 SCAN_TTL_SECONDS = 3600
 MAX_ARTIFACTS = 5
@@ -53,7 +54,7 @@ MAX_AGGREGATE_BYTES = 2 * 1024**3
 
 EXPIRED = "This scan has expired. Upload the file again."
 BUSY = "This scan is being updated. Try again in a moment."
-STORE_FAILED = "The file could not be stored. Try again."
+STORE_FAILED = "migration.err_store_failed"
 SOURCE_MISSING = "The uploaded file for this migration is missing. Discard it and upload the file again."
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 _STORED_RE = re.compile(r"artifact-\d+")
@@ -153,7 +154,7 @@ def _token_lock(directory: Path) -> Iterator[None]:
     except FileNotFoundError as exc:  # the scan was removed while this request waited
         raise ScanStoreError(410, EXPIRED) from exc
     except OSError as exc:
-        raise ScanStoreError(500, STORE_FAILED) from exc
+        raise ScanStoreError(500, t(STORE_FAILED)) from exc
     if release is None:
         raise ScanStoreError(409, BUSY)
     try:
@@ -267,7 +268,7 @@ async def _read_text(chunks: AsyncIterator[bytes]) -> str:
     async for chunk in chunks:
         data += chunk
         if len(data) > _SOURCE_KEY_MAX:
-            raise ScanStoreError(422, "This source is not available.")
+            raise ScanStoreError(422, t("migration.err_source_unavailable"))
     return data.decode("utf-8", errors="replace").strip()
 
 
@@ -276,24 +277,24 @@ async def _stream_file(part: UploadPart, path: Path, *, per_file: int, remaining
     try:
         fh = _open_artifact(path)
     except OSError as exc:
-        raise ScanStoreError(500, STORE_FAILED) from exc
+        raise ScanStoreError(500, t(STORE_FAILED)) from exc
     try:
         async for chunk in part.chunks:
             size += len(chunk)
             if size > per_file:
-                raise ScanStoreError(413, "This file is larger than this source allows.")
+                raise ScanStoreError(413, t("migration.err_file_too_large"))
             if size > remaining:
-                raise ScanStoreError(413, "The upload is larger than the allowed total.")
+                raise ScanStoreError(413, t("migration.err_upload_too_large"))
             digest.update(chunk)
             try:
                 for start in range(0, len(chunk), _WRITE_BYTES):
                     fh.write(chunk[start:start + _WRITE_BYTES])
             except OSError as exc:
-                raise ScanStoreError(500, STORE_FAILED) from exc
+                raise ScanStoreError(500, t(STORE_FAILED)) from exc
     finally:
         fh.close()
     if size == 0:
-        raise ScanStoreError(422, "The uploaded file is empty.")
+        raise ScanStoreError(422, t("migration.err_upload_empty"))
     return Artifact(path, _sanitize_name(part.filename), size, digest.hexdigest())
 
 
@@ -307,7 +308,7 @@ async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> tuple[A
             if key:
                 adapter = registry.get_adapter(key)
                 if adapter is None:
-                    raise ScanStoreError(422, "This source is not available.")
+                    raise ScanStoreError(422, t("migration.err_source_unavailable"))
         elif part.name == "files" and part.filename:
             if len(artifacts) >= MAX_ARTIFACTS:
                 raise ScanStoreError(413, f"Upload at most {MAX_ARTIFACTS} files.")
@@ -392,7 +393,7 @@ async def create_scan(files: AsyncIterable[UploadPart], *, owner: ScanOwner) -> 
                 "decisions": None,
             })
         except OSError as exc:
-            raise ScanStoreError(500, STORE_FAILED) from exc
+            raise ScanStoreError(500, t(STORE_FAILED)) from exc
     except BaseException:
         _discard(directory)
         raise
@@ -451,7 +452,7 @@ def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecision
             data["decisions"] = decisions_json(decisions)
             _write_json(path, data)
         except OSError as exc:
-            raise ScanStoreError(500, STORE_FAILED) from exc
+            raise ScanStoreError(500, t(STORE_FAILED)) from exc
         return _read(token, directory, owner)
 
 
@@ -493,7 +494,7 @@ def verify_unchanged(token: str, *, owner: ScanOwner) -> ScanSession:
             try:
                 changed = artifact_changed(artifact)
             except OSError as exc:
-                raise ScanStoreError(500, STORE_FAILED) from exc
+                raise ScanStoreError(500, t(STORE_FAILED)) from exc
             if changed:
                 _discard(directory)
                 raise ScanStoreError(409, "The uploaded file changed after it was scanned. Upload it again.")

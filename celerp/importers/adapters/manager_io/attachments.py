@@ -22,6 +22,7 @@ from celerp.importers.adapters.manager_io.book import AttachmentRef, Book
 from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
 from celerp.importers.schema import CoverageClass
 from celerp.services.attachments import accepts_mime
+from ui.i18n import t
 
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 MAX_NAME = 255
@@ -93,23 +94,23 @@ def _check(book: Book, reader: ManagerReader, ref: AttachmentRef) -> tuple[Accep
     """The accepted attachment and its content. Raises ScanError with the rejection reason."""
     ext = _extension(ref.name)
     if ext is None:
-        raise ScanError("The file name is not a plain name with an accepted file type.")
+        raise ScanError(t("migration.attachment_bad_name"))
     target_type = book.names.get(ref.target or "")
     if target_type not in TARGET_TYPES or book.is_blocked(ref.target):
-        raise ScanError("Its target record is not in the business file or is not carried into Celerp.")
+        raise ScanError(t("migration.attachment_no_target"))
     if ref.size > MAX_ATTACHMENT_BYTES:
-        raise ScanError("The file is larger than 25 MiB.")
+        raise ScanError(t("migration.attachment_too_large"))
     stored = reader.blob(ref.key, MAX_ATTACHMENT_BYTES)
     if stored is None:
-        raise ScanError("Its content is stored outside the business file.")
+        raise ScanError(t("migration.attachment_external"))
     content, size = stored
     if content is None:
-        raise ScanError("The file is larger than 25 MiB.")
+        raise ScanError(t("migration.attachment_too_large"))
     digest = hashlib.sha256(content)
     if ref.sha256 is not None and digest.digest() != ref.sha256:
-        raise ScanError("The content does not match its stored hash.")
+        raise ScanError(t("migration.attachment_damaged"))
     if not _signature_matches(ext, content):
-        raise ScanError("The content does not match the file type of its name.")
+        raise ScanError(t("migration.attachment_type_mismatch"))
     accepted = Accepted(ref.key, ref.name, FILE_TYPES[ext][0], size, digest.hexdigest(), ref.target, target_type)
     return accepted, content
 

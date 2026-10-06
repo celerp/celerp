@@ -47,6 +47,7 @@ from celerp.importers.schema import (
 )
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkEntityMapping
 from test_helpers import DATABASE_URL
+from ui.i18n import t
 
 # Every run-scoped endpoint, as (method, path suffix).
 RUN_ROUTES = (("get", ""), ("get", "/reconciliation"), ("get", "/reconciliation/pack"),
@@ -127,7 +128,7 @@ class FakeAdapter:
         spec = _read(artifacts)
         if decisions.mode == CIFMode.CUTOVER:
             if decisions.cutover_date < date.fromisoformat(spec["first_transaction"]):
-                raise ScanError("The cutover date is before the first transaction in this business file.")
+                raise ScanError(t("migration.err_cutover_before_first"))
         common = {"source_system": FAKE_KEY}
         journals = []
         if spec["journal"]:

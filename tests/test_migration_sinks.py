@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import func, select
 
 from test_helpers import register_admin
+from ui.i18n import t
 
 _PROVENANCE = {"source_system": "manager_io"}
 
@@ -153,7 +154,7 @@ async def test_internal_sinks_share_domain_import_services(client, session, monk
     }]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["created"] == 0 and "No contact matches contact:missing" in body["errors"][0]
+    assert body["created"] == 0 and t("error.contacts_not_found", "en", names="contact:missing") in body["errors"][0]
     assert calls == ["import_journal_records"]
     receivable = CIFAccount(
         **_PROVENANCE, source_type="Account", source_external_id="acct-ar", code="1100",

@@ -23,6 +23,8 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
+from ui.i18n import t
+
 
 @pytest.fixture(autouse=True)
 def _isolate_database_side_effects(monkeypatch):
@@ -288,7 +290,7 @@ class TestPgVersionPreCheck:
             with pytest.raises(ValueError) as ei:
                 bi.validate_archive(path)
             msg = str(ei.value)
-            assert "PostgreSQL 17" in msg and "PostgreSQL 16" in msg
+            assert msg == t("error.restore_pg_newer", "en", backup=17, local=16)
         finally:
             path.unlink(missing_ok=True)
 
@@ -332,8 +334,9 @@ class TestValidateArchivePaths:
         path = _write_archive_to_tmp(out.getvalue())
         monkeypatch.setattr(bi, "_local_pg_restore_major", lambda: None)
         try:
-            with pytest.raises(ValueError, match="Unsafe path"):
+            with pytest.raises(ValueError) as ei:
                 bi.validate_archive(path)
+            assert str(ei.value) == t("error.restore_unsafe", "en")
         finally:
             path.unlink(missing_ok=True)
 
@@ -644,8 +647,8 @@ class TestReconcileSchema:
         with pytest.raises(RuntimeError) as exc_info:
             await backup_import._reconcile_schema()
         message = str(exc_info.value)
-        assert "schema could not be brought up to date" in message
-        assert "DuplicateColumn" in message
+        assert message == t("error.restore_schema_update", "en",
+                             detail="DuplicateColumn: column already exists")
 
 
 # ---------------------------------------------------------------------------
