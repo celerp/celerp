@@ -188,12 +188,13 @@ def _local_panel(modules: list[dict], lang: str = "en",
     #      tiebreaker among imports that share (or lack) an install time.
     #   B. newest installed_at first - ISO 8601 strings sort chronologically, so
     #      reverse gives newest first; defaults have no install time and tie here,
-    #      keeping pass A's order.
+    #      keeping pass A's order. A value that is not text counts as none.
     #   C. imports (non-default) before defaults - defaults re-seed on every
     #      desktop version bump, so their folder times are meaningless for "newest".
     # The shared table JS keeps this order until a header is clicked to sort.
     modules = sorted(modules, key=lambda m: 0 if m.get("enabled") else 1)
-    modules = sorted(modules, key=lambda m: m.get("installed_at") or "", reverse=True)
+    modules = sorted(modules, reverse=True, key=lambda m: (
+        m["installed_at"] if isinstance(m.get("installed_at"), str) else ""))
     modules = sorted(modules, key=lambda m: 1 if m.get("is_default") else 0)
     name_to_label = {m["name"]: (m.get("label") or m["name"]) for m in modules}
 

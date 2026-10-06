@@ -688,11 +688,20 @@ _RESERVED_IMPORT_NAMES = frozenset({"celerp", "ui", "default_modules", "premium_
 
 def _import_roots(name: str, pkg_path: Path) -> list[str]:
     """Every top-level name the module answers to once its folder and the
-    folder's parent are on sys.path: its own name and each package or source
-    file directly inside it."""
-    shipped = {entry.stem for entry in pkg_path.iterdir()
-               if (entry.is_dir() and (entry / "__init__.py").is_file())
-               or (entry.suffix == ".py" and entry.name != "__init__.py")}
+    folder's parent are on sys.path: its own name and each package or
+    importable file (source, compiled or extension) directly inside it."""
+    suffixes = importlib.machinery.all_suffixes()
+
+    def importable(entry: Path) -> str | None:
+        return next((entry.name[:-len(s)] for s in suffixes if entry.name.endswith(s)), None)
+
+    shipped = set()
+    for entry in pkg_path.iterdir():
+        if entry.is_dir():
+            if any((entry / f"__init__{s}").is_file() for s in suffixes):
+                shipped.add(entry.name)
+        elif (stem := importable(entry)) and stem != "__init__":
+            shipped.add(stem)
     return sorted({name} | shipped)
 
 
@@ -731,7 +740,10 @@ def _check_import_names(name: str, pkg_path: Path) -> None:
     already hold the name. Raises :class:`ModuleLoadError`."""
     homes = _module_homes(pkg_path)
     elsewhere = [p for p in sys.path if not any(_inside(Path(p or "."), h) for h in homes)]
-    own = name.replace("-", "_") if name.startswith(_RESERVED_PREFIX) else None
+    # Marketplace names use '-' only, so a celerp_ package belongs to the one
+    # celerp- name without '_'.
+    own = (name.replace("-", "_")
+           if name.startswith(_RESERVED_PREFIX) and "_" not in name else None)
     for root in _import_roots(name, pkg_path):
         if root.startswith(_RESERVED_IMPORT_PREFIX) and root != own:
             raise ModuleLoadError(
@@ -893,9 +905,10 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     The one preflight both the migration phase and the loader consume. Per
     enabled module (core-folded ones excepted) it reads the copy
     resolve_runtime_module_path picks and checks: the manifest is a literal
-    that validates; its name matches the folder; the importer's name rules
-    (reserved prefix); the Celerp version it needs; the table prefix contract;
-    that no package name it answers to is already taken, by Python or by
+    that validates; its name matches the folder; the importer's name charset
+    rules; a celerp_ package only in the celerp- module of that name
+    (_check_import_names); the Celerp version it needs; the table prefix
+    contract; that no package name it answers to is already taken, by Python or by
     another enabled module (_refuse_shared_import_names); that no
     projection prefix it declares overlaps core's or another enabled module's
     (_refuse_overlapping_projection_prefixes); that every route

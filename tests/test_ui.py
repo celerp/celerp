@@ -9231,6 +9231,20 @@ class TestModulesUI:
         assert body.index("Newer Import") < body.index("Older Import")
 
     @pytest.mark.asyncio
+    async def test_installed_table_orders_an_install_time_that_is_not_text_as_unknown(
+            self, ui_client):
+        rows = [
+            {"name": "odd-imp", "label": "Odd Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": 5},
+            {"name": "new-imp", "label": "Newer Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert body.index("Newer Import") < body.index("Odd Import")
+
+    @pytest.mark.asyncio
     async def test_installed_table_groups_defaults_after_imports(self, ui_client):
         """Every non-default row renders above every default row, even when the
         default is enabled and the imports are disabled."""

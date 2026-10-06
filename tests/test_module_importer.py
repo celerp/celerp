@@ -225,7 +225,7 @@ def test_official_install_requires_celerp_prefix(module_dir):
                                   "celerp_mine", "CELERP_mine"])
 @pytest.mark.parametrize("source", ["sideloaded", "community"])
 def test_upload_refuses_the_reserved_prefix_in_any_case(module_dir, name, source):
-    with pytest.raises(ModuleImportError, match="reserved for Marketplace modules"):
+    with pytest.raises(ModuleImportError, match="'celerp-' or 'celerp_', in any letter case, are reserved for Marketplace modules"):
         install_from_zip(_zip_bytes({"__init__.py": MANIFEST.replace("my-module", name)}),
                          source=source)
     assert not (module_dir / name).exists()
