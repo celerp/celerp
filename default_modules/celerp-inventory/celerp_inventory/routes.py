@@ -1412,13 +1412,13 @@ class ItemsMetadataBody(BaseModel):
     entity_ids: list[str] = Field(..., min_length=1, max_length=MAX_ITEMS_METADATA)
 
 
-@router.post("/metadata")
+@router.post("/metadata", dependencies=[require_permission("view_inventory")])
 async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """Bulk item-metadata read: one entry per requested id, keyed by entity_id.
 
     Returns the same visibility-filtered flat dict GET /items/{entity_id} returns
     per item, minus the sold_price enrichment (list/doc/audit renderers never read
-    it). This is a read gated by the router-level authentication; company_id is
+    it). This is a read gated by view_inventory, as GET /items/{entity_id} is; company_id is
     derived server-side from the JWT, never from the body, and the query is scoped
     to that company so it cannot read another company's items. Field/cost
     visibility is applied per the item's OWN category, exactly as the per-item

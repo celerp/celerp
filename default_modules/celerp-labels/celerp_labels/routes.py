@@ -158,6 +158,7 @@ async def delete_template(
 async def print_single(
     entity_id: str,
     request: Request,
+    _: None = require_permission("view_inventory"),
     company_id: uuid.UUID = Depends(get_current_company_id),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
@@ -180,6 +181,7 @@ async def print_single(
 @router.post("/bulk-print")
 async def bulk_print(
     body: BulkPrintBody,
+    _: None = require_permission("view_inventory"),
     company_id: uuid.UUID = Depends(get_current_company_id),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
