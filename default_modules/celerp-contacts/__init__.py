@@ -37,5 +37,4 @@ PLUGIN_MANIFEST = {
         },
     },
     "migrations": None,
-    "requires": [],
 }

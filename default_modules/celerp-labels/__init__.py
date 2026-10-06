@@ -6,7 +6,6 @@ This is the reference module for the Celerp module system. It demonstrates:
 - PLUGIN_MANIFEST structure
 - API + UI route registration
 - Slot contributions (nav, bulk_action)
-- pip dependency declaration via requirements.txt
 
 Module authors: see https://celerp.com/docs/modules for the full guide.
 """
@@ -65,8 +64,4 @@ PLUGIN_MANIFEST = {
         "th": {"file": "celerp_labels/locales/th.json"},
         "vi": {"file": "celerp_labels/locales/vi.json"},
     },
-
-    # ── Python dependencies ───────────────────────────────────────────────────
-    # Informational; actual install via requirements.txt in this directory.
-    "requires": ["reportlab>=4.0", "python-barcode", "qrcode"],
 }

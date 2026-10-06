@@ -91,7 +91,7 @@ describe("mayOpenData", () => {
 });
 
 describe("boot order", () => {
-  const STEPS = ["applyDbModePersist", "applyStoragePersist", "seedDefaultModules", "runModuleSetup",
+  const STEPS = ["applyDbModePersist", "applyStoragePersist", "seedDefaultModules",
                  "runMigrations", "startApi", "startUi"];
 
   function steps(allowed, { bundled = true } = {}) {
@@ -258,7 +258,6 @@ describe("app-main startup", () => {
     const { events, before, after } = await startPackaged(COMPATIBLE);
     expect(events.filter((e) => /^(spawn|execFileSync|message)/.test(e))).toEqual([
       "spawnSync:-m celerp compatibility",
-      "execFileSync:module_setup.py --data-dir celerp-data",
       "execFileSync:-m celerp migrate",
       "spawn:-m uvicorn celerp.main:app",
     ]);
