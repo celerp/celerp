@@ -515,20 +515,20 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
 
 async def _committed_shape(plan: _Plan) -> str | None:
     """The first table ``plan`` carries whose columns or keys, as now committed, differ
-    from those ``plan`` was made from, or None. Read through a connection of its own: the
-    backup's transaction reads the catalog as it was when the transaction began."""
+    from those ``plan`` was made from, as the catalog names it, or None. Read through a
+    connection of its own: the backup's transaction reads the catalog as it was when the
+    transaction began."""
     async with AsyncSession(bind=celerp.db.engine) as session, session.begin():
         await _pin(session, restoring=False)
-        return db_catalog.changed_schema(plan.schema, await db_catalog.read(session), plan.order)
+        name = db_catalog.changed_schema(plan.schema, await db_catalog.read(session), plan.order)
+        return name and await db_catalog.label(session, name)
 
 
 async def _unchanged(session: AsyncSession, plan: _Plan, lock) -> None:
     """Lock the tables ``plan`` carries with ``lock`` (``db_catalog.hold`` or
     ``db_catalog.fence``), then refuse the backup when any of them was replaced,
     reshaped, or given other columns or keys since ``plan`` was made."""
-    changed = await lock(session, plan.order)
-    if changed is None and (name := await _committed_shape(plan)):
-        changed = await db_catalog.label(session, name)
+    changed = await lock(session, plan.order) or await _committed_shape(plan)
     if changed:
         raise BackupError(409, RESHAPED.format(table=changed))
 
@@ -615,8 +615,12 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
         if not _within_limits(partial):
             raise BackupError(409, TOO_LARGE_TO_BACK_UP)
         partial.replace(out)
-    except BaseException:
+    except BaseException as exc:
         partial.unlink(missing_ok=True)
+        # A table whose columns changed meanwhile can fail to read, e.g. once a type it
+        # uses is renamed; that is answered as the change it is.
+        if isinstance(exc, DBAPIError) and (changed := await _committed_shape(plan)):
+            raise BackupError(409, RESHAPED.format(table=changed)) from None
         raise
     return manifest
 

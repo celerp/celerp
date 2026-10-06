@@ -1546,6 +1546,74 @@ async def test_a_carried_table_held_by_the_export_cannot_have_a_column_made_agai
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
 
+def _bk_while_widgets_are_read(monkeypatch, then) -> None:
+    """Await ``then()`` as the export starts reading the rows of zz_widgets."""
+    cb = _bk_cb()
+    batches = cb._batches
+
+    async def after_then(session, table, *args):
+        if table.name == "zz_widgets":
+            await then()
+        async for batch in batches(session, table, *args):
+            yield batch
+
+    monkeypatch.setattr(cb, "_batches", after_then)
+
+
+async def test_a_type_of_a_carried_column_renamed_while_it_is_read_stops_the_export(
+        real_engine, tmp_path, monkeypatch):
+    """zz_widgets.company_id is of the domain zz_company, renamed by another connection as
+    the export reads the table, so its rows can no longer be read by the name the export
+    holds. The export is refused as a table whose structure changed, with nothing written."""
+    from celerp.services import company_backup as cb
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_defined(real_engine, cid)
+        await _bk_ddl(real_engine, ["CREATE DOMAIN zz_company AS uuid",
+                                    "ALTER TABLE zz_widgets ALTER COLUMN company_id TYPE zz_company"])
+        _bk_while_widgets_are_read(
+            monkeypatch, lambda: _bk_ddl(real_engine, ["ALTER DOMAIN zz_company RENAME TO zz_company_renamed"]))
+
+        refused = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
+
+        assert (refused.status_code, refused.detail) == (409, cb.RESHAPED.format(table="zz_widgets"))
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+        await _bk_sql(real_engine, "DROP DOMAIN IF EXISTS zz_company, zz_company_renamed")
+
+
+async def test_a_database_error_while_a_carried_table_is_read_is_not_taken_for_a_change(
+        real_engine, tmp_path, monkeypatch):
+    """A database error reading zz_widgets while no carried table changed is raised as it
+    is, not answered as a change of structure."""
+    from sqlalchemy.exc import DBAPIError
+
+    from celerp.services import company_backup as cb
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_defined(real_engine, cid)
+
+        async def fail():
+            raise DBAPIError("SELECT 1", {}, Exception("division by zero"))
+
+        _bk_while_widgets_are_read(monkeypatch, fail)
+        out = tmp_path / "out.celerp-company"
+
+        with pytest.raises(DBAPIError):
+            await cb.export_company_snapshot(cid, out)
+        assert not out.exists() and not out.with_name(out.name + ".partial").exists()
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
 async def test_a_foreign_key_added_to_a_carried_table_while_it_is_read_stops_the_export(
         real_engine, tmp_path, monkeypatch):
     """Another connection adds a key binding zz_widgets.made_by to zz_ext.makers while the
