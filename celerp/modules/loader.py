@@ -845,9 +845,11 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
         offline_only=instance_jwt is None,
     ):
         return None
-    log.warning("Premium module %r skipped: no valid license", module.name)
     if unconfirmed:
+        log.warning("Module %r not loaded: the Marketplace could not confirm it is free "
+                    "and there is no valid license", module.name)
         return "Not loaded: the Marketplace could not confirm it is free and there is no valid license here. Connect to the internet and restart."
+    log.warning("Premium module %r skipped: no valid license", module.name)
     return PAID_MODULE_REFUSAL
 
 

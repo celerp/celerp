@@ -32,7 +32,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from celerp.modules.license import PAID_MODULE_REFUSAL
+from celerp.modules.license import PAID_MODULE_REFUSAL, marketplace_flags
 
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
@@ -581,9 +581,9 @@ def _source_label(source: str | None, is_default: bool, lang: str) -> str:
 
 
 def _catalog_price(m: dict, lang: str) -> str:
-    if m.get("price_monthly"):
+    if m.get("price_monthly") is not None:
         return f"${m['price_monthly']:g}/mo"
-    if m.get("price_once"):
+    if m.get("price_once") is not None:
         return f"${m['price_once']:g}"
     return t("marketplace.free", lang)
 
@@ -765,7 +765,7 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
     the catalog price. Buying and installing are for the installation owner, so
     anyone else gets no action buttons."""
     row_id = f"marketplace-row-{m['id']}"
-    is_paid = bool(m.get("price_monthly") or m.get("price_once"))
+    _, is_paid = marketplace_flags(m)
     owned = m["id"] in licensed
     if m["id"] in installed:
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
@@ -781,9 +781,9 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
         # data-sharing, and licensing terms) sit on the Checkout page, where the
         # buyer consents and pays - see _checkout_consent - not in this table.
         buys = []
-        if m.get("price_monthly"):
+        if m.get("price_monthly") is not None:
             buys.append(_buy_btn(m["id"], "monthly", f"${m['price_monthly']:g}/mo", lang))
-        if m.get("price_once"):
+        if m.get("price_once") is not None:
             buys.append(_buy_btn(m["id"], "once", f"${m['price_once']:g} " + t("marketplace.once", lang), lang))
         status_td = Td("--", data_filter_value="--")
         action_td = Td(Div(*buys, style="display:flex;gap:8px;flex-wrap:wrap;"))

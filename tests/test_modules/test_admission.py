@@ -2348,6 +2348,23 @@ def test_unconfirmed_module_refusal_is_not_shown_as_a_licence_on_another_compute
     assert "bought it on" not in html
 
 
+def test_refusal_log_says_why_the_module_did_not_load(_modules, tmp_path, monkeypatch, caplog):
+    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    unconfirmed, paid = f"celerp-{_uid()}", f"celerp-{_uid()}"
+    _write_module(_modules, unconfirmed, {"name": unconfirmed, "version": "1.0.0"})
+    pkg = _write_module(_modules, paid, {"name": paid, "version": "1.0.0"})
+    (pkg / PREMIUM_MARKER).write_text("")
+
+    with caplog.at_level("WARNING", logger="celerp.modules.loader"):
+        loader.admit_modules(_modules, {unconfirmed, paid})
+
+    lines = {r.args[0]: r.getMessage() for r in caplog.records
+             if r.name == "celerp.modules.loader" and r.args}
+    assert lines[paid].startswith("Premium module")
+    assert not lines[unconfirmed].startswith("Premium module")
+    assert "could not confirm" in lines[unconfirmed]
+
+
 def _legacy_licence(legacy: Path, slug: str, entry: dict) -> None:
     (legacy / "license_cache").mkdir(parents=True, exist_ok=True)
     (legacy / "license_cache" / f"{slug}.json").write_text(json.dumps(entry))
