@@ -296,6 +296,32 @@ async def test_a_user_another_user_names_stays(real_client, real_engine):  # noq
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS ext_invited_by"))
 
 
+async def test_a_user_a_table_named_u_names_stays(real_client, real_engine):  # noqa: F811
+    """A module table is named ``u`` and one of its rows names the clerk, Alpha's only.
+    The table's name cannot be confused with the users being deleted: resetting Alpha
+    keeps the clerk and the row."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        await conn.execute(text("CREATE TABLE u (id uuid PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id))"))
+        await conn.execute(text("INSERT INTO u VALUES (:i, :u)"), {"i": uuid.uuid4(), "u": clerk})
+    try:
+        before = await _rows(real_engine, "u")
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+        assert await _rows(real_engine, "u") == before
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS u"))
+
+
 @pytest.mark.parametrize("action", ["SET NULL", "SET DEFAULT"])
 async def test_a_row_whose_key_clears_outlives_the_reset_company(real_client, real_engine, action):  # noqa: F811
     """A module row with no company column names Alpha through a key that clears on
