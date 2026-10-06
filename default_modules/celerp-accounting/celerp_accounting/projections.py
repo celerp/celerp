@@ -25,6 +25,8 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
         current.update({"entity_type": "period", "period": data["period"], "status": "closed"})
     elif event_type == "acc.period.reopened":
         current.update({"entity_type": "period", "period": data["period"], "status": "open"})
+    elif event_type == "acc.reconciliation.reopened":
+        current.update({"entity_type": "reconciliation", **data})
     else:
         raise ValueError(f"Unsupported accounting event: {event_type}")
 
