@@ -951,7 +951,8 @@ async def test_unmatched_dates_are_the_company_business_day(client, session, pay
     the day the same payment is booked on, never the UTC day."""
     import re
     from fasthtml.common import to_xml
-    from celerp.models.payment_closure import UnmatchedRefund
+    from sqlalchemy import update
+    from celerp.models.payment_closure import UnmatchedPayment, UnmatchedRefund
     from celerp.services.payments import receive_payment
     from ui.routes.settings_payments import _unmatched
     tok = await _register(client)
@@ -964,6 +965,9 @@ async def test_unmatched_dates_are_the_company_business_day(client, session, pay
         assert await receive_payment({"company_id": cid, "entity_id": entity, "reference": reference,
                                       "amount_minor": 100, "currency": "usd", "paid_at": _PAID_LATE.isoformat(),
                                       "context": bkk, "managed": True})
+    # Arrival is stamped with the current time; pin it to the same late-evening instant.
+    await session.execute(update(UnmatchedPayment).where(UnmatchedPayment.reference == "pi_unmatched")
+                          .values(received_at=_PAID_LATE))
     session.add(UnmatchedRefund(refund_id="re_late", cycle=1, transition="applied", reference="pi_x",
                                 amount_minor=100, currency="USD", former_company=cid, document="doc:gone",
                                 received_at=_PAID_LATE, occurred_at=_PAID_LATE))
