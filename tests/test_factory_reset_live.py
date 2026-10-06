@@ -335,6 +335,86 @@ async def test_a_user_whose_sessions_another_row_names_stays(real_client, real_e
             await conn.execute(text("DROP TABLE IF EXISTS ext_audit, ext_sessions"))
 
 
+async def test_a_tree_of_rows_no_user_reaches_keeps_no_user(real_client, real_engine):  # noqa: F811
+    """A shared category tree (each category cascading from its parent, no company, no
+    user) with a label naming one category. Nothing deleting a user reaches the tree, so
+    the clerk, Alpha's only, goes with Alpha. A second Alpha-only user has an assignment,
+    cascading from users, that a row of Beta's logs: that user stays, and so does the log."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    beta = await _id(real_client, tb)
+    r = await real_client.post("/companies/me/users", headers=auth(ta), json={
+        "email": "keeper@example.com", "name": "Keeper", "role": "operator", "password": OWNER_PASSWORD})
+    assert r.status_code == 200, r.text
+    category, assignment = uuid.uuid4(), uuid.uuid4()
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        keeper = (await conn.execute(text("SELECT id FROM users WHERE email = 'keeper@example.com'"))).scalar_one()
+        await conn.execute(text("CREATE TABLE ext_cats (id uuid PRIMARY KEY, "
+                                "parent_id uuid REFERENCES ext_cats(id) ON DELETE CASCADE)"))
+        await conn.execute(text("CREATE TABLE ext_cat_labels (id uuid PRIMARY KEY, "
+                                "cat_id uuid NOT NULL REFERENCES ext_cats(id))"))
+        await conn.execute(text("CREATE TABLE ext_assign (id uuid PRIMARY KEY, "
+                                "user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE)"))
+        await conn.execute(text("CREATE TABLE ext_assign_log (id uuid PRIMARY KEY, company_id uuid NOT NULL "
+                                "REFERENCES companies(id), assign_id uuid NOT NULL REFERENCES ext_assign(id) "
+                                "ON DELETE CASCADE)"))
+        await conn.execute(text("INSERT INTO ext_cats VALUES (:c, NULL)"), {"c": category})
+        await conn.execute(text("INSERT INTO ext_cat_labels VALUES (:i, :c)"), {"i": uuid.uuid4(), "c": category})
+        await conn.execute(text("INSERT INTO ext_assign VALUES (:a, :u)"), {"a": assignment, "u": keeper})
+        await conn.execute(text("INSERT INTO ext_assign_log VALUES (:i, :b, :a)"),
+                           {"i": uuid.uuid4(), "b": beta, "a": assignment})
+    try:
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 0
+        assert await count(real_engine, "users", "id = :i", i=keeper) == 1
+        assert await count(real_engine, "ext_assign_log", "company_id = :b", b=beta) == 1
+        assert await count(real_engine, "ext_cat_labels") == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_assign_log, ext_assign, ext_cat_labels, ext_cats"))
+
+
+async def test_a_user_whose_rows_head_a_tree_another_company_names_stays(real_client, real_engine):  # noqa: F811
+    """A thread tree cascades from users and from each reply's parent. The clerk, Alpha's
+    only, started a thread; a reply by nobody in particular hangs off it, and a row of
+    Beta's names that reply by a cascading key. Deleting the clerk would cascade down the
+    tree into Beta's row, so the clerk stays and every row with them."""
+    import uuid
+
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    beta = await _id(real_client, tb)
+    thread, reply = uuid.uuid4(), uuid.uuid4()
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        await conn.execute(text("CREATE TABLE ext_threads (id uuid PRIMARY KEY, "
+                                "user_id uuid REFERENCES users(id) ON DELETE CASCADE, "
+                                "parent_id uuid REFERENCES ext_threads(id) ON DELETE CASCADE)"))
+        await conn.execute(text("CREATE TABLE ext_pins (id uuid PRIMARY KEY, company_id uuid NOT NULL "
+                                "REFERENCES companies(id), thread_id uuid REFERENCES ext_threads(id) ON DELETE CASCADE)"))
+        await conn.execute(text("INSERT INTO ext_threads VALUES (:t, :u, NULL), (:r, NULL, :t)"),
+                           {"t": thread, "r": reply, "u": clerk})
+        await conn.execute(text("INSERT INTO ext_pins VALUES (:i, :b, :r)"), {"i": uuid.uuid4(), "b": beta, "r": reply})
+    try:
+        before = {t: await _rows(real_engine, t) for t in ("ext_threads", "ext_pins")}
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+        assert {t: await _rows(real_engine, t) for t in before} == before
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_pins, ext_threads"))
+
+
 async def test_a_user_a_table_named_u_names_stays(real_client, real_engine):  # noqa: F811
     """A module table is named ``u`` and one of its rows names the clerk, Alpha's only.
     The table's name cannot be confused with the users being deleted: resetting Alpha

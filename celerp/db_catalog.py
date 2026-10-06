@@ -159,24 +159,29 @@ def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
         return (f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
                 f"FROM {ident(fk.target)} WHERE {condition})")
 
+    # The tables outside any company that deleting a user cascades into.
+    reached = {"users"}
+
+    def carries(fk: ForeignKey) -> bool:
+        return fk.cascades and fk.target in reached and fk.target not in company
+
+    while grown := {name for name in set(schema) - company - reached if any(map(carries, schema[name].fks))}:
+        reached |= grown
+
     def going(name: str, seen: frozenset[str]) -> str:
-        """The condition picking the rows of ``name`` deleted with the user, or nothing.
-        Rows reached again through a loop of cascading keys are not bounded here, so
-        all of that table's rows count."""
+        """The condition picking the rows of ``name`` deleted with the user. Rows reached
+        again through a loop of cascading keys are not bounded here, so all of that
+        table's rows count."""
         if name == "users":
             return f"id = {user}.id"
         conds = []
-        for fk in schema[name].fks:
-            if not fk.cascades or fk.target in company:
-                continue
+        for fk in filter(carries, schema[name].fks):
             if fk.target in seen:
                 return "TRUE"
-            if via := going(fk.target, seen | {fk.target}):
-                conds.append(picks(fk, via))
+            conds.append(picks(fk, going(fk.target, seen | {fk.target})))
         return " OR ".join(conds)
 
-    deleted = {name: cond for name in ["users", *sorted(set(schema) - company - {"users"})]
-               if (cond := going(name, frozenset({name})))}
+    deleted = {name: going(name, frozenset({name})) for name in ["users", *sorted(reached - {"users"})]}
     refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {picks(fk, deleted[fk.target])})"
             for name in sorted(schema) for fk in schema[name].fks
             if fk.target in deleted and not (fk.cascades and name in deleted and name != "users")]
