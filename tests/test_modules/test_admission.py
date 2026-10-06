@@ -1416,7 +1416,8 @@ _ACTIVATIONS = {
 # The process states modules load in: the API and UI processes as they start, a
 # process that imported a protected internal first, and one that imported nothing.
 _VERDICT = """
-import json, sys, types
+import faulthandler, json, sys, types
+faulthandler.dump_traceback_later(60, exit=True)
 process = sys.argv[2]
 if process == "preloaded":
     import celerp.ai.llm  # noqa: F401
@@ -1445,7 +1446,7 @@ _PROCESSES = ("preloaded", "fresh", "api", "ui")
 
 @pytest.mark.process
 @pytest.mark.timeout(120)  # four interpreters each load every default module; slower than the suite guard allows on a shared runner
-def test_module_gets_the_same_verdict_in_every_process(_modules):
+def test_module_gets_the_same_verdict_in_every_process(_modules, tmp_path):
     """A protected import the module's own code attempts as it activates refuses it;
     what core imports on its own behalf, and what is already loaded, do not count.
     The API process has imported protected internals before modules load, the UI
@@ -1460,14 +1461,20 @@ def test_module_gets_the_same_verdict_in_every_process(_modules):
                       files=files, init_prelude=prelude)
         folders[folder] = case
     repo = Path(__file__).resolve().parents[2]
-    runs = {p: subprocess.Popen([sys.executable, "-c", _VERDICT, str(_modules), p, json.dumps(list(folders))],
-                                cwd=repo, env={**os.environ, "MODULE_DIR": str(_modules)},
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            for p in _PROCESSES}
+    # The licence-gated defaults ask the Marketplace; a relay address that refuses
+    # at once keeps every verdict independent of the network.
+    env = {**os.environ, "MODULE_DIR": str(_modules), "GATEWAY_HTTP_URL": "http://127.0.0.1:9", "GATEWAY_TOKEN": ""}
+    logs = {p: (tmp_path / f"{p}.out", tmp_path / f"{p}.err") for p in _PROCESSES}
+    runs = {}
+    for p, (out, err) in logs.items():
+        with open(out, "w") as out_file, open(err, "w") as err_file:
+            runs[p] = subprocess.Popen([sys.executable, "-c", _VERDICT, str(_modules), p, json.dumps(list(folders))],
+                                       cwd=repo, env=env, stdin=subprocess.DEVNULL, stdout=out_file, stderr=err_file)
     results = {}
     for process, run in runs.items():
-        out, err = run.communicate(timeout=180)
-        assert run.returncode == 0, err[-2000:]
+        run.wait()
+        out, err = (path.read_text() for path in logs[process])
+        assert run.returncode == 0, (process, err[-4000:])
         results[process] = json.loads(out.strip().splitlines()[-1])
 
     assert results["preloaded"]["preloaded"] and results["api"]["preloaded"]
