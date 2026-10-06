@@ -25,6 +25,7 @@ from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
 from celerp_docs.sequences import next_doc_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
+from ui.i18n import t
 
 VALID_FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
 
@@ -104,9 +105,9 @@ def _build_router() -> APIRouter:
         company = await locked_company(session, company_id)
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail="Subscription template not found")
+            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
         if proj.state.get("status") == "cancelled":
-            raise HTTPException(status_code=409, detail="Cannot generate from a cancelled subscription")
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_generate_cancelled"))
 
         state = proj.state
         target_doc_type = "invoice" if state.get("doc_type") == "subscription_invoice" else "purchase_order"
@@ -247,9 +248,9 @@ def _build_router() -> APIRouter:
     ) -> dict:
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail="Subscription template not found")
+            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
         if proj.state.get("status") != "active":
-            raise HTTPException(status_code=409, detail="Subscription is not active")
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_pause_not_active"))
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
                          event_type="doc.updated", data={"fields_changed": {"status": {"new": "paused"}}},
                          actor_id=user.id, location_id=None, source="subscription",
@@ -267,9 +268,9 @@ def _build_router() -> APIRouter:
     ) -> dict:
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail="Subscription template not found")
+            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
         if proj.state.get("status") != "paused":
-            raise HTTPException(status_code=409, detail="Subscription is not paused")
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_resume_not_paused"))
         next_run = _next_run_date(
             proj.state.get("frequency", "monthly"),
             proj.state.get("custom_interval_days"),
@@ -295,9 +296,9 @@ def _build_router() -> APIRouter:
     ) -> dict:
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail="Subscription template not found")
+            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
         if proj.state.get("status") == "cancelled":
-            raise HTTPException(status_code=409, detail="Subscription is already cancelled")
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_already_cancelled"))
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
                          event_type="doc.updated", data={"fields_changed": {"status": {"new": "cancelled"}}},
                          actor_id=user.id, location_id=None, source="subscription",
@@ -316,12 +317,12 @@ def _build_router() -> APIRouter:
         """Promote a draft subscription template to active, computing next_run_date."""
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
-            raise HTTPException(status_code=404, detail="Subscription template not found")
+            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
         if proj.state.get("status") != "draft":
-            raise HTTPException(status_code=409, detail="Only draft subscriptions can be activated")
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
         frequency = proj.state.get("frequency", "monthly")
         if frequency not in VALID_FREQUENCIES:
-            raise HTTPException(status_code=422, detail="Frequency must be set before activating")
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_frequency_required"))
         start = proj.state.get("start_date") or date.today().isoformat()
         next_run = _next_run_date(frequency, proj.state.get("custom_interval_days"), start)
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
