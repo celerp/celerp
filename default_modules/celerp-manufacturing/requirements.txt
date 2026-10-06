@@ -1,3 +1,0 @@
-fastapi>=0.100
-sqlalchemy>=2.0
-pydantic>=2.0
