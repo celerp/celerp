@@ -289,10 +289,48 @@ def _case_lineage_guard_wrong_arity(base, marker, monkeypatch):
 
 
 def _case_in_production_wrong_arity(base, marker, monkeypatch):
+    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
     return _migrating_module(base, f"acme-{_uid()}", marker,
                              slots={"inventory_in_production": [{"handler": "{inner}.wip:held"}]},
                              code={"wip.py": "async def held(session, company_id, extra):\n    return 0\n"}
                              ), "session, company_id"
+
+
+def _case_in_production_not_first_party(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"inventory_in_production": [{"handler": "{inner}.wip:held"}]},
+                             code={"wip.py": "async def held(*, session, company_id):\n    return 0\n"}
+                             ), "is filled by Celerp's own modules only"
+
+
+_PROJECT = {"proj.py": "def apply(state, event_type, data):\n    return state\n"}
+
+
+def _projecting_module(base, marker, *prefixes, folder: str | None = None):
+    return _migrating_module(
+        base, folder or f"acme-{_uid()}", marker, code=_PROJECT,
+        slots={"projection_handler": [{"prefix": p, "handler": "{inner}.proj:apply"}
+                                      for p in prefixes]})
+
+
+def _case_projection_prefix_twice(base, marker, monkeypatch):
+    return _projecting_module(base, marker, "acme.", "acme."), "overlap"
+
+
+def _case_projection_prefixes_overlap(base, marker, monkeypatch):
+    return _projecting_module(base, marker, "acme.", "acme.order."), "overlap"
+
+
+def _case_projection_prefix_is_cores(base, marker, monkeypatch):
+    return _projecting_module(base, marker, "sys."), "already handles"
+
+
+def _case_projection_prefix_covers_cores(base, marker, monkeypatch):
+    return _projecting_module(base, marker, "s"), "already handles"
+
+
+def _case_projection_prefix_inside_cores(base, marker, monkeypatch):
+    return _projecting_module(base, marker, "mp.order."), "already handles"
 
 
 _WRAP = "import functools\n\ndef wrap(fn):\n    @functools.wraps(fn)\n    def inner(*a, **k):\n        return fn(*a, **k)\n    return inner\n\n"
@@ -716,6 +754,12 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_lineage_guard_not_async,
     _case_lineage_guard_wrong_arity,
     _case_in_production_wrong_arity,
+    _case_in_production_not_first_party,
+    _case_projection_prefix_twice,
+    _case_projection_prefixes_overlap,
+    _case_projection_prefix_is_cores,
+    _case_projection_prefix_covers_cores,
+    _case_projection_prefix_inside_cores,
     _case_hook_decorated,
     _case_hook_undefined,
     _case_hook_call_bound,
@@ -816,6 +860,69 @@ async def test_second_module_shipping_the_same_import_name_is_refused(
     assert not (tmp_path / "b.txt").exists()
     assert first.name in admission.refused[second.name]
     assert "also ships" in loader.load_errors()[second.name]
+
+
+async def test_first_party_module_fills_a_first_party_slot(
+        _db_engine, _modules, tmp_path, monkeypatch):
+    """Control for the refusal above: Celerp's own module fills the slot."""
+    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
+    marker = tmp_path / "ran.txt"
+    pkg, _ = _case_in_production_not_first_party(_modules, marker, monkeypatch)
+
+    admission, loaded = await _admit_and_migrate(_db_engine, _modules, {pkg.name})
+
+    assert admission.refused == {}
+    assert marker.exists()
+    assert [m["name"] for m in loaded] == [pkg.name]
+
+
+@pytest.mark.parametrize("first_prefix, second_prefix", [
+    ("acme.", "acme."), ("acme.", "acme.order."), ("acme.order.", "acme."),
+])
+async def test_second_module_with_an_overlapping_projection_prefix_is_refused(
+        first_prefix, second_prefix, _db_engine, _modules, tmp_path):
+    """Each event type has one projection handler. Of two modules whose
+    prefixes overlap, the first in name order keeps its prefix; the second is
+    refused before any of its migrations run."""
+    uid = _uid()
+    first = _projecting_module(_modules, tmp_path / "a.txt", first_prefix, folder=f"acme-a{uid}")
+    second = _projecting_module(_modules, tmp_path / "b.txt", second_prefix, folder=f"acme-b{uid}")
+
+    admission, loaded = await _admit_and_migrate(
+        _db_engine, _modules, {first.name, second.name})
+
+    assert [m["name"] for m in loaded] == [first.name]
+    assert (tmp_path / "a.txt").exists()
+    assert not (tmp_path / "b.txt").exists()
+    assert first.name in admission.refused[second.name]
+    assert "overlaps" in loader.load_errors()[second.name]
+
+
+async def test_first_party_module_claims_its_projection_prefix_first(
+        _db_engine, _modules, tmp_path, monkeypatch):
+    """A first-party module keeps its prefix even when another module sorts
+    before it."""
+    uid = _uid()
+    other = _projecting_module(_modules, tmp_path / "a.txt", "acme.", folder=f"acme-a{uid}")
+    own = _projecting_module(_modules, tmp_path / "b.txt", "acme.", folder=f"acme-b{uid}")
+    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: pkg_path.name == own.name)
+
+    admission, loaded = await _admit_and_migrate(_db_engine, _modules, {other.name, own.name})
+
+    assert [m["name"] for m in loaded] == [own.name]
+    assert own.name in admission.refused[other.name]
+
+
+def test_kernel_projection_prefixes_cover_the_core_folded_modules():
+    """Core handles the system events and every prefix a core-folded module
+    declares; admission claims all of them before any module."""
+    default_modules = Path(loader.__file__).parents[2] / "default_modules"
+    folded = [default_modules / name for name in loader.CORE_FOLDED]
+    declared = {item["prefix"] for path in folded if path.is_dir()
+                for item in (loader.read_manifest(path).get("slots") or {}).get(
+                    "projection_handler", [])}
+    assert "mp." in declared
+    assert slots.KERNEL_PROJECTION_PREFIXES == {"sys."} | declared
 
 
 def test_official_marketplace_module_keeps_reserved_prefix(_modules):

@@ -69,7 +69,8 @@ from celerp.modules.importer import (
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME, read_meta
 from celerp.modules.slots import (
-    SLOT_NAMES, register as register_slot, resolve_handler,
+    FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
+    register as register_slot, resolve_handler,
     unregister_module as unregister_module_slots,
 )
 from celerp.services.app_paths import is_app_local_path
@@ -783,11 +784,11 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     _validate_table_prefix(name, manifest)
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
-    _check_slot_contracts(pkg_path, manifest["slots"])
+    first_party = is_first_party(pkg_path)
+    _check_slot_contracts(pkg_path, manifest["slots"], first_party=first_party)
     _check_import_names(name, pkg_path, official=official)
     entry_files = _module_entry_files(pkg_path, manifest)
     _check_dynamic_writes(pkg_path, entry_files, _handler_names(manifest) | {"PLUGIN_MANIFEST"})
-    first_party = is_first_party(pkg_path)
     if not first_party:
         violations: set[str] = set()
         for entry in entry_files:
@@ -873,6 +874,29 @@ def _refuse_shared_import_names(candidates: dict[str, AdmittedModule],
         claimed.update(dict.fromkeys(roots, name))
 
 
+def _refuse_overlapping_projection_prefixes(candidates: dict[str, AdmittedModule],
+                                            refused: dict[str, str]) -> None:
+    """The projection engine applies the first projection_handler prefix an
+    event type starts with, so two overlapping prefixes would leave one handler
+    unreachable. Core's own prefixes are claimed first, then first-party
+    modules', then the rest in name order; a later module with a prefix that
+    overlaps a claimed one moves from *candidates* to *refused*."""
+    claimed = dict.fromkeys(KERNEL_PROJECTION_PREFIXES, "Celerp")
+    for name in sorted(candidates, key=lambda n: (not candidates[n].first_party, n)):
+        prefixes = _projection_prefixes(
+            candidates[name].manifest["slots"].get("projection_handler", []))
+        clash = next(((p, c) for p in prefixes for c in claimed
+                      if projection_prefixes_overlap(p, c)), None)
+        if clash is not None:
+            refused[name] = (f"Projection prefix {clash[0]!r} overlaps {clash[1]!r}, which "
+                             f"{claimed[clash[1]]!r} already handles; each event type may "
+                             f"have one handler only.")
+            log.error("Module %r refused: %s", name, refused[name])
+            del candidates[name]
+            continue
+        claimed.update(dict.fromkeys(prefixes, name))
+
+
 def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     """Decide, without executing any module code, which enabled modules may run.
 
@@ -882,7 +906,9 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     that validates; its name matches the folder; the importer's name rules
     (reserved prefix); the Celerp version it needs; the table prefix contract;
     that no package name it answers to is already taken, by Python or by
-    another enabled module (_refuse_shared_import_names); that every route
+    another enabled module (_refuse_shared_import_names); that no
+    projection prefix it declares overlaps core's or another enabled module's
+    (_refuse_overlapping_projection_prefixes); that every route
     source lies inside the module and provides its setup function; that no
     code it would execute rebinds a callable core calls (_check_dynamic_writes);
     that the migrations package resolves inside the module; for a
@@ -916,6 +942,7 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
             continue
         candidates[name] = module
     _refuse_shared_import_names(candidates, refused)
+    _refuse_overlapping_projection_prefixes(candidates, refused)
     order = _dependency_order(
         {n: m.manifest["depends_on"] for n, m in candidates.items()},
         enabled, installed, refused)
@@ -2110,6 +2137,25 @@ def _validate_bulk_action(pkg_path: Path, contribution) -> None:
                 f"{sorted(_BULK_ACTION_TYPES)}, not {item['action_type']!r}.")
 
 
+def _projection_prefixes(contribution) -> list[str]:
+    """The prefixes of a manifest's projection_handler contribution."""
+    return [item["prefix"] for item in
+            (contribution if isinstance(contribution, list) else [contribution])]
+
+
+def _validate_projection_prefixes(pkg_path: Path, contribution) -> None:
+    """Raise :class:`ModuleLoadError` if two of a module's projection_handler
+    prefixes overlap: the engine applies the first match, so the other handler
+    would never run."""
+    prefixes = _projection_prefixes(contribution)
+    for i, first in enumerate(prefixes):
+        for second in prefixes[i + 1:]:
+            if projection_prefixes_overlap(first, second):
+                raise ModuleLoadError(
+                    f"Slot 'projection_handler' prefixes {first!r} and {second!r} overlap; "
+                    f"each event type may have one handler only.")
+
+
 def _validate_category_schema(pkg_path: Path, contribution) -> None:
     """Raise :class:`ModuleLoadError` unless every category_schema entry's fields
     are field definitions: dicts with a key, and text label and type and a list
@@ -2174,6 +2220,7 @@ _SLOT_VALIDATORS = {
     **_LINK_SLOT_VALIDATORS,
     "bulk_action": _validate_bulk_action,
     "category_schema": _validate_category_schema,
+    "projection_handler": _validate_projection_prefixes,
     **{slot: _keyword_validator(slot) for slot in _HANDLER_KEYWORDS},
 }
 
@@ -2292,10 +2339,11 @@ def _check_search_provider_descriptor(contribution) -> None:
         )
 
 
-def _check_slot_contracts(pkg_path: Path, slots_manifest: dict) -> None:
+def _check_slot_contracts(pkg_path: Path, slots_manifest: dict, *, first_party: bool) -> None:
     """Every slot rule the manifest and the module's source decide, checked
     before any of the module's code runs: the slot is one Celerp reads
-    (SLOT_NAMES), the search_provider descriptor, the entry rules (_validate_slot_entry), each slot's own validator, and for a
+    (SLOT_NAMES) and, for a module that is not first-party, not one of
+    FIRST_PARTY_SLOTS; the search_provider descriptor, the entry rules (_validate_slot_entry), each slot's own validator, and for a
     callable slot an in-module "module.path:function" whose source shows it
     async exactly where core awaits it (_check_source_call_style). Load proves
     the object importing actually returns (_resolve_slot_callables). Raises :class:`ModuleLoadError`.
@@ -2306,6 +2354,8 @@ def _check_slot_contracts(pkg_path: Path, slots_manifest: dict) -> None:
             raise ModuleLoadError(
                 f"The manifest fills unknown slot {slot_name!r}; Celerp reads only "
                 f"{', '.join(sorted(SLOT_NAMES))}.")
+        if slot_name in FIRST_PARTY_SLOTS and not first_party:
+            raise ModuleLoadError(f"Slot {slot_name!r} is filled by Celerp's own modules only.")
         if slot_name == _SEARCH_PROVIDER_SLOT:
             _check_search_provider_descriptor(contribution)
         for item in contribution if isinstance(contribution, list) else [contribution]:

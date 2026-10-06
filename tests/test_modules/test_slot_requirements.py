@@ -116,6 +116,10 @@ def module_dir(tmp_path, monkeypatch):
     base = tmp_path / "modules"
     base.mkdir()
     monkeypatch.setenv("MODULE_DIR", str(base))
+    # A module filling a first-party slot stands in for one of Celerp's own (the
+    # first-party rule itself: test_admission).
+    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: bool(
+        set(loader.read_manifest(pkg_path).get("slots") or {}) & slots.FIRST_PARTY_SLOTS))
     before_path, before_mods = list(sys.path), dict(sys.modules)
     slots.clear()
     yield base
@@ -188,8 +192,13 @@ def test_handler_whose_signature_only_loading_shows_is_refused_at_load(module_di
     admission = loader.admit_modules(str(module_dir), {name})
     assert admission.refused == {}
     wrapped_file.write_text(shown + wrapped + "handler = target\n")
-    loader.load_all(str(module_dir), {name}, admission=admission)
+    if slot in slots.FIRST_PARTY_SLOTS:
+        # Celerp's own module failing to load stops startup.
+        with pytest.raises(loader.ModuleLoadError, match="keyword arguments"):
+            loader.load_all(str(module_dir), {name}, admission=admission)
+    else:
+        loader.load_all(str(module_dir), {name}, admission=admission)
+        assert "keyword arguments" in loader.load_errors()[name]
 
     assert not loader.is_running(name)
-    assert "keyword arguments" in loader.load_errors()[name]
     assert slots.get(slot) == []

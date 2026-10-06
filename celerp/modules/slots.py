@@ -28,7 +28,10 @@ doc_detail_actions Element on a document's detail page, from a "render" callable
                    ("module.path:function", called with the document)
 doc_detail_badges  Status badge on a document's detail page, from a "render" callable
 category_schema    Default field definitions for a named category
-projection_handler Maps event-type prefixes to a handler function
+projection_handler Maps event-type prefixes to a handler function. Each event type has
+                   one handler: no two prefixes may overlap (one equal to or starting
+                   with another), within a module, across modules, or with a prefix
+                   core handles itself (KERNEL_PROJECTION_PREFIXES)
 on_company_created Async callback(session, company_id) fired after a new company is persisted
 on_modules_ready   Async callback(session) fired once after every module has loaded
 doc_finalize_hook  Async callback fired when a document is finalized, before commit
@@ -38,7 +41,7 @@ inventory_in_production
                    `async def handler(*, session, company_id) -> Decimal`, called with
                    exactly those keyword arguments: stock value an older release issued
                    to work still open, which its books still carry on the inventory
-                   accounts
+                   accounts. Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
 item_lineage_guard {"handler": "module.path:function"} naming
                    `async def handler(*, session, entry, transition) -> None`, called
                    with exactly those keyword arguments on every live item event, after
@@ -97,6 +100,21 @@ SLOT_NAMES = frozenset({
     "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
 })
+
+# Slots only Celerp's own (first-party) modules may fill; admission refuses any
+# other module that fills one.
+FIRST_PARTY_SLOTS = frozenset({"inventory_in_production"})
+
+# projection_handler prefixes core handles itself: system events (registered at
+# startup, celerp.main) and the core-folded connectors' declared prefixes.
+KERNEL_PROJECTION_PREFIXES = frozenset({"sys.", "mp.", "shop.sync."})
+
+
+def projection_prefixes_overlap(a: str, b: str) -> bool:
+    """Whether two projection_handler prefixes could both match one event type.
+    The projection engine applies the first match, so one would hide the other."""
+    return a.startswith(b) or b.startswith(a)
+
 
 _slots: dict[str, list[dict]] = {}
 
