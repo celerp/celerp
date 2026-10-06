@@ -12,6 +12,7 @@ import uuid as _uuid
 
 import pytest
 from httpx import AsyncClient
+from ui.i18n import t
 
 from celerp.ai import tools as ai_tools
 from celerp.ai.files import XLSX_CONTENT_TYPE, upload_dir
@@ -261,7 +262,7 @@ async def test_line_create_rejects_unknown_account_and_repeats_cleanly(client, s
 
     partial = await client.post(url, json={"account_code": "6100", "memo": "Fee", "amount": 1}, headers=h)
     assert partial.status_code == 422, partial.text
-    assert "Partial" in partial.json()["detail"]
+    assert partial.json()["detail"] == t("acct.err_recon_partial", "en")
 
     r = await client.post(url, json={"account_code": "6100", "memo": "Fee"}, headers=h)
     assert r.status_code == 200, r.text

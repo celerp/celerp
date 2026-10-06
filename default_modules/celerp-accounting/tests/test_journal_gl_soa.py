@@ -1366,7 +1366,7 @@ async def test_ledger_rejects_a_contact_filter_that_matches_no_contact(client):
     r = await client.get("/accounting/ledger/1120", headers=_h(tok),
                          params={"contact_id": "contact:not-a-real-id"})
     assert r.status_code == 422, r.text
-    assert "contact_id" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_contact_pick", "en")
 
 
 @pytest.mark.asyncio
@@ -1440,7 +1440,7 @@ async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(c
     r = await client.get("/accounting/general-ledger", headers=_h(tok),
                          params={"contact_id": "contact:not-a-real-id"})
     assert r.status_code == 422, r.text
-    assert "contact_id" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_contact_pick", "en")
 
 
 # ---------------------------------------------------------------------------
@@ -1650,7 +1650,8 @@ async def test_report_date_filters_reject_unparsable_dates(client, param, bad):
     for path in _dated_report_paths(contact):
         r = await client.get(path, headers=_h(tok), params={param: bad})
         assert r.status_code == 422, f"{path} accepted {bad!r}: {r.text}"
-        assert param in r.json()["detail"]
+        field = t("label.start_date" if param == "date_from" else "acct.field_end_date", "en")
+        assert r.json()["detail"] == t("acct.err_date_invalid", "en", field=field)
 
 
 async def test_report_date_filters_reject_an_inverted_range(client):
@@ -1667,7 +1668,7 @@ async def test_report_date_filters_reject_an_inverted_range(client):
             "date_from": "2026-12-31", "date_to": "2026-01-01"})
         assert r.status_code == 422, f"{path} accepted an inverted range: {r.text}"
         detail = r.json()["detail"]
-        assert "date_from" in detail and "date_to" in detail, detail
+        assert detail == t("acct.err_date_range", "en", start="2026-12-31", end="2026-01-01"), detail
 
 
 async def test_report_date_filters_accept_valid_dates(client):
@@ -2128,7 +2129,7 @@ async def test_creating_an_account_with_an_unknown_type_is_rejected(client):
     r = await client.post("/accounting/accounts", json={
         "code": "1191", "name": "Odd", "account_type": "liabilty"}, headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "asset" in r.json()["detail"] and "liability" in r.json()["detail"]
+    assert "Asset" in r.json()["detail"] and "Liability" in r.json()["detail"]
 
 
 async def test_patching_an_account_to_an_unknown_type_is_rejected(client):
@@ -2145,7 +2146,7 @@ async def test_the_balance_sheet_rejects_an_unparsable_as_of(client):
     tok = await _reg(client)
     r = await client.get("/accounting/balance-sheet?as_of=2026-W01", headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "as_of" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_date_invalid", "en", field=t("acct.field_as_of_date", "en"))
 
 
 def test_the_screen_offers_exactly_the_account_types_the_api_accepts():

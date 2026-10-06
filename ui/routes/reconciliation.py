@@ -842,7 +842,7 @@ def setup_routes(app):
         amount_raw = str(form.get("amount", "")).strip()
         if not account_code:
             return await _fresh_workspace(token, session_id,
-                                          notice=t("acct.account_code_required"))
+                                          notice=t("settings_accounting.code_required"))
         data = {"account_code": account_code, "memo": memo}
         # No party chosen means no contact key, so an entry nobody named posts
         # exactly the request it posted before the picker existed.

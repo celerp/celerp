@@ -274,9 +274,14 @@ def _checked_account_type(value: str) -> str:
     if value not in ACCOUNT_TYPES:
         raise HTTPException(
             status_code=422,
-            detail="Account type must be one of: " + ", ".join(ACCOUNT_TYPES) + ".",
+            detail=t("settings_accounting.account_type_invalid", types=_enum_labels("account_type", ACCOUNT_TYPES)),
         )
     return value
+
+
+def _enum_labels(domain: str, values) -> str:
+    """The choices a refusal offers, in the words the reader picks them by."""
+    return ", ".join(t(f"enum.{domain}.{v}") for v in values)
 
 
 def _checked_cash_flow_category(value: str | None) -> str | None:
@@ -287,7 +292,7 @@ def _checked_cash_flow_category(value: str | None) -> str | None:
     if value not in CASH_FLOW_CATEGORIES:
         raise HTTPException(
             status_code=422,
-            detail="Cash flow category must be one of: " + ", ".join(CASH_FLOW_CATEGORIES) + ".",
+            detail=t("acct.err_cash_flow", categories=_enum_labels("cash_flow", CASH_FLOW_CATEGORIES)),
         )
     return value
 
@@ -300,21 +305,21 @@ def _trimmed_text(value: Any, what: str) -> str:
     """A text field, trimmed. The database cannot store a NUL character, so one
     is refused here with the field's name rather than failing the whole write."""
     if not isinstance(value, str):
-        raise HTTPException(status_code=422, detail=f"{what} must be text.")
+        raise HTTPException(status_code=422, detail=t("acct.err_not_text", field=what))
     if "\x00" in value:
-        raise HTTPException(status_code=422, detail=f"{what} cannot contain a NUL character.")
+        raise HTTPException(status_code=422, detail=t("acct.err_control_char", field=what))
     return value.strip()
 
 
 def _checked_account_code(value: Any) -> str:
     """The account code, trimmed. Postings and parents refer to accounts by code,
     so a blank or over-long one is refused rather than stored or cut short."""
-    code = _trimmed_text(value, "Account code")
+    code = _trimmed_text(value, t("acct.field_account_code"))
     if not code:
-        raise HTTPException(status_code=422, detail="Account code is required.")
+        raise HTTPException(status_code=422, detail=t("settings_accounting.code_required"))
     if len(code) > _ACCOUNT_CODE_MAX:
         raise HTTPException(
-            status_code=422, detail=f"Account code must be {_ACCOUNT_CODE_MAX} characters or fewer.",
+            status_code=422, detail=t("settings_accounting.code_too_long", max=_ACCOUNT_CODE_MAX),
         )
     return code
 
@@ -323,19 +328,19 @@ def _checked_parent_code(value: Any) -> str | None:
     """The parent account code, trimmed; missing or blank means no parent."""
     if value is None:
         return None
-    parent = _trimmed_text(value, "Parent code")
+    parent = _trimmed_text(value, t("acct.field_parent_code"))
     if len(parent) > _ACCOUNT_CODE_MAX:
         raise HTTPException(
-            status_code=422, detail=f"Parent code must be {_ACCOUNT_CODE_MAX} characters or fewer.",
+            status_code=422, detail=t("acct.err_parent_code_too_long", max=_ACCOUNT_CODE_MAX),
         )
     return parent or None
 
 
 def _checked_account_name(value: Any) -> str:
     """The account name, trimmed. Every report labels the account with it."""
-    name = _trimmed_text(value, "Account name")
+    name = _trimmed_text(value, t("acct.field_account_name"))
     if not name:
-        raise HTTPException(status_code=422, detail="Account name is required.")
+        raise HTTPException(status_code=422, detail=t("settings_accounting.name_required"))
     return name
 
 
@@ -356,7 +361,7 @@ def _parsed_is_active(value: Any) -> bool:
         if word in _ACTIVE_WORDS:
             return _ACTIVE_WORDS[word]
     raise HTTPException(
-        status_code=422, detail="is_active must be one of: true, false, yes, no, 1, 0, or blank.",
+        status_code=422, detail=t("acct.err_active_value"),
     )
 
 
@@ -545,7 +550,7 @@ async def patch_account(
         )
     ).scalar_one_or_none()
     if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
+        raise HTTPException(status_code=404, detail=t("settings_accounting.account_not_found"))
     account_type = _checked_account_type(payload.account_type) if payload.account_type is not None else None
     await check_account_change(session, company_id, acc, account_type=account_type, is_active=payload.is_active)
 
@@ -573,12 +578,12 @@ async def _planned_chart_import(
     if body.upsert:
         raise HTTPException(
             status_code=422,
-            detail="The chart import only adds accounts. Existing codes are kept; edit them in the chart.",
+            detail=t("acct.err_chart_import_adds_only"),
         )
     if len(body.records) > _CHART_IMPORT_MAX:
         raise HTTPException(
             status_code=422,
-            detail=f"A chart file can hold up to {_CHART_IMPORT_MAX} accounts; this one has {len(body.records)}.",
+            detail=t("acct.err_chart_import_too_many", count=len(body.records), max=_CHART_IMPORT_MAX),
         )
     existing = dict((await session.execute(
         select(Account.code, Account.parent_code).where(Account.company_id == company_id)
@@ -629,7 +634,7 @@ async def import_chart_accounts(
     except IntegrityError:
         await session.rollback()
         raise HTTPException(
-            status_code=409, detail="The chart changed during the import. Nothing was added; try again.",
+            status_code=409, detail=t("acct.err_chart_changed"),
         )
     return _chart_import_result(plan)
 
@@ -680,14 +685,14 @@ def _require_iso_date(value: str | None, field: str) -> None:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid {field} date format. Use YYYY-MM-DD.",
+            detail=t("acct.err_date_invalid", field=field),
         )
     try:
         date.fromisoformat(value)
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid {field} date format. Use YYYY-MM-DD.",
+            detail=t("acct.err_date_invalid", field=field),
         )
 
 
@@ -699,13 +704,12 @@ def _require_date_range(date_from: str | None, date_to: str | None) -> None:
     empty report that reads as a quiet period instead of as a question that
     cannot be answered. Refused here so every report refuses it alike.
     """
-    _require_iso_date(date_from, "date_from")
-    _require_iso_date(date_to, "date_to")
+    _require_iso_date(date_from, t("label.start_date"))
+    _require_iso_date(date_to, t("acct.field_end_date"))
     if date_from and date_to and date_from > date_to:
         raise HTTPException(
             status_code=422,
-            detail=(f"date_from {date_from} is after date_to {date_to}. "
-                    "Start the range on or before the date it ends."),
+            detail=t("acct.err_date_range", start=date_from, end=date_to),
         )
 
 
@@ -768,8 +772,7 @@ def _require_q(q: str) -> None:
     if len(q) > _JOURNAL_Q_MAX:
         raise HTTPException(
             status_code=422,
-            detail=(f"Search text is {len(q)} characters, longer than the "
-                    f"{_JOURNAL_Q_MAX} the journal searches."),
+            detail=t("acct.err_search_too_long", length=len(q), max=_JOURNAL_Q_MAX),
         )
 
 
@@ -828,7 +831,7 @@ async def _require_contact(
     """The contact a statement was asked for, or 404 for a contact that is not there."""
     row = await import_service.contact_row(session, company_id, contact_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="Contact not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_contact_pick"))
     return row
 
 
@@ -851,7 +854,7 @@ async def _require_contact_filter(
     if await import_service.contact_row(session, company_id, contact_id) is None:
         raise HTTPException(
             status_code=422,
-            detail=f"No contact matches contact_id {contact_id}.",
+            detail=t("acct.err_contact_pick"),
         )
 
 
@@ -901,19 +904,19 @@ def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str
     the fourth line of an entry should be told which line was refused, not handed
     a rejection they have to search for.
     """
-    where = f"Line {index + 1}"
+    where = t("acct.field_line", n=index + 1)
     currency = (line.currency or "").upper()
     if not currency and line.rate is None:
         return None
     if not currency:
         raise HTTPException(
             status_code=422,
-            detail=f"{where} has an exchange rate but no currency. A rate needs the currency it converts from.",
+            detail=t("acct.err_fx_rate_no_currency", line=where),
         )
     if currency not in ISO_4217_CURRENCIES:
         raise HTTPException(
             status_code=422,
-            detail=f"{where}: unknown currency {line.currency}. Use a three-letter ISO 4217 code.",
+            detail=t("acct.err_currency_unknown", currency=line.currency),
         )
     if currency == base:
         # The company's own currency converts at 1 by definition. An explicit 1 is
@@ -922,21 +925,18 @@ def _validated_line_fx(base: str, line: "ManualJELine", index: int) -> tuple[str
         if line.rate is not None and to_decimal(line.rate) != 1:
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    f"{where}: {currency} is this company's own currency, so its rate "
-                    f"is 1, not {line.rate}."
-                ),
+                detail=t("acct.err_fx_base_rate", line=where, currency=currency),
             )
         return None
     if line.rate is None:
         raise HTTPException(
             status_code=422,
-            detail=f"{where} is in {currency} but has no exchange rate.",
+            detail=t("acct.err_fx_no_rate", line=where, currency=currency),
         )
     try:
         return currency, checked_exchange_rate(line.rate)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"{where}: exchange rate {exc}.") from exc
+        raise HTTPException(status_code=422, detail=t("acct.err_fx_rate_invalid", line=where)) from exc
 
 
 def _id_chunks(ids: list[str], size: int = 10_000):
@@ -1505,9 +1505,9 @@ async def create_manual_journal_entry(
 ) -> dict:
     """Post a manual journal entry. Validates accounts and balance; the period
     lock is enforced by the event engine on the entry's date."""
-    _require_iso_date(payload.ts or "", "entry")
+    _require_iso_date(payload.ts or "", t("acct.field_entry_date"))
     if len(payload.entries) < 2:
-        raise HTTPException(status_code=422, detail="A journal entry needs at least 2 lines.")
+        raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
     await import_service.check_line_contacts(
@@ -1543,15 +1543,15 @@ async def create_manual_journal_entry(
                 detail=f"Account {line.account} is a parent account. Post to one of its sub-accounts: {', '.join(sorted(children))}.",
             )
         if line.debit < 0 or line.credit < 0:
-            raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
+            raise HTTPException(status_code=422, detail=t("acct.err_je_negative"))
         line_fx = _validated_line_fx(base, line, index)
         amount_currency = line_fx[0] if line_fx else base
         d = round_money(line.debit, amount_currency)
         c = round_money(line.credit, amount_currency)
         if d > 0 and c > 0:
-            raise HTTPException(status_code=422, detail="Each line must have an amount on only one side, debit or credit.")
+            raise HTTPException(status_code=422, detail=t("acct.err_je_both_sides"))
         if d == 0 and c == 0:
-            raise HTTPException(status_code=422, detail="Each line needs a debit or credit amount.")
+            raise HTTPException(status_code=422, detail=t("acct.err_je_no_amount"))
         if line_fx:
             currency, rate = line_fx
             bd = round_money(d * rate, base)
@@ -1584,13 +1584,11 @@ async def create_manual_journal_entry(
         short = "credit" if total_debit > total_credit else "debit"
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"Entry is out of balance in {base}: debits {total_debit} do not equal "
-                f"credits {total_credit}. The {short} side is short by {gap}."
-            ),
+            detail=t(f"acct.err_je_unbalanced_{short}", base=base,
+                     debits=total_debit, credits=total_credit, gap=gap),
         )
     if total_debit == 0:
-        raise HTTPException(status_code=422, detail="Entry total must be greater than zero.")
+        raise HTTPException(status_code=422, detail=t("acct.err_je_zero"))
 
     je_id = f"je:manual:{uuid.uuid4()}"
     created = await emit_event(
@@ -1682,14 +1680,14 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
     """
     row = await session.get(Projection, (company_id, entity_id))
     if not row or row.entity_type != "journal_entry":
-        raise HTTPException(status_code=404, detail="Journal entry not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_je_not_found"))
     state = row.state
     if state.get("je_type") != "manual":
         # Auto-posted entries mirror their source document; voiding one here would
         # desync the books from the document. Undoing the document reverses its JEs.
         raise HTTPException(
             status_code=422,
-            detail="Only manual journal entries can be voided here. Undo the source document instead.",
+            detail=t("acct.err_je_not_manual"),
         )
     if state.get("status") == "void":
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
@@ -1730,12 +1728,11 @@ async def bulk_void_journal_entries(
     """
     je_ids = list(dict.fromkeys(x.strip() for x in payload.je_ids if x.strip()))
     if not je_ids:
-        raise HTTPException(status_code=422, detail="No journal entries selected.")
+        raise HTTPException(status_code=422, detail=t("acct.err_void_none_selected"))
     if len(je_ids) > _BULK_VOID_LIMIT:
         raise HTTPException(
             status_code=422,
-            detail=f"Too many journal entries in one request: {len(je_ids)}. "
-                   f"The limit is {_BULK_VOID_LIMIT}; void them in smaller batches.",
+            detail=t("acct.err_void_too_many", count=len(je_ids), max=_BULK_VOID_LIMIT),
         )
 
     actor_id = user.id
@@ -1827,7 +1824,7 @@ async def account_ledger(
         for _, state, _ in posted
         for entry in state.get("entries", [])
     ):
-        raise HTTPException(status_code=404, detail="Account not found")
+        raise HTTPException(status_code=404, detail=t("settings_accounting.account_not_found"))
 
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
 
@@ -2157,7 +2154,7 @@ async def balance_sheet(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Balance sheet as of a given date (default: all posted entries to date)."""
-    _require_iso_date(as_of, "as_of")
+    _require_iso_date(as_of, t("acct.field_as_of_date"))
     from celerp.services.auto_je import upsert_opening_inventory_je
     await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
     await session.commit()
@@ -2304,7 +2301,7 @@ async def statement_of_account(
             winner = nxt
         return {"merged_into": winner}
     if contact_row.state.get("deleted"):
-        raise HTTPException(status_code=404, detail="Contact not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_contact_pick"))
 
     base = await _base_currency(session, company_id)
     posted = await _je_rows(session, company_id)
@@ -2483,7 +2480,7 @@ async def get_bank_account(
         )
     ).scalar_one_or_none()
     if not b:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
     return (await _bank_dicts(session, company_id, [b]))[0]
 
 
@@ -2496,10 +2493,10 @@ async def create_bank_account(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if payload.bank_type not in _BANK_TYPES:
-        raise HTTPException(status_code=422, detail=f"bank_type must be one of {sorted(_BANK_TYPES)}")
+        raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
     currency = payload.currency.upper()
     if currency not in ISO_4217_CURRENCIES:
-        raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
+        raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
 
     # Resolve or auto-assign chart account code
     code = (
@@ -2579,9 +2576,9 @@ async def patch_bank_account(
         )
     ).scalar_one_or_none()
     if not b:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
     if payload.bank_type is not None and payload.bank_type not in _BANK_TYPES:
-        raise HTTPException(status_code=422, detail=f"bank_type must be one of {sorted(_BANK_TYPES)}")
+        raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
 
     if payload.bank_name is not None:
         b.bank_name = payload.bank_name
@@ -2592,7 +2589,7 @@ async def patch_bank_account(
     if payload.currency is not None:
         normed = payload.currency.upper()
         if normed not in ISO_4217_CURRENCIES:
-            raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
+            raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
         b.currency = normed
     if payload.is_active and not b.is_active:
         await require_money_account(session, company_id, b.chart_account_code)
@@ -2736,7 +2733,7 @@ async def _get_recon(
         query = query.with_for_update()
     recon = (await db.execute(query)).scalar_one_or_none()
     if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_recon_not_found"))
     return recon
 
 
@@ -2745,7 +2742,7 @@ async def _recon_bank_and_entries(
 ) -> tuple[BankAccount, list[dict]]:
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
     return bank, await _je_entries_for_account(db, company_id, bank.chart_account_code)
 
 
@@ -2857,7 +2854,7 @@ async def start_reconciliation(
         )
     ).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
 
     # One open session per statement: starting the same statement again
     # continues it instead of opening a duplicate.
@@ -2873,7 +2870,7 @@ async def start_reconciliation(
         if abs(float(existing.statement_balance) - float(payload.statement_balance)) >= 0.005:
             raise HTTPException(
                 status_code=409,
-                detail="An open reconciliation already exists for this bank/date with a different statement balance.",
+                detail=t("acct.err_recon_open_exists"),
             )
         return _recon_to_dict(existing)
 
@@ -2959,7 +2956,7 @@ async def complete_reconciliation(
     if abs(difference) >= 0.01:
         raise HTTPException(
             status_code=422,
-            detail=f"Cannot complete: difference of {difference:.2f} remains. Mark all matching transactions first.",
+            detail=t("acct.err_recon_unbalanced", difference=f"{difference:.2f}"),
         )
 
     recon.status = "completed"
@@ -3023,7 +3020,7 @@ async def _require_account(db: AsyncSession, company_id: uuid.UUID, code: str) -
         select(Account).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
     if not account:
-        raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
+        raise HTTPException(status_code=422, detail=t("acct.err_account_unknown", code=code))
     return account
 
 
@@ -3223,7 +3220,7 @@ async def _import_statement_lines(
                 status_code=409,
                 detail={
                     "code": "statement_has_progress",
-                    "message": "This statement already has reconciliation work. Start a new session instead of replacing it.",
+                    "message": t("acct.err_statement_has_progress"),
                 },
             )
         for line in existing:
@@ -3345,7 +3342,7 @@ async def auto_match_recon(
 
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
 
     stmt_lines = (await db.execute(
         select(BankStatementLine).where(
@@ -3407,11 +3404,11 @@ async def _next_reconciliation_je_id(
         if row is None:
             return entity_id
         if row.entity_type != "journal_entry":
-            raise HTTPException(status_code=409, detail="Reconciliation journal-entry id is already in use")
+            raise HTTPException(status_code=409, detail=t("acct.err_recon_entry_exists"))
         if (row.state or {}).get("status") != "void":
             raise HTTPException(
                 status_code=409,
-                detail="This statement line already has an active reconciliation journal entry.",
+                detail=t("acct.err_recon_line_has_entry"),
             )
         attempt += 1
 
@@ -3428,15 +3425,15 @@ async def _void_reconciliation_created_je(
 
     je_id = line.matched_je_id
     if not je_id:
-        raise HTTPException(status_code=409, detail="Created statement line has no journal entry to reverse")
+        raise HTTPException(status_code=409, detail=t("acct.err_recon_undo_no_entry"))
     row = await db.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if row is None or row.entity_type != "journal_entry":
-        raise HTTPException(status_code=409, detail="Created statement line journal entry was not found")
+        raise HTTPException(status_code=409, detail=t("acct.err_recon_undo_entry_gone"))
     state = row.state or {}
     if state.get("status") == "void":
         return
     if state.get("je_type") not in {"recon_create", "recon_split"}:
-        raise HTTPException(status_code=409, detail="Statement line is linked to a journal entry not owned by reconciliation")
+        raise HTTPException(status_code=409, detail=t("acct.err_recon_undo_foreign"))
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.voided",
@@ -3471,14 +3468,14 @@ async def match_stmt_line(
         await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))
     ).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
     valid_ids = {e["je_id"] for e in await _je_entries_for_account(db, company_id, bank.chart_account_code)}
     if payload.je_id not in valid_ids:
-        raise HTTPException(status_code=400, detail="Book entry not found for this bank account")
+        raise HTTPException(status_code=400, detail=t("acct.err_recon_book_entry_missing"))
     already = set(recon.reconciled_je_ids or [])
     own = sl.matched_je_id if sl.status in ("matched", "created") else None
     if payload.je_id in already and payload.je_id != own:
-        raise HTTPException(status_code=400, detail="Book entry is already reconciled against another statement line")
+        raise HTTPException(status_code=400, detail=t("acct.err_recon_book_entry_matched"))
     old_je_id = own
     was_resolved = sl.status in ("matched", "created")
     sl.status = "matched"
@@ -3550,14 +3547,14 @@ async def create_je_from_line(
         )
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
     await _require_account(db, company_id, payload.account_code)
 
     line_amount = abs(float(sl.amount))
     if payload.amount is not None and abs(float(payload.amount) - line_amount) >= 0.005:
         raise HTTPException(
             status_code=422,
-            detail="Partial statement-line journal entries are not supported; amount must equal the statement line.",
+            detail=t("acct.err_recon_partial"),
         )
     entry_date = payload.date or sl.line_date
     memo = payload.memo or sl.description
@@ -3632,10 +3629,10 @@ async def split_stmt_line(
         )
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
 
     if not payload.splits:
-        raise HTTPException(status_code=422, detail="At least one split entry required")
+        raise HTTPException(status_code=422, detail=t("acct.at_least_one_split_entry_required"))
 
     je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:split:{sl.id}")
     idem_c = je_idempotency_key(je_id, "recon_split", "c")
@@ -3699,12 +3696,12 @@ async def patch_stmt_line(
         if payload.status not in ("unmatched", "skipped"):
             raise HTTPException(
                 status_code=422,
-                detail="Only unmatched or skipped can be set directly; use match/create for resolved states.",
+                detail=t("acct.err_recon_status_set"),
             )
         if sl.status in ("matched", "created"):
             raise HTTPException(
                 status_code=409,
-                detail="Unmatch this line through the dedicated unmatch action before changing its status.",
+                detail=t("acct.err_recon_status_matched"),
             )
         sl.status = payload.status
         sl.matched_je_id = None
@@ -3836,10 +3833,10 @@ async def write_off_difference(
     if abs(difference) > tol:
         raise HTTPException(
             status_code=422,
-            detail=f"Difference {difference:.2f} exceeds tolerance {tol:.2f}. Cannot write off.",
+            detail=t("acct.err_writeoff_too_large", difference=f"{difference:.2f}", tolerance=f"{tol:.2f}"),
         )
     if abs(difference) < 0.005:
-        raise HTTPException(status_code=422, detail="No difference to write off.")
+        raise HTTPException(status_code=422, detail=t("acct.err_writeoff_nothing"))
     await _require_account(db, company_id, payload.account_code)
 
     idem_c = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "c")
@@ -3930,7 +3927,7 @@ async def patch_recon_rule(
         )
     )).scalar_one_or_none()
     if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_rule_not_found"))
     for field in ("match_field", "match_pattern", "match_type", "target_account_code",
                   "default_memo", "default_tax", "is_active"):
         val = getattr(payload, field)
@@ -3954,7 +3951,7 @@ async def delete_recon_rule(
         )
     )).scalar_one_or_none()
     if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_rule_not_found"))
     await db.delete(rule)
     await db.commit()
     return {"deleted": str(rule_id)}
@@ -3978,7 +3975,7 @@ async def _get_recon_and_line(
         ).with_for_update()
     )).scalar_one_or_none()
     if not sl:
-        raise HTTPException(status_code=404, detail="Statement line not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_statement_line_not_found"))
     return recon, sl
 
 
@@ -4242,7 +4239,7 @@ async def set_period_lock(
 ) -> dict:
     company = await locked_company(session, company_id)
     if payload.lock_date:
-        _require_iso_date(payload.lock_date, "lock")
+        _require_iso_date(payload.lock_date, t("migration.lock_date"))
     write_period_lock(company, payload.lock_date, user.id)
     settings = company.settings
     await session.commit()
@@ -4294,7 +4291,7 @@ async def close_fiscal_year(
         net_income -= balance
 
     if not closing_entries:
-        raise HTTPException(status_code=422, detail="No revenue or expense balances to close.")
+        raise HTTPException(status_code=422, detail=t("acct.err_close_nothing"))
 
     # Net income goes to Retained Earnings (3200)
     # If net income is positive (profit): credit 3200

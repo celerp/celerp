@@ -152,7 +152,7 @@ def setup_routes(app):
             if e.status == 403:
                 content = Div(t("acct.not_authorized"), cls="error-banner")
             else:
-                content = Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
+                content = Div(e.detail or t("acct.error_loading_data"), cls="error-banner")
 
         # The journal answers HX-Request with the page body alone, like every other
         # report page, so a caller can swap it into #main-content.
@@ -196,7 +196,7 @@ def setup_routes(app):
             accounts = []
             if error is None:
                 error = (t("acct.not_authorized") if e.status == 403
-                         else f"{t('acct.error_loading_data')}: {e.detail}")
+                         else e.detail or t("acct.error_loading_data"))
         return await base_shell(
             page_header(t("acct.new_journal_entry", get_lang(request))),
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
@@ -272,7 +272,7 @@ def setup_routes(app):
         if error is None:
             for e in entries:
                 if e.get("currency") and e["currency"] not in CURRENCY_CODES:
-                    error = t("acct.err_currency_unknown")
+                    error = t("acct.err_currency_unknown", currency=e["currency"])
                     break
                 r = e.get("rate")
                 if r is not None and (not _math.isfinite(r) or r <= 0):

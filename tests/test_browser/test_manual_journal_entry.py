@@ -229,7 +229,7 @@ def test_manual_je_fx_journey_converts_per_line_and_refuses_to_plug(
     # Posting anyway is refused, and the refusal names the same gap. Nothing is
     # written to the books to make the entry foot.
     page.click('button[type="submit"]')
-    page.wait_for_selector("text=out of balance in USD", timeout=10000)
+    page.wait_for_selector("text=doesn't balance in USD", timeout=10000)
     assert page.locator('#je-lines [name="debit_0"]').input_value() == "33.33", \
         "a refused entry comes back with what was typed, not an empty form"
 
