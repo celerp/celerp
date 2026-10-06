@@ -107,6 +107,17 @@ async def ensure_company(session, company_id=None):
     return cid
 
 
+async def seed_member(session, role: str = "operator", *, active: bool = True):
+    """Insert a company, a user and their membership with ``role``; return (company_id, user_id)."""
+    import uuid as _uuid
+    from celerp.models.accounting import UserCompany
+    company_id, user_id = await ensure_company(session), _uuid.uuid4()
+    await ensure_user(session, user_id)
+    session.add(UserCompany(user_id=user_id, company_id=company_id, role=role, is_active=active))
+    await session.flush()
+    return company_id, user_id
+
+
 async def clear_sample_items(session, company_id) -> None:
     """Remove the sample items a new company starts with, so the test's next item
     import only adds items (an import that clears them cannot be undone)."""
