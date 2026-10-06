@@ -370,3 +370,38 @@ async def test_token_exchange_200_without_access_token_gives_clear_502(client, r
         dl = await _download(client, headers)
     assert dl.status_code == 502
     assert "unexpected" in dl.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_install_of_a_free_official_module_keeps_it_loading_offline(
+        client, relay_env, tmp_path, monkeypatch):
+    """Install is online by definition, so it records the free verdict there; the
+    module then loads on a later start with the relay out of reach."""
+    from celerp.modules import loader
+
+    headers = await _register(client)
+    fake = _fake_relay(meta=_FakeResp(200, {"is_official": True, "price_monthly": 0,
+                                            "price_once": None}))
+    with patch("httpx.AsyncClient", fake):
+        dl = await _download(client, headers)
+    r = await _install(client, headers, dl.json()["path"])
+    assert r.status_code == 200, r.text
+    assert (tmp_path / "license_cache" / "celerp-budgeting.free.json").is_file()
+
+    def _offline(*a, **kw):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr("urllib.request.urlopen", _offline)
+    monkeypatch.setattr(loader, "exchange_api_key_for_jwt", lambda *a, **k: None)
+    admission = loader.admit_modules(str(relay_env), {"celerp-budgeting"})
+    assert [m.name for m in admission.admitted] == ["celerp-budgeting"]
+
+
+@pytest.mark.asyncio
+async def test_install_of_a_paid_module_records_no_free_verdict(client, relay_env, tmp_path):
+    headers = await _register(client)
+    with patch("httpx.AsyncClient", _fake_relay()):
+        dl = await _download(client, headers)
+    r = await _install(client, headers, dl.json()["path"])
+    assert r.status_code == 200, r.text
+    assert not (tmp_path / "license_cache" / "celerp-budgeting.free.json").exists()

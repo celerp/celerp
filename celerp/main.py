@@ -274,6 +274,14 @@ async def _serve(_app: FastAPI, held):
     if _MODULE_DIR:
         from celerp.modules.loader import load_all, register_api_routes
         from celerp.config import read_config as _read_config
+        if not update_verify:
+            # Fetch the free verdict of every installed celerp- module that has
+            # none, in the background while online, so it loads later without
+            # the relay.
+            import threading
+            from celerp.modules.loader import fetch_missing_free_verdicts
+            threading.Thread(target=fetch_missing_free_verdicts, args=(_MODULE_DIR,),
+                             name="free-verdicts", daemon=True).start()
         _enabled_env = _os.environ.get("ENABLED_MODULES", "")
         if _enabled_env:
             _enabled: set[str] = set(_enabled_env.split(","))

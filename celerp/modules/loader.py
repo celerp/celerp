@@ -821,12 +821,11 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     offline lifetime JWT and the grace cache alone, so a module with neither is
     refused.
     """
-    premium = is_premium_path(module.path)
-    if not premium and not (is_reserved_name(module.name)
-                            and module.name not in first_party_names()):
+    by_name = _needs_licence_by_name(module.name, module.path)
+    if not by_name and not is_premium_path(module.path):
         return None
     relay_url, instance_jwt, data_dir, instance_id = creds()
-    if not premium and is_free_official(module.name, relay_url, Path(data_dir)):
+    if by_name and is_free_official(module.name, relay_url, Path(data_dir)):
         return None
     if check_license(
         slug=module.name,
@@ -839,6 +838,35 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
         return None
     log.warning("Premium module %r skipped: no valid license", module.name)
     return "Premium module: no valid license."
+
+
+def _needs_licence_by_name(name: str, pkg_path: Path) -> bool:
+    """A celerp- module that is not a default and not in a premium tree: it
+    loads on a free official verdict or a licence."""
+    return (is_reserved_name(name) and name not in first_party_names()
+            and not is_premium_path(pkg_path))
+
+
+def fetch_missing_free_verdicts(module_dir: str) -> None:
+    """Fetch the Marketplace verdict for every installed module that is licence
+    checked by name and has none kept yet, enabled or not, so it loads later
+    without the relay. Run at startup in the background; offline it records
+    nothing and admission decides as usual."""
+    from celerp.config import settings as _settings
+    from celerp.gateway.state import relay_http_url
+    relay_url = relay_http_url()
+    seen: set[str] = set()
+    for entry in module_dir.split(","):
+        root = Path(entry.strip())
+        if not entry.strip() or not root.is_dir():
+            continue
+        for pkg_path in sorted(root.iterdir()):
+            name = pkg_path.name
+            if name in seen or not (pkg_path / "__init__.py").is_file():
+                continue
+            seen.add(name)
+            if _needs_licence_by_name(name, pkg_path):
+                is_free_official(name, relay_url, _settings.data_dir)
 
 
 def _premium_credentials():
@@ -860,7 +888,7 @@ def _premium_credentials():
             cache["creds"] = (
                 relay_url,
                 exchange_api_key_for_jwt(relay_url, api_key) if api_key else None,
-                os.environ.get("DATA_DIR", "/tmp/celerp-data"),
+                str(_settings.data_dir),
                 # The instance's own canonical id (offline-available): a lifetime
                 # license is validated against this via its `sub` claim.
                 ensure_instance_id(),

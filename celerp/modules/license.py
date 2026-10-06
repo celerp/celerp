@@ -17,6 +17,9 @@ Public API
 
 ``is_free_official(slug, relay_url, cache_dir) -> bool``
     True when the Marketplace lists *slug* as a free official module (cached).
+
+``record_free_verdict(slug, cache_dir)``
+    Keeps that verdict, without expiry; also written at Marketplace install.
 """
 from __future__ import annotations
 
@@ -95,7 +98,7 @@ def check_license(
         slug:         Module slug to verify (e.g. ``"celerp-warehousing"``).
         relay_url:    Base URL of the Celerp relay service (no trailing slash).
         instance_jwt: Bearer JWT obtained from relay ``/auth/token``.
-        cache_dir:    DATA_DIR for this Celerp instance — cache is stored in a
+        cache_dir:    The instance data dir (settings.data_dir); the cache is stored in a
                       ``license_cache/`` subdirectory.
         instance_id:  This instance's canonical id; a lifetime license only
                       counts when its ``sub`` claim matches it (see
@@ -173,8 +176,7 @@ def is_free_official(slug: str, relay_url: str, cache_dir: Path) -> bool:
     reused from then on without a network call. Any other answer, or none (relay
     unreachable, unknown module, malformed reply), is False and is not cached, so
     the caller falls through to :func:`check_license`."""
-    cache_file = Path(cache_dir) / "license_cache" / f"{slug}.free.json"
-    cached = _cache_data(cache_file)
+    cached = _cache_data(_free_verdict_file(slug, cache_dir))
     if isinstance(cached, dict) and cached.get("free") is True:
         return True
     url = relay_url.rstrip("/") + f"/marketplace/modules/{slug}"
@@ -189,12 +191,23 @@ def is_free_official(slug: str, relay_url: str, cache_dir: Path) -> bool:
     is_official, is_paid = marketplace_flags(meta)
     if not is_official or is_paid:
         return False
+    record_free_verdict(slug, cache_dir)
+    return True
+
+
+def record_free_verdict(slug: str, cache_dir: Path) -> None:
+    """Keep the Marketplace's free official verdict for *slug* on this instance.
+    It does not expire: a module once listed free stays loadable offline."""
+    cache_file = _free_verdict_file(slug, cache_dir)
     try:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps({"free": True, "cached_at": time.time()}))
     except OSError as exc:
-        log.debug("Could not write the free verdict for %s: %s", slug, exc)
-    return True
+        log.warning("Could not write the free verdict for %s: %s", slug, exc)
+
+
+def _free_verdict_file(slug: str, cache_dir: Path) -> Path:
+    return Path(cache_dir) / "license_cache" / f"{slug}.free.json"
 
 
 def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:
