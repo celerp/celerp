@@ -514,6 +514,22 @@ class TestFindSafeStamp:
         assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
         assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev1"
 
+    def test_an_unreadable_column_list_is_no_proof_a_column_was_dropped(self):
+        """A live column read that fails proves nothing: the walk must not stamp
+        past a column drop it could not check."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+        metadata = sa.MetaData()
+        sa.Table("notices", metadata, sa.Column("id", sa.Integer))
+        inspector = self._make_inspector(("notices", ["id", "read"]))
+        inspector.get_columns.side_effect = RuntimeError("column read failed")
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev1"
+
     def test_a_drop_of_a_column_the_kernel_still_has_is_no_evidence(self):
         """A column dropped long ago and added back by the current models is not
         expected to be absent."""

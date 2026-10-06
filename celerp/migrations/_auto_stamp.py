@@ -28,7 +28,8 @@ DDL signature is present in the live schema.
 DDL signatures handled:
   - create_table:  table exists in the schema
   - add_column:    column exists in the table
-  - drop_column:   the table exists and the column no longer does (a missing table proves nothing)
+  - drop_column:   the table exists and the column no longer does (a missing
+                   table or an unreadable column list proves nothing)
   - create_index:  index name exists in the table's indexes
   - create_unique_constraint: treated as create_index (Postgres/SQLite
                               both implement unique constraints as indexes)
@@ -232,12 +233,13 @@ def _table_exists(inspector, table: str) -> bool:
         return False
 
 
-def _column_exists(inspector, table: str, column: str) -> bool:
+def _live_columns(inspector, table: str) -> set[str] | None:
+    """The live table's column names, or None when they cannot be read. Callers
+    treat None as unproven in either direction."""
     try:
-        cols = inspector.get_columns(table)
+        return {c.get("name") for c in inspector.get_columns(table)}
     except Exception:
-        return False
-    return any(c.get("name") == column for c in cols)
+        return None
 
 
 def _index_exists(
@@ -316,10 +318,11 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
     """Return True iff the live schema contains this signature's DDL."""
     if sig.kind == "create_table":
         return _table_exists(inspector, sig.table)
-    if sig.kind == "add_column":
-        return _table_exists(inspector, sig.table) and _column_exists(inspector, sig.table, sig.column)
-    if sig.kind == "drop_column":
-        return _table_exists(inspector, sig.table) and not _column_exists(inspector, sig.table, sig.column)
+    if sig.kind in ("add_column", "drop_column"):
+        cols = _live_columns(inspector, sig.table) if _table_exists(inspector, sig.table) else None
+        if cols is None:
+            return False
+        return (sig.column in cols) == (sig.kind == "add_column")
     if sig.kind == "create_index":
         return _table_exists(inspector, sig.table) and _index_exists(
             inspector, sig.table, sig.extra, sig.columns)
