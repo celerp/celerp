@@ -17900,9 +17900,9 @@ class TestCelerpAccountSurface:
         """A claim that hits the UI deadline is explained in link terms (the
         link may already be done; restart or retry), never with the generic
         busy-server and batch-size copy of a data request."""
-        from ui.api_client import APIError, TIMEOUT_MESSAGE
+        from ui.api_client import APIError, timeout_message
         with patch("ui.api_client.cloud_claim",
-                   new=AsyncMock(side_effect=APIError(504, TIMEOUT_MESSAGE))):
+                   new=AsyncMock(side_effect=APIError(504, timeout_message()))):
             r = await ui_client.post("/settings/cloud-claim",
                                      data={"claim_email": "o@shop.example", "otp_code": "123456"},
                                      cookies=_authed())

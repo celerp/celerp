@@ -21,11 +21,11 @@ import pytest
 import httpx
 from unittest.mock import AsyncMock, patch, MagicMock
 
+from ui.i18n import t
 from ui.api_client import (
     _api_client,
     _anon_api_client,
     APIError,
-    CONNECT_MESSAGE,
     batch_import,
 )
 
@@ -65,7 +65,7 @@ async def test_api_client_connect_error_raises_503():
                 pass  # pragma: no cover
 
     assert exc_info.value.status == 503
-    assert exc_info.value.detail == CONNECT_MESSAGE
+    assert exc_info.value.detail == t("api.unreachable")
     assert "http://" not in exc_info.value.detail
 
 

@@ -179,7 +179,7 @@ def setup_routes(app):
                 )
             if e.status == 401 and e.detail == NO_COMPANY:
                 return RedirectResponse(START_COMPANY, status_code=302)
-            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
+            return auth_shell(_login_form(email=email, error=_sign_in_error(e), next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
         resp = RedirectResponse(nxt, status_code=302)
@@ -199,7 +199,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401 and e.detail == NO_COMPANY:
                 return RedirectResponse(START_COMPANY, status_code=302)
-            return auth_shell(_login_form(email=email, error=e.detail, next_url=nxt), title=page_title("btn.sign_in"))
+            return auth_shell(_login_form(email=email, error=_sign_in_error(e), next_url=nxt), title=page_title("btn.sign_in"))
         except Exception as e:
             return auth_shell(_login_form(email=email, error=t("auth.server_error", e=e), next_url=nxt), title=page_title("btn.sign_in"))
         resp = RedirectResponse(nxt, status_code=302)
@@ -584,8 +584,12 @@ def setup_routes(app):
 # Components
 # ---------------------------------------------------------------------------
 
+def _sign_in_error(e: APIError) -> str:
+    """Refused credentials read in the visitor's language; any other refusal shows the API's own message."""
+    return t("auth.invalid_credentials") if e.status == 401 else e.detail
+
+
 def _login_form(email: str = "", error: str | None = None, notice: str = "", next_url: str = "/") -> FT:
-    lang = "en"
     return Div(
         auth_header(t("page.sign_in_to_celerp")),
         notice,
@@ -594,15 +598,15 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
             # Carries the page the user was bounced from, so signing back in
             # returns there instead of the dashboard.
             Input(type="hidden", name="next", value=next_url) if next_url != "/" else "",
-            Div(Label(t("label.email", lang), For="email", cls="form-label"),
+            Div(Label(t("label.email"), For="email", cls="form-label"),
                 Input(type="email", id="email", name="email", value=email,
-                      placeholder="you@example.com", required=True, autofocus=True, cls="form-input"),
+                      placeholder=t("account.email_placeholder"), required=True, autofocus=True, cls="form-input"),
                 cls="form-group"),
-            Div(Label(t("label.password", lang), For="password", cls="form-label"),
+            Div(Label(t("label.password"), For="password", cls="form-label"),
                 Input(type="password", id="password", name="password",
                       placeholder="••••••••", required=True, cls="form-input"),
                 cls="form-group"),
-            Button(t("btn.sign_in", lang), type="submit", cls="btn btn--primary btn--full"),
+            Button(t("btn.sign_in"), type="submit", cls="btn btn--primary btn--full"),
             P(A(t("auth.forgot_password"), href="/forgot-password", hx_get="/forgot-password",
                 hx_swap="none", cls="auth-link"), cls="auth-footer-text"),
             method="post", action="/login", cls="auth-form",
@@ -997,7 +1001,7 @@ def _forgot_password_form(error: str | None = None) -> FT:
             flash(error) if error else "",
             Div(Label(t("th.email"), For="email", cls="form-label"),
                 Input(type="email", id="email", name="email",
-                      placeholder="you@example.com", required=True, autofocus=True, cls="form-input"),
+                      placeholder=t("account.email_placeholder"), required=True, autofocus=True, cls="form-input"),
                 cls="form-group"),
             Button(t("btn.send_reset_link"), type="submit", cls="btn btn--primary btn--full"),
             P(A(t("auth.back_to_login"), href="/login", cls="auth-link"), cls="auth-footer-text"),

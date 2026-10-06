@@ -10,6 +10,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +31,15 @@ _LOCAL_KEEPALIVE_EXPIRY = 3.0
 
 # One source of truth for the temporary-failure copy every local client surfaces,
 # so the interactive, anonymous, AI, and bulk context managers cannot drift apart.
-SATURATION_MESSAGE = (
-    "The app is handling too many requests right now. Please try again in a moment."
-)
-TIMEOUT_MESSAGE = (
-    "Request timed out. The server is busy or the payload is too large. "
-    "Try again or reduce the batch size."
-)
+# Each reads in the language of the request it fails.
+def saturation_message() -> str:
+    return t("api.busy")
 
 
-CONNECT_MESSAGE = "Celerp could not reach its local service. Try again in a moment."
+def timeout_message() -> str:
+    return t("api.timed_out")
+
+
 NO_RESPONSE = "no_response"
 
 
@@ -47,7 +47,7 @@ def _connect_message() -> str:
     """The copy for an unreachable local service. Where it was looked for goes to the log only."""
     from ui.config import API_BASE
     logger.warning("Local API unreachable at %s", API_BASE)
-    return CONNECT_MESSAGE
+    return t("api.unreachable")
 
 
 class APIError(Exception):
@@ -242,11 +242,11 @@ async def _local_error_mapping():
     try:
         yield
     except httpx.PoolTimeout as exc:
-        raise APIError(503, SATURATION_MESSAGE) from exc
+        raise APIError(503, saturation_message()) from exc
     except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
-        raise APIError(504, TIMEOUT_MESSAGE, {"code": NO_RESPONSE}) from exc
+        raise APIError(504, timeout_message(), {"code": NO_RESPONSE}) from exc
     except httpx.TimeoutException as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+        raise APIError(504, timeout_message()) from exc
     except (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
         raise APIError(503, _connect_message(), {"code": NO_RESPONSE}) from exc
     except httpx.TransportError as exc:
@@ -2097,7 +2097,7 @@ async def _stream_get(token: str, path: str, *, params: dict | None = None,
         resp = await client.send(client.build_request("GET", path, params=params or {}), stream=True)
     except httpx.PoolTimeout as exc:
         await client.aclose()
-        raise APIError(503, SATURATION_MESSAGE) from exc
+        raise APIError(503, saturation_message()) from exc
     except httpx.TimeoutException as exc:
         await client.aclose()
         raise APIError(504, timeout_message) from exc
@@ -3358,7 +3358,7 @@ async def _with_total_timeout(awaitable, timeout: float):
     try:
         return await asyncio.wait_for(awaitable, timeout=timeout)
     except asyncio.TimeoutError as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+        raise APIError(504, timeout_message()) from exc
 
 
 CONTROL_PLANE_TIMEOUT = 20.0
@@ -3653,7 +3653,7 @@ async def migration_run_action(token: str, run_id: str, action: str) -> dict:
 async def migration_pack(token: str, run_id: str):
     """GET the reconciliation pack CSV, streamed. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, f"/migrations/{run_id}/reconciliation/pack",
-                             timeout_message=TIMEOUT_MESSAGE)
+                             timeout_message=timeout_message())
 
 
 # ── Company backups ──────────────────────────────────────────────────────────
@@ -3662,7 +3662,7 @@ async def company_backup_download(token: str, run_id: str | None = None):
     """GET the session company's backup file, streamed. ``run_id`` names a completed
     migration run of that company, whose provenance the API adds. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, "/company-backups/download", params={"run_id": run_id} if run_id else None,
-                             timeout_message=TIMEOUT_MESSAGE)
+                             timeout_message=timeout_message())
 
 
 def _backup_path(token: str | None, step: str) -> str:
