@@ -650,6 +650,7 @@
   "error.unauthorized": "Unauthorized",
   "error.unexpected_error_body": "An unexpected error occurred. Please try again.",
   "error.install_owner_deactivate": "This person is the installation owner, so they can't be deactivated in any company. The installation owner can hand that role to someone else in Global Config, Users; after that they can be deactivated.",
+  "error.books_currency_changed": "This payment was taken when your company currency was {base}; it is now {current}. Posting it would mix two currencies in your accounts, so it was not posted. Record a correcting journal entry in Accounting, Journal instead.",
   "field.label.allow_splitting": "Allow Splitting",
   "field.label.barcode": "Barcode",
   "field.label.batch_no": "Batch / Lot No",

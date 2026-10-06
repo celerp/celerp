@@ -3097,6 +3097,7 @@
   "doc.share_off_tip": "Não compartilhado",
   "error.invalid_value": "Valor inválido",
   "error.install_owner_deactivate": "Esta pessoa é o proprietário da instalação, por isso não pode ser desativada em nenhuma empresa. O proprietário da instalação pode passar essa função a outra pessoa em Configuração global, Usuários; depois disso ela poderá ser desativada.",
+  "error.books_currency_changed": "Este pagamento foi recebido quando a moeda da empresa era {base}; agora é {current}. Lançá-lo misturaria duas moedas nas suas contas, por isso não foi lançado. Registre um lançamento de correção em Contabilidade, Diário.",
   "field.tooltip.batch_no": "Número de lote para este estoque físico. Texto livre; vários lotes podem compartilhar um único SKU.",
   "field.tooltip.pick_method": "Qual lote físico deve ser retirado primeiro na venda: FIFO (o mais antigo recebido), FEFO (o que expirar primeiro) ou LIFO (o mais novo). A opção “Padrão” utiliza a configuração da empresa. LIFO é exclusivo para US-GAAP (não permitido segundo as IFRS).",
   "field.tooltip.preferred_supplier": "Fornecedor padrão para este item. Texto livre; usado para agrupar uma seleção de reabastecimento em um rascunho de pedido de compra por fornecedor.",

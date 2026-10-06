@@ -1648,6 +1648,7 @@
   "error.something_went_wrong": "የሆነ ችግር ተፈጥሯል",
   "error.unexpected_error_body": "ያልተጠበቀ ስህተት ተፈጥሯል። እባክዎ እንደገና ይሞክሩ።",
   "error.install_owner_deactivate": "ይህ ሰው የመጫኛው ባለቤት ስለሆነ በማንኛውም ኩባንያ ውስጥ ሊቦዝን አይችልም። የመጫኛው ባለቤት ይህን ሚና በአጠቃላይ ውቅር፣ ተጠቃሚዎች ውስጥ ለሌላ ሰው ማስተላለፍ ይችላል፤ ከዚያ በኋላ ሊቦዝን ይችላል።",
+  "error.books_currency_changed": "ይህ ክፍያ የተቀበለው የኩባንያዎ ገንዘብ {base} በነበረበት ጊዜ ነው፤ አሁን {current} ነው። መመዝገቡ በሂሳቦችዎ ውስጥ ሁለት ገንዘቦችን ያቀላቅላል፣ ስለዚህ አልተመዘገበም። በምትኩ በሂሳብ አያያዝ፣ ጆርናል ውስጥ የማስተካከያ ግቤት ይመዝግቡ።",
   "field.label.allow_splitting": "መከፋፈልን ፍቀድ",
   "field.label.barcode": "ባርኮድ",
   "field.label.batch_no": "ባች / ዕጣ ቁጥር",

@@ -61,6 +61,7 @@ from celerp.services.list_behavior import (
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 from celerp.schemas.numbers import FiniteFloat
+from ui.i18n import t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -2553,7 +2554,7 @@ async def books_currency_still(session, company_id, base: str) -> str:
         .execution_options(populate_existing=True))).scalar_one_or_none()
     current = books_currency((company.settings or {}) if company else {})
     if base != current:
-        raise HTTPException(status_code=422, detail=f"The payment is on {base} books; the company keeps them in {current}")
+        raise HTTPException(status_code=422, detail=t("error.books_currency_changed", base=base, current=current))
     return current
 
 
