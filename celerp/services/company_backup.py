@@ -278,9 +278,9 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         else:
             ok = name in PORTABLE_TABLES and bool(table.pk)
         # Reading a table another inherits from reads that table's rows too, which none of
-        # its keys bind and which a key can name apart from it. Reading one under row
-        # security reads only the rows a rule lets through, and a restore takes only the
-        # tables a backup can name.
+        # its keys bind and which a key can name apart from it. A table this connection
+        # cannot read every row of (``hidden``) cannot be carried whole, and a restore
+        # takes only the tables a backup can name.
         if ok and name not in inherited and name not in hidden and _TABLE_NAME.fullmatch(name):
             carried.append(name)
         elif strict:

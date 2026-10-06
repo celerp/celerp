@@ -1476,6 +1476,36 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
         await _bk_sql(real_engine, "DROP TABLE IF EXISTS ext_allow")
 
 
+async def test_a_carried_table_the_role_cannot_read_is_refused_whole(
+        real_engine, real_client, tmp_path, monkeypatch, rules_bind):
+    """The role Celerp connects as may not read zz_gadgets. The backup is refused naming
+    the table, with nothing written, and a backup made before is refused on restore the
+    same way, with nothing restored."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch, backup={"zz_gadgets": "include"})
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_sql(real_engine, _BK_GADGETS)
+        await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (gen_random_uuid(), :c)", c=cid)
+        made = await real_client.get("/company-backups/download", headers=auth(tok))
+        assert made.status_code == 200, made.text[:200]
+        await _bk_sql(real_engine, "REVOKE SELECT ON zz_gadgets FROM CURRENT_USER")
+        companies = await _bk_scalar(real_engine, "SELECT count(*) FROM companies")
+
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+
+        assert r.status_code == 409, r.text[:200]
+        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
+                                      "back up yet. Nothing was backed up.")
+        r = await restore(real_client, tok, made.content, mode="new_company")
+        assert r.status_code == 422, r.text[:200]
+        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
+                                      "restore yet. Nothing was restored.")
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM companies") == companies
+    finally:
+        await _bk_drop(real_engine, "zz_gadgets")
+
+
 async def test_row_security_forced_as_the_export_begins_stops_it(
         real_engine, real_client, tmp_path, monkeypatch, rules_bind):
     """Another connection forces row security on zz_gadgets, with a rule hiding every row,
@@ -1583,6 +1613,35 @@ async def test_a_companies_table_ahead_of_celerps_stops_the_backup(real_engine, 
         assert list(out.parent.iterdir()) == []
     finally:
         await _bk_sql(real_engine, f"DROP SCHEMA IF EXISTS {role} CASCADE")
+
+
+@pytest.mark.parametrize("system", ["pg_catalog", "information_schema"])
+async def test_a_system_schema_named_on_the_search_path_still_backs_up_and_resets(
+        real_engine, real_client, tmp_path, monkeypatch, system):
+    """The database is set to look in a system schema after Celerp's own. Those hold
+    Postgres's own tables, never a company's, so the backup, its restore and a factory
+    reset all go ahead."""
+    from sqlalchemy import event
+
+    def path(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f'SET search_path = "$user", public, {system}')
+        cursor.close()
+
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    event.listen(real_engine.sync_engine, "connect", path)
+    try:
+        assert system in await _bk_scalar(real_engine, "SELECT current_setting('search_path')")
+        made = await real_client.get("/company-backups/download", headers=auth(tok))
+        assert made.status_code == 200, made.text[:200]
+        r = await restore(real_client, tok, made.content, mode="new_company")
+        assert r.status_code == 201, r.text[:200]
+        r = await real_client.post("/system/factory-reset", headers=auth(tok), json={"confirm_name": "Alpha Trading"})
+        assert r.status_code == 200, r.text[:200]
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM public.companies WHERE id = :c", c=cid) == 0
+    finally:
+        event.remove(real_engine.sync_engine, "connect", path)
 
 
 _BK_ODD = ('CREATE TABLE "zz_Gadgets" (id uuid primary key, company_id uuid not null '

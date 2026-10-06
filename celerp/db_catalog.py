@@ -181,12 +181,12 @@ async def pin(session: AsyncSession) -> None:
     Raises ``TableElsewhere``, naming it, while a table sits in another schema this
     connection reaches tables by name in: a company's rows there would be left out of
     what is read and deleted, and a table there named like one of Celerp's would stand
-    in for it."""
+    in for it. Postgres's own schemas hold no company's rows and are not counted."""
     elsewhere = await session.scalar(text(
         "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c "
         "JOIN pg_namespace n ON n.oid = c.relnamespace "
         "WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition "
-        "AND n.nspname = ANY(current_schemas(false)) "
+        "AND n.nspname = ANY(current_schemas(false)) AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
         "AND c.relnamespace <> (SELECT relnamespace FROM pg_class WHERE oid = to_regclass('companies')) "
         "ORDER BY array_position(current_schemas(false), n.nspname::text), c.relname LIMIT 1"))
     if elsewhere:
@@ -198,12 +198,14 @@ async def pin(session: AsyncSession) -> None:
 
 
 async def hidden(session: AsyncSession) -> list[str]:
-    """The tables of this schema row security keeps rows of from this connection, by
-    name. Reading one returns only the rows a rule lets through, and deleting from one
-    skips the others, so none of them can be backed up, reset or discarded whole."""
+    """The tables of this schema this connection cannot read every row of, by name: those
+    it may not read at all, and those row security keeps rows of from it. Reading one
+    returns only the rows a rule lets through, and deleting from one skips the others, so
+    none of them can be backed up, reset or discarded whole."""
     return list((await session.scalars(text(
         "SELECT c.relname::text FROM pg_class c WHERE c.relnamespace = to_regnamespace(current_schema()) "
-        "AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND row_security_active(c.oid) "
+        "AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
+        "AND (row_security_active(c.oid) OR NOT has_table_privilege(c.oid, 'SELECT')) "
         "ORDER BY 1"))).all())
 
 
@@ -302,8 +304,8 @@ async def changed_outside(session: AsyncSession) -> tuple[str, str] | None:
     """Why a reset or discard cannot tell whose rows a key or a delete reaches, as
     ``(kind, table)`` with kind ``outside_reference`` (``outside_referrer``) or
     ``partition_key`` (``partition_key``, or a table ``inheriting``), or None when every
-    row they reach is one the catalog reads. A table row security keeps rows of
-    (``hidden``) counts as ``partition_key`` too: a delete skips the rows it hides."""
+    row they reach is one the catalog reads. A table this connection cannot read every
+    row of (``hidden``) counts as ``partition_key`` too: a delete cannot reach them all."""
     if table := await outside_referrer(session):
         return "outside_reference", table
     if table := await partition_key(session):

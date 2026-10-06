@@ -1272,6 +1272,38 @@ async def test_a_reset_reads_the_tables_beside_a_schema_named_after_the_database
             await conn.execute(text("DROP TABLE IF EXISTS public.ext_par"))
 
 
+async def test_a_reset_is_refused_while_a_table_cannot_be_read(
+        real_client, real_engine, rules_bind):  # noqa: F811
+    """The role Celerp connects as may not read a table holding Alpha's row, so a delete
+    cannot pick out Alpha's rows there. The reset is refused naming that table, and
+    nothing is deleted."""
+    from sqlalchemy import text
+
+    ta, _ = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        for statement in ("CREATE TABLE ext_unread (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+                          "INSERT INTO ext_unread VALUES (gen_random_uuid(), :a)",
+                          "REVOKE SELECT ON ext_unread FROM CURRENT_USER"):
+            await conn.execute(text(statement), {"a": alpha})
+    try:
+        held = await _held(real_engine, alpha)
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
+                                                             {"table": "ext_unread"})
+        assert await _held(real_engine, alpha) == held
+        async with real_engine.begin() as conn:
+            await conn.execute(text("GRANT SELECT ON ext_unread TO CURRENT_USER"))
+        assert await count(real_engine, "ext_unread", "company_id = :a", a=alpha) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_unread"))
+
+
 async def test_a_reset_is_refused_while_a_table_sits_in_a_schema_ahead_of_celerps(
         real_client, real_engine):  # noqa: F811
     """A schema named after the role Celerp connects as exists, and a table holding Alpha's
