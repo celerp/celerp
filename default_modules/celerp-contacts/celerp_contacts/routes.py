@@ -244,7 +244,7 @@ async def _locked_contact(session: AsyncSession, company_id, contact_id: str) ->
     """The contact a file change applies to, read once no other write to it is in flight."""
     row = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
     if row is None:
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     return row
 
 
@@ -346,7 +346,7 @@ async def download_contact_file(
 ) -> FileResponse:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
 
     match = _get_contact_file(row.state.get("files", []), file_id)
     url = match.get("url", "")
@@ -432,7 +432,7 @@ async def add_contact_note(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
 
     note_id = f"note:{uuid.uuid4()}"
     entry = await emit_event(
@@ -471,7 +471,7 @@ async def update_contact_note(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
 
     entry = await emit_event(
         session,
@@ -506,7 +506,7 @@ async def delete_contact_note(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
 
     entry = await emit_event(
         session,
@@ -538,7 +538,7 @@ async def add_contact_person(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     person_id = f"person:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -569,7 +569,7 @@ async def update_contact_person(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -598,7 +598,7 @@ async def remove_contact_person(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -629,7 +629,7 @@ async def add_contact_address(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     address_id = f"address:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -660,7 +660,7 @@ async def update_contact_address(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -689,7 +689,7 @@ async def remove_contact_address(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_record_not_found"))
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     entry = await emit_event(
         session,
         company_id=company_id,

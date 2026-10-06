@@ -1865,7 +1865,7 @@ class TestPeriodLockAndCloseBooks:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"required" in r.content
+        assert b"Choose the date your financial year ends" in r.content
 
 
 class TestReportsPage:

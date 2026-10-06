@@ -164,7 +164,7 @@ async def _page(request: Request, *content, title: str) -> FT:
 def _error_content(e: APIError):
     if e.status == 403:
         return Div(t("acct.not_authorized"), cls="error-banner")
-    return Div(f"{t('acct.error_loading_data')}: {e.detail}", cls="error-banner")
+    return Div(e.detail or t("acct.error_loading_data"), cls="error-banner")
 
 
 # ── Statement subjects ──────────────────────────────────────────────────────
@@ -1118,7 +1118,7 @@ def setup_routes(app):
             accounts = (await api.get_chart(token)).get("items") or []
         except APIError as e:
             return HTMLResponse(_option_notice(
-                f"{t('acct.error_loading_data')}: {e.detail}"))
+                e.detail or t("acct.error_loading_data")))
         needle = q.lower()
         opts = _contact_options(contacts) + [
             (val, label) for val, label in _account_options(accounts)

@@ -21,6 +21,7 @@ import uuid
 import pytest
 
 from test_helpers import grant_permission, perm_setup
+from ui.i18n import t
 
 PATH = "/accounting/accounts/import/batch"
 PREVIEW_PATH = "/accounting/accounts/import/preview"
@@ -183,18 +184,18 @@ async def test_chart_import_repeat_same_file_creates_nothing(client):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("row, message", [
-    (_row(""), "code is required"),
-    (_row("   "), "code is required"),
+    (_row(""), "Enter an account code"),
+    (_row("   "), "Enter an account code"),
     (_row("8" * 33), "32 characters"),
-    (_row("8500", ""), "name is required"),
-    (_row("8500", "  "), "name is required"),
-    (_row("8500", "Bad Type", "Current Asset"), "Account type must be one of"),
-    (_row("8500", "No Type", ""), "Account type must be one of"),
-    ({"code": 8500, "name": "Numeric", "account_type": "asset"}, "code must be text"),
+    (_row("8500", ""), "Enter an account name"),
+    (_row("8500", "  "), "Enter an account name"),
+    (_row("8500", "Bad Type", "Current Asset"), "account type isn't recognized"),
+    (_row("8500", "No Type", ""), "account type isn't recognized"),
+    ({"code": 8500, "name": "Numeric", "account_type": "asset"}, "Account code must be plain text"),
     ("not a row", "must be an object"),
-    (_row("8500", "Bad\x00Name"), "Account name cannot contain a NUL character."),
-    (_row("85\x0000"), "Account code cannot contain a NUL character."),
-    (_row("8500", parent_code="85\x0001"), "Parent code cannot contain a NUL character."),
+    (_row("8500", "Bad\x00Name"), "Account name contains a hidden control character"),
+    (_row("85\x0000"), "Account code contains a hidden control character"),
+    (_row("8500", parent_code="85\x0001"), "Parent account code contains a hidden control character"),
 ])
 async def test_chart_import_validates_code_name_type(client, row, message):
     h = await _reg(client)
@@ -209,9 +210,9 @@ async def test_chart_import_validates_code_name_type(client, row, message):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload, message", [
-    ({"code": "", "name": "Blank Code", "account_type": "asset"}, "code is required"),
+    ({"code": "", "name": "Blank Code", "account_type": "asset"}, "Enter an account code"),
     ({"code": "8" * 33, "name": "Long Code", "account_type": "asset"}, "32 characters"),
-    ({"code": "8600", "name": " ", "account_type": "asset"}, "name is required"),
+    ({"code": "8600", "name": " ", "account_type": "asset"}, "Enter an account name"),
 ])
 async def test_create_account_applies_the_same_code_and_name_rules(client, payload, message):
     h = await _reg(client)
@@ -226,14 +227,14 @@ async def test_account_parent_code_is_trimmed_and_length_checked(client):
     r = await client.post("/accounting/accounts", headers=h, json={
         "code": "8610", "name": "Long Parent", "account_type": "asset", "parent_code": "8" * 40})
     assert r.status_code == 422, r.text
-    assert "Parent code must be 32 characters" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_parent_code_too_long", "en", max=32)
     r = await client.post("/accounting/accounts", headers=h, json={
         "code": "8611", "name": "Blank Parent", "account_type": "asset", "parent_code": "  "})
     assert r.status_code == 200, r.text
     assert r.json()["parent_code"] is None
     r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": "8" * 40})
     assert r.status_code == 422, r.text
-    assert "Parent code must be 32 characters" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_parent_code_too_long", "en", max=32)
     r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": " 1000 "})
     assert r.status_code == 200, r.text
     assert (await _chart(client, h))["8611"]["parent_code"] == "1000"
@@ -276,7 +277,7 @@ async def test_chart_import_over_the_limit_says_so_plainly(client):
     rows = [_row(f"A{i:04d}", f"Account {i}") for i in range(2001)]
     r = await _import(client, h, rows)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == "A chart file can hold up to 2000 accounts; this one has 2001."
+    assert r.json()["detail"] == t("acct.err_chart_import_too_many", "en", count=2001, max=2000)
     assert "A0000" not in await _chart(client, h)
 
 
@@ -434,7 +435,7 @@ async def test_chart_import_rejects_unrecognized_is_active(client, value):
     r = await _import(client, h, [_row("8690", "Odd", is_active=value)])
     body = r.json()
     assert body["created"] == 0
-    assert len(body["errors"]) == 1 and "is_active" in body["errors"][0]
+    assert len(body["errors"]) == 1 and t("acct.err_active_value", "en") in body["errors"][0]
     assert "8690" not in await _chart(client, h)
 
 

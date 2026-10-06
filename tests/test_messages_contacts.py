@@ -54,7 +54,7 @@ def test_prefix_keys_are_gone():
 
 
 @pytest.mark.parametrize("key, says", [
-    ("contacts.err_record_not_found", "Go back, refresh the page"),
+    ("error.record_not_found", "Go back, refresh the page"),
     ("contacts.err_resubmitted", "possibly from another tab"),
     ("contacts.err_file_not_found", "It may have been deleted."),
     ("contacts.err_name_required", "Enter a name for the contact"),

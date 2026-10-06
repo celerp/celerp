@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
 from ui.api_client import APIError
+from ui.i18n import t
 
 _BANK = {"id": "b1", "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
          "chart_account_code": "1112", "currency": "USD", "balance": 0.0, "is_active": False}
@@ -29,7 +30,7 @@ async def ui_client():
 
 @pytest.mark.asyncio
 async def test_a_restore_the_books_refuse_shows_why_and_keeps_the_list(ui_client):
-    refused = AsyncMock(side_effect=APIError(422, "Account 1112 is inactive."))
+    refused = AsyncMock(side_effect=APIError(422, t("acct.err_account_archived", "en", code="1112")))
     with patch("ui.api_client.get_bank_account", new=AsyncMock(return_value=_BANK)), \
          patch("ui.api_client.patch_bank_account", new=refused), \
          patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": [_BANK, _OTHER]})):
@@ -37,7 +38,7 @@ async def test_a_restore_the_books_refuse_shows_why_and_keeps_the_list(ui_client
                                   cookies={"celerp_token": make_test_token(role="owner")})
 
     assert r.status_code == 200
-    assert "Account 1112 is inactive." in r.text
+    assert "Account 1112 is archived" in r.text
     assert "error-banner" in r.text
     assert "Main Bank" in r.text
     refused.assert_awaited_once()

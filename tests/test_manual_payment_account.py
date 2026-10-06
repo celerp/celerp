@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -55,16 +56,16 @@ async def _payments(client, tok, doc_id: str) -> list:
 async def _bad_account(client, tok, case: str) -> tuple[str, str]:
     """(account code, expected refusal) for each way an account cannot take a payment."""
     if case == "missing":
-        return "1199", "Unknown account 1199."
+        return "1199", t("acct.err_account_unknown", "en", code="1199")
     if case == "archived":
         await _account(client, tok, "1190", "asset", active=False)
-        return "1190", "Account 1190 is inactive."
+        return "1190", t("acct.err_account_archived", "en", code="1190")
     if case == "not_asset":
-        return "4100", "Account 4100 is a revenue account"
+        return "4100", "Account 4100 is a Revenue account"
     r = await client.post("/companies", json={"name": "OtherCo"}, headers=_h(tok))
     assert r.status_code == 200, r.text
     await _account(client, r.json()["access_token"], "1190", "asset")
-    return "1190", "Unknown account 1190."
+    return "1190", t("acct.err_account_unknown", "en", code="1190")
 
 
 _CASES = ["missing", "archived", "not_asset", "other_company"]

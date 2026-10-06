@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from ui.i18n import t
 from sqlalchemy import text
 
 from company_backup_support import token
@@ -81,7 +82,7 @@ async def test_an_account_archived_before_the_payment_reaches_it_refuses_the_pay
     r = await paying
 
     assert r.status_code == 422, r.text
-    assert f"Account {CODE} is inactive." in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_account_archived", "en", code=CODE)
     assert await _posted_to(real_engine, eid) == []
 
 

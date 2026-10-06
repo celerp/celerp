@@ -23,6 +23,9 @@ from ui.routes.accounting_import import ACCOUNT_TYPES
 # list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
 # two run in separate processes, so a test asserts they still match.
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
+# The longest account code the API accepts (celerp_accounting.routes._ACCOUNT_CODE_MAX),
+# mirrored the same way and asserted by the same kind of test.
+_ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import t
@@ -450,7 +453,7 @@ async def _validate_account(token: str, name: str, account_type: str,
     if not name:
         return t("settings_accounting.name_required")
     if account_type not in ACCOUNT_TYPES:
-        return t("settings_accounting.account_type_invalid", types=", ".join(ACCOUNT_TYPES))
+        return t("settings_accounting.account_type_invalid", types=", ".join(t(f"enum.account_type.{x}") for x in ACCOUNT_TYPES))
     if parent_code:
         if parent_code == own_code:
             return t("settings_accounting.account_own_parent")
@@ -859,8 +862,8 @@ def setup_routes(app):
         parent_code = str(form.get("parent_code", "")).strip()
         if not code:
             return P(t("settings_accounting.code_required"), cls="error-banner")
-        if len(code) > 32:
-            return P(t("settings_accounting.code_too_long"), cls="error-banner")
+        if len(code) > _ACCOUNT_CODE_MAX:
+            return P(t("settings_accounting.code_too_long", max=_ACCOUNT_CODE_MAX), cls="error-banner")
         err = await _validate_account(token, name, account_type, parent_code, own_code=code)
         if err:
             return P(err, cls="error-banner")
