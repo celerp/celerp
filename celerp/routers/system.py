@@ -159,14 +159,18 @@ def _held_elsewhere(schema: dict) -> str:
             if fk.target not in rows:
                 continue
             if name in rows:
-                checks.append((name, f"({rows[name]}) IS NOT TRUE AND {naming(fk, mine=True)}"))
+                # A named row the company holds only through a key is shared by the two
+                # companies, so its table, which holds that key, is the one named.
+                shared = fk.target != "companies" and "company_id" not in schema[fk.target].columns
+                checks.append((name, f"({rows[name]}) IS NOT TRUE AND {naming(fk, mine=True)}",
+                               fk.target if shared else name))
             elif theirs:
-                checks.append((name, f"{naming(fk, mine=True)} AND ({theirs})"))
+                checks.append((name, f"{naming(fk, mine=True)} AND ({theirs})", name))
         if name in rows and theirs:
-            checks.append((name, f"({rows[name]}) AND ({theirs})"))
+            checks.append((name, f"({rows[name]}) AND ({theirs})", name))
     return " UNION ALL ".join(
-        f"(SELECT '{name.replace(chr(39), chr(39) * 2)}' WHERE EXISTS "
-        f"(SELECT 1 FROM {ident(name)} WHERE {where}))" for name, where in checks) + " LIMIT 1"
+        f"(SELECT '{named.replace(chr(39), chr(39) * 2)}' WHERE EXISTS "
+        f"(SELECT 1 FROM {ident(name)} WHERE {where}))" for name, where, named in checks) + " LIMIT 1"
 
 
 def _company_deletes(schema: dict) -> list[str]:

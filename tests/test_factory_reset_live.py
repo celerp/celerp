@@ -572,6 +572,26 @@ async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
             await conn.execute(text("DROP TABLE IF EXISTS ext_pairs, ext_items"))
 
 
+@pytest.mark.parametrize("action", ["CASCADE", "NO ACTION"])
+async def test_a_reset_is_refused_naming_users_while_a_user_of_another_company_hangs_off_it(
+        real_client, real_engine, action):  # noqa: F811
+    """A module column on users names each user's home company, and the owner, still
+    Beta's, has Alpha as home. Beta's own records name the owner as they always do; the
+    row tying the owner to Alpha is in users, so the refusal names users."""
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha = await _id(real_client, ta)
+    async with real_engine.begin() as conn:
+        await conn.execute(text(f"ALTER TABLE users ADD COLUMN ext_home uuid REFERENCES companies(id) ON DELETE {action}"))
+        await conn.execute(text("UPDATE users SET ext_home = :a WHERE email = :e"), {"a": alpha, "e": OWNER_EMAIL})
+    try:
+        await _refused_untouched(real_client, real_engine, ta, alpha, ("users", "user_companies"), "users")
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS ext_home"))
+
+
 def _commit_elsewhere(*statements: str, **params):
     """Start committing ``statements`` on a connection of its own, in another thread. The
     returned dict gets ``committed``, or the ``error`` the commit raised."""
