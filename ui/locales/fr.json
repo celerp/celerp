@@ -2580,7 +2580,7 @@
   "settings.type_reset_prefix": "Tapez ",
   "settings.type_reset_suffix": " pour confirmer. Cette action ne peut pas être annulée.",
   "settings.delete_everything": "Tout supprimer",
-  "system.factory_reset.busy": "Les données de cette entreprise ont changé pendant sa réinitialisation. Rien n'a été supprimé. Réessayez.",
+  "system.factory_reset.busy": "Cette entreprise n'a pas pu être réinitialisée, car d'autres modifications étaient enregistrées en même temps. Rien n'a été supprimé. Réessayez.",
   "system.factory_reset.held_elsewhere": "Cette entreprise ne peut pas être réinitialisée, car des enregistrements de {table} qui appartiennent à une autre entreprise font référence à ses données. Rien n'a été supprimé.",
   "system.factory_reset.name_mismatch": "Saisissez le nom de l'entreprise exactement comme indiqué pour réinitialiser cette entreprise.",
   "system.factory_reset.reference_cycle": "Les tables {tables} se référencent mutuellement en boucle, cette entreprise ne peut donc pas être réinitialisée. Rien n'a été supprimé.",

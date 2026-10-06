@@ -24,8 +24,8 @@ from celerp.services.auth import (
 from celerp.services.permissions import require_permission
 
 _ATTACHMENT_ROOT = Path("static/attachments")
-_DEADLOCK = "40P01"
-_SERIALIZATION_FAILURE = "40001"
+# Another transaction in the way: the reset rolls back and is refused as busy.
+_BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
 
 router = APIRouter(dependencies=[require_permission("manage_company_settings")])
 
@@ -198,9 +198,9 @@ async def factory_reset(
     # transaction and is committed in one step.
     await lock_connector_maintenance(session)
     schema = await db_catalog.read(session)
-    # Another transaction writing these tables can lock in the opposite order. Postgres
-    # then aborts one of the two; when it is the reset, the rollback leaves everything
-    # as it was and the owner is asked to try again.
+    # Another transaction writing these tables can hold them for longer than a request
+    # may wait, or lock in the opposite order so Postgres aborts one of the two. Either
+    # way the rollback leaves everything as it was and the owner is asked to try again.
     try:
         await session.execute(text(_lock_writers(schema)))
         members = list((await session.execute(
@@ -216,13 +216,13 @@ async def factory_reset(
         await session.execute(text(db_catalog.delete_users_left_without_a_company(schema)), {"members": members})
         await session.commit()
     except DBAPIError as exc:
-        if sqlstate(exc) not in (_DEADLOCK, _SERIALIZATION_FAILURE):
+        if sqlstate(exc) not in _BUSY:
             raise
         await session.rollback()
         raise HTTPException(status_code=409, detail=refusal(
             "system.factory_reset.busy",
-            "This company's data changed while it was being reset. Nothing was deleted. "
-            "Try again.")) from exc
+            "This company could not be reset because other changes were being saved at the "
+            "same time. Nothing was deleted. Try again.")) from exc
 
     # Bust the in-process nonce cache: a deleted user's stale token must not auto-create rows
     from celerp.services.session_tracker import _nonce_cache_bust_all

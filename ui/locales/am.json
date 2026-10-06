@@ -2680,7 +2680,7 @@
   "settings.type_reset_prefix": "ይተይቡ ",
   "settings.type_reset_suffix": "። ይህ ሊቀለበስ አይችልም።",
   "settings.delete_everything": "ሁሉንም ነገር ሰርዝ",
-  "system.factory_reset.busy": "ይህ ኩባንያ ዳግም በመጀመር ላይ እያለ ውሂቡ ተቀይሯል። ምንም አልተሰረዘም። እንደገና ይሞክሩ።",
+  "system.factory_reset.busy": "በተመሳሳይ ጊዜ ሌሎች ለውጦች ይቀመጡ ስለነበር ይህ ኩባንያ ዳግም ሊጀመር አልቻለም። ምንም አልተሰረዘም። እንደገና ይሞክሩ።",
   "system.factory_reset.held_elsewhere": "በ{table} ውስጥ የሌላ ኩባንያ የሆኑ መዝገቦች የዚህን ኩባንያ ውሂብ ስለሚያመለክቱ ይህ ኩባንያ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
   "system.factory_reset.name_mismatch": "ይህን ኩባንያ ዳግም ለማስጀመር የኩባንያውን ስም ልክ እንደሚታየው ይተይቡ።",
   "system.factory_reset.reference_cycle": "ሰንጠረዦቹ {tables} እርስ በርሳቸው በዙር ይጠቃቀሳሉ፣ ስለዚህ ይህ ኩባንያ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",

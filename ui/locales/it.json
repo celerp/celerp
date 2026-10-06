@@ -2580,7 +2580,7 @@
   "settings.type_reset_prefix": "Digita ",
   "settings.type_reset_suffix": " per confermare. Questa operazione non può essere annullata.",
   "settings.delete_everything": "Elimina tutto",
-  "system.factory_reset.busy": "I dati di questa azienda sono cambiati durante la reimpostazione. Non è stato eliminato nulla. Riprova.",
+  "system.factory_reset.busy": "Non è stato possibile reimpostare questa azienda perché nello stesso momento venivano salvate altre modifiche. Non è stato eliminato nulla. Riprova.",
   "system.factory_reset.held_elsewhere": "Questa azienda non può essere reimpostata perché alcuni record in {table} che appartengono a un'altra azienda fanno riferimento ai suoi dati. Non è stato eliminato nulla.",
   "system.factory_reset.name_mismatch": "Digita il nome dell'azienda esattamente come mostrato per reimpostare questa azienda.",
   "system.factory_reset.reference_cycle": "Le tabelle {tables} si richiamano a vicenda in un ciclo, quindi questa azienda non può essere reimpostata. Non è stato eliminato nulla.",

@@ -513,6 +513,49 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
             await conn.execute(text("DROP TABLE IF EXISTS ext_links, ext_items"))
 
 
+def _refused_busy(r) -> None:
+    """The reset was refused because other work was saving at the same time."""
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "system.factory_reset.busy", detail
+    assert detail["message"] == ("This company could not be reset because other changes were being saved "
+                                 "at the same time. Nothing was deleted. Try again.")
+    assert in_language("de", detail) != detail["message"]
+
+
+async def test_a_reset_waiting_too_long_behind_another_writer_is_refused_as_busy(real_client, real_engine):  # noqa: F811
+    """Beta's transaction has written ext_links and stays open for longer than a request
+    may wait for a lock. The reset gives up waiting and is refused as busy, never a
+    server error, and nothing of Alpha is deleted."""
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from migration_support import DATABASE_URL
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE ext_links (id uuid PRIMARY KEY, "
+                                "company_id uuid NOT NULL REFERENCES companies(id))"))
+    beta_engine = create_async_engine(DATABASE_URL)
+    try:
+        held = await _held(real_engine, alpha)
+        async with beta_engine.begin() as beta_conn:
+            await beta_conn.execute(text("INSERT INTO ext_links VALUES (:i, :c)"), {"i": uuid.uuid4(), "c": beta})
+            r = await _reset(real_client, ta, "Alpha Co")
+
+        _refused_busy(r)
+        assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
+        assert await _held(real_engine, alpha) == held
+        assert await count(real_engine, "ext_links", "company_id = :c", c=beta) == 1
+    finally:
+        await beta_engine.dispose()
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_links"))
+
+
 async def test_a_reset_caught_in_a_deadlock_is_refused_and_deletes_nothing(real_client, real_engine):  # noqa: F811
     """Beta is part way through a transaction that wrote ext_links when the reset starts
     locking: the reset waits for ext_links while holding ext_items, and Beta then writes
@@ -554,12 +597,7 @@ async def test_a_reset_caught_in_a_deadlock_is_refused_and_deletes_nothing(real_
                                     {"i": uuid.uuid4(), "c": beta})
         r = await reset
 
-        assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
-        assert detail["message_key"] == "system.factory_reset.busy", detail
-        assert detail["message"] == ("This company's data changed while it was being reset. "
-                                     "Nothing was deleted. Try again.")
-        assert in_language("de", detail) != detail["message"]
+        _refused_busy(r)
         assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
         assert await _held(real_engine, alpha) == held
         assert await count(real_engine, "ext_items", "company_id = :c", c=alpha) == 1

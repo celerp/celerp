@@ -2579,7 +2579,7 @@
   "settings.type_reset_prefix": "Ketik ",
   "settings.type_reset_suffix": " untuk mengonfirmasi. Tindakan ini tidak dapat dibatalkan.",
   "settings.delete_everything": "Hapus semuanya",
-  "system.factory_reset.busy": "Data perusahaan ini berubah saat sedang diatur ulang. Tidak ada yang dihapus. Coba lagi.",
+  "system.factory_reset.busy": "Perusahaan ini tidak dapat diatur ulang karena ada perubahan lain yang sedang disimpan pada saat yang sama. Tidak ada yang dihapus. Coba lagi.",
   "system.factory_reset.held_elsewhere": "Perusahaan ini tidak dapat diatur ulang karena catatan di {table} milik perusahaan lain merujuk ke datanya. Tidak ada yang dihapus.",
   "system.factory_reset.name_mismatch": "Ketik nama perusahaan persis seperti yang ditampilkan untuk mengatur ulang perusahaan ini.",
   "system.factory_reset.reference_cycle": "Tabel {tables} saling merujuk dalam satu lingkaran, jadi perusahaan ini tidak dapat diatur ulang. Tidak ada yang dihapus.",
