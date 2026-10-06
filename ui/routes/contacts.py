@@ -597,8 +597,7 @@ def _contact_bulk_templates(contact_type: str) -> FT:
             P(t("contacts.merge_prompt", type=contact_type),
               cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
             Div(id="contact-merge-radio-list",
-                data_merge_failed=t("contacts.merge_failed"),
-                data_merge_failed_prefix=t("contacts.merge_failed_prefix")),
+                data_merge_failed=t("contacts.merge_failed")),
             Button(t("btn.confirm_merge"), type="button", id="contact-merge-confirm-btn",
                    cls="btn btn--primary btn--sm", style="margin-top:0.75rem;",
                    disabled=True,
@@ -638,7 +637,7 @@ def _contact_bulk_templates(contact_type: str) -> FT:
       }
     }).catch(function(err) {
       var res = document.getElementById('bulk-action-result');
-      if (res) res.innerHTML = '<p class="flash flash--error">' + list.dataset.mergeFailedPrefix + err.message + '</p>';
+      if (res) res.innerHTML = '<p class="flash flash--error">' + list.dataset.mergeFailed + '</p>';
     });
   };
   if (window.htmx) htmx.process(list.parentElement);
@@ -726,7 +725,6 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         "confirmDelete": t("contacts.confirm_bulk_delete"),
         "deletedTpl": t("contacts.deleted_count"),
         "deleteFailed": t("contacts.delete_failed"),
-        "deleteFailedPrefix": t("contacts.delete_failed_prefix"),
     })
     return await base_shell(
         page_header(
@@ -779,7 +777,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
           res.innerHTML = '<p class="flash flash--error">' + (d.detail || CFG.deleteFailed) + '</p>';
         }}
       }}).catch(function(err){{
-        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailedPrefix + err.message + '</p>';
+        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailed + '</p>';
       }});
       return;
     }}
@@ -870,9 +868,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         sessionStorage.removeItem('celerp_contact_selection');
         window.location.href = {_json.dumps(back_href)};
       }} else {{
-        alert(d.detail || {_json.dumps(t("contacts.delete_failed_dot"))});
+        alert(d.detail || {_json.dumps(t("contacts.delete_failed"))});
       }}
-    }}).catch(function(err){{ alert({_json.dumps(t("contacts.delete_failed_prefix"))} + err.message); }});
+    }}).catch(function(err){{ alert({_json.dumps(t("contacts.delete_failed"))}); }});
   }});
 }})();
 """)
@@ -1794,7 +1792,7 @@ def setup_routes(app):
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
-            return P(t("contacts.error_prefix", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
 
@@ -1914,7 +1912,7 @@ def setup_routes(app):
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
         if field == "currency" and value and value not in _CURRENCY_CODES:
-            return P(t("contacts.invalid_currency", code=repr(value)), cls="cell-error")
+            return P(t("contacts.invalid_currency", code=value), cls="cell-error")
         data = {field: float(value) if field == "credit_limit" and value else value}
         try:
             await api.patch_contact(token, contact_id, data)
