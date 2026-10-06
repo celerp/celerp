@@ -802,37 +802,31 @@ def setup_routes(app):
     @app.get("/settings/company/companies-list")
     async def company_settings_companies_list(request: Request):
         """HTMX fragment: list of all user's companies with switch links."""
-        from fasthtml.common import to_xml
+        token = _token(request)
+        if not token:
+            return Response(content="", media_type="text/html")
+        return await _companies_list_response(token, get_lang(request))
+
+    @app.post("/settings/company/{company_id}/reactivate")
+    async def company_settings_reactivate(request: Request, company_id: str):
+        """Reactivate a deactivated company from "Your companies"; the session stays in
+        the company the user is working in. Answers with the refreshed list."""
         token = _token(request)
         if not token:
             return Response(content="", media_type="text/html")
         lang = get_lang(request)
         try:
-            resp = await api.my_companies(token)
-            companies = resp.get("items", []) if isinstance(resp, dict) else resp
-        except Exception:
-            return Response(content="", media_type="text/html")
-        if not companies:
-            return Response(to_xml(P(t("msg.no_results", lang), cls="settings-hint")), media_type="text/html")
-        if len(companies) == 1:
-            name = companies[0].get("company_name", "")
-            content = Span(name, cls="settings-hint")
-        else:
-            options = [
-                Option(
-                    c.get("company_name", ""),
-                    value=c.get("company_id", ""),
-                    selected=c.get("is_current", False),
-                )
-                for c in companies
-            ]
-            content = Select(
-                *options,
-                onchange="location='/switch-company/'+this.value",
-                cls="cell-input cell-input--select",
-                style="max-width:320px;",
-            )
-        return Response(to_xml(content), media_type="text/html")
+            done = await api.reactivate_company(token, company_id)
+        except APIError as e:
+            return await _companies_list_response(token, lang, P(str(e.detail), cls="cell-error"))
+        mine = await api.my_companies(token)
+        name = next((c.get("company_name", "") for c in mine.get("items", [])
+                     if c.get("company_id") == company_id), "")
+        notice = [P(t("settings.company_reactivated", lang, name=name), cls="flash flash--success")]
+        if done.get("connectors_to_reconnect"):
+            notice.append(P(t("settings.company_reactivated_reconnect", lang,
+                              names=", ".join(done["connectors_to_reconnect"])), cls="flash flash--warning"))
+        return await _companies_list_response(token, lang, *notice)
 
     # ── Company PATCH endpoints ──────────────────────────────────────
     @app.get("/settings/company/{field}/edit")
@@ -3063,6 +3057,53 @@ def _company_settings_card(company: dict, lang: str = "en", can_change_business_
         ),
         cls="detail-card section-card",
     )
+
+
+async def _companies_list_response(token: str, lang: str, *notice) -> Response:
+    """The "Your companies" fragment: the companies to work in, plus a Deactivated
+    section when one of the user's companies is deactivated, with any *notice* on top."""
+    from fasthtml.common import to_xml
+    try:
+        resp = await api.my_companies(token)
+    except Exception:
+        return Response(content="", media_type="text/html")
+    companies = resp.get("items", [])
+    deactivated = resp.get("deactivated", [])
+    if not companies:
+        content = P(t("msg.no_results", lang), cls="settings-hint")
+    elif len(companies) == 1:
+        content = Span(companies[0].get("company_name", ""), cls="settings-hint")
+    else:
+        content = Select(
+            *[Option(c.get("company_name", ""), value=c.get("company_id", ""),
+                     selected=c.get("is_current", False)) for c in companies],
+            onchange="location='/switch-company/'+this.value",
+            cls="cell-input cell-input--select",
+            style="max-width:320px;",
+        )
+    parts = [*notice, content]
+    if deactivated:
+        parts.append(Div(
+            H4(t("settings.deactivated_companies", lang)),
+            Table(Tbody(*[_deactivated_company_row(c, lang) for c in deactivated]), cls="detail-table"),
+            cls="companies-deactivated",
+        ))
+    return Response(to_xml(Div(*parts) if len(parts) > 1 else content), media_type="text/html")
+
+
+def _deactivated_company_row(company: dict, lang: str) -> FT:
+    """One deactivated company: Reactivate for its owner, otherwise who can do it."""
+    if company.get("role") == "owner":
+        action = Button(
+            t("btn.reactivate", lang),
+            hx_post=f"/settings/company/{company['company_id']}/reactivate",
+            hx_target="#settings-companies-list",
+            hx_swap="innerHTML",
+            cls="btn btn--secondary btn--sm",
+        )
+    else:
+        action = Span(t("settings.reactivate_ask_owner", lang), cls="settings-hint")
+    return Tr(Td(company.get("company_name", "")), Td(action))
 
 
 def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:

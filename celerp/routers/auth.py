@@ -41,6 +41,7 @@ from celerp.services.auth import (
     validate_password,
     verify_password,
 )
+from ui.i18n import t
 
 router = APIRouter()
 
@@ -317,13 +318,10 @@ async def my_companies(
     ).scalars().all()
     company_ids = [link.company_id for link in links]
     if not company_ids:
-        return {"items": [], "total": 0}
+        return {"items": [], "total": 0, "deactivated": []}
     companies_rows = (
-        await session.execute(
-            select(Company).where(Company.id.in_(company_ids), Company.is_active == True)  # noqa: E712
-        )
+        await session.execute(select(Company).where(Company.id.in_(company_ids)))
     ).scalars().all()
-    companies_by_id = {c.id: c for c in companies_rows}
     role_by_id = {link.company_id: link.role for link in links}
     result = [
         {
@@ -334,9 +332,16 @@ async def my_companies(
             "is_current": c.id == current_company_id,
         }
         for c in companies_rows
-        if c.id in role_by_id
+        if c.is_active
     ]
-    return {"items": result, "total": len(result)}
+    # Listed apart so each can be reactivated by its owner (POST /companies/me/reactivate
+    # after switching in), never offered as a company to work in.
+    deactivated = [
+        {"company_id": str(c.id), "company_name": c.name, "role": role_by_id[c.id]}
+        for c in companies_rows
+        if not c.is_active
+    ]
+    return {"items": result, "total": len(result), "deactivated": deactivated}
 
 
 @router.post("/switch-company/{company_id}")
@@ -362,8 +367,9 @@ async def switch_company(
     if not link:
         raise HTTPException(status_code=403, detail="Access to this company not granted")
     company = await session.get(Company, company_id)
-    if company is None or not company.is_active:
-        raise HTTPException(status_code=403, detail="Company is deactivated")
+    # An owner may enter their deactivated company, as at sign-in, to reactivate it.
+    if company is None or (not company.is_active and link.role != "owner"):
+        raise HTTPException(status_code=403, detail=t("error.company_deactivated_ask_owner"))
     # A company switch is a continuation of the current session: pass the snonce
     # it authenticated on so a concurrent revocation cannot be jumped over.
     return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
