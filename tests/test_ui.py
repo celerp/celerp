@@ -9727,9 +9727,24 @@ _CATALOG_FIXTURE = [
     {"id": "equipment-maintenance", "name": "Equipment Maintenance",
      "description": "Track equipment service.", "tier": "community",
      "repo": "https://github.com/celerp/celerp-module-template",
-     "author": "Celerp", "license": "MIT",
+     "author": "Celerp", "license": "MIT", "commit": "0123456789abcdef0123456789abcdef01234567",
      "data_access": "Equipment records it creates.", "network_calls": "None."},
 ]
+
+
+def _archive_host(seen: list[str]):
+    """Stands in for the module host's archive download: records each URL asked
+    for and serves a small zip body, so a test sees exactly what was fetched."""
+    import httpx
+
+    real = httpx.AsyncClient
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=b"PK\x05\x06" + b"\x00" * 18)
+
+    return patch("ui.marketplace_catalog.httpx.AsyncClient",
+                 new=lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
 
 
 class TestMarketplaceUI:
@@ -9903,6 +9918,48 @@ class TestMarketplaceUI:
         assert b"/modules/community-import" in r.content
         assert b"equipment-maintenance.zip" in r.content   # path passed to the importer
         assert b">Import<" in r.content
+
+    @pytest.mark.asyncio
+    async def test_community_download_fetches_the_commit_the_listing_pins(self, ui_client, tmp_path, monkeypatch):
+        """Download fetches the exact commit named in the community index, never the
+        repository's latest code."""
+        monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+        seen: list[str] = []
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status", new=AsyncMock(return_value={"email_verified": True})),
+            _archive_host(seen),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert seen == ["https://github.com/celerp/celerp-module-template/archive/"
+                        "0123456789abcdef0123456789abcdef01234567.zip"]
+        assert b">Downloaded<" in r.content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("commit", [None, "", "HEAD", "main", "0123456789ab"])
+    async def test_community_download_refuses_a_listing_with_no_pinned_commit(
+            self, ui_client, tmp_path, monkeypatch, commit):
+        """A listing that does not pin a full commit is refused with a plain reason and
+        nothing is fetched: there is no fallback to the latest code."""
+        monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+        entry = {k: v for k, v in _CATALOG_FIXTURE[1].items() if k != "commit"}
+        if commit is not None:
+            entry["commit"] = commit
+        seen: list[str] = []
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=([entry], False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.account_status", new=AsyncMock(return_value={"email_verified": True})),
+            _archive_host(seen),
+        ):
+            r = await ui_client.post("/modules/community-download",
+                                     data={"id": "equipment-maintenance"}, cookies=_authed())
+        assert seen == []
+        assert b">Downloaded<" not in r.content
+        assert b"/modules/community-download" in r.content   # Download button still there
+        assert "does not pin a version" in r.headers.get("HX-Trigger", "")
 
     @pytest.mark.asyncio
     async def test_community_download_failure_keeps_download_button(self, ui_client):

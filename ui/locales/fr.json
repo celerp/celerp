@@ -3114,6 +3114,7 @@
   "marketplace.community_ack": "Afficher les modules communautaires ({n}) : je comprends qu’un module communautaire est un logiciel tiers fonctionnant avec les mêmes droits d’accès que Celerp lui-même, y compris l’accès à toutes les données métier. Il est recommandé de lire le code source ou de s’assurer de la fiabilité de l’auteur avant l’installation. Effectuez d’abord une sauvegarde.",
   "marketplace.community_unverified_note": "Toutes les informations fournies dans les modules communautaires sont déclarées par les auteurs eux-mêmes et n'ont pas été vérifiées.",
   "marketplace.download_failed": "Impossible de télécharger le module. Vérifiez votre connexion et réessayez.",
+  "marketplace.download_unpinned": "La fiche de ce module ne fixe aucune version, il ne peut donc pas être téléchargé. Demandez à son auteur de mettre à jour l'index communautaire.",
   "marketplace.downloaded": "Téléchargé",
   "marketplace.import_failed": "Le module n'a pas pu être importé. Consultez le message pour plus de détails, puis réessayez.",
   "marketplace.view_page": "Afficher la page",

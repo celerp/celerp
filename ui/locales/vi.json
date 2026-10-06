@@ -3113,6 +3113,7 @@
   "marketplace.community_ack": "Hiển thị các mô-đun cộng đồng ({n}): Tôi hiểu rằng mô-đun cộng đồng là phần mềm của bên thứ ba chạy với quyền truy cập tương tự như chính Celerp, bao gồm tất cả dữ liệu kinh doanh. Nên đọc mã nguồn hoặc quyết định xem bạn có tin tưởng tác giả trước khi cài đặt. Hãy sao lưu trước.",
   "marketplace.community_unverified_note": "Tất cả thông tin được cung cấp trong các mô-đun cộng đồng đều do tác giả tự khai báo và chưa được xác minh.",
   "marketplace.download_failed": "Không thể tải xuống mô-đun. Vui lòng kiểm tra kết nối mạng và thử lại.",
+  "marketplace.download_unpinned": "Mục niêm yết của mô-đun này không chỉ định phiên bản nên không thể tải xuống. Hãy đề nghị tác giả cập nhật chỉ mục cộng đồng.",
   "marketplace.downloaded": "Đã tải xuống",
   "marketplace.import_failed": "Không thể nhập mô-đun. Xem thông báo để biết chi tiết, sau đó thử lại.",
   "marketplace.view_page": "Xem trang",

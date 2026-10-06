@@ -43,6 +43,10 @@ class TestParse:
                                "homepage": "javascript:alert(1)"}))
         assert len(mods) == 1 and "homepage" not in mods[0]
 
+    def test_pinned_commit_kept(self):
+        pin = "0123456789abcdef0123456789abcdef01234567"
+        assert mc._parse(_doc({**GOOD, "commit": pin}))[0]["commit"] == pin
+
     def test_strings_length_capped(self):
         mods = mc._parse(_doc({**GOOD, "description": "x" * 5000}))
         assert len(mods[0]["description"]) == 300
@@ -115,12 +119,12 @@ class TestCommunityDownload:
     @pytest.mark.asyncio
     async def test_download_rejects_bad_id(self):
         with pytest.raises(ValueError):
-            await mc.download_community_archive("https://github.com/a/b", "bad id!")
+            await mc.download_community_archive("https://github.com/a/b", "0" * 40, "bad id!")
 
     @pytest.mark.asyncio
     async def test_download_rejects_non_https_repo(self):
         with pytest.raises(ValueError):
-            await mc.download_community_archive("http://github.com/a/b", "ok")
+            await mc.download_community_archive("http://github.com/a/b", "0" * 40, "ok")
 
     def test_read_staged_rejects_path_outside_staging(self, _data_dir):
         outside = _data_dir / "secret.zip"
