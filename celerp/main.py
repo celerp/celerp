@@ -32,7 +32,7 @@ _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
-from ui.i18n import I18nMiddleware
+from ui.i18n import I18nMiddleware, t
 from celerp.models.base import Base
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -642,7 +642,11 @@ if settings.celerp_public_url:
 
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc) -> JSONResponse:
-    return JSONResponse(status_code=404, content={"detail": "Not found"})
+    # A route that raised its own 404 keeps its message; an unknown address gets the generic one.
+    detail = getattr(exc, "detail", None)
+    if not detail or detail == "Not Found":
+        detail = t("error.api_not_found")
+    return JSONResponse(status_code=404, content={"detail": detail})
 
 
 @app.exception_handler(Exception)
