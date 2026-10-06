@@ -1443,6 +1443,8 @@ print(json.dumps({"preloaded": preloaded, "loads": {f: f in loaded for f in fold
 _PROCESSES = ("preloaded", "fresh", "api", "ui")
 
 
+@pytest.mark.process
+@pytest.mark.timeout(120)  # four interpreters each load every default module; slower than the suite guard allows on a shared runner
 def test_module_gets_the_same_verdict_in_every_process(_modules):
     """A protected import the module's own code attempts as it activates refuses it;
     what core imports on its own behalf, and what is already loaded, do not count.
