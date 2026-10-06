@@ -236,7 +236,7 @@ class TestPremiumLicenseGate:
         from celerp.config import settings as _s
         from celerp.modules import loader as _loader
         monkeypatch.setattr(_s, "gateway_token", "")
-        monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setattr(_s, "data_dir", tmp_path / "data")
         self._make_premium_module(tmp_path)
         result = load_all(tmp_path, {"paid-mod"})
         assert result == []

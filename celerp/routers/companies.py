@@ -2283,6 +2283,13 @@ async def marketplace_install(
             status_code=422,
             detail="The downloaded package does not match the requested module.")
 
+    if is_official and not is_paid:
+        # Install is online by definition: keep the free verdict now, so the
+        # module never needs the relay to load.
+        from celerp.config import settings
+        from celerp.modules.license import record_free_verdict
+        record_free_verdict(slug, settings.data_dir)
+
     # Landed on disk: drop the staged archive and its sidecar.
     staged.unlink(missing_ok=True)
     staged.with_suffix(".json").unlink(missing_ok=True)

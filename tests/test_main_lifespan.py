@@ -65,6 +65,20 @@ def _mock_db():
 _NO_MODULES = Admission(admitted=[], refused={})
 
 
+def _verdict_fetch_spy(monkeypatch) -> dict:
+    """Stand in for the background fetch of missing free verdicts at boot."""
+    import threading
+
+    seen: dict = {"done": threading.Event()}
+
+    def _fetch(*args):
+        seen["args"] = args
+        seen["done"].set()
+
+    monkeypatch.setattr("celerp.modules.loader.fetch_missing_free_verdicts", _fetch)
+    return seen
+
+
 @pytest.mark.asyncio
 async def test_modules_ready_commit_guarded(monkeypatch):
     """A failing on_modules_ready hook does not crash boot: the raise is caught,
@@ -88,6 +102,7 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
     monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy))
+    verdicts = _verdict_fetch_spy(monkeypatch)
     # Boot's connector adoption reads the companies table; this test has no schema.
     monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", AsyncMock())
 
@@ -112,6 +127,8 @@ async def test_modules_ready_commit_guarded(monkeypatch):
 
     assert entered, "boot did not survive a failing on_modules_ready hook"
     assert rollback_spy.await_count >= 1, "the poisoned boot session was not rolled back"
+    assert verdicts["done"].wait(5), "boot did not fetch missing free verdicts"
+    assert verdicts["args"] == ("/tmp/modules-forced",)
 
 
 @pytest.mark.asyncio
@@ -138,6 +155,7 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", fire)
     monkeypatch.setattr("celerp.gateway.bootstrap.associate_partner_deployment", associate)
     monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", adopt)
+    verdicts = _verdict_fetch_spy(monkeypatch)
 
     saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
     settings.gateway_token = ""
@@ -154,6 +172,7 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
 
     fire.assert_not_awaited()
     associate.assert_not_awaited()
+    assert not verdicts["done"].is_set()
     adopt.assert_awaited_once()
 
 

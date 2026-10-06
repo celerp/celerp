@@ -241,7 +241,8 @@ def _relay_identity(monkeypatch, data_dir: Path, detail: dict | None = None,
     monkeypatch.setattr(settings, "gateway_token", "test-gateway-token" if activated else "")
     monkeypatch.setattr(settings, "gateway_http_url", "https://relay.invalid")
     monkeypatch.setattr(celerp.config, "ensure_instance_id", lambda: "instance-1")
-    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    monkeypatch.delenv("DATA_DIR", raising=False)
     monkeypatch.setattr("urllib.request.urlopen", _urlopen)
     if activated:
         monkeypatch.setattr(loader, "exchange_api_key_for_jwt", lambda *a, **k: "jwt")
@@ -2182,6 +2183,79 @@ def test_never_activated_install_refuses_with_no_verdict_while_the_relay_is_away
     assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
 
 
+def test_licence_cache_lives_in_the_celerp_data_dir(_modules, tmp_path, monkeypatch):
+    """The desktop app sets only CELERP_DATA_DIR; every licence cache must live
+    there, so a free official module still loads after a restart offline."""
+    data = tmp_path / "celerp-data"
+    calls = _relay_identity(monkeypatch, data, _FREE)
+    monkeypatch.setenv("CELERP_DATA_DIR", str(data))
+    seen = {}
+    monkeypatch.setattr(loader, "check_license",
+                        lambda **kw: seen.setdefault("cache_dir", kw["cache_dir"]) and False)
+    free, paid = f"celerp-{_uid()}", f"celerp-{_uid()}"
+    _write_module(_modules, free, {"name": free, "version": "1.0.0"})
+    _write_module(_modules, paid, {"name": paid, "version": "1.0.0"})
+    (_modules / paid / PREMIUM_MARKER).write_text("")
+
+    admission = loader.admit_modules(_modules, {free, paid})
+    assert [m.name for m in admission.admitted] == [free]
+    assert (data / "license_cache" / f"{free}.free.json").is_file()
+    assert Path(seen["cache_dir"]) == data
+
+    # A restart with the relay out of reach.
+    calls = _relay_identity(monkeypatch, data)
+    monkeypatch.setenv("CELERP_DATA_DIR", str(data))
+    assert [m.name for m in loader.admit_modules(_modules, {free}).admitted] == [free]
+    assert calls["detail"] == []
+
+
+def test_first_offline_start_without_a_verdict_refuses_until_the_relay_answers(
+        _modules, tmp_path, monkeypatch):
+    """A free official module installed before verdicts were recorded, first
+    started offline: there is no verdict to trust, so it is refused with the
+    licence reason; the next start that reaches the Marketplace loads it."""
+    data = tmp_path / "data"
+    _relay_identity(monkeypatch, data, activated=False)
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
+
+    _relay_identity(monkeypatch, data, _FREE, activated=False)
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+
+
+def test_startup_fetches_missing_verdicts_for_installed_celerp_modules(
+        _modules, tmp_path, monkeypatch):
+    """Every installed celerp- module that is not a default and has no verdict
+    gets one while online, enabled or not, so it loads later offline."""
+    data = tmp_path / "data"
+    calls = _relay_identity(monkeypatch, data, _FREE, activated=False)
+    fresh, known, other = f"celerp-{_uid()}", f"celerp-{_uid()}", f"acme-{_uid()}"
+    for name in (fresh, known, other):
+        _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    (data / "license_cache").mkdir(parents=True)
+    (data / "license_cache" / f"{known}.free.json").write_text('{"free": true}')
+
+    loader.fetch_missing_free_verdicts(str(_modules))
+
+    assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{fresh}"]
+    assert (data / "license_cache" / f"{fresh}.free.json").is_file()
+
+
+def test_startup_fetch_leaves_defaults_and_the_premium_tree_alone(tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data", _FREE, activated=False)
+    premium = tmp_path / "premium_modules"
+    name = f"celerp-{_uid()}"
+    _write_module(premium, name, {"name": name, "version": "1.0.0"})
+    default = sorted(loader.first_party_names())[0]
+    _write_module(premium, default, {"name": default, "version": "1.0.0"})
+
+    loader.fetch_missing_free_verdicts(str(premium))
+
+    assert calls["detail"] == []
+
+
 def test_default_names_are_not_licence_checked(tmp_path):
     """Control: the defaults Celerp ships load without a relay round trip."""
     def _no_relay():
@@ -2197,13 +2271,11 @@ async def test_celerp_module_restored_from_a_backup_needs_a_licence(tmp_path, mo
     import tarfile
 
     from celerp import __version__
-    from celerp.config import settings
     from celerp.services import backup_import
 
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
     modules = tmp_path / "modules"
     monkeypatch.setenv("MODULE_DIR", str(modules))
-    _relay_identity(monkeypatch, tmp_path / "data", _PAID)
+    _relay_identity(monkeypatch, tmp_path, _PAID)
     name = f"celerp-{_uid()}"
     meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
                        "created_at": "2026-10-06T00:00:00Z", "company_name": "T"}).encode()
