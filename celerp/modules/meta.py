@@ -25,7 +25,7 @@ META_FILENAME = ".celerp-meta.json"
 # loader), never by a sidecar.
 IMPORT_SOURCES = {"community", "sideloaded"}
 
-# Every source the module list reports; any other sidecar value reads as "sideloaded".
+# Every source the module list reports; a sidecar without one reads as "sideloaded".
 SOURCES = IMPORT_SOURCES | {"marketplace"}
 
 
@@ -41,11 +41,20 @@ def write_meta(pkg_dir: Path, *, source: str) -> None:
 
 
 def read_meta(pkg_dir: Path) -> dict:
-    """Return the sidecar contents, or ``{}`` if it is missing, unreadable or not
-    a JSON object."""
+    """Return the sidecar's fields that hold a value of the right type: ``source``
+    when it is one of :data:`SOURCES`, ``installed_at`` when it is a string. Any
+    other field or value is left out, as is the whole file when it is missing,
+    unreadable or not a JSON object."""
     path = Path(pkg_dir) / META_FILENAME
     try:
         meta = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    return meta if isinstance(meta, dict) else {}
+    if not isinstance(meta, dict):
+        return {}
+    fields = {}
+    if isinstance(meta.get("source"), str) and meta["source"] in SOURCES:
+        fields["source"] = meta["source"]
+    if isinstance(meta.get("installed_at"), str):
+        fields["installed_at"] = meta["installed_at"]
+    return fields

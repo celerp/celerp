@@ -13,7 +13,8 @@ Both funnel through the same checks, so the security posture cannot drift
 between surfaces:
   - manifest must parse (PLUGIN_MANIFEST with a valid "name")
   - the installed folder name IS the manifest name (id = folder = manifest)
-  - the "celerp-" prefix is reserved for Marketplace modules
+  - names starting "celerp-" or "celerp_", in any letter case, are reserved
+    for Marketplace modules
   - size caps, zip-slip guards, symlink rejection
   - min_celerp_version gate against the running app
   - collision refusal (existing module of the same name must be removed first)
@@ -84,8 +85,8 @@ def _validate_name(name: str, *, official: bool = False) -> None:
         raise ModuleImportError("Official module packages must use the 'celerp-' name prefix.")
     if not official and name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX)):
         raise ModuleImportError(
-            "The 'celerp-' name prefix is reserved for Marketplace modules. A module of "
-            "your own needs a name without the 'celerp-' prefix."
+            "Names starting with 'celerp-' or 'celerp_', in any letter case, are reserved "
+            "for Marketplace modules. A module of your own needs a different name."
         )
 
 

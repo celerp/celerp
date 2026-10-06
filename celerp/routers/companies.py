@@ -1668,7 +1668,7 @@ async def list_modules(
         first_party_names, is_core_folded, is_first_party, is_running, load_errors,
         loaded_modules, read_manifest_metadata,
     )
-    from celerp.modules.meta import SOURCES, read_meta
+    from celerp.modules.meta import read_meta
     from celerp.modules.registry import company_modules
 
     company = await session.get(Company, company_id)
@@ -1708,17 +1708,15 @@ async def list_modules(
                 # content (its digest matches the committed first-party lock), not
                 # by name or sidecar, and never carries an install time (the desktop
                 # app re-seeds them on every version bump). A non-default folder
-                # with no sidecar (a pre-existing import) falls back to its
-                # folder ctime so ordering still has something to sort on.
+                # whose sidecar holds no install time (a pre-existing import) falls
+                # back to its folder ctime so ordering still has something to sort on.
                 is_default = is_first_party(pkg_path)
                 if is_default:
                     source = "default"
                     installed_at = None
                 else:
                     meta = read_meta(pkg_path)
-                    source = meta.get("source")
-                    if source not in SOURCES:
-                        source = "sideloaded"
+                    source = meta.get("source", "sideloaded")
                     installed_at = meta.get("installed_at")
                     if installed_at is None:
                         ctime = pkg_path.stat().st_ctime

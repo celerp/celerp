@@ -1009,6 +1009,48 @@ def test_celerp_module_cannot_take_the_package_of_a_module_not_installed(_module
     assert _NOT_ITS_PACKAGE.format(package) in admission.refused[name]
 
 
+def test_celerp_module_cannot_take_the_package_of_another_spelling(_modules):
+    # Marketplace names use '-' only, so celerp_zz_q is the package of celerp-zz-q
+    # and never of a copy named celerp-zz_q.
+    u = _uid()
+    copy, package = f"celerp-zz_q{u}", f"celerp_zz_q{u}"
+    _write_module(_modules, copy, {"name": copy, "version": "1.0.0"},
+                  {f"{package}/__init__.py": ""})
+
+    admission = loader.admit_modules(str(_modules), {copy})
+
+    assert admission.admitted == []
+    assert _NOT_ITS_PACKAGE.format(package) in admission.refused[copy]
+
+
+def test_marketplace_module_keeps_its_package_beside_another_spelling(_modules):
+    u = _uid()
+    real, copy, package = f"celerp-zz-q{u}", f"celerp-zz_q{u}", f"celerp_zz_q{u}"
+    install_from_zip(_official_zip(real, {f"{package}/__init__.py": ""}),
+                     official=True, source="marketplace")
+    _write_module(_modules, copy, {"name": copy, "version": "1.0.0"},
+                  {f"{package}/__init__.py": ""})
+
+    admission = loader.admit_modules(str(_modules), {real, copy})
+
+    assert [a.name for a in admission.admitted] == [real]
+
+
+@pytest.mark.parametrize("shipped", ["{}.pyc", "{}.abi3.so", "{}/__init__.pyc"],
+                         ids=["compiled_file", "extension", "compiled_package"])
+def test_celerp_package_without_source_is_checked_like_a_source_one(shipped, _modules):
+    name, package = f"celerp-aaa{_uid()}", f"celerp_zzz{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"}, {})
+    target = _modules / name / shipped.format(package)
+    target.parent.mkdir(exist_ok=True)
+    target.write_bytes(b"")
+
+    assert package in loader._import_roots(name, _modules / name)
+    admission = loader.admit_modules(str(_modules), {name})
+    assert admission.admitted == []
+    assert _NOT_ITS_PACKAGE.format(package) in admission.refused[name]
+
+
 # ── A1 at load: a refused module's own code never runs ───────────────────────
 
 
