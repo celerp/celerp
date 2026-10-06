@@ -1387,29 +1387,43 @@ _CORE_SERVICES = ("celerp.services.company_files", "celerp.services.company_back
                   "celerp.services.company_backup_files", "celerp.services.company_reset",
                   "celerp.services.migrations", "celerp.routers.company_backup")
 
-# What a third-party module's own code does as it activates, and whether it loads.
+# What a third-party module's own code does as it activates, and whether it loads
+# (True) or the text its refusal names.
+_AI = "protected BSL internals (celerp.ai)"
+_CREDENTIALS = "protected BSL internals (celerp.credentials)"
+_ISSUERS = ("issue_token_pair", "create_access_token", "create_refresh_token")
 _ACTIVATIONS = {
-    "direct-import": ("import celerp.ai.llm  # noqa: F401\n", {}, False),
-    "computed-import": ("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n", {}, False),
-    "computed-builtin-import": ("__import__('celerp.' + 'ai.llm')\n", {}, False),
-    "computed-importlib-import": ("import importlib\nimportlib.__import__('celerp.' + 'ai.llm')\n", {}, False),
+    "direct-import": ("import celerp.ai.llm  # noqa: F401\n", {}, _AI),
+    "computed-import": ("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-builtin-import": ("__import__('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-importlib-import": ("import importlib\nimportlib.__import__('celerp.' + 'ai.llm')\n", {}, _AI),
     "computed-import-in-own-submodule": (
         "from .reach import VALUE  # noqa: F401\n",
-        {"reach.py": "import importlib\nllm = importlib.import_module('celerp.' + 'ai.llm')\nVALUE = 1\n"}, False),
+        {"reach.py": "import importlib\nllm = importlib.import_module('celerp.' + 'ai.llm')\nVALUE = 1\n"}, _AI),
     "computed-import-in-a-class-body": (
-        "import importlib\nclass C:\n    llm = importlib.import_module('celerp.' + 'ai.llm')\n", {}, False),
+        "import importlib\nclass C:\n    llm = importlib.import_module('celerp.' + 'ai.llm')\n", {}, _AI),
     "computed-import-in-a-default": (
-        "import importlib\ndef f(llm=importlib.import_module('celerp.' + 'ai.llm')):\n    return llm\n", {}, False),
+        "import importlib\ndef f(llm=importlib.import_module('celerp.' + 'ai.llm')):\n    return llm\n", {}, _AI),
     "computed-import-on-a-thread": (
         "import importlib, threading\nt = threading.Thread(target=lambda: importlib.import_module('celerp.' + 'ai.llm'))\n"
-        "t.start()\nt.join()\n", {}, False),
+        "t.start()\nt.join()\n", {}, _AI),
     "computed-import-in-a-thread-pool": (
         "import importlib\nfrom concurrent.futures import ThreadPoolExecutor\nwith ThreadPoolExecutor(1) as pool:\n"
         "    try:\n        pool.submit(importlib.import_module, 'celerp.' + 'ai.llm').result()\n"
-        "    except ImportError:\n        pass\n", {}, False),
+        "    except ImportError:\n        pass\n", {}, _AI),
     "computed-import-through-asyncio-to-thread": (
         "import asyncio, importlib\ntry:\n    asyncio.run(asyncio.to_thread(importlib.import_module, 'celerp.' + 'ai.llm'))\n"
-        "except ImportError:\n    pass\n", {}, False),
+        "except ImportError:\n    pass\n", {}, _AI),
+    **{f"credential-issuer-{name}": (f"from celerp.credentials import {name}  # noqa: F401\n", {}, _CREDENTIALS)
+       for name in _ISSUERS},
+    **{f"issuer-at-its-old-path-{name}": (
+        f"from celerp.services.auth import {name}  # noqa: F401\n", {}, f"cannot import name {name!r}")
+       for name in _ISSUERS},
+    "credential-wrapper-at-its-old-path": (
+        "from celerp.routers.company_backup import _tokens  # noqa: F401\n", {}, "cannot import name '_tokens'"),
+    "login-wrapper-at-its-old-path": (
+        "from celerp.routers.auth import _issue_login_tokens  # noqa: F401\n", {},
+        "cannot import name '_issue_login_tokens'"),
     "own-submodule": ("from .helper import VALUE  # noqa: F401\n", {"helper.py": "VALUE = 1\n"}, True),
     "unusual-import-arguments": (
         "__import__('os', 5)\nclass F:\n    def __iter__(self):\n        raise RuntimeError('no names')\n"
@@ -1499,13 +1513,13 @@ def test_module_gets_the_same_verdict_in_every_process(_modules, tmp_path):
     assert results["preloaded"]["preloaded"] and results["api"]["preloaded"]
     assert not results["fresh"]["preloaded"]
     assert results["ui"]["ui_routes"]
-    expected = {case: loads for case, (_, _, loads) in _ACTIVATIONS.items()}
+    expected = {case: verdict is True for case, (_, _, verdict) in _ACTIVATIONS.items()}
     for process, result in results.items():
         assert {folders[f]: v for f, v in result["loads"].items()} == expected, (process, result["errors"])
         assert result["default_errors"] == {}, process
     for folder, case in folders.items():
         if not expected[case]:
-            assert "celerp.ai" in results["fresh"]["errors"][folder]
+            assert _ACTIVATIONS[case][2] in results["fresh"]["errors"][folder], case
 
 
 def test_core_import_on_another_thread_is_not_charged_to_an_activating_module(_modules):
@@ -1533,6 +1547,56 @@ def test_core_import_on_another_thread_is_not_charged_to_an_activating_module(_m
         del builtins._acme_started, builtins._acme_release
 
     assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
+
+
+def test_core_executor_job_during_an_activation_is_not_charged_to_the_module(_modules):
+    """While a module's activation is held, a core thread-pool job imports a
+    protected internal; the module did not start that work, so it still loads."""
+    import importlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    started, release = threading.Event(), threading.Event()
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude="import builtins\nbuiltins._acme_started.set()\nbuiltins._acme_release.wait(10)\n")
+    import builtins
+    builtins._acme_started, builtins._acme_release = started, release
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(loaded=loader.load_all(str(_modules), {folder})))
+    try:
+        worker.start()
+        assert started.wait(10)
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(importlib.import_module, "celerp.ai.llm").result(10)
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        del builtins._acme_started, builtins._acme_release
+
+    assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
+
+
+@pytest.mark.parametrize("other_state", ["disabled", "refused"])
+def test_protected_import_in_another_installed_modules_file_refuses_the_module(_modules, other_state):
+    """A file in any installed third-party module's folder is module code, whether
+    that module is enabled or not: a protected import it makes while a module
+    activates and runs it refuses the activating module."""
+    other = f"acme-other-{_uid()}"
+    _write_module(_modules, other, {"name": other, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  files={"reach.py": "import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n"},
+                  init_prelude="import celerp.ai.llm  # noqa: F401\n" if other_state == "refused" else "")
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude=f"import os, runpy\nrunpy.run_path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "
+                               f"{other!r}, 'reach.py'))\n")
+
+    loader.load_all(str(_modules), {folder, other} if other_state == "refused" else {folder})
+
+    assert not loader.is_running(folder)
+    assert not loader.is_running(other)
+    assert _AI in loader.load_errors()[folder]
 
 
 def test_protected_import_in_a_symlinked_own_file_refuses_the_module(_modules, tmp_path):

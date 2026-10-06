@@ -14,15 +14,11 @@ runs nothing.
 
 Protected internals
 -------------------
-An admission and licensing rule, not a sandbox: a third-party module's own code
-must not import protected BSL internals (_PROTECTED_BSL_INTERNALS). Admission
-scans its source for such imports, and a protected import its code attempts while
-the module activates refuses it, whether or not the internal was already loaded.
-A module that breaks the rule is rejected with a clear error that names the
-violation and links to the license and the sanctioned alternative.
-
-Module authors who need AI should use celerp.modules.api (public, BSL) —
-NOT celerp.ai.* directly.
+Protected BSL internals (_PROTECTED_BSL_INTERNALS), among them the AI internals
+and credential issuance, are unsupported for third-party modules. Module authors
+use celerp.modules.api (public, BSL) instead. A module found importing a
+protected internal is refused with a clear error that names the violation and
+links to the license and the sanctioned alternative.
 
 Startup sequence
 ----------------
@@ -47,6 +43,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import contextvars
 import copy
 import fnmatch
 import functools
@@ -62,6 +59,7 @@ import re
 import shutil
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,12 +84,14 @@ from celerp.services.permissions import is_permission_key
 log = logging.getLogger(__name__)
 
 # First-party BSL internals that third-party modules are not allowed to import
-# (licensing boundary). Module authors use celerp.modules.api instead.
+# (admission policy): the licensing boundary and credential issuance. Module
+# authors use celerp.modules.api instead.
 _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.session_gate",
     "celerp.ai",
     "celerp.gateway",
     "celerp.connectors",
+    "celerp.credentials",
 })
 
 _BSL_DOCS_URL = "https://celerp.com/licenses/bsl"
@@ -1141,10 +1141,12 @@ def load_all(
     Returns:
         List of successfully loaded PLUGIN_MANIFEST dicts.
     """
+    global _module_dirs
     _loaded.clear()
     _load_errors.clear()
     _admitted.clear()
     _module_routes.clear()
+    _module_dirs = tuple(e.strip() for e in str(module_dir).split(",") if e.strip())
     # Every core table is on the metadata before any module code runs, so a table
     # a module adds is told apart from one it merely caused to be imported.
     import celerp.models  # noqa: F401
@@ -1329,37 +1331,73 @@ def admitted_module_root(import_name: str) -> Path | None:
     return next((m.path for m in _admitted.values() if top in _import_roots(m.name, m.path)), None)
 
 
-# Each third-party module activating now, on any thread: its folder and the
-# protected internals its own code has tried to import meanwhile.
-_activations: list[tuple[Path, set[str]]] = []
+# The module directories the last load_all was given.
+_module_dirs: tuple[str, ...] = ()
+
+
+def _owning_module(filename: str) -> Path | None:
+    """The installed third-party module folder the source file *filename* sits in,
+    enabled or not, by its own path or by the file it links to; None for a file
+    outside every module folder and for a first-party module whose content matches
+    its lock. Module folders are the folders holding an ``__init__.py`` directly
+    in a module directory."""
+    roots = dict.fromkeys(e.strip() for e in (*_module_dirs, *module_search_path().split(",")) if e.strip())
+    for resolve in (os.path.abspath, os.path.realpath):
+        path = Path(resolve(filename))
+        for root in map(Path, map(resolve, roots)):
+            parts = path.relative_to(root).parts if path.is_relative_to(root) else ()
+            if len(parts) < 2:
+                continue
+            folder = root / parts[0]
+            if (folder / "__init__.py").is_file() and not is_first_party(folder):
+                return folder
+    return None
+
+
+# The protected internals the module activation whose code runs in this context
+# has tried to import; work its code hands to a thread or a thread pool carries
+# it along (_handed_over).
+_activation: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar("_activation", default=None)
+# Every activation in progress, on any thread. The guards are installed while any is.
+_live: list[set[str]] = []
 _guard_lock = threading.Lock()
-_unguarded = (builtins.__import__, importlib.import_module, importlib.__import__)
+_unguarded = (builtins.__import__, importlib.import_module, importlib.__import__,
+              threading.Thread.start, ThreadPoolExecutor.submit)
 
 
-def _owned_by(filename: str, root: Path) -> bool:
-    """True when the file *filename* sits in the module folder *root*, by its own
-    path or by the file it links to."""
-    return Path(os.path.abspath(filename)).is_relative_to(os.path.abspath(root)) or _inside(Path(filename), root)
+def _run_handed_over(fn, *args, **kwargs):
+    """Run work an activating module's code handed to another thread."""
+    return fn(*args, **kwargs)
+
+
+def _module_frame(frame) -> bool:
+    """True when the first caller from *frame* outward that is not the standard
+    library is module code (_owning_module) or work module code handed over."""
+    while frame is not None:
+        code = frame.f_code
+        if code is _run_handed_over.__code__ or _owning_module(code.co_filename):
+            return True
+        if str(frame.f_globals.get("__name__")).partition(".")[0] not in sys.stdlib_module_names:
+            return False
+        frame = frame.f_back
+    return False
+
+
+def _running_activation() -> set[str] | None:
+    activation = _activation.get()
+    return activation if any(a is activation for a in _live) else None
 
 
 def _charge_import(name: str, frame, package=None, fromlist=()) -> None:
-    """Refuse an import of a protected internal asked for by an activating module's
-    own code: the first caller outside the standard library is in its folder, or
-    only the standard library is calling, as on a worker thread it was handed to."""
-    activations = list(_activations)
-    if not activations:
+    """Refuse an import of a protected internal that module code asks for while
+    its module activates, on the activating thread or in work it handed over."""
+    activation = _running_activation()
+    if activation is None:
         return
     name = importlib.util.resolve_name(name, package) if name.startswith(".") else name
     hit = next(filter(None, map(_protected_hit, [name, *(f"{name}.{f}" for f in fromlist)])), None)
-    if not hit:
-        return
-    while frame and str(frame.f_globals.get("__name__")).partition(".")[0] in sys.stdlib_module_names:
-        frame = frame.f_back
-    charged = [attempted for root, attempted in activations
-               if frame is None or _owned_by(frame.f_code.co_filename, root)]
-    for attempted in charged:
-        attempted.add(hit)
-    if charged:
+    if hit and _module_frame(frame):
+        activation.add(hit)
         raise ImportError(f"{hit} is not available to modules: {_MODULE_AI_API_URL}")
 
 
@@ -1378,30 +1416,54 @@ def _guarded_import_module(name, package=None):
     return _unguarded[1](name, package)
 
 
+def _handed_over(fn, frame):
+    """*fn* bound to the running activation when module code calling from *frame*
+    hands it to another thread; None for any other caller."""
+    if _running_activation() is None or not _module_frame(frame):
+        return None
+    return functools.partial(contextvars.copy_context().run, _run_handed_over, fn)
+
+
+def _guarded_thread_start(self):
+    work = _handed_over(self.run, sys._getframe(1))
+    if work is not None:
+        self.run = work
+    return _unguarded[3](self)
+
+
+def _guarded_submit(self, fn, /, *args, **kwargs):
+    return _unguarded[4](self, _handed_over(fn, sys._getframe(1)) or fn, *args, **kwargs)
+
+
 @contextmanager
 def _activating(pkg_name: str, pkg_path: Path, *, trusted: bool):
     """Run part of a third-party module's activation (its import, slot and route
-    setup). A protected import its own code attempts meanwhile refuses the module."""
+    setup). A protected import module code attempts meanwhile refuses the module."""
     global _unguarded
     if trusted:
         yield
         return
-    activation: tuple[Path, set[str]] = (pkg_path, set())
+    activation: set[str] = set()
     with _guard_lock:
-        if not _activations:
-            _unguarded = (builtins.__import__, importlib.import_module, importlib.__import__)
+        if not _live:
+            _unguarded = (builtins.__import__, importlib.import_module, importlib.__import__,
+                          threading.Thread.start, ThreadPoolExecutor.submit)
             builtins.__import__, importlib.import_module = _guarded_import, _guarded_import_module
             importlib.__import__ = _guarded_import
-        _activations.append(activation)
+            threading.Thread.start, ThreadPoolExecutor.submit = _guarded_thread_start, _guarded_submit
+        _live.append(activation)
+    token = _activation.set(activation)
     try:
         yield
     finally:
+        _activation.reset(token)
         with _guard_lock:
-            _activations[:] = [a for a in _activations if a is not activation]
-            if not _activations:
-                builtins.__import__, importlib.import_module, importlib.__import__ = _unguarded
-        if activation[1]:
-            raise ModuleLoadError(_bsl_violation_message(pkg_name, activation[1]))
+            _live[:] = [a for a in _live if a is not activation]
+            if not _live:
+                (builtins.__import__, importlib.import_module, importlib.__import__,
+                 threading.Thread.start, ThreadPoolExecutor.submit) = _unguarded
+        if activation:
+            raise ModuleLoadError(_bsl_violation_message(pkg_name, activation))
 
 
 def _evict_module(pkg_name: str) -> None:
