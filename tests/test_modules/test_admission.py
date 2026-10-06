@@ -18,7 +18,6 @@ from __future__ import annotations
 import ast
 import io
 import json
-import shutil
 import sys
 import uuid
 import zipfile
@@ -29,10 +28,7 @@ import httpx
 import pytest
 
 from celerp.modules import loader, slots
-from celerp.modules.importer import (
-    MARKETPLACE_RECORD, PREMIUM_MARKER, install_from_zip, marketplace_installs, remove_module_dir,
-)
-from celerp.modules.meta import write_meta
+from celerp.modules.importer import PREMIUM_MARKER, install_from_zip
 
 
 @pytest.fixture(autouse=True)
@@ -134,10 +130,6 @@ async def test_admitted_module_migration_runs(_db_engine, _modules, tmp_path):
 
 def _case_name_mismatch(base, marker, monkeypatch):
     return _migrating_module(base, f"acme-{_uid()}", marker, name=f"acme-other-{_uid()}"), "folder"
-
-
-def _case_reserved_prefix(base, marker, monkeypatch):
-    return _migrating_module(base, f"celerp-{_uid()}", marker), "install it again from the Marketplace"
 
 
 def _case_min_version(base, marker, monkeypatch):
@@ -771,7 +763,6 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_lineage_guard_decorated,
     _case_api_setup_decorated,
     _case_name_mismatch,
-    _case_reserved_prefix,
     _case_min_version,
     _case_missing_table_prefix,
     _case_migrations_absolute_path,
@@ -938,99 +929,53 @@ def _official_zip(name: str) -> bytes:
     return buf.getvalue()
 
 
-def _copied_by_hand(base: Path, name: str) -> Path:
-    """An official-looking package placed in the module directory without the
-    Marketplace, carrying the sidecar a Marketplace install writes."""
-    pkg = _write_module(base, name, {"name": name, "version": "1.0.0"})
-    write_meta(pkg, source="marketplace")
-    return pkg
-
-
-def _admitted(base: Path, *names: str) -> list[str]:
-    return [a.name for a in loader.admit_modules(str(base), set(names)).admitted]
-
-
-_REINSTALL = "install it again from the Marketplace"
-
-
 def test_marketplace_install_keeps_reserved_prefix(_modules):
     """The reserved prefix is the importer's rule, not a blanket ban: a module the
     Marketplace installed as official keeps its celerp- name."""
     name = f"celerp-{_uid()}"
     install_from_zip(_official_zip(name), official=True, source="marketplace")
 
-    assert _admitted(_modules, name) == [name]
+    assert [a.name for a in loader.admit_modules(str(_modules), {name}).admitted] == [name]
 
 
-def test_official_module_changed_after_install_is_refused(_modules):
+def test_celerp_module_copied_in_by_hand_loads(_modules):
+    name, inner = f"celerp-{_uid()}", f"celerp_{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0", "api_routes": f"{inner}.api"},
+                  {f"{inner}/__init__.py": "", f"{inner}/api.py": "def setup_api_routes(app):\n    pass\n"})
+
+    admission = loader.admit_modules(str(_modules), {name})
+
+    assert admission.refused == {}
+    assert [(a.name, a.first_party) for a in admission.admitted] == [(name, False)]
+    loader.load_all(str(_modules), {name}, admission=admission)
+    assert loader.is_running(name), loader.load_errors()
+
+
+@pytest.mark.parametrize("case", [_case_protected_import_in_init, _case_in_production_not_first_party],
+                         ids=lambda c: c.__name__.removeprefix("_case_"))
+def test_celerp_name_carries_no_first_party_allowance(case, _modules, tmp_path, monkeypatch):
+    pkg, reason = case(_modules, tmp_path / "ran.txt", monkeypatch)
     name = f"celerp-{_uid()}"
-    install_from_zip(_official_zip(name), official=True, source="marketplace")
-    (_modules / name / "extra.py").write_text("x = 1\n")
+    init = pkg / "__init__.py"
+    init.write_text(init.read_text().replace(repr(pkg.name), repr(name)))
+    pkg = pkg.rename(_modules / name)
 
     admission = loader.admit_modules(str(_modules), {name})
 
     assert admission.admitted == []
-    assert _REINSTALL in admission.refused[name]
+    assert reason in admission.refused[name]
 
 
-def test_removed_official_module_copied_back_by_hand_is_refused(_modules, tmp_path):
+def test_celerp_module_copied_in_by_hand_cannot_take_a_default_modules_package(_modules):
     name = f"celerp-{_uid()}"
-    install_from_zip(_official_zip(name), official=True, source="marketplace")
-    kept = tmp_path / "kept"
-    shutil.copytree(_modules / name, kept)
-    remove_module_dir(name)
-    shutil.copytree(kept, _modules / name)
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"},
+                  {"celerp_inventory/__init__.py": ""})
+    module_dir = f"{_modules},{loader.BUNDLED_SOURCE_DIR}"
 
-    assert _admitted(_modules, name) == []
+    admission = loader.admit_modules(module_dir, {name, "celerp-inventory"})
 
-
-@pytest.mark.parametrize("with_record", [False, True])
-def test_reserved_module_never_becomes_official_from_its_own_files(_modules, with_record):
-    """A celerp- folder whose own files say it came from the Marketplace is not
-    taken as one, whether or not the directory has recorded an install yet."""
-    if with_record:
-        install_from_zip(_official_zip(f"celerp-{_uid()}"), official=True, source="marketplace")
-    copied = _copied_by_hand(_modules, f"celerp-{_uid()}").name
-
-    for _ in range(2):
-        admission = loader.admit_modules(str(_modules), {copied})
-        assert admission.admitted == []
-        assert _REINSTALL in admission.refused[copied]
-        assert "without the 'celerp-' prefix" in admission.refused[copied]
-    assert copied not in marketplace_installs(_modules)
-
-
-def test_marketplace_install_is_recorded(_modules):
-    name = f"celerp-{_uid()}"
-    install_from_zip(_official_zip(name), official=True, source="marketplace")
-
-    assert marketplace_installs(_modules) == {
-        name: loader.module_content_digest(_modules / name)}
-
-
-def test_refused_module_installed_again_from_the_marketplace_loads(_modules):
-    name = f"celerp-{_uid()}"
-    _copied_by_hand(_modules, name)
-    assert _admitted(_modules, name) == []
-
-    remove_module_dir(name)
-    install_from_zip(_official_zip(name), official=True, source="marketplace")
-
-    assert _admitted(_modules, name) == [name]
-
-
-@pytest.mark.parametrize("record", [None, "{not json", "[]"])
-def test_missing_or_unreadable_record_grants_nothing(_modules, record):
-    name = f"celerp-{_uid()}"
-    install_from_zip(_official_zip(name), official=True, source="marketplace")
-    path = _modules / MARKETPLACE_RECORD
-    if record is None:
-        path.unlink()
-    else:
-        path.write_text(record)
-
-    assert _admitted(_modules, name) == []
-    assert marketplace_installs(_modules) == {}
+    assert [a.name for a in admission.admitted] == ["celerp-inventory"]
+    assert "'celerp-inventory' also ships 'celerp_inventory'" in admission.refused[name]
 
 
 # ── A1 at load: a refused module's own code never runs ───────────────────────
@@ -1041,11 +986,11 @@ def _init_marker_module(base: Path, folder: str, marker: Path, manifest: dict,
     return _write_module(base, folder, manifest, files, init_prelude=_marker_line(marker))
 
 
-@pytest.mark.parametrize("variant", ["name_mismatch", "reserved_prefix", "route_outside",
+@pytest.mark.parametrize("variant", ["name_mismatch", "route_outside",
                                      "protected_import_in_slot_module"])
 def test_load_all_refuses_before_import(variant, _modules, tmp_path):
     marker = tmp_path / "imported.txt"
-    folder = f"celerp-{_uid()}" if variant == "reserved_prefix" else f"acme-{_uid()}"
+    folder = f"acme-{_uid()}"
     inner = f"acme_{_uid()}"
     manifest = {"name": folder, "version": "1.0.0"}
     files: dict[str, str] = {f"{inner}/__init__.py": ""}
