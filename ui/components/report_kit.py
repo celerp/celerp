@@ -120,7 +120,7 @@ def plain_error_response(e: APIError):
     if e.status == 403:
         return PlainTextResponse(t("acct.not_authorized"), status_code=403)
     status = e.status if 400 <= e.status < 500 else 500
-    return PlainTextResponse(f"{t('shell.error_prefix')} {e.detail}", status_code=status)
+    return PlainTextResponse(str(e.detail), status_code=status)
 
 
 def date_params(d_from: str, d_to: str) -> dict:

@@ -86,7 +86,7 @@ async def _check_missing_jes(
         try:
             require_doc_rate(state, base_currency)
         except ValueError as exc:
-            return f"{exc}. Set the document exchange rate to continue."
+            return str(exc)
         if payment is None:
             return None
         raw = payment.get("conversion_rate")

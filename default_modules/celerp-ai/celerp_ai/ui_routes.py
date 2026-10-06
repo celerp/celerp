@@ -365,7 +365,7 @@ def setup_ui_routes(app) -> None:
         try:
             job = await api.ai_batch_status(token, session_token, job_id)
         except APIError as e:
-            return _msg_bubble("ai", _api_error_text(e, lang), error=True)
+            return _msg_bubble("ai", _api_error_text(e), error=True)
         if job.get("status") != "completed":
             return _job_bubble(job, conversation_id, lang)
 
@@ -374,7 +374,7 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return (
                 _job_done_line(job, lang),
-                _msg_bubble("ai", _api_error_text(e, lang), error=True),
+                _msg_bubble("ai", _api_error_text(e), error=True),
             )
         message_id = str(result.get("message_id", ""))
         actions = result.get("pending_actions") or []
@@ -409,7 +409,7 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             if e.status == 409 and _api_error_code(e) == "action_not_pending":
                 return _action_panel(t("ai.action_expired", lang), ok=False)
-            return _action_panel(_api_error_text(e, lang), ok=False)
+            return _action_panel(_api_error_text(e), ok=False)
         if result.get("action_status") == "retryable":
             return _retry_action_panel(
                 conversation_id, message_id, tool_call_id,
@@ -444,7 +444,7 @@ def setup_ui_routes(app) -> None:
                 # Another tab may already have handled it. Its desired visible
                 # state is still "gone", so make dismissal idempotent in the UI.
                 return _R("")
-            return _action_panel(_api_error_text(e, get_lang(request)), ok=False)
+            return _action_panel(_api_error_text(e), ok=False)
         return _R("")
 
     @app.post("/ai/dismiss-all-ui/{conversation_id}/{message_id}")
@@ -466,7 +466,7 @@ def setup_ui_routes(app) -> None:
                 token, get_session_token(), conversation_id, message_id, selected,
             )
         except APIError as exc:
-            return _action_panel(_api_error_text(exc, get_lang(request)), ok=False)
+            return _action_panel(_api_error_text(exc), ok=False)
         return _R("", headers={"HX-Refresh": "true"})
 
     @app.post("/ai/confirm-all-ui/{conversation_id}/{message_id}")
@@ -502,7 +502,7 @@ def setup_ui_routes(app) -> None:
             if e.status == 409 and _api_error_code(e) == "action_not_pending":
                 error = t("ai.action_expired", lang)
             else:
-                error = _api_error_text(e, lang)
+                error = _api_error_text(e)
             return _confirm_tail(conversation_id, message_id, view, [], tally, lang, error=error)
         outcomes = result.get("results") or []
         tally.add(outcomes)
@@ -807,7 +807,7 @@ def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
     """
     if e.status == 429:
         return user_bubble, _msg_bubble("ai", t("ai.busy", lang))
-    return user_bubble, _msg_bubble("ai", _api_error_text(e, lang), error=True)
+    return user_bubble, _msg_bubble("ai", _api_error_text(e), error=True)
 
 
 def _load_error(message: str, lang: str = "en", *, href: str | None = None,
@@ -831,9 +831,9 @@ def _api_error_code(e: APIError) -> str:
     return ""
 
 
-def _api_error_text(e: APIError, lang: str = "en") -> str:
+def _api_error_text(e: APIError) -> str:
     detail = e.detail.get("message") or e.detail.get("code") if isinstance(e.detail, dict) else e.detail
-    return f"{t('ai.error_prefix', lang)} {detail}"
+    return str(detail)
 
 
 def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
@@ -842,7 +842,7 @@ def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
         return True, _confirm_success_text(outcome.get("data"), lang)
     error = outcome.get("error") or {}
     message = (error.get("message") or error.get("code")) if isinstance(error, dict) else str(error)
-    return False, f"{t('ai.error_prefix', lang)} {message}"
+    return False, str(message)
 
 
 def _label(key: str) -> str:
@@ -1348,7 +1348,7 @@ def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
     ok, failed, total = _job_counts(job)
     if status == "failed":
         return Div(
-            Div(f"{t('ai.job_failed', lang)} {job.get('error') or ''}".strip()),
+            Div(job.get("error") or t("ai.job_failed", lang)),
             Button(t("ai.attach_files_again", lang), type="button",
                    cls="btn btn--secondary btn--sm", onclick="celerpAiOpenFilePicker()"),
             cls="ai-msg ai-msg--ai ai-msg--error", data_job_id=job_id,

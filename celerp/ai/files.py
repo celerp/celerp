@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 
 from celerp.config import settings
+from ui.i18n import t
 
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 AGENT_UPLOAD_TYPES = frozenset({
@@ -77,17 +78,17 @@ def _file_paths_and_meta(
 ) -> tuple[Path, dict]:
     """Resolve an owned transient upload without reading its potentially large body."""
     if not isinstance(file_id, str) or not _UPLOAD_ID_RE.fullmatch(file_id):
-        raise FileNotFoundError(f"File {file_id} not found")
+        raise FileNotFoundError(t("error.file_not_found"))
     d = upload_dir()
     bin_path = d / f"{file_id}.bin"
     meta_path = d / f"{file_id}.meta"
     if not bin_path.exists() or not meta_path.exists():
-        raise FileNotFoundError(f"File {file_id} not found")
+        raise FileNotFoundError(t("error.file_not_found"))
     meta = json.loads(meta_path.read_text())
     if meta.get("company_id") != str(company_id):
-        raise PermissionError(f"File {file_id} not accessible")
+        raise PermissionError(t("error.file_not_accessible"))
     if user_id is not None and meta.get("user_id") != str(user_id):
-        raise PermissionError(f"File {file_id} not accessible")
+        raise PermissionError(t("error.file_not_accessible"))
     return bin_path, meta
 
 

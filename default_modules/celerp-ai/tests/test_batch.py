@@ -24,7 +24,7 @@ from celerp.models.company import Company, User
 from celerp.models.ai import AIBatchJob
 from celerp.config import settings
 from celerp.ai.batch import (
-    INTERRUPTED_ERROR,
+    interrupted_error,
     MAX_BATCH_FILES,
     create_batch_job,
     fail_interrupted_jobs,
@@ -33,6 +33,7 @@ from celerp.ai.batch import (
     run_batch,
 )
 from celerp.ai.llm import ModelResult, RelayError
+from ui.i18n import t
 
 
 def _model_result(content: str, credits: int = 1) -> ModelResult:
@@ -149,7 +150,7 @@ async def test_batch_creates_job_pending(session, company, user):
 @pytest.mark.asyncio
 async def test_batch_max_files_enforced(session, company, user):
     file_ids = [f"f{i}" for i in range(MAX_BATCH_FILES + 1)]
-    with pytest.raises(ValueError, match="Maximum"):
+    with pytest.raises(ValueError, match="at most"):
         await create_batch_job(session, company.id, user.id, "too many", file_ids)
 
 
@@ -399,7 +400,7 @@ async def test_batch_total_failure_records_error(session, db_factory, company, u
     async with db_factory() as s:
         updated = await s.get(AIBatchJob, job.id)
         assert updated.status == "failed"
-        assert updated.error == "None of the files could be read."
+        assert updated.error == t("ai.job_failed")
         assert all("did not answer in time" in f["error"] for f in updated.results["files"])
 
 
@@ -418,7 +419,7 @@ async def test_interrupted_jobs_marked_failed_on_startup(session, company, user)
     for job_id in (pending.id, running.id):
         job = await session.get(AIBatchJob, job_id)
         assert job.status == "failed"
-        assert job.error == INTERRUPTED_ERROR
+        assert job.error == interrupted_error()
         assert job.completed_at is not None
     assert (await session.get(AIBatchJob, done.id)).status == "completed"
     assert await fail_interrupted_jobs(session) == 0

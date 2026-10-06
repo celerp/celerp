@@ -90,14 +90,12 @@ class AgentResult:
 
 # -- Error mapping ----------------------------------------------------------
 
-_RELAY_ERROR_TEXT = {
-    "unexpected_reply": "The AI service returned an unexpected reply. Please try again.",
-    "continuation_expired": "The conversation step expired, ask the question again.",
-    "busy": "The AI service is temporarily busy. Please try again in a moment.",
-    "gateway_error": "The AI service is temporarily unavailable. Please try again shortly.",
+_RELAY_ERROR_KEY = {
+    "unexpected_reply": "ai.err_bad_reply",
+    "continuation_expired": "ai.err_step_expired",
+    "gateway_error": "ai.err_unavailable",
 }
-_TIMEOUT_TEXT = "Celerp AI could not complete this request in time. Please try again."
-_SESSION_EXPIRED_TEXT = "Your session expired, sign in again."
+_BUSY_TEXT = "The AI service is temporarily busy. Please try again in a moment."
 
 
 class _SessionExpired(Exception):
@@ -107,17 +105,19 @@ class _SessionExpired(Exception):
 def _user_error(exc: BaseException) -> str:
     """Map an exception to user-safe text by type, never by message substring."""
     if isinstance(exc, asyncio.TimeoutError):
-        return _TIMEOUT_TEXT
+        return t("ai.err_timeout")
     if isinstance(exc, RelayError):
         if exc.code == "service_unavailable":
             return str(exc)
         if exc.code == "no_session":
             return t("error.ai_signed_out")
-        return _RELAY_ERROR_TEXT[exc.code]
+        if exc.code == "busy":
+            return _BUSY_TEXT
+        return t(_RELAY_ERROR_KEY[exc.code])
     if isinstance(exc, httpx.TimeoutException):
-        return "The AI service took too long to respond. Please try again."
+        return t("ai.err_timeout")
     if isinstance(exc, _SessionExpired):
-        return _SESSION_EXPIRED_TEXT
+        return t("error.session_expired")
     return "An unexpected error occurred. Please try again."
 
 
@@ -192,7 +192,7 @@ def _load_files(file_ids: list[str] | None, company_id: uuid.UUID, user_id: uuid
         except (FileNotFoundError, PermissionError):
             raise HTTPException(
                 status_code=404,
-                detail=f"File {fid} is no longer available, please attach it again.",
+                detail=t("error.file_gone"),
             )
     return files
 

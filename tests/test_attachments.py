@@ -516,7 +516,7 @@ async def test_bulk_refuses_an_oversized_file_without_unpacking_it(
     assert resp.status_code == 200
     by_file = {r["file"]: r for r in resp.json()["report"]}
     assert by_file["BULK-BIG.png"]["status"] == "error"
-    assert "MB limit" in by_file["BULK-BIG.png"]["detail"]
+    assert "Choose a smaller file" in by_file["BULK-BIG.png"]["detail"]
     assert by_file["BULK-OK.png"]["status"] == "ok"
     assert "BULK-BIG.png" not in opened
     assert await _item_files(client, token, big_id) == []

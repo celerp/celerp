@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+from ui.i18n import t
 
 
 # ── Exception handlers (via the live app) ────────────────────────────────────
@@ -38,7 +39,7 @@ async def test_unhandled_exception_handler_returns_500():
     assert response.status_code == 500
     import json
     body = json.loads(response.body)
-    assert body["detail"] == "Internal server error"
+    assert body["detail"] == t("error.server_error")
 
 
 @pytest.mark.asyncio
@@ -55,7 +56,7 @@ async def test_rate_limit_handler_returns_429():
     assert response.status_code == 429
     import json
     body = json.loads(response.body)
-    assert body["detail"] == "Rate limit exceeded"
+    assert body["detail"] == t("error.rate_limited")
 
 
 # ── Lifespan: gateway startup/teardown ────────────────────────────────────────

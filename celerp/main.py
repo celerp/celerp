@@ -652,7 +652,7 @@ async def not_found_handler(request: Request, exc) -> JSONResponse:
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     log_unhandled_exception(request, exc)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(status_code=500, content={"detail": t("error.server_error")})
 
 
 def _finite_or_text(value: float) -> float | str:
@@ -668,7 +668,7 @@ async def request_validation_handler(_request: Request, exc: RequestValidationEr
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
-    return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+    return JSONResponse(status_code=429, content={"detail": t("error.rate_limited")})
 
 
 @app.exception_handler(CodeConflictError)

@@ -18,6 +18,7 @@ from sqlalchemy import delete, func, select
 
 from celerp.models.payment_closure import PaymentClosure, PaymentRecovery, UnmatchedPayment, UnmatchedRefund
 from celerp.services.money import round_money, to_decimal
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def to_stripe_amount(amount, currency: str) -> int:
     if (value <= 0 or value != round_money(value, code) or scaled != scaled.to_integral_value()
             or (code in _STRIPE_WHOLE_UNITS and value != value.to_integral_value())
             or (code in _STRIPE_THREE_DECIMAL and scaled % 10)):
-        raise ValueError(f"{value} {code} cannot be paid online: Stripe cannot charge that amount exactly")
+        raise ValueError(t("error.stripe_amount", value=value, code=code))
     return int(scaled)
 
 
