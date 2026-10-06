@@ -207,7 +207,7 @@ def end_request(session: AsyncSession, authority: RequestAuthority) -> None:
         session.info.pop(AUTHORITY, None)
 
 
-def _authority_for(session: AsyncSession, company_id) -> RequestAuthority | None:
+def request_authority(session: AsyncSession, company_id) -> RequestAuthority | None:
     authority = session.info.get(AUTHORITY)
     if authority is None or str(authority.company_id) != str(company_id):
         return None
@@ -269,7 +269,7 @@ async def get_current_company_settings(
     """
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
-    authority = _authority_for(session, company_id)
+    authority = request_authority(session, company_id)
     if authority is None:
         return settings
     view = AuthoritySettings(settings)
@@ -295,7 +295,7 @@ def require_permission(key: str):
     ) -> None:
         company = await session.get(Company, company_id)
         assert_role_permission(company.settings if company else {}, role, key)
-        authority = _authority_for(session, company_id)
+        authority = request_authority(session, company_id)
         if authority is not None and authority.role == role:
             authority.keys.add(key)
 

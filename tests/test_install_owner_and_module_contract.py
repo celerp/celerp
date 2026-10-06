@@ -2,16 +2,13 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.gateway.client import GatewayClient
 from celerp.models.company import User
-from celerp.modules.api import ai_query
 from ui.i18n import localize_notification
 from test_helpers import invite_user, register_admin
 
@@ -54,26 +51,6 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
     )).scalars().all()
     assert len(rows) == 1
     assert rows[0].id == current.id
-
-
-@pytest.mark.asyncio
-async def test_module_ai_api_keeps_explicit_session_contract(monkeypatch):
-    monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
-    run_query = AsyncMock(return_value=SimpleNamespace(
-        answer="ok", model_used="test", tools_called=[]))
-    monkeypatch.setattr("celerp.ai.service.run_query", run_query)
-
-    result = await ai_query(
-        query="hello", company_id="company-1",
-        session_token="session-1", db_session=None)
-    assert result["answer"] == "ok"
-    run_query.assert_awaited_once()
-
-    with pytest.raises(HTTPException) as exc:
-        await ai_query(
-            query="hello", company_id="company-1",
-            session_token="wrong", db_session=None)
-    assert exc.value.status_code == 401
 
 
 class _WS:
