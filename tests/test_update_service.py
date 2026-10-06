@@ -226,6 +226,20 @@ def test_unreadable_state_fails_closed(cfg_dir, body):
     assert update.update_in_progress() is True
 
 
+@pytest.mark.parametrize("pending", [{"step": "migrate"}, {"from": "1.0.0", "step": "migrate"},
+                                     {"from": "1.0.0", "to": "1.1.0"}, {"from": 1, "to": "1.1.0", "step": "x"},
+                                     "migrate", ["1.0.0", "1.1.0"]], ids=repr)
+def test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed(cfg_dir, pending):
+    update.write_state({"in_progress": pending})
+    steps = FakeSteps()
+    with pytest.raises(update.UpdateStateError, match="unfinished update"):
+        update.reconcile(steps)
+    with pytest.raises(update.UpdateStateError):
+        update.run_update("1.1.0", steps)
+    assert steps.calls == []
+    assert update.update_in_progress() is True
+
+
 def test_missing_state_is_no_update(cfg_dir):
     assert update.read_state() == {}
 

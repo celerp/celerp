@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 def setup_ui_routes(app) -> None:
     """Register all inventory UI routes into the FastHTML app."""
-    from ui.routes.inventory import setup_routes
-    setup_routes(app)
+    from ui.routes import inventory, settings_inventory
+    inventory.setup_routes(app)
+    settings_inventory.setup_routes(app)
     log.info("celerp-inventory: UI routes registered")

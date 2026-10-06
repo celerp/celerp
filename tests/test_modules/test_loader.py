@@ -54,9 +54,10 @@ def _scan(pkg: Path, dotted: str) -> set[str]:
 
 
 def _load(pkg: Path, name: str, *, trusted: bool = False) -> dict:
-    """Import a module the way load_all does after admission."""
+    """Admit and import a module the way load_all does."""
     from celerp.modules import loader
-    return _load_one(pkg, name, trusted=trusted, declared=loader._declared_manifest(pkg))
+    return _load_one(pkg, name, trusted=trusted,
+                     declared=loader._admission_checks(name, pkg).manifest)
 
 
 def _make_module(base: Path, name: str, manifest: str, extra_code: str = "") -> Path:
@@ -1520,18 +1521,25 @@ class TestSearchProviderSlot:
                 "handler": "celerp.services.auth:get_current_user",
                 "result_key": "items", "permission": "view_inventory"})
 
-    def test_missing_handler_function_rejected_at_load(self, tmp_path):
-        with pytest.raises(ModuleLoadError, match="failed to resolve"):
+    def test_missing_handler_function_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="top-level def"):
             self._load(tmp_path, "good_module_sp_nofn", {
                 "handler": "good_module_sp_nofn:nope", "result_key": "items",
                 "permission": "view_inventory"})
 
     def test_non_callable_handler_rejected(self, tmp_path):
+        """Load proves what import returns, not what admission read: a source
+        that changes after admission to bind a non-callable is refused."""
+        from celerp.modules import loader
+        name = "good_module_sp_nc"
+        pkg = _sp_module(tmp_path, name, {
+            "handler": f"{name}:prov", "result_key": "items",
+            "permission": "view_inventory"})
+        declared = loader._admission_checks(name, pkg).manifest
+        init = pkg / "__init__.py"
+        init.write_text(init.read_text() + "prov = 'not a function'\n")
         with pytest.raises(ModuleLoadError, match="not callable"):
-            self._load(tmp_path, "good_module_sp_nc", {
-                "handler": "good_module_sp_nc:prov", "result_key": "items",
-                "permission": "view_inventory"},
-                handler_code="prov = 'not a function'\n")
+            _load_one(pkg, name, trusted=False, declared=declared)
 
     def test_sync_handler_rejected(self, tmp_path):
         with pytest.raises(ModuleLoadError, match="must be async"):

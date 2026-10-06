@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import httpx
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 import ui.api_client as api
 from ui.config import get_token as _token
+from ui.i18n import get_lang, localize_notification
 
 
 def setup_routes(app):
@@ -29,9 +30,14 @@ def setup_routes(app):
         async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
                 r = await c.get("/notifications", params=params)
-                return Response(content=r.content, media_type="application/json", status_code=r.status_code)
             except (httpx.ConnectError, httpx.TimeoutException):
                 return Response('{"items":[],"unread_count":0}', media_type="application/json", status_code=200)
+        if r.status_code != 200:
+            return Response(content=r.content, media_type="application/json", status_code=r.status_code)
+        data = r.json()
+        lang = get_lang(request)
+        data["items"] = [localize_notification(n, lang) for n in data.get("items", [])]
+        return JSONResponse(data)
 
     @app.post("/notifications/read-all")
     async def proxy_notifications_read_all(request: Request) -> Response:

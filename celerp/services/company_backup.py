@@ -57,7 +57,7 @@ from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, valid_table_prefixes
 from celerp.modules import requirements
 from celerp.modules.loader import module_label, module_search_path, read_manifest, resolve_module_path
-from celerp.modules.registry import get_enabled, set_enabled
+from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
 from celerp.services.company_backup_files import private_file
@@ -719,7 +719,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
     _collect_urls(settings, company_id, found, types)
     # A module enabled in settings but not installed here is not something this company's
     # data depends on, so it is not a requirement of the backup.
-    enabled = {name for name in get_enabled(settings) if _installed(name) is not None}
+    enabled = {name for name in company_modules(settings) if _installed(name) is not None}
     manifest: dict = {
         "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
         "backup_id": str(uuid.uuid4()),
@@ -1541,6 +1541,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session:
         try:
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+            await hold_module_state(session)
             checked = await check_backup(session, backup)
             await _lock(session, backup_id, bootstrapping=mode == "bootstrap")
             if mode == "bootstrap":
@@ -1605,7 +1606,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                         raise BackupError(422, ATTACHMENT_FAILED) from None
                 id_map = {source: str(new_id), **{old: str(uuid.uuid4()) for old in checked.ids}, **url_map}
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
-                settings = set_enabled(settings, get_enabled(settings) | set(m["modules"]["enabled"]))
+                settings = set_enabled(settings, set(m["modules"]["enabled"]))  # the checked list, never the copied key
                 settings["restored_backup"] = {
                     "backup_id": backup_id, "sha256": backup.sha256, "created_at": m["created_at"],
                     "source_company_name": m["company"]["name"],
@@ -1639,6 +1640,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except Exception:
                     logger.warning("Removing attachment files of a failed company restore failed", exc_info=True)
             raise
+        # The restore has committed: rewriting the load set's mirror never undoes it.
+        await commit_with_load_set(session)
     if stored:
         await asyncio.to_thread(attachments.clear_landing, str(new_id))
     return RestoreResult(company_id=str(company.id), company_name=company.name, outcome=CREATED,

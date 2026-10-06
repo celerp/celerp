@@ -32,12 +32,9 @@ def module_contribution_visible(
     connected_connectors: set[str] | None = None,
 ) -> bool:
     """Apply company-module, permission, and optional connector gates uniformly."""
-    from celerp.modules.loader import CORE_FOLDED
-    from celerp.modules.registry import get_enabled
-    module = contribution.get("_module")
-    if module and module not in CORE_FOLDED and "enabled_modules" in settings:
-        if module not in get_enabled(settings):
-            return False
+    from celerp.modules.registry import uses_module
+    if not uses_module(settings, contribution.get("_module")):
+        return False
     if not slot_permission_allows(contribution, settings, role):
         return False
     required = contribution.get("requires_connector")

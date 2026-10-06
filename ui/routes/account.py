@@ -35,7 +35,7 @@ from ui.components.shell import toast_header
 from ui.config import PRIVACY_POLICY_URL, RELAY_URL
 from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
-from ui.security import is_safe_authorize_url
+from ui.security import is_safe_authorize_url, owner_refusal
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
@@ -494,6 +494,8 @@ def setup_routes(app):
 
     @app.post("/account/email")
     async def account_email(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
@@ -521,6 +523,8 @@ def setup_routes(app):
 
     @app.get("/account/google")
     async def account_google(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
@@ -548,6 +552,8 @@ def setup_routes(app):
 
     @app.get("/account/poll")
     async def account_poll(request: Request):
+        if refused := await owner_refusal(request):
+            return refused
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)

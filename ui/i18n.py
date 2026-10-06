@@ -201,6 +201,16 @@ def field_label_key(label: str) -> str | None:
     a library category's field shows in the user's language; ``None`` for a label the
     user typed, which shows as typed."""
     return _field_label_keys().get(label)
+def localize_notification(item: dict, lang: str | None = None) -> dict:
+    """*item* with its title and body in *lang* when it carries a ``message_key``
+    (celerp.notifications.service.create_keyed); a param given as ``{"key": k}`` is
+    itself translated. A plain-text notification is returned unchanged."""
+    key = item.get("message_key")
+    if not key:
+        return item
+    params = {k: t(v["key"], lang) if isinstance(v, dict) else v
+              for k, v in (item.get("message_params") or {}).items()}
+    return {**item, "title": t(f"{key}.title", lang, **params), "body": t(f"{key}.body", lang, **params)}
 
 
 def field_label(f: dict) -> str:

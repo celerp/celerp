@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from packaging.version import InvalidVersion, Version
 
-from celerp.config import read_config, set_enabled_modules
+from celerp.config import read_config, replace_enabled_modules
 from celerp.modules import loader
 
 log = logging.getLogger(__name__)
@@ -129,7 +129,9 @@ def prepare(plan: RequirementPlan, *, consent: frozenset[str] = frozenset()) -> 
         raise ConsentRequired(", ".join(r.label for r in unconsented))
     names = [r.name for r in plan.requirements if r.status is Status.ENABLE_REQUIRED]
     if names:
-        set_enabled_modules(names)
+        # The company that needs them is created after the restart, and its own module
+        # set names them from then on; until then they join the installation's list.
+        replace_enabled_modules([*read_config().get("modules", {}).get("enabled", []), *names])
     return not plan.ready
 
 

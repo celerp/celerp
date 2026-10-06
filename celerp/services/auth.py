@@ -89,7 +89,6 @@ def create_access_token(
     jti: str | None = None,
     *,
     snonce: str,
-    modules: list[str] | None = None,
 ) -> tuple[str, str]:
     """Return (encoded_token, jti).
 
@@ -101,11 +100,8 @@ def create_access_token(
     ``session_tracker.get_nonce(session, user_id)`` before calling this function.
     There is no default - a session-bound token can never be minted without one.
 
-    *role*, *email* and *modules* are UI/client hints only - they are NEVER used
-    for server authorization, which derives the role from current DB membership.
-
-    *modules* is the list of enabled module names for the company, embedded so
-    the UI can filter the sidebar without any additional DB or API calls.
+    *role* and *email* are UI/client hints only - they are NEVER used for
+    server authorization, which derives the role from current DB membership.
     """
     import uuid as _uuid
     expire_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
@@ -119,7 +115,6 @@ def create_access_token(
         "role": role,
         "jti": token_jti,
         "snonce": snonce,
-        "modules": modules or [],
         "exp": datetime.now(timezone.utc) + timedelta(minutes=expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm), token_jti
@@ -275,6 +270,7 @@ STAGED_COMPANY = "This company is still being moved into Celerp. Finish or disca
 # The only routes a staged company's own token reaches. Token refresh, logout and health
 # do not authenticate through this dependency, so they stay available as well.
 STAGED_ALLOWED_PREFIX = "/migrations/"
+MODULE_OFF = "This module is turned off for your company."
 
 
 async def get_auth_context(
@@ -290,10 +286,18 @@ async def get_auth_context(
     A token scoped to a migration-staged company is isolated here, centrally: it
     reaches the migration routes only. The same user's tokens for other companies
     are unaffected.
+
+    A module's routes answer only for a company that uses the module.
     """
     ctx = await validate_access_token(session, token)
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=STAGED_COMPANY)
+    from celerp.modules.loader import route_module
+    from celerp.modules.registry import uses_module
+
+    module = route_module(request.scope)
+    if module and not uses_module(ctx.company.settings, module):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MODULE_OFF)
     # The authority the request starts with is judged again under the company lock
     # (company_lock), so a write that waits there never runs on revoked access.
     from celerp.services.permissions import authorize_request, end_request
@@ -457,27 +461,22 @@ async def issue_token_pair(
     from celerp.services.session_tracker import (
         lock_auth_state as _lock,
         register_token as _register,
-        _nonce_cache_set,
     )
-    from celerp.modules.registry import get_enabled as _get_enabled
 
     role = (await lock_issuance_company(session, user.id, company_id)).role
-    company = await session.get(Company, company_id)
     user_id = str(user.id)
     company_id = str(company_id)
     auth_state = await _lock(session, user_id)
     if expected_snonce is not None and expected_snonce != auth_state.nonce:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
     snonce = auth_state.nonce
-    enabled_modules = sorted(_get_enabled(company.settings or {}))
     access_token, token_jti = create_access_token(
-        user_id, company_id, role, user.email, jti=jti, snonce=snonce, modules=enabled_modules
+        user_id, company_id, role, user.email, jti=jti, snonce=snonce
     )
     # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp.
     capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     expiry_dt = datetime.now(timezone.utc) + timedelta(minutes=capped_minutes)
     await _register(session, token_jti, user_id, company_id, expiry_dt, commit=False)
     await session.commit()
-    _nonce_cache_set(user_id, snonce)
     refresh_token = create_refresh_token(user_id, company_id, snonce=snonce)
     return {"access_token": access_token, "refresh_token": refresh_token}

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Regression for the post-commit nonce-cache revocation race."""
+"""Postgres is the only nonce authority: a revoked access token stays revoked."""
 from __future__ import annotations
 
 import pytest
@@ -11,12 +11,8 @@ from celerp.config import settings
 
 
 @pytest.mark.asyncio
-async def test_stale_process_cache_cannot_revive_revoked_access(client, session):
-    from celerp.services.session_tracker import (
-        _nonce_cache_set,
-        get_nonce,
-        invalidate_sessions,
-    )
+async def test_revoked_access_stays_revoked(client, session):
+    from celerp.services.session_tracker import get_nonce, invalidate_sessions
 
     reg = await client.post(
         "/auth/register",
@@ -36,12 +32,25 @@ async def test_stale_process_cache_cannot_revive_revoked_access(client, session)
     await invalidate_sessions(session, user_id)
     n1 = await get_nonce(session, user_id)
     assert n1 != n0
-
-    _nonce_cache_set(user_id, n0)
-
-    assert await get_nonce(session, user_id) == n1
     r = await client.get(
         "/auth/my-companies",
         headers={"Authorization": f"Bearer {access}"},
     )
     assert r.status_code == 401
+
+
+def test_no_process_local_nonce_cache_remains():
+    """Postgres is the only nonce authority: no cache helpers survive to be called."""
+    import celerp.services.session_tracker as tracker
+
+    left = [name for name in ("_nonce_cache_set", "_nonce_cache_get", "_nonce_cache_bust",
+                              "_nonce_cache_bust_all", "get_nonce_from_cache") if hasattr(tracker, name)]
+    assert left == []
+
+
+@pytest.mark.asyncio
+async def test_debug_cache_stats_answers():
+    from celerp.routers import debug
+
+    stats = await debug.cache_stats()
+    assert set(stats) == {"drain_cache"}

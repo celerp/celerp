@@ -389,3 +389,133 @@ def test_upgrade_that_cannot_check_exits_nonzero(tmp_path):
     assert res.exit_code == 1
     assert "could not reach the package index" in res.output
     run_update.assert_not_called()
+
+
+def test_a_stop_while_the_servers_start_stops_them_and_the_database(tmp_path):
+    """A SIGTERM that arrives before both servers accept connections still runs the
+    supervisor's shutdown: the servers are terminated and it exits normally, so the
+    embedded database it started is stopped on the way out instead of left running."""
+    import signal
+
+    from celerp.cli import _start
+
+    handlers: dict = {}
+    spawned: list[_Proc] = []
+
+    def fake_popen(cmd, env, **kwargs):
+        proc = _Proc("api" if any("celerp.main" in s for s in cmd) else "ui")
+        spawned.append(proc)
+        return proc
+
+    def stopped_while_starting(*_servers, **_kw):
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    with (
+        patch("subprocess.Popen", side_effect=fake_popen),
+        patch("celerp.cli._read_config", return_value=CFG),
+        patch("celerp.cli._config_to_env", return_value={}),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.cli._migrate_to_head"),
+        patch("celerp.cli._wait_ready", side_effect=stopped_while_starting),
+        patch("signal.signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)),
+        pytest.raises(SystemExit) as stopped,
+    ):
+        _start({**CFG, "database": dict(CFG["database"])})
+    assert stopped.value.code == 0
+    assert [p.name for p in spawned] == ["api", "ui"] and all(p.terminated for p in spawned)
+
+
+@pytest.mark.parametrize("stage", ["database", "reconcile", "migrate"])
+def test_a_stop_before_the_servers_start_releases_the_lock_and_unwinds(tmp_path, stage):
+    """The stop handler is in place before the update lock is taken, and a SIGTERM
+    at any later point of startup (starting the database, finishing an interrupted
+    update, migrating) ends `celerp start` normally: the update lock is released
+    and the exit unwinds, so the embedded database it started is stopped on the
+    way out instead of left running."""
+    import signal
+
+    from celerp import config_store
+    from celerp.cli import _start
+
+    handlers: dict = {}
+    real_hold = config_store.hold_lock
+
+    def stop_now(*_a, **_kw):
+        assert signal.SIGTERM in handlers, f"no stop handler installed before {stage}"
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    def hold(*a, **kw):
+        assert signal.SIGTERM in handlers, "no stop handler installed before the update lock"
+        return real_hold(*a, **kw)
+
+    def stage_patch(name):
+        return {"side_effect": stop_now} if name == stage else {}
+
+    with (
+        patch("celerp.cli._read_config", return_value=CFG),
+        patch("celerp.cli._config_to_env", return_value={}),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.config_store.hold_lock", side_effect=hold),
+        patch("celerp.cli.ensure_database", **stage_patch("database")),
+        patch("celerp.cli._update_state_or_exit", return_value={"in_progress": stage == "reconcile"}),
+        patch("celerp.cli._update_steps"),
+        patch.object(update, "reconcile", **stage_patch("reconcile")),
+        patch("celerp.cli._migrate_to_head", **stage_patch("migrate")),
+        patch("celerp.cli._server_spawners", side_effect=AssertionError("servers started")),
+        patch("signal.signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)),
+        pytest.raises(SystemExit) as stopped,
+    ):
+        _start({**CFG, "database": dict(CFG["database"])})
+    assert stopped.value.code == 0
+    assert not (tmp_path / "update.lock").exists()
+
+
+def test_a_server_that_ignores_the_stop_is_killed(tmp_path):
+    """A server that does not stop when asked never holds the supervisor open: after
+    a bounded wait it is killed and the supervisor exits, so the database it
+    started is stopped too."""
+    import signal
+    import subprocess
+
+    from celerp.cli import _start
+
+    handlers: dict = {}
+    spawned: list = []
+
+    class _Wedged(_Proc):
+        killed = False
+
+        def poll(self):
+            return 0 if self.killed else None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            if self.killed:
+                return 0
+            if timeout is None:
+                raise AssertionError("waited on a wedged server with no time limit")
+            raise subprocess.TimeoutExpired("server", timeout)
+
+    def fake_popen(cmd, env, **kwargs):
+        proc = _Wedged("api" if any("celerp.main" in s for s in cmd) else "ui")
+        spawned.append(proc)
+        return proc
+
+    def stopped_while_starting(*_servers, **_kw):
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    with (
+        patch("subprocess.Popen", side_effect=fake_popen),
+        patch("celerp.cli._read_config", return_value=CFG),
+        patch("celerp.cli._config_to_env", return_value={}),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.cli._migrate_to_head"),
+        patch("celerp.cli._wait_ready", side_effect=stopped_while_starting),
+        patch("signal.signal", side_effect=lambda sig, handler: handlers.__setitem__(sig, handler)),
+        pytest.raises(SystemExit) as stopped,
+    ):
+        _start({**CFG, "database": dict(CFG["database"])})
+    assert stopped.value.code == 0
+    assert [p.name for p in spawned] == ["api", "ui"] and all(p.killed for p in spawned)

@@ -176,7 +176,7 @@ test("the log lines are part of the state, so a replay shows what the live event
       "Found v2.0.1, downloading...",
       "Downloading: 4% (2 KB/s)",
       "Downloading: 23% (4 KB/s)",
-      "v2.0.1 ready. Click 'Restart to Install'",
+      "v2.0.1 ready. Restart to install.",
     ];
     expect(getUpdateState().log).toEqual(log);
     // The last live event carried the same log the replay returns.
@@ -196,7 +196,7 @@ test("a re-check after the update downloaded changes nothing, not even the log",
   function test_recheck_after_downloaded_keeps_the_log() {
     const { updater, sent, getUpdateState } = downloadedSetup();
     const ready = getUpdateState();
-    expect(ready.log.slice(-1)).toEqual(["v2.0.1 ready. Click 'Restart to Install'"]);
+    expect(ready.log.slice(-1)).toEqual(["v2.0.1 ready. Restart to install."]);
     // The periodic re-check finds the same, already downloaded, update.
     updater.emit("checking-for-update");
     updater.emit("update-available", { version: "2.0.1" });

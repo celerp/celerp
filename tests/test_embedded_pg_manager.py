@@ -87,6 +87,24 @@ def test_start_registers_atexit_stop(tmp_path):
     mreg.assert_called_once_with(embedded_pg._stop_all)
 
 
+def test_stop_while_pg_ctl_start_waits_still_stops_the_server_at_exit(tmp_path):
+    """pg_ctl start forks the postmaster before it returns: a stop signal (the
+    server's handler raises SystemExit) landing while it waits must leave the
+    new postmaster owned, so the exit hook stops it."""
+    def start_interrupted(cmd, *a, **k):
+        if cmd[-1] == "start":
+            raise SystemExit(0)
+        return _ok(cmd, *a, **k)
+
+    with patch.object(embedded_pg, "_is_running", return_value=False), \
+         patch("subprocess.run", side_effect=start_interrupted), \
+         patch("atexit.register") as mreg:
+        with pytest.raises(SystemExit):
+            embedded_pg._start(tmp_path)
+    assert tmp_path in embedded_pg._STARTED
+    mreg.assert_called_once_with(embedded_pg._stop_all)
+
+
 @pytest.mark.parametrize("own", [False, True])
 def test_ensure_cluster_takes_over_a_running_cluster_only_when_owning(tmp_path, own):
     """A cluster left running by a crashed server is stopped at exit by the

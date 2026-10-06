@@ -32,6 +32,7 @@ STRIPE_OWNED_PAYMENT = (
 STRIPE_RECEIPT_KEPT = (
     "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
 )
+PAYMENT_NOT_NAMED = "A payment can be taken off a document only by naming it, and a deletion keeps its place."
 # Every event that takes a received payment back off a document.
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
 
@@ -88,10 +89,16 @@ async def refuse_stripe_payment_removal(session, company_id, entity_id, payments
                                         index, event_type: str) -> None:
     """422 when *event_type* would take the payment at *index* off the document while
     Stripe holds its money (``stripe_payment_indexes``), or would delete a payment
-    received through Stripe (``stripe_receipt_references``)."""
+    received through Stripe (``stripe_receipt_references``). A payment a person
+    recorded on the document from the unmatched payments, and that was never
+    refunded, may be deleted: that puts it back with them (``payments.return_unmatched``)."""
+    payment = next((p for p in payments if p.get("index") == index), None)
+    if event_type == "doc.payment.deleted" and payment is not None and not payment.get("refunded"):
+        from celerp.services.payments import recorded_unmatched
+        if payment.get("reference") in await recorded_unmatched(session, company_id, entity_id):
+            return
     if index in await stripe_payment_indexes(session, company_id, entity_id, payments):
         raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
-    payment = next((p for p in payments if p.get("index") == index), None)
     if (event_type == "doc.payment.deleted" and payment is not None
             and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
         raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)
@@ -105,9 +112,16 @@ async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
     row = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
     if row is None or row.entity_type != "doc":
         return
+    # A refund naming no payment, or a deletion by list position (the shape deletions
+    # had before they kept their place), cannot be checked against the payment it
+    # takes off; no writer may emit either.
+    data = kwargs.get("data") or {}
+    if data.get("payment_index") is None or (kwargs["event_type"] == "doc.payment.deleted"
+                                             and data.get("tombstone") is not True):
+        raise HTTPException(status_code=422, detail=PAYMENT_NOT_NAMED)
     await refuse_stripe_payment_removal(session, kwargs["company_id"], kwargs["entity_id"],
                                         (row.state or {}).get("payments", []),
-                                        (kwargs.get("data") or {}).get("payment_index"), kwargs["event_type"])
+                                        data["payment_index"], kwargs["event_type"])
 
 
 async def find_event_by_idempotency(session, company_id, idempotency_key: str | None) -> LedgerEntry | None:

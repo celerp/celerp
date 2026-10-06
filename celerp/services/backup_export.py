@@ -85,19 +85,6 @@ def restore_roots() -> dict[str, Path]:
     }
 
 
-async def required_installation_modules(session) -> set[str]:
-    """Every module enabled by any company of this installation."""
-    from sqlalchemy import select
-    from celerp.models.company import Company
-
-    required: set[str] = set()
-    for company_settings in (await session.scalars(select(Company.settings))).all():
-        names = (company_settings or {}).get("enabled_modules") or []
-        if isinstance(names, list):
-            required.update(str(n) for n in names)
-    return required
-
-
 async def export_full() -> Path:
     """Export pg_dump + all restore-owned files + meta.json as .celerp-backup.
 
@@ -121,9 +108,10 @@ async def archive_meta() -> dict:
     from celerp.config import read_config
     from celerp.db import get_session_ctx
     from celerp.migrations.compatibility import running_version
+    from celerp.modules.registry import load_set
 
     async with get_session_ctx() as session:
-        enabled_modules = sorted(await required_installation_modules(session))
+        enabled_modules = await load_set(session)
     return {
         "celerp_version": running_version(),
         "pg_version": _pg_version(),

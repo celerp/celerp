@@ -67,11 +67,20 @@ async def publish(
     user_id: uuid.UUID | None,
     event_data: dict[str, Any],
 ) -> None:
-    """Publish an event to subscribers.
+    """Publish an event to subscribers now (see ``deliver``)."""
+    deliver(company_id, user_id, event_data)
 
-    If user_id is None (company-wide), publishes to all subscribers
+
+def deliver(
+    company_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    event_data: dict[str, Any],
+) -> None:
+    """Put an event on subscriber queues.
+
+    If user_id is None (company-wide), delivers to all subscribers
     whose key starts with the company_id prefix.
-    If user_id is set, publishes only to that user's subscribers.
+    If user_id is set, delivers only to that user's subscribers.
     """
     prefix = _company_prefix(company_id)
 

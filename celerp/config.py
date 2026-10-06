@@ -759,32 +759,6 @@ def resolve_install_order(names: list[str], module_dir: Path) -> list[str]:
     return ordered
 
 
-def set_enabled_modules(names: list[str]) -> bool:
-    """Idempotently add modules to the config file's enabled list.
-
-    Resolves transitive dependencies and writes the updated config to disk.
-    Works even when config.toml does not yet exist (e.g. Electron binary on
-    first boot before 'celerp init' is run). write_config() handles missing
-    sections with empty defaults so the file is always well-formed.
-
-    Returns True if the enabled set changed (config was written), False if
-    every requested module was already enabled (no-op). Callers can use this
-    to skip follow-up work like a process restart when nothing changed.
-    """
-    install_order = _install_closure(names)
-
-    def _enable(cfg: dict) -> bool:
-        modules = cfg.setdefault("modules", {})
-        currently_enabled: list[str] = list(modules.get("enabled", []))
-        new_modules = [n for n in install_order if n not in currently_enabled]
-        if not new_modules:
-            return False
-        modules["enabled"] = currently_enabled + new_modules
-        return True
-
-    return bool(_update_config(_enable))
-
-
 def replace_enabled_modules(names: list[str]) -> bool:
     """Make the config file's enabled list exactly *names* plus their dependencies.
 
@@ -806,15 +780,3 @@ def replace_enabled_modules(names: list[str]) -> bool:
 def _install_closure(names: list[str]) -> list[str]:
     """*names* and their transitive dependencies, resolved against the bundled modules."""
     return resolve_install_order(list(names), Path(__file__).parent.parent / "default_modules")
-
-
-def remove_enabled_module(name: str) -> None:
-    """Drop one module from [modules].enabled in config.toml under the config
-    lock, so the next restart honours a disable or removal. A name that is not
-    enabled leaves the file untouched."""
-    def _remove(cfg: dict) -> None:
-        enabled = cfg.get("modules", {}).get("enabled", [])
-        cfg.setdefault("modules", {})["enabled"] = [m for m in enabled if m != name]
-
-    _update_config(_remove)
-

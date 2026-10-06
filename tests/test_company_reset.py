@@ -352,3 +352,17 @@ async def test_a_hidden_star_card_stays_hidden_after_a_reset(real_engine, real_c
                                 headers=auth(await token(real_engine, shared, b)))
     assert cta.status_code == 200, cta.text
     assert cta.json()["dismissed"] is True, cta.json()
+async def test_a_reset_sent_again_while_the_first_runs_says_the_company_is_gone(real_engine, real_client,
+                                                                               tmp_path, monkeypatch):
+    import asyncio
+    _local_files(monkeypatch, tmp_path)
+    shared = await owner(real_engine)
+    a = await company(real_engine, shared, "Harbor Goods Ltd", "alpha")
+    await company(real_engine, shared, "Hillside Supply Co", "bravo")
+    tok = await token(real_engine, shared, a)
+
+    rs = await asyncio.gather(*(real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"},
+                                                 headers=auth(tok)) for _ in range(3)))
+
+    assert sorted(r.status_code for r in rs) == [200, 404, 404], [(r.status_code, r.text) for r in rs]
+    assert "Requires the manage_company_lifecycle permission" not in [r.text for r in rs]

@@ -137,15 +137,15 @@ class TestBackupExportWritesEnabledModules:
             captured["meta"] = meta
             return tmp_path / "test.celerp-backup"
 
-        async def fake_required_installation_modules(session):
-            return {"celerp-inventory", "celerp-dashboard", "celerp-contacts"}
+        async def fake_load_set(session):
+            return ["celerp-contacts", "celerp-dashboard", "celerp-inventory"]
 
         # Lazy imports happen inside export_full, so patch the source modules
         import celerp.services.backup as backup_mod
         import celerp.config as cfg_mod
         monkeypatch.setattr(be, "_build_archive", fake_build)
         monkeypatch.setattr(backup_mod, "dump_database", lambda url: b"FAKE_DUMP")
-        monkeypatch.setattr(be, "required_installation_modules", fake_required_installation_modules)
+        monkeypatch.setattr("celerp.modules.registry.load_set", fake_load_set)
         monkeypatch.setattr(cfg_mod, "read_config", lambda: {"company": {"name": "Test"}})
 
         await be.export_full()

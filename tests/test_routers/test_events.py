@@ -33,7 +33,6 @@ from celerp.models.company import Company, User
 from celerp.notifications.sse import _subscribers, publish, shutdown_all
 from celerp.services import runtime_state
 from celerp.services.auth import create_access_token
-from celerp.services.session_tracker import _nonce_cache_set
 
 
 async def _bearer(session, snonce: str = "stream-nonce") -> tuple[str, uuid.UUID, uuid.UUID, str]:
@@ -45,10 +44,9 @@ async def _bearer(session, snonce: str = "stream-nonce") -> tuple[str, uuid.UUID
     So a synthetic token with no DB rows would 401 before opening: the helper
     persists (and commits, so the route's own short-lived session sees them) an
     active user, an active company, an active admin membership, and a
-    ``UserAuthState`` whose nonce matches the token's ``snonce``. The in-process
-    nonce cache is primed to the same value so the live-stream poll finds no
-    mismatch. Tests that force an eviction rotate BOTH the DB nonce and the cache
-    to a different value after calling this.
+    ``UserAuthState`` whose nonce matches the token's ``snonce``, so the
+    live-stream poll finds no mismatch. Tests that force an eviction rotate the
+    DB nonce to a different value after calling this.
 
     Returns ``(token, company_id, user_id, user_id_str)``.
     """
@@ -65,18 +63,16 @@ async def _bearer(session, snonce: str = "stream-nonce") -> tuple[str, uuid.UUID
     token, _ = create_access_token(
         subject=str(user_id), company_id=str(company_id), role="admin", snonce=snonce
     )
-    _nonce_cache_set(str(user_id), snonce)
     return token, company_id, user_id, str(user_id)
 
 
 async def _rotate_nonce(session, user_id: uuid.UUID, new_nonce: str) -> None:
-    """Rotate a seeded user's server nonce in the DB and the cache, revoking the
+    """Rotate a seeded user's server nonce in the DB, revoking the
     token that was minted against the old nonce. Mirrors what invalidate_sessions
     does elsewhere (logout, force-login, security-sensitive account changes)."""
     row = await session.get(UserAuthState, user_id)
     row.nonce = new_nonce
     await session.commit()
-    _nonce_cache_set(str(user_id), new_nonce)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -227,8 +223,8 @@ async def test_events_stream_emits_drain_when_draining(session, monkeypatch):
     client can reconnect elsewhere during a deploy."""
     monkeypatch.setattr(events_mod, "_STREAM_TICK_SECONDS", 0.02)
     # A validated v2 stream (nonce matches, no eviction) must still surface drain on
-    # its poll tick. The poll checks drain on every tick, not only on a nonce cache
-    # miss, so a matching nonce does not suppress it.
+    # its poll tick. The poll checks drain on every tick, so a matching nonce does
+    # not suppress it.
     token, company_id, user_id, _ = await _bearer(session)
     _subscribers.pop(f"{company_id}:{user_id}", None)
     # Prime the in-process drain cache so is_draining() reports True on the tick

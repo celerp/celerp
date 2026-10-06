@@ -9,26 +9,14 @@ render gate is not the only guard. This is the auth-boundary proof (P6.5).
 """
 from __future__ import annotations
 
-import os
 import uuid
 
 import httpx
 import pytest
 
+from .conftest import clear_session_registry
+
 pytestmark = pytest.mark.browser
-
-
-def _clear_session_registry() -> None:
-    """Wipe session_registry rows so a second user can log in."""
-    import psycopg2
-    from urllib.parse import urlsplit
-    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
-    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                            password=parts.password, dbname=parts.path.lstrip("/"))
-    conn.autocommit = True
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM session_registry;")
-    conn.close()
 
 
 def _set_cookie(browser_context, token: str) -> None:
@@ -102,7 +90,7 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
                  json={"email": email, "name": "Viewer", "role": "viewer", "password": "pw12345a"})
     assert r.status_code == 200, r.text
 
-    _clear_session_registry()
+    clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": email, "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
@@ -124,5 +112,5 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
                 json={"claim_token": "tok-abc"}, timeout=10)
             assert resp.status_code == 403, f"{path} -> {resp.status_code}"
     finally:
-        _clear_session_registry()
+        clear_session_registry()
         _set_cookie(browser_context, seeded_user["access_token"])
