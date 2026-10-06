@@ -357,8 +357,32 @@ class TestPremiumLicenseGate:
 class TestBSLProtection:
     def test_protected_internals_set_is_complete(self):
         assert "celerp.session_gate" in _PROTECTED_BSL_INTERNALS
-        assert "celerp.ai.service" in _PROTECTED_BSL_INTERNALS
-        assert "celerp.ai.quota" in _PROTECTED_BSL_INTERNALS
+        assert "celerp.ai" in _PROTECTED_BSL_INTERNALS
+        assert not [n for n in _PROTECTED_BSL_INTERNALS if n.startswith("celerp.ai.")]
+
+    @pytest.mark.parametrize("source", [
+        "from celerp.ai.llm import call_llm\n",
+        "import celerp.ai.llm\n",
+        "from celerp.ai import memory\n",
+        "from celerp import ai\n",
+        "import importlib\nimportlib.import_module('celerp.ai.models')\n",
+    ])
+    def test_every_celerp_ai_module_is_protected(self, tmp_path, source):
+        pkg = tmp_path / "ai-reach"
+        inner = pkg / "ai_reach"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(source)
+        assert _scan(pkg, "ai_reach.routes") == {"celerp.ai"}
+
+    def test_module_importing_celerp_ai_llm_refused_at_load(self, tmp_path):
+        pkg = tmp_path / "llm-reach"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "from celerp.ai.llm import call_llm\n"
+            "PLUGIN_MANIFEST = {'name': 'llm-reach', 'version': '1.0'}"
+        )
+        with pytest.raises(ModuleLoadError, match="protected BSL internals"):
+            _load(pkg, "llm-reach")
 
     def test_module_importing_session_gate_rejected(self, tmp_path):
         pkg = tmp_path / "bad-session"
@@ -951,7 +975,7 @@ class TestElectronTrustedModuleDirs:
         )
         violations = _scan(pkg, "scan_test.routes")
         assert "celerp.session_gate" in violations
-        assert "celerp.ai.quota" in violations
+        assert "celerp.ai" in violations
 
     def test_ast_scan_catches_lazy_bsl_import_inside_function(self, tmp_path):
         """AST scan catches BSL imports nested inside function bodies (lazy imports)."""
@@ -990,7 +1014,7 @@ class TestElectronTrustedModuleDirs:
         (inner / "routes.py").write_text("from abs_test import helper\n")
         (inner / "helper.py").write_text("from celerp.ai.quota import check\n")
         violations = _scan(pkg, "abs_test.routes")
-        assert "celerp.ai.quota" in violations
+        assert "celerp.ai" in violations
 
     def test_ast_scan_catches_dynamic_importlib(self, tmp_path):
         """A dynamic importlib.import_module(...) with a string-literal target is
@@ -1005,7 +1029,7 @@ class TestElectronTrustedModuleDirs:
             "    return m\n"
         )
         violations = _scan(pkg, "dyn_test.routes")
-        assert "celerp.ai.quota" in violations
+        assert "celerp.ai" in violations
 
     def test_ast_scan_catches_dunder_import(self, tmp_path):
         """__import__('celerp.session_gate') is likewise flagged."""

@@ -82,8 +82,7 @@ log = logging.getLogger(__name__)
 # (licensing boundary). Module authors use celerp.modules.api instead.
 _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.session_gate",
-    "celerp.ai.service",
-    "celerp.ai.quota",
+    "celerp.ai",
     "celerp.gateway",
     "celerp.connectors",
 })
@@ -1313,14 +1312,11 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
             candidate = getattr(val, "__name__", None) or getattr(
                 getattr(val, "__spec__", None), "name", None
             )
-            if candidate and candidate in _PROTECTED_BSL_INTERNALS:
-                violations.add(candidate)
             owner = getattr(val, "__module__", None)
-            if owner and owner in _PROTECTED_BSL_INTERNALS:
-                violations.add(owner)
+            violations |= {hit for hit in map(_protected_hit, (candidate, owner)) if hit}
 
         truly_new = set(sys.modules.keys()) - before
-        violations |= truly_new & _PROTECTED_BSL_INTERNALS
+        violations |= {hit for hit in map(_protected_hit, truly_new) if hit}
 
         if violations:
             _evict_module(pkg_name)
@@ -1600,6 +1596,8 @@ def register_ui_routes(app, loaded: list[dict]) -> None:
 
 def _protected_hit(name: str) -> str | None:
     """The protected internal `name` names/imports from, or None."""
+    if not isinstance(name, str):
+        return None
     for protected in _PROTECTED_BSL_INTERNALS:
         if name == protected or name.startswith(protected + "."):
             return protected
