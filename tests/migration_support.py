@@ -297,7 +297,7 @@ async def real_engine(_db_engine, monkeypatch):
 
     engine = create_async_engine(
         DATABASE_URL, poolclass=NullPool,
-        connect_args={"server_settings": {"lock_timeout": "3000", "statement_timeout": "30000"}},
+        connect_args=celerp.db.REQUEST_CONNECT_ARGS,
     )
 
     from celerp.models.base import Base

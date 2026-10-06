@@ -43,6 +43,11 @@ def sqlstate(exc: BaseException) -> str | None:
 # after clearing them for startup work.
 _REQUEST_LOCK_TIMEOUT_MS = "3000"
 _REQUEST_STATEMENT_TIMEOUT_MS = "30000"
+# Bound how long any query may wait on a lock or run, so a stuck query is cancelled
+# instead of pinning a connection for the full request lifetime. Every request
+# connection carries them, the test suite's included, so tests wait as production does.
+REQUEST_CONNECT_ARGS = {"server_settings": {
+    "lock_timeout": _REQUEST_LOCK_TIMEOUT_MS, "statement_timeout": _REQUEST_STATEMENT_TIMEOUT_MS}}
 
 # Pool budget: the app runs one API worker (both `celerp start` and the Electron
 # shell launch uvicorn without --workers), so this single process owns one request
@@ -56,7 +61,8 @@ if os.environ.get("CELERP_TEST_NULLPOOL"):
     # test can't leave a poisoned/locked connection lingering in a pooled
     # connection and block the next test's TRUNCATE. Only ever set by the test
     # harness; no effect in production.
-    engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool)
+    engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool,
+                                 connect_args=REQUEST_CONNECT_ARGS)
 else:
     engine = create_async_engine(
         settings.database_url,
@@ -64,21 +70,14 @@ else:
         pool_pre_ping=True,
         pool_size=REQUEST_DB_POOL_SIZE,
         max_overflow=REQUEST_DB_MAX_OVERFLOW,
-        # Bound how long any query may wait on a lock or run, so a stuck query is
-        # cancelled instead of pinning one of the few pooled connections for the
-        # full request lifetime (lock_timeout 3s, statement_timeout 30s, in ms).
-        # This is a per-connection default, so it applies to every request AND
+        # The request timeouts (lock_timeout 3s, statement_timeout 30s) are a
+        # per-connection default, so they apply to every request AND
         # every pooled background job (connector syncs, the gateway, the daily
         # scheduler) - all of which must stay bounded. Startup reconciliation and
         # the projection rebuild are the only work that legitimately runs longer;
         # they use lifecycle_engine below instead of this pool, and the migration
         # advisory-lock wait self-exempts via lifecycle_timeouts_disabled.
-        connect_args={
-            "server_settings": {
-                "lock_timeout": _REQUEST_LOCK_TIMEOUT_MS,
-                "statement_timeout": _REQUEST_STATEMENT_TIMEOUT_MS,
-            }
-        },
+        connect_args=REQUEST_CONNECT_ARGS,
     )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

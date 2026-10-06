@@ -31,6 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from celerp.db import REQUEST_CONNECT_ARGS
 from test_helpers import DATABASE_URL
 
 
@@ -50,12 +51,7 @@ async def real_engine(_db_engine):
     engine = create_async_engine(
         DATABASE_URL,
         poolclass=NullPool,
-        connect_args={
-            "server_settings": {
-                "lock_timeout": "3000",
-                "statement_timeout": "30000",
-            }
-        },
+        connect_args=REQUEST_CONNECT_ARGS,
     )
 
     async def _truncate():
