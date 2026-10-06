@@ -80,3 +80,18 @@ def test_topbar_controls_fit_without_overlap(page: Page, fresh_company, ui_serve
     for name in ("company", "language"):
         fit = page.locator(_CONTROLS[name]).first.evaluate(_TEXT_FIT_JS)
         assert fit["need"] <= fit["have"] + 1, f"{name} '{fit['text']}' is cut: {fit}"
+
+
+@pytest.mark.parametrize("chars", range(0, 40))
+def test_phone_search_keeps_room_whatever_the_company_name(page: Page, fresh_company, ui_server, chars):
+    """On a phone the company name sits beside the search only when both fit; a name that
+    would squeeze the search below typing room moves to its own row instead."""
+    page.set_viewport_size({"width": 390, "height": 800})
+    page.goto("/inventory")
+    page.wait_for_selector(_CONTROLS["company"], state="visible")
+    page.locator(_CONTROLS["company"]).evaluate(
+        "(el, name) => { el.options[el.selectedIndex].text = name; }", "Company " + "x" * chars)
+    search = page.locator(_CONTROLS["search"]).bounding_box()
+    company = page.locator(_CONTROLS["company"]).bounding_box()
+    assert search["width"] >= 200, f"search box too narrow to type in: {search} beside {company}"
+    assert company["x"] + company["width"] <= 390 + 0.5, f"company off screen: {company}"

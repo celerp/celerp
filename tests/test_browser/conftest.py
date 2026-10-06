@@ -213,6 +213,10 @@ def browser_context(playwright, ui_server, seeded_user):
         "domain": "127.0.0.1",
         "path": "/",
     }])
+    # The host health banner reports this machine's real CPU and RAM. A sharded run loads
+    # the machine enough to raise it mid-test, and it pushes every page down. Pages here
+    # see a healthy host; the endpoint itself is covered by the unit tests.
+    ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
     yield ctx
     browser.close()
 
