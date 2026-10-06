@@ -260,7 +260,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
         r = await real_client.get("/company-backups/download", params=params, headers=auth(tok))
         assert r.status_code == 409, (params, r.text)
         detail = r.json()["detail"]
-        assert url in detail and detail.endswith("Nothing was backed up."), detail
+        assert url in detail and "Nothing was backed up." in detail, detail
         assert not [p for p in folder.rglob("*") if p.is_file()]
     out = tmp_path / "bk-out" / "books.celerp-company"
     with pytest.raises(cb.BackupError) as err:

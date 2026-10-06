@@ -9,6 +9,7 @@ Covers:
 - field_schema.py column ordering (qty → weight → pieces)
 """
 import pytest
+from ui.i18n import t
 
 
 # ── units.py helpers ──────────────────────────────────────────────────────────
@@ -160,7 +161,7 @@ class TestValidateUnits:
         units = [self._make(name="carat"), self._make(name="carat")]
         with pytest.raises(HTTPException) as exc:
             _validate_units(units)
-        assert "duplicate" in exc.value.detail.lower()
+        assert exc.value.detail == t("company.err_unit_duplicate", name="carat")
 
     def test_invalid_name_raises(self):
         from fastapi import HTTPException

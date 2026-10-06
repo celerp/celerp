@@ -72,7 +72,7 @@ async def test_undeclared_rows_block_only_their_company(real_engine, real_client
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
         assert "Widgets" in detail and "zz_gadgets" not in detail and "zz-widgets" not in detail, detail
-        assert detail.endswith("Nothing was backed up.")
+        assert "Nothing was backed up." in detail
         _no_files(tmp_path)
         r = await real_client.get("/company-backups/download", headers=auth(tok_b))
         assert r.status_code == 200, r.text
@@ -131,7 +131,7 @@ async def test_unknown_core_table_blocks_only_company_with_rows(real_engine, rea
         r = await real_client.get("/company-backups/download", headers=auth(tok_a))
         assert r.status_code == 409, r.text
         assert "bk_unknown_things" not in r.json()["detail"]
-        assert r.json()["detail"].endswith("Nothing was backed up.")
+        assert "Nothing was backed up." in r.json()["detail"]
         r = await real_client.get("/company-backups/download", headers=auth(tok_b))
         assert r.status_code == 200, r.text
     finally:

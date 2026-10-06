@@ -28,6 +28,7 @@ import zipfile
 from unittest.mock import patch
 
 import pytest
+from ui.i18n import t
 
 pytestmark = pytest.mark.xdist_group("modules_api")
 
@@ -225,7 +226,7 @@ async def test_malformed_relay_json_gives_friendly_error(client, relay_env):
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert "invalid response" in dl.json()["detail"].lower()
+    assert dl.json()["detail"] == t("error.relay_bad_reply")
 
 
 @pytest.mark.asyncio
@@ -298,7 +299,7 @@ async def test_mismatched_package_name_removed_and_refused(client, relay_env):
         dl = await _download(client, headers)
     r = await _install(client, headers, dl.json()["token"])
     assert r.status_code == 422
-    assert "does not match" in r.json()["detail"]
+    assert r.json()["detail"] == t("company.err_download_mismatch")
     assert not (relay_env / "celerp-imposter").exists()
     assert not (relay_env / "celerp-budgeting").exists()
 

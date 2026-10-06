@@ -45,10 +45,8 @@ INSTALL_WIDE = {
     "unmatched_refunds": "refunds of online payments kept until their payment is on its invoice",
 }
 
-NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."
 AI_BATCH_ACTIVE = ("Wait for the assistant to finish reading files before resetting this company. "
                    "Nothing was deleted.")
-FAILED = "The company could not be reset. Nothing was deleted."
 PAYMENTS_NOT_CLOSED = {
     "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
                           "closed, then reset it. Nothing was deleted."),
@@ -139,7 +137,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     to Celerp Cloud has its online payments closed there first; a database failure part
     way leaves the transaction to roll back."""
     if typed_name != company.name:
-        raise ResetRefused(422, NAME_MISMATCH)
+        raise ResetRefused(422, t("settings.reset_name_mismatch"))
     # A session being issued, or a file being stored, holds the company FOR KEY SHARE until
     # it is saved: the reset waits for it and then removes it with the company, and a later
     # one waits for the reset and finds the company gone.
@@ -178,5 +176,5 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
         session.add(task)
         await session.flush()
     except SQLAlchemyError as exc:
-        raise ResetRefused(500, FAILED, closure) from exc
+        raise ResetRefused(500, t("settings.reset_not_done"), closure) from exc
     return Reset(task.id, closure)

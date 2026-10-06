@@ -373,5 +373,5 @@ def test_clean_schema_restore_of_bad_dump_raises(config_dir, monkeypatch):
     uri = embedded_pg.ensure_cluster(config_dir)
     bad = config_dir / "database.dump"
     bad.write_bytes(b"not a dump")
-    with pytest.raises(RuntimeError, match="pg_restore failed"):
+    with pytest.raises(RuntimeError, match="input file does not appear to be a valid archive"):
         backup.restore_database_file(bad, uri, clean_schema=True)

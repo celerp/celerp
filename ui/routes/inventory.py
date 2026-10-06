@@ -29,7 +29,7 @@ from ui.components.shell import base_shell, minimal_shell, page_header, search_h
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
-from celerp.services.permissions import role_has_permission
+from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.module_slots import (
     connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
 )
@@ -1992,7 +1992,7 @@ def setup_routes(app):
         """Return label template dropdown options for the print button."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             async with api._local_client(token, timeout=5.0, follow_redirects=False) as c:
                 r = await c.get("/api/labels/templates")
@@ -2036,14 +2036,14 @@ function celerpPrintLabel(entityId, templateId) {
     async def recipe_section(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         # The self-refresh (recipeSaved) includes #recipe-form, so the picker scope survives.
         show_all = str(request.query_params.get("show_all_components", "")) in ("on", "true", "1")
         try:
             return await _recipe_section_response(token, entity_id, show_all=show_all)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     async def _production_block_response(token: str, entity_id: str, flash_msg: str | None = None,
@@ -2059,12 +2059,12 @@ function celerpPrintLabel(entityId, templateId) {
     async def production_block(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             return await _production_block_response(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="production-block")
 
     _RUN_ACTIONS = {
@@ -2078,7 +2078,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Advance a work order via its Action dropdown (action in the form body); refresh the block."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         fn = _RUN_ACTIONS.get(str(form.get("action") or ""))
         if fn is None:
@@ -2088,7 +2088,7 @@ function celerpPrintLabel(entityId, templateId) {
             return await _production_block_response(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             return await _production_block_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
 
     @app.post("/api/items/{entity_id}/recipe-section")
@@ -2096,7 +2096,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Structural recipe change (add/remove/clear row): persist immediately, re-render."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         show_all = str(form.get("show_all_components", "")) in ("on", "true", "1")
         action = request.query_params.get("action", "")
@@ -2156,7 +2156,7 @@ function celerpPrintLabel(entityId, templateId) {
             return await _recipe_section_response(token, entity_id, show_all=show_all)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             try:
                 return await _recipe_section_response(token, entity_id, show_all=show_all,
                                                       flash_msg=e.detail, flash_kind="error")
@@ -2168,7 +2168,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Persist the output quantity on change, then fire recipeSaved to re-render the section."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         try:
             output_qty = float(str(form.get("output_qty", "1")) or 1)
@@ -2183,7 +2183,7 @@ function celerpPrintLabel(entityId, templateId) {
             return "", HttpHeader("HX-Trigger", "recipeSaved")
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             return _recipe_saved_status(t("inventory.not_saved_detail", detail=e.detail), "error")
 
     @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit")
@@ -2192,7 +2192,7 @@ function celerpPrintLabel(entityId, templateId) {
         from ui.components.table import editable_cell
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         cell_type = _RECIPE_CELLS.get(section, {}).get(field)
         if cell_type is None:
             return P(t("inventory.unknown_recipe_field"), cls="cell-error")
@@ -2214,7 +2214,7 @@ function celerpPrintLabel(entityId, templateId) {
     async def recipe_cell_display(request: Request, entity_id: str, section: str, idx: int, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if _RECIPE_CELLS.get(section, {}).get(field) is None:
             return P(t("inventory.unknown_recipe_field"), cls="cell-error")
         try:
@@ -2234,12 +2234,12 @@ function celerpPrintLabel(entityId, templateId) {
     async def workflow_section(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             return await _workflow_section_response(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="workflow-section")
 
     @app.post("/api/items/{entity_id}/workflow-section")
@@ -2247,7 +2247,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Structural workflow change (add / remove / reorder / set or upload a step reference)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         action = request.query_params.get("action", "")
         form = await request.form()
         try:
@@ -2278,7 +2278,7 @@ function celerpPrintLabel(entityId, templateId) {
             return await _workflow_section_response(token, entity_id)
         except APIError as e:
             if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
+                return P(t("error.session_expired"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="workflow-section")
 
     @app.get("/api/items/{entity_id}/workflow-cell/{idx}/{field}/edit")
@@ -2286,7 +2286,7 @@ function celerpPrintLabel(entityId, templateId) {
         from ui.components.table import editable_cell
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         cell_type = _WORKFLOW_CELLS.get(field)
         if cell_type is None:
             return P(t("inventory.unknown_workflow_field"), cls="cell-error")
@@ -2317,7 +2317,7 @@ function celerpPrintLabel(entityId, templateId) {
     async def workflow_cell_display(request: Request, entity_id: str, idx: int, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if _WORKFLOW_CELLS.get(field) is None:
             return P(t("inventory.unknown_workflow_field"), cls="cell-error")
         try:
@@ -2353,7 +2353,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Set a file as the hero image by clicking its gallery thumbnail; re-render the gallery."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.set_item_file_hero(token, entity_id, file_id)
             item = await api.get_item(token, entity_id)
@@ -2365,7 +2365,7 @@ function celerpPrintLabel(entityId, templateId) {
     async def field_edit_cell(request: Request, entity_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             schema, item, cat_schemas, locs, company = await asyncio.gather(
                 api.get_item_schema(token),
@@ -2475,7 +2475,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Restore a cell to display (read-only) state — used by Escape key handler."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             schema, item, cat_schemas, locs, company = await asyncio.gather(
                 api.get_item_schema(token),
@@ -2542,7 +2542,7 @@ function celerpPrintLabel(entityId, templateId) {
     async def _field_patch(request: Request, entity_id: str, field: str, corrections: list[dict]):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value: str | float | bool = str(form.get("value", ""))
 
@@ -2581,7 +2581,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return _workflow_cell(entity_id, idx, fname, new_val)
             except APIError as e:
                 if e.status == 401:
-                    return P(t("error.unauthorized"), cls="cell-error")
+                    return P(t("error.session_expired"), cls="cell-error")
                 edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
                                         cell_type=_WORKFLOW_CELLS.get(fname, "text"), restore_url=restore_url,
                                         options=list(_WORKFLOW_TIME_UNITS) if fname == "time_unit" else None)
@@ -2626,7 +2626,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return _recipe_cell(entity_id, section, idx, fname, new_val), HttpHeader("HX-Trigger", "recipeSaved")
             except APIError as e:
                 if e.status == 401:
-                    return P(t("error.unauthorized"), cls="cell-error")
+                    return P(t("error.session_expired"), cls="cell-error")
                 # Keep the user in the editor with the system-standard error styling.
                 edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
                                         cell_type=cell_type, restore_url=restore_url,
@@ -3191,7 +3191,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Return editable_cell for `field` with restore_url → paired-display."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if field not in _PAIRED_FIELDS:
             return P(t("inventory.not_paired_field"), cls="cell-error")
         try:
@@ -3256,7 +3256,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Restore paired cell to display state (ESC or after save)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if field not in _PAIRED_FIELDS:
             return P(t("inventory.not_paired_field"), cls="cell-error")
         try:
@@ -3511,7 +3511,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         if not role_has_permission(settings, _get_role(request), "edit_inventory"):
-            return Div(P(t("error.unauthorized"), cls="flash flash--error"), id="bulk-action-result")
+            return Div(P(missing_permission_text("edit_inventory"), cls="flash flash--error"), id="bulk-action-result")
         reserved: set[str] = set()
         ok = 0
         failed = 0
@@ -4710,7 +4710,7 @@ function celerpPrintLabel(entityId, templateId) {
     async def item_upload_file(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         file = form.get("file")
         if file is None:
@@ -4822,7 +4822,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Drop or pick an image in the list image cell; returns the re-rendered cell."""
         token = _token(request)
         if not token:
-            return _thumbnail_cell_error(entity_id, t("error.unauthorized"))
+            return _thumbnail_cell_error(entity_id, t("error.session_expired"))
         form = await request.form()
         file = form.get("file")
         error = None

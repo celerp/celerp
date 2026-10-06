@@ -24,6 +24,7 @@ from test_cost_restatement import (
     TZ, _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state,
     company_auth,
 )
+from ui.i18n import t
 
 EDIT = "edit"   # where the late correction falls in a history
 
@@ -495,12 +496,13 @@ async def test_locked_current_period_refuses_and_writes_nothing(client, session)
         await step(client, session, auth, ctx)
     from celerp.services.company_lock import locked_company
     company = await locked_company(session, auth["company_id"])
-    company.settings = {**company.settings, "lock_date": business_date_at(datetime.now(timezone.utc), TZ)}
+    lock_date = business_date_at(datetime.now(timezone.utc), TZ)
+    company.settings = {**company.settings, "lock_date": lock_date}
     await session.commit()
     before = await _snapshot(session, auth)
     r = await _set_cost(client, auth, ctx["a"], 100.0)
     assert r.status_code == 422, r.text
-    assert "Period is locked" in r.json()["detail"]
+    assert r.json()["detail"] == t("error.period_locked", date=lock_date)
     assert await _snapshot(session, auth) == before
 
 

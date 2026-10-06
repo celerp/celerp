@@ -76,8 +76,7 @@ async def test_wrong_name_shows_the_reason_inside_the_dialog(ui, real_engine):
 
     assert r.status_code == 200
     assert "HX-Redirect" not in r.headers
-    assert "The name you typed does not match this company&#x27;s name. Nothing was deleted." in r.text \
-        or "The name you typed does not match this company's name. Nothing was deleted." in r.text
+    assert t("settings.reset_name_mismatch") in _page(r)
     assert await count(real_engine, "companies", "id = :c", c=str(a)) == 1
 
 
@@ -90,7 +89,7 @@ async def test_non_owner_is_told_in_the_dialog(ui, real_engine):
 
     r = await ui.post(RESET_UI, data={"company_name": "Harbor Goods Ltd"})
 
-    assert "Owner role required." in r.text
+    assert t("settings.owner_role_required") in _page(r)
     assert await count(real_engine, "companies", "id = :c", c=str(a)) == 1
 
 

@@ -7,6 +7,7 @@ reactivated instead of copied, and the refusals and stale previews around them."
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import re
 import threading
@@ -14,6 +15,8 @@ import uuid
 
 import httpx
 import pytest
+
+from ui.i18n import t
 
 from .test_migration_wizard_browser import _pg_admin
 
@@ -209,7 +212,7 @@ def test_restore_refused_for_non_owner_browser(page, fresh_company, api_server, 
     _cookie(page.context, _token_for(second, source["id"]))
     _upload(page, _SETTINGS, path)
     text = page.content()
-    assert f"Team members not added, because only an owner of {_restored_name(source)} can add them: 1" in text
+    assert f"Team members not added: 1. Only an owner of {_restored_name(source)} can add them." in text
     assert page.locator('button:has-text("Add team and open company")').count() == 0
     page.click('button:has-text("Open existing company")')
     page.wait_for_url(re.compile(r"/settings/restore-backup/done"), timeout=_WAIT_MS)
@@ -253,7 +256,7 @@ def test_restore_inactive_destination_refused_browser(page, fresh_company, api_s
     _cookie(page.context, _token_for(second, source["id"]))
     _upload(page, _NEW_COMPANY, path)
     text = page.content()
-    assert "already restored here as a company you are not a member of" in text
+    assert t("company_backup.err_not_a_member") in html.unescape(text)
     assert "deactivated" not in text and dest not in text
     assert page.locator('button:has-text("Reactivate existing company")').count() == 0
     assert page.locator('button:has-text("Restore company")').count() == 0
@@ -276,7 +279,7 @@ def test_restore_stale_preview_browser(page, fresh_company, tmp_path):
     page.click('button:has-text("Add team and open company")')
     page.wait_for_load_state("domcontentloaded")
     text = page.content()
-    assert "Something changed since this preview. Check the updated preview before continuing." in text
+    assert t("company_backup.err_stale_preview") in html.unescape(text)
     assert f"Team members who get access to {_restored_name(source)} with their roles in this company: 2" in text
     assert _members(dest) == before
 

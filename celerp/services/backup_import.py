@@ -216,8 +216,6 @@ def _is_protected_module_dir(
 RESTORE_NOTICE_FILE = "restore-notice.json"
 
 
-SAFETY_WARNING = "A safety backup could not be made before restoring."
-
 # Response header on a successful whole-installation restore: every session
 # ended with it, so the UI drops the browser's session cookies.
 SESSION_ENDED_HEADER = "X-Session-Ended"
@@ -900,7 +898,7 @@ async def run_recovery(path: Path):
         "digest": prepared.digest, "expires_at": expires_at.isoformat(),
     }))
     detail = (safety.error or "").rstrip(".")
-    return _failed(f"{SAFETY_WARNING} {detail}.", needs_confirmation=True,
+    return _failed(t("system_recovery.safety_failed", detail=detail), needs_confirmation=True,
                    confirmation_id=prepared.id, archive_digest=prepared.digest)
 
 

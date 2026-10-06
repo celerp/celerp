@@ -1625,7 +1625,7 @@ async def test_a_payment_recorded_again_into_a_locked_period_is_refused_like_any
         assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) == _OCTOBER_3
     r = await real_client.post(f"/docs/{eid}/payment", headers=auth(await token(real_engine, boss, a)),
                                json={"amount": 500.0, "payment_date": "2025-10-03", "bank_account": "1110"})
-    assert r.status_code == 422 and r.json()["detail"].startswith("Period is locked through 2025-10-31")
+    assert r.status_code == 422 and r.json()["detail"].startswith("Your books are locked up to 2025-10-31")
 
 
 @pytest.mark.parametrize("refusal", ["generation_stale", "recovery_pending"])

@@ -10,6 +10,7 @@ import pytest
 
 from celerp.services.pricing import is_cost_list_name  # noqa: E402
 from test_helpers import create_item, grant_permission, perm_setup  # noqa: E402
+from celerp.services.permissions import missing_permission_text
 
 
 async def _item_state(client, headers: dict, item_id: str) -> dict:
@@ -228,7 +229,7 @@ async def test_cost_at_creation_still_gated_for_available_item(client, session):
     body["status"] = "available"
     r = await client.post("/items", json=body, headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert "set_inventory_prices" in r.json()["detail"]
+    assert r.json()["detail"] == missing_permission_text("set_inventory_prices")
 
 
 def test_with_draft_cost_list_reinjects_for_authorable_draft():

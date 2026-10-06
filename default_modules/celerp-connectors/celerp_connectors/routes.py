@@ -203,7 +203,7 @@ def _relay_https_error() -> dict | None:
     if relay_http_url().startswith("https://") or os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
         return None
     return {"ok": False, "error": "relay_not_https",
-            "detail": "Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development."}
+            "detail": t("connectors.err_relay_not_https")}
 
 
 @router.post("/{connector_name}/credentials")

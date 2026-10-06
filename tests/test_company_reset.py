@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+from ui.i18n import t
 from sqlalchemy import text
 
 from company_backup_support import company, member, owner, snapshot, token
@@ -235,8 +237,7 @@ async def test_wrong_name_is_refused_and_nothing_changes(real_engine, real_clien
     for typed in ("harbor goods ltd", "Harbor Goods Ltd ", "Hillside Supply Co", ""):
         r = await real_client.post(RESET, json={"company_name": typed}, headers=auth(tok))
         assert r.status_code == 422, (typed, r.text)
-        assert r.json()["detail"] == ("The name you typed does not match this company's name. "
-                                      "Nothing was deleted.")
+        assert r.json()["detail"] == t("settings.reset_name_mismatch")
     assert (await real_client.post(RESET, json={}, headers=auth(tok))).status_code == 422
 
     assert await snapshot(real_engine) == before
@@ -272,7 +273,7 @@ async def test_a_failure_part_way_leaves_the_company_intact(real_engine, real_cl
         before = await snapshot(real_engine)
         r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"}, headers=auth(tok))
         assert r.status_code == 500
-        assert r.json()["detail"] == "The company could not be reset. Nothing was deleted."
+        assert r.json()["detail"] == t("settings.reset_not_done")
         assert await snapshot(real_engine) == before
         assert (_folder(tmp_path, a) / "alpha.pdf").exists()
         assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 200

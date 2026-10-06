@@ -220,7 +220,7 @@ def setup_routes(app):
     async def edit_managed_tag_form(request: Request, tag_name: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             tags = await api.get_contact_tags_vocabulary(token)
         except Exception:
@@ -250,7 +250,7 @@ def setup_routes(app):
     async def update_managed_tag(request: Request, tag_name: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         new_name = str(form.get("name", "")).strip() or tag_name
         color = str(form.get("color", "")).strip() or None
@@ -270,7 +270,7 @@ def setup_routes(app):
     async def delete_managed_tag(request: Request, tag_name: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             tags = await api.get_contact_tags_vocabulary(token)
         except Exception:
@@ -283,7 +283,7 @@ def setup_routes(app):
     async def save_contact_defaults(request: Request):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         defaults = {
             "default_price_list": form.get("default_price_list") or None,

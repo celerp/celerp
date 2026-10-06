@@ -471,14 +471,14 @@ def test_stuck_step_fails_instead_of_waiting(monkeypatch):
     """A step that never ends (a stalled pip or migration) raises UpdateError,
     which every step of run_update turns into the undo path above."""
     monkeypatch.setattr(update, "STEP_TIMEOUT_SECONDS", 1)
-    with pytest.raises(update.UpdateError, match="did not finish"):
+    with pytest.raises(update.UpdateError, match="was stopped"):
         update._step("-c", "import time; time.sleep(60)")
 
 
 def test_failed_step_logs_its_output_and_raises_only_the_exit_code(caplog):
     with pytest.raises(update.UpdateError) as exc:
         update._step("-c", "import sys; sys.stderr.write('se' + 'cret'); sys.exit(3)")
-    assert "secret" not in str(exc.value) and str(exc.value).endswith("exited 3")
+    assert "secret" not in str(exc.value) and str(exc.value).endswith("(code 3)")
     assert "secret" in caplog.text
 
 
