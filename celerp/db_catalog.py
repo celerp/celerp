@@ -126,13 +126,14 @@ def company_tables(schema: dict[str, Table], *, held: bool = False) -> set[str]:
 
 
 def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
-    """Of the users bound as ``:members``, delete those no remaining row still names.
+    """Of the users bound as ``:members``, delete those whose deletion goes no further
+    than rows holding no company's data.
 
-    A row of a company, or one hanging off it, keeps its user whatever its foreign key
-    does on delete, and so does one that names the user through rows of tables outside
-    any company (a per-user preference): deleting the user would cascade into, change or
-    trip over that company's data. Elsewhere (a session, a badge) a cascading reference
-    goes with the user."""
+    Deleting a user cascades into the rows outside any company that name it by a
+    cascading key (a session, a badge), and on into theirs. A user is kept while any
+    other row names one of those: a row of a company, another user, or a row naming it
+    by a key that does not cascade. Deleting the user would cascade into, change or trip
+    over that row."""
     company = company_tables(schema)
     # The users being deleted are named by an alias no table of the schema has, so no
     # table a condition reads can hide it.
@@ -140,23 +141,29 @@ def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
     while user in schema:
         user += "_"
 
-    def reaching(name: str, seen: frozenset[str]) -> list[str]:
-        """Conditions picking the rows of ``name`` that name the user, directly or
-        through rows of tables outside any company."""
+    def picks(fk: ForeignKey, condition: str) -> str:
+        return (f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
+                f"FROM {ident(fk.target)} WHERE {condition})")
+
+    def going(name: str, seen: frozenset[str]) -> str:
+        """The condition picking the rows of ``name`` deleted with the user, or nothing.
+        Rows reached again through a loop of cascading keys are not bounded here, so
+        all of that table's rows count."""
+        if name == "users":
+            return f"id = {user}.id"
         conds = []
         for fk in schema[name].fks:
-            if fk.target == "users":
-                conds += [f"{ident(col)} = {user}.id" for col in fk.cols]
-            elif fk.target not in company and fk.target not in seen and (
-                    via := reaching(fk.target, seen | {fk.target})):
-                conds.append(f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
-                             f"FROM {ident(fk.target)} WHERE {' OR '.join(via)})")
-        return conds
+            if not fk.cascades or fk.target in company:
+                continue
+            if fk.target in seen:
+                return "TRUE"
+            if via := going(fk.target, seen | {fk.target}):
+                conds.append(picks(fk, via))
+        return " OR ".join(conds)
 
-    refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {cond})"
-            for name in sorted(company) for cond in reaching(name, frozenset({name}))]
-    refs += [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {ident(col)} = {user}.id)"
-             for name, table in schema.items() if name not in company
-             for fk in table.fks if fk.target == "users" and not fk.cascades
-             for col in fk.cols]
+    deleted = {name: cond for name in ["users", *sorted(set(schema) - company - {"users"})]
+               if (cond := going(name, frozenset({name})))}
+    refs = [f"NOT EXISTS (SELECT 1 FROM {ident(name)} WHERE {picks(fk, deleted[fk.target])})"
+            for name in sorted(schema) for fk in schema[name].fks
+            if fk.target in deleted and not (fk.cascades and name in deleted and name != "users")]
     return " AND ".join([f"DELETE FROM users AS {user} WHERE {user}.id = ANY(:members)", *refs])

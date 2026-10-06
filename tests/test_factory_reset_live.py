@@ -276,24 +276,63 @@ async def test_a_user_another_company_reaches_through_a_per_user_table_stays(
             await conn.execute(text("DROP TABLE IF EXISTS ext_uses, ext_prefs"))
 
 
-async def test_a_user_another_user_names_stays(real_client, real_engine):  # noqa: F811
+@pytest.mark.parametrize("action", ["NO ACTION", "CASCADE"])
+async def test_a_user_another_user_names_stays(real_client, real_engine, action):  # noqa: F811
     """A module column on users names who invited each user, and the clerk, Alpha's
-    only, invited the others. Resetting Alpha keeps the clerk those rows still name."""
+    only, invited the others. Resetting Alpha keeps the clerk those rows still name, so
+    the owner, still Beta's, is neither deleted with the clerk nor tripped over."""
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    beta = await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
+        await conn.execute(text(
+            f"ALTER TABLE users ADD COLUMN ext_invited_by uuid REFERENCES users(id) ON DELETE {action}"))
+        await conn.execute(text("UPDATE users SET ext_invited_by = :u WHERE id <> :u"), {"u": clerk})
+    try:
+        members = await _rows(real_engine, "user_companies")
+
+        r = await _reset(real_client, ta, "Alpha Co")
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+        assert [m for m in await _rows(real_engine, "user_companies")] == [m for m in members if beta in map(str, m)]
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS ext_invited_by"))
+
+
+async def test_a_user_whose_sessions_another_row_names_stays(real_client, real_engine):  # noqa: F811
+    """The clerk, Alpha's only, has a session in a per-user table that cascades from
+    users, and an audit row with no company names that session by a key that does not
+    cascade. Deleting the clerk would trip over the audit row, so the reset keeps the
+    clerk and leaves both rows as they were."""
+    import uuid
+
     from sqlalchemy import text
 
     ta, _ = await _two_companies(real_client)
     async with real_engine.begin() as conn:
         clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
-        await conn.execute(text("ALTER TABLE users ADD COLUMN ext_invited_by uuid REFERENCES users(id)"))
-        await conn.execute(text("UPDATE users SET ext_invited_by = :u WHERE id <> :u"), {"u": clerk})
+        await conn.execute(text("CREATE TABLE ext_sessions (id uuid PRIMARY KEY, "
+                                "user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE)"))
+        await conn.execute(text("CREATE TABLE ext_audit (id uuid PRIMARY KEY, "
+                                "session_id uuid NOT NULL REFERENCES ext_sessions(id))"))
+        session = uuid.uuid4()
+        await conn.execute(text("INSERT INTO ext_sessions VALUES (:s, :u)"), {"s": session, "u": clerk})
+        await conn.execute(text("INSERT INTO ext_audit VALUES (:i, :s)"), {"i": uuid.uuid4(), "s": session})
     try:
+        before = {t: await _rows(real_engine, t) for t in ("ext_sessions", "ext_audit")}
+
         r = await _reset(real_client, ta, "Alpha Co")
 
         assert r.status_code == 200, r.text
         assert await count(real_engine, "users", "id = :i", i=clerk) == 1
+        assert {t: await _rows(real_engine, t) for t in before} == before
     finally:
         async with real_engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS ext_invited_by"))
+            await conn.execute(text("DROP TABLE IF EXISTS ext_audit, ext_sessions"))
 
 
 async def test_a_user_a_table_named_u_names_stays(real_client, real_engine):  # noqa: F811

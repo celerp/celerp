@@ -254,6 +254,34 @@ async def test_bootstrap_discard_keeps_an_owner_another_company_reaches_through_
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_discard_keeps_an_owner_whose_sessions_another_row_names(
+        real_client, real_engine, migration_env):
+    """The owner has a session in a per-user table that cascades from users, and an audit
+    row with no company names that session by a key that does not cascade. The discard
+    keeps the owner rather than trip over the audit row."""
+    from sqlalchemy import text
+
+    token, run_id, owner, _ = await _bootstrapped_beside_another_company(real_client, real_engine)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE ext_sessions (id uuid PRIMARY KEY, "
+                                "user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE)"))
+        await conn.execute(text("CREATE TABLE ext_audit (id uuid PRIMARY KEY, "
+                                "session_id uuid NOT NULL REFERENCES ext_sessions(id))"))
+        session = uuid.uuid4()
+        await conn.execute(text("INSERT INTO ext_sessions VALUES (:s, :u)"), {"s": session, "u": owner})
+        await conn.execute(text("INSERT INTO ext_audit VALUES (:i, :s)"), {"i": uuid.uuid4(), "s": session})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 200 and r.json() == {"redirect": "/"}, r.text
+        assert await count(real_engine, "users", "id = :i", i=owner) == 1
+        assert await count(real_engine, "ext_audit", "session_id = :s", s=session) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_audit, ext_sessions"))
+
+
+@pytest.mark.asyncio
 async def test_additional_company_discard_with_a_storage_failure_keeps_the_active_company(
         real_client, real_engine, migration_env, monkeypatch):
     token, run_id, _ = await _staged(real_client, real_engine, migration_env)
