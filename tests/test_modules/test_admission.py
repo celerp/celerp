@@ -16,9 +16,12 @@ nothing depends on an installed module or on another test's imports.
 from __future__ import annotations
 
 import ast
+import io
 import json
+import shutil
 import sys
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -26,7 +29,7 @@ import httpx
 import pytest
 
 from celerp.modules import loader, slots
-from celerp.modules.importer import PREMIUM_MARKER
+from celerp.modules.importer import PREMIUM_MARKER, install_from_zip, remove_module_dir
 from celerp.modules.meta import write_meta
 
 
@@ -925,17 +928,82 @@ def test_kernel_projection_prefixes_cover_the_core_folded_modules():
     assert slots.KERNEL_PROJECTION_PREFIXES == {"sys."} | declared
 
 
-def test_official_marketplace_module_keeps_reserved_prefix(_modules):
-    """The reserved prefix is the importer's rule, not a blanket ban: a module the
-    marketplace installed as official keeps its celerp- name."""
-    pkg = _write_module(_modules, f"celerp-{_uid()}", {"name": "", "version": "1.0.0"})
-    manifest = {"name": pkg.name, "version": "1.0.0"}
-    (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
+def _official_zip(name: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"{name}/__init__.py",
+                    f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n")
+    return buf.getvalue()
+
+
+def _copied_by_hand(base: Path, name: str) -> Path:
+    """An official-looking package placed in the module directory without the
+    Marketplace, carrying the sidecar a Marketplace install writes."""
+    pkg = _write_module(base, name, {"name": name, "version": "1.0.0"})
     write_meta(pkg, source="marketplace")
+    return pkg
 
-    admission = loader.admit_modules(str(_modules), {pkg.name})
 
-    assert [a.name for a in admission.admitted] == [pkg.name]
+def _admitted(base: Path, *names: str) -> list[str]:
+    return [a.name for a in loader.admit_modules(str(base), set(names)).admitted]
+
+
+_RENAME_OR_INSTALL = "Install this module from the Marketplace"
+
+
+def test_marketplace_install_keeps_reserved_prefix(_modules):
+    """The reserved prefix is the importer's rule, not a blanket ban: a module the
+    Marketplace installed as official keeps its celerp- name."""
+    name = f"celerp-{_uid()}"
+    install_from_zip(_official_zip(name), official=True, source="marketplace")
+
+    assert _admitted(_modules, name) == [name]
+
+
+def test_reserved_prefix_copied_in_by_hand_is_refused(_modules):
+    installed = f"celerp-{_uid()}"
+    install_from_zip(_official_zip(installed), official=True, source="marketplace")
+    copied = _copied_by_hand(_modules, f"celerp-{_uid()}").name
+
+    admission = loader.admit_modules(str(_modules), {installed, copied})
+
+    assert [a.name for a in admission.admitted] == [installed]
+    assert _RENAME_OR_INSTALL in admission.refused[copied]
+    assert "rename it" in admission.refused[copied]
+
+
+def test_official_module_changed_after_install_is_refused(_modules):
+    name = f"celerp-{_uid()}"
+    install_from_zip(_official_zip(name), official=True, source="marketplace")
+    (_modules / name / "extra.py").write_text("x = 1\n")
+
+    admission = loader.admit_modules(str(_modules), {name})
+
+    assert admission.admitted == []
+    assert _RENAME_OR_INSTALL in admission.refused[name]
+
+
+def test_removed_official_module_copied_back_by_hand_is_refused(_modules, tmp_path):
+    name = f"celerp-{_uid()}"
+    install_from_zip(_official_zip(name), official=True, source="marketplace")
+    kept = tmp_path / "kept"
+    shutil.copytree(_modules / name, kept)
+    remove_module_dir(name)
+    shutil.copytree(kept, _modules / name)
+
+    assert _admitted(_modules, name) == []
+
+
+def test_marketplace_installs_from_before_the_record_keep_loading(_modules):
+    """Installs made before Celerp recorded official installs are adopted once,
+    from what was on disk then; a copy placed afterwards is not."""
+    earlier = _copied_by_hand(_modules, f"celerp-{_uid()}").name
+
+    assert _admitted(_modules, earlier) == [earlier]
+    assert _admitted(_modules, earlier) == [earlier]
+
+    later = _copied_by_hand(_modules, f"celerp-{_uid()}").name
+    assert _admitted(_modules, earlier, later) == [earlier]
 
 
 # ── A1 at load: a refused module's own code never runs ───────────────────────

@@ -64,10 +64,10 @@ from pathlib import Path
 from celerp.modules.importer import (
     _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
     _read_manifest as _read_literal_manifest, _validate_name, _validate_name_chars,
-    _validate_table_prefix,
+    _validate_table_prefix, official_installs,
 )
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
-from celerp.modules.meta import META_FILENAME, read_meta
+from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
     FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
     register as register_slot, resolve_handler,
@@ -585,14 +585,17 @@ class Admission:
 
 def _is_official_name(name: str, pkg_path: Path) -> bool:
     """True when a module may carry the reserved ``celerp-`` name: the committed
-    lock claims it, the marketplace installed it, or it ships in a license-gated
-    premium tree. Anything else claiming the prefix is refused, exactly as the
-    importer refuses a sideload that claims it."""
+    lock claims it, it ships in a license-gated premium tree, or the Marketplace
+    installed it and its content is unchanged since (importer.official_installs,
+    a record kept beside the modules, never inside one). Anything else claiming
+    the prefix is refused, exactly as the importer refuses a sideload that
+    claims it."""
     if not name.startswith(_RESERVED_PREFIX):
         return False
-    return (name in first_party_names()
-            or read_meta(pkg_path).get("source") == "marketplace"
-            or any(p.name == "premium_modules" for p in pkg_path.parents))
+    if name in first_party_names() or any(p.name == "premium_modules" for p in pkg_path.parents):
+        return True
+    recorded = official_installs(pkg_path.parent).get(name)
+    return recorded is not None and recorded == module_content_digest(pkg_path)
 
 
 def _inside(path: Path, root: Path) -> bool:

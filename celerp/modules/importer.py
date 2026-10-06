@@ -27,6 +27,8 @@ import ast
 import contextlib
 import errno
 import functools
+import json
+import logging
 import os
 import shutil
 import stat
@@ -35,7 +37,9 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from celerp.modules.meta import write_meta
+from celerp.modules.meta import read_meta, write_meta
+
+log = logging.getLogger(__name__)
 
 # Compressed and uncompressed caps. Generous for code, hostile to zip bombs.
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
@@ -49,6 +53,12 @@ _NAME_MAX = 64
 # carrying it like premium_modules/, so downloaded paid modules are license-checked
 # at load without needing a second module dir.
 PREMIUM_MARKER = ".celerp-premium"
+
+# The official installs in a module directory, kept beside the modules and never
+# inside one: module name -> its content digest when the Marketplace installed it.
+# A module keeps the reserved celerp- name only while this record names it with
+# its current content (loader._is_official_name).
+OFFICIAL_RECORD = ".celerp-official.json"
 
 
 class ModuleImportError(Exception):
@@ -78,7 +88,8 @@ def _validate_name(name: str, *, official: bool = False) -> None:
     # install under it - so neither path can impersonate the other.
     if official != name.startswith(_RESERVED_PREFIX):
         raise ModuleImportError(
-            "The 'celerp-' name prefix is reserved for official modules."
+            "The 'celerp-' name prefix is reserved for official modules. Install this "
+            "module from the Marketplace, or rename it without the 'celerp-' prefix."
             if not official else
             "Official module packages must use the 'celerp-' name prefix."
         )
@@ -438,6 +449,7 @@ def remove_module_dir(name: str) -> None:
                 continue
             if is_first_party(target):
                 continue
+            _forget_official(base, name)
             grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
             try:
                 os.replace(target, grave)
@@ -449,13 +461,78 @@ def remove_module_dir(name: str) -> None:
         raise ModuleImportError(f"Module '{name}' is not installed.")
 
 
+def _read_official_record(base: Path) -> dict[str, str] | None:
+    """*base*'s official-install record, or None when it has none yet. An
+    unreadable record names nothing."""
+    try:
+        record = json.loads((base / OFFICIAL_RECORD).read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _write_official_record(base: Path, record: dict[str, str]) -> None:
+    staged = base / f".{OFFICIAL_RECORD}.{uuid.uuid4().hex}"
+    staged.write_text(json.dumps(record, sort_keys=True))
+    os.replace(staged, base / OFFICIAL_RECORD)
+
+
+def _official_record_locked(base: Path) -> dict[str, str]:
+    """*base*'s record, created on first use (the caller holds the install lock).
+    Celerp releases before the record trusted the sidecar a Marketplace install
+    writes, so the reserved-name modules carrying it are adopted, once, as they
+    are on disk at that moment."""
+    from celerp.modules.loader import module_content_digest
+
+    record = _read_official_record(base)
+    if record is None:
+        record = {}
+        for pkg in sorted(base.iterdir()):
+            if (pkg.is_dir() and pkg.name.startswith(_RESERVED_PREFIX)
+                    and read_meta(pkg).get("source") == "marketplace"):
+                digest = module_content_digest(pkg)
+                if digest is not None:
+                    record[pkg.name] = digest
+        _write_official_record(base, record)
+    return record
+
+
+def official_installs(base: Path) -> dict[str, str]:
+    """The modules in *base* the Marketplace installed as official: name ->
+    content digest at install. Grants nothing when the record cannot be read or
+    created."""
+    record = _read_official_record(base)
+    if record is not None:
+        return record
+    try:
+        with _one_install_at_a_time(base):
+            return _official_record_locked(base)
+    except OSError as exc:
+        log.warning("Cannot record official module installs in %s: %s", base, exc)
+        return {}
+
+
+def _forget_official(base: Path, name: str) -> None:
+    """Drop *name* from *base*'s record (the caller holds the install lock)."""
+    record = _read_official_record(base)
+    if record and name in record:
+        del record[name]
+        try:
+            _write_official_record(base, record)
+        except OSError as exc:
+            raise ModuleImportError(f"Could not remove the module: {exc}")
+
+
 @contextlib.contextmanager
-def _one_install_at_a_time():
+def _one_install_at_a_time(base: Path | None = None):
     """Run the block while no other install, in any process, is in its own.
 
     What an install is checked against (the names and table prefixes already on
-    disk) only stays true until the package lands if nothing else lands first."""
-    path = _module_dir() / ".install.lock"
+    disk) only stays true until the package lands if nothing else lands first.
+    *base* is the module directory to hold, the install directory by default."""
+    path = (base or _module_dir()) / ".install.lock"
     with open(path, "a+b") as handle:
         if os.name == "nt":
             import msvcrt
@@ -486,10 +563,11 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     _validate_name(name, official=official)
     _check_min_version(manifest)
     with _one_install_at_a_time():
-        return _land(staged, manifest, name, premium=premium, source=source)
+        return _land(staged, manifest, name, official=official, premium=premium, source=source)
 
 
-def _land(staged: Path, manifest: dict, name: str, *, premium: bool, source: str) -> dict:
+def _land(staged: Path, manifest: dict, name: str, *, official: bool, premium: bool,
+          source: str) -> dict:
     _validate_table_prefix(name, manifest)
     # Reconcile the marker in BOTH directions - belt and suspenders alongside
     # the explicit reserved-name refusals above: this is the one place every
@@ -530,6 +608,15 @@ def _land(staged: Path, manifest: dict, name: str, *, premium: bool, source: str
                 f"A module named '{name}' already exists. Remove it first, then import."
             )
         raise ModuleImportError(f"Could not write the module to disk: {exc}")
+    if official:
+        from celerp.modules.loader import module_content_digest
+        try:
+            record = _official_record_locked(target.parent)
+            record[name] = module_content_digest(target)
+            _write_official_record(target.parent, record)
+        except OSError as exc:
+            shutil.rmtree(target, ignore_errors=True)
+            raise ModuleImportError(f"Could not record the module install: {exc}")
     return {
         "name": name,
         "version": str(manifest.get("version", "")),
