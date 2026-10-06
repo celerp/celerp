@@ -3406,6 +3406,7 @@
   "migration.discard": "Annulla migrazione",
   "migration.discard_confirm": "Annullare la migrazione verso {company}? I dati importati e il file caricato verranno eliminati.",
   "migration.discard_partition_key": "Questa migrazione non può essere annullata perché la tabella {table} è stata modificata al di fuori di Celerp (da un modulo installato o da una modifica diretta al database) in un modo che l'annullamento non può gestire in sicurezza. Non è stato eliminato nulla. Chiedi a chi ha installato quel modulo o modificato il database di correggerlo.",
+  "migration.discard_unsafe_data": "Questa migrazione non può essere annullata perché la tabella {table} contiene record di questa azienda che non fanno parte della migrazione, quindi l'annullamento non può rimuoverli in sicurezza. Di solito provengono da un modulo installato o da una modifica diretta al database. Non è stato eliminato nulla. Chiedi a chi ha installato quel modulo o modificato il database di rimuovere quei record, poi annulla di nuovo la migrazione.",
   "migration.phase.company_settings": "Azienda e impostazioni",
   "migration.phase.currencies_taxes_accounts": "Anagrafiche contabili",
   "migration.phase.contacts_locations": "Contatti e sedi",

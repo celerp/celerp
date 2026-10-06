@@ -964,8 +964,13 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         held = await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'),
                                     {"c": str(company.id)})
         if held:
-            raise MigrationError(409, f"This company has data in {table} that discard cannot remove safely. "
-                                      "Nothing was deleted.")
+            raise MigrationError(409, refusal(
+                "migration.discard_unsafe_data",
+                f"This migration cannot be discarded because the table {table} holds records of this "
+                "company that are not part of the migration, so discarding cannot safely remove them. "
+                "They usually come from an installed module or a direct database change. Nothing was "
+                "deleted. Ask whoever installed that module or changed the database to remove those "
+                "records, then discard again.", table=table))
     run_ids = list((await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id

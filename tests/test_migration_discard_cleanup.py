@@ -29,7 +29,7 @@ from migration_support import (
     scan_upload,
 )
 from test_factory_reset_live import _PARTITIONED, _PT
-from test_helpers import create_item, default_location_id, register_admin
+from test_helpers import create_item, default_location_id, in_language, register_admin
 
 TASKS = "migration_cleanup_tasks"
 
@@ -317,6 +317,33 @@ async def test_bootstrap_discard_is_refused_while_a_key_is_kept_on_one_partition
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_pt"))
             await conn.execute(text("DELETE FROM companies WHERE id = :c"), {"c": other})
+
+
+@pytest.mark.asyncio
+async def test_discard_is_refused_while_the_company_has_records_discard_does_not_remove(
+        real_client, real_engine, migration_env):
+    """A table discard does not know holds a row of the staged company. The discard is
+    refused naming that table, in the user's language, and the company, the row and the
+    run's files are all kept."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE ext_notes (id uuid PRIMARY KEY, company_id uuid NOT NULL)"))
+        await conn.execute(text("INSERT INTO ext_notes VALUES (gen_random_uuid(), :c)"), {"c": company_id})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_unsafe_data", {"table": "ext_notes"})
+        assert "ext_notes" in in_language("de", detail) != detail["message"]
+        assert await count(real_engine, "companies", "id = :c", c=company_id) == 1
+        assert await count(real_engine, "ext_notes", "company_id = :c", c=company_id) == 1
+        assert _source(migration_env, run_id).is_dir()
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
 
 
 @pytest.mark.asyncio

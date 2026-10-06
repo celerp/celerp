@@ -501,7 +501,9 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
         await conn.execute(text("INSERT INTO mystery_rows VALUES (:c)"), {"c": company_id})
     try:
         r = await discard(admin_token, run_id)
-        assert r.status_code == 409 and "mystery_rows" in r.json()["detail"]
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_unsafe_data", {"table": "mystery_rows"})
         await intact()
     finally:
         async with real_engine.begin() as conn:

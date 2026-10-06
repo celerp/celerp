@@ -3406,6 +3406,7 @@
   "migration.discard": "Hủy quá trình di chuyển",
   "migration.discard_confirm": "Hủy quá trình di chuyển vào {company}? Dữ liệu đã nhập và tệp đã tải lên sẽ bị xóa.",
   "migration.discard_partition_key": "Không thể hủy quá trình di chuyển này vì bảng {table} đã bị thay đổi bên ngoài Celerp (bởi một mô-đun đã cài đặt hoặc một thay đổi trực tiếp trong cơ sở dữ liệu) theo cách mà việc hủy không thể xử lý an toàn. Không có gì bị xóa. Hãy nhờ người đã cài mô-đun đó hoặc đã thay đổi cơ sở dữ liệu sửa lại.",
+  "migration.discard_unsafe_data": "Không thể hủy quá trình di chuyển này vì bảng {table} chứa bản ghi của công ty này không thuộc quá trình di chuyển, nên việc hủy không thể xóa chúng một cách an toàn. Chúng thường đến từ một mô-đun đã cài đặt hoặc một thay đổi trực tiếp trong cơ sở dữ liệu. Không có gì bị xóa. Hãy nhờ người đã cài mô-đun đó hoặc đã thay đổi cơ sở dữ liệu xóa các bản ghi này, rồi hủy lại quá trình di chuyển.",
   "migration.phase.company_settings": "Công ty và thiết lập",
   "migration.phase.currencies_taxes_accounts": "Danh mục kế toán",
   "migration.phase.contacts_locations": "Liên hệ và địa điểm",
