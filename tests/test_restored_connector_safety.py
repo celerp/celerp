@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, download, member, owner, restore, settle, token
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -368,8 +369,7 @@ async def test_reconnect_same_store_relinks_then_protects(restored, real_engine,
     r = await real_client.post("/items/merge", headers=auth(restored.tok),
                                json={"source_entity_ids": [restored.a, restored.b], "target_sku_from": restored.a})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == (
-        "This catalog product is currently linked to WooCommerce. Merge its physical lots instead.")
+    assert r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="WooCommerce")
 
 
 async def test_reconnect_different_store_fails_closed(restored, real_engine):

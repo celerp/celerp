@@ -38,6 +38,7 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_projections
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
+from ui.i18n import t
 
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 
@@ -144,7 +145,7 @@ class BatchImportResult(BaseModel):
 async def _get_order(session: AsyncSession, company_id, order_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": order_id})
     if row is None or row.entity_type != "mfg_order":
-        raise HTTPException(status_code=404, detail="Manufacturing order not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_run_not_found"))
     return row
 
 
@@ -157,12 +158,12 @@ def _order_item_ids(data: dict) -> list[str]:
     for line in inputs:
         item_id = line.get("item_id") if isinstance(line, dict) else None
         if not isinstance(item_id, str) or not item_id:
-            raise HTTPException(status_code=422, detail="Every component of a run must name an item")
+            raise HTTPException(status_code=422, detail=t("manufacturing.err_component_no_item"))
         ids.append(item_id)
     output = data.get("output_item_id")
     if output is not None:
         if not isinstance(output, str) or not output:
-            raise HTTPException(status_code=422, detail="A run's product must name an item")
+            raise HTTPException(status_code=422, detail=t("manufacturing.err_product_no_item"))
         ids.append(output)
     return ids
 
@@ -181,7 +182,7 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
     for item_id in ids:
         row = rows.get(item_id)
         if row is None or row.entity_type != "item":
-            raise HTTPException(status_code=422, detail=f"Not an item in this company: {item_id}")
+            raise HTTPException(status_code=422, detail=t("manufacturing.err_item_unknown"))
     return await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=location_id,
@@ -236,11 +237,11 @@ async def set_item_recipe(
     """
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
 
     recipe = payload.model_dump()
     if any(c.get("item_id") == item_id for c in recipe["components"]):
-        raise HTTPException(status_code=422, detail="An item cannot be a component of itself")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_component_is_self"))
 
     # Merge any auto-labor from registered providers (the future-module seam; no-op in v1).
     recipe["labor"] = apply_labor_providers(recipe["components"], recipe.get("labor", []))
@@ -248,7 +249,8 @@ async def set_item_recipe(
     root_state = {**item.state, "recipe": recipe}
     graph, missing = await _load_recipe_graph(session, company_id, item_id, root_state)
     if missing:
-        raise HTTPException(status_code=422, detail=f"Component item(s) not found: {', '.join(sorted(set(missing)))}")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_components_missing",
+                                                      items=", ".join(sorted(set(missing)))))
 
     # The component unit is not free text — it is the component item's own sell unit.
     for comp in recipe["components"]:
@@ -308,7 +310,7 @@ async def set_item_workflow(
     """
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
 
     file_ids = {f.get("id") for f in (item.state.get("files") or [])}
     steps = []
@@ -316,12 +318,12 @@ async def set_item_workflow(
         if step.time_unit not in _WORKFLOW_TIME_UNITS:
             raise HTTPException(
                 status_code=422,
-                detail=f"Invalid time unit '{step.time_unit}' (use one of {', '.join(_WORKFLOW_TIME_UNITS)})",
+                detail=t("manufacturing.err_time_unit", unit=step.time_unit, units=", ".join(_WORKFLOW_TIME_UNITS)),
             )
         if step.ref_file_id and step.ref_file_id not in file_ids:
             raise HTTPException(
                 status_code=422,
-                detail=f"Reference file '{step.ref_file_id}' is not attached to this item",
+                detail=t("manufacturing.err_step_file_not_attached"),
             )
         data = step.model_dump()
         data["id"] = step.id or str(uuid.uuid4())
@@ -398,7 +400,7 @@ async def build_item(
     """
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     if not is_manufacturable(item.state):
         raise HTTPException(status_code=422, detail="Item has no recipe to build from")
     if str((item.state or {}).get("status") or "").lower() == "draft":
@@ -496,7 +498,7 @@ async def recost_dependents(
     """
     states = await _all_item_states(session, company_id)
     if item_id not in states:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     recosted = await _recost_dependents_of(session, company_id, user, item_id, states)
     await session.commit()
     return {"recosted": recosted, "count": len(recosted)}
@@ -788,9 +790,9 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
             continue
         try:
             order_id = await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
-        except HTTPException as exc:
+        except HTTPException:
             # The recipe names something that is no longer an item: nothing was written.
-            not_created.append(f"{st.get('sku') or item_id} ({failure_reason(exc)})")
+            not_created.append(st.get("sku") or item_id)
             continue
         linked.add(item_id)
         if auto_complete:
@@ -926,14 +928,14 @@ async def bulk_run_action(
         try:
             async with session.begin_nested():
                 if action in ("start", "hold", "cancel", "issue", "complete") and status in _CLOSED_RUN_STATUSES:
-                    raise ValueError("run is already closed")
+                    raise ValueError(t("manufacturing.err_run_closed"))
                 if action == "start":
                     await _emit(run_id, "mfg.order.started", {"started_by": str(user.id)})
                 elif action == "hold":
                     await _emit(run_id, "mfg.order.on_hold", {"reason": None})
                 elif action == "resume":
                     if status != "on_hold":
-                        raise ValueError("only an on-hold run can be resumed")
+                        raise ValueError(t("manufacturing.err_resume_not_held"))
                     await _emit(run_id, "mfg.order.resumed", {"resumed_by": str(user.id)})
                 elif action == "cancel":
                     await _emit(run_id, "mfg.order.cancelled", {})
@@ -943,7 +945,7 @@ async def bulk_run_action(
                     outstanding = _outstanding_inputs(st)
                     if outstanding:
                         if require_issued:
-                            raise ValueError("components must be issued before completing (required by settings)")
+                            raise ValueError(t("manufacturing.err_issue_before_complete"))
                         await _lock_code_namespace_for_completion(session, company_id)
                         await _issue_and_record(session, company_id, user, run_id, outstanding, states)
                         st = (await _get_order(session, company_id, run_id)).state
@@ -976,7 +978,7 @@ async def item_manufacturing_hub(
     + the production runs that make it. SKUs are resolved for human-readable display."""
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     item_sku = (item.state or {}).get("sku")
     states = await _all_item_states(session, company_id)
 
@@ -1232,8 +1234,8 @@ def _wc_conflict(exc: IntegrityError, name: str) -> HTTPException:
     """Tell the two work-center uniqueness violations apart, so the message names
     the actual problem rather than always blaming the name."""
     if "uq_work_center_one_default" in str(exc.orig):
-        return HTTPException(status_code=409, detail="Another work center is already the default")
-    return HTTPException(status_code=409, detail=f"A work center named '{name}' already exists")
+        return HTTPException(status_code=409, detail=t("manufacturing.err_wc_default_taken"))
+    return HTTPException(status_code=409, detail=t("manufacturing.err_wc_name_taken", name=name))
 
 
 async def _unset_other_defaults(session: AsyncSession, company_id, keep_id) -> None:
@@ -1279,7 +1281,7 @@ async def create_work_center(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if not payload.name.strip():
-        raise HTTPException(status_code=422, detail="Work center name is required")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_wc_name_required"))
     # A company's first center becomes its default, so the board always has a
     # working-day length to read once any center exists.
     has_any = (await session.execute(
@@ -1309,11 +1311,11 @@ async def patch_work_center(
 ) -> dict:
     wc = await session.get(WorkCenter, _parse_loc(wc_id))
     if wc is None or wc.company_id != company_id:
-        raise HTTPException(status_code=404, detail="Work center not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_wc_not_found"))
     fields = payload.model_dump(exclude_unset=True)
     if "name" in fields:
         if not (fields["name"] or "").strip():
-            raise HTTPException(status_code=422, detail="Work center name is required")
+            raise HTTPException(status_code=422, detail=t("manufacturing.err_wc_name_required"))
         wc.name = fields["name"].strip()
     if "wip_location_id" in fields:
         wc.wip_location_id = _parse_loc(fields["wip_location_id"])
@@ -1347,7 +1349,7 @@ async def set_default_work_center(
     """Make this the company's default work center, clearing the previous one."""
     wc = await session.get(WorkCenter, _parse_loc(wc_id))
     if wc is None or wc.company_id != company_id:
-        raise HTTPException(status_code=404, detail="Work center not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_wc_not_found"))
     await _unset_other_defaults(session, company_id, wc.id)
     wc.is_default = True
     name = wc.name or ""
@@ -1368,7 +1370,7 @@ async def delete_work_center(
 ) -> dict:
     wc = await session.get(WorkCenter, _parse_loc(wc_id))
     if wc is None or wc.company_id != company_id:
-        raise HTTPException(status_code=404, detail="Work center not found")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_wc_not_found"))
     others = (await session.execute(
         select(WorkCenter.id).where(
             WorkCenter.company_id == company_id, WorkCenter.id != wc.id,
@@ -1401,7 +1403,7 @@ async def _reject_draft_item(session: AsyncSession, company_id, item_id: str, ac
     item's state so the caller can reuse it instead of fetching twice."""
     row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail=f"Item not found: {item_id}")
+        raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     if str((row.state or {}).get("status") or "").lower() == "draft":
         raise HTTPException(status_code=422, detail=f"Cannot {action} a draft item ({item_id}); make it available first.")
     return row.state
@@ -1683,9 +1685,9 @@ async def create_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if not payload.description.strip():
-        raise HTTPException(status_code=422, detail="description is required")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_description_required"))
     if len(payload.inputs) == 0:
-        raise HTTPException(status_code=409, detail="Cannot create/start order with no inputs")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_no_components"))
     entity_id = f"mfg:{uuid.uuid4()}"
     entry = await _emit_order_created(
         session, company_id, entity_id, payload.model_dump(exclude_none=True),
@@ -1717,7 +1719,7 @@ async def start_order(
 ) -> dict:
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") == "completed":
-        raise HTTPException(status_code=409, detail="Order already completed")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_run_already_completed"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -1747,7 +1749,7 @@ async def hold_order(
     """Put an active run on hold (paused). Reversible via /resume."""
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot hold a closed run")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_hold_closed"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.on_hold", data={"reason": (payload.reason if payload else None)},
@@ -1768,7 +1770,7 @@ async def resume_order(
     """Resume an on-hold run (back to In Progress)."""
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") != "on_hold":
-        raise HTTPException(status_code=409, detail="Only an on-hold run can be resumed")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_resume_not_held"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.resumed", data={"resumed_by": str(user.id)},
@@ -1791,10 +1793,10 @@ async def schedule_order(
     written; a blank value clears that field. A closed run cannot be rescheduled."""
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot reschedule a closed run")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_reschedule_closed"))
     data = payload.model_dump(exclude_unset=True, exclude={"idempotency_key"})
     if not data:
-        raise HTTPException(status_code=422, detail="No scheduling fields provided")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_reschedule_no_dates"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.scheduled", data=data, actor_id=user.id, location_id=None,
@@ -1833,7 +1835,7 @@ async def issue_order(
     `items` issues everything still outstanding. Issuing auto-advances a planned run to In Progress."""
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot issue to a closed run")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_issue_closed"))
     states = await _all_item_states(session, company_id)
     items = ([{"item_id": i.item_id, "quantity": i.quantity} for i in payload.items]
              if (payload and payload.items) else _outstanding_inputs(row.state))
@@ -1855,7 +1857,7 @@ async def receive_order(
     `quantity` receives everything still outstanding; once fully received the run auto-completes."""
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot receive into a closed run")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_receive_closed"))
     qty = (payload.quantity if (payload and payload.quantity is not None)
            else _outstanding_output(row.state))
     if qty <= 0:
@@ -1887,14 +1889,13 @@ async def complete_order(
     """
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot complete a closed run")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_run_closed"))
     states = await _all_item_states(session, company_id)
     outstanding = _outstanding_inputs(row.state)
     if outstanding:
         # When the company requires components issued first, completing must not silently auto-issue.
         if (await _mfg_settings(session, company_id)).get("require_issued_before_complete"):
-            raise HTTPException(status_code=409,
-                                detail="Issue all components before completing this run (required by settings)")
+            raise HTTPException(status_code=409, detail=t("manufacturing.err_issue_before_complete"))
         await _lock_code_namespace_for_completion(session, company_id)
         await _issue_and_record(session, company_id, user, order_id, outstanding, states)
         row = await _get_order(session, company_id, order_id)
@@ -1918,7 +1919,7 @@ async def cancel_order(
 ) -> dict:
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot cancel a closed run")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_run_closed"))
     entry = await emit_event(
         session,
         company_id=company_id,

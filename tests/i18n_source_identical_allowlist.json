@@ -189,7 +189,6 @@
     "inventory.dur_hours",
     "inventory.dur_min",
     "inventory.dur_zero",
-    "inventory.error_detail",
     "inventory.import_col_total",
     "inventory.pricing_total_hdr",
     "inventory.ws_sku",

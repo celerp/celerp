@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .costing import MAX_RECIPE_DEPTH, RecipeError
+from .costing import MAX_RECIPE_DEPTH, RecipeError, recipe_cycle, recipe_too_deep
 
 ItemLookup = Callable[[str], dict | None]
 
@@ -69,7 +69,7 @@ def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:
 
     def _walk(item_id: str, qty: float, path: frozenset[str], depth: int) -> None:
         if depth > MAX_RECIPE_DEPTH:
-            raise RecipeError("recipe nesting exceeds max depth")
+            raise recipe_too_deep()
         state = lookup(item_id)
         recipe = (state or {}).get("recipe") or {}
         components = recipe.get("components") or []
@@ -83,7 +83,7 @@ def explode_demand(lines: list[tuple[str, float]], lookup: ItemLookup) -> dict:
             if not cid:
                 continue
             if cid in path:
-                raise RecipeError(f"recipe cycle detected at {cid}")
+                raise recipe_cycle(cid, lookup)
             _walk(cid, float(c.get("quantity") or 0) * factor, path | {cid}, depth + 1)
 
     for item_id, qty in lines:

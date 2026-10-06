@@ -9,10 +9,9 @@ from pydantic import BaseModel, Field, model_validator
 
 # The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
 # boundary, the interactive routes, the allocation service, and the scanner share one
-# source of truth. reject_comma_sku/SKU_COMMA_MESSAGE are re-exported here because
-# celerp_inventory.routes imports them from this module.
+# source of truth. reject_comma_sku is re-exported here because
+# celerp_inventory.routes imports it from this module.
 from celerp.inventory_codes import (  # noqa: F401 - re-exported for celerp_inventory
-    SKU_COMMA_MESSAGE,
     reject_comma_sku,
     validate_barcode,
     validate_gtin,

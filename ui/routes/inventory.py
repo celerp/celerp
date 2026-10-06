@@ -2375,7 +2375,7 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_company(token),
             )
         except APIError as e:
-            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "edit_inventory"):
             # Without the edit permission, swap back a non-editable display cell
             # (a role granted the write in the matrix keeps its input).
@@ -2485,7 +2485,7 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_company(token),
             )
         except APIError as e:
-            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         locations = locs.get("items", [])
         # ESC restore inherits the same read-only state as the static cell, so a
         # restored gated cell never re-offers click-to-edit without the permission.
@@ -3200,7 +3200,7 @@ function celerpPrintLabel(entityId, templateId) {
                 api.get_all_category_schemas(token), api.get_locations(token),
             )
         except APIError as e:
-            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         locations = locs.get("items", [])
         if field in AMOUNT_EDIT_GATED_KEYS and str(item.get("status") or "").lower() != "draft":
             # The paired cell is a second inline-edit entry point for amount fields
@@ -3266,7 +3266,7 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             return await _paired_display(token, entity_id, field, _get_role(request), _pd_company.get("settings") or {})
         except APIError as e:
-            return P(t("inventory.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 

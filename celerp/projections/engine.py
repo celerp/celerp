@@ -18,6 +18,7 @@ from celerp.inventory_codes import (
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -25,15 +26,13 @@ log = logging.getLogger(__name__)
 _ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
 
 
-_TYPE_LABELS = {"item": "Item", "doc": "Document", "list": "List", "contact": "Contact"}
-
-
 def _item_exists() -> HTTPException:
-    return HTTPException(status_code=409, detail="Item already exists")
+    return HTTPException(status_code=409, detail=t("inventory.err_item_exists"))
 
 
 def _not_found(entity_type: str) -> HTTPException:
-    return HTTPException(status_code=404, detail=f"{_TYPE_LABELS.get(entity_type, 'Record')} not found")
+    return HTTPException(status_code=404, detail=t(
+        "inventory.err_item_not_found" if entity_type == "item" else "error.record_not_found"))
 
 
 def _resolve_module_handler(dotted: str):
