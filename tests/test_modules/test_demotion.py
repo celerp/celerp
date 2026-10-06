@@ -19,9 +19,10 @@ import pytest_asyncio
 from sqlalchemy import select
 from unittest.mock import AsyncMock, patch
 
-from celerp.models.company import Company
+from celerp.models.company import Company, User
 from celerp.models.notification import Notification
 from celerp.modules.demotion import notify_demoted_modules
+from celerp.notifications.service import mark_read
 from celerp.modules import loader as _loader
 
 # `session` (Postgres, rollback-isolated) comes from the root conftest.
@@ -34,6 +35,15 @@ async def company(session) -> Company:
     await session.commit()
     await session.refresh(c)
     return c
+
+
+@pytest_asyncio.fixture
+async def user(session) -> User:
+    u = User(email="reader@demoteco.test", name="Reader")
+    session.add(u)
+    await session.commit()
+    await session.refresh(u)
+    return u
 
 
 @pytest_asyncio.fixture
@@ -111,14 +121,14 @@ class TestNotifyDemotedModules:
         assert len(await _modules_notifs(session, company.id)) == 1
 
     @pytest.mark.asyncio
-    async def test_renotifies_after_dismissal(self, session, company):
-        # Persistent-until-fixed: once the prior notice is read (dismissed), a still
-        # demoted module notifies again on the next boot.
+    async def test_renotifies_after_dismissal(self, session, company, user):
+        # Persistent-until-fixed: once a user has read (dismissed) the prior notice, a
+        # still demoted module notifies again on the next boot.
         with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
             await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
             rows = await _modules_notifs(session, company.id)
-            rows[0].read = True
+            assert await mark_read(session, rows[0].id, company.id, user.id)
             await session.commit()
             again = await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()

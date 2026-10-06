@@ -1,0 +1,109 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+"""Notices move from one shared read flag to a read receipt per user.
+
+A real alembic upgrade on Postgres from the previous head: a personal notice its
+user had read keeps that state as a receipt, an unread one stays unread, a
+company-wide notice starts unread for everyone, and the shared column is gone. The
+notices table comes from the models at start, so each test builds it as the previous
+release did.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from sqlalchemy import create_engine, text
+
+from .conftest import throwaway_db, upgrade_to
+
+REVISION = "u8j9f0a1b2c3"
+PARENT = "t7i8d9e0f1a2"
+
+
+def test_revision_follows_its_parent():
+    from alembic.script import ScriptDirectory
+
+    from celerp.alembic_config import build_alembic_config
+
+    assert ScriptDirectory.from_config(build_alembic_config()).get_revision(REVISION).down_revision == PARENT
+
+
+# The notices table as the previous release's models created it at start.
+_OLD_NOTIFICATIONS = """
+    CREATE TABLE notifications (
+        id UUID PRIMARY KEY,
+        company_id UUID NOT NULL REFERENCES companies (id),
+        user_id UUID REFERENCES users (id),
+        category VARCHAR(32) NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        action_url TEXT,
+        priority VARCHAR(16) NOT NULL,
+        read BOOLEAN NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL
+    )
+"""
+
+
+def _seed(conn) -> dict[str, str]:
+    ids = {k: str(uuid.uuid4()) for k in ("company", "alice", "bob", "read", "unread", "wide")}
+    conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                      "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
+    for key in ("alice", "bob"):
+        conn.execute(text("INSERT INTO users (id, email, name, auth_hash, is_active, created_at) "
+                          "VALUES (:u, :e, 'User', 'x', true, now())"),
+                     {"u": ids[key], "e": f"{key}@example.test"})
+    for key, user, read in (("read", ids["alice"], True), ("unread", ids["alice"], False), ("wide", None, True)):
+        conn.execute(text(
+            "INSERT INTO notifications (id, company_id, user_id, category, title, body, priority, read, created_at) "
+            "VALUES (:id, :c, :u, 'system', :t, 'B', 'medium', :r, now())"),
+            {"id": ids[key], "c": ids["company"], "u": user, "t": key, "r": read})
+    return ids
+
+
+@pytest.mark.parametrize("started_first", [False, True], ids=["upgrade", "started-before-upgrade"])
+def test_migration_keeps_personal_read_state(started_first):
+    """started_first: this version started once before the upgrade ran, so its models
+    already created the receipts table next to the old flag."""
+    from celerp.models.notification import NotificationRead
+
+    with throwaway_db("notifreads") as (_, sync_url):
+        upgrade_to(sync_url, PARENT)
+        eng = create_engine(sync_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(text(_OLD_NOTIFICATIONS))
+                ids = _seed(conn)
+                if started_first:
+                    NotificationRead.__table__.create(conn)
+
+            upgrade_to(sync_url, REVISION)
+
+            with eng.connect() as conn:
+                receipts = {tuple(map(str, r)) for r in conn.execute(text(
+                    "SELECT notification_id, user_id FROM notification_reads"))}
+                columns = set(conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'notifications'")).scalars())
+                notices = conn.execute(text("SELECT count(*) FROM notifications")).scalar_one()
+        finally:
+            eng.dispose()
+
+    assert receipts == {(ids["read"], ids["alice"])}
+    assert "read" not in columns
+    assert notices == 3
+
+
+def test_new_installation_has_nothing_to_convert():
+    """With no notices table yet the revision changes nothing; start creates both."""
+    with throwaway_db("notifreads") as (_, sync_url):
+        upgrade_to(sync_url, REVISION)
+        eng = create_engine(sync_url)
+        try:
+            with eng.connect() as conn:
+                assert conn.execute(text("SELECT to_regclass('notification_reads')")).scalar() is None
+        finally:
+            eng.dispose()

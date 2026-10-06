@@ -38,8 +38,9 @@ VERSIONS = Path(build_alembic_config().get_main_option("script_location")) / "ve
 RELEASE_HEAD = "o2d3e4f5a6b7"
 
 # What this release adds on top of it, oldest first: session companies, then the
-# payment revisions, then import reversibility.
-RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8d9e0f1a2"]
+# payment revisions, then import reversibility, then per-user notice reads.
+RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8d9e0f1a2",
+                 "u8j9f0a1b2c3"]
 
 
 def _declared(path: Path) -> dict[str, object]:

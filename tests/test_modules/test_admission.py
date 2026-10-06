@@ -312,21 +312,40 @@ def test_load_all_refuses_before_import(variant, _modules, tmp_path):
     assert pkg.name in loader.load_errors()
 
 
-def test_runtime_manifest_must_match_the_admitted_one(_modules):
-    """Admission reads the literal; code that rewrites PLUGIN_MANIFEST at import
-    cannot widen what was admitted."""
+_ALWAYS_EQUAL_STR = (
+    "class _Same(str):\n"
+    "    def __eq__(self, other):\n"
+    "        return True\n"
+    "    __hash__ = str.__hash__\n")
+
+
+@pytest.mark.parametrize("rewrite", [
+    "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n"
+    "PLUGIN_MANIFEST['slots'] = {'nav': {'key': 'x', 'label': 'X', 'href': '/x'}}\n",
+    _ALWAYS_EQUAL_STR
+    + "PLUGIN_MANIFEST['api_routes'] = _Same('celerp.routers.health')\n"
+    + "PLUGIN_MANIFEST['version'] = _Same('9.9.9')\n",
+], ids=["extra-route-and-slot", "always-equal-str"])
+def test_module_rewriting_its_manifest_loads_with_the_admitted_one(_modules, rewrite):
+    """Admission reads the literal; a module that rewrites PLUGIN_MANIFEST while
+    it imports still loads, with only what was admitted."""
     inner = f"acme_{_uid()}"
     folder = f"acme-{_uid()}"
     pkg = _write_module(
         _modules, folder, {"name": folder, "version": "1.0.0"},
         {f"{inner}/__init__.py": ""})
     init = pkg / "__init__.py"
-    init.write_text(init.read_text() + "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n")
+    init.write_text(init.read_text() + rewrite)
 
     loaded = loader.load_all(str(_modules), {folder})
 
-    assert loaded == []
-    assert "differs" in loader.load_errors()[folder]
+    assert folder not in loader.load_errors()
+    assert [m["name"] for m in loaded] == [folder]
+    manifest = loaded[0]
+    assert manifest.get("api_routes") is None
+    assert type(manifest["version"]) is str and manifest["version"] == "1.0.0"
+    assert manifest["slots"] == {}
+    assert not any(e.get("_module") == folder for e in slots.get("nav"))
 
 
 # ── A2: route entrypoint provenance ──────────────────────────────────────────
@@ -806,20 +825,21 @@ async def test_route_failure_creates_none_of_the_module_tables(committed_engine,
 
 
 async def test_refused_module_creates_none_of_its_tables(committed_engine, _modules):
-    """Refused at load, after its code ran (the manifest differs at runtime)."""
+    """Refused at load, after its code ran (a slot names a handler it lacks)."""
     folder = f"acme-{_uid()}"
     inner = f"acme_{_uid()}"
-    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"},
-                        {f"{inner}/__init__.py": "",
-                         f"{inner}/models.py": _MODELS.replace("{inner}", inner)},
-                        init_prelude=f"import {inner}.models")
-    init = pkg / "__init__.py"
-    init.write_text(init.read_text() + "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n")
+    _write_module(_modules, folder,
+                  {"name": folder, "version": "1.0.0",
+                   "slots": {"on_modules_ready": {"handler": f"{inner}.hooks:missing"}}},
+                  {f"{inner}/__init__.py": "",
+                   f"{inner}/hooks.py": "x = 1\n",
+                   f"{inner}/models.py": _MODELS.replace("{inner}", inner)},
+                  init_prelude=f"import {inner}.models")
 
     loader.load_all(str(_modules), {folder})
     tables = await _created_tables(committed_engine)
 
-    assert "differs" in loader.load_errors()[folder]
+    assert folder in loader.load_errors()
     assert f"{inner}_things" not in tables
 
 

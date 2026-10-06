@@ -28,7 +28,6 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.migrations._data_reconcile import get_meta, set_meta
-from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services import auto_je
@@ -128,19 +127,9 @@ def _notify_body(c: dict) -> str:
 
 
 async def _notify(session, company_id, c: dict) -> None:
-    """One bell notice per company, deduped on the unread stable title so a
-    retrying boot never stacks duplicates."""
-    existing = (await session.execute(
-        select(Notification.id)
-        .where(
-            Notification.company_id == company_id,
-            Notification.category == _CATEGORY,
-            Notification.title == _TITLE,
-            Notification.read == False,  # noqa: E712
-        )
-        .limit(1)
-    )).scalar()
-    if existing:
+    """One bell notice per company, deduped on the standing notice with its stable
+    title so a retrying boot never stacks duplicates."""
+    if await notification_service.has_standing(session, company_id, _CATEGORY, _TITLE):
         return
     action_url = "/accounting?q=COGS%20backfill"
     if c["earliest"] and c["latest"]:

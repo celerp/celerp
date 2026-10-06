@@ -44,6 +44,7 @@ the shared metadata, so table creation never builds them.
 from __future__ import annotations
 
 import ast
+import copy
 import fnmatch
 import functools
 import hashlib
@@ -1052,11 +1053,10 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
 
     Args:
         trusted: If True, skip BSL import checks. Set for first-party bundled modules.
-        declared: The manifest admission validated. The manifest the import
-            produces must equal it, so code that rewrites PLUGIN_MANIFEST at
-            import cannot widen what was admitted.
+        declared: The manifest admission validated. It is the only manifest
+            used here; whatever PLUGIN_MANIFEST holds after import is ignored.
 
-    Returns the manifest dict. Raises :class:`ModuleLoadError` on failure.
+    Returns a copy of the declared manifest. Raises :class:`ModuleLoadError` on failure.
     """
     before = set(sys.modules.keys())
 
@@ -1104,17 +1104,7 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
             _evict_module(pkg_name)
             raise ModuleLoadError(_bsl_violation_message(pkg_name, violations))
 
-    try:
-        manifest = _validated_manifest(getattr(mod, "PLUGIN_MANIFEST", None))
-    except ModuleLoadError as exc:
-        log.error("Module %r rejected: invalid manifest (%s)", pkg_name, exc)
-        _evict_module(pkg_name)
-        raise
-    if manifest != declared:
-        _evict_module(pkg_name)
-        raise ModuleLoadError(
-            "PLUGIN_MANIFEST at import differs from the manifest declared in __init__.py.")
-
+    manifest = copy.deepcopy(declared)
     slots_manifest = manifest["slots"]
 
     # Check every slot entry BEFORE any is registered, so a module with one bad
