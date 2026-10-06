@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import ensure_instance_id, settings
 from celerp.db import get_session
-from celerp.gateway.state import relay_http_url
 from celerp.services import supporter_badge as _badge
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
@@ -62,6 +61,7 @@ async def badge_verify_url(return_url: str, _user=Depends(get_current_user)) -> 
     """The relay verify-start URL to open in the browser. ``return_url`` is where the
     relay redirects back with the credential (the install's own page). Claiming a badge
     lists the founder on the public wall - there is no separate opt-in."""
+    from celerp.gateway.state import relay_http_url
     from urllib.parse import urlencode
 
     iid = ensure_instance_id()
@@ -75,6 +75,7 @@ async def get_badge(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """The current user's supporter badge (or null) + the public founders wall URL."""
+    from celerp.gateway.state import relay_http_url
     return {
         "badge": _badge.to_dict(await _badge.get(session, user.id)),
         "wall_url": f"{relay_http_url()}/github/founders",

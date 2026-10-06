@@ -35,7 +35,6 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.credentials import issue_token_pair
 from celerp.db import get_session
 from celerp.importers.adapters.registry import list_adapters
 from celerp.models.company import Company, User
@@ -327,6 +326,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
     The bootstrap lock serializes racing starts; the loser re-checks and is refused. If the
     response is lost after the commit, the owner signs in and is taken back to the run.
     The setup code is consumed only after the commit."""
+    from celerp.credentials import issue_token_pair
     required = False
     async with _start_errors(session):
         await ensure_not_bootstrapped(session)
@@ -455,6 +455,7 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
     that company. The login is held until the commit, so of two starts one creates the
     company and the other is told the login already has one; a start whose answer was
     lost is the same, and signing in lands on the company being moved in."""
+    from celerp.credentials import issue_token_pair
     async with _start_errors(session):
         user = await companyless_login(session, payload.email, payload.password)
         await hold_direct_slot(session)

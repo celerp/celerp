@@ -3,6 +3,7 @@
 
 from contextlib import asynccontextmanager
 import asyncio
+import importlib
 import logging
 import math
 import sys
@@ -23,10 +24,9 @@ from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
-from celerp.gateway.state import load_commercial_context
 load_cloud_config()
 load_backup_config()
-load_commercial_context()
+importlib.import_module("celerp.gateway.state").load_commercial_context()
 assert_secure_jwt()
 # Read before ensure_instance_id() writes the id.
 _FIRST_BOOT = not settings.gateway_instance_id

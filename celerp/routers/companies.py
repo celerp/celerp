@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.credentials import issue_token_pair
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
@@ -243,6 +242,7 @@ async def create_company(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create a new company linked to the current user. Returns JWT scoped to new company."""
+    from celerp.credentials import issue_token_pair
     user = ctx.user
     company = await provision_additional_company(session, user=user, company_name=payload.name)
     try:
@@ -2297,6 +2297,7 @@ async def reset_company(
     The typed name must equal the company's name exactly. All or nothing: files go only
     after the commit. Returns a token pair for another of the caller's companies, or
     ``{"next": "start_company"}`` when this was their last one."""
+    from celerp.credentials import issue_token_pair
     from celerp.connectors.ownership import lock_connector_maintenance
     from celerp.services import company_reset, payments
     from celerp.services.migrations import run_cleanup_task

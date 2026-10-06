@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.credentials import issue_token_pair
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
@@ -84,6 +83,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     those changes are all-or-nothing. Module lifecycle hooks retain their existing
     best-effort policy; the one-time setup code is consumed only after commit.
     """
+    from celerp.credentials import issue_token_pair
     required = ""
     try:
         # Cheap post-bootstrap fast path. This is only an optimization: the same
@@ -194,6 +194,7 @@ async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) 
 @router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
+    from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
     await hold_direct_slot(session)
     # Signs in to the company first_usable_company_link picks. A company removed
@@ -215,6 +216,7 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first, in the
     same transaction as the new session."""
+    from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
     await hold_direct_slot(session, taking_over=True)
     link = await first_usable_company_link(session, user.id)
@@ -241,6 +243,7 @@ async def start_company(request: Request, payload: StartCompanyRequest,
                         session: AsyncSession = Depends(get_session)) -> dict:
     """Create a company for a login that has none left, after its last company was reset,
     and sign it in as that company's owner."""
+    from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
     name = payload.company_name.strip()
     if not name:
@@ -267,6 +270,7 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     Every failure mode returns the same neutral "Invalid refresh token" so the
     caller learns nothing about which element failed.
     """
+    from celerp.credentials import issue_token_pair
     claims = decode_refresh_token(payload.refresh_token)
 
     try:
@@ -344,6 +348,7 @@ async def switch_company(
 
     Only succeeds if the user has an active entry in user_companies for that company.
     """
+    from celerp.credentials import issue_token_pair
     user = ctx.user
     link = (
         await session.execute(
