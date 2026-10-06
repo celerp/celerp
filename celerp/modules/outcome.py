@@ -42,7 +42,8 @@ _POLL_SECONDS = 0.5
 _LOG_EVERY_SECONDS = 30.0
 _WATCH_SECONDS = 2.0
 
-NOT_REPORTED = "Not running: the server did not report this module as started."
+NOT_REPORTED = ("Not running: this module didn't start and gave no reason. Restart Celerp; "
+                "if it still doesn't start, ask the module's developer.")
 
 
 def publish(conn) -> None:

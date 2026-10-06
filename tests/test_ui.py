@@ -9576,7 +9576,7 @@ class TestModulesUI:
                 stack.enter_context(patch(k, new=v))
             r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
-        assert b"Required by:" in r.content and b"Child" in r.content  # tooltip rendered
+        assert b"Other modules need this one" in r.content and b"Child" in r.content  # tooltip rendered
 
     @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):

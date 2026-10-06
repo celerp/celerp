@@ -37,12 +37,13 @@ from celerp.services.vertical_presets import (
     merge_missing_preset_categories,
     seed_category_units,
 )
+from ui.i18n import t
 
 
 async def _company(session: AsyncSession, company_id) -> Company:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company
 
 
@@ -69,7 +70,7 @@ def _build_router() -> APIRouter:
     async def get_category(name: str) -> dict:
         cat = load_category(name)
         if cat is None:
-            raise HTTPException(status_code=404, detail=f"Category '{name}' not found")
+            raise HTTPException(status_code=404, detail=t("error.category_not_found", name=name))
         return cat
 
     @router.get("/verticals/presets", dependencies=read_deps)
@@ -87,7 +88,7 @@ def _build_router() -> APIRouter:
     ) -> dict:
         preset = load_preset(vertical)
         if preset is None:
-            raise HTTPException(status_code=404, detail=f"Preset '{vertical}' not found")
+            raise HTTPException(status_code=404, detail=t("error.business_type_unavailable", vertical=vertical))
         modules = installed_preset_modules(preset)
 
         company = await _company(session, company_id)
@@ -113,7 +114,7 @@ def _build_router() -> APIRouter:
     ) -> dict:
         cat = load_category(name)
         if cat is None:
-            raise HTTPException(status_code=404, detail=f"Category '{name}' not found")
+            raise HTTPException(status_code=404, detail=t("error.category_not_found", name=name))
         company = await _company(session, company_id)
         settings = dict(company.settings or {})
         settings["category_schemas"] = {**(settings.get("category_schemas") or {}), cat["name"]: cat["fields"]}

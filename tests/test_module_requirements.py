@@ -194,18 +194,18 @@ def module_dir(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("backup, message", [
-    (None, "company_backup"),
-    ("include", "company_backup"),
-    ({"acme_things": "maybe"}, "include"),
-    ({"other_things": "include"}, "acme_"),
-    ({"acme_Things!": "include"}, "acme_Things!"),
+    (None, "doesn't say how its data is backed up"),
+    ("include", "doesn't say how its data is backed up"),
+    ({"acme_things": "maybe"}, "backup settings are built incorrectly"),
+    ({"other_things": "include"}, "backup settings are built incorrectly"),
+    ({"acme_Things!": "include"}, "backup settings are built incorrectly"),
 ])
 def test_import_refuses_module_without_valid_backup_declaration(module_dir, tmp_path, backup, message):
     """A module owning tables must say how each travels with a company backup, in the
     documented shape, before it can be installed."""
     from celerp.modules.importer import ModuleImportError, install_from_folder
     src = _module(tmp_path / "src", "acme-things", prefix="acme_", backup=backup, migrations=True)
-    with pytest.raises(ModuleImportError, match=message.replace("!", r"\!")):
+    with pytest.raises(ModuleImportError, match=message):
         install_from_folder(src)
     assert not (module_dir / "acme-things").exists()
 

@@ -143,7 +143,7 @@ def _case_missing_table_prefix(base, marker, monkeypatch):
     manifest = loader.read_manifest(pkg)
     del manifest["table_prefix"]
     (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
-    return pkg, "table_prefix"
+    return pkg, "doesn't name the data it stores"
 
 
 def _case_migrations_absolute_path(base, marker, monkeypatch):

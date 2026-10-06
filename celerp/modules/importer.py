@@ -36,6 +36,7 @@ import zipfile
 from pathlib import Path
 
 from celerp.modules.meta import write_meta
+from ui.i18n import t
 
 # Compressed and uncompressed caps. Generous for code, hostile to zip bombs.
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
@@ -63,12 +64,10 @@ def _validate_name_chars(name: str) -> None:
     prefix trust rule, which only governs where a NEW package may install.
     """
     if not name or len(name) > _NAME_MAX:
-        raise ModuleImportError("Module name missing or too long.")
+        raise ModuleImportError(t("module_import.name_invalid"))
     ok = all(c.isascii() and (c.isalnum() or c in "-_") for c in name)
     if not ok or not name[0].isalnum():
-        raise ModuleImportError(
-            "Module name may only contain letters, digits, '-' and '_'."
-        )
+        raise ModuleImportError(t("module_import.name_chars"))
 
 
 def _validate_name(name: str, *, official: bool = False) -> None:
@@ -100,16 +99,16 @@ def _read_manifest(init_py_text: str) -> dict:
     try:
         tree = ast.parse(init_py_text)
     except Exception:
-        raise ModuleImportError("__init__.py does not parse as Python.")
+        raise ModuleImportError(t("module_import.broken_init"))
     node = _manifest_node(tree)
     if node is None:
-        raise ModuleImportError("No PLUGIN_MANIFEST found in __init__.py.")
+        raise ModuleImportError(t("module_import.no_manifest"))
     try:
         manifest = ast.literal_eval(node.value)
     except Exception:
-        raise ModuleImportError("PLUGIN_MANIFEST must contain only literal values.")
+        raise ModuleImportError(t("module_import.manifest_bad"))
     if not isinstance(manifest, dict):
-        raise ModuleImportError("PLUGIN_MANIFEST must be a dict.")
+        raise ModuleImportError(t("module_import.manifest_bad"))
     return manifest
 
 
@@ -138,12 +137,8 @@ def _locate_module(tree: Path) -> tuple[Path, dict]:
         init = candidates[0] / "__init__.py"
         return candidates[0], _read_manifest(init.read_text(encoding="utf-8", errors="replace"))
     if not candidates:
-        raise ModuleImportError(
-            "No __init__.py with a PLUGIN_MANIFEST found; not a Celerp module package."
-        )
-    raise ModuleImportError(
-        "The archive contains more than one module; import a single-module package."
-    )
+        raise ModuleImportError(t("module_import.not_a_module"))
+    raise ModuleImportError(t("module_import.multiple_modules"))
 
 
 def _version_tuple(v: str) -> tuple:
@@ -333,10 +328,7 @@ def _validate_table_prefix(name: str, manifest: dict) -> None:
     """
     if "table_prefix" not in manifest:
         if manifest.get("migrations"):
-            raise ModuleImportError(
-                "This module declares migrations, so its PLUGIN_MANIFEST must set a "
-                '"table_prefix" naming the tables it owns (for example "acme_").'
-            )
+            raise ModuleImportError(t("module_import.no_table_prefix"))
         return
     problem = table_prefix_problem(name, manifest["table_prefix"])
     if problem:
@@ -357,36 +349,27 @@ def _validate_company_backup(name: str, manifest: dict) -> None:
         return
     declared = manifest.get("company_backup")
     if not isinstance(declared, dict) or not declared:
-        raise ModuleImportError(
-            f'Module "{name}" owns tables, so its PLUGIN_MANIFEST must set "company_backup" to a '
-            'mapping of each table to "include" or "exclude" '
-            f'(for example {{"{prefix}things": "include"}}).'
-        )
+        raise ModuleImportError(t("module_import.no_backup_rule", name=name))
     for table, how in declared.items():
         if not isinstance(table, str) or not TABLE_NAME.fullmatch(table):
-            raise ModuleImportError(f'company_backup names "{table}", which is not a table name.')
+            raise ModuleImportError(t("module_import.backup_rule_bad"))
         if not table.startswith(prefix):
-            raise ModuleImportError(
-                f'company_backup names "{table}", which does not begin with the table_prefix "{prefix}".')
+            raise ModuleImportError(t("module_import.backup_rule_bad"))
         if how not in ("include", "exclude"):
-            raise ModuleImportError(
-                f'company_backup must say "include" or "exclude" for "{table}", not "{how}".')
+            raise ModuleImportError(t("module_import.backup_rule_bad"))
 
 
 def _module_dir() -> Path:
     raw = os.environ.get("MODULE_DIR", "")
     first = raw.split(",")[0].strip()
     if not first:
-        raise ModuleImportError("This install has no module directory configured.")
+        raise ModuleImportError(t("module_import.no_module_dir"))
     d = Path(first)
     # A sideload must never land in a bundled/trusted dir: a package written there
     # would inherit first-party trust by name. Refuse rather than write into it.
     from celerp.modules.loader import is_bundled_dir
     if is_bundled_dir(d):
-        raise ModuleImportError(
-            "The module directory points at the bundled default modules, which is "
-            "read-only. Configure a writable MODULE_DIR for imports."
-        )
+        raise ModuleImportError(t("module_import.module_dir_read_only"))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -394,9 +377,7 @@ def _module_dir() -> Path:
 def _target_for(name: str) -> Path:
     target = _module_dir() / name
     if target.exists():
-        raise ModuleImportError(
-            f"A module named '{name}' already exists. Remove it first, then import."
-        )
+        raise ModuleImportError(t("module_import.already_installed", name=name))
     return target
 
 
@@ -434,11 +415,11 @@ def remove_module_dir(name: str) -> None:
         try:
             os.replace(target, grave)
         except OSError as exc:
-            raise ModuleImportError(f"Could not remove the module: {exc}")
+            raise ModuleImportError(t("module_import.remove_failed", exc=exc))
         shutil.rmtree(grave, ignore_errors=True)
         removed = True
     if not removed:
-        raise ModuleImportError(f"Module '{name}' is not installed.")
+        raise ModuleImportError(t("module_import.not_installed", name=name))
 
 
 def _finish(staged: Path, manifest: dict, *, official: bool = False,
@@ -487,10 +468,8 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
         # dir raises FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) -
         # both mean "already there", so surface the same friendly message.
         if isinstance(exc, FileExistsError) or exc.errno == errno.ENOTEMPTY:
-            raise ModuleImportError(
-                f"A module named '{name}' already exists. Remove it first, then import."
-            )
-        raise ModuleImportError(f"Could not write the module to disk: {exc}")
+            raise ModuleImportError(t("module_import.already_installed", name=name))
+        raise ModuleImportError(t("module_import.write_failed", exc=exc))
     return {
         "name": name,
         "version": str(manifest.get("version", "")),
@@ -510,7 +489,7 @@ def _zip_root(zf: zipfile.ZipFile) -> str:
     for info in zf.infolist():
         name = info.filename
         if name.startswith("/") or name.startswith("\\"):
-            raise ModuleImportError("Archive contains absolute paths.")
+            raise ModuleImportError(t("module_import.unsafe"))
         top = name.split("/", 1)[0]
         if top:
             tops.add(top)
@@ -518,9 +497,7 @@ def _zip_root(zf: zipfile.ZipFile) -> str:
         return ""
     if len(tops) == 1:
         return tops.pop() + "/"
-    raise ModuleImportError(
-        "Archive must contain a single module folder (or __init__.py at its root)."
-    )
+    raise ModuleImportError(t("module_import.bad_layout"))
 
 
 def install_from_zip(data: bytes, *, official: bool = False,
@@ -533,7 +510,7 @@ def install_from_zip(data: bytes, *, official: bool = False,
     `source` is recorded in the provenance sidecar and drives the source shield
     and newest-first ordering on the modules page."""
     if len(data) > MAX_ARCHIVE_BYTES:
-        raise ModuleImportError("Archive is too large (limit 50 MB).")
+        raise ModuleImportError(t("module_import.too_large"))
     tmp_zip = None
     staging = Path(tempfile.mkdtemp(prefix="celerp-mod-import-"))
     try:
@@ -542,7 +519,7 @@ def install_from_zip(data: bytes, *, official: bool = False,
         try:
             zf = zipfile.ZipFile(tmp_zip)
         except zipfile.BadZipFile:
-            raise ModuleImportError("That file is not a valid zip archive.")
+            raise ModuleImportError(t("module_import.not_zip"))
         with zf:
             root = _zip_root(zf)
             unpacked = 0
@@ -557,21 +534,20 @@ def install_from_zip(data: bytes, *, official: bool = False,
                 try:
                     dest.resolve().relative_to(out.resolve())
                 except ValueError:
-                    raise ModuleImportError("Archive contains unsafe paths.")
+                    raise ModuleImportError(t("module_import.unsafe"))
                 # symlink entries carry the link mode in external_attr
                 mode = (info.external_attr >> 16) & 0xFFFF
                 if stat.S_ISLNK(mode):
-                    raise ModuleImportError("Archive contains symlinks; refused.")
+                    raise ModuleImportError(t("module_import.symlinks"))
                 if rel == PREMIUM_MARKER:
                     # Only the installer itself may write this file (it's how
                     # the license gate decides a module is paid) - a package
                     # that ships it would either fake premium status on a free
                     # module or collide with a genuinely paid install's marker.
-                    raise ModuleImportError(
-                        "Archive contains a reserved file name; refused.")
+                    raise ModuleImportError(t("module_import.reserved_name"))
                 unpacked += info.file_size
                 if unpacked > MAX_UNPACKED_BYTES:
-                    raise ModuleImportError("Archive expands too large; refused.")
+                    raise ModuleImportError(t("module_import.unpacked_too_large"))
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(dest, "wb") as f:
                     shutil.copyfileobj(src, f, length=1024 * 256)
@@ -591,24 +567,22 @@ def install_from_folder(source_path: str | Path, *,
     `source` is recorded in the provenance sidecar (defaults to a sideload)."""
     src = Path(source_path)
     if not src.is_dir():
-        raise ModuleImportError("That path is not a folder.")
+        raise ModuleImportError(t("module_import.not_a_folder"))
     init_py = src / "__init__.py"
     if not init_py.exists():
-        raise ModuleImportError(
-            "No __init__.py at the folder root; not a Celerp module package."
-        )
+        raise ModuleImportError(t("module_import.folder_not_module"))
     if (src / PREMIUM_MARKER).exists():
         # Same reserved-name refusal as the zip path - only the installer
         # itself may write this file.
-        raise ModuleImportError("Folder contains a reserved file name; refused.")
+        raise ModuleImportError(t("module_import.folder_reserved_name"))
     total = 0
     for p in src.rglob("*"):
         if p.is_symlink():
-            raise ModuleImportError("Folder contains symlinks; refused.")
+            raise ModuleImportError(t("module_import.folder_symlinks"))
         if p.is_file():
             total += p.stat().st_size
             if total > MAX_UNPACKED_BYTES:
-                raise ModuleImportError("Folder is too large; refused.")
+                raise ModuleImportError(t("module_import.folder_too_large"))
     manifest = _read_manifest(init_py.read_text(encoding="utf-8", errors="replace"))
     # Function-level import: loader imports PREMIUM_MARKER from this module at load
     # time, so a top-level loader import here would be circular. The digest and this
