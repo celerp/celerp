@@ -939,6 +939,49 @@ async def test_module_tables_referencing_in_a_loop_refused(real_engine, real_cli
         await _bk_drop(real_engine, "zz_gadgets", "zz_widgets")
 
 
+_BK_OUTSIDE_KEYS = {
+    # A key into a table of another schema, which a backup never carries.
+    "other_schema": ["CREATE SCHEMA zz_ext", "CREATE TABLE zz_ext.lookup (id uuid primary key)",
+                     "CREATE TABLE zz_widgets (id uuid primary key, "
+                     "company_id uuid not null references companies(id) on delete cascade, "
+                     "lookup_id uuid references zz_ext.lookup(id))"],
+    # A key one partition holds that its partitioned table does not.
+    "one_partition": ["CREATE SCHEMA zz_ext", "CREATE TABLE zz_ext.lookup (id uuid primary key)",
+                      "CREATE TABLE zz_widgets (id uuid primary key, "
+                      "company_id uuid not null references companies(id) on delete cascade, "
+                      "lookup_id uuid) PARTITION BY HASH (id)",
+                      "CREATE TABLE zz_widgets_p0 PARTITION OF zz_widgets FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
+                      "CREATE TABLE zz_widgets_p1 PARTITION OF zz_widgets FOR VALUES WITH (MODULUS 2, REMAINDER 1)",
+                      "ALTER TABLE zz_widgets_p0 ADD FOREIGN KEY (lookup_id) REFERENCES zz_ext.lookup(id)"],
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_BK_OUTSIDE_KEYS))
+async def test_reference_outside_the_backup_is_cleared(real_engine, real_client, tmp_path, monkeypatch, shape):
+    """A value naming a row the backup does not carry is exported empty, so the backup
+    restores without binding it to an unrelated row that happens to share the id."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        for sql in _BK_OUTSIDE_KEYS[shape]:
+            await _bk_sql(real_engine, sql)
+        lookup = uuid.uuid4()
+        await _bk_sql(real_engine, "INSERT INTO zz_ext.lookup (id) VALUES (:i)", i=lookup)
+        for _ in range(4):
+            await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id, lookup_id) VALUES (:i, :c, :l)",
+                          i=uuid.uuid4(), c=cid, l=lookup)
+        data = await download(real_client, tok)
+        rows = [json.loads(line) for line in members(data)["tables/zz_widgets.jsonl"].splitlines()]
+        assert len(rows) == 4 and {r["lookup_id"] for r in rows} == {None}, rows
+        new = await _bk_restore_new(real_client, tok, data)
+        assert await _bk_scalar(real_engine, "SELECT count(*) FROM zz_widgets WHERE company_id = :c "
+                                             "AND lookup_id IS NULL", c=uuid.UUID(new)) == 4
+    finally:
+        await _bk_drop(real_engine, "zz_widgets")
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+
+
 async def test_insert_order_from_foreign_keys(real_engine, tmp_path, monkeypatch):
     """Tables come out parents first for every foreign key between two backed-up tables."""
     cb = _bk_cb()

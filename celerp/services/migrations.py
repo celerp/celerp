@@ -986,7 +986,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     redirect = "/"
     if bootstrap:
         gone = await session.execute(text(db_catalog.delete_users_left_without_a_company(
-            await db_catalog.read(session))), {"members": [owner_id]})
+            db_catalog.own_keys(await db_catalog.read(session)))), {"members": [owner_id]})
         if gone.rowcount:
             redirect = "/setup"
     await session.commit()

@@ -192,8 +192,8 @@ class _Plan:
     def outside_fks(self, table: str) -> list[tuple[str, ...]]:
         """Foreign keys of ``table`` pointing at a table the backup does not carry."""
         carried = set(self.order)
-        return [cols for cols, target, _, _ in self.schema[table].fks
-                if target != "companies" and target not in carried]
+        return [fk.cols for fk in self.schema[table].fks
+                if fk.target != "companies" and fk.target not in carried]
 
 
 def _owner(table: str, prefixes: dict[str, str]) -> str | None:
@@ -266,8 +266,8 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         keep = set(carried)
         order, unordered = db_catalog.fk_order(carried, schema)
         for name in list(carried):
-            if name in unordered or any(schema[name].columns[c].notnull for cols, target, _, _ in schema[name].fks
-                                        if target != "companies" and target not in keep for c in cols):
+            if name in unordered or any(schema[name].columns[c].notnull for fk in schema[name].fks
+                                        if fk.target != "companies" and fk.target not in keep for c in fk.cols):
                 if strict:
                     raise _refusal(name, owners)
                 carried.remove(name)
@@ -807,13 +807,13 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
     digests: dict[str, int] = {}
     refs: dict[tuple[str, tuple[str, ...]], set[tuple]] = {}
     keys: dict[tuple[str, tuple[str, ...]], set[tuple]] = {}
-    wanted = {(target, tcols) for t in order for cols, target, tcols, _ in plan.schema[t].fks
-              if target in carried and set(cols) <= set(m["tables"][t]["columns"])}
+    wanted = {(fk.target, fk.tcols) for t in order for fk in plan.schema[t].fks
+              if fk.target in carried and set(fk.cols) <= set(m["tables"][t]["columns"])}
     with zipfile.ZipFile(backup.path) as zf:
         for name in order:
             table, columns = plan.schema[name], m["tables"][name]["columns"]
             present = set(columns)
-            fks = [(cols, target, tcols) for cols, target, tcols, _ in table.fks if set(cols) <= present]
+            fks = [fk[:3] for fk in table.fks if set(fk.cols) <= present]
             own_keys = [(tcols, keys.setdefault((name, tcols), set())) for target, tcols in wanted if target == name]
             if any(not set(tcols) <= present for tcols, _ in own_keys):
                 raise BackupError(422, DAMAGED)

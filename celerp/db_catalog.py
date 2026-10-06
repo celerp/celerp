@@ -25,9 +25,10 @@ class Column:
 
 class ForeignKey(NamedTuple):
     cols: tuple[str, ...]
-    target: str
+    target: str  # ``schema.table`` when the table is in another schema
     tcols: tuple[str, ...]
     on_delete: str  # pg_constraint.confdeltype: a no action, r restrict, c cascade, n set null, d set default
+    own: bool = True  # declared on the table itself, naming a table of this schema
 
     @property
     def cascades(self) -> bool:
@@ -68,29 +69,41 @@ async def read(session: AsyncSession) -> dict[str, Table]:
             "WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
             "ORDER BY c.relname, a.attnum"))).all():
         tables.setdefault(rel, Table(rel)).columns[att] = Column(udt, notnull, generated)
-    for rel, kind, cols, target, tcols, on_delete in (await session.execute(text(
-            "SELECT c.relname::text, k.contype::text, "
+    # Every key a table's rows are bound by: its own, those one of its partitions holds,
+    # and those naming another schema. Postgres also keeps a copy of a key for each
+    # partition it reaches; the key itself already says all a copy does.
+    for rel, kind, cols, target, tcols, on_delete, own in (await session.execute(text(
+            "SELECT r.relname::text, k.contype::text, "
             "ARRAY(SELECT a.attname::text FROM unnest(k.conkey) WITH ORDINALITY u(n, i) "
             "      JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = u.n ORDER BY u.i), "
-            "f.relname::text, "
+            "CASE WHEN f.relnamespace = r.relnamespace THEN f.relname ELSE format('%s.%s', fn.nspname, f.relname) END, "
             "ARRAY(SELECT a.attname::text FROM unnest(k.confkey) WITH ORDINALITY u(n, i) "
             "      JOIN pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = u.n ORDER BY u.i), "
-            "k.confdeltype::text "
+            "k.confdeltype::text, c.oid = r.oid AND f.relnamespace = r.relnamespace "
             "FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_class f ON f.oid = k.confrelid "
-            # A key into another schema names a table this catalog does not hold, and so does
-            # the copy Postgres keeps of a key for each partition of the table it names.
-            "WHERE n.nspname = current_schema() AND (k.contype = 'p' OR k.contype = 'f' "
-            "AND f.relnamespace = n.oid AND k.conparentid = 0) "
-            "ORDER BY c.relname, k.conname"))).all():
+            "JOIN pg_class r ON r.oid = COALESCE(pg_partition_root(c.oid), c.oid) "
+            "JOIN pg_namespace n ON n.oid = r.relnamespace "
+            "LEFT JOIN pg_class f ON f.oid = k.confrelid LEFT JOIN pg_namespace fn ON fn.oid = f.relnamespace "
+            "WHERE n.nspname = current_schema() AND k.conparentid = 0 "
+            "AND (k.contype = 'f' OR k.contype = 'p' AND c.oid = r.oid) "
+            "ORDER BY r.relname, k.conname"))).all():
         table = tables.get(rel)
         if table is None:
             continue
         if kind == "p":
             table.pk = tuple(cols)
         else:
-            table.fks.append(ForeignKey(tuple(cols), target, tuple(tcols), on_delete))
+            table.fks.append(ForeignKey(tuple(cols), target, tuple(tcols), on_delete, own))
     return tables
+
+
+def own_keys(schema: dict[str, Table]) -> dict[str, Table]:
+    """The catalog with each table keeping only the keys declared on it into this schema:
+    the ones a reset or discard follows to find whose rows are whose. A key into another
+    schema leaves this schema's rows as they are, and a key one partition holds makes
+    them refuse (``partition_key``)."""
+    return {name: Table(name, table.columns, table.pk, [fk for fk in table.fks if fk.own])
+            for name, table in schema.items()}
 
 
 async def outside_referrer(session: AsyncSession) -> str | None:

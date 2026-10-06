@@ -241,15 +241,16 @@ async def factory_reset(
                 "to fix it.", table=partition))
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
-        held = await session.scalar(text(_held_elsewhere(schema)), {"c": str(company_id)})
+        keys = db_catalog.own_keys(schema)
+        held = await session.scalar(text(_held_elsewhere(keys)), {"c": str(company_id)})
         if held:
             raise HTTPException(status_code=409, detail=refusal(
                 "system.factory_reset.held_elsewhere",
                 f"This company cannot be reset because records in {held} that belong to another "
                 "company refer to its data. Nothing was deleted.", table=held))
-        for delete in _company_deletes(schema):
+        for delete in _company_deletes(keys):
             await session.execute(text(delete), {"c": str(company_id)})
-        await session.execute(text(db_catalog.delete_users_left_without_a_company(schema)), {"members": members})
+        await session.execute(text(db_catalog.delete_users_left_without_a_company(keys)), {"members": members})
         await session.commit()
     except DBAPIError as exc:
         if sqlstate(exc) not in _BUSY:
