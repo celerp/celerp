@@ -592,6 +592,34 @@ async def test_a_reset_is_refused_naming_users_while_a_user_of_another_company_h
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS ext_home"))
 
 
+async def test_a_reset_is_refused_naming_the_table_of_another_company_that_names_a_child_row(
+        real_client, real_engine):  # noqa: F811
+    """Alpha's messages hang off Alpha's conversations, so every message is Alpha's own.
+    Beta's quote names one of them: the refusal names Beta's quotes, never Alpha's messages."""
+    from sqlalchemy import text
+
+    ta, tb = await _two_companies(real_client)
+    alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
+    async with real_engine.begin() as conn:
+        for statement in (
+                "CREATE TABLE ext_conv (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+                "CREATE TABLE ext_msg (id uuid PRIMARY KEY, "
+                "conv_id uuid NOT NULL REFERENCES ext_conv(id) ON DELETE CASCADE)",
+                "CREATE TABLE ext_quote (id uuid PRIMARY KEY, company_id uuid NOT NULL, "
+                "msg_id uuid REFERENCES ext_msg(id))",
+                "INSERT INTO ext_conv VALUES ('00000000-0000-0000-0000-000000000c01', :a)",
+                "INSERT INTO ext_msg VALUES ('00000000-0000-0000-0000-000000000d01', "
+                "'00000000-0000-0000-0000-000000000c01')",
+                "INSERT INTO ext_quote VALUES (gen_random_uuid(), :b, '00000000-0000-0000-0000-000000000d01')"):
+            await conn.execute(text(statement), {"a": alpha, "b": beta})
+    try:
+        await _refused_untouched(real_client, real_engine, ta, alpha,
+                                 ("ext_conv", "ext_msg", "ext_quote"), "ext_quote")
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_quote, ext_msg, ext_conv"))
+
+
 def _commit_elsewhere(*statements: str, **params):
     """Start committing ``statements`` on a connection of its own, in another thread. The
     returned dict gets ``committed``, or the ``error`` the commit raised."""

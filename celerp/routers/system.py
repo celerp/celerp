@@ -159,9 +159,11 @@ def _held_elsewhere(schema: dict) -> str:
             if fk.target not in rows:
                 continue
             if name in rows:
-                # A named row the company holds only through a key is shared by the two
-                # companies, so its table, which holds that key, is the one named.
-                shared = fk.target != "companies" and "company_id" not in schema[fk.target].columns
+                # A named row tied to the company by a key of its own straight to companies,
+                # as a user is by a home company, is shared by the two companies, so its
+                # table, which holds that key, is the one named.
+                shared = fk.target != "companies" and "company_id" not in schema[fk.target].columns and any(
+                    k.target == "companies" for k in schema[fk.target].fks)
                 checks.append((name, f"({rows[name]}) IS NOT TRUE AND {naming(fk, mine=True)}",
                                fk.target if shared else name))
             elif theirs:
