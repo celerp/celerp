@@ -10,9 +10,11 @@ Uses the standard test client + register pattern from conftest.
 """
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import uuid
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -326,6 +328,46 @@ class TestModuleProvenanceAndDelete:
         row = next(m for m in r.json() if m["name"] == "acme-widgets")
         assert row["source"] == "community"
         assert row["installed_at"] == "2026-07-29T00:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_scan_reports_marketplace_only_for_recorded_installs(self, client, tmp_path):
+        from celerp.modules.importer import install_from_zip
+
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        claimed = _write_pkg(module_dir, "acme-claimed")
+        (claimed / ".celerp-meta.json").write_text(
+            '{"source": "marketplace", "installed_at": "2026-07-29T00:00:00+00:00"}')
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            for name in ("acme-listed", "acme-edited"):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as zf:
+                    zf.writestr(f"{name}/__init__.py", _PKG_INIT.format(name=name, disp=name))
+                install_from_zip(buf.getvalue(), source="marketplace")
+            (module_dir / "acme-edited" / "extra.py").write_text("x = 1\n")
+            r = await client.get("/companies/me/modules", headers=_h(token))
+        assert r.status_code == 200, r.text
+        source = {m["name"]: m["source"] for m in r.json()}
+        assert source["acme-listed"] == "marketplace"
+        assert source["acme-claimed"] == "sideloaded"
+        assert source["acme-edited"] == "sideloaded"
+
+    @pytest.mark.asyncio
+    async def test_upload_cannot_claim_marketplace_source(self, client, tmp_path):
+        token = await _register(client)
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("acme-up/__init__.py", _PKG_INIT.format(name="acme-up", disp="Up"))
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.post(
+                "/companies/me/modules/import", headers=_h(token),
+                files={"file": ("acme-up.zip", buf.getvalue(), "application/zip")},
+                data={"source": "marketplace"})
+        assert r.status_code == 422, r.text
+        assert not (module_dir / "acme-up").exists()
 
     @pytest.mark.asyncio
     async def test_scan_reports_default_source_for_genuine_defaults(self, client):

@@ -29,7 +29,9 @@ import httpx
 import pytest
 
 from celerp.modules import loader, slots
-from celerp.modules.importer import PREMIUM_MARKER, install_from_zip, remove_module_dir
+from celerp.modules.importer import (
+    MARKETPLACE_RECORD, PREMIUM_MARKER, install_from_zip, marketplace_installs, remove_module_dir,
+)
 from celerp.modules.meta import write_meta
 
 
@@ -135,7 +137,7 @@ def _case_name_mismatch(base, marker, monkeypatch):
 
 
 def _case_reserved_prefix(base, marker, monkeypatch):
-    return _migrating_module(base, f"celerp-{_uid()}", marker), "reserved"
+    return _migrating_module(base, f"celerp-{_uid()}", marker), "install it again from the Marketplace"
 
 
 def _case_min_version(base, marker, monkeypatch):
@@ -948,7 +950,7 @@ def _admitted(base: Path, *names: str) -> list[str]:
     return [a.name for a in loader.admit_modules(str(base), set(names)).admitted]
 
 
-_RENAME_OR_INSTALL = "Install this module from the Marketplace"
+_REINSTALL = "install it again from the Marketplace"
 
 
 def test_marketplace_install_keeps_reserved_prefix(_modules):
@@ -960,18 +962,6 @@ def test_marketplace_install_keeps_reserved_prefix(_modules):
     assert _admitted(_modules, name) == [name]
 
 
-def test_reserved_prefix_copied_in_by_hand_is_refused(_modules):
-    installed = f"celerp-{_uid()}"
-    install_from_zip(_official_zip(installed), official=True, source="marketplace")
-    copied = _copied_by_hand(_modules, f"celerp-{_uid()}").name
-
-    admission = loader.admit_modules(str(_modules), {installed, copied})
-
-    assert [a.name for a in admission.admitted] == [installed]
-    assert _RENAME_OR_INSTALL in admission.refused[copied]
-    assert "rename it" in admission.refused[copied]
-
-
 def test_official_module_changed_after_install_is_refused(_modules):
     name = f"celerp-{_uid()}"
     install_from_zip(_official_zip(name), official=True, source="marketplace")
@@ -980,7 +970,7 @@ def test_official_module_changed_after_install_is_refused(_modules):
     admission = loader.admit_modules(str(_modules), {name})
 
     assert admission.admitted == []
-    assert _RENAME_OR_INSTALL in admission.refused[name]
+    assert _REINSTALL in admission.refused[name]
 
 
 def test_removed_official_module_copied_back_by_hand_is_refused(_modules, tmp_path):
@@ -994,16 +984,53 @@ def test_removed_official_module_copied_back_by_hand_is_refused(_modules, tmp_pa
     assert _admitted(_modules, name) == []
 
 
-def test_marketplace_installs_from_before_the_record_keep_loading(_modules):
-    """Installs made before Celerp recorded official installs are adopted once,
-    from what was on disk then; a copy placed afterwards is not."""
-    earlier = _copied_by_hand(_modules, f"celerp-{_uid()}").name
+@pytest.mark.parametrize("with_record", [False, True])
+def test_reserved_module_never_becomes_official_from_its_own_files(_modules, with_record):
+    """A celerp- folder whose own files say it came from the Marketplace is not
+    taken as one, whether or not the directory has recorded an install yet."""
+    if with_record:
+        install_from_zip(_official_zip(f"celerp-{_uid()}"), official=True, source="marketplace")
+    copied = _copied_by_hand(_modules, f"celerp-{_uid()}").name
 
-    assert _admitted(_modules, earlier) == [earlier]
-    assert _admitted(_modules, earlier) == [earlier]
+    for _ in range(2):
+        admission = loader.admit_modules(str(_modules), {copied})
+        assert admission.admitted == []
+        assert _REINSTALL in admission.refused[copied]
+        assert "without the 'celerp-' prefix" in admission.refused[copied]
+    assert copied not in marketplace_installs(_modules)
 
-    later = _copied_by_hand(_modules, f"celerp-{_uid()}").name
-    assert _admitted(_modules, earlier, later) == [earlier]
+
+def test_marketplace_install_is_recorded(_modules):
+    name = f"celerp-{_uid()}"
+    install_from_zip(_official_zip(name), official=True, source="marketplace")
+
+    assert marketplace_installs(_modules) == {
+        name: loader.module_content_digest(_modules / name)}
+
+
+def test_refused_module_installed_again_from_the_marketplace_loads(_modules):
+    name = f"celerp-{_uid()}"
+    _copied_by_hand(_modules, name)
+    assert _admitted(_modules, name) == []
+
+    remove_module_dir(name)
+    install_from_zip(_official_zip(name), official=True, source="marketplace")
+
+    assert _admitted(_modules, name) == [name]
+
+
+@pytest.mark.parametrize("record", [None, "{not json", "[]"])
+def test_missing_or_unreadable_record_grants_nothing(_modules, record):
+    name = f"celerp-{_uid()}"
+    install_from_zip(_official_zip(name), official=True, source="marketplace")
+    path = _modules / MARKETPLACE_RECORD
+    if record is None:
+        path.unlink()
+    else:
+        path.write_text(record)
+
+    assert _admitted(_modules, name) == []
+    assert marketplace_installs(_modules) == {}
 
 
 # ── A1 at load: a refused module's own code never runs ───────────────────────

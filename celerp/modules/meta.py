@@ -3,9 +3,9 @@
 """Per-module provenance sidecar (``.celerp-meta.json``).
 
 The importer writes one of these into every module folder at install time. It
-records where the module came from and when it landed, and it is the single
-source for two user-facing features on the modules page: the source shield next
-to each module name, and the newest-imported-first ordering.
+records where the module came from and when it landed. The modules page orders
+by its install time and tells a community import from a plain sideload by its
+source; a Marketplace install is known from the importer's own record instead.
 
 The sidecar is advisory: a folder without one (a pre-existing import, or a
 default module re-seeded by the desktop app) is simply treated as unknown
@@ -19,10 +19,10 @@ from pathlib import Path
 
 META_FILENAME = ".celerp-meta.json"
 
-# Every source a module can legitimately carry in its sidecar. "default" is not
-# here: default modules are trusted by name, not by sidecar (see the loader), so
-# their provenance is never read from a file.
-VALID_SOURCES = {"marketplace", "community", "sideloaded"}
+# The sources an uploaded package may record. A Marketplace install is known from
+# the importer's own record (importer.MARKETPLACE_RECORD), never from a sidecar,
+# and a default module by its content (see the loader).
+IMPORT_SOURCES = {"community", "sideloaded"}
 
 
 def write_meta(pkg_dir: Path, *, source: str) -> None:

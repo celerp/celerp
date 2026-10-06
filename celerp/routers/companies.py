@@ -1665,8 +1665,8 @@ async def list_modules(
     from datetime import datetime, timezone
     from pathlib import Path
     from celerp.modules.loader import (
-        first_party_names, is_core_folded, is_first_party, is_running, load_errors,
-        loaded_modules, read_manifest_metadata,
+        first_party_names, installed_from_marketplace, is_core_folded, is_first_party,
+        is_running, load_errors, loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
     from celerp.modules.registry import company_modules
@@ -1707,16 +1707,24 @@ async def list_modules(
                 # newest-imported-first ordering. A default is identified by
                 # content (its digest matches the committed first-party lock), not
                 # by name or sidecar, and never carries an install time (the desktop
-                # app re-seeds them on every version bump). A non-default folder
-                # with no sidecar (a pre-existing import) falls back to its
-                # folder ctime so ordering still has something to sort on.
+                # app re-seeds them on every version bump). A Marketplace install
+                # is identified by the importer's record of it, never by the
+                # sidecar; the sidecar only tells a community import from a plain
+                # sideload. A non-default folder with no sidecar (a pre-existing
+                # import) falls back to its folder ctime so ordering still has
+                # something to sort on.
                 is_default = is_first_party(pkg_path)
                 if is_default:
                     source = "default"
                     installed_at = None
                 else:
                     meta = read_meta(pkg_path)
-                    source = meta.get("source")
+                    if installed_from_marketplace(pkg_path):
+                        source = "marketplace"
+                    elif meta.get("source") == "community":
+                        source = "community"
+                    else:
+                        source = "sideloaded"
                     installed_at = meta.get("installed_at")
                     if installed_at is None:
                         ctime = pkg_path.stat().st_ctime
@@ -1995,9 +2003,9 @@ async def import_module_upload(
     from celerp.modules.importer import (
         MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip,
     )
-    from celerp.modules.meta import VALID_SOURCES
+    from celerp.modules.meta import IMPORT_SOURCES
 
-    if source not in VALID_SOURCES:
+    if source not in IMPORT_SOURCES:
         raise HTTPException(status_code=422, detail="Unknown module source.")
     # Reject on the declared length before reading, then read with a hard cap so
     # an oversize (or lying-Content-Length) body cannot be buffered whole in RAM.
