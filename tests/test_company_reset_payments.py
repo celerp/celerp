@@ -31,6 +31,7 @@ from company_backup_support import company, owner, snapshot, token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 
 from celerp.services.payments import reconcile_payments
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -38,7 +39,6 @@ RESET = "/companies/me/reset"
 CLOSURE = "/billing/connect/companies/retire/"
 RECOVERY = "/billing/connect/recovery"
 CHECKOUT = "/billing/connect/checkout"
-PAUSED = "Online payment is paused while recent payments are checked. Please try again shortly."
 NAME = "Harbor Goods Ltd"
 LOST = object()  # Cloud takes the step, but its answer never arrives
 NO_ANSWER = object()  # the request returns nothing
@@ -1218,7 +1218,7 @@ async def test_every_payment_a_restore_may_have_lost_is_recorded_again_before_a_
 
     # Until they are recorded again, no new payment opens.
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
-    assert r.status_code == 409 and r.json()["detail"] == PAUSED
+    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_pay_paused", "en")
     assert cloud.checkouts == []
 
     await cloud.deliver()
@@ -1643,7 +1643,7 @@ async def test_a_payment_cloud_refuses_until_a_restore_is_confirmed_reads_as_pau
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
 
-    assert r.status_code == 409 and r.json()["detail"] == PAUSED
+    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_pay_paused", "en")
     assert cloud.checkouts == [(str(a), 0, 409)]
 
 
@@ -1660,7 +1660,7 @@ async def test_new_payments_wait_until_cloud_confirms_a_restore(real_engine, rea
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
 
-    assert r.status_code == 409 and r.json()["detail"] == PAUSED
+    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_pay_paused", "en")
     assert cloud.checkouts == []
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)

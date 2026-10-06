@@ -410,7 +410,8 @@ async def set_woocommerce_order_reconciled(
         with_for_update=True, populate_existing=True,
     )
     if doc is None or doc.entity_type != "doc":
-        raise ValueError(f"WooCommerce order {order_id} has not been imported")
+        from ui.i18n import t
+        raise ValueError(t("documents.err_woo_order_missing", order_id=order_id))
     state = doc.state or {}
     if state.get("woocommerce_reconciliation_signature") != signature:
         raise WooCommerceReconciliationChanged(

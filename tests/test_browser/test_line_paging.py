@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from ui.i18n import t
+
 pytestmark = pytest.mark.browser
 
 _AUDIT_LINES = 105
@@ -166,7 +168,7 @@ def test_finalized_audit_delete_selected_keeps_rows_and_explains(page, ui_server
     page.locator("#li-bulk-delete-btn").click()
     toast = page.locator(".toast-container .toast--error")
     toast.wait_for(state="visible", timeout=5000)
-    assert "cannot be deleted" in toast.inner_text()
+    assert t("documents.audit_lines_locked", "en") in toast.inner_text()
     assert _row_skus(page) == before
     page.wait_for_timeout(600)
     assert page.evaluate("_celerpLinesDirty()") is False

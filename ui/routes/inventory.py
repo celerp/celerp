@@ -2698,7 +2698,7 @@ function celerpPrintLabel(entityId, templateId) {
                 else:
                     qty = float(old_item.get("quantity") or 0)
                     if qty == 0:
-                        return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
+                        return P(t("error.cannot_divide_by_zero_qty"), cls="cell-error")
                     # Derive the unit price (a rate) at the fewest decimals that make rate*qty
                     # reconcile to the entered total - so the typed total is honoured exactly and the
                     # stored rate stays clean. Same helper as CSV import (DRY) -> both pages agree.

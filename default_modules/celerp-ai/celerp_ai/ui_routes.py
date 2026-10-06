@@ -623,7 +623,7 @@ def setup_ui_routes(app) -> None:
         except APIError as exc:
             return P(_api_error_text(exc), cls="ai-settings__error")
         except Exception:
-            return P(t("msg.could_not_load_data"), cls="ai-settings__error")
+            return P(t("ai.memory_clear_failed"), cls="ai-settings__error")
         return P(t("msg.memory_cleared"), cls="ai-memory__empty")
 
     @app.post("/ai/upload")

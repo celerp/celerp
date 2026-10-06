@@ -291,7 +291,7 @@ def setup_routes(app):
         try:
             row = await _payment_row(token, reference)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         return _invoice_cell(reference, (row or {}).get("document_ref"))
 
 

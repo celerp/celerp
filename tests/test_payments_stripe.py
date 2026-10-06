@@ -16,6 +16,7 @@ import pytest
 from httpx import AsyncClient
 
 from celerp.services.company_lock import locked_company
+from ui.i18n import t
 
 
 # When Stripe reported a payment paid, and the books its page opened with.
@@ -738,7 +739,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
                                     reference="pi_race", amount_minor=107000, currency="usd",
                                     paid_at=PAID, context=BOOKS, managed=True)
     assert refused.value.status_code == 409
-    assert "exceeds amount outstanding" in refused.value.detail
+    assert refused.value.detail == t("documents.err_payment_too_much", "en", amount=1070.0, outstanding=570.0)
     await session.rollback()
 
     doc = await _doc_state(client, tok, eid)
