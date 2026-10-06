@@ -26,6 +26,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
+from ui.i18n import t
 
 from celerp.db import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -194,7 +195,7 @@ async def trigger_backup():
     backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
 
     if not result.ok:
-        raise HTTPException(status_code=422, detail=result.error or "Unknown error")
+        raise HTTPException(status_code=422, detail=result.error or t("error.backup_failed_unknown"))
 
     resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)} uploaded)")
     resp.headers["HX-Trigger"] = "backupDone"
@@ -320,10 +321,6 @@ async def continue_import(
 
 public_router = APIRouter()
 
-_ALREADY_SET_UP = (
-    "This installation is already set up. Sign in as the installation owner and "
-    "use System Recovery, which replaces the whole installation."
-)
 
 
 @public_router.post("/import-bootstrap")
@@ -343,7 +340,7 @@ async def import_backup_bootstrap(
     if existing is not None:
         raise HTTPException(
             status_code=403,
-            detail=_ALREADY_SET_UP,
+            detail=t("error.restore_already_set_up"),
         )
 
     tmp_path = await _spool_upload(file)
@@ -360,13 +357,13 @@ async def import_backup_bootstrap(
             if existing is not None:
                 raise HTTPException(
                     status_code=403,
-                    detail=_ALREADY_SET_UP,
+                    detail=t("error.restore_already_set_up"),
                 )
             await session.close()
             result = await bootstrap_recovery(tmp_path)
             if not result.ok:
                 raise HTTPException(
-                    status_code=422, detail=result.error or "Import failed"
+                    status_code=422, detail=result.error or t("error.restore_failed_unknown")
                 )
             if setup_code_configured:
                 await asyncio.to_thread(bootstrap.clear_setup_code)

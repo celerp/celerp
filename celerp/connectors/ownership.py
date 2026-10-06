@@ -478,9 +478,7 @@ async def lock_unassigned_connector(
     await lock_connector_key(session, connector, exclusive=True)
     rows = await _connector_rows(session, connector, for_update=True)
     if not _unassigned_only(rows):
-        raise ConnectorOwnershipError(
-            f"{connector} has no unassigned connection to reset"
-        )
+        raise ConnectorOwnershipError(t("error.connector_nothing_to_reset", service=_service(connector)))
     return rows
 
 
@@ -556,8 +554,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
             confirmed = await connector.same_store(ctx, samples)
         except Exception as exc:
             raise ConnectorStoreChangedError(
-                f"Could not read {store_handle} to confirm this company's "
-                f"{connector.display_name} records came from it. Try again."
+                t("error.store_unchecked", store=store_handle, service=connector.display_name)
             ) from exc
         if not confirmed:
             raise ConnectorStoreChangedError(

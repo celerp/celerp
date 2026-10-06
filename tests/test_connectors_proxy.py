@@ -59,7 +59,7 @@ async def test_connectors_tab_shows_trial_cta_when_relay_gates_on_plan():
     assert "instance_id=" not in html
     assert "celerp.com" not in html
     assert "connector-entitlement-cta" in html
-    assert "Could not load connectors" not in html
+    assert "Celerp couldn't load your connections" not in html
 
 
 @pytest.mark.asyncio
@@ -428,7 +428,7 @@ async def test_deposit_account_route_rejects_an_unknown_account(deposit_ui):
         r = await client.post("/settings/connectors/woocommerce/deposit-account",
                               data={"woocommerce_deposit_account": "9999"}, cookies=cookies)
     assert r.status_code == 200
-    assert "9999 is not an active bank account." in r.text
+    assert "9999 isn't an active bank account." in r.text
     patch_company.assert_not_awaited()
 
 

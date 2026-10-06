@@ -792,7 +792,7 @@ async def fetch_relay_auth(
     data = resp.json()
     token = data.get("access_token") if isinstance(data, dict) else None
     if not token:
-        raise RelayProtocolError("relay auth response missing access_token")
+        raise RelayProtocolError(t("error.relay_bad_reply"))
     iid_raw = data.get("instance_id") if isinstance(data, dict) else None
     iid = str(iid_raw).strip() if iid_raw else ""
     return str(token), (iid or None)

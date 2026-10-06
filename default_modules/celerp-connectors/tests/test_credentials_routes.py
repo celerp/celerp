@@ -357,7 +357,7 @@ async def test_item_sync_rejects_unbounded_batch_before_locking():
                 _session(),
             )
     assert exc.value.status_code == 422
-    assert "At most 200" in str(exc.value.detail)
+    assert "Sync at most 200 at a time." in str(exc.value.detail)
     lock.assert_not_awaited()
 
 
