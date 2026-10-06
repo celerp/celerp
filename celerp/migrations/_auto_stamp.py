@@ -28,7 +28,7 @@ DDL signature is present in the live schema.
 DDL signatures handled:
   - create_table:  table exists in the schema
   - add_column:    column exists in the table
-  - drop_column:   column no longer exists in the table
+  - drop_column:   the table exists and the column no longer does (a missing table proves nothing)
   - create_index:  index name exists in the table's indexes
   - create_unique_constraint: treated as create_index (Postgres/SQLite
                               both implement unique constraints as indexes)
@@ -304,7 +304,7 @@ def _signature_expected(metadata, sig: RevisionSignature) -> bool:
     if sig.kind == "add_column":
         return table is not None and sig.column in table.c
     if sig.kind == "drop_column":
-        return table is None or sig.column not in table.c
+        return table is not None and sig.column not in table.c
     if sig.kind == "create_index":
         return _metadata_has_index(metadata, sig)
     if sig.kind == "create_unique_constraint":
@@ -319,7 +319,7 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
     if sig.kind == "add_column":
         return _table_exists(inspector, sig.table) and _column_exists(inspector, sig.table, sig.column)
     if sig.kind == "drop_column":
-        return not (_table_exists(inspector, sig.table) and _column_exists(inspector, sig.table, sig.column))
+        return _table_exists(inspector, sig.table) and not _column_exists(inspector, sig.table, sig.column)
     if sig.kind == "create_index":
         return _table_exists(inspector, sig.table) and _index_exists(
             inspector, sig.table, sig.extra, sig.columns)
