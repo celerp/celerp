@@ -958,7 +958,7 @@ def _changed_outside(kind: str, table: str) -> dict:
 
 
 async def _refuse_changed_outside(session: AsyncSession) -> None:
-    if changed := await db_catalog.changed_outside(session):
+    if changed := await db_catalog.changed_outside(session, db_catalog.keyed(await db_catalog.read(session))):
         raise MigrationError(409, _changed_outside(*changed))
 
 

@@ -240,6 +240,11 @@ async def factory_reset(
     except db_catalog.TableElsewhere as exc:
         raise HTTPException(status_code=409, detail=_changed_outside("partition_key", exc.table)) from None
     schema = await db_catalog.read(session)
+    # A table this connection cannot read and delete from can neither be locked below
+    # nor have the company's rows picked out of it.
+    if tables := await db_catalog.hidden(session, schema):
+        raise HTTPException(status_code=409, detail=_changed_outside(
+            "partition_key", await db_catalog.label(session, tables[0])))
     # Another transaction writing these tables can hold them for longer than a request
     # may wait, or lock in the opposite order so Postgres aborts one of the two. Either
     # way the rollback leaves everything as it was and the owner is asked to try again.
@@ -248,7 +253,7 @@ async def factory_reset(
         if await db_catalog.read(session) != schema:  # a table or key added before the lock
             await session.rollback()
             raise _busy()
-        if changed := await db_catalog.changed_outside(session):
+        if changed := await db_catalog.changed_outside(session, schema):
             raise HTTPException(status_code=409, detail=_changed_outside(*changed))
         members = list((await session.execute(
             select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())

@@ -1272,20 +1272,30 @@ async def test_a_reset_reads_the_tables_beside_a_schema_named_after_the_database
             await conn.execute(text("DROP TABLE IF EXISTS public.ext_par"))
 
 
-async def test_a_reset_is_refused_while_a_table_cannot_be_read(
-        real_client, real_engine, rules_bind):  # noqa: F811
-    """The role Celerp connects as may not read a table holding Alpha's row, so a delete
-    cannot pick out Alpha's rows there. The reset is refused naming that table, and
-    nothing is deleted."""
+@pytest.mark.parametrize("table, rights", [
+    ("ext_unread (id uuid PRIMARY KEY, company_id uuid NOT NULL)", ""),
+    ("ext_unread (id uuid PRIMARY KEY, company_id uuid NOT NULL)", "GRANT SELECT ON ext_unread TO CURRENT_USER"),
+    ("ext_unread (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+     "GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ext_unread TO CURRENT_USER"),
+    ("ext_unread (id serial PRIMARY KEY, note text)", ""),
+], ids=["company_rows_no_rights", "company_rows_read_only", "company_rows_unread", "no_company_rows_no_rights"])
+async def test_a_reset_is_refused_while_a_table_cannot_be_read_or_deleted_from(
+        real_client, real_engine, rules_bind, table, rights):  # noqa: F811
+    """The role Celerp connects as may not read and delete from a table, so the reset can
+    neither pick out Alpha's rows there nor hold the table still while it deletes. The
+    reset is refused naming that table, and nothing is deleted."""
     from sqlalchemy import text
 
     ta, _ = await _two_companies(real_client)
     alpha = await _id(real_client, ta)
+    keyed = "company_id" in table
     async with real_engine.begin() as conn:
-        for statement in ("CREATE TABLE ext_unread (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
-                          "INSERT INTO ext_unread VALUES (gen_random_uuid(), :a)",
-                          "REVOKE SELECT ON ext_unread FROM CURRENT_USER"):
-            await conn.execute(text(statement), {"a": alpha})
+        await conn.execute(text(f"CREATE TABLE {table}"))
+        if keyed:
+            await conn.execute(text("INSERT INTO ext_unread VALUES (gen_random_uuid(), :a)"), {"a": alpha})
+        await conn.execute(text("REVOKE ALL ON ext_unread FROM CURRENT_USER"))
+        if rights:
+            await conn.execute(text(rights))
     try:
         held = await _held(real_engine, alpha)
 
@@ -1296,9 +1306,10 @@ async def test_a_reset_is_refused_while_a_table_cannot_be_read(
         assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
                                                              {"table": "ext_unread"})
         assert await _held(real_engine, alpha) == held
-        async with real_engine.begin() as conn:
-            await conn.execute(text("GRANT SELECT ON ext_unread TO CURRENT_USER"))
-        assert await count(real_engine, "ext_unread", "company_id = :a", a=alpha) == 1
+        if keyed:
+            async with real_engine.begin() as conn:
+                await conn.execute(text("GRANT ALL ON ext_unread TO CURRENT_USER"))
+            assert await count(real_engine, "ext_unread", "company_id = :a", a=alpha) == 1
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_unread"))

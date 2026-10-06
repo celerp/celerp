@@ -375,8 +375,8 @@ async def test_bootstrap_discard_is_refused_when_a_table_inherits_from_users_aft
         await conn.execute(text("INSERT INTO ext_user_copy SELECT * FROM users WHERE email = :e"), {"e": OWNER_EMAIL})
     changed_outside = db_catalog.changed_outside
 
-    async def then_inherit(session):
-        found = await changed_outside(session)
+    async def then_inherit(session, reached):
+        found = await changed_outside(session, reached)
         monkeypatch.setattr(db_catalog, "changed_outside", changed_outside)
         async with real_engine.begin() as conn:
             await conn.execute(text("SET LOCAL lock_timeout = '1s'"))
@@ -455,6 +455,62 @@ async def test_discard_is_refused_while_row_security_hides_records_of_the_compan
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
+
+
+@pytest.mark.asyncio
+async def test_discard_is_refused_while_a_table_holding_records_of_the_company_cannot_be_read(
+        real_client, real_engine, migration_env, rules_bind):
+    """The role Celerp connects as has no rights at all on a table holding a row of the
+    staged company. The discard is refused naming that table, and the company and the row
+    are kept."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.begin() as conn:
+        for statement in ("CREATE TABLE ext_notes (id uuid PRIMARY KEY, company_id uuid NOT NULL)",
+                          "INSERT INTO ext_notes VALUES (gen_random_uuid(), :c)",
+                          "REVOKE ALL ON ext_notes FROM CURRENT_USER"):
+            await conn.execute(text(statement), {"c": company_id})
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key", {"table": "ext_notes"})
+        assert await count(real_engine, "companies", "id = :c", c=company_id) == 1
+        async with real_engine.begin() as conn:
+            await conn.execute(text("GRANT ALL ON ext_notes TO CURRENT_USER"))
+        assert await count(real_engine, "ext_notes", "company_id = :c", c=company_id) == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
+
+
+@pytest.mark.asyncio
+async def test_discard_goes_ahead_beside_a_table_it_cannot_read_that_holds_no_company_records(
+        real_client, real_engine, migration_env, rules_bind):
+    """The role Celerp connects as has no rights on a table with no company column and no
+    key to any other table, so no company's rows are there and discarding never reaches
+    it. The staged company is discarded and the table is left as it was."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.begin() as conn:
+        for statement in ("CREATE TABLE ext_audit (id serial PRIMARY KEY, note text)",
+                          "INSERT INTO ext_audit (note) VALUES ('kept')",
+                          "REVOKE ALL ON ext_audit FROM CURRENT_USER"):
+            await conn.execute(text(statement))
+    try:
+        r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+
+        assert r.status_code == 200, r.text
+        assert await count(real_engine, "companies", "id = :c", c=company_id) == 0
+        async with real_engine.begin() as conn:
+            await conn.execute(text("GRANT ALL ON ext_audit TO CURRENT_USER"))
+        assert await count(real_engine, "ext_audit", "note = 'kept'") == 1
+    finally:
+        async with real_engine.begin() as conn:
+            await conn.execute(text("DROP TABLE IF EXISTS ext_audit"))
 
 
 @pytest.mark.asyncio

@@ -1476,8 +1476,9 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
         await _bk_sql(real_engine, "DROP TABLE IF EXISTS ext_allow")
 
 
+@pytest.mark.parametrize("rights", ["SELECT", "ALL"])
 async def test_a_carried_table_the_role_cannot_read_is_refused_whole(
-        real_engine, real_client, tmp_path, monkeypatch, rules_bind):
+        real_engine, real_client, tmp_path, monkeypatch, rules_bind, rights):
     """The role Celerp connects as may not read zz_gadgets. The backup is refused naming
     the table, with nothing written, and a backup made before is refused on restore the
     same way, with nothing restored."""
@@ -1489,7 +1490,7 @@ async def test_a_carried_table_the_role_cannot_read_is_refused_whole(
         await _bk_sql(real_engine, "INSERT INTO zz_gadgets VALUES (gen_random_uuid(), :c)", c=cid)
         made = await real_client.get("/company-backups/download", headers=auth(tok))
         assert made.status_code == 200, made.text[:200]
-        await _bk_sql(real_engine, "REVOKE SELECT ON zz_gadgets FROM CURRENT_USER")
+        await _bk_sql(real_engine, f"REVOKE {rights} ON zz_gadgets FROM CURRENT_USER")
         companies = await _bk_scalar(real_engine, "SELECT count(*) FROM companies")
 
         r = await real_client.get("/company-backups/download", headers=auth(tok))
@@ -1728,7 +1729,7 @@ async def test_a_table_of_another_schema_is_named_unambiguously(real_engine, sha
         for statement in ("CREATE TABLE zz_parent (id int primary key, company_id uuid)", 'CREATE SCHEMA "zz q"', sql):
             await _bk_sql(real_engine, statement)
         async with AsyncSession(bind=real_engine) as session:
-            assert await db_catalog.changed_outside(session) == expected
+            assert await db_catalog.changed_outside(session, ()) == expected
     finally:
         await _bk_sql(real_engine, 'DROP SCHEMA IF EXISTS "zz q" CASCADE')
         await _bk_drop(real_engine, "zz_parent")

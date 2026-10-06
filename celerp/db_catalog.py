@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import Collection, NamedTuple
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -197,16 +197,18 @@ async def pin(session: AsyncSession) -> None:
     await session.execute(text("SET LOCAL row_security = off"))
 
 
-async def hidden(session: AsyncSession) -> list[str]:
+async def hidden(session: AsyncSession, deleting: Collection[str] = ()) -> list[str]:
     """The tables of this schema this connection cannot read every row of, by name: those
-    it may not read at all, and those row security keeps rows of from it. Reading one
-    returns only the rows a rule lets through, and deleting from one skips the others, so
-    none of them can be backed up, reset or discarded whole."""
+    it may not read at all, and those row security keeps rows of from it; and of
+    ``deleting``, those it may not delete rows from. Reading one returns only the rows a
+    rule lets through, and deleting from one skips the others or fails, so none of them
+    can be backed up, reset or discarded whole."""
     return list((await session.scalars(text(
         "SELECT c.relname::text FROM pg_class c WHERE c.relnamespace = to_regnamespace(current_schema()) "
         "AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
-        "AND (row_security_active(c.oid) OR NOT has_table_privilege(c.oid, 'SELECT')) "
-        "ORDER BY 1"))).all())
+        "AND (row_security_active(c.oid) OR NOT has_table_privilege(c.oid, 'SELECT') "
+        "     OR c.relname = ANY(:deleting) AND NOT has_table_privilege(c.oid, 'DELETE')) "
+        "ORDER BY 1"), {"deleting": list(deleting)})).all())
 
 
 async def label(session: AsyncSession, name: str) -> str:
@@ -300,17 +302,18 @@ async def partition_key(session: AsyncSession) -> str | None:
         "WHERE k.contype = 'f' AND k.conparentid = 0 ORDER BY 1 LIMIT 1"))
 
 
-async def changed_outside(session: AsyncSession) -> tuple[str, str] | None:
+async def changed_outside(session: AsyncSession, reached: Collection[str]) -> tuple[str, str] | None:
     """Why a reset or discard cannot tell whose rows a key or a delete reaches, as
     ``(kind, table)`` with kind ``outside_reference`` (``outside_referrer``) or
     ``partition_key`` (``partition_key``, or a table ``inheriting``), or None when every
-    row they reach is one the catalog reads. A table this connection cannot read every
-    row of (``hidden``) counts as ``partition_key`` too: a delete cannot reach them all."""
+    row they reach is one the catalog reads. A table of ``reached``, those the caller
+    deletes from or locks, this connection cannot read and delete every row of
+    (``hidden``) counts as ``partition_key`` too."""
     if table := await outside_referrer(session):
         return "outside_reference", table
     if table := await partition_key(session):
         return "partition_key", table
-    if tables := await hidden(session):
+    if tables := [t for t in await hidden(session, reached) if t in reached]:
         return "partition_key", await label(session, tables[0])
     if tables := await inheriting(session):
         return "partition_key", min(tables.values())
@@ -350,6 +353,14 @@ def company_tables(schema: dict[str, Table], *, held: bool = False) -> set[str]:
                          or any(fk.target in owned and not (held and fk.clears) for fk in table.fks))}:
         owned |= grown
     return owned
+
+
+def keyed(schema: dict[str, Table]) -> set[str]:
+    """The tables a delete of a company's rows or of its users can reach: each with a
+    company column, a foreign key, or named by one. A table with none of these holds no
+    company's rows and nothing deleting them touches it."""
+    named = {fk.target for table in schema.values() for fk in table.fks}
+    return {name for name, table in schema.items() if "company_id" in table.columns or table.fks or name in named}
 
 
 def delete_users_left_without_a_company(schema: dict[str, Table]) -> str:
