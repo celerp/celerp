@@ -9720,6 +9720,9 @@ class TestModulesUI:
         assert "/login" in r.headers.get("location", "")
 
 
+# The token a marketplace Download hands back for celerp-budgeting.
+_PAID_TOK = "celerp-budgeting-" + "0" * 32
+
 _CATALOG_FIXTURE = [
     {"id": "celerp-budgeting", "name": "Budgeting", "description": "Budgets and forecasting.",
      "tier": "official", "homepage": "https://celerp.com/marketplace/celerp-budgeting",
@@ -10210,20 +10213,19 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_marketplace_download_stages_and_offers_install(self, ui_client):
         """Download stages the licensed archive and swaps the row to an Install
-        button carrying the staged path."""
+        button carrying that download's token."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.marketplace_download",
-                  new=AsyncMock(return_value={"ok": True,
-                                              "path": "/data/marketplace-downloads/celerp-budgeting.zip"})),
+                  new=AsyncMock(return_value={"ok": True, "token": _PAID_TOK})),
         ):
             r = await ui_client.post("/modules/marketplace-download",
                                      data={"slug": "celerp-budgeting"}, cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content
-        assert b"celerp-budgeting.zip" in r.content          # path passed to install
+        assert _PAID_TOK.encode() in r.content                # token passed to install
         assert b">Install<" in r.content
 
     @pytest.mark.asyncio
@@ -10249,19 +10251,19 @@ class TestMarketplaceUI:
         """Install lands the staged archive and redirects to the Installed tab
         so the new module is immediately visible and enableable - the same
         terminal state a community import reaches."""
+        install = AsyncMock(return_value={"ok": True, "name": "celerp-budgeting",
+                                          "display_name": "Budgeting"})
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
-            patch("ui.api_client.marketplace_install",
-                  new=AsyncMock(return_value={"ok": True, "name": "celerp-budgeting",
-                                              "display_name": "Budgeting"})),
+            patch("ui.api_client.marketplace_install", new=install),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting",
-                                           "path": "/data/marketplace-downloads/celerp-budgeting.zip"},
+                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
                                      cookies=_authed())
         assert r.status_code == 200
         assert r.headers.get("HX-Redirect") == "/modules?tab=local"
+        assert install.await_args.args[1] == _PAID_TOK          # exactly this download
 
     @pytest.mark.asyncio
     async def test_marketplace_install_failure_keeps_install_button(self, ui_client):
@@ -10277,13 +10279,32 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(422, "The downloaded package does not match the requested module."))),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting",
-                                           "path": "/data/marketplace-downloads/celerp-budgeting.zip"},
+                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content   # Install button still there
         assert "celerpToast" in r.headers.get("HX-Trigger", "")
         assert b'hx-trigger="load"' not in r.content          # error is not auto-wiped
+
+    @pytest.mark.asyncio
+    async def test_marketplace_install_of_a_gone_download_offers_download_again(self, ui_client):
+        """An expired or unknown download cannot be installed by retrying, so the
+        row goes back to Download and the reason is shown as a corner toast."""
+        from ui.api_client import APIError
+        with (
+            patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
+            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
+            patch("ui.api_client.marketplace_install",
+                  new=AsyncMock(side_effect=APIError(410, "This download has expired. Download it again."))),
+        ):
+            r = await ui_client.post("/modules/marketplace-install",
+                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"/modules/marketplace-download" in r.content
+        assert b"/modules/marketplace-install" not in r.content
+        assert "celerpToast" in r.headers.get("HX-Trigger", "")
 
     # ── Account check before Buy ─────────────────────────────────────────────
 

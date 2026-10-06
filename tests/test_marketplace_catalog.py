@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from celerp.services import staged_downloads
 from ui import marketplace_catalog as mc
 
 GOOD = {
@@ -254,7 +255,7 @@ class TestCommunityDownload:
         with _host([]):
             token = await mc.download_community_archive("https://github.com/a/b", PIN, "ok")
         staged = mc._staging_dir() / f"{token}.zip"
-        old = staged.stat().st_mtime - mc.STAGED_DOWNLOAD_TTL_SECONDS - 1
+        old = staged.stat().st_mtime - staged_downloads.TTL_SECONDS - 1
         os.utime(staged, (old, old))
         with pytest.raises(mc.DownloadRefused) as exc:
             mc.read_staged_archive("ok", token)
