@@ -815,21 +815,17 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     so one with no verdict and no licence is refused. The name only ever adds
     this check; it grants nothing.
 
-    Only checked when this instance has a relay identity (it has activated / been
-    given a GATEWAY_TOKEN). It verifies even when the live token exchange failed
-    (no JWT): check_license still decides from the offline lifetime JWT and the
-    grace cache, so a transient startup failure falls back to cached state rather
-    than skipping the check. Only a never-activated install skips it.
+    Checked on every instance, activated or not. The Marketplace listing is
+    public, so a free verdict needs no relay identity. With no live JWT (never
+    activated, or the token exchange failed) check_license decides from the
+    offline lifetime JWT and the grace cache alone, so a module with neither is
+    refused.
     """
     premium = is_premium_path(module.path)
     if not premium and not (is_reserved_name(module.name)
                             and module.name not in first_party_names()):
         return None
     relay_url, instance_jwt, data_dir, instance_id = creds()
-    if not relay_url:
-        log.debug("Premium module %r: no relay identity (never activated) - "
-                  "skipping license check (dev mode)", module.name)
-        return None
     if not premium and is_free_official(module.name, relay_url, Path(data_dir)):
         return None
     if check_license(
@@ -850,8 +846,9 @@ def _premium_credentials():
     computed lazily and ONCE per admission: the JWT is the same for every
     module, and there must be no network call at all when no premium module is
     present. gateway_token (GATEWAY_TOKEN / GATEWAY_URL on a hosted deploy; set
-    by /auth/activate on desktop) is exchanged for a short-lived JWT via
-    /auth/token, the same pattern celerp.routers.health uses."""
+    by /auth/activate on desktop), when there is one, is exchanged for a
+    short-lived JWT via /auth/token, the same pattern celerp.routers.health uses.
+    The relay URL comes from the gateway settings either way."""
     cache: dict = {}
 
     def _resolve() -> tuple[str, str | None, str, str]:
@@ -859,7 +856,7 @@ def _premium_credentials():
             from celerp.config import ensure_instance_id, settings as _settings
             from celerp.gateway.state import relay_http_url
             api_key = _settings.gateway_token
-            relay_url = relay_http_url() if api_key else ""
+            relay_url = relay_http_url()
             cache["creds"] = (
                 relay_url,
                 exchange_api_key_for_jwt(relay_url, api_key) if api_key else None,
