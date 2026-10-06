@@ -265,6 +265,13 @@ def test_message_says_what_to_do(key, needle):
     assert needle in _en(key)
 
 
+@pytest.mark.parametrize("key", ["shell.update_blocked_administrator", "error.restore_already_set_up"])
+def test_owner_only_messages_name_the_installation_owner(key):
+    # The installation owner role can be handed on, so the original installer may no longer hold it.
+    assert "installation owner" in _en(key)
+    assert "installed" not in _en(key)
+
+
 @pytest.mark.parametrize("key", ["shell.error_prefix", "ai.error_prefix",
                                  "shell.request_failed_prefix", "shell.network_error_prefix"])
 def test_prefix_keys_are_gone(key):

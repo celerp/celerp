@@ -528,7 +528,8 @@ async def test_confirm_all_last_chunk_shows_tally_and_drafts_link(ui_client):
             "doc_ids": ",".join(f"doc:{i}" for i in range(1, 11)),
         })
     assert r.status_code == 200, r.text
-    assert t("ai.confirm_all_result", "en", completed=12, failed=0) in r.text
+    assert t("ai.confirm_all_done", "en", completed=12) in r.text
+    assert "not applied" not in r.text and "marked Failed" not in r.text
     assert "hx-trigger" not in r.text
     assert "Open these 12 drafts" in r.text
     assert 'href="/docs?view=drafts&amp;ids=' + ",".join(f"doc:{i}" for i in range(1, 13)) + '"' in r.text

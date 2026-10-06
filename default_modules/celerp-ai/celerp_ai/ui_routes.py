@@ -1307,6 +1307,8 @@ def _confirm_tail(conversation_id: str, message_id: str, view: str, rest: list[s
           failed=tally.failed, attention=tally.attention)
         if tally.attention
         else t("ai.confirm_all_result", lang, completed=tally.completed, failed=tally.failed)
+        if tally.failed
+        else t("ai.confirm_all_done", lang, completed=tally.completed)
     )
     children: list = [P(summary, cls="ai-action-group__summary")]
     if error:
