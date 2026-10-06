@@ -167,40 +167,23 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
     "module.path:function_name". The function is called with **kwargs.
     A failing hook never blocks its siblings or boot: it is logged at ERROR
     (with traceback) and swallowed, so a recurrence surfaces as an alert
-    instead of vanishing.
+    instead of vanishing. A hook given the caller's session runs in its own
+    savepoint, so a failed hook's writes are rolled back with it and the
+    caller's transaction carries on as if the hook had not run.
     """
+    import contextlib
     import logging
 
     _log = logging.getLogger(__name__)
+    session = kwargs.get("session")
 
     for contrib in await _company_hooks(slot, kwargs):
-        handler_path = contrib["handler"]
         try:
-            func = resolve_handler(handler_path)
-            await func(**kwargs)
+            async with (session.begin_nested() if session is not None
+                        else contextlib.nullcontext()):
+                await resolve_handler(contrib["handler"])(**kwargs)
         except Exception as exc:
             _log.exception(
                 "Lifecycle hook %s from %s failed: %s",
                 slot, contrib.get("_module", "?"), exc,
             )
-
-
-async def fire_lifecycle_strict(slot_name: str, **kwargs) -> None:
-    """Like fire_lifecycle but propagates HTTPException from handlers.
-
-    Use for slots where a handler must be able to block the action.
-    """
-    import logging
-    from fastapi import HTTPException
-
-    _log = logging.getLogger(__name__)
-
-    for contrib in await _company_hooks(slot_name, kwargs):
-        handler_path = contrib["handler"]
-        try:
-            func = resolve_handler(handler_path)
-            await func(**kwargs)
-        except HTTPException:
-            raise
-        except Exception as e:
-            _log.warning("Slot handler %s raised: %s", handler_path, e)

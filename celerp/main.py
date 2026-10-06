@@ -318,11 +318,11 @@ async def _serve(_app: FastAPI, held):
             # instance that already has companies).
             from celerp.modules.slots import fire_lifecycle as _fire
             from celerp.db import LifecycleSessionLocal as _LifecycleSession
-            # Best-effort, like the two sibling blocks below: a hook that fails
-            # during flush poisons the shared session, so the commit raises.
-            # Roll back and log at ERROR rather than let that crash boot - the
-            # manufacturing seed hook, for one, must never be able to take the
-            # app down. Seed hooks can replay large ledgers, so they run on the
+            # Best-effort, like the two sibling blocks below: fire_lifecycle
+            # rolls a failed hook back to its own savepoint, and if the commit
+            # itself fails, roll back and log at ERROR rather than let that
+            # crash boot - the manufacturing seed hook, for one, must never be
+            # able to take the app down. Seed hooks can replay large ledgers, so they run on the
             # unbounded lifecycle engine, not the timeout-bounded request pool.
             async with _LifecycleSession() as _sess:
                 try:

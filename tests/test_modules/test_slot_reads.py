@@ -24,7 +24,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 # Readers that take slot names: the registry's own, and the page helpers that
 # pass their first (visible_slot_contributions) or every (required_connectors)
 # argument on to it.
-_DIRECT = {"get", "get_slot", "fire_lifecycle", "fire_lifecycle_strict"}
+_DIRECT = {"get", "get_slot", "fire_lifecycle"}
 _INDIRECT = {"visible_slot_contributions": False, "required_connectors": True}
 
 
