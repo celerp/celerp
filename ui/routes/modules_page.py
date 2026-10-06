@@ -278,9 +278,8 @@ def _local_panel(modules: list[dict], lang: str = "en",
             )
 
         # Provenance shield to the LEFT of the name (tags-left): gold for
-        # bundled defaults, one for Marketplace installs, nothing for community,
-        # a plain sideload or an unknown origin.
-        source_icon = _source_icon(m.get("source"), bool(m.get("is_default")), lang)
+        # bundled defaults, nothing for any other origin.
+        source_icon = _source_icon(bool(m.get("is_default")), lang)
         # The leftmost Source column states the origin in words - always filled,
         # even for a plain sideload - alongside the shield beside the name.
         source_label = _source_label(m.get("source"), bool(m.get("is_default")), lang)
@@ -549,23 +548,18 @@ def _trust_icon(tier: str, lang: str):
                 title=tip, aria_label=tip, role="img")
 
 
-def _source_icon(source: str | None, is_default: bool, lang: str):
-    """The provenance shield shown to the left of a module name, or None.
+def _source_icon(is_default: bool, lang: str):
+    """The gold shield shown to the left of a default module's name, or None.
 
-    Defaults (gold) and Marketplace installs carry one. It states where the
-    module came from and changes nothing about what the module may do.
-    Community, sideloaded, and unknown origins show no shield. The Source column
-    still states the origin in words.
+    Only the defaults Celerp ships carry one. Every other origin, Marketplace
+    included, shows no shield: the install sidecar that records an origin is
+    advisory. The Source column still states the origin in words.
     """
-    if is_default:
-        tier, key = "default", "modules.source_default"
-    elif source == "marketplace":
-        tier, key = "trusted", "modules.source_marketplace"
-    else:
+    if not is_default:
         return None
-    tip = t(key, lang)
+    tip = t("modules.source_default", lang)
     return Span(NotStr(_SHIELD_SVG),
-                cls=f"module-source-icon trust-icon trust-icon--{tier}",
+                cls="module-source-icon trust-icon trust-icon--default",
                 title=tip, aria_label=tip, role="img")
 
 

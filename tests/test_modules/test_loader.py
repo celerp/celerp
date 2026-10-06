@@ -41,10 +41,6 @@ def clean_state(tmp_path):
     slots.clear()
     loader._loaded.clear()
     loader._load_errors.clear()
-    # Remove any test module packages added to sys.modules
-    for key in list(sys.modules.keys()):
-        if key.startswith("test_mod_") or key.startswith("good_module") or key.startswith("bad_module"):
-            sys.modules.pop(key, None)
 
 
 def _scan(pkg: Path, dotted: str) -> set[str]:

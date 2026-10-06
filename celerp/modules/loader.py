@@ -63,9 +63,11 @@ from pathlib import Path
 
 from celerp.modules.importer import (
     _RESERVED_IMPORT_PREFIX, _RESERVED_PREFIX, PREMIUM_MARKER, ModuleImportError, _bound_names, _check_min_version,
-    _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix,
+    _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix, is_reserved_name,
 )
-from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
+from celerp.modules.license import (
+    check_license, exchange_api_key_for_jwt, is_free_official, is_premium_path,
+)
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
     FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
@@ -735,9 +737,11 @@ def _is_module_code(location: str | None, homes: list[Path]) -> bool:
 
 def _check_import_names(name: str, pkg_path: Path) -> None:
     """Refuse a module that would answer to a package name the standard library,
-    Celerp or an installed package already uses: loading it would replace that
-    package for everything else in the process. Only another Celerp module may
-    already hold the name. Raises :class:`ModuleLoadError`."""
+    Celerp, an installed package or another module already uses: loading it would
+    replace that package for everything else in the process. A name already
+    imported counts as taken unless it was imported from this module's own
+    folder; one not yet imported may be held by another Celerp module, which
+    _refuse_shared_import_names settles. Raises :class:`ModuleLoadError`."""
     homes = _module_homes(pkg_path)
     elsewhere = [p for p in sys.path if not any(_inside(Path(p or "."), h) for h in homes)]
     # Marketplace names use '-' only, so a celerp_ package belongs to the one
@@ -750,7 +754,8 @@ def _check_import_names(name: str, pkg_path: Path) -> None:
                 f"The package name {root!r} belongs to the celerp- module of that name; "
                 f"the module must use its own.")
         if root in sys.modules:
-            taken = not _is_module_code(_module_location(sys.modules[root]), homes)
+            location = _module_location(sys.modules[root])
+            taken = not (location and _inside(Path(location), pkg_path))
         else:
             spec = importlib.machinery.PathFinder.find_spec(root, elsewhere)
             taken = bool(spec and spec.origin) and not _is_module_code(spec.origin, homes)
@@ -803,18 +808,29 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
 def _license_refusal(module: AdmittedModule, creds) -> str | None:
     """Why a premium module may not load on this instance, or None.
 
+    Checked for a module in a premium tree or carrying the paid marker, and for
+    every celerp- name that is not one of the defaults Celerp ships, wherever its
+    folder came from: a celerp- module the Marketplace lists as free and official
+    loads (that verdict is cached on this instance), any other needs a licence,
+    so one with no verdict and no licence is refused. The name only ever adds
+    this check; it grants nothing.
+
     Only checked when this instance has a relay identity (it has activated / been
     given a GATEWAY_TOKEN). It verifies even when the live token exchange failed
     (no JWT): check_license still decides from the offline lifetime JWT and the
     grace cache, so a transient startup failure falls back to cached state rather
     than skipping the check. Only a never-activated install skips it.
     """
-    if not is_premium_path(module.path):
+    premium = is_premium_path(module.path)
+    if not premium and not (is_reserved_name(module.name)
+                            and module.name not in first_party_names()):
         return None
     relay_url, instance_jwt, data_dir, instance_id = creds()
     if not relay_url:
         log.debug("Premium module %r: no relay identity (never activated) - "
                   "skipping license check (dev mode)", module.name)
+        return None
+    if not premium and is_free_official(module.name, relay_url, Path(data_dir)):
         return None
     if check_license(
         slug=module.name,
@@ -908,18 +924,21 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     that validates; its name matches the folder; the importer's name charset
     rules; a celerp_ package only in the celerp- module of that name
     (_check_import_names); the Celerp version it needs; the table prefix
-    contract; that no package name it answers to is already taken, by Python or by
-    another enabled module (_refuse_shared_import_names); that no
+    contract; that no package name it answers to is already taken, by Python, by
+    code imported from elsewhere (_check_import_names) or by another enabled
+    module (_refuse_shared_import_names); that no
     projection prefix it declares overlaps core's or another enabled module's
     (_refuse_overlapping_projection_prefixes); that every route
     source lies inside the module and provides its setup function; that no
     code it would execute rebinds a callable core calls (_check_dynamic_writes);
     that the migrations package resolves inside the module; for a
     module that is not first-party, that nothing it would execute imports a
-    protected internal; and for a premium module, a valid license. Survivors are
-    then put in dependency order, a module whose dependency is missing or
-    refused being refused too. A first-party module that fails a rule stops
-    startup, as a default module is the product.
+    protected internal; for a premium module, a valid license; and for a
+    celerp- name that is not a default, a free official verdict or a valid
+    license (_license_refusal). Survivors are then put in dependency order, a
+    module whose dependency is missing or refused being refused too. A
+    first-party module that fails a rule stops startup, as a default module is
+    the product.
     """
     refused: dict[str, str] = {}
     candidates: dict[str, AdmittedModule] = {}
