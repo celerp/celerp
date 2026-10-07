@@ -1930,8 +1930,8 @@ async def purge_module_data(
     """Drop every table carrying the module's declared prefix, in one transaction. Installation owner only.
 
     Refused while any company uses the module or it is still running: its data
-    must be quiet before it is dropped. The drop list is re-derived from the manifest prefix server-side; no
-    client-sent preview is trusted. A module with no matching tables is a clean
+    must be quiet before it is dropped. The drop list is read from the manifest prefix at the time of the
+    drop, not from the preview. A module with no matching tables is a clean
     no-op success. A table outside the module still depending on one of these
     tables blocks the whole drop, which rolls back with a plain explanation.
     Deleting the module folder is a separate action and does not touch these tables.
@@ -2182,8 +2182,8 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # The install answer alone says whether the module is official (which
-            # allows the reserved celerp- name) and paid (the licence-gate marker).
+            # The install response carries the download token and the official
+            # and paid flags.
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
             if r.status_code != 200:
