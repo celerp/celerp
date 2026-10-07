@@ -22,6 +22,7 @@ import os
 import uuid
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
@@ -39,14 +40,18 @@ RELEASE_HEAD = "o2d3e4f5a6b7"
 
 # What this release adds on top of it, oldest first: session companies, then the
 # payment revisions, then per-company modules for companies from 2.5, then the invoice
-# an unmatched payment is recorded on, then import reversibility, then per-user notice
-# reads.
+# an unmatched payment is recorded on, then cash flow sections, notice translations and
+# generated account codes, then import reversibility, then per-user notice reads.
 RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1", "t7i8j9k0l1m2",
-                 "u8j9k0l1m2n3", "v0m1n2o3p4q5", "w1n2o3p4q5r6"]
+                 "u8j9k0l1m2n3", "c7f1a2b3d4e5", "d8e9f0a1b2c3", "e9f0a1b2c3d4", "v0m1n2o3p4q5",
+                 "w1n2o3p4q5r6"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
 MODULE_WORK_HEAD = "u8j9k0l1m2n3"
+
+# The newest revision main carries ahead of this release's own revisions.
+MAIN_HEAD = "e9f0a1b2c3d4"
 
 
 def _declared(path: Path) -> dict[str, object]:
@@ -196,9 +201,10 @@ def test_upgrade_downgrade_and_fresh_install_agree_on_the_schema():
         assert _business_data(up_sync, ids) == kept
 
 
-def test_a_database_at_the_module_work_head_reaches_head():
+@pytest.mark.parametrize("start", [MODULE_WORK_HEAD, MAIN_HEAD])
+def test_a_database_at_an_earlier_head_reaches_head(start):
     with throwaway_db("graph_mod") as (mod_async, mod_sync), throwaway_db("graph_new") as (new_async, new_sync):
-        upgrade_to(mod_sync, MODULE_WORK_HEAD)
+        upgrade_to(mod_sync, start)
         _apply_migrations(mod_async)
         _apply_migrations(new_async)
 

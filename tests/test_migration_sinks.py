@@ -166,7 +166,8 @@ async def test_internal_sinks_share_domain_import_services(client, session, monk
     result = await via_sink("accounts", [receivable, sales])
     assert (result.created, result.errors) == (2, [])
     codes = {m.source_external_id: m.target_entity_id for m in result.mappings}
-    assert codes["acct-ar"] == "1120"
+    # The receivable keeps its source code; this company's chart already holds 1100.
+    assert codes["acct-ar"] == "1100-1"
     calls.clear()
     journal = CIFJournalEntry(
         **_PROVENANCE, source_type="JournalEntry", source_external_id="je-1", entry_date="2026-01-03",
@@ -180,7 +181,7 @@ async def test_internal_sinks_share_domain_import_services(client, session, monk
     assert (result.created, result.skipped, result.errors) == (1, 0, [])
     je = await session.get(Projection, (company_id, result.mappings[0].target_entity_id))
     assert [(e["account"], e.get("contact")) for e in je.state["entries"]] == [
-        ("1120", contact_id), (codes["acct-sales"], None),
+        ("1100-1", contact_id), (codes["acct-sales"], None),
     ]
     orphan = journal.model_copy(update={"source_external_id": "je-2", "lines": [
         CIFJournalLine(account_external_id="acct-ar", debit=Decimal("1"), contact_external_id="cust-unknown"),

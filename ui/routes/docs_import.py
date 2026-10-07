@@ -172,7 +172,7 @@ def received_table(items: list[dict]) -> FT:
     )
     body = (Tbody(*[_row(r) for r in items]) if items
             else Tbody(Tr(Td(t("received.empty"), colspan="8", cls="empty-state-msg"))))
-    return Table(Thead(head), body, cls="data-table sticky-head", id="received-table")
+    return Div(Table(Thead(head), body, cls="data-table sticky-head", id="received-table"), cls="table-scroll-wrap")
 
 
 def _booked_href(kind: str | None, entity_id: str) -> str:

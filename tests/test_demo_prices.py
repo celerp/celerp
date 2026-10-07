@@ -1,12 +1,7 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Test that demo item prices work even without the inventory projection handler.
-
-Root cause: setup sets the business type (which reseeds demo items) BEFORE
-restarting the API, so the celerp-inventory module's projection handler isn't loaded. The default
-fallback handler {**state, **data} doesn't interpret item.pricing.set
-events correctly. Fix: include prices in attributes of item.created.
-"""
+"""Demo item prices land on the items, and demo items change only through the loaded
+Inventory module."""
 import pytest
 from unittest.mock import patch as mock_patch
 
@@ -31,35 +26,28 @@ async def test_prices_with_handler_loaded(client):
         assert rp is not None and rp > 0, f"{it['sku']} missing retail_price!"
 
 @pytest.mark.asyncio
-async def test_prices_without_handler(client):
-    """Simulates wizard flow: inventory handler NOT loaded during reseed.
-    Prices should still appear via attributes promotion."""
+async def test_a_business_type_set_without_inventory_loaded_leaves_the_items_alone(client):
+    """With the Inventory module not loaded, setting the business type writes no item
+    change (nothing could apply one): the items stay as registration seeded them."""
     h = await _headers(client)
+    before = (await client.get("/items", headers=h)).json()["items"]
 
-    # Mock _get_module_handlers to return empty dict (no inventory handler)
     with mock_patch("celerp.projections.engine._get_module_handlers", return_value={}):
         r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=h)
         assert r.status_code == 200, r.text
-    
-    items = (await client.get("/items", headers=h)).json()["items"]
-    print(f"\nItems without handler: {len(items)}")
-    for it in items[:3]:
-        rp = it.get("retail_price")
-        wp = it.get("wholesale_price")
-        cp = it.get("cost_price")
-        print(f"  {it['sku']}: retail={rp}, wholesale={wp}, cost={cp}")
-        assert rp is not None and rp > 0, f"{it['sku']} missing retail_price without handler!"
-        assert wp is not None and wp > 0, f"{it['sku']} missing wholesale_price!"
-        assert cp is not None and cp > 0, f"{it['sku']} missing cost_price!"
+
+    assert r.json()["changes"]["demo_items_replaced"] == 0
+    after = (await client.get("/items", headers=h)).json()["items"]
+    assert sorted(i["sku"] for i in after) == sorted(i["sku"] for i in before)
+    assert all((i.get("retail_price") or 0) > 0 for i in after), after
 
 @pytest.mark.asyncio
-async def test_ui_table_renders_prices_without_handler(client):
-    """Full simulation: reseed without handler, then render data_table."""
+async def test_ui_table_renders_demo_prices(client):
+    """The reseeded demo items render their prices in the inventory table."""
     h = await _headers(client)
 
-    with mock_patch("celerp.projections.engine._get_module_handlers", return_value={}):
-        r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=h)
-        assert r.status_code == 200, r.text
+    r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=h)
+    assert r.status_code == 200, r.text
     
     schema = (await client.get("/companies/me/item-schema", headers=h)).json()
     items = (await client.get("/items", headers=h)).json()["items"]

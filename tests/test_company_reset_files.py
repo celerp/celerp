@@ -594,7 +594,8 @@ async def test_a_backup_finished_after_the_reset_is_never_published(real_engine,
     _local_files(monkeypatch, tmp_path)
     boss, a, b, files_a, files_b = await _harbor(real_engine)
     out = settings.data_dir / "company_backups" / str(a) / f"late{cb.EXTENSION}"
-    reached, release = _pause_after(monkeypatch, cb, "_export_company")
+    # Read, not yet published: the reset waits for the read itself to finish.
+    reached, release = _pause_before(monkeypatch, cb, "hold_company")
     export = asyncio.create_task(cb.export_company_snapshot(a, out))
     await _until(reached, export)
 

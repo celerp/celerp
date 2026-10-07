@@ -88,13 +88,20 @@ def preview_pattern(pattern: str, prefix: str, seq_num: int = 1) -> str:
     return _expand_pattern(pattern, prefix, datetime.now(timezone.utc), seq_num)
 
 
+def require_doc_type(doc_type: str) -> str:
+    """Return ``doc_type`` when it is a document type this app numbers, else refuse it by name."""
+    if doc_type not in _PREFIX_BY_DOC_TYPE:
+        raise ValueError(
+            f"{doc_type!r} is not a document type. Use one of: {', '.join(sorted(_PREFIX_BY_DOC_TYPE))}.")
+    return doc_type
+
+
 def next_doc_ref(company: Company, doc_type: str) -> str:
     """Generate the next document reference and increment the sequence counter.
 
     ``company`` must come from locked_company(), taken before any document row lock;
     a counter change on any other company object is refused at flush."""
-    if doc_type not in _PREFIX_BY_DOC_TYPE:
-        raise ValueError(f"Unsupported doc_type for sequence: {doc_type}")
+    require_doc_type(doc_type)
 
     now = datetime.now(timezone.utc)
     settings = dict(company.settings or {})
@@ -150,8 +157,7 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
     """Update numbering config for a single doc type. Returns the updated sequence.
 
     ``company`` must come from locked_company(), as for next_doc_ref()."""
-    if doc_type not in _PREFIX_BY_DOC_TYPE:
-        raise ValueError(f"Unsupported doc_type: {doc_type}")
+    require_doc_type(doc_type)
 
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})

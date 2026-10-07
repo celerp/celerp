@@ -165,6 +165,23 @@ async def test_list_notifications_newest_first(session, company, user):
 
 
 @pytest.mark.asyncio
+async def test_the_bell_lists_notices_that_ask_for_action_first(session, company, user):
+    """The bell (unread only) puts high-priority notices first, newest first within each
+    priority, so one asking the user to act is not buried under later news. The full list
+    stays newest first."""
+    with patch("celerp.notifications.service.deliver"):
+        await svc.create(session, company.id, "accounting", "Act", "B0", priority="high")
+        await svc.create(session, company.id, "ai", "News 1", "B1", user_id=user.id)
+        await svc.create(session, company.id, "ai", "News 2", "B2", user_id=user.id)
+        await session.commit()
+
+    bell = await svc.list_notifications(session, company.id, user.id, unread_only=True)
+    assert [n.title for n in bell] == ["Act", "News 2", "News 1"]
+    every = await svc.list_notifications(session, company.id, user.id)
+    assert [n.title for n in every] == ["News 2", "News 1", "Act"]
+
+
+@pytest.mark.asyncio
 async def test_list_notifications_pagination(session, company, user):
     with patch("celerp.notifications.service.deliver"):
         for i in range(5):

@@ -235,8 +235,9 @@ async def test_wrong_name_is_refused_and_nothing_changes(real_engine, real_clien
     for typed in ("harbor goods ltd", "Harbor Goods Ltd ", "Hillside Supply Co", ""):
         r = await real_client.post(RESET, json={"company_name": typed}, headers=auth(tok))
         assert r.status_code == 422, (typed, r.text)
-        assert r.json()["detail"] == ("The name you typed does not match this company's name. "
-                                      "Nothing was deleted.")
+        assert r.json()["detail"] == {
+            "message": "The name you typed does not match this company's name. Nothing was deleted.",
+            "message_key": "company_reset.name_mismatch", "params": {}}
     assert (await real_client.post(RESET, json={}, headers=auth(tok))).status_code == 422
 
     assert await snapshot(real_engine) == before

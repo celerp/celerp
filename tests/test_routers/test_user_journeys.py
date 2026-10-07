@@ -26,7 +26,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from test_helpers import import_sent_po
+from test_helpers import import_sent_po, merge_items
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -671,7 +671,7 @@ async def test_crud_item_merge(client):
     h = _h(token)
     eid_a = await _item(client, token, qty=5)
     eid_b = await _item(client, token, qty=3)
-    r = await client.post("/items/merge", headers=h, json={
+    r = await merge_items(client, headers=h, json={
         "source_entity_ids": [eid_a, eid_b],
         "target_sku_from": eid_a,
     })
@@ -725,7 +725,7 @@ async def test_merge_active_count_drops_by_one(client):
     assert count_before == list_count_before, "valuation and list counts must agree before merge"
     assert available_before == count_before, "all items should be 'available' before merge"
     # Merge.
-    r = await client.post("/items/merge", headers=h, json={
+    r = await merge_items(client, headers=h, json={
         "source_entity_ids": [eid_a, eid_b],
         "target_sku_from": eid_a,
     })
@@ -765,7 +765,7 @@ async def test_merge_source_ledger_has_details(client):
     # Get source SKUs for verification.
     sku_a = (await client.get(f"/items/{eid_a}", headers=h)).json()["sku"]
     sku_b = (await client.get(f"/items/{eid_b}", headers=h)).json()["sku"]
-    r = await client.post("/items/merge", headers=h, json={
+    r = await merge_items(client, headers=h, json={
         "source_entity_ids": [eid_a, eid_b],
         "target_sku_from": eid_a,
     })
@@ -1268,13 +1268,14 @@ async def test_wf_manufacturing_list_contains_order(client):
     token = await _reg(client)
     h = _h(token)
     raw_id = await _item(client, token, qty=10, sku="RAW-LIST")
+    made_id = await _item(client, token, qty=0, sku="FG-LIST")
     order = await client.post(
         "/manufacturing",
         headers=h,
         json={
             "description": "List Test",
             "inputs": [{"item_id": raw_id, "quantity": 1}],
-            "expected_outputs": [{"sku": "FG-LIST", "name": "FG List", "quantity": 1}],
+            "output_item_id": made_id,
         },
     )
     oid = order.json()["id"]
@@ -1861,7 +1862,7 @@ async def test_ie_import_partial_with_errors_reports_them(client):
     assert result["created"] == 1
     assert result["skipped"] == 1
     assert len(result.get("errors", [])) == 1
-    assert "not import-safe" in result["errors"][0]
+    assert "not import-safe" in result["errors"][0]["message"]
 
 
 @pytest.mark.asyncio
@@ -1962,7 +1963,7 @@ async def test_ie_import_with_source_ts(client):
         "entity_id": f"item:{uuid.uuid4()}",
         "event_type": "item.created",
         "data": {"sku": "TS-IMPORT", "name": "Timestamped", "sell_by": "piece", "quantity": 1},
-        "source": "migration",
+        "source": "import",
         "idempotency_key": uuid.uuid4().hex,
         "source_ts": "2025-01-15T10:30:00Z",
     }

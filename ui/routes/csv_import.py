@@ -32,7 +32,7 @@ from starlette.responses import StreamingResponse
 import ui.api_client as api
 from celerp.services import import_stage
 from ui.components.icons import import_icon
-from ui.i18n import t, get_lang
+from ui.i18n import get_lang, refusal_text, t
 from ui.components.table import searchable_select
 
 from celerp.importers import tabular
@@ -182,7 +182,7 @@ def import_result_errors(result: dict) -> list[str]:
     messages, or only a count of failed rows. The messages are shown whenever
     there are any; the count is shown only when it is all the endpoint said.
     """
-    errors = [str(e) for e in result.get("errors") or []]
+    errors = [refusal_text(e) for e in result.get("errors") or []]
     if errors:
         return errors
     failed = int(result.get("failed", 0) or 0)
@@ -1610,7 +1610,7 @@ def import_result_panel(
     *,
     created: int,
     skipped: int,
-    errors: list[str],
+    errors: list[str | dict],
     entity_label: str,
     back_href: str,
     import_more_href: str,
@@ -1655,7 +1655,7 @@ def import_result_panel(
     if details:
         error_block = Details(
             Summary(t("import.error_details", n=len(details))),
-            *(P(e) for e in details[:10]),
+            *(P(refusal_text(e)) for e in details[:10]),
             cls="mt-sm",
         )
 

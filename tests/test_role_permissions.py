@@ -226,7 +226,7 @@ def test_defaults_are_registry_membership():
 
 # ── Gate 1: inventory cost visibility and price writes ───────────
 
-from test_helpers import grant_permission, invite_user, perm_setup  # noqa: E402
+from test_helpers import grant_permission, invite_user, perm_setup, merge_items  # noqa: E402
 
 _GRANTED = {"role_grants": {"view_inventory_costs": _roles_from("operator")}}
 
@@ -1565,8 +1565,7 @@ async def test_merge_still_allowed_without_amount_permission(client, session):
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
     a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
-    r = await client.post("/items/merge",
-                          json={"source_entity_ids": [a, b], "target_sku_from": a},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["operator_h"])
     assert r.status_code == 200, r.text
 
@@ -1577,8 +1576,7 @@ async def test_merge_override_denied_without_amount_permission(client, session):
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
     a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [a, b], "target_sku_from": a, "resulting_quantity": 99.0},
         headers=ctx["operator_h"],
     )
@@ -1590,8 +1588,7 @@ async def test_merge_negative_override_rejected(client, session):
     """A negative resulting_quantity is rejected on value, independent of role."""
     ctx = await perm_setup(client, session)
     a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [a, b], "target_sku_from": a, "resulting_quantity": -5.0},
         headers=ctx["admin_h"],
     )
@@ -2105,7 +2102,7 @@ async def test_merge_resolved_price_denied_without_permission(client, session):
         })
         assert r.status_code == 200, r.text
         ids.append(r.json()["id"])
-    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+    r = await merge_items(client, headers=ctx["operator_h"], json={
         "source_entity_ids": ids, "target_sku_from": ids[0], "resolved_attributes": {"vip_price": "999"},
     })
     assert r.status_code == 403, r.text
@@ -2240,12 +2237,12 @@ async def test_merge_cost_override_denied_without_permission(client, session):
             "location_id": ctx["location_id"], "sell_by": "piece", "cost_total": 10,
         })
         ids.append(r.json()["id"])
-    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+    r = await merge_items(client, headers=ctx["operator_h"], json={
         "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 99999,
     })
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == _PRICE_DENIED
-    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+    r = await merge_items(client, headers=ctx["operator_h"], json={
         "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 20,
     })
     assert r.status_code == 200, r.text

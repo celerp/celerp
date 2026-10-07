@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from test_helpers import sell_item
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -139,9 +141,8 @@ async def test_export_items_csv_uses_list_pipeline(client):
     tok = await _reg(client)
     await _item(client, tok, name="Beta Gadget", sku="PIPE-B", category="Gadgets")
     await _item(client, tok, name="Alpha Gadget", sku="PIPE-A", category="Gadgets")
-    sold = await _item(client, tok, name="Gone Gadget", sku="PIPE-S", category="Gadgets")
-    r = await client.post(f"/items/{sold}/status", headers=_h(tok), json={"new_status": "sold"})
-    assert r.status_code == 200, r.text
+    sold = await _item(client, tok, name="Gone Gadget", sku="PIPE-S", category="Gadgets", quantity=1)
+    await sell_item(client, _h(tok), sold)
 
     def _skus(text: str) -> list[str]:
         reader = _csv_reader(text)

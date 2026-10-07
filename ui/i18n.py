@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from functools import lru_cache
@@ -177,14 +178,6 @@ def category_labels(names: dict) -> dict:
     return {k: category_label(k, names.get(k)) for k in {*library, *names}}
 
 
-def unit_label(name: str) -> str:
-    """Display name for a unit of measure: a system unit (piece, gram, ...) in the user's
-    language, a unit the company added exactly as named. Display only: the stored value
-    stays the unit name."""
-    tkey = f"unit.{name}"
-    return t(tkey) if tkey in _cached_load("en") else name
-
-
 @lru_cache(maxsize=1)
 def _field_label_keys() -> dict[str, str]:
     """English text -> translation key of every item field label in the catalog: the
@@ -201,16 +194,109 @@ def field_label_key(label: str) -> str | None:
     a library category's field shows in the user's language; ``None`` for a label the
     user typed, which shows as typed."""
     return _field_label_keys().get(label)
-def localize_notification(item: dict, lang: str | None = None) -> dict:
-    """*item* with its title and body in *lang* when it carries a ``message_key``
-    (celerp.notifications.service.create_keyed); a param given as ``{"key": k}`` is
-    itself translated. A plain-text notification is returned unchanged."""
-    key = item.get("message_key")
+
+
+def t_or(key: str, fallback: str, **kwargs) -> str:
+    """Translate *key* when a catalog has it, else return *fallback* (text the server
+    already wrote in English). A translation missing one of *kwargs* falls back too."""
+    lang = _current_lang.get()
+    text = _cached_load(lang).get(key) or _cached_load("en").get(key)
+    if text is None:
+        return fallback
+    try:
+        return text.format(**kwargs) if kwargs else text
+    except (KeyError, IndexError, ValueError):
+        return fallback
+
+
+def role_label(role: str, fallback: str) -> str:
+    """Display label of a posting role (``posting.role.<role>``)."""
+    return t_or(f"posting.role.{role}", fallback)
+
+
+# Doc-type display labels: the raw doc_type stays canonical everywhere (persistence,
+# URLs, comparisons); only the shown label is translated.
+_DOC_TYPE_LABEL_KEYS = {
+    "invoice": "settings.doc_type_invoice",
+    "purchase_order": "settings.doc_type_purchase_order",
+    "quotation": "settings_sales.doc_type_quotation",
+    "credit_note": "settings.doc_type_credit_note",
+    "bill": "settings.doc_type_bill",
+    "memo": "th.memo",
+    "shipping_doc": "settings_sales.doc_type_shipping_doc",
+    "list": "enum.doc_type.list",
+    "consignment_in": "settings.doc_type_consignment_in",
+    "receipt": "settings.doc_type_receipt",
+}
+
+
+def doc_type_label(dt: str) -> str:
+    """Human label for a doc_type, in the request language; unknown types fall
+    back to a title-cased form of the raw value."""
+    key = _DOC_TYPE_LABEL_KEYS.get(dt)
+    return t(key) if key else dt.replace("_", " ").title()
+
+
+# Why a run needs reconciling, as the server records it, in the user's language.
+_RECONCILE_REASONS = {
+    "books disagree": "manufacturing.reconcile_reason_books_disagree",
+    "received before tracking": "manufacturing.reconcile_reason_received",
+    "component without an inventory account": "manufacturing.reconcile_reason_no_account",
+    "books from elsewhere": "manufacturing.reconcile_reason_elsewhere",
+}
+
+
+def reconcile_reason(reason: str) -> str:
+    """Why a production run waits for reconciling, in the user's language."""
+    key = _RECONCILE_REASONS.get(reason)
+    return t(key) if key else reason
+
+
+def refusal_text(detail) -> str:
+    """An API refusal in the user's language. A structured refusal carries ``message``
+    (English), ``message_key`` and ``params``; its ``message_key`` is translated with
+    those params. Anything else is shown as the server wrote it, the ``detail`` of a body
+    carrying a machine code included."""
+    if not isinstance(detail, dict):
+        return str(detail or "")
+    message = str(detail.get("message") or detail.get("detail") or "")
+    key = detail.get("message_key")
     if not key:
-        return item
-    params = {k: t(v["key"], lang) if isinstance(v, dict) else v
-              for k, v in (item.get("message_params") or {}).items()}
-    return {**item, "title": t(f"{key}.title", lang, **params), "body": t(f"{key}.body", lang, **params)}
+        return message
+    params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
+    return t_or(str(key), message, **params)
+
+
+_ICON = re.compile(r"^\W+")
+
+
+def _refusal_param(name: str, value):
+    """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
+    label without its icon), or a list of them (``steps`` joined by semicolons, others as
+    sentences), in the user's language; a ``role`` as its label and ``roles`` as their
+    labels; ``type``/``types`` as account types; ``status`` as an item status; ``reason``
+    as why a production run waits for reconciling."""
+    from ui.components.table import display_enum
+
+    if isinstance(value, dict) and "message" in value:
+        text = refusal_text(value)
+        # A sidebar item named in a sentence reads as its label, without its icon.
+        return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
+    if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+        return ("; " if name == "steps" else " ").join(refusal_text(v) for v in value)
+    if name == "role":
+        return role_label(str(value), str(value).replace("_", " "))
+    if name == "roles" and isinstance(value, list):
+        return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
+    if name == "status":
+        return display_enum(value, "item_status")
+    if name == "reason":
+        return reconcile_reason(str(value))
+    if name == "type":
+        return display_enum(value, "account_type")
+    if name == "types" and isinstance(value, list):
+        return t("posting.type_or").join(display_enum(v, "account_type") for v in value)
+    return value
 
 
 def field_label(f: dict) -> str:

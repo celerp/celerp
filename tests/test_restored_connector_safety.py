@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, download, member, owner, restore, settle, token
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
+from test_helpers import merge_items
 
 pytestmark = pytest.mark.asyncio
 
@@ -163,8 +164,8 @@ async def test_portable_restore_historical_ids_not_active(restored, real_engine,
     channel = next(i for i in r.json()["items"] if i["id"] == restored.a)["_channel_state"]
     assert channel == {"shopify": {"linked": False, "enabled": False, "historical": True},
                        "woocommerce": {"linked": False, "enabled": False, "historical": True}}
-    r = await real_client.post("/items/merge", headers=auth(restored.tok),
-                               json={"source_entity_ids": [restored.a, restored.b], "target_sku_from": restored.a})
+    r = await merge_items(real_client, headers=auth(restored.tok),
+                          json={"source_entity_ids": [restored.a, restored.b], "target_sku_from": restored.a})
     assert r.status_code == 200, r.text
     assert await _queued(real_engine, restored.cid) == 0
 
@@ -365,8 +366,8 @@ async def test_reconnect_same_store_relinks_then_protects(restored, real_engine,
     assert await _Connect(real_engine, restored.cid, on_bind=on_bind)() == {"ok": True}
     assert bound and bound[0]["external_links"]["woocommerce"]["product_id"] == "77"
     await _links(real_engine, restored.cid, restored.a, {"woocommerce": dict(LIVE_WOO)})
-    r = await real_client.post("/items/merge", headers=auth(restored.tok),
-                               json={"source_entity_ids": [restored.a, restored.b], "target_sku_from": restored.a})
+    r = await merge_items(real_client, headers=auth(restored.tok),
+                          json={"source_entity_ids": [restored.a, restored.b], "target_sku_from": restored.a})
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == (
         "This catalog product is currently linked to WooCommerce. Merge its physical lots instead.")

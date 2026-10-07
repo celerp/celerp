@@ -4,7 +4,10 @@
 
 Journals and transfers are written by the same journal import service as the
 accounting batch route; chart rows and bank accounts by the same helpers as the
-account and bank-account routes. Every account figure this sink measures is
+account and bank-account routes. Every account keeps its source code, suffixed
+where Celerp already holds that code for another account; no Celerp default account
+is added. Source control accounts are recorded per posting role so the roles can be
+mapped when the migration finishes. Every account figure this sink measures is
 debit minus credit.
 """
 
@@ -15,7 +18,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from celerp.importers.results import RecordOutcome
+from celerp.importers.results import RecordOutcome, failure_reason
 from celerp.importers.schema import (
     AccountControl,
     CIFAccount,
@@ -25,7 +28,9 @@ from celerp.importers.schema import (
     ReconciliationExpectations,
     ReconciliationMeasure,
 )
+from celerp.accounting_roles import AccountRole
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
+from celerp.services.account_roles import current_settings, record_source_control, source_controls
 from celerp.services.migration_core_sink import (
     deterministic_id,
     import_prepared,
@@ -37,7 +42,6 @@ from celerp_accounting import import_service
 from celerp_accounting.import_service import JOURNAL_CREATED, AccImportRecord
 from celerp_accounting.models import Account
 from celerp_accounting.routes import (
-    THAI_CHART_OF_ACCOUNTS,
     _base_currency,
     _build_balances,
     _je_doc_refs,
@@ -49,23 +53,17 @@ from celerp_accounting.routes import (
 ACCOUNT = "account"
 JOURNAL = "journal_entry"
 CONTACT = "contact"
-RECEIVABLE_CODE = "1120"
-PAYABLE_CODE = "2110"
 
-_CHART = {row["code"]: row for row in THAI_CHART_OF_ACCOUNTS}
 _TYPE_ROOTS = {"asset": 1000, "liability": 2000, "equity": 3000, "revenue": 4000, "cogs": 5000, "expense": 6000}
 
-# Source control accounts land on the Celerp control account with the same meaning:
-# inventory on the postable goods account every inventory posting uses, under its
-# 1130 header.
-_CONTROL_CODES = {
-    AccountControl.RECEIVABLE: RECEIVABLE_CODE,
-    AccountControl.PAYABLE: PAYABLE_CODE,
-    AccountControl.INVENTORY: "1130-P",
-    AccountControl.RETAINED_EARNINGS: "3200",
+# The posting role a source control account served. Tax splits by side: an asset is
+# tax paid, a liability tax collected. Bank and cash accounts become bank accounts.
+_CONTROL_ROLES = {
+    AccountControl.RECEIVABLE: AccountRole.RECEIVABLE,
+    AccountControl.PAYABLE: AccountRole.PAYABLE,
+    AccountControl.INVENTORY: AccountRole.INVENTORY_PURCHASED,
+    AccountControl.RETAINED_EARNINGS: AccountRole.RETAINED_EARNINGS,
 }
-_INPUT_TAX_CODE = "1150"
-_OUTPUT_TAX_CODE = "2120"
 
 _ACCOUNT_MEASURES = {
     ReconciliationMeasure.TRIAL_BALANCE,
@@ -73,12 +71,12 @@ _ACCOUNT_MEASURES = {
     ReconciliationMeasure.TAX_CONTROL,
 }
 _CONTROL_MEASURES = {
-    ReconciliationMeasure.AR_CONTROL: RECEIVABLE_CODE,
-    ReconciliationMeasure.AP_CONTROL: PAYABLE_CODE,
+    ReconciliationMeasure.AR_CONTROL: AccountRole.RECEIVABLE,
+    ReconciliationMeasure.AP_CONTROL: AccountRole.PAYABLE,
 }
 _PARTY_MEASURES = {
-    ReconciliationMeasure.AR_BY_CUSTOMER: RECEIVABLE_CODE,
-    ReconciliationMeasure.AP_BY_SUPPLIER: PAYABLE_CODE,
+    ReconciliationMeasure.AR_BY_CUSTOMER: AccountRole.RECEIVABLE,
+    ReconciliationMeasure.AP_BY_SUPPLIER: AccountRole.PAYABLE,
 }
 
 
@@ -107,6 +105,7 @@ class AccountingMigrationSink:
         posted = await _je_rows(context.session, context.company_id)
         balances = _build_balances(posted, None, None)
         codes = await mapped_targets(context, ACCOUNT, [e.key for e in wanted])
+        settings = await current_settings(context.session, context.company_id)
         contacts = await mapped_targets(context, CONTACT, [e.key for e in wanted if e.measure in _PARTY_MEASURES])
         party_totals: dict[tuple[str, str], Decimal] = {}
         if contacts:
@@ -128,11 +127,13 @@ class AccountingMigrationSink:
                     continue
                 actual = balances.get(codes[e.key], Decimal(0))
             elif e.measure in _CONTROL_MEASURES:
-                actual = balances.get(codes.get(e.key, _CONTROL_MEASURES[e.measure]), Decimal(0))
+                controls = [codes[e.key]] if e.key in codes else source_controls(settings, _CONTROL_MEASURES[e.measure])
+                actual = sum((balances.get(code, Decimal(0)) for code in controls), Decimal(0))
             else:
                 if e.key not in contacts:
                     continue
-                actual = party_totals.get((_PARTY_MEASURES[e.measure], contacts[e.key]), Decimal(0))
+                actual = sum((party_totals.get((code, contacts[e.key]), Decimal(0))
+                              for code in source_controls(settings, _PARTY_MEASURES[e.measure])), Decimal(0))
             out.append(DestinationMeasurement(e.measure, e.key, e.currency, actual))
         return out
 
@@ -149,7 +150,7 @@ async def _import_accounts(context: SinkContext, accounts: list[CIFAccount]) -> 
             select(Account.code, Account).where(Account.company_id == context.company_id)
         )).all()
     }
-    taken = set(existing) | set(_CHART)
+    taken = set(existing)
     outcomes: dict[int, RecordOutcome] = {}
     pending = list(enumerate(accounts))
     while pending:
@@ -166,7 +167,7 @@ async def _import_accounts(context: SinkContext, accounts: list[CIFAccount]) -> 
                     context, account, resolved.get(account.parent_external_id or ""), existing, taken,
                 )
             except Exception as exc:
-                outcomes[index] = RecordOutcome("", "failed", f"Account {account.name}: {exc}")
+                outcomes[index] = RecordOutcome("", "failed", f"Account {account.name}: {failure_reason(exc)}")
                 continue
             resolved[account.source_external_id] = code
             outcomes[index] = RecordOutcome(code, "created")
@@ -190,10 +191,12 @@ async def _write_account(
 ) -> str:
     session, company_id = context.session, context.company_id
     if account.control in (AccountControl.BANK, AccountControl.CASH):
-        code = await import_service.next_bank_account_code(session, company_id)
+        code = await import_service.next_bank_account_code(session, company_id, parent_code)
+        # The bank keeps its place in the imported chart; no standard header is added.
         await import_service.add_bank_account(
             session, company_id,
             code=code,
+            parent_code=parent_code,
             account_name=account.name,
             bank_name=account.name,
             account_number="",
@@ -205,36 +208,22 @@ async def _write_account(
         taken.add(code)
         return code
 
-    control_code = _control_code(account)
-    if control_code is not None:
-        await _ensure_chart_account(session, company_id, control_code, existing)
-        return control_code
-
     code = _free_code(account.code, taken) if account.code else _next_code(account.account_type.value, taken)
     existing[code] = await import_service.create_chart_account(
         session, company_id, code=code, name=account.name, account_type=account.account_type.value,
-        parent_code=parent_code, is_active=account.is_active,
+        parent_code=parent_code, is_active=account.is_active, code_generated=not account.code,
     )
     taken.add(code)
+    role = _control_role(account)
+    if role is not None:
+        await record_source_control(session, company_id, role, code)
     return code
 
 
-async def _ensure_chart_account(session, company_id, code: str, existing: dict[str, Account]) -> None:
-    """Add a standard chart account, and the standard headers above it, where missing."""
-    row = _CHART[code]
-    if row["parent_code"] in _CHART:
-        await _ensure_chart_account(session, company_id, row["parent_code"], existing)
-    if code not in existing:
-        existing[code] = await import_service.create_chart_account(
-            session, company_id, code=code, name=row["name"],
-            account_type=row["account_type"], parent_code=row["parent_code"],
-        )
-
-
-def _control_code(account: CIFAccount) -> str | None:
+def _control_role(account: CIFAccount) -> AccountRole | None:
     if account.control == AccountControl.TAX:
-        return _INPUT_TAX_CODE if account.account_type.value == "asset" else _OUTPUT_TAX_CODE
-    return _CONTROL_CODES.get(account.control) if account.control else None
+        return AccountRole.TAX_INPUT if account.account_type.value == "asset" else AccountRole.TAX_OUTPUT
+    return _CONTROL_ROLES.get(account.control) if account.control else None
 
 
 def _next_code(account_type: str, taken: set[str]) -> str:

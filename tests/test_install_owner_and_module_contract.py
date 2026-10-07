@@ -2,15 +2,17 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.gateway.client import GatewayClient
 from celerp.models.company import User
-from ui.i18n import localize_notification
-from test_helpers import invite_user, register_admin
+from celerp.modules.api import ai_query
+from test_helpers import invite_user, notice_in, register_admin
 
 
 @pytest.mark.asyncio
@@ -51,6 +53,26 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
     )).scalars().all()
     assert len(rows) == 1
     assert rows[0].id == current.id
+
+
+@pytest.mark.asyncio
+async def test_module_ai_api_keeps_explicit_session_contract(monkeypatch):
+    monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
+    run_query = AsyncMock(return_value=SimpleNamespace(
+        answer="ok", model_used="test", tools_called=[]))
+    monkeypatch.setattr("celerp.ai.service.run_query", run_query)
+
+    result = await ai_query(
+        query="hello", company_id="company-1",
+        session_token="session-1", db_session=None)
+    assert result["answer"] == "ok"
+    run_query.assert_awaited_once()
+
+    with pytest.raises(HTTPException) as exc:
+        await ai_query(
+            query="hello", company_id="company-1",
+            session_token="wrong", db_session=None)
+    assert exc.value.status_code == 401
 
 
 class _WS:
@@ -181,11 +203,11 @@ async def test_handover_tells_the_new_owner_and_the_users_list_names_the_owner(c
     # The API carries readable text and the message key the UI translates from.
     assert [n["title"] for n in told] == ["You are now the installation owner"]
     assert "hand ownership on" in told[0]["body"]
-    assert told[0]["message_key"] == "notif.install_owner"
-    assert set(told[0]["message_params"]) == {"name"}
-    german = localize_notification(told[0], "de")
+    assert told[0]["i18n"]["title"] == "notif.install_owner.title"
+    assert set(told[0]["i18n"]["params"]) == {"name"}
+    german = notice_in("de", told[0])
     assert german["title"] == "Sie sind jetzt der Installationsinhaber"
     assert "Einstellungen > Benutzer" in german["body"]
     assert told[0]["action_url"] == "/settings/general?tab=users"
     others = (await client.get("/notifications", headers=admin_h)).json()["items"]
-    assert "notif.install_owner" not in [n["message_key"] for n in others]
+    assert "notif.install_owner.title" not in [(n["i18n"] or {}).get("title") for n in others]

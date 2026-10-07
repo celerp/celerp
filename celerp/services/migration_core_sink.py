@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import find_event_by_idempotency
 from celerp.importers.adapters.base import ScanError
-from celerp.importers.results import ImportOutcome, RecordOutcome
+from celerp.importers.results import ImportOutcome, RecordOutcome, message_text
 from celerp.importers.schema import (
     CIFAttachment,
     CIFCompanyProfile,
@@ -122,7 +122,7 @@ def sink_result(
                 outcome.entity_id, status,
             ))
         else:
-            result.errors.append(sink_error(record, outcome.message or "The record could not be imported."))
+            result.errors.append(sink_error(record, message_text(outcome.message or "The record could not be imported.")))
     return result
 
 

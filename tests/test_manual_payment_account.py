@@ -55,16 +55,16 @@ async def _payments(client, tok, doc_id: str) -> list:
 async def _bad_account(client, tok, case: str) -> tuple[str, str]:
     """(account code, expected refusal) for each way an account cannot take a payment."""
     if case == "missing":
-        return "1199", "Unknown account 1199."
+        return "1199", "Account 1199 is not in the chart of accounts."
     if case == "archived":
         await _account(client, tok, "1190", "asset", active=False)
         return "1190", "Account 1190 is inactive."
     if case == "not_asset":
-        return "4100", "Account 4100 is a revenue account"
+        return "4100", "Account 4100 is of type revenue."
     r = await client.post("/companies", json={"name": "OtherCo"}, headers=_h(tok))
     assert r.status_code == 200, r.text
     await _account(client, r.json()["access_token"], "1190", "asset")
-    return "1190", "Unknown account 1190."
+    return "1190", "Account 1190 is not in the chart of accounts."
 
 
 _CASES = ["missing", "archived", "not_asset", "other_company"]
@@ -80,7 +80,7 @@ async def test_a_payment_to_an_account_that_cannot_take_it_is_refused(client, ca
         "amount": 100.0, "payment_date": "2026-03-02", "bank_account": code})
 
     assert r.status_code == 422, r.text
-    assert reason in r.json()["detail"]
+    assert reason in r.json()["detail"]["message"]
     assert await _payments(client, tok, doc_id) == []
 
 
@@ -94,7 +94,7 @@ async def test_a_bulk_payment_to_an_account_that_cannot_take_it_is_refused(clien
         "doc_ids": doc_ids, "amount": 200.0, "payment_date": "2026-03-02", "bank_account": code})
 
     assert r.status_code == 422, r.text
-    assert reason in r.json()["detail"]
+    assert reason in r.json()["detail"]["message"]
     for doc_id in doc_ids:
         assert await _payments(client, tok, doc_id) == []
 

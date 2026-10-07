@@ -168,8 +168,8 @@ async def migrate_self_contacts(session: AsyncSession, company_id, actor_id=None
 
 
 async def migrate_all_self_contacts(session: AsyncSession, actor_id=None) -> list[dict]:
-    """Run migrate_self_contacts for every company, committing per company so one failure does not abort
-    the batch. Idempotent and cheap on re-run: companies whose self_contact_id is already cached (new
+    """Run migrate_self_contacts for every company, each in its own savepoint so one failure does not
+    abort the batch; the caller commits. Idempotent and cheap on re-run: companies whose self_contact_id is already cached (new
     seed or previously migrated) are skipped without touching the ledger. Returns per-company summaries."""
     companies = (await session.execute(select(Company.id, Company.settings))).all()
     results: list[dict] = []
@@ -179,10 +179,9 @@ async def migrate_all_self_contacts(session: AsyncSession, actor_id=None) -> lis
         if await migrations.is_company_migration_staged(session, company_id):
             continue
         try:
-            res = await migrate_self_contacts(session, company_id, actor_id)
-            await session.commit()
+            async with session.begin_nested():
+                res = await migrate_self_contacts(session, company_id, actor_id)
         except Exception as exc:  # one bad company must not abort the batch
-            await session.rollback()
             _log.warning("migrate_self_contacts failed for company %s: %s", company_id, exc)
             res = {"company_id": str(company_id), "status": "error", "error": str(exc)}
         results.append(res)
@@ -198,8 +197,7 @@ async def backfill_self_contacts_hook(*, session: AsyncSession) -> None:
         if await migrations.is_company_migration_staged(session, cid):
             continue
         try:
-            if await backfill_self_contact_identity(session, cid):
-                await session.commit()
+            async with session.begin_nested():
+                await backfill_self_contact_identity(session, cid)
         except Exception as exc:  # one bad company must not abort the batch
-            await session.rollback()
             _log.warning("self-contact identity backfill failed for company %s: %s", cid, exc)

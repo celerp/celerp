@@ -49,6 +49,9 @@ async def _seed(factory) -> tuple[uuid.UUID, uuid.UUID]:
                        type="warehouse", is_default=True))
         await s.commit()
     async with factory() as s:
+        from celerp_accounting.routes import seed_chart_of_accounts_hook
+
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await demo.seed_demo_items(s, company_id, user_id, vertical=_START)
         await s.commit()
     return company_id, user_id

@@ -119,6 +119,24 @@ def test_activity_table_footer_translates():
     assert "XX_SHOWING" in html
 
 
+@pytest.mark.parametrize("event_type", [
+    "item.inventory_account.recorded", "item.inventory_on_books.recorded",
+    "mfg.order.wip_opened", "mfg.order.wip_unresolved",
+])
+def test_posting_events_read_as_words_in_every_language(event_type):
+    """The stock-account and work-in-progress events get a written label in every
+    language, never the title-cased event type ("Item Inventory Account Recorded")."""
+    import json
+    from pathlib import Path
+    from ui.components.activity import _title_case
+    for path in sorted(Path("ui/locales").glob("*.json")):
+        catalog = json.loads(path.read_text())
+        assert catalog.get(f"event.{event_type}"), f"{path.name} has no label for {event_type}"
+    i18n.set_lang("en")
+    i18n._cached_load.cache_clear()
+    assert event_label(event_type) != _title_case(event_type)
+
+
 def test_an_untyped_document_is_named_with_a_noun_in_french():
     """The fallback label names the thing ("Document"), never the verb "Documenter"."""
     i18n.set_lang("fr")

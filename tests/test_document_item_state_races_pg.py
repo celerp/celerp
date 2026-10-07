@@ -104,9 +104,15 @@ def _reserve_on_list(s, company_id, user, holder_id):
     return docs.reserve_list_lines(holder_id, body, company_id=company_id, _=None, user=user, session=s)
 
 
-def _status_reserved(s, company_id, user, _holder_id):
-    return inventory.set_item_status(_ITEM, inventory.StatusBody(new_status="reserved"), company_id=company_id,
-                                     _=None, user=user, role="admin", settings={}, session=s)
+async def _reserved_by_no_document(s, company_id, user) -> None:
+    """A reservation no document holds, as an older release's status edit recorded it;
+    a status edit can no longer reserve an item."""
+    await emit_event(
+        s, company_id=company_id, entity_id=_ITEM, entity_type="item", event_type="item.status.set",
+        data={"new_status": "reserved"}, actor_id=user.id, location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()),
+    )
+    await s.commit()
 
 
 # (writer, change, holder kind, the status the change leaves the item in)
@@ -115,7 +121,6 @@ _RACES = [
     pytest.param(_create_list, _revert, None, "draft", id="list-vs-revert-to-draft"),
     pytest.param(_create_doc, _reserve_on_doc, "doc", "reserved", id="invoice-vs-reserve-on-invoice"),
     pytest.param(_create_doc, _reserve_on_list, "list", "reserved", id="invoice-vs-reserve-on-list"),
-    pytest.param(_create_doc, _status_reserved, None, "reserved", id="invoice-vs-status-reserved"),
 ]
 
 
@@ -227,7 +232,7 @@ async def test_an_item_reserved_by_a_status_edit_cannot_go_on_a_new_invoice(comm
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
     async with factory() as s:
-        await _status_reserved(s, company_id, user, None)
+        await _reserved_by_no_document(s, company_id, user)
 
     async with factory() as s:
         outcome = (await asyncio.gather(_create_doc(s, company_id, user), return_exceptions=True))[0]

@@ -87,12 +87,16 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
                           session: AsyncSession = Depends(get_session)):
     """Back up the company the session is on and serve the file, deleted once sent."""
     provenance = await _provenance(session, ctx, run_id) if run_id is not None else None
+    filename = f"{ctx.company.slug}{cb.EXTENSION}"
+    # The backup reads through a transaction of its own: end this one first, so the
+    # download holds one connection while the backup is made, not two.
+    await session.rollback()
     dest = files.export_path(ctx.company_id)
     try:
         await cb.export_company_snapshot(ctx.company_id, dest, provenance=provenance)
     except cb.BackupError as exc:
         return _error(exc)
-    return FileResponse(dest, media_type="application/octet-stream", filename=f"{ctx.company.slug}{cb.EXTENSION}",
+    return FileResponse(dest, media_type="application/octet-stream", filename=filename,
                         background=BackgroundTask(dest.unlink, missing_ok=True))
 
 

@@ -107,6 +107,33 @@ def test_duplicate_scan_blocked_and_persisted(page, ui_server, api):
     assert len(matches) == 1, f"server must hold one line for the item, got {line_items}"
 
 
+
+def test_duplicate_message_outlives_the_previous_scans_notice(page, ui_server, api):
+    """The earlier scan's notice clears on its own timer; that timer must not wipe the newer
+    duplicate message before the operator has had its full time to read it."""
+    tag = uuid.uuid4().hex[:6]
+    item = _nonsplittable_item(api, tag)
+    doc_id = api.post("/docs", json={"doc_type": "invoice", "status": "draft"}).json()["id"]
+
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("#scan-bar-input", timeout=8000)
+    inp = page.locator("#scan-bar-input")
+    inp.click()
+    inp.fill(item["barcode"])
+    inp.press("Enter")
+    _wait_for_sku_row(page, item["sku"])
+
+    page.wait_for_timeout(2000)
+    inp.click()
+    inp.fill(item["barcode"])
+    inp.press("Enter")
+    page.wait_for_function(
+        "m => (document.getElementById('scan-bar-status').textContent || '').includes(m)", arg=_DUP_MSG,
+        timeout=8000)
+    page.wait_for_timeout(1800)
+    assert _DUP_MSG in (page.locator("#scan-bar-status").text_content() or ""), \
+        "the duplicate-item message was cleared by the earlier scan's timer"
+
 def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
     """Two genuinely simultaneous scans of the same non-splittable item persist only
     one line. BOTH catalog-lookups are held until both are in flight, so neither

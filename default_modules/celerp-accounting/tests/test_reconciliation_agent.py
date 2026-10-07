@@ -257,7 +257,7 @@ async def test_line_create_rejects_unknown_account_and_repeats_cleanly(client, s
 
     r = await client.post(url, json={"account_code": "9999", "memo": "Fee"}, headers=h)
     assert r.status_code == 422
-    assert "9999" in r.json()["detail"]
+    assert r.json()["detail"]["message"] == "Account 9999 is not in the chart of accounts."
 
     partial = await client.post(url, json={"account_code": "6100", "memo": "Fee", "amount": 1}, headers=h)
     assert partial.status_code == 422, partial.text
@@ -327,4 +327,4 @@ async def test_write_off_rejects_missing_account(client):
     sid = r.json()["id"]
     r = await client.post(f"/accounting/reconciliation/{sid}/write-off", json={"account_code": "9999"}, headers=h)
     assert r.status_code == 422
-    assert "9999" in r.json()["detail"]
+    assert r.json()["detail"]["message"] == "Account 9999 is not in the chart of accounts."

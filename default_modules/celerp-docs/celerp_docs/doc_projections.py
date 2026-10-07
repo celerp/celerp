@@ -68,6 +68,14 @@ def _payment_status(paid: Decimal, outstanding: Decimal) -> str:
     return "paid" if outstanding == 0 else ("partial" if paid > 0 else "final")
 
 
+def _status_without_receipts(state: dict) -> str:
+    """The status a document holds once nothing is received on it: still a draft when its
+    goods came in before it was issued, otherwise what its payments make it."""
+    if state.get("pre_receipt_status") == "draft" and not state.get("finalized"):
+        return "draft"
+    return _payment_status(*_payment_balances(state, to_decimal(state.get("amount_paid", 0))))
+
+
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
 
@@ -167,7 +175,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                 li.pop("entity_id", None)
                 li.pop("quantity_received", None)
         # Fulfillment state is independent of doc status - do not clear it here.
-        # Revert fulfillment explicitly with the revert-lines endpoint.
+        # Revert lines (revert-lines) reverts fulfillment explicitly.
     elif event_type == "doc.unvoided":
         restored = data.get("restored_status", "final")
         current["status"] = restored
@@ -302,6 +310,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["converted_to"] = data["target_doc_id"]
         current["converted_to_type"] = data.get("target_doc_type")
     elif event_type == "doc.received":
+        current.setdefault("pre_receipt_status", current.get("status"))
         received = data.get("received_items", [])
         current.setdefault("received_items", [])
         current["received_items"].extend(received)
@@ -354,7 +363,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         elif any_received:
             current["status"] = "partially_received"
         else:
-            current["status"] = "final"
+            current["status"] = _status_without_receipts(current)
     elif event_type == "doc.items_returned":
         returned = data.get("items", [])
         current.setdefault("returned_items", [])
@@ -382,7 +391,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["received_items"] = []
         current["received_item_ids"] = []
         current["returned_items"] = []
-        current["status"] = "final"
+        current["status"] = _status_without_receipts(current)
+        current.pop("pre_receipt_status", None)
         # Clear entity_id from line items so per-line status column resets to "Not Received".
         for li in current.get("line_items", []):
             li.pop("entity_id", None)

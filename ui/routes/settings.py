@@ -18,6 +18,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, unwrap_address
 from celerp.services.currencies import CURRENCY_CODES
+from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td, currency_label
 from ui.components.phone import phone_input_td as _phone_input_td
 from ui.config import PAYMENT_TERMS_URL, PRIVACY_POLICY_URL
@@ -26,7 +27,7 @@ from ui.security import not_permitted_redirect, owner_refusal
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
-from ui.i18n import t, get_lang, tier_label, category_label
+from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
@@ -642,7 +643,7 @@ def _company_reset_card(company_name: str) -> FT:
                 ),
                 Div(
                     Div(id="company-reset-flash"),
-                    P(t("settings.type_company_name"), " ", Strong(company_name)),
+                    P(t("settings.type_reset_prefix"), Strong(company_name), t("settings.type_reset_suffix")),
                     Input(type="text", id=input_id, name="company_name",
                           autocomplete="off", cls="form-input",
                           data_name=company_name, oninput=validate_js),
@@ -719,39 +720,21 @@ def setup_routes(app):
             return P(f"{t('shell.error_prefix')} {e.detail}", cls="cell-error")
         current = str(company.get(key, "") or "")
         lang = get_lang(request)
-        if key == "docs_default_preset":
-            options = [
-                ("last_12m", t("filter.last_12m", lang)),
-                ("this_year", t("settings.this_calendar_year", lang)),
-                ("all", t("filter.all_time", lang)),
-            ]
-            return Td(
-                Select(
-                    *[Option(label, value=val, selected=(val == current))
-                      for val, label in options],
-                    name="value",
-                    hx_patch=f"/settings/preferences/{key}",
-                    hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="change",
-                    cls="cell-input cell-input--select", autofocus=True,
-                ),
-                cls="cell cell--editing",
-            )
-        if key == "default_per_page":
-            options = [("25", "25"), ("50", "50"), ("100", "100"), ("250", "250"), ("500", "500")]
-            return Td(
-                Select(
-                    *[Option(label, value=val, selected=(val == current))
-                      for val, label in options],
-                    name="value",
-                    hx_patch=f"/settings/preferences/{key}",
-                    hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="change",
-                    cls="cell-input cell-input--select", autofocus=True,
-                ),
-                cls="cell cell--editing",
-            )
-        return P(t("msg.unknown_preference"), cls="cell-error")
+        options = _preference_choices(key, lang)
+        if not options:
+            return P(t("msg.unknown_preference"), cls="cell-error")
+        return Td(
+            Select(
+                *[Option(label, value=val, selected=(val == current))
+                  for val, label in options.items()],
+                name="value",
+                hx_patch=f"/settings/preferences/{key}",
+                hx_target="closest td", hx_swap="outerHTML", hx_include="this",
+                hx_trigger="change",
+                cls="cell-input cell-input--select", autofocus=True,
+            ),
+            cls="cell cell--editing",
+        )
 
     @app.patch("/settings/preferences/{key}")
     async def preference_patch(request: Request, key: str):
@@ -767,7 +750,7 @@ def setup_routes(app):
             await api.patch_company(token, {key: value})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _preference_display_cell(key, value)
+        return _preference_display_cell(key, value, get_lang(request))
 
     # ── Password change (POST only - UI is in settings_general) ──────
     @app.post("/settings/password")
@@ -1680,7 +1663,7 @@ def setup_routes(app):
                 Td(r.get("sku", "")),
                 Td(r.get("file", "")),
                 Td(Span(status, cls=f"badge badge--{cls}") if cls else Span(status)),
-                Td(r.get("tag", "") or r.get("detail", "")),
+                Td(r.get("tag", "") or refusal_text(r.get("detail"))),
                 Td(hero_icon, style="text-align:center;"),
                 data_status=status or "unknown",
             )
@@ -2387,8 +2370,8 @@ def setup_routes(app):
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div(t("settings.owner_role_required"), cls="flash flash--error")
-        form = await request.form()
         token = _token(request)
+        form = await request.form()
         try:
             async with api._local_client(token, timeout=60.0, follow_redirects=False) as c:
                 r = await c.post("/companies/me/reset", json={"company_name": str(form.get("company_name", ""))})
@@ -2396,8 +2379,7 @@ def setup_routes(app):
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         if r.status_code != 200:
-            detail = body.get("detail")
-            return Div(detail if isinstance(detail, str) else t("settings.reset_failed"), cls="flash flash--error")
+            return Div(api.error_text(r, t("settings.reset_failed")), cls="flash flash--error")
         from ui.config import clear_session_cookies, set_session_cookies
         from ui.routes.auth import START_COMPANY
         resp = Response(status_code=200)
@@ -2421,7 +2403,7 @@ def setup_routes(app):
             async with api._local_client(token, timeout=5.0, follow_redirects=False) as c:
                 r = await c.delete("/companies/me")
             if r.status_code != 200:
-                return Div(r.json().get("detail", t("settings.deactivation_failed")), cls="flash flash--error")
+                return Div(api.error_text(r, t("settings.deactivation_failed")), cls="flash flash--error")
         except Exception as exc:
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         from starlette.responses import RedirectResponse
@@ -2627,9 +2609,7 @@ def setup_routes(app):
         from fasthtml.common import Div, to_xml
         from celerp.services.backup_import import SESSION_ENDED_HEADER
         if r.status_code >= 400:
-            detail = r.text[:200]
-            if r.headers.get("content-type", "").startswith("application/json"):
-                detail = str(r.json().get("detail") or detail)
+            detail = api.error_text(r, r.text[:200])
             return Response(
                 content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
                 media_type="text/html",
@@ -2713,21 +2693,25 @@ def setup_routes(app):
 
 # ── Display cell helpers (click-to-edit pattern) ─────────────────────────
 
-def _preference_display_cell(key: str, value, lang: str = "en") -> FT:
-    label_map = {
-        "docs_default_preset": {
+def _preference_choices(key: str, lang: str) -> dict[str, str]:
+    """The values a company preference can take, each with its label in ``lang``; empty
+    for a key that is not a preference."""
+    if key == "docs_default_preset":
+        return {
             "last_12m": t("filter.last_12m", lang),
             "this_year": t("settings.this_calendar_year", lang),
             "all": t("filter.all_time", lang),
-        },
-        "default_per_page": {
-            n: t("settings.per_page", lang, n=n) for n in ("25", "50", "100", "250", "500")
-        },
-    }.get(key, {})
-    display = label_map.get(str(value or ""), str(value) if value else EMPTY)
+        }
+    if key == "default_per_page":
+        return {n: t("settings.per_page", lang, n=n) for n in ("25", "50", "100", "250", "500")}
+    return {}
+
+
+def _preference_display_cell(key: str, value, lang: str) -> FT:
+    display = _preference_choices(key, lang).get(str(value or ""), str(value) if value else EMPTY)
     return Td(
         Span(display, cls="cell-text"),
-        title=t("settings.click_to_change"),
+        title=t("settings.click_to_change", lang),
         hx_get=f"/settings/preferences/{key}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
@@ -2875,14 +2859,15 @@ def _derive_key(label: str, existing_keys: set[str], exclude_idx: int | None = N
     """Derive a unique snake_case key from a label.
 
     Lowercases, replaces spaces and hyphens with underscores, strips non-alphanumeric chars.
-    Appends _2, _3 etc. to resolve collisions with existing_keys.
+    Appends _2, _3 etc. to resolve collisions with existing_keys and with the item keys only the
+    app writes (a field keyed like one could never be filled).
     exclude_idx is unused (collision check is against the passed set, caller excludes self).
     """
     import re
     base = re.sub(r"[^a-z0-9_]", "", label.lower().replace(" ", "_").replace("-", "_")).strip("_") or "field"
     key = base
     n = 2
-    while key in existing_keys:
+    while key in existing_keys or key in SYSTEM_ITEM_KEYS:
         key = f"{base}_{n}"
         n += 1
     return key
@@ -3090,7 +3075,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
         Table(
             *[Tr(
                 Td(label, cls="detail-label"),
-                _preference_display_cell(key, flat.get(key)),
+                _preference_display_cell(key, flat.get(key), lang),
             ) for key, label in prefs],
             cls="detail-table",
         ),
@@ -3429,10 +3414,13 @@ def _terms_conditions_tab(templates: list[dict], prefix: str = "terms-conditions
                    hx_on__after_request="window.location.reload()"),
             cls="page-actions mb-md",
         ),
-        Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.text")), Th(t("th.document_types")), Th(t("th.default_for")), Th(""))),
-            Tbody(*[_row(gi, tpl) for gi, tpl in filtered]),
-            cls="data-table sticky-head",
+        Div(
+            Table(
+                Thead(Tr(Th(t("th.name")), Th(t("th.text")), Th(t("th.document_types")), Th(t("th.default_for")), Th(""))),
+                Tbody(*[_row(gi, tpl) for gi, tpl in filtered]),
+                cls="data-table sticky-head",
+            ),
+            cls="table-scroll-wrap",
         ),
         cls="settings-card",
     )

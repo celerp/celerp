@@ -810,6 +810,36 @@ class TestModuleDataPurge:
         assert "acme_widget" not in names and "acme_meta" not in names
 
 
+class TestSettingsPredatingModuleEnablement:
+    """A company whose settings hold no enabled_modules runs every loaded module, so a
+    toggle starts from those, never from nothing."""
+
+    async def _legacy(self, client, session) -> str:
+        from celerp.models.company import Company
+
+        token = await _register(client)
+        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
+        company = await session.get(Company, uuid.UUID(company_id))
+        company.settings = {k: v for k, v in (company.settings or {}).items() if k != "enabled_modules"}
+        await session.commit()
+        return token
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["enable", "disable"])
+    async def test_a_toggle_keeps_every_other_running_module(self, client, session, monkeypatch, action):
+        import celerp.config
+        from celerp.modules import loader
+
+        name = "celerp-labels"
+        running = set(loader.first_party_names()) - ({name} if action == "enable" else set())
+        # The installation's list, which a company that has never chosen runs.
+        monkeypatch.setattr(celerp.config, "read_config", lambda: {"modules": {"enabled": sorted(running)}})
+        token = await self._legacy(client, session)
+        r = await client.post(f"/companies/me/modules/{name}/{action}", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert set(r.json()["enabled_modules"]) == (running | {name} if action == "enable" else running - {name})
+
+
 class TestPurgeRechecksTablePrefix:
     """A module copied straight into MODULE_DIR never passed the install check, so
     the purge re-checks its prefix before dropping anything."""

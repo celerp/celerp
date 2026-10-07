@@ -47,7 +47,7 @@ NO_ANSWER = object()  # the request returns nothing
 _PAYMENT = ("company_id", "entity_id", "reference", "amount_minor", "currency", "paid_at", "context",
             "managed", "delivery_id")
 # The books a payment page opened with, for a payment whose page the test does not open.
-BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
+BOOKS = {"deposit_account": "1111", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
 OPENED = object()  # the books the invoice's last payment page opened with
 
 
@@ -762,7 +762,7 @@ async def _paid(engine, entity_id) -> list[tuple]:
 
 async def _pay_by_hand(client, engine, boss, cid, entity_id, amount: float):
     r = await client.post(f"/docs/{entity_id}/payment", headers=auth(await token(engine, boss, cid)), json={
-        "amount": amount, "payment_date": "2026-10-01", "bank_account": "1110"})
+        "amount": amount, "payment_date": "2026-10-01", "bank_account": "1111"})
     assert r.status_code == 200, r.text
 
 
@@ -1623,7 +1623,7 @@ async def test_a_payment_recorded_again_into_a_locked_period_is_refused_like_any
     async with maker(real_engine)() as s:
         assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) == _OCTOBER_3
     r = await real_client.post(f"/docs/{eid}/payment", headers=auth(await token(real_engine, boss, a)),
-                               json={"amount": 500.0, "payment_date": "2025-10-03", "bank_account": "1110"})
+                               json={"amount": 500.0, "payment_date": "2025-10-03", "bank_account": "1111"})
     assert r.status_code == 422 and r.json()["detail"].startswith("Period is locked through 2025-10-31")
 
 

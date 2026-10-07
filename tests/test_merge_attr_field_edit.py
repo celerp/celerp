@@ -23,6 +23,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import merge_items
 
 
 async def _token(client) -> str:
@@ -74,8 +75,7 @@ def _read_grade(item: dict):
 
 
 async def _merge(client, headers, sources: list[str], target: str) -> dict:
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": sources, "target_sku_from": target},
         headers=headers,
     )

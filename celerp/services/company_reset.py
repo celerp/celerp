@@ -4,9 +4,10 @@
 """Reset one company: remove it and everything it owns in one transaction, keeping every
 login and every other company.
 
-What the company owns is read from the live schema, never from a hand list: a table with
-a ``company_id`` column, and any table reaching one through foreign keys. A table that is
-neither and is not named below as belonging to the installation stops the reset before
+What the company owns is read from the database catalog (celerp.db_catalog), never from a
+hand list, so a switched-off module's tables are included: a table with a ``company_id``
+column, and any table reaching one through foreign keys. A table that reaches neither a
+company nor a table named below as belonging to the installation stops the reset before
 anything is written, so a table added later can never be skipped or wiped by mistake.
 """
 
@@ -16,8 +17,12 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import delete, select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from celerp import db_catalog
+from celerp.accounting_roles import refusal
+from celerp.db import sqlstate
 
 from celerp.models.accounting import UserCompany
 from celerp.models.ai import AIBatchJob
@@ -27,7 +32,6 @@ from celerp.models.connector_config import ConnectorConfig
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.services import payments
 from celerp.services.auth import first_usable_company_link
-from celerp.services.company_backup import _fk_order, _ident, _schema
 from celerp.services.company_lock import lock_company_for_deletion
 from ui.i18n import t
 
@@ -45,10 +49,11 @@ INSTALL_WIDE = {
     "unmatched_refunds": "refunds of online payments kept until their payment is on its invoice",
 }
 
-NAME_MISMATCH = "The name you typed does not match this company's name. Nothing was deleted."
 AI_BATCH_ACTIVE = ("Wait for the assistant to finish reading files before resetting this company. "
                    "Nothing was deleted.")
 FAILED = "The company could not be reset. Nothing was deleted."
+# Another transaction in the way: the reset rolls back and is refused as busy.
+_BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
 PAYMENTS_NOT_CLOSED = {
     "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
                           "closed, then reset it. Nothing was deleted."),
@@ -66,7 +71,7 @@ PAYMENTS_NOT_CLOSED = {
 
 
 class ResetRefused(Exception):
-    def __init__(self, status: int, detail: str, closure: uuid.UUID | None = None) -> None:
+    def __init__(self, status: int, detail: str | dict, closure: uuid.UUID | None = None) -> None:
         super().__init__(detail)
         self.status = status
         self.detail = detail
@@ -81,52 +86,180 @@ class Reset:
     closure: uuid.UUID | None
 
 
-@dataclass(frozen=True)
-class _Owned:
-    """A table holding the company's rows and the condition selecting them."""
-    table: str
-    where: str
+def _busy() -> ResetRefused:
+    return ResetRefused(409, refusal(
+        "company_reset.busy",
+        "This company could not be reset because other changes were being saved at the "
+        "same time. Nothing was deleted. Try again."))
 
 
-async def owned_tables(session: AsyncSession) -> list[_Owned]:
-    """Every table holding rows of a company, children before the tables they reference,
-    ending with ``companies``. Refuses when a table cannot be placed."""
-    schema = await _schema(session)
-    where = {"companies": "id = :c"}
-    for name, table in schema.items():
-        if "company_id" in table.columns:
-            where[name] = "company_id = :c"
-    # A child reaches the company through foreign keys into tables already placed.
-    while True:
-        found = {}
-        for name, table in schema.items():
-            if name in where or name in INSTALL_WIDE:
-                continue
-            refs = [(cols, target, tcols) for cols, target, tcols in table.fks if target in where]
-            if refs:
-                found[name] = " OR ".join(
-                    f"({', '.join(map(_ident, cols))}) IN "
-                    f"(SELECT {', '.join(map(_ident, tcols))} FROM {_ident(target)} WHERE {where[target]})"
-                    for cols, target, tcols in refs)
-        if not found:
-            break
-        where.update(found)
-    unplaced = sorted(t for t in schema if t not in where and t not in INSTALL_WIDE)
+def _changed_outside(kind: str, table: str) -> ResetRefused:
+    """The refusal for a table changed outside Celerp (``db_catalog.changed_outside``)."""
+    if kind == "outside_reference":
+        return ResetRefused(409, refusal(
+            "company_reset.outside_reference",
+            f"This company cannot be reset because the table {table}, which was added outside "
+            "Celerp (by an installed module or a direct database change), refers to Celerp's "
+            "records. Nothing was deleted. Ask whoever installed that module or changed the "
+            "database to remove that reference.", table=table))
+    return ResetRefused(409, refusal(
+        "company_reset.partition_key",
+        f"This company cannot be reset because the table {table} was changed outside Celerp "
+        "(by an installed module or a direct database change) in a way the reset cannot safely "
+        "handle. Nothing was deleted. Ask whoever installed that module or changed the database "
+        "to fix it.", table=table))
+
+
+def _placed(schema: dict) -> None:
+    """Refuse a table that holds neither company nor installation data, and an
+    installation table that would also hold company data."""
+    company = db_catalog.company_tables(schema)
+    install = {name for name in INSTALL_WIDE if name in schema}
+    # A table hanging off the installation's tables (a login's own rows) is the installation's.
+    installation = db_catalog.reach(schema, install, lambda name, fk: True)
+    unplaced = sorted(name for name in schema if name not in company and name not in installation)
     if unplaced:
         raise ResetRefused(409, f"This company cannot be reset safely: {', '.join(unplaced)} could not be "
                                 "identified as company data. Nothing was deleted.")
-    crossing = sorted(t for t in INSTALL_WIDE if t in schema and t in where)
-    crossing += sorted(t for t in INSTALL_WIDE if t in schema
-                       and any(target in where for _, target, _ in schema[t].fks))
+    crossing = sorted(install & company)
     if crossing:
-        raise ResetRefused(409, f"This company cannot be reset safely: {', '.join(crossing)} holds both "
+        verb = "holds" if len(crossing) == 1 else "hold"
+        raise ResetRefused(409, f"This company cannot be reset safely: {', '.join(crossing)} {verb} both "
                                 "installation and company data. Nothing was deleted.")
-    order, unordered = _fk_order(list(where), schema)
-    cycles = sorted(unordered - set(order))
-    if cycles:
-        raise ResetRefused(409, f"This company cannot be reset safely: {', '.join(cycles)} reference each "
-                                "other. Nothing was deleted.")
-    return [_Owned(t, where[t]) for t in reversed(order)]
+
+
+def _company_rows(schema: dict) -> dict[str, str]:
+    """Every table holding rows of the company bound as ``:c``, each after the tables it
+    references, with the condition that picks them: its company column, or else a
+    foreign key to rows already picked (a conversation's messages, a run's entity maps).
+    A key that clears on delete picks nothing: Postgres clears it. Tables that refer to
+    each other in a loop have no such order, nor a condition built from one another, so
+    the reset is refused naming them."""
+    ident = db_catalog.ident
+    owned = db_catalog.company_tables(schema, held=True)
+    order, unordered = db_catalog.fk_order(sorted(owned), schema)
+    if looped := ", ".join(sorted(unordered - set(order))):
+        raise ResetRefused(409, refusal(
+            "company_reset.reference_cycle",
+            f"The tables {looped} refer to each other in a loop, so this company cannot be "
+            "reset. Nothing was deleted.", tables=looped))
+    where: dict[str, str] = {"companies": "id = CAST(:c AS uuid)"}
+
+    def rows(name: str) -> str:
+        if name not in where:
+            table = schema[name]
+            if "company_id" in table.columns:  # a few connector tables keep it as text
+                where[name] = f"company_id = CAST(CAST(:c AS text) AS {ident(table.columns['company_id'].udt)})"
+            else:
+                where[name] = " OR ".join(
+                    f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
+                    f"FROM {ident(fk.target)} WHERE {rows(fk.target)})"
+                    for fk in table.fks if fk.target in owned and fk.target != name and not fk.clears)
+        return where[name]
+
+    return {name: rows(name) for name in order}
+
+
+def _lock_writers(schema: dict) -> list[str]:
+    """The locks on every table, held until the reset commits. Nothing written to a company
+    table between the checks and the deletes can then be deleted with the company, and no
+    table or key can be added that the reset does not know about: such a write waits, and
+    fails on the row that is gone. An installation table keeps taking writes, since its rows
+    outlive the company (a payment closure is recorded from its own connection during the
+    reset), but no key can be added to it. So do sessions: issuing one holds the company FOR
+    KEY SHARE, which waits for the reset, and a sign-out during the reset only deletes them.
+    Concurrent resets take it in the same order, one after the other."""
+    writable = sorted(set(schema) & (INSTALL_WIDE.keys() | {SessionRegistry.__tablename__}))
+    company = sorted(set(schema) - set(writable))
+    return [f"LOCK TABLE {', '.join(map(db_catalog.ident, names))} IN {mode} MODE"
+            for names, mode in ((company, "SHARE ROW EXCLUSIVE"), (writable, "ROW EXCLUSIVE")) if names]
+
+
+def _held_elsewhere(schema: dict) -> str:
+    """A query naming a table whose rows the reset of the company bound as ``:c`` would
+    delete, change or trip over though they are not only that company's: a row outside
+    the company naming one of its rows, or a row of the company also naming another
+    company's, by a key of any kind. Nothing when there is none."""
+    ident = db_catalog.ident
+    rows = _company_rows(schema)
+    company = db_catalog.company_tables(schema)
+
+    def naming(fk, mine: bool, seen: frozenset[str] = frozenset()) -> str:
+        """The rows whose ``fk`` names a row of the company (``mine``) or of another."""
+        if fk.target in rows:
+            where = f"({rows[fk.target]})" + ("" if mine else " IS NOT TRUE")
+        else:  # reached only through keys that clear: another company's when it names one
+            where = "FALSE" if fk.target in seen else others(fk.target, seen | {fk.target}) or "FALSE"
+        return f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} " \
+               f"FROM {ident(fk.target)} WHERE {where})"
+
+    def others(name: str, seen: frozenset[str]) -> str:
+        """The rows of ``name``, a table with no company column, that are another company's
+        too: those naming one of its rows."""
+        return " OR ".join(naming(fk, False, seen) for fk in schema[name].fks if fk.target in company)
+
+    checks = []
+    for name in sorted(company):
+        table = schema[name]
+        theirs = "" if "company_id" in table.columns else others(name, frozenset())
+        for fk in table.fks:
+            if fk.target not in rows:
+                continue
+            if name in rows:
+                # A named row tied to the company by a key of its own straight to companies,
+                # as a user is by a home company, is shared by the two companies, so its
+                # table, which holds that key, is the one named.
+                shared = fk.target != "companies" and "company_id" not in schema[fk.target].columns and any(
+                    k.target == "companies" for k in schema[fk.target].fks)
+                checks.append((name, f"({rows[name]}) IS NOT TRUE AND {naming(fk, mine=True)}",
+                               fk.target if shared else name))
+            elif theirs:
+                checks.append((name, f"{naming(fk, mine=True)} AND ({theirs})", name))
+        if name in rows and theirs:
+            checks.append((name, f"({rows[name]}) AND ({theirs})", name))
+    return " UNION ALL ".join(
+        f"(SELECT '{named.replace(chr(39), chr(39) * 2)}' WHERE EXISTS "
+        f"(SELECT 1 FROM {ident(name)} WHERE {where}))" for name, where, named in checks) + " LIMIT 1"
+
+
+def _company_deletes(schema: dict) -> list[str]:
+    """The deletes that remove the company bound as ``:c``, each table before any it
+    references."""
+    return [f"DELETE FROM {db_catalog.ident(name)} WHERE {where}"
+            for name, where in reversed(_company_rows(schema).items())]
+
+
+async def _company_schema(session: AsyncSession, cid: str) -> dict:
+    """The catalog's keys, read and locked for the reset of the company bound as ``cid``
+    once every table is placed and no row the reset would reach belongs to another
+    company. Raises ResetRefused otherwise, before anything is written."""
+    try:
+        await db_catalog.pin(session)
+    except db_catalog.TableElsewhere as exc:
+        raise _changed_outside("partition_key", exc.table) from None
+    schema = await db_catalog.read(session)
+    # A table this connection cannot read and delete from can neither be locked below
+    # nor have the company's rows picked out of it.
+    if tables := await db_catalog.hidden(session, schema):
+        raise _changed_outside("partition_key", await db_catalog.label(session, tables[0]))
+    _placed(schema)
+    _company_rows(schema)
+    # Another transaction writing these tables can hold them for longer than a request
+    # may wait, or lock in the opposite order so Postgres aborts one of the two. Either
+    # way the rollback leaves everything as it was and the owner is asked to try again.
+    for lock in _lock_writers(schema):
+        await session.execute(text(lock))
+    if await db_catalog.read(session) != schema:  # a table or key added before the lock
+        raise _busy()
+    if changed := await db_catalog.changed_outside(session, schema):
+        raise _changed_outside(*changed)
+    keys = db_catalog.own_keys(schema)
+    if held := await session.scalar(text(_held_elsewhere(keys)), {"c": cid}):
+        raise ResetRefused(409, refusal(
+            "company_reset.held_elsewhere",
+            f"This company cannot be reset because records in {held} that belong to another "
+            "company refer to its data. Nothing was deleted.", table=held))
+    return keys
 
 
 async def reset(session: AsyncSession, company: Company, typed_name: str) -> Reset:
@@ -139,13 +272,20 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     to Celerp Cloud has its online payments closed there first; a database failure part
     way leaves the transaction to roll back."""
     if typed_name != company.name:
-        raise ResetRefused(422, NAME_MISMATCH)
+        raise ResetRefused(422, refusal(
+            "company_reset.name_mismatch",
+            "The name you typed does not match this company's name. Nothing was deleted."))
     # A session being issued, or a file being stored, holds the company FOR KEY SHARE until
     # it is saved: the reset waits for it and then removes it with the company, and a later
     # one waits for the reset and finds the company gone.
     await lock_company_for_deletion(session, company.id)
-    tables = await owned_tables(session)
     cid = str(company.id)
+    try:
+        keys = await _company_schema(session, cid)
+    except DBAPIError as exc:
+        if sqlstate(exc) not in _BUSY:
+            raise
+        raise _busy() from exc
     connected = sorted(set((await session.scalars(
         select(ConnectorConfig.connector).where(ConnectorConfig.company_id == cid))).all()))
     if connected:
@@ -179,8 +319,8 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     except payments.PaymentsNotClosed as exc:
         raise ResetRefused(*PAYMENTS_NOT_CLOSED[exc.reason]) from None
     try:
-        for owned in tables:
-            await session.execute(text(f"DELETE FROM {_ident(owned.table)} WHERE {owned.where}"), {"c": cid})
+        for statement in _company_deletes(keys):
+            await session.execute(text(statement), {"c": cid})
         await payments.unrecord_company(session, company.id)
         # A login left with no company is signed out everywhere, so it no longer holds
         # the single direct sign-in place.
@@ -191,5 +331,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
         session.add(task)
         await session.flush()
     except SQLAlchemyError as exc:
+        if isinstance(exc, DBAPIError) and sqlstate(exc) in _BUSY:
+            raise ResetRefused(409, _busy().detail, closure) from exc
         raise ResetRefused(500, FAILED, closure) from exc
     return Reset(task.id, closure)

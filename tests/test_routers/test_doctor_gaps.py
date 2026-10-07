@@ -1,16 +1,16 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """
-Coverage gap closers for routers/doctor.py:
-  - line 82: void/draft/expired/converted docs skipped in missing_jes
-  - line 142: legacy entity_id format (not je:auto: prefix) in duplicate_jes
-  - lines 211-216: orphan_projections fix=True path
-  - line 240: stale_projections projection with no events (continue)
-  - lines 248-257: stale_projections fix=True path (replayed != current)
-  - line 277: unbalanced_jes void JE skip
-  - line 282: unbalanced_jes found (debit != credit)
-  - line 309: zero_amount_jes fix=True path
-  - line 354/486: run_doctor invalid check name → 422
+Coverage gap closers for the record checks behind POST /admin/doctor (celerp_admin routes):
+  - void/draft/expired/converted docs skipped in missing_jes
+  - legacy entity_id format (not je:auto: prefix) in duplicate_jes
+  - orphan_projections fix=True path
+  - stale_projections projection with no events (continue)
+  - stale_projections fix=True path (replayed != current)
+  - unbalanced_jes void JE skip
+  - unbalanced_jes found (debit != credit)
+  - zero_amount_jes fix=True path
+  - run_doctor invalid check name → 422
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def _proj(company_id, entity_id: str, entity_type: str, state: dict) -> "Project
 
 
 # ---------------------------------------------------------------------------
-# run_doctor invalid check name → 422 (line 486)
+# run_doctor invalid check name → 422
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -88,12 +88,12 @@ async def test_doctor_invalid_check(client: "AsyncClient"):
 
 
 # ---------------------------------------------------------------------------
-# missing_jes: skip void/draft/converted/expired docs (line 82)
+# missing_jes: skip void/draft/converted/expired docs
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_doctor_missing_jes_skips_void(client: "AsyncClient"):
-    """Void docs are not flagged as missing JEs (line 82)."""
+    """Void docs are not flagged as missing JEs."""
     tok, _ = await _reg(client)
 
     r = await client.post("/docs", headers=_h(tok), json={
@@ -114,12 +114,12 @@ async def test_doctor_missing_jes_skips_void(client: "AsyncClient"):
 
 
 # ---------------------------------------------------------------------------
-# duplicate_jes: legacy entity_id (not je:auto: prefix) (line 142)
+# duplicate_jes: legacy entity_id (not je:auto: prefix)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", session: AsyncSession):
-    """JE entity_id not starting with je:auto: uses fallback group_key (line 142)."""
+    """JE entity_id not starting with je:auto: uses fallback group_key."""
     tok, _ = await _reg(client)
 
     # Get company_id from token
@@ -147,7 +147,7 @@ async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", sess
     assert r1.json()["created"] == 1
 
     # Manually insert a second ledger event for the SAME legacy entity_id
-    # to create a duplicate pair that triggers the fallback group_key (line 142)
+    # to create a duplicate pair that triggers the fallback group_key
     import uuid as _uuid
     from celerp.models.ledger import LedgerEntry
 
@@ -174,12 +174,12 @@ async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", sess
 
 
 # ---------------------------------------------------------------------------
-# orphan_projections: fix=True deletes the orphan (lines 211-216)
+# orphan_projections: fix=True deletes the orphan
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_doctor_orphan_projections_fix(client: "AsyncClient", session: AsyncSession):
-    """orphan_projections fix=True deletes orphaned projections (lines 211-216)."""
+    """orphan_projections fix=True deletes orphaned projections."""
     tok, _ = await _reg(client)
 
     from jose import jwt as _jwt
@@ -204,12 +204,12 @@ async def test_doctor_orphan_projections_fix(client: "AsyncClient", session: Asy
 
 
 # ---------------------------------------------------------------------------
-# stale_projections: no events → continue (line 240) + fix path (248-257)
+# stale_projections: no events → continue + fix path
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_doctor_stale_projections_fix(client: "AsyncClient", session: AsyncSession):
-    """stale_projections: detects and fixes a corrupted projection (lines 240, 248-257)."""
+    """stale_projections: detects and fixes a corrupted projection."""
     tok, _ = await _reg(client)
 
     # Create a contact
@@ -244,12 +244,12 @@ async def test_doctor_stale_projections_fix(client: "AsyncClient", session: Asyn
 
 
 # ---------------------------------------------------------------------------
-# unbalanced_jes: void skip (line 277) + imbalanced JE found (line 282)
+# unbalanced_jes: void skip + imbalanced JE found
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_doctor_unbalanced_jes(client: "AsyncClient", session: AsyncSession):
-    """unbalanced_jes: skips void JEs, detects imbalanced ones (lines 277, 282)."""
+    """unbalanced_jes: skips void JEs, detects imbalanced ones."""
     tok, _ = await _reg(client)
 
     from jose import jwt as _jwt
@@ -284,17 +284,17 @@ async def test_doctor_unbalanced_jes(client: "AsyncClient", session: AsyncSessio
     result = next(c for c in rd.json()["results"] if c["check"] == "unbalanced_jes")
 
     found_ids = [d["entity_id"] for d in result.get("details", [])]
-    assert imb_id in found_ids          # detected (line 282)
-    assert void_id not in found_ids     # skipped (line 277)
+    assert imb_id in found_ids          # detected
+    assert void_id not in found_ids     # skipped
 
 
 # ---------------------------------------------------------------------------
-# zero_amount_jes: fix=True voids the zero JE (line 309)
+# zero_amount_jes: fix=True voids the zero JE
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_doctor_zero_amount_jes_fix(client: "AsyncClient", session: AsyncSession):
-    """zero_amount_jes: fix=True voids the zero-amount JE (line 309)."""
+    """zero_amount_jes: fix=True voids the zero-amount JE."""
     tok, _ = await _reg(client)
 
     from jose import jwt as _jwt
@@ -307,7 +307,7 @@ async def test_doctor_zero_amount_jes_fix(client: "AsyncClient", session: AsyncS
 
     zero_id = f"je:{uuid.uuid4()}"
 
-    # Insert the ledger event (needed by fix code at line 320 to void)
+    # Insert the ledger event (needed by the fix path to void)
     le = LedgerEntry(
         company_id=company_id,
         entity_id=zero_id,

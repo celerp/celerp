@@ -607,6 +607,19 @@ document.addEventListener('click', function(e) {
     }
   });
 });
+// A tab strip wider than the screen scrolls sideways inside itself; bring its current
+// tab into view whenever the strip is drawn, without moving the page.
+function revealActiveTabs() {
+  document.querySelectorAll('.category-tabs').forEach(function(strip) {
+    var tab = strip.querySelector('.category-tab--active');
+    if (!tab || strip.scrollWidth <= strip.clientWidth) return;
+    var left = tab.offsetLeft - strip.offsetLeft;
+    if (left < strip.scrollLeft || left + tab.offsetWidth > strip.scrollLeft + strip.clientWidth)
+      strip.scrollLeft = left - (strip.clientWidth - tab.offsetWidth) / 2;
+  });
+}
+document.addEventListener('DOMContentLoaded', revealActiveTabs);
+document.addEventListener('htmx:afterSettle', revealActiveTabs);
 """
 
 
@@ -865,7 +878,8 @@ function _notifItemHtml(n) {
   var content = n.action_url
     ? '<a class="notif-item__link" href="' + _notifEsc(n.action_url) + '">' + inner + '</a>'
     : '<div class="notif-item__link">' + inner + '</div>';
-  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '" data-id="' + _notifEsc(n.id) + '">'
+  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread')
+    + (n.priority === 'high' ? ' notif-item--high' : '') + '" data-id="' + _notifEsc(n.id) + '">'
     + content
     + '<button class="notif-item__dismiss" type="button" title="' + window.__shellI18n.markAsRead + '" aria-label="' + window.__shellI18n.markAsRead + '">&times;</button>'
     + '</div>';
@@ -985,9 +999,9 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         loadNotifications();
         if (data.priority === 'high' && Notification.permission === 'granted') {
-          // The stream carries the stored message key; show the rendered copy.
-          fetch('/notifications?limit=5').then(function(r) { return r.json(); }).then(function(d) {
-            var n = (d.items || []).find(function(x) { return x.id === data.id; });
+          // The listed notice is in the reader's language; the pushed one is as stored.
+          fetch('/notifications?limit=20').then(function(r) { return r.json(); }).then(function(d) {
+            var n = (d.items || []).find(function(i) { return i.id === data.id; });
             if (n) new Notification(n.title, { body: n.body });
           }).catch(function() {});
         }
@@ -2364,10 +2378,28 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
     return str(best_match.get("key") or active) if best_match else active
 
 
+def module_nav(settings: dict | None) -> list[dict]:
+    """Nav entries of the modules running in this process that the company uses
+    (uses_module on its settings), in display order. Anything that shows or links
+    to a module's pages asks this, so a module that is off leaves no trace."""
+    from celerp.modules.registry import uses_module
+    try:
+        from celerp.modules.slots import get as get_slot
+        slot_items: list[dict] = get_slot("nav")
+    except Exception:
+        slot_items = []
+    return [item for item in sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
+            if uses_module(settings, item.get("_module"))]
+
+
+def module_active(settings: dict | None, name: str) -> bool:
+    """Whether module ``name`` is running here and the company uses it."""
+    return any(item.get("_module") == name for item in module_nav(settings))
+
+
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
-    from celerp.modules.registry import uses_module
     from celerp.services.permissions import role_has_permission
     from ui.module_slots import slot_permission_allows
 
@@ -2376,26 +2408,13 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     def _allowed(item: dict) -> bool:
         return slot_permission_allows(item, settings, role)
 
-    def _module_enabled(item: dict) -> bool:
-        """Kernel entries (no _module key) always show; a module's entries show
-        when the company uses the module (read from current settings)."""
-        return uses_module(settings, item.get("_module"))
-
-    # Collect all nav items from loaded modules
-    try:
-        from celerp.modules.slots import get as get_slot
-        slot_items: list[dict] = get_slot("nav")
-    except Exception:
-        slot_items = []
-
-    all_items_raw = sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
     # Drop what this company cannot see before deduplicating, not after. Two modules
     # may offer the same section: accounting and reports both declare "reports",
     # because the financial reports stay reachable when the reports module is off.
     # Deduplicating first lets a disabled module's entry win the key and then be
     # filtered out, taking the enabled module's entry with it and leaving the
     # section missing from the nav altogether.
-    visible = [item for item in all_items_raw if _allowed(item) and _module_enabled(item)]
+    visible = [item for item in module_nav(settings) if _allowed(item)]
 
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()
@@ -2433,9 +2452,14 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
 
     sections: list[FT] = [_link(item) for item in top_level]
 
-    for group_label, items in grouped.items():
-        group_key = group_label.lower().replace(" ", "_")
-        is_active_group = group_label == active_group
+    for group, items in grouped.items():
+        group_key = group.lower().replace(" ", "_")
+        is_active_group = group == active_group
+        # A module's group is named by nav.group.<key>; a group no catalog names shows as declared.
+        label_key = f"nav.group.{group_key}"
+        group_label = t(label_key, lang)
+        if group_label == label_key:
+            group_label = group
         # Check if any item in the group declares a settings_href
         settings_href = next((i["settings_href"] for i in items if i.get("settings_href")), None)
         if settings_href:
@@ -2460,7 +2484,8 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         )
 
     # Blank install: only kernel entries visible — show a helpful prompt
-    has_module_nav = bool(slot_items)
+    from celerp.modules.slots import get as get_slot
+    has_module_nav = bool(get_slot("nav"))
     if not has_module_nav:
         empty_state: list[FT] = [Div(
             P(t("msg.no_modules_installed"), cls="sidebar-empty-title"),
@@ -2492,6 +2517,11 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
             A(t("nav.modules", lang), href="/modules",
               title=t("nav.modules_tip", lang),
               cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
+        )
+        settings_link.append(
+            A(t("nav.doctor", lang), href="/doctor",
+              title=t("nav.doctor_tip", lang),
+              cls=f"nav-link {'nav-link--active' if active == 'doctor' else ''}"),
         )
     if role_has_permission(settings, role, "manage_integrations"):
         settings_link.append(

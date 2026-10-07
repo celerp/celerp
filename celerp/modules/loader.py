@@ -74,8 +74,8 @@ from celerp.modules.license import (
 )
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
-    FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, projection_prefixes_overlap,
-    register as register_slot, resolve_handler,
+    FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, check as check_slot,
+    projection_prefixes_overlap, register as register_slot, resolve_handler,
     unregister_module as unregister_module_slots,
 )
 from celerp.services.app_paths import is_app_local_path
@@ -323,6 +323,14 @@ def _matches_lock(name: str, digest: str | None) -> bool:
                 "treating it as not first-party.", name)
         return False
     return True
+
+
+def first_party_owner(code_file: str | Path) -> str | None:
+    """The bundled module whose package holds ``code_file`` (a function's
+    ``__code__.co_filename``), or None when that module folder is not first-party
+    by content. Module code lives at ``<module folder>/<package>/<file>.py``."""
+    folder = Path(code_file).resolve().parent.parent
+    return folder.name if is_first_party(folder) else None
 
 
 def first_party_names() -> frozenset[str]:
@@ -1156,6 +1164,39 @@ def module_label(pkg_name: str) -> str:
             or pkg_name.removeprefix("celerp-").replace("-", " ").replace("_", " ").title())
 
 
+def modules_owning_events(event_types: set[str]) -> list[str]:
+    """The display names of the installed modules whose projection handlers own these
+    event types, enabled or not; an event type no installed module owns is named as is."""
+    owned, unowned = event_owners(event_types)
+    return sorted({*owned, *unowned})
+
+
+def event_owners(event_types: set[str]) -> tuple[list[str], list[str]]:
+    """The display names of the installed modules whose projection handlers own these
+    event types, enabled or not, and the event types no installed module owns."""
+    owners: dict[str, str] = {}
+    for entry in module_search_path().split(","):
+        root = Path(entry)
+        if not root.is_dir():
+            continue
+        for pkg in sorted(root.iterdir()):
+            if not (pkg / "__init__.py").exists():
+                continue
+            manifest = read_manifest(pkg)
+            label = manifest.get("display_name") or manifest.get("name") or pkg.name
+            for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
+                owners.setdefault(contrib.get("prefix") or "", label)
+    owned: set[str] = set()
+    unowned: set[str] = set()
+    for t in event_types:
+        label = next((label for prefix, label in owners.items() if prefix and t.startswith(prefix)), None)
+        if label:
+            owned.add(label)
+        else:
+            unowned.add(t)
+    return sorted(owned), sorted(unowned)
+
+
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
@@ -1605,12 +1646,26 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
         raise
 
     # Register extension slots (search_provider is registered from its prepared
-    # descriptor below, never through the generic path).
-    for slot_name, contribution in slots_manifest.items():
-        if slot_name == _SEARCH_PROVIDER_SLOT:
-            continue
-        for item in contribution if isinstance(contribution, list) else [contribution]:
-            register_slot(slot_name, {**item, **_runtime_keys(pkg_name, trusted)})
+    # descriptor below, never through the generic path). Every contribution is checked
+    # first, so a module one slot refuses registers none. The runtime keys come last,
+    # so a manifest cannot claim them.
+    generic = [
+        (slot_name, {**item, **_runtime_keys(pkg_name, trusted)})
+        for slot_name, contribution in slots_manifest.items() if slot_name != _SEARCH_PROVIDER_SLOT
+        for item in (contribution if isinstance(contribution, list) else [contribution])
+        if isinstance(item, dict)
+    ]
+    for slot_name, item in generic:
+        try:
+            check_slot(slot_name, item)
+        except ValueError as exc:
+            log.error("Module %r rejected: %s", pkg_name, exc)
+            for key in list(sys.modules.keys()):
+                if key == pkg_name or key.startswith(pkg_name + "."):
+                    sys.modules.pop(key, None)
+            raise ModuleLoadError(str(exc))
+    for slot_name, item in generic:
+        register_slot(slot_name, item)
 
     if prepared_search_provider is not None:
         register_slot(_SEARCH_PROVIDER_SLOT, prepared_search_provider)

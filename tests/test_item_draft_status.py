@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.services.pricing import is_cost_list_name  # noqa: E402
-from test_helpers import create_item, grant_permission, perm_setup  # noqa: E402
+from test_helpers import create_item, grant_permission, perm_setup, merge_items, reserve_item  # noqa: E402
 
 
 async def _item_state(client, headers: dict, item_id: str) -> dict:
@@ -345,7 +345,7 @@ async def test_reserve_rejected_on_draft(client, session):
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
     r2 = await client.post(f"/items/{item_id}/reserve", json={"quantity": 1}, headers=ctx["admin_h"])
-    assert r2.status_code == 422, r2.text
+    assert r2.status_code == 409, r2.text
 
 
 async def test_expire_rejected_on_draft_single_and_bulk(client, session):
@@ -356,13 +356,13 @@ async def test_expire_rejected_on_draft_single_and_bulk(client, session):
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
     r2 = await client.post(f"/items/{item_id}/expire", headers=ctx["admin_h"])
-    assert r2.status_code == 422, r2.text
+    assert r2.status_code == 409, r2.text
 
     r3 = await client.post("/items", json=_draft_item_body(ctx["location_id"], "BYP-BEXPIRE"),
                            headers=ctx["admin_h"])
     item_id2 = r3.json()["id"]
     r4 = await client.post("/items/bulk/expire", json={"entity_ids": [item_id2]}, headers=ctx["admin_h"])
-    assert r4.status_code == 422, r4.text
+    assert r4.status_code == 409, r4.text
     assert (await _item_state(client, ctx["admin_h"], item_id2)).get("status") == "draft"
 
 
@@ -478,7 +478,7 @@ async def test_revert_of_reserved_item_rejected(client, session):
                           headers=ctx["admin_h"])
     item_id = r.json()["id"]
     assert (await _make_available(client, ctx["admin_h"], item_id)).status_code == 200
-    assert (await _set_status(client, ctx["admin_h"], item_id, "reserved")).status_code == 200
+    await reserve_item(client, ctx["admin_h"], item_id)
 
     rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
@@ -629,14 +629,15 @@ async def test_opening_inventory_je_excludes_draft(client, session):
 def test_manufacturing_lot_qty_excludes_draft_lots():
     """On-hand lot totals never count a draft lot; a lot with no status counts as
     available, matching the projection default for pre-draft data."""
-    from celerp_manufacturing.routes import _lot_qty_by_parent
+    from celerp_manufacturing.routes import _stock_by_product
 
     states = {
+        "item:prod": {"quantity": 0.0, "status": "available", "recipe": {"components": [{"item_id": "item:raw"}]}},
         "item:lot-1": {"parent_item_id": "item:prod", "quantity": 4.0, "status": "available"},
         "item:lot-2": {"parent_item_id": "item:prod", "quantity": 3.0, "status": "draft"},
         "item:lot-3": {"parent_item_id": "item:prod", "quantity": 2.0},
     }
-    assert _lot_qty_by_parent(states) == {"item:prod": 6.0}
+    assert _stock_by_product(states)[0]["item:prod"] == 6.0
 
 
 # ── Drafts cannot circulate onto documents or lists ───────────────────────────
@@ -700,9 +701,9 @@ async def test_merge_rejects_two_draft_sources(client, session):
     a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-DD-A")
     b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-DD-B")
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["admin_h"])
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
 
     sa = await _item_state(client, ctx["admin_h"], a)
     sb = await _item_state(client, ctx["admin_h"], b)
@@ -716,9 +717,9 @@ async def test_merge_rejects_available_plus_draft_source(client, session):
     a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-AD-A", status="available")
     b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-AD-B")
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["admin_h"])
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
 
     sa = await _item_state(client, ctx["admin_h"], a)
     sb = await _item_state(client, ctx["admin_h"], b)
@@ -733,9 +734,9 @@ async def test_merge_rejects_draft_target_sku_from(client, session):
     a = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-T-A", status="available")
     b = await _merge_item(client, ctx["admin_h"], ctx["location_id"], "MRG-T-B")
 
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": b},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": b},
                           headers=ctx["admin_h"])
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
 
 
 # ── UI surfaces ───────────────────────────────────────────────────────────────

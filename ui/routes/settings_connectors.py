@@ -14,7 +14,7 @@ from starlette.responses import HTMLResponse
 
 from ui.components.attrs import hx_vals
 from ui.components.activity import relative_time
-from ui.i18n import t, get_lang
+from ui.i18n import get_lang, refusal_text, t
 from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
@@ -297,7 +297,7 @@ async def _kickoff_connector_sync(company_id: str, platform: str, token: str) ->
     from ui.api_client import start_connector_sync
     result = await start_connector_sync(token, platform)
     if not result.get("ok"):
-        raise RuntimeError(result.get("detail") or "Could not start connector sync")
+        raise RuntimeError(refusal_text(result.get("detail")) or "Could not start connector sync")
 
 
 async def _autosync_once(company_id: str, platform: str, token: str) -> None:
@@ -592,7 +592,7 @@ def _disconnect_failed(
 ) -> FT:
     """The outcome of a disconnect that changed nothing. Unless it was already
     forced, it offers to disconnect anyway, with a warning."""
-    detail = result.get("detail") or result.get("error") or "disconnect_failed"
+    detail = refusal_text(result.get("detail")) or result.get("error") or "disconnect_failed"
     return Div(
         Span(t("connectors.disconnect_failed", lang, detail=detail), cls="flash flash--warning"),
         *([] if force else [Button(
@@ -1429,7 +1429,7 @@ def setup_routes(app):
         if not result.get("ok"):
             # Surface a failed store rather than silently rendering "connected".
             err = result.get("error", "")
-            detail = result.get("detail", "")
+            detail = refusal_text(result.get("detail"))
             if err == "subscription_required":
                 msg = t("connectors.no_subscription", lang)
             elif err in ("store_rejected", "store_unreachable"):

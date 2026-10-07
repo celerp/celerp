@@ -351,29 +351,29 @@ def find_safe_stamp(
 ) -> str:
     """Return the newest revision the current kernel schema safely proves.
 
-    Revisions are newest→oldest. A revision is proven only when it and every
-    older revision with schema evidence are applied: a newer change already
-    present never covers an older one that is missing. Data-only revisions
-    carry no schema evidence. When ``expected_metadata`` is supplied,
-    historical objects no longer owned by the current kernel are ignored; this
-    prevents a create_all database from being judged against obsolete
-    intermediate schema while still detecting a missing current column/index
-    in any older revision.
+    Revisions are newest→oldest. Data-only revisions carry no schema evidence.
+    A revision is proven when its changes and those of every older revision are
+    present, so the answer lies below the oldest gap: a revision applied above
+    an older missing one does not prove the older one ran.
+    When ``expected_metadata`` is supplied, historical objects no longer owned
+    by the current kernel are ignored; this prevents a create_all database from
+    being judged against obsolete intermediate schema while still detecting a
+    missing current column/index in any older revision.
     """
     revs = [r for r in revisions if getattr(r, "revision", None) is not None]
-    proven = "base"
-    saw_evidence = False
-
-    for rev in reversed(revs):
+    evidence = []  # (position, applied) for each revision with schema evidence
+    for i, rev in enumerate(revs):
         sigs = [
             sig for sig in sigs_by_rev.get(rev.revision, [])
             if _signature_expected(expected_metadata, sig)
         ]
-        if not sigs:
-            continue
-        saw_evidence = True
-        if not all(_signature_applied(inspector, sig) for sig in sigs):
-            return proven
-        proven = rev.revision
+        if sigs:
+            evidence.append((i, all(_signature_applied(inspector, sig) for sig in sigs)))
 
-    return revs[0].revision if saw_evidence else "base"
+    if not evidence:
+        return "base"
+    gaps = [i for i, applied in evidence if not applied]
+    if not gaps:
+        return revs[0].revision
+    below = [i for i, _ in evidence if i > max(gaps)]
+    return revs[below[0]].revision if below else "base"

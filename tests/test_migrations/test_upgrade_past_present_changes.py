@@ -21,15 +21,16 @@ from celerp.cli import _apply_migrations
 from .conftest import schema_of, throwaway_db, upgrade_to
 
 
-def test_only_the_change_already_present_is_skipped():
-    # Stamped at the last release, already holding the import reversibility column
-    # that the newest revision adds, and none of the revisions in between.
+def _upgrade_matches_fresh(stamped_at: str, *present: str) -> None:
+    """Stamp a database at ``stamped_at``, apply the ``present`` statements of a later
+    revision by hand, then upgrade it and a fresh database alike."""
     with throwaway_db("present") as (old_async, old_sync), throwaway_db("fresh") as (new_async, new_sync):
-        upgrade_to(old_sync, "o2d3e4f5a6b7")
+        upgrade_to(old_sync, stamped_at)
         eng = create_engine(old_sync)
         try:
             with eng.begin() as conn:
-                conn.execute(text("ALTER TABLE import_batches ADD COLUMN reversible BOOLEAN DEFAULT false NOT NULL"))
+                for statement in present:
+                    conn.execute(text(statement))
         finally:
             eng.dispose()
 
@@ -37,3 +38,19 @@ def test_only_the_change_already_present_is_skipped():
         _apply_migrations(new_async)
 
         assert schema_of(old_sync) == schema_of(new_sync)
+
+
+def test_only_the_change_already_present_is_skipped():
+    # Stamped three revisions before the import operation key, already holding that
+    # revision's column and index, and none of the revisions in between.
+    _upgrade_matches_fresh(
+        "k8f9a0b1c2d3",
+        "ALTER TABLE import_batches ADD COLUMN operation_key TEXT",
+        "CREATE UNIQUE INDEX uq_import_batch_company_operation ON import_batches (company_id, operation_key)")
+
+
+def test_a_later_release_change_already_present_is_skipped():
+    # Stamped at an earlier release, already holding the import reversibility column a
+    # later revision adds, and none of the revisions in between.
+    _upgrade_matches_fresh(
+        "o2d3e4f5a6b7", "ALTER TABLE import_batches ADD COLUMN reversible BOOLEAN DEFAULT false NOT NULL")

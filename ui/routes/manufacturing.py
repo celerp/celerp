@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from decimal import Decimal
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -12,11 +13,17 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+import uuid
+
+from ui.components.operation_key import (
+    kept_operation_key, operation_key_attrs, operation_key_vals, required_operation_key,
+)
+from ui.components.posting_accounts import account_picker, distinct_name
 from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import (EMPTY, empty_mark, status_cards, empty_state_cta, format_value, search_bar,
-                                 bulk_toolbar, filter_th, display_enum, COLUMN_FILTER_JS)
+                                 bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
-from ui.i18n import t
+from ui.i18n import reconcile_reason, refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +230,7 @@ def _demand_row(l: dict) -> FT:
     )
 
 
-def _demand_table(lines: list[dict]) -> FT:
+def _demand_table(lines: list[dict], kept_key: str = "") -> FT:
     if not lines:
         return Div(
             P(t("manufacturing.demand_empty"), cls="hint"),
@@ -239,7 +246,7 @@ def _demand_table(lines: list[dict]) -> FT:
             filter_th(t("th.status"), 8, center=True),
         )),
         Tbody(*[_demand_row(l) for l in lines]),
-        cls="data-table", id="mfg-table",
+        cls="data-table", id="mfg-table", **operation_key_attrs(kept_key),
     )
 
 
@@ -265,7 +272,7 @@ def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
 
 
 
-def _order_table(orders: list[dict], today: str = "") -> FT:
+def _order_table(orders: list[dict], today: str = "", kept_key: str = "") -> FT:
     if not orders:
         return Div(
             empty_state_cta(t("manufacturing.nothing_in_production"),
@@ -285,6 +292,7 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
         id="mfg-table",
+        **operation_key_attrs(kept_key),
     )
 
 
@@ -346,6 +354,77 @@ def _wc_table(centers: list[dict], loc_names: dict) -> FT:
         Tbody(*rows) if rows else Tbody(Tr(Td(t("manufacturing.no_work_centers"),
                                               colspan="7", cls="empty-row"))),
         cls="data-table", id="wc-table",
+    )
+
+
+def _reconcile_accounts(posting: dict) -> list[dict]:
+    """The accounts a reconciled value can come off: those that have held purchased or opening
+    inventory, and retained earnings for value the books never carried."""
+    accounts = list((posting.get("older_stock") or {}).get("candidates") or [])
+    accounts += [{"code": r["code"], "name": r.get("name") or ""} for r in posting.get("roles") or []
+                 if r.get("role") == "retained_earnings" and r.get("code")]
+    return accounts
+
+
+def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str, values: dict | None = None,
+                     account: str = "", flash: str | None = None, kind: str = "error") -> FT:
+    """The on-page form recording what a run needing reconciliation holds: a value per component
+    still in the run and, when the books are kept, the account that value comes off."""
+    flash_el = Div(flash, cls=f"flash flash--{kind}", role="status") if flash else ""
+    if kind == "success" and not needs:
+        return Div(flash_el, id="reconcile-panel", cls="detail-card recipe-block")
+    if not needs.get("reason"):
+        return Div(flash_el, P(t("mfg.not_unresolved"), cls="hint"),
+                   id="reconcile-panel", cls="detail-card recipe-block")
+    values = values or {}
+    reason = needs["reason"]
+    rows = [
+        Tr(Td(" ".join(x for x in (c.get("sku"), distinct_name(c.get("sku"), c.get("name"))) if x) or c["item_id"]),
+           Td(f"{c['quantity']:g}", cls="cell--number"),
+           Td(Input(type="hidden", name="item_id", value=c["item_id"]),
+              Input(type="number", name="value", value=values.get(c["item_id"], ""), step="any", min="0",
+                    cls="form-input form-input--xs", aria_label=t("th.value")),
+              cls="cell--number"))
+        for c in needs.get("components") or []
+    ]
+    table = Table(
+        Thead(Tr(Th(t("th.item")), Th(t("th.qty"), cls="cell--number"), Th(t("th.value"), cls="cell--number"))),
+        Tbody(*rows), cls="data-table",
+    ) if rows else P(t("manufacturing.reconcile_nothing_held"), cls="hint")
+    unlotted = float(needs.get("unlotted") or 0)
+    discard = Form(
+        P(t("manufacturing.reconcile_unlotted", qty=f"{unlotted:g}"), cls="hint"),
+        Input(type="hidden", name="idempotency_key", value=key),
+        Div(Button(t("manufacturing.reconcile_discard"), type="submit", cls="btn btn--secondary"),
+            cls="form-actions"),
+        hx_post=f"/manufacturing/runs/{run_id}/repair-output", hx_target="#reconcile-panel",
+        hx_swap="outerHTML", hx_disabled_elt="find button",
+    ) if unlotted > 0 else ""
+    received = needs.get("received") or []
+    output = P(t("manufacturing.reconcile_received", lots=", ".join(
+        f"{r.get('sku') or r['lot_item_id']} ({r['quantity']:g})" for r in received)), cls="hint") if received else ""
+    picker = Div(
+        Label(t("manufacturing.reconcile_account")),
+        account_picker("account", accounts, value=account, aria_label=t("manufacturing.reconcile_account")),
+        P(t("manufacturing.reconcile_account_hint"), cls="hint"),
+        *[P(t("manufacturing.reconcile_room", account=code, room=room), cls="hint")
+          for code, room in (needs.get("rooms") or {}).items() if Decimal(room)],
+        cls="form-field",
+    ) if accounts else ""
+    return Div(
+        flash_el,
+        P(t("manufacturing.reconcile_intro", reason=reconcile_reason(reason)), cls="hint"),
+        discard,
+        output,
+        Form(
+            table, picker,
+            Input(type="hidden", name="idempotency_key", value=key),
+            Div(Button(t("manufacturing.reconcile_submit"), type="submit", cls="btn btn--primary"),
+                cls="form-actions mt-md"),
+            hx_post=f"/manufacturing/runs/{run_id}/reconcile", hx_target="#reconcile-panel",
+            hx_swap="outerHTML", hx_disabled_elt="find button",
+        ),
+        id="reconcile-panel", cls="detail-card recipe-block",
     )
 
 
@@ -420,7 +499,8 @@ def setup_routes(app):
                 {"value": "requirements", "label": t("manufacturing.action_print_requirements"),
                  "method": "open", "url": "/manufacturing/requirements"},
             ]),
-            _demand_table(lines),
+            # The queue swaps in place by #mfg-table; the wrap stays and scrolls it on a narrow screen.
+            Div(_demand_table(lines), cls="table-scroll-wrap"),
             Script(COLUMN_FILTER_JS),
         )
         return await base_shell(
@@ -470,6 +550,9 @@ def setup_routes(app):
                  "url": f"/manufacturing/runs/bulk/start?status={active}"},
                 {"value": "issue", "label": t("manufacturing.action_issue"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/issue?status={active}"},
+                {"value": "return", "label": t("manufacturing.action_return"), "method": "post",
+                 "url": f"/manufacturing/runs/bulk/return?status={active}",
+                 "confirm": t("manufacturing.confirm_return_runs")},
                 {"value": "complete", "label": t("manufacturing.action_complete"), "method": "post",
                  "url": f"/manufacturing/runs/bulk/complete?status={active}",
                  "confirm": t("manufacturing.confirm_complete")},
@@ -481,7 +564,8 @@ def setup_routes(app):
                  "url": f"/manufacturing/runs/bulk/cancel?status={active}",
                  "confirm": t("manufacturing.confirm_cancel_runs")},
             ]),
-            _order_table(shown, today=date.today().isoformat()),
+            # The queue swaps in place by #mfg-table; the wrap stays and scrolls it on a narrow screen.
+            Div(_order_table(shown, today=date.today().isoformat()), cls="table-scroll-wrap"),
             Script(COLUMN_FILTER_JS),
         )
         return await base_shell(
@@ -516,15 +600,24 @@ def setup_routes(app):
                 wo_lines.append({"item_id": item_id, "doc_id": doc_id})
         result: dict = {"created": []}
         rows: list[dict] = []
-        error = ""
+        error = kept = ""
         try:
             if wo_lines:
-                result = await api.manufacturing_make_work_orders(token, wo_lines, complete=complete)
+                result = await api.manufacturing_make_work_orders(
+                    token, wo_lines, complete=complete,
+                    idempotency_key=required_operation_key(form, "make_complete" if complete else "make"))
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # Whether it was made is not known (the answer may have been lost): the board keeps
+            # the action's key, so sending it again is the same action.
+            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_make"), kept_operation_key(form, e)
+        try:
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = str(e.detail) or t("manufacturing.err_make")
+            error = error or refusal_text(e.data or e.detail) or t("manufacturing.err_make")
         lines = _demand_filter(_demand_lines(rows), dtype)
         made = len(result.get("created", []))
         if error:
@@ -535,7 +628,7 @@ def setup_routes(app):
         else:
             msg, kind = t("manufacturing.nothing_to_make_selected"), "info"
         return HTMLResponse(
-            to_xml(_demand_table(lines)),
+            to_xml(_demand_table(lines, kept)),
             headers=toast_header(msg, kind),
         )
 
@@ -651,6 +744,7 @@ def setup_routes(app):
 
     # Per-action success toast KEY (R1); each holds a count-neutral "...: {n}" template (R7).
     _BULK_RUN_MSG = {"start": "manufacturing.bulk_started", "issue": "manufacturing.bulk_issued",
+                     "return": "manufacturing.bulk_returned",
                      "complete": "manufacturing.bulk_completed", "hold": "manufacturing.bulk_hold",
                      "resume": "manufacturing.bulk_resumed", "cancel": "manufacturing.bulk_cancelled"}
 
@@ -665,15 +759,22 @@ def setup_routes(app):
         ids = list(dict.fromkeys(form.getlist("selected")))
         result: dict = {"done": [], "skipped": []}
         orders: list[dict] = []
-        error = ""
+        error = kept = ""
         try:
             if ids:
-                result = await api.manufacturing_bulk_run_action(token, ids, action)
+                result = await api.manufacturing_bulk_run_action(token, ids, action,
+                                                                 idempotency_key=required_operation_key(form, action))
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            # As Make selected: the queue keeps the key of an action whose outcome is not known.
+            error, kept = refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action"), kept_operation_key(form, e)
+        try:
             orders = (await api.list_mfg_orders(token, {})).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = str(e.detail) or t("manufacturing.err_bulk_action")
+            error = error or refusal_text(e.data or e.detail) or t("manufacturing.err_bulk_action")
         done = len(result.get("done", []))
         skipped = len(result.get("skipped", []))
         if error:
@@ -681,12 +782,109 @@ def setup_routes(app):
         else:
             msg = t(_BULK_RUN_MSG.get(action, "manufacturing.bulk_updated"), n=done)
             if skipped:
-                msg += " " + t("manufacturing.bulk_skipped", n=skipped)
+                why = dict.fromkeys(refusal_text({**s, "message": s.get("reason")}) for s in result["skipped"])
+                msg = ". ".join([msg, t("manufacturing.bulk_skipped", n=skipped),
+                                 *(w.rstrip(".") for w in why if w)]) + "."
             kind = "success" if done else "info"
         return HTMLResponse(
-            to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat())),
+            to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat(), kept_key=kept)),
             headers=toast_header(msg, kind),
         )
+
+    async def _reconcile_context(token: str, run_id: str) -> tuple[dict, list[dict]]:
+        needs = await api.mfg_reconcile_needs(token, run_id)
+        try:
+            accounts = _reconcile_accounts(await api.get_posting_accounts(token))
+        except APIError as e:
+            if e.status == 401:
+                raise
+            accounts = []  # Accounting is off or not the user's to keep: reconciling says so
+        return needs, accounts
+
+    @app.get("/manufacturing/runs/{run_id}/reconcile")
+    async def reconcile_page(request: Request, run_id: str):
+        """A run whose materials' value its history cannot prove: record what it holds so it can
+        carry on. The notification raised for such a run links here."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            run = await api.get_mfg_order(token, run_id)
+            needs, accounts = await _reconcile_context(token, run_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return HTMLResponse(str(e.detail), status_code=e.status or 404)
+        out = (run.get("expected_outputs") or [{}])[0]
+        product = out.get("sku") or out.get("name") or run.get("output_item_id")
+        crumbs = [(t("manufacturing.work_in_progress"), "/manufacturing/production")]
+        if run.get("output_item_id"):
+            crumbs.append((product, f"/inventory/{run['output_item_id']}?tab=manufacturing"))
+        crumbs.append(("WO-" + run_id.split(":")[-1][:8], None))
+        return await base_shell(
+            breadcrumbs(crumbs),
+            page_header(t("manufacturing.reconcile_title")),
+            _reconcile_panel(run_id, needs, accounts, key=uuid.uuid4().hex),
+            title=page_title("manufacturing.reconcile_title"),
+            nav_active="manufacturing",
+            request=request,
+        )
+
+    @app.post("/manufacturing/runs/{run_id}/reconcile")
+    async def reconcile_submit(request: Request, run_id: str):
+        """Send the values and account entered; on a refusal keep them on the form and say why."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        entered = dict(zip(form.getlist("item_id"), (str(v).strip() for v in form.getlist("value"))))
+        account = str(form.get("account") or "")
+        key = str(form.get("idempotency_key") or "")
+        components = []
+        for item_id, raw in entered.items():
+            try:
+                components.append({"item_id": item_id, "value": float(raw)})
+            except ValueError:
+                pass  # left out, so the refusal names it as having no value
+        try:
+            await api.reconcile_mfg_order(token, run_id, {"components": components, "account": account or None},
+                                          idempotency_key=required_operation_key(form))
+            return _reconcile_panel(run_id, {}, [], key=key, flash=t("manufacturing.reconcile_done"),
+                                    kind="success")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            refusal, key = refusal_text(e.data or e.detail), kept_operation_key(form, e) or uuid.uuid4().hex
+        try:
+            needs, accounts = await _reconcile_context(token, run_id)
+        except APIError:
+            return Div(Div(refusal, cls="flash flash--error", role="status"), id="reconcile-panel", cls="detail-card recipe-block")
+        return _reconcile_panel(run_id, needs, accounts, key=key, values=entered, account=account, flash=refusal)
+
+    @app.post("/manufacturing/runs/{run_id}/repair-output")
+    async def repair_output_submit(request: Request, run_id: str):
+        """Discard what an older release recorded as received without making any stock; on a
+        refusal keep the offer on the page and say why."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        key = str(form.get("idempotency_key") or "")
+        try:
+            await api.repair_mfg_output(token, run_id, idempotency_key=required_operation_key(form))
+            refusal, kind = t("manufacturing.reconcile_discarded"), "success"
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            refusal, kind = refusal_text(e.data or e.detail), "error"
+            key = kept_operation_key(form, e) or uuid.uuid4().hex
+        try:
+            needs, accounts = await _reconcile_context(token, run_id)
+        except APIError:
+            return Div(Div(refusal, cls=f"flash flash--{kind}", role="status"), id="reconcile-panel",
+                       cls="detail-card recipe-block")
+        return _reconcile_panel(run_id, needs, accounts, key=uuid.uuid4().hex if kind == "success" else key,
+                                flash=refusal, kind=kind)
 
     @app.get("/manufacturing/runs/{run_id}/edit/{field}")
     async def run_field_edit(request: Request, run_id: str, field: str):
@@ -705,7 +903,7 @@ def setup_routes(app):
             f"event.preventDefault();event.stopPropagation();}}"
         )
         common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML",
-                  "hx_trigger": "change", "onkeydown": escape_js}
+                  "hx_trigger": "change", "onkeydown": escape_js, "hx_vals": operation_key_vals()}
         if field == "priority":
             return Select(
                 Option("--", value="", selected=(current == "")),
@@ -732,13 +930,16 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         fields = {k: str(form[k]) for k in ("due_date", "priority", "planned_start") if k in form}
+        refused = ""
         if fields:
             try:
-                await api.schedule_mfg_order(token, run_id, fields)
+                await api.schedule_mfg_order(token, run_id, fields, idempotency_key=required_operation_key(form))
             except APIError as e:
                 if e.status == 401:
                     return P(t("error.unauthorized"), cls="cell-error")
-        return await _incomplete_runs_table(token)
+                refused = refusal_text(e.data or e.detail)  # e.g. the run closed meanwhile: say so
+        table = await _incomplete_runs_table(token)
+        return HTMLResponse(to_xml(table), headers=toast_header(refused, "error")) if refused else table
 
     # ── Work Centers ──────────────────────────────────────────────────────
     async def _wc_table_response(token: str) -> FT:

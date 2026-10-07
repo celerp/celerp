@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
+from test_helpers import sell_item
 
 
 async def _register(client, email: str | None = None) -> str:
@@ -356,7 +357,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
 
     po_je = await _find_je(client, token, "doc.received", po_id)
     po_entries = po_je["data"]["entries"]
-    assert {x["account"] for x in po_entries} == {"1130-P", "2110"}
+    assert {x["account"] for x in po_entries} == {"1130-OB", "1130-P", "2110"}
     _assert_balanced(po_entries)
     assert po_id in po_je["data"]["memo"]
 
@@ -992,14 +993,8 @@ async def test_receive_return_on_credit_note(client, session):
     item1 = await client.post("/items", headers=h, json={"status": "available", "sku": "W-001", "name": "Widget", "quantity": 2, "cost_price": 40.0, "unit_price": 50.0, "sell_by": "piece"})
     assert item1.status_code == 200
     item1_id = item1.json()["id"]
-    # Mark as sold
-    await client.post(f"/items/{item1_id}/status", headers=h, json={"new_status": "sold"})
-
-    # Create and finalize an invoice
-    inv = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}], "subtotal": 100, "tax": 0, "total": 100})
-    assert inv.status_code == 200
-    inv_id = inv.json()["id"]
-    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+    # Sell it on an invoice
+    inv_id = await sell_item(client, h, item1_id, unit_price=50.0)
 
     # Create credit note linked to invoice
     cn = await client.post("/docs", headers=h, json={"doc_type": "credit_note", "original_doc_id": inv_id, "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}], "subtotal": 100, "tax": 0, "total": 100})
@@ -1029,20 +1024,13 @@ async def test_receive_return_mints_fresh_barcode_not_the_sold_lot(client, sessi
     token = await _register(client)
     h = _h(token)
 
-    # Sold item carrying a barcode; mark it sold (it keeps the barcode).
+    # Sold item carrying a barcode; sell it (it keeps the barcode).
     sold = await client.post("/items", headers=h, json={
         "status": "available", "sku": "W-RET", "name": "Returnable",
         "barcode": "555001", "quantity": 1, "cost_price": 40.0,
         "unit_price": 50.0, "sell_by": "piece"})
     assert sold.status_code == 200, sold.text
-    await client.post(f"/items/{sold.json()['id']}/status", headers=h, json={"new_status": "sold"})
-
-    inv = await client.post("/docs", headers=h, json={
-        "doc_type": "invoice",
-        "line_items": [{"name": "Returnable", "sku": "W-RET", "quantity": 1, "unit_price": 50, "sell_by": "unit"}],
-        "subtotal": 50, "tax": 0, "total": 50})
-    inv_id = inv.json()["id"]
-    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+    inv_id = await sell_item(client, h, sold.json()["id"], unit_price=50.0)
 
     cn = await client.post("/docs", headers=h, json={
         "doc_type": "credit_note", "original_doc_id": inv_id,
@@ -1119,12 +1107,7 @@ async def test_doc_return_received_projection(client, session):
     # Create a sold inventory item for the SKU being returned
     item = await client.post("/items", headers=h, json={"status": "available", "sku": "W-001", "name": "Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 50.0, "sell_by": "piece"})
     assert item.status_code == 200
-    await client.post(f"/items/{item.json()['id']}/status", headers=h, json={"new_status": "sold"})
-
-    inv = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 1, "unit_price": 50, "sell_by": "unit"}], "subtotal": 50, "tax": 0, "total": 50})
-    assert inv.status_code == 200
-    inv_id = inv.json()["id"]
-    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+    inv_id = await sell_item(client, h, item.json()["id"], unit_price=50.0)
 
     cn_r = await client.post(
         "/docs",
@@ -1255,7 +1238,7 @@ async def test_undo_receive_return_removes_items_from_inventory(client, session)
     # Create sold inventory item
     item_r = await client.post("/items", headers=h, json={"status": "available", "sku": "RR-001", "name": "Returnable Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 60.0, "sell_by": "piece"})
     assert item_r.status_code == 200
-    await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
+    await sell_item(client, h, item_r.json()["id"])
 
     # Create CN and finalize
     cn_r = await client.post("/docs", headers=h, json={
@@ -1305,7 +1288,7 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     # Create sold inventory item
     item_r = await client.post("/items", headers=h, json={"status": "available", "sku": "RR-002", "name": "Resold Widget", "quantity": 1, "cost_price": 25.0, "unit_price": 50.0, "sell_by": "piece"})
     assert item_r.status_code == 200
-    await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
+    await sell_item(client, h, item_r.json()["id"])
 
     # Create and finalize CN
     cn_r = await client.post("/docs", headers=h, json={
@@ -1324,7 +1307,7 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     new_item_id = returned_items[0]["item_id"]
 
     # Re-sell the returned item (simulates someone selling it before the undo)
-    await client.post(f"/items/{new_item_id}/status", headers=h, json={"new_status": "sold"})
+    await sell_item(client, h, new_item_id)
 
     # Revert Return Stock must fail with 409 and name the blocked item
     undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
@@ -1440,8 +1423,8 @@ async def test_revert_goods_received_blocked_if_item_resold(client, session):
     item_ids = bill_state.get("received_item_ids", [])
     assert item_ids, "received_item_ids must be populated"
 
-    # Mark item as sold to block revert
-    await client.post(f"/items/{item_ids[0]}/status", headers=h, json={"new_status": "sold"})
+    # Sell the item to block revert
+    await sell_item(client, h, item_ids[0])
 
     undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
     assert undo_r.status_code == 409, undo_r.text

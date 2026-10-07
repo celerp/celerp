@@ -1,16 +1,17 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Pure unit tests for recipe expansion (order inputs/outputs + JIT demand explosion)."""
+"""Pure unit tests for recipe expansion (order inputs and output + JIT demand explosion)."""
 from __future__ import annotations
 
 import pytest
 
 from celerp_manufacturing.costing import RecipeError
+from celerp_inventory.projections import is_manufacturable
 from celerp_manufacturing.expansion import (
     expand_recipe,
     explode_demand,
-    is_manufacturable,
     mfg_idem_key,
+    output_line,
 )
 
 
@@ -25,34 +26,37 @@ def _item(sku, components=None, output_qty=1, **kw):
 
 def test_expand_basic() -> None:
     item = _item("RING", [{"item_id": "GOLD", "quantity": 2}])
-    inputs, outputs = expand_recipe(item, 3)
-    assert inputs == [{"item_id": "GOLD", "quantity": 6.0}]
-    assert outputs == [{"sku": "RING", "name": "RING", "quantity": 3.0, "category": None}]
+    assert expand_recipe(item, 3, {}.get) == [{"item_id": "GOLD", "quantity": 6.0}]
+
+
+def test_output_line_names_the_product() -> None:
+    assert output_line(_item("RING", category="Rings"), 3) == {"sku": "RING", "name": "RING", "quantity": 3.0,
+                                                              "category": "Rings"}
 
 
 def test_expand_output_qty_batch() -> None:
     # recipe yields 10 per batch; comp 5 per batch; build 20 → 5 * (20/10) = 10
     item = _item("WIDGET", [{"item_id": "RAW", "quantity": 5}], output_qty=10)
-    inputs, _ = expand_recipe(item, 20)
+    inputs = expand_recipe(item, 20, {}.get)
     assert inputs == [{"item_id": "RAW", "quantity": 10.0}]
 
 
 def test_expand_multiple_components() -> None:
     item = _item("ASM", [{"item_id": "A", "quantity": 1}, {"item_id": "B", "quantity": 3}])
-    inputs, _ = expand_recipe(item, 4)
+    inputs = expand_recipe(item, 4, {}.get)
     assert inputs == [{"item_id": "A", "quantity": 4.0}, {"item_id": "B", "quantity": 12.0}]
 
 
 def test_expand_nested_single_level() -> None:
     # A sub-assembly stays ONE input line (consumed as stock); expand is single-level.
     item = _item("RING", [{"item_id": "SUB", "quantity": 2}])
-    inputs, _ = expand_recipe(item, 1)
+    inputs = expand_recipe(item, 1, {}.get)
     assert inputs == [{"item_id": "SUB", "quantity": 2.0}]
 
 
 def test_expand_non_manufacturable_raises() -> None:
     with pytest.raises(RecipeError):
-        expand_recipe(_item("RAW"), 5)
+        expand_recipe(_item("RAW"), 5, {}.get)
 
 
 # --- explode_demand (recursive JIT) ----------------------------------------
@@ -90,6 +94,15 @@ def test_explode_demand_cycle_safe() -> None:
         explode_demand([("A", 1)], g.get)
 
 
+def test_explode_demand_refusal_names_the_product_by_its_sku() -> None:
+    """The pick list says which product's recipe cannot be used, as the build does."""
+    g = {"item:ring": {**_item("RING", [{"item_id": "item:gold", "quantity": 0}]), "sku": "RING-9"},
+         "item:gold": _item("GOLD")}
+    with pytest.raises(RecipeError) as exc:
+        explode_demand([("item:ring", 1)], g.get)
+    assert str(exc.value) == "RING-9: Component GOLD quantity must be greater than zero"
+
+
 # --- helpers ----------------------------------------------------------------
 
 def test_is_manufacturable() -> None:
@@ -99,6 +112,7 @@ def test_is_manufacturable() -> None:
 
 
 def test_idem_key_deterministic_and_distinct() -> None:
-    assert mfg_idem_key("doc:1", "line:a") == mfg_idem_key("doc:1", "line:a")
-    assert mfg_idem_key("doc:1", "line:a") != mfg_idem_key("doc:1", "line:b")
-    assert mfg_idem_key("doc:1", "line:a", 0) != mfg_idem_key("doc:1", "line:a", 1)
+    assert mfg_idem_key("doc:1", "item:a", "op1") == mfg_idem_key("doc:1", "item:a", "op1")
+    assert mfg_idem_key("doc:1", "item:a", "op1") != mfg_idem_key("doc:1", "item:b", "op1")
+    assert mfg_idem_key("doc:1", "item:a", "op1") != mfg_idem_key("doc:2", "item:a", "op1")
+    assert mfg_idem_key("doc:1", "item:a", "op1") != mfg_idem_key("doc:1", "item:a", "op2")

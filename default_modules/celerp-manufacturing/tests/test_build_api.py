@@ -106,17 +106,18 @@ async def test_issue_rejects_draft_component_and_leaves_quantity_untouched(clien
     (which is authoring data on a draft, not committed inventory) must not move."""
     token = await _register(client)
     comp = await _item(client, token, "DFTCOMP", quantity=5, status="draft")
+    out = await _item(client, token, "OUT1", quantity=0)
     order = await client.post("/manufacturing", headers=_h(token), json={
         "description": "Order with a draft component",
         "inputs": [{"item_id": comp, "quantity": 2}],
-        "expected_outputs": [{"sku": "OUT1", "name": "Output", "quantity": 1}],
+        "output_item_id": out,
     })
     assert order.status_code == 200, order.text
     order_id = order.json()["id"]
 
     r = await client.post(f"/manufacturing/{order_id}/issue", headers=_h(token),
                           json={"items": [{"item_id": comp, "quantity": 2}]})
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
     assert (await client.get(f"/items/{comp}", headers=_h(token))).json()["quantity"] == 5
 
 
@@ -133,13 +134,14 @@ async def test_receive_rejects_draft_output_even_if_status_changed_after_order_c
     r = await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2})
     assert r.status_code == 200, r.text
     order_id = r.json()["id"]
+    assert (await client.post(f"/manufacturing/{order_id}/issue", headers=_h(token))).status_code == 200
 
     revert = await client.post("/items/bulk/revert-to-draft", headers=_h(token), json={"entity_ids": [ring]})
     assert revert.status_code == 200, revert.text
     assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["status"] == "draft"
 
     recv = await client.post(f"/manufacturing/{order_id}/receive", headers=_h(token), json={"quantity": 2})
-    assert recv.status_code == 422, recv.text
+    assert recv.status_code == 409, recv.text
     assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 4
 
 
