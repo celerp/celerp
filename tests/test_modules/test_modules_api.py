@@ -400,7 +400,7 @@ class TestModuleProvenanceAndDelete:
         assert "acme-odd" in to_xml(_local_panel(rows, lang="en"))
 
     @pytest.mark.asyncio
-    async def test_upload_cannot_claim_marketplace_source(self, client, tmp_path):
+    async def test_upload_with_marketplace_source_is_rejected(self, client, tmp_path):
         token = await _register(client)
         module_dir = tmp_path / "modules"
         module_dir.mkdir()
