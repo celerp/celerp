@@ -408,6 +408,40 @@ async def test_migration_runs_its_checked_source_not_bytecode_beside_it(
     assert not list(pkg.rglob("__pycache__"))
 
 
+async def test_bytecode_that_appears_after_startup_checks_never_runs_in_place_of_a_migration(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    """Bytecode written beside a migration by an earlier module's migration is removed
+    before that migration runs."""
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    planted = tmp_path / "planted.txt"
+    base = tmp_path / "modules"
+    uid = uuid.uuid4().hex[:8]
+    later = _make_module(base, f"acme-b{uid}",
+                         {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    target = later / "inner" / "migrations" / "m_001.py"
+    _plant_bytecode(staged / "m_001.py", planted)
+    pyc = Path(importlib.util.cache_from_source(str(target)))
+    staged_pyc = Path(importlib.util.cache_from_source(str(staged / "m_001.py")))
+    earlier = _make_module(base, f"acme-a{uid}", {"m_001.py": (
+        "import os\nimport shutil\n\n\ndef upgrade():\n"
+        f"    os.makedirs({str(pyc.parent)!r}, exist_ok=True)\n"
+        f"    shutil.copyfile({str(staged_pyc)!r}, {str(pyc)!r})\n")}, table_prefix=f"early{uid}_")
+    manifest = {"name": later.name, "version": "1.0.0", "migrations": "inner.migrations",
+                "table_prefix": "acme_", "depends_on": [earlier.name]}
+    (later / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {earlier.name, later.name})
+
+    assert {earlier.name, later.name} <= set(surviving), errors
+    assert not planted.exists(), "bytecode ran in place of the migration source"
+    assert _table_exists(_probe_table)
+    assert not pyc.exists()
+
+
 @pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
 async def test_migration_whose_compiled_files_cannot_be_removed_never_runs(
         trusted, _db_engine, tmp_path, monkeypatch, _probe_table):

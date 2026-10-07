@@ -888,7 +888,7 @@ def check_unchanged(module: AdmittedModule) -> None:
         raise ModuleLoadError(MODULE_CHANGED)
 
 
-def ready_to_run(module: AdmittedModule) -> None:
+def _prepare_module_execution(module: AdmittedModule) -> None:
     """Called before any of the module's code runs (its migrations, its import), so
     Python runs exactly the source admission checked.
 
@@ -896,8 +896,8 @@ def ready_to_run(module: AdmittedModule) -> None:
     it is removed and proven gone; the files must still be those admission checked.
     Raises :class:`ModuleLoadError` otherwise.
     """
-    sys.dont_write_bytecode = True
     sys.pycache_prefix = None
+    sys.dont_write_bytecode = True
     _purge_pycache(module.path)
     check_unchanged(module)
 
@@ -1274,7 +1274,7 @@ def load_all(
         # while it is imported.
         _admitted[pkg_name] = module
         try:
-            ready_to_run(module)
+            _prepare_module_execution(module)
             with _recording_tables(pkg_name):
                 manifest = _load_one(pkg_path, pkg_name, trusted=module.first_party,
                                      declared=module.manifest)

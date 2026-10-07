@@ -22,6 +22,21 @@ _PLACEHOLDER_FIT_JS = """(el) => {
 }"""
 
 
+# Every header box, read together once fonts have loaded and the layout has had two
+# frames to settle, so no box is measured against a different layout than another.
+_HEADER_BOXES_JS = """async (header) => {
+  await document.fonts.ready;
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const box = el => { const r = el.getBoundingClientRect();
+    return {x: r.x, y: r.y, width: r.width, height: r.height}; };
+  const boxes = {title: box(header.querySelector('.page-title')),
+                 caption: box(header.querySelector('.search-scope-label')),
+                 search: box(header.querySelector('#search-input'))};
+  for (const b of header.querySelectorAll('.page-actions > .btn')) boxes['button ' + b.innerText] = box(b);
+  return boxes;
+}"""
+
+
 def _overlap(a: dict, b: dict) -> bool:
     return (a["x"] < b["x"] + b["width"] - 0.5 and b["x"] < a["x"] + a["width"] - 0.5
             and a["y"] < b["y"] + b["height"] - 0.5 and b["y"] < a["y"] + a["height"] - 0.5)
@@ -41,12 +56,7 @@ def _open(page: Page, ui_server: str, lang: str, width: int, path: str = "/inven
 def test_list_page_header_stacks_without_overlap(page: Page, fresh_company, ui_server, lang, width, path):
     _open(page, ui_server, lang, width, path)
     header = page.locator(".page-header")
-    boxes = {"title": header.locator(".page-title").bounding_box(),
-             "caption": header.locator(".search-scope-label").bounding_box(),
-             "search": header.locator("#search-input").bounding_box()}
-    actions = header.locator(".page-actions > .btn")
-    for i in range(actions.count()):
-        boxes[f"button {actions.nth(i).inner_text()}"] = actions.nth(i).bounding_box()
+    boxes = header.evaluate(_HEADER_BOXES_JS)
     assert len(boxes) >= 6, boxes.keys()
 
     for name, b in boxes.items():

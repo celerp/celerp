@@ -194,11 +194,12 @@ async def run_migration_phase(engine, admission: loader.Admission) -> loader.Adm
                 sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
             )
             try:
-                # Every admitted module is made ready before any migration runs, since
-                # a migration may import another module's code.
+                # Every admitted module is prepared before any migration runs, since a
+                # migration may import another module's code, including a module that
+                # has no migrations of its own.
                 for module in admission.admitted:
                     try:
-                        loader.ready_to_run(module)
+                        loader._prepare_module_execution(module)
                     except loader.ModuleLoadError as exc:
                         if module.first_party:
                             raise
@@ -218,6 +219,7 @@ async def run_migration_phase(engine, admission: loader.Admission) -> loader.Adm
                         # migration back: the module's code ran as module code, and its
                         # files are still those admission checked.
                         async with engine.begin() as conn:
+                            loader._prepare_module_execution(module)
                             with loader._activating(module.name, module.path, trusted=module.first_party):
                                 await conn.run_sync(
                                     run_module_migrations, module.name, module.path,

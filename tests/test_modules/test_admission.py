@@ -2969,11 +2969,10 @@ def _stuck_bytecode():
 
 def test_loading_a_module_writes_no_compiled_files_beside_its_source(
         _modules, tmp_path, monkeypatch):
-    """Loading a module writes no bytecode anywhere in its folder."""
-    from celerp.config import settings
+    """Loading a module writes no bytecode anywhere in its folder, and the process
+    writes none afterwards either."""
     monkeypatch.setattr(sys, "dont_write_bytecode", False)
-    monkeypatch.setattr(sys, "pycache_prefix", None)
-    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "cache"))
     marker = tmp_path / "ran.txt"
     folder = f"acme-{_uid()}"
     inner = f"acme_{_uid()}"
@@ -2984,6 +2983,33 @@ def test_loading_a_module_writes_no_compiled_files_beside_its_source(
         (pkg / "__init__.py").read_text() + f"import {inner}\n")
 
     loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+    assert sys.dont_write_bytecode is True
+    assert sys.pycache_prefix is None
+    assert not (tmp_path / "cache").exists()
+
+
+def test_module_in_a_read_only_folder_loads(_modules, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": ""})
+    (pkg / "__init__.py").write_text(
+        (pkg / "__init__.py").read_text() + f"import {inner}\n")
+    dirs = [pkg, *[d for d in pkg.rglob("*") if d.is_dir()]]
+    for d in dirs:
+        d.chmod(0o555)
+    try:
+        loaded = loader.load_all(str(_modules), {folder})
+    finally:
+        for d in dirs:
+            d.chmod(0o755)
 
     assert [m["name"] for m in loaded] == [folder]
     assert marker.exists()

@@ -588,6 +588,16 @@ def _restore_import_path():
 
 
 @pytest.fixture(autouse=True)
+def _restore_bytecode_settings():
+    """Restore the process-wide bytecode settings after each test. Loading a module
+    turns bytecode writing off for the rest of the process; each test starts from
+    the settings the test run began with."""
+    before = (_sys.dont_write_bytecode, _sys.pycache_prefix)
+    yield
+    _sys.dont_write_bytecode, _sys.pycache_prefix = before
+
+
+@pytest.fixture(autouse=True)
 def _mock_get_modules_default():
     """Default get_modules mock — returns empty list so settings page always has a valid response."""
     from unittest.mock import patch, AsyncMock
