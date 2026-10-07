@@ -539,33 +539,33 @@ async def _export_company(session: AsyncSession, company_id, out: Path, *, prove
         raise BackupError(404, "Company not found.")
     plan = await _classify(session, strict=True)
     await _unchanged(session, plan, db_catalog.hold)
-    tables = []
-    for name in plan.order:
-        if name in plan.owners and not await session.scalar(text(
-                f"SELECT 1 FROM {db_catalog.ident(name)} t WHERE t.company_id = "
-                f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
-                {"c": str(company_id)}):
-            continue
-        tables.append(name)
-    settings = _kept_settings(company.settings)
-    found: dict[str, str] = {}
-    types: dict[str, str] = {}
-    _collect_urls(settings, company_id, found, types)
-    # A module enabled in settings but not installed here is not something this company's
-    # data depends on, so it is not a requirement of the backup.
-    enabled = {name for name in get_enabled(settings) if _installed(name) is not None}
-    manifest: dict = {
-        "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "company": {"id": str(company.id), "name": company.name, "settings": settings},
-        **({"provenance": provenance} if provenance else {}),
-        "modules": {"enabled": sorted(enabled),
-                    "versions": _module_versions(enabled | {plan.owners[t] for t in tables if t in plan.owners})},
-        "tables": {}, "attachments": [],
-    }
-    out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_name(out.name + ".partial")
     try:
+        tables = []
+        for name in plan.order:
+            if name in plan.owners and not await session.scalar(text(
+                    f"SELECT 1 FROM {db_catalog.ident(name)} t WHERE t.company_id = "
+                    f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
+                    {"c": str(company_id)}):
+                continue
+            tables.append(name)
+        settings = _kept_settings(company.settings)
+        found: dict[str, str] = {}
+        types: dict[str, str] = {}
+        _collect_urls(settings, company_id, found, types)
+        # A module enabled in settings but not installed here is not something this company's
+        # data depends on, so it is not a requirement of the backup.
+        enabled = {name for name in get_enabled(settings) if _installed(name) is not None}
+        manifest: dict = {
+            "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "company": {"id": str(company.id), "name": company.name, "settings": settings},
+            **({"provenance": provenance} if provenance else {}),
+            "modules": {"enabled": sorted(enabled),
+                        "versions": _module_versions(enabled | {plan.owners[t] for t in tables if t in plan.owners})},
+            "tables": {}, "attachments": [],
+        }
+        out.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for name in tables:
                 table = plan.schema[name]

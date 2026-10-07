@@ -26,6 +26,9 @@ class Column:
     notnull: bool
     generated: bool
     num: int  # pg_attribute.attnum: a column dropped and added again under its name is another column
+    type_oid: int  # pg_attribute.atttypid: a type made again under the name is another type
+    type_namespace: int  # pg_type.typnamespace: the schema the type is in
+    typmod: int  # pg_attribute.atttypmod: the type's own details, such as a varchar's length
 
 
 class ForeignKey(NamedTuple):
@@ -64,17 +67,19 @@ def ident(name: str) -> str:
 
 async def read(session: AsyncSession) -> dict[str, Table]:
     tables: dict[str, Table] = {}
-    for rel, att, udt, notnull, generated, num in (await session.execute(text(
+    for rel, att, udt, notnull, generated, num, type_oid, type_namespace, typmod in (await session.execute(text(
             "SELECT c.relname::text, a.attname::text, t.typname::text, a.attnotnull, "
             "(a.attidentity <> '' OR a.attgenerated <> '' "
-            " OR COALESCE(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%'), a.attnum "
+            " OR COALESCE(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%'), a.attnum, "
+            "a.atttypid, t.typnamespace, a.atttypmod "
             "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
             "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
             "JOIN pg_type t ON t.oid = a.atttypid "
             "LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum "
             "WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND NOT c.relispartition "
             "ORDER BY c.relname, a.attnum"))).all():
-        tables.setdefault(rel, Table(rel)).columns[att] = Column(udt, notnull, generated, num)
+        tables.setdefault(rel, Table(rel)).columns[att] = Column(
+            udt, notnull, generated, num, type_oid, type_namespace, typmod)
     # Every key a table's rows are bound by: its own, those one of its partitions holds,
     # and those naming another schema. Postgres also keeps a copy of a key for each
     # partition it reaches; the key itself already says all a copy does. A key naming a
@@ -304,8 +309,8 @@ async def fence(session: AsyncSession, names: list[str]) -> str | None:
 
 
 def changed_schema(expected: dict[str, Table], current: dict[str, Table], names: Collection[str]) -> str | None:
-    """The first of ``names`` whose columns (each by name and position, so a column made
-    again counts as changed), primary key or foreign keys in ``current`` differ from
+    """The first of ``names`` whose columns (each by name, position and type, so a column
+    or type made again counts as changed), primary key or foreign keys in ``current`` differ from
     ``expected``, or that ``current`` no longer has, or None."""
     return next((name for name in names if current.get(name) != expected[name]), None)
 

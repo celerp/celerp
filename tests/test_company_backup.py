@@ -1449,6 +1449,7 @@ _BK_REDEFINED = {
                                                   "UPDATE zz_widgets SET note_new = note",
                                                   "ALTER TABLE zz_widgets DROP COLUMN note",
                                                   "ALTER TABLE zz_widgets RENAME COLUMN note_new TO note"],
+    "a column's length changed": ["ALTER TABLE zz_widgets ALTER COLUMN note TYPE varchar(80)"],
 }
 
 
@@ -1479,6 +1480,46 @@ async def test_a_carried_table_redefined_before_the_export_holds_it_stops_it(
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+
+
+_BK_RETYPED = {
+    "the type of a column moved to another schema": ["ALTER DOMAIN zz_note SET SCHEMA zz_ext"],
+    "the type of a column replaced by another of the same name": [
+        "ALTER DOMAIN zz_note RENAME TO zz_note_old", "CREATE DOMAIN zz_note AS text",
+        "ALTER TABLE zz_widgets ALTER COLUMN note TYPE zz_note", "DROP DOMAIN zz_note_old"],
+}
+
+
+@pytest.mark.parametrize("change", list(_BK_RETYPED))
+async def test_a_type_of_a_carried_column_changed_before_the_export_holds_it_stops_it(
+        real_engine, tmp_path, monkeypatch, change):
+    """zz_widgets.note is of the domain zz_note. Another connection moves the domain to
+    another schema, or replaces it with another domain of the same name, after the export
+    has read the tables' shape and before it holds them. The export is refused with
+    nothing written, and asks for another try."""
+    from celerp import db_catalog
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_defined(real_engine, cid)
+        await _bk_ddl(real_engine, ["CREATE DOMAIN zz_note AS text",
+                                    "ALTER TABLE zz_widgets ALTER COLUMN note TYPE zz_note"])
+        hold = db_catalog.hold
+
+        async def change_then_hold(session, names):
+            await _bk_ddl(real_engine, _BK_RETYPED[change])
+            return await hold(session, names)
+
+        monkeypatch.setattr(db_catalog, "hold", change_then_hold)
+        err = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
+
+        assert (err.status_code, err.detail) == (409, _BK_RESHAPED_DETAIL)
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+        await _bk_sql(real_engine, "DROP DOMAIN IF EXISTS zz_note, zz_note_old")
 
 
 async def test_an_unchanged_catalog_reads_the_same_through_two_connections(real_engine, tmp_path, monkeypatch):
@@ -1579,6 +1620,42 @@ async def test_a_type_of_a_carried_column_renamed_while_it_is_read_stops_the_exp
 
         refused = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
 
+        assert (refused.status_code, refused.detail) == (409, cb.RESHAPED.format(table="zz_widgets"))
+    finally:
+        await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
+        await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
+        await _bk_sql(real_engine, "DROP DOMAIN IF EXISTS zz_company, zz_company_renamed")
+
+
+async def test_a_type_of_a_carried_column_renamed_as_the_export_holds_it_stops_it(
+        real_engine, tmp_path, monkeypatch):
+    """zz_widgets.company_id is of the domain zz_company, renamed by another connection
+    once the export has held the tables and compared their shape, before it looks for the
+    company's rows in them. The export is refused as a table whose structure changed,
+    with nothing written."""
+    from celerp.services import company_backup as cb
+
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _, cid, _ = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    try:
+        await _bk_defined(real_engine, cid)
+        await _bk_ddl(real_engine, ["CREATE DOMAIN zz_company AS uuid",
+                                    "ALTER TABLE zz_widgets ALTER COLUMN company_id TYPE zz_company"])
+        committed = cb._committed_shape
+        renamed = []
+
+        async def compare_then_rename(plan):
+            changed = await committed(plan)
+            if not renamed:
+                await _bk_ddl(real_engine, ["ALTER DOMAIN zz_company RENAME TO zz_company_renamed"])
+                renamed.append(changed)
+            return changed
+
+        monkeypatch.setattr(cb, "_committed_shape", compare_then_rename)
+        refused = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
+
+        assert renamed == [None]
         assert (refused.status_code, refused.detail) == (409, cb.RESHAPED.format(table="zz_widgets"))
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
