@@ -2128,12 +2128,15 @@ class _MarketplaceInstallBody(BaseModel):
     ref: str
 
 
+_INSTALL_FIELDS = ("token", "slug", "version", "is_official", "is_paid", "sha256")
+
+
 def _install_answer(answer: dict, slug: str) -> dict | None:
-    """The install answer if it has exactly the expected fields with plain types
-    and names the requested module, else None."""
+    """The install answer's fields if each is present with a plain type and it names
+    the requested module, else None. Any other field is dropped."""
     from celerp.modules.marketplace_stage import SHA256_RE
 
-    if set(answer) != {"token", "slug", "version", "is_official", "is_paid", "sha256"}:
+    if any(field not in answer for field in _INSTALL_FIELDS):
         return None
     token, version, sha256 = answer["token"], answer["version"], answer["sha256"]
     if (not isinstance(token, str) or not token
@@ -2143,7 +2146,7 @@ def _install_answer(answer: dict, slug: str) -> dict | None:
             or not isinstance(answer["is_paid"], bool)
             or not isinstance(sha256, str) or not SHA256_RE.fullmatch(sha256)):
         return None
-    return answer
+    return {field: answer[field] for field in _INSTALL_FIELDS}
 
 
 @router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])

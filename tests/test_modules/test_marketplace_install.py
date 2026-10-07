@@ -221,14 +221,18 @@ _DROP = object()
     {"sha256": "ABC" + "0" * 61},
     {"sha256": "0" * 63},
     {"sha256": None},
-    {"extra": "field"},
+    {"token": _DROP},
+    {"token": ""},
+    {"token": 1},
+    {"slug": None},
 ], ids=["no_is_paid", "no_is_official", "paid_null", "paid_zero", "paid_str", "official_int",
         "official_str", "no_slug", "no_version", "empty_version", "int_version", "no_sha256",
-        "upper_sha256", "short_sha256", "null_sha256", "extra_field"])
+        "upper_sha256", "short_sha256", "null_sha256", "no_token", "empty_token", "int_token",
+        "null_slug"])
 @pytest.mark.asyncio
 async def test_install_answer_of_any_other_shape_stages_nothing(client, relay_env, change):
-    """Unless the install answer has exactly the expected fields with plain types,
-    the download fails and nothing else is asked."""
+    """Unless every expected field of the install answer is present with a plain
+    type, the download fails and nothing else is asked."""
     headers = await _register(client)
     urls: list = []
     answer = _answer()
@@ -243,6 +247,25 @@ async def test_install_answer_of_any_other_shape_stages_nothing(client, relay_en
     assert "invalid response" in dl.json()["detail"].lower()
     assert urls == []
     assert _staged(relay_env) == []
+
+
+@pytest.mark.asyncio
+async def test_install_answer_with_an_unknown_field_stages_the_module(client, relay_env):
+    """A field the install answer adds beyond the expected ones does not stop the download."""
+    headers = await _register(client)
+    with patch("httpx.AsyncClient", _fake_relay(install=_install_answer(new_field="value"))):
+        dl = await _download(client, headers)
+    assert dl.status_code == 200, dl.text
+    assert len(_staged(relay_env)) == 1
+
+
+def test_install_answer_keeps_only_the_expected_fields():
+    from celerp.routers.companies import _install_answer as read_install_answer
+
+    answer = _answer(new_field="value")
+
+    assert read_install_answer(answer, "celerp-budgeting") == {
+        key: answer[key] for key in ("token", "slug", "version", "is_official", "is_paid", "sha256")}
 
 
 @pytest.mark.asyncio
