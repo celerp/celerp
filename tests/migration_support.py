@@ -346,9 +346,12 @@ async def rules_bind(real_engine):
                 "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"))).scalar_one()
 
     def as_role(dbapi_connection, _record):
+        # Committed, so a later rollback on the connection (such as setting its isolation
+        # level) does not undo it.
         cursor = dbapi_connection.cursor()
         cursor.execute(f"SET ROLE {role}")
         cursor.close()
+        dbapi_connection.commit()
 
     role = None
     if await bypasses():
