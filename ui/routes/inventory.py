@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
+from ui.components.deleted_items import deleted_items, deleted_label, is_deleted
 from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import import_icon
 from ui.api_client import APIError, _flatten_item_attrs
@@ -1884,6 +1885,7 @@ def setup_routes(app):
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp, category_names = [], {}, [], [], {}, {}, [], {}, {}
+        deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
         # Split preview for the item-detail split card; own try/except so a non-splittable item
         # (or any preview error) degrades to the disabled card rather than blanking the page.
         try:
@@ -1970,7 +1972,7 @@ def setup_routes(app):
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
             _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, category_names, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings, connected_connectors=_item_connectors,
-                              manufacturing=module_active(_item_settings, "celerp-manufacturing")),
+                              deleted_parents=deleted_parents, manufacturing=module_active(_item_settings, "celerp-manufacturing")),
             title=page_title("page.item_detail"),
             nav_active="inventory",
             request=request,
@@ -2004,8 +2006,10 @@ def setup_routes(app):
         name = item.get("name") or item.get("sku") or entity_id
 
         from ui.components.activity import activity_table
+        deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
         table = activity_table(activities, title="", section_cls="", subject_entity_id=entity_id,
-                               currency=currency, category_names=category_names, resizable=True)
+                               currency=currency, category_names=category_names, resizable=True,
+                               deleted=deleted_parents)
         pages = max(1, (total + per_page - 1) // per_page)
         pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
 
@@ -2401,6 +2405,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
+        items += (await deleted_items(token, [c.get("item_id") for c in (item.get("recipe") or {}).get("components", [])])).values()
         cat = item.get("category") or ""
         category = category_label(cat, (await api.get_category_labels(token)).get(cat)) if cat else ""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -6737,9 +6742,13 @@ def _worksheet_unit_label(unit: str) -> str:
 
 def _component_label(c: dict, by_id: dict[str, dict]) -> str:
     """SKU plus name for a recipe component. Imported-recipe rows carry only a SKU, so the name
-    is resolved from the item list at render; an item that no longer exists shows its SKU alone."""
+    is resolved from the item list at render; an item that no longer exists shows its SKU alone,
+    and a deleted one its SKU and the "[Deleted]" mark."""
+    it = by_id.get(c.get("item_id") or "") or {}
     sku = c.get("sku") or c.get("item_id") or ""
-    name = c.get("name") or (by_id.get(c.get("item_id") or "") or {}).get("name") or ""
+    if is_deleted(it):
+        return deleted_label(it.get("sku") or sku)
+    name = c.get("name") or it.get("name") or ""
     return f"{sku} - {name}".strip(" -") or EMPTY
 
 
@@ -6858,8 +6867,9 @@ def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
 
     def _row(inp: dict) -> FT:
         it = by_id.get(inp.get("item_id") or "") or {}
+        sku = it.get("sku") or inp.get("item_id") or EM
         return Tr(
-            Td(it.get("sku") or inp.get("item_id") or EM),
+            Td(deleted_label(sku) if is_deleted(it) else sku),
             Td(it.get("name") or EM),
             Td(f"{float(inp.get('quantity') or 0):g}", cls="ws-num"),
             Td(f"{float(inp.get('issued_qty') or 0):g}", cls="ws-num"),
@@ -6942,8 +6952,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         it = by_id.get(cid) or (hidden or {}).get(cid)
         orphan = it is None
         label = f"{c.get('sku') or cid} - {it.get('name', '')}".strip(" -") if it else t("inventory.unavailable_suffix", name=c.get('sku') or cid)
-        if it and it.get("status") == "deleted":
-            label = f"{it.get('sku') or cid} {t('item.deleted_mark')}"
+        if is_deleted(it):
+            label = deleted_label(it.get('sku') or cid)
         return Tr(
             Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
             _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
@@ -7303,6 +7313,7 @@ def _item_detail_tabs(
     settings: dict | None = None,
     connected_connectors: set[str] | None = None,
     *,
+    deleted_parents: dict[str, dict] | None = None,
     manufacturing: bool,
 ) -> FT:
     """Tabbed item detail: Details | Pricing | Manufacturing | Activity. The Manufacturing
@@ -7355,7 +7366,8 @@ def _item_detail_tabs(
     elif active_tab == "activity":
         panel = Div(
             _undo_merge_block(entity_id, ledger),
-            _ledger_table(ledger, entity_id=entity_id, currency=currency, category_names=category_names),
+            _ledger_table(ledger, entity_id=entity_id, currency=currency, category_names=category_names,
+                          deleted=deleted_parents),
             cls="detail-grid detail-grid--single",
         )
     else:
@@ -7681,11 +7693,11 @@ def _undo_merge_block(entity_id: str, ledger: list[dict]) -> FT | str:
 
 
 def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None,
-                  category_names: dict | None = None) -> FT:
+                  category_names: dict | None = None, deleted: dict[str, dict] | None = None) -> FT:
     from ui.components.activity import activity_table
     history_url = f"/inventory/{entity_id}/history" if entity_id else None
     return activity_table(ledger, max_display=10, subject_entity_id=entity_id, currency=currency,
-                          category_names=category_names, history_url=history_url, resizable=True)
+                          category_names=category_names, history_url=history_url, resizable=True, deleted=deleted)
 
 
 # ---------------------------------------------------------------------------
