@@ -1757,7 +1757,7 @@
   "table.page_range": "{first}-{last} de {total}",
   "table.page_range_none": "0 de {total}",
   "table.per_page_option": "{n} por página",
-  "table.confirm_delete_row": "¿Desea eliminar este elemento? Esta acción no se puede deshacer.",
+  "table.confirm_delete_row": "Los borradores que nada más usa se borran. Los borradores que usan otros registros pasan a Eliminados, donde puede restaurarlos.",
   "table.confirm_delete_selected": "¿Desea eliminar los elementos seleccionados? Esta acción no se puede deshacer.",
   "table.confirm_archive_selected": "¿Desea archivar los elementos seleccionados? Quedarán ocultos en la vista predeterminada.",
   "table.confirm_restore_selected": "¿Restaurar los elementos seleccionados en el catálogo? Volverán a estar disponibles.",

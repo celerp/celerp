@@ -1758,7 +1758,7 @@
   "table.page_range": "{first}-{last} di {total}",
   "table.page_range_none": "0 di {total}",
   "table.per_page_option": "{n} per pagina",
-  "table.confirm_delete_row": "Elimina questa voce? Questa operazione non può essere annullata.",
+  "table.confirm_delete_row": "Le bozze non usate da nient'altro vengono cancellate. Le bozze usate da altri record passano in Eliminati, dove puoi ripristinarle.",
   "table.confirm_delete_selected": "Elimina le voci selezionate? Questa operazione non può essere annullata.",
   "table.confirm_archive_selected": "Archiviare gli articoli selezionati? Verranno nascosti dalla visualizzazione predefinita.",
   "table.confirm_restore_selected": "Ripristinare gli articoli selezionati nel catalogo? Torneranno disponibili.",

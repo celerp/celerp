@@ -1757,7 +1757,7 @@
   "table.page_range": "{first}-{last} من {total}",
   "table.page_range_none": "0 من {total}",
   "table.per_page_option": "{n} في كل صفحة",
-  "table.confirm_delete_row": "هل تريد حذف هذا العنصر؟ لا يمكن التراجع عن هذه العملية.",
+  "table.confirm_delete_row": "تُمحى المسودات التي لا يستخدمها أي شيء آخر. تنتقل المسودات التي تستخدمها سجلات أخرى إلى المحذوفة، حيث يمكنك استعادتها.",
   "table.confirm_delete_selected": "هل تريد حذف العناصر المحددة؟ لا يمكن التراجع عن هذه العملية.",
   "table.confirm_archive_selected": "هل تريد أرشفة العناصر المحددة؟ سيتم إخفاؤها من العرض الافتراضي.",
   "table.confirm_restore_selected": "هل تريد استعادة العناصر المحددة إلى الفهرس؟ ستصبح متاحة مرة أخرى.",

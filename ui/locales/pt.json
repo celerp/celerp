@@ -1757,7 +1757,7 @@
   "table.page_range": "{first}-{last} de {total}",
   "table.page_range_none": "0 de {total}",
   "table.per_page_option": "{n} por página",
-  "table.confirm_delete_row": "Excluir este item? Esta ação não pode ser desfeita.",
+  "table.confirm_delete_row": "Rascunhos que nada mais usa são apagados. Rascunhos usados por outros registros vão para Excluídos, onde você pode restaurá-los.",
   "table.confirm_delete_selected": "Excluir os itens selecionados? Esta ação não pode ser desfeita.",
   "table.confirm_archive_selected": "Arquivar os itens selecionados? Eles ficarão ocultos na visualização padrão.",
   "table.confirm_restore_selected": "Restaurar os itens selecionados no catálogo? Eles ficarão disponíveis novamente.",

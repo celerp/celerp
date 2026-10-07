@@ -1757,7 +1757,7 @@
   "table.page_range": "{first}-{last} dari {total}",
   "table.page_range_none": "0 dari {total}",
   "table.per_page_option": "{n} per halaman",
-  "table.confirm_delete_row": "Hapus item ini? Tindakan ini tidak dapat dibatalkan.",
+  "table.confirm_delete_row": "Draf yang tidak digunakan oleh apa pun akan dihapus permanen. Draf yang digunakan catatan lain dipindahkan ke Dihapus, tempat Anda dapat memulihkannya.",
   "table.confirm_delete_selected": "Hapus item yang dipilih? Tindakan ini tidak dapat dibatalkan.",
   "table.confirm_archive_selected": "Arsipkan item yang dipilih? Item-item tersebut akan disembunyikan dari tampilan default.",
   "table.confirm_restore_selected": "Kembalikan item yang dipilih ke katalog? Item-item tersebut akan tersedia kembali.",

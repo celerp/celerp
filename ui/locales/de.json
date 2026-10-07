@@ -1758,7 +1758,7 @@
   "table.page_range": "{first}-{last} von {total}",
   "table.page_range_none": "0 von {total}",
   "table.per_page_option": "{n} pro Seite",
-  "table.confirm_delete_row": "Diesen Eintrag löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.",
+  "table.confirm_delete_row": "Entwürfe, die nirgends sonst verwendet werden, werden gelöscht. Entwürfe, die andere Datensätze verwenden, werden nach Gelöscht verschoben, wo Sie sie wiederherstellen können.",
   "table.confirm_delete_selected": "Ausgewählte Einträge löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.",
   "table.confirm_archive_selected": "Ausgewählte Einträge archivieren? Sie werden in der Standardansicht ausgeblendet.",
   "table.confirm_restore_selected": "Ausgewählte Einträge wieder in den Katalog aufnehmen? Sie sind dann wieder verfügbar.",

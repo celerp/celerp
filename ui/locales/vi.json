@@ -1757,7 +1757,7 @@
   "table.page_range": "{first}-{last} trên {total}",
   "table.page_range_none": "0 trên {total}",
   "table.per_page_option": "{n} trên mỗi trang",
-  "table.confirm_delete_row": "Xóa mục này? Thao tác này không thể hoàn tác.",
+  "table.confirm_delete_row": "Bản nháp không được dùng ở đâu khác sẽ bị xóa hẳn. Bản nháp mà các bản ghi khác đang dùng sẽ chuyển sang Đã xóa, nơi bạn có thể khôi phục chúng.",
   "table.confirm_delete_selected": "Xóa các mục đã chọn? Thao tác này không thể hoàn tác.",
   "table.confirm_archive_selected": "Lưu trữ các mục đã chọn? Chúng sẽ bị ẩn khỏi chế độ xem mặc định.",
   "table.confirm_restore_selected": "Khôi phục các mục đã chọn vào danh mục? Chúng sẽ lại có sẵn.",

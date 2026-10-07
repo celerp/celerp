@@ -1757,7 +1757,7 @@
   "table.page_range": "{total}件中 {first}-{last}",
   "table.page_range_none": "{total}件中 0",
   "table.per_page_option": "1ページあたり{n}件",
-  "table.confirm_delete_row": "この項目を削除しますか？この操作は元に戻せません。",
+  "table.confirm_delete_row": "他で使われていない下書きは消去されます。他の記録で使われている下書きは削除済みに移動し、そこで復元できます。",
   "table.confirm_delete_selected": "選択した項目を削除しますか？この操作は元に戻せません。",
   "table.confirm_archive_selected": "選択したアイテムをアーカイブしますか？ それらはデフォルトの表示から非表示になります。",
   "table.confirm_restore_selected": "選択したアイテムをカタログに復元しますか？ それらは再び利用可能になります。",

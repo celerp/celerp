@@ -1864,7 +1864,7 @@
   "table.page_range": "ከ{total} ውስጥ {first}-{last}",
   "table.page_range_none": "ከ{total} ውስጥ 0",
   "table.per_page_option": "{n} በገጽ",
-  "table.confirm_delete_row": "ይህ ዕቃ ይሰረዝ? ይህ ሊቀለበስ አይችልም።",
+  "table.confirm_delete_row": "ሌላ ምንም የማይጠቀምባቸው ረቂቆች ይጠፋሉ። ሌሎች መዝገቦች የሚጠቀሙባቸው ረቂቆች ወደ የተሰረዙ ይዛወራሉ፣ እዚያም ወደነበሩበት መመለስ ይችላሉ።",
   "table.confirm_delete_selected": "የተመረጡ ንጥሎች ይሰረዙ? ይህ ሊቀለበስ አይችልም።",
   "table.confirm_archive_selected": "የተመረጡ ንጥሎች ማህደር ይደረጉ? ከነባሪው እይታ ይደበቃሉ።",
   "table.confirm_restore_selected": "የተመረጡ ንጥሎች ወደ ካታሎግ ይመለሱ? እንደገና የሚገኙ ይሆናሉ።",

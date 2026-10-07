@@ -1758,7 +1758,7 @@
   "table.page_range": "{first}-{last} sur {total}",
   "table.page_range_none": "0 sur {total}",
   "table.per_page_option": "{n} par page",
-  "table.confirm_delete_row": "Supprimer cet élément ? Cette action est irréversible.",
+  "table.confirm_delete_row": "Les brouillons que rien d'autre n'utilise sont effacés. Les brouillons utilisés par d'autres enregistrements passent dans Supprimés, où vous pouvez les restaurer.",
   "table.confirm_delete_selected": "Supprimer les éléments sélectionnés ? Cette action est irréversible.",
   "table.confirm_archive_selected": "Archiver les éléments sélectionnés ? Ils seront masqués dans l'affichage par défaut.",
   "table.confirm_restore_selected": "Restaurer les éléments sélectionnés dans le catalogue ? Ils seront à nouveau disponibles.",
