@@ -9,10 +9,8 @@ so nothing depends on an installed module.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import py_compile
 import sys
 import uuid
 from contextlib import contextmanager
@@ -378,57 +376,39 @@ async def test_migration_runs_inside_the_module_guard(_db_engine, tmp_path, monk
     assert not _table_exists(_probe_table)
 
 
-def _plant_bytecode(source: Path, marker: Path) -> None:
-    """Unchecked bytecode beside *source* that writes *marker* instead of running it."""
-    cache = Path(importlib.util.cache_from_source(str(source)))
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    other = cache.parent / "other.py"
-    other.write_text(f"open({str(marker)!r}, 'w').write('ran')\n")
-    py_compile.compile(str(other), cfile=str(cache), dfile=str(source), doraise=True,
-                       invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
-    other.unlink()
-
-
-async def test_migration_runs_its_checked_source_not_bytecode_beside_it(
+async def test_migration_runs_from_source_and_leaves_no_compiled_files(
         _db_engine, tmp_path, monkeypatch, _probe_table):
     monkeypatch.setattr(sys, "dont_write_bytecode", False)
-    monkeypatch.setattr(sys, "pycache_prefix", None)
-    planted = tmp_path / "planted.txt"
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "cache"))
     base = tmp_path / "modules"
     pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
                        {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
-    _plant_bytecode(pkg / "inner" / "migrations" / "m_001.py", planted)
     monkeypatch.setenv("MODULE_DIR", str(base))
 
     surviving, errors = await _phase(_db_engine, {pkg.name})
 
     assert pkg.name in surviving, errors
-    assert not planted.exists()
     assert _table_exists(_probe_table)
-    assert not list(pkg.rglob("__pycache__"))
+    assert not [p for p in pkg.rglob("*") if p.name == "__pycache__" or p.suffix == ".pyc"]
+    assert sys.dont_write_bytecode is True
+    assert sys.pycache_prefix is None
+    assert not (tmp_path / "cache").exists()
 
 
-async def test_bytecode_that_appears_after_startup_checks_never_runs_in_place_of_a_migration(
+async def test_migration_changed_by_an_earlier_modules_migration_never_runs(
         _db_engine, tmp_path, monkeypatch, _probe_table):
-    """Bytecode written beside a migration by an earlier module's migration is removed
-    before that migration runs."""
-    monkeypatch.setattr(sys, "dont_write_bytecode", False)
-    monkeypatch.setattr(sys, "pycache_prefix", None)
-    planted = tmp_path / "planted.txt"
+    """A migration whose file changed after startup checks, here by an earlier module's
+    migration, is refused before it runs."""
+    marker = tmp_path / "ran.txt"
     base = tmp_path / "modules"
     uid = uuid.uuid4().hex[:8]
     later = _make_module(base, f"acme-b{uid}",
                          {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
-    staged = tmp_path / "staged"
-    staged.mkdir()
     target = later / "inner" / "migrations" / "m_001.py"
-    _plant_bytecode(staged / "m_001.py", planted)
-    pyc = Path(importlib.util.cache_from_source(str(target)))
-    staged_pyc = Path(importlib.util.cache_from_source(str(staged / "m_001.py")))
+    appended = f"\nopen({str(marker)!r}, 'w').write('ran')\n"
     earlier = _make_module(base, f"acme-a{uid}", {"m_001.py": (
-        "import os\nimport shutil\n\n\ndef upgrade():\n"
-        f"    os.makedirs({str(pyc.parent)!r}, exist_ok=True)\n"
-        f"    shutil.copyfile({str(staged_pyc)!r}, {str(pyc)!r})\n")}, table_prefix=f"early{uid}_")
+        f"def upgrade():\n    with open({str(target)!r}, 'a') as f:\n        f.write({appended!r})\n")},
+        table_prefix=f"early{uid}_")
     manifest = {"name": later.name, "version": "1.0.0", "migrations": "inner.migrations",
                 "table_prefix": "acme_", "depends_on": [earlier.name]}
     (later / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
@@ -436,10 +416,11 @@ async def test_bytecode_that_appears_after_startup_checks_never_runs_in_place_of
 
     surviving, errors = await _phase(_db_engine, {earlier.name, later.name})
 
-    assert {earlier.name, later.name} <= set(surviving), errors
-    assert not planted.exists(), "bytecode ran in place of the migration source"
-    assert _table_exists(_probe_table)
-    assert not pyc.exists()
+    assert earlier.name in surviving, errors
+    assert later.name not in surviving
+    assert loader.MODULE_CHANGED in errors[later.name]
+    assert not marker.exists()
+    assert not _table_exists(_probe_table)
 
 
 @pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])

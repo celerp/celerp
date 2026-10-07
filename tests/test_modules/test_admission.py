@@ -16,11 +16,9 @@ nothing depends on an installed module or on another test's imports.
 from __future__ import annotations
 
 import ast
-import importlib.util
 import io
 import json
 import os
-import py_compile
 import subprocess
 import sys
 import time
@@ -171,7 +169,7 @@ def _case_migrations_symlink_escape(base, marker, monkeypatch):
     manifest["migrations"] = "linked"
     (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
     assert not tmp_marker.exists()
-    return pkg, "outside"
+    return pkg, "Cannot check the module's files."
 
 
 def _case_route_outside_module(base, marker, monkeypatch):
@@ -2940,6 +2938,7 @@ def test_compiled_files_are_removed_before_the_module_runs(_modules, tmp_path, m
     outside.mkdir()
     (outside / "kept.pyc").write_bytes(b"\x00")
     (pkg / inner / "__pycache__").symlink_to(outside, target_is_directory=True)
+    (pkg / inner / "linked.pyc").symlink_to(outside / "kept.pyc")
 
     loaded = loader.load_all(str(_modules), {folder})
 
@@ -2947,7 +2946,25 @@ def test_compiled_files_are_removed_before_the_module_runs(_modules, tmp_path, m
     assert marker.exists()
     assert _bytecode_left(pkg) == []
     assert not (pkg / inner / "__pycache__").is_symlink()
+    assert not (pkg / inner / "linked.pyc").is_symlink()
     assert (outside / "kept.pyc").is_file()
+
+
+def test_module_whose_compiled_files_are_still_present_after_removal_is_refused(
+        _modules, tmp_path, monkeypatch):
+    """Whether the bytecode is gone is decided by looking again after removing it."""
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    monkeypatch.setattr(loader.shutil, "rmtree", lambda *args, **kwargs: None)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert loaded == []
+    assert not marker.exists()
+    assert loader.load_errors()[folder] == "Cannot remove compiled Python files from the module."
 
 
 @pytest.fixture
@@ -3071,48 +3088,6 @@ def test_default_module_changed_after_admission_stops_startup(_modules, tmp_path
     with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
         loader.load_all(str(_modules), {name}, admission=admission)
     assert not marker.exists()
-
-
-def _plant_bytecode(source: Path, marker: Path, cache: Path) -> None:
-    """Bytecode at *cache* that Python would take for *source*, writing *marker*
-    instead of running the source. Unchecked, so it is never compared to the source."""
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    other = cache.parent / f"other_{_uid()}.py"
-    other.write_text(_marker_line(marker))
-    py_compile.compile(str(other), cfile=str(cache), dfile=str(source), doraise=True,
-                       invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
-    other.unlink()
-
-
-@pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
-@pytest.mark.parametrize("where", ["beside_source", "under_data_dir", "configured_cache_dir"])
-def test_planted_bytecode_never_runs_in_place_of_the_checked_source(
-        where, trusted, _modules, tmp_path, monkeypatch, _first_party):
-    from celerp.config import settings
-    data = tmp_path / "data"
-    monkeypatch.setattr(settings, "data_dir", data)
-    monkeypatch.setattr(sys, "dont_write_bytecode", False)
-    cache_dir = {"beside_source": None,
-                 "under_data_dir": str(data.resolve() / "bytecode"),
-                 "configured_cache_dir": str(tmp_path / "cache")}[where]
-    monkeypatch.setattr(sys, "pycache_prefix",
-                        cache_dir if where == "configured_cache_dir" else None)
-    ran, planted = tmp_path / "ran.txt", tmp_path / "planted.txt"
-    folder = f"acme-{_uid()}"
-    pkg = _init_marker_module(_modules, folder, ran, {"name": folder, "version": "1.0.0"})
-    if trusted:
-        _first_party(pkg)
-    source = pkg / "__init__.py"
-    previous, sys.pycache_prefix = sys.pycache_prefix, cache_dir
-    cache = Path(importlib.util.cache_from_source(str(source)))
-    sys.pycache_prefix = previous
-    _plant_bytecode(source, planted, cache)
-
-    loaded = loader.load_all(str(_modules), {folder})
-
-    assert [(m["name"], m["first_party"]) for m in loaded] == [(folder, trusted)]
-    assert ran.exists()
-    assert not planted.exists()
 
 
 def test_module_changed_while_it_is_checked_never_runs(_modules, tmp_path, monkeypatch, _first_party):

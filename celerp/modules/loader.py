@@ -56,6 +56,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -449,33 +450,21 @@ def _purge_pycache(pkg_path: Path) -> None:
     """Remove all bytecode under pkg_path before the module is imported, and prove it gone.
 
     The content digest excludes bytecode, so bytecode left beside the checked source
-    could run in its place. A symlink is removed itself, never followed. Raises
-    :class:`ModuleLoadError` when any of it cannot be removed.
+    could run in its place. A symlink is removed itself, never followed. The rescan
+    decides: :class:`ModuleLoadError` when any of it is still there.
     """
     try:
         for path in _bytecode(pkg_path):
-            _remove(path)
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
         left = _bytecode(pkg_path)
     except OSError as exc:
         raise ModuleLoadError(
             f"Cannot remove compiled Python files from the module ({type(exc).__name__}).") from exc
     if left:
         raise ModuleLoadError("Cannot remove compiled Python files from the module.")
-
-
-def _remove(path: Path) -> None:
-    """Remove *path* (a directory with its contents; a symlink itself, never followed).
-    Already gone counts as removed: another process loading the same folder may
-    remove it first."""
-    try:
-        if path.is_dir() and not path.is_symlink():
-            for entry in path.iterdir():
-                _remove(entry)
-            path.rmdir()
-        else:
-            path.unlink()
-    except FileNotFoundError:
-        pass
 
 
 # Loaded manifests - populated by load_all()
@@ -856,6 +845,8 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     # The one digest of what is checked: first-party is decided from it, and it is
     # what the module's files must still match when its code runs.
     digest = module_content_digest(pkg_path)
+    if digest is None:
+        raise ModuleLoadError("Cannot check the module's files.")
     manifest = _declared_manifest(pkg_path)
     if manifest["name"] != name:
         raise ModuleLoadError(
@@ -876,8 +867,6 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
             violations |= _scan_protected_imports(pkg_path, entry)
         if violations:
             raise ModuleLoadError(_bsl_violation_message(name, violations))
-    if digest is None:
-        raise ModuleLoadError("Cannot check the module's files.")
     return AdmittedModule(name, pkg_path, manifest, first_party, digest)
 
 
