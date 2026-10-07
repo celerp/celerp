@@ -1507,7 +1507,7 @@ def test_module_gets_the_same_verdict_in_every_process(_modules, tmp_path):
                       files=files, init_prelude=prelude)
         folders[folder] = case
     repo = Path(__file__).resolve().parents[2]
-    # The licence-gated defaults ask the Marketplace; a relay address that refuses
+    # The licensed defaults ask the Marketplace; a relay address that refuses
     # at once keeps every verdict independent of the network. With no module
     # enabled, the UI process sets up its own routes without waiting for an API.
     config = tmp_path / "config.toml"
