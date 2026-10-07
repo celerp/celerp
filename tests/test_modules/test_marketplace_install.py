@@ -3,20 +3,18 @@
 """The two-step marketplace install: Download stages, Install lands the package.
 
 POST /companies/me/modules/marketplace-download fetches an archive from the
-relay and stages it under an opaque reference together with the package's
-identity (slug, version, digest) and install details. POST
+relay and stages it under a new reference together with the package's slug,
+version, SHA-256 and install details. POST
 /companies/me/modules/marketplace-install imports the staged archive named by
 that reference through the shared importer; the module lands DISABLED, exactly
 like a community import, so enabling and restarting stay the deliberate steps in
 the Installed tab.
 
 The relay is faked at the httpx boundary for the download half; the importer, the
-premium marker, the official-prefix gate, and every error path run for real. The
-properties under test: a download stages nothing unless the package bytes match
-the identity in the install answer; every download owns its own stage, so two
-downloads of one module never mix; Install lands only the package the stage
-describes; and an expired, malformed, missing or incomplete stage asks for
-another download.
+premium marker, the official-prefix gate, and every error path run for real.
+Covered: a download stages nothing unless the package matches the install answer;
+each download has its own stage; Install lands only the package its stage holds;
+and an expired, malformed, missing or incomplete stage asks for another download.
 
 Credentials: _relay_creds() exchanges settings.gateway_token (the permanent
 API key set by a successful /auth/activate) for a short-lived JWT via
@@ -309,7 +307,7 @@ async def test_download_failure_is_recoverable(client, relay_env):
 @pytest.mark.asyncio
 async def test_malformed_relay_json_gives_friendly_error(client, relay_env):
     """A 200 with a non-JSON body must not surface as a raw 500 - the download
-    should recognize it can't trust the response and say so plainly."""
+    should report an invalid response in plain words."""
     headers = await _register(client)
     fake = _fake_relay(install=_FakeResp(200, bad_json=True))
     with patch("httpx.AsyncClient", fake):
@@ -381,9 +379,8 @@ async def test_package_version_must_match_the_listed_version(client, relay_env, 
 
 
 @pytest.mark.asyncio
-async def test_third_party_package_may_not_claim_celerp_prefix(client, relay_env):
-    """A celerp-* package that is not official is refused at install, using the
-    official flag recorded at download."""
+async def test_celerp_prefixed_package_that_is_not_official_is_refused(client, relay_env):
+    """A celerp-* package whose download is not official is refused at install."""
     headers = await _register(client)
     fake = _fake_relay(install=_install_answer(is_official=False))
     with patch("httpx.AsyncClient", fake):
@@ -402,7 +399,7 @@ async def test_third_party_package_may_not_claim_celerp_prefix(client, relay_env
 @pytest.mark.asyncio
 async def test_install_refuses_a_malformed_reference(client, relay_env, tmp_path, ref):
     """Install accepts only a well-formed download reference; anything else,
-    including a file name or a path, is refused outright."""
+    including a file name or a path, is refused."""
     headers = await _register(client)
     (tmp_path / "celerp-budgeting.zip").write_bytes(_zip_bytes())
     r = await _install(client, headers, ref)
@@ -455,13 +452,13 @@ def _unreadable_details(package: Path, details: Path) -> None:
     details.write_text("{not json")
 
 
-def _package_bytes_replaced(package: Path, details: Path) -> None:
+def _package_differs_from_its_digest(package: Path, details: Path) -> None:
     package.write_bytes(_zip_bytes(_MANIFEST.replace("Budgeting", "Budgets")))
 
 
 @pytest.mark.parametrize("damage", [
     _no_details, _no_package, _details_short_a_field, _details_with_a_text_flag,
-    _unreadable_details, _package_bytes_replaced,
+    _unreadable_details, _package_differs_from_its_digest,
 ], ids=lambda f: f.__name__.strip("_"))
 @pytest.mark.asyncio
 async def test_install_of_an_incomplete_stage_asks_for_a_new_download(client, relay_env, damage):
@@ -556,9 +553,10 @@ async def test_two_downloads_of_one_module_each_keep_their_own_package(client, r
 
 
 @pytest.mark.asyncio
-async def test_interleaved_downloads_of_one_module_never_mix(client, relay_env, tmp_path):
-    """Download A asks first but receives its bytes only after download B has
-    finished. Each reference still installs its own bytes with its own details."""
+async def test_overlapping_downloads_of_one_module_each_install_their_own_package(
+        client, relay_env, tmp_path):
+    """Download A starts first and receives its package only after download B has
+    finished. Each reference installs its own package with its own details."""
     from celerp.modules.importer import PREMIUM_MARKER
 
     headers = await _register(client)

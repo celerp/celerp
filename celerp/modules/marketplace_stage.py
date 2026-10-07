@@ -3,16 +3,13 @@
 
 """Marketplace downloads waiting for Install, one stage per download.
 
-A download is staged under an opaque random reference (``mp_`` plus 32 hex digits)
-and never under its module name, so two downloads of one module share nothing.
-Each stage is a directory holding the package bytes and a details file naming
-exactly the module slug and version, the official and paid flags, the SHA-256 of
-the package and the time it was staged. The details file is written last, so a
-stage without it is incomplete.
+Each download is staged under its own random reference (``mp_`` plus 32 hex
+digits). A stage is a directory holding the package bytes and a details file with
+the module slug and version, the official and paid flags, the SHA-256 of the
+package and the time it was staged. The details file is written last, so a stage
+without it is incomplete.
 
-A reference is only ever matched against REF_RE and never used as a path fragment
-until it has matched. Reading a stage re-hashes the package against its recorded
-digest. A stage lives as long as the download authorization it came from, about
+Reading a stage checks the package against its recorded SHA-256. A stage lasts
 15 minutes; an expired, incomplete or missing stage means downloading again.
 """
 
@@ -65,7 +62,7 @@ def stage_paths(ref: str) -> tuple[Path, Path] | None:
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    """Write *data* to *path* whole or not at all, readable by the server only."""
+    """Write *data* to *path* whole or not at all, with owner-only permissions."""
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE)
     try:
