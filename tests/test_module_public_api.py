@@ -213,18 +213,18 @@ def test_read_resource_refuses_a_module_file_that_is_not_the_caller(_modules, tm
 
 
 def test_read_resource_refuses_a_caller_naming_another_file(_modules, tmp_path):
-    """A function whose code object claims to live in another folder reads
-    nothing there: the module's folder is the one the loader admitted."""
-    forge = (
+    """A module reads resources only from its own folder, whatever file a
+    caller names."""
+    source = (
         "import types\n"
-        "def steal(target):\n"
+        "def read_as(target):\n"
         "    code = read.__code__.replace(co_filename=target)\n"
         "    scope = {'read_resource': read_resource, '__name__': __name__, '__file__': target}\n"
         "    return types.FunctionType(code, scope)('secret.txt', target)\n"
     )
-    _, mod = _module(_modules, tmp_path, forge)
+    _, mod = _module(_modules, tmp_path, source)
     with pytest.raises(ValueError):
-        mod.steal(str(tmp_path / "anything.py"))
+        mod.read_as(str(tmp_path / "anything.py"))
 
 
 def test_read_resource_refuses_code_outside_any_loaded_module(tmp_path):
@@ -359,25 +359,24 @@ async def test_ai_query_refused_without_a_signed_request(session, run_query, wit
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("signed", [False, True], ids=["no-signed-request", "signed-by-a-member-without-ai"])
-async def test_ai_query_ignores_authority_registered_by_module_code(session, run_query, signed):
-    """Module code can register request authority for another member who may use
-    the assistant; the query still answers only to the signed caller."""
+async def test_ai_query_answers_only_the_signed_in_caller(session, run_query, signed):
+    """An AI query answers only for the signed-in user who asked it."""
     company_id, viewer_id = await seed_member(session, "viewer")
     _, other_id = await seed_member(session)
     from celerp.models.accounting import UserCompany
     session.add(UserCompany(user_id=other_id, company_id=company_id, role="operator", is_active=True))
     await session.flush()
 
-    async def forge_and_ask():
+    async def ask_as_another_member():
         authorize_request(session, company_id, other_id, "operator")
         return await api.ai_query("hello", str(company_id), db_session=session)
 
     with pytest.raises(HTTPException) as exc:
         if signed:
             async with signed_request(session, company_id, viewer_id, "viewer"):
-                await forge_and_ask()
+                await ask_as_another_member()
         else:
-            await forge_and_ask()
+            await ask_as_another_member()
     assert exc.value.status_code == 403
     run_query.assert_not_awaited()
 

@@ -163,7 +163,7 @@ class TestCommunityDownload:
         "http://github.com/a/b",
         "https://gitlab.com/a/b",
         "https://github.com.example.net/a/b",
-        "https://evilgithub.com/a/b",
+        "https://othergithub.com/a/b",
         "https://user@github.com/a/b",
         "https://github.com:8443/a/b",
         "https://github.com/a/b/tree/main",
@@ -196,8 +196,8 @@ class TestCommunityDownload:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("location", [
-        "https://evil.example/a.zip",
-        "https://codeload.github.com.evil.example/a.zip",
+        "https://other.example/a.zip",
+        "https://codeload.github.com.other.example/a.zip",
         f"https://github.com/a/b/archive/{PIN}.zip",
     ])
     async def test_download_refuses_a_redirect(self, location):
@@ -284,7 +284,7 @@ class TestCommunityDownload:
 # ── one GitHub parser for listing, archive and source link ───────────────────
 
 _NOT_CANONICAL = [
-    "https://gitlab.com/a/b", "https://github.com.example.net/a/b", "https://evilgithub.com/a/b",
+    "https://gitlab.com/a/b", "https://github.com.example.net/a/b", "https://othergithub.com/a/b",
     "https://user@github.com/a/b", "https://github.com:8443/a/b", "https://github.com/a/b/tree/main",
     "https://github.com/a/b/", "https://github.com/a", "https://github.com/a/..",
     "https://github.com/a/b?x=1", "https://github.com/a/b.git",

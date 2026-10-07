@@ -100,11 +100,11 @@ def read(directory: Path, token) -> tuple[bytes, dict | None]:
         data = path.read_bytes()
     except FileNotFoundError:
         raise StagedDownloadMissing(token)
-    sidecar = path.with_suffix(".json")
-    if not sidecar.exists():
+    details = path.with_suffix(".json")
+    if not details.exists():
         return data, None
     try:
-        meta = json.loads(sidecar.read_text())
+        meta = json.loads(details.read_text())
     except (ValueError, OSError):
         raise StagedDownloadUnreadable(token)
     if not isinstance(meta, dict):

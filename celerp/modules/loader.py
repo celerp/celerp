@@ -83,9 +83,8 @@ from celerp.services.permissions import is_permission_key
 
 log = logging.getLogger(__name__)
 
-# First-party BSL internals that third-party modules are not allowed to import
-# (admission policy): the licensing boundary and credential issuance. Module
-# authors use celerp.modules.api instead.
+# First-party internals that third-party modules do not import. Module authors
+# use celerp.modules.api instead.
 _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.session_gate",
     "celerp.ai",
