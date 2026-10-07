@@ -2192,8 +2192,8 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # The install answer alone says whether the module is official (which
-            # allows the reserved celerp- name) and paid (the licence-gate marker).
+            # The install response carries the download token and the official
+            # and paid flags.
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
             if r.status_code != 200:
