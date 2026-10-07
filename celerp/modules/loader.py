@@ -876,7 +876,7 @@ def fetch_missing_free_verdicts(module_dir: str) -> None:
 
 
 def _premium_credentials():
-    """A resolver for the relay credentials the premium-license gate needs,
+    """A resolver for the relay credentials the premium license check needs,
     computed lazily and ONCE per admission: the JWT is the same for every
     module, and there must be no network call at all when no premium module is
     present. gateway_token (GATEWAY_TOKEN / GATEWAY_URL on a hosted deploy; set

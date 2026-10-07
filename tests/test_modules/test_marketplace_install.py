@@ -162,8 +162,8 @@ async def test_download_stages_then_install_marks_premium_and_lands_disabled(cli
 
 @pytest.mark.asyncio
 async def test_paid_install_requires_the_normal_license_path(client, relay_env, tmp_path):
-    """A paid install lands with the licence-gate marker and no free verdict, and
-    nothing else is asked."""
+    """A paid install requires the normal license path: it lands with no free
+    verdict, and nothing else is asked."""
     headers = await _register(client)
     urls: list = []
     with patch("httpx.AsyncClient", _fake_relay(urls=urls)):
@@ -301,8 +301,8 @@ async def test_mismatched_package_name_removed_and_refused(client, relay_env):
 
 @pytest.mark.asyncio
 async def test_third_party_package_may_not_claim_celerp_prefix(client, relay_env):
-    """The install answer says NOT official -> a celerp-* package must be refused
-    at install, using the official flag recorded at download."""
+    """A celerp-* package that is not official is refused at install, using the
+    official flag recorded at download."""
     headers = await _register(client)
     fake = _fake_relay(install=_install_answer(is_official=False))
     with patch("httpx.AsyncClient", fake):
