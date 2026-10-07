@@ -346,7 +346,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         run_id = run.id
         # The first owner has no other company, so they are signed in to the staged one;
         # its token reaches the migration routes only. Issuing the tokens commits.
-        tokens = await issue_token_pair(session, user=user, company_id=run.company_id)
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
     if required:
         try:
             await asyncio.to_thread(bootstrap.clear_setup_code)
@@ -472,7 +472,7 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
         awaiting = await _turn_on_modules(plan)
         run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
         run_id = run.id
-        tokens = await issue_token_pair(session, user=user, company_id=run.company_id)
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
     await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
     return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 

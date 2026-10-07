@@ -93,7 +93,8 @@ def _token_for(user_id: str, company_id: str) -> str:
             async with AsyncSession(engine, expire_on_commit=False) as s:
                 user = await s.get(User, uuid.UUID(user_id))
                 company = await s.get(Company, uuid.UUID(company_id))
-                out["token"] = (await issue_token_pair(s, user=user, company_id=company.id))["access_token"]
+                out["token"] = (await issue_token_pair(s, user=user, company_id=company.id,
+                                                      expected_snonce=None))["access_token"]
         finally:
             await engine.dispose()
 

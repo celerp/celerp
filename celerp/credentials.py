@@ -4,7 +4,7 @@
 
 Protected by module admission policy like the AI internals: a third-party module
 whose code imports it is refused. Modules act for a signed-in user through
-``celerp.modules.api``; they never mint sessions."""
+``celerp.modules.api``."""
 
 from __future__ import annotations
 
@@ -82,8 +82,8 @@ async def issue_token_pair(
     *,
     user: User,
     company_id: uuid.UUID,
+    expected_snonce: str | None,
     jti: str | None = None,
-    expected_snonce: str | None = None,
 ) -> dict:
     """The single access+refresh issuance point.
 
@@ -97,14 +97,16 @@ async def issue_token_pair(
     force-login, refresh, switch-company, create-company) routes through here so
     no path can issue a token that misses the version/type/nonce contract.
 
-    *expected_snonce* distinguishes a continuation from a fresh credential:
+    *expected_snonce* distinguishes a continuation from a fresh credential, and every
+    caller states which it is:
 
-    - A continuation (refresh, sliding refresh, switch-company, create-company)
-      passes the snonce it authenticated on.  If it no longer equals the locked
+    - A continuation (refresh, sliding refresh, switch-company, create-company,
+      company reset, signed-in backup restore and reactivation) passes the snonce it authenticated on.  If it no longer equals the locked
       nonce, a concurrent revocation advanced the generation, so a neutral 401
       is raised BEFORE minting or registering any JTI - the continuation can
       never jump onto the newer generation (F2).
-    - A fresh credential (register, password login, force-login) passes
+    - A fresh credential (register, password login, force-login, setup-code and
+      password-authenticated restores and migration starts) passes
       ``expected_snonce=None`` and always mints on whatever the locked row holds.
 
     Holding the lock across the read-check-mint-register-commit window is what
@@ -134,7 +136,9 @@ async def issue_token_pair(
     return {"access_token": access_token, "refresh_token": refresh_token}
 
 
-async def issue_token_pair_by_id(session: AsyncSession, user_id, company_id) -> dict:
+async def issue_token_pair_by_id(session: AsyncSession, user_id, company_id, *,
+                                 expected_snonce: str | None) -> dict:
     """``issue_token_pair`` for the user and company named by id."""
     user = await session.get(User, uuid.UUID(str(user_id)))
-    return await issue_token_pair(session, user=user, company_id=uuid.UUID(str(company_id)))
+    return await issue_token_pair(session, user=user, company_id=uuid.UUID(str(company_id)),
+                                  expected_snonce=expected_snonce)

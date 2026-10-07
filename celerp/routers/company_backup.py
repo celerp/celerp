@@ -268,21 +268,23 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
     """Restore a staged backup as the preview showed it and switch the caller to the company:
     a new one, or the one it was already restored as. Repeating a restore that finished,
     when its response was lost, opens the company it made."""
-    from celerp.credentials import issue_token_pair_by_id
+    from celerp.credentials import issue_token_pair
     stage = _stage(str(ctx.user.id), payload.upload_token)
     if not stage.is_file():
         result = await cb.reopen_restored(files.restored_company(stage), user_id=ctx.user.id)
         if result is None:
             raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
-        return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id))
-    try:
-        result = await cb.restore_company(stage, mode=payload.mode, user_id=ctx.user.id,
-                                          current_company_id=ctx.company_id, plan_fingerprint=payload.plan_fingerprint,
-                                          company_name=payload.company_name)
-    except cb.BackupError as exc:
-        return _error(exc, stage)
-    files.finish_stage(stage, result.company_id)
-    return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id))
+    else:
+        try:
+            result = await cb.restore_company(stage, mode=payload.mode, user_id=ctx.user.id,
+                                              current_company_id=ctx.company_id,
+                                              plan_fingerprint=payload.plan_fingerprint,
+                                              company_name=payload.company_name)
+        except cb.BackupError as exc:
+            return _error(exc, stage)
+        files.finish_stage(stage, result.company_id)
+    return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
+                                                    expected_snonce=ctx.snonce))
 
 
 @router.post("/reactivate")
@@ -291,7 +293,7 @@ async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(use
     """Reactivate the deactivated company a staged backup was already restored as, instead
     of restoring a copy, and switch the caller to it. Connectors its deactivation
     disconnected are named, not reconnected."""
-    from celerp.credentials import issue_token_pair_by_id
+    from celerp.credentials import issue_token_pair
     stage = _stage(str(ctx.user.id), payload.upload_token)
     if not stage.is_file():
         reopened = await cb.reopen_restored(files.restored_company(stage), user_id=ctx.user.id)
@@ -308,7 +310,7 @@ async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(use
         files.finish_stage(stage, done.company_id)
         company_id, name, reconnect = done.company_id, done.company_name, done.connectors_to_reconnect
         outcome = cb.REACTIVATED if done.reactivated else cb.OPENED_EXISTING
-    tokens = await issue_token_pair_by_id(session, ctx.user.id, company_id)
+    tokens = await issue_token_pair(session, user=ctx.user, company_id=company_id, expected_snonce=ctx.snonce)
     return {"company_id": str(company_id), "company_name": name, "outcome": outcome,
             "connectors_to_reconnect": reconnect, **tokens}
 
@@ -388,14 +390,16 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
         result = await cb.reopen_restored(files.restored_company(stage), owner_account=account)
         if result is None:
             raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
-        return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id))
+        return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
+                                                              expected_snonce=None))
     try:
         result = await cb.restore_company(stage, mode="bootstrap", owner_account=account,
                                           company_name=payload.company_name)
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
-    response = _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id))
+    response = _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
+                                                              expected_snonce=None))
     if required:
         try:
             await asyncio.to_thread(bootstrap.clear_setup_code)
@@ -440,4 +444,5 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
     except cb.BackupError as exc:
         return _error(exc, stage)
     files.finish_stage(stage, result.company_id)
-    return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id))
+    return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
+                                                          expected_snonce=None))

@@ -2400,6 +2400,59 @@ async def test_concurrent_restore_creates_one_company(real_engine, real_client, 
     assert await count(real_engine, "projections", "company_id = :c", c=uuid.UUID(results[0].json()["company_id"])) == 1
 
 
+def _signed_out_during(engine, monkeypatch, service: str, user) -> None:
+    """The caller signs out everywhere while the named backup service call runs."""
+    from celerp.services.session_tracker import invalidate_sessions
+    cb = _bk_cb()
+    real = getattr(cb, service)
+
+    async def signing_out(*args, **kwargs):
+        result = await real(*args, **kwargs)
+        async with maker(engine)() as s:
+            await invalidate_sessions(s, str(user))
+        return result
+    monkeypatch.setattr(cb, service, signing_out)
+
+
+async def test_sign_out_during_restore_or_reactivation_signs_nothing_in(real_engine, real_client, tmp_path,
+                                                                        monkeypatch):
+    """A sign-out that lands while a restore or a reactivation runs ends that session too:
+    the request gets no new session."""
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    preview = await _ln_preview(real_client, tok, data, "new_company")
+    _signed_out_during(real_engine, monkeypatch, "reactivate_restored", user)
+    r = await _ln_reactivate(real_client, tok, preview)
+    assert r.status_code == 401 and "access_token" not in r.text, r.text
+
+    tok = await token(real_engine, user, cid)
+    preview = await _ln_preview(real_client, tok, data, "settings")
+    _signed_out_during(real_engine, monkeypatch, "restore_company", user)
+    r = await _ln_commit(real_client, tok, preview, "settings")
+    assert r.status_code == 401 and "access_token" not in r.text, r.text
+
+
+async def test_restore_cut_off_by_sign_out_opens_after_signing_in_again(real_engine, real_client, tmp_path,
+                                                                        monkeypatch):
+    """A restore that finished while its session was signed out is opened, not restored again,
+    when the same upload is confirmed after signing in again."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    data = await download(real_client, tok)
+    upload = confirm(await _ln_preview(real_client, tok, data, "new_company"), "new_company")
+    _signed_out_during(real_engine, monkeypatch, "restore_company", user)
+    cut_off = await real_client.post("/company-backups/restore", json=upload, headers=auth(tok))
+    assert cut_off.status_code == 401, cut_off.text
+    companies = await count(real_engine, "companies")
+    restored = await _r_scalar(real_engine, "SELECT id::text FROM companies WHERE id <> :c", c=cid)
+
+    again = await real_client.post("/company-backups/restore", json=upload,
+                                   headers=auth(await token(real_engine, user, cid)))
+    assert again.status_code == 200, again.text
+    assert (again.json()["company_id"], again.json()["outcome"]) == (restored, "opened_existing")
+    assert (await _r_me(real_client, again.json()["access_token"]))["id"] == restored
+    assert await count(real_engine, "companies") == companies
+
+
 # ── Id remapping and reference policy ────────────────────────────────────────
 
 async def test_exact_value_id_remap(real_engine, real_client, tmp_path, monkeypatch):

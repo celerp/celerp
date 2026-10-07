@@ -125,7 +125,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         )
         # Single commit point: the central issuer locks the auth state, registers the
         # initial access JTI, and commits the whole bootstrap as one transaction.
-        tokens = await issue_token_pair(session, user=user, company_id=company.id)
+        tokens = await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=None)
     except HTTPException:
         await session.rollback()
         raise
@@ -205,7 +205,7 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
         if link is None:
             raise HTTPException(status_code=401, detail=NO_COMPANY)
         try:
-            return await issue_token_pair(session, user=user, company_id=link.company_id)
+            return await issue_token_pair(session, user=user, company_id=link.company_id, expected_snonce=None)
         except CompanyUnavailable:
             continue
     raise CompanyUnavailable()
@@ -228,7 +228,7 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     from celerp.services.session_tracker import invalidate_all_sessions as _invalidate_all
     evicting_ip = request.client.host if request.client else None
     await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
-    return await issue_token_pair(session, user=user, company_id=link.company_id)
+    return await issue_token_pair(session, user=user, company_id=link.company_id, expected_snonce=None)
 
 
 class StartCompanyRequest(BaseModel):
@@ -252,7 +252,7 @@ async def start_company(request: Request, payload: StartCompanyRequest,
     if not await hold_companyless_login(session, user.id):
         raise HTTPException(status_code=409, detail=HAS_COMPANY)
     company = await provision_additional_company(session, user=user, company_name=name)
-    return await issue_token_pair(session, user=user, company_id=company.id)
+    return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=None)
 
 
 class RefreshRequest(BaseModel):
