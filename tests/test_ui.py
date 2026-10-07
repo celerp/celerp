@@ -9652,8 +9652,11 @@ _CATALOG_FIXTURE = [
 ]
 
 
-_DOWNLOAD_HANDLERS = {"community_download", "community_import",
-                      "modules_marketplace_download", "modules_marketplace_install"}
+# Each download handler and the name it keeps the download under.
+_DOWNLOAD_HANDLERS = {"community_download": "download_token",
+                      "community_import": "download_token",
+                      "modules_marketplace_download": "download_ref",
+                      "modules_marketplace_install": "download_ref"}
 
 
 def _archive_host(seen: list[str]):
@@ -9862,13 +9865,13 @@ class TestMarketplaceUI:
         tree = ast.parse(inspect.getsource(page))
         handlers = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
                     and n.name in _DOWNLOAD_HANDLERS}
-        assert set(handlers) == _DOWNLOAD_HANDLERS
+        assert set(handlers) == set(_DOWNLOAD_HANDLERS)
         for name, fn in handlers.items():
             assigned = {t.id for n in ast.walk(fn) if isinstance(n, (ast.Assign, ast.AnnAssign))
                         for t in ast.walk(n.targets[0] if isinstance(n, ast.Assign) else n.target)
                         if isinstance(t, ast.Name)}
-            assert {"session_token", "download_token"} <= assigned, name
-            assert not {"token", "download"} & assigned, name
+            assert {"session_token", _DOWNLOAD_HANDLERS[name]} <= assigned, name
+            assert not {"token", "download", "ref"} & assigned, name
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("zone", ["", "1"], ids=["row", "resumed-zone"])

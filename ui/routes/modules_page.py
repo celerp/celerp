@@ -1559,14 +1559,14 @@ def setup_routes(app):
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        ref = str(form.get("ref", ""))
+        download_ref = str(form.get("ref", ""))
         m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            await api.marketplace_install(session_token, ref)
+            await api.marketplace_install(session_token, download_ref)
         except APIError as e:
             # A download that is gone (expired or already used) offers Download
             # again; any other failure keeps Install for a retry.
-            kept = None if e.status == 410 else ref
+            kept = None if e.status == 410 else download_ref
             return _toast(
                 _marketplace_row(m, lang, installed, licensed, owner, download_ref=kept),
                 e.detail or str(e))
