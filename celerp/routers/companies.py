@@ -2151,12 +2151,11 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     """Stage a marketplace module for install: fetch it from the relay and hold
     the archive on disk, ready for a following Install. Installation owner only.
 
-    The relay enforces the gates at token issuance: a paid module needs an active
-    license, third-party code needs a passed security scan. Never-stuck by design:
-    every Download requests a FRESH one-time token, so any failure - relay down,
-    download interrupted - is fully recoverable by clicking Download again. The
-    bytes are staged only when their SHA-256 matches the install answer, under a
-    new opaque reference that Install takes back; nothing is installed until then.
+    A paid module needs an active license and a third-party module a passed
+    security scan. Every Download requests a fresh one-time token, so after any
+    failure (relay down, download interrupted) clicking Download again works. The
+    package is staged only when its SHA-256 matches the install answer, under a
+    new reference that Install takes; nothing is installed until then.
     """
     import asyncio
     import hashlib
@@ -2200,7 +2199,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
     if hashlib.sha256(data).hexdigest() != answer["sha256"]:
         raise HTTPException(status_code=502,
-                            detail="The downloaded package was incomplete or changed. Try again.")
+                            detail="The downloaded package does not match its listing. Try again.")
 
     ref = await asyncio.to_thread(
         marketplace_stage.write_stage, data, slug=answer["slug"], version=answer["version"],
