@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -285,6 +286,93 @@ async def test_third_party_migration_failure_records_load_error_and_rolls_back_w
             assert reg is None
     finally:
         eng.dispose()
+
+
+def _table_exists(name: str) -> bool:
+    eng = create_engine(_sync_url())
+    try:
+        with eng.connect() as c:
+            return c.execute(text("SELECT to_regclass(:n)"), {"n": name}).scalar() is not None
+    finally:
+        eng.dispose()
+
+
+@pytest.fixture
+def _probe_table():
+    """The name of a table a test's migration creates, dropped afterwards in case
+    the migration committed it."""
+    name = f"acme_probe_{uuid.uuid4().hex[:8]}"
+    yield name
+    eng = create_engine(_sync_url())
+    try:
+        with eng.begin() as c:
+            c.execute(text(f'DROP TABLE IF EXISTS "{name}"'))
+    finally:
+        eng.dispose()
+
+
+# Creates a prefixed table, then adds a file to its own module folder.
+_MIG_CHANGES_ITS_MODULE = """
+from pathlib import Path
+
+import sqlalchemy as sa
+from alembic import op
+
+
+def upgrade():
+    op.create_table("__TABLE__", sa.Column("id", sa.Integer(), primary_key=True))
+    Path(__file__).resolve().parents[2].joinpath("added.py").write_text("")
+"""
+
+
+async def test_migration_that_changes_its_module_is_rolled_back(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_CHANGES_ITS_MODULE.replace("__TABLE__", _probe_table)})
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert (pkg / "added.py").is_file()
+    assert pkg.name not in surviving
+    assert loader.MODULE_CHANGED in errors[pkg.name]
+    assert not _table_exists(_probe_table)
+
+
+_MIG_GUARD_PROBE = """
+import sqlalchemy as sa
+from alembic import op
+
+
+def upgrade():
+    op.create_table("__TABLE__", sa.Column("id", sa.Integer(), primary_key=True))
+"""
+
+
+async def test_migration_runs_inside_the_module_guard(_db_engine, tmp_path, monkeypatch, _probe_table):
+    """The migration runs inside the same guard as the module's import: a guard that
+    refuses the module as it closes rolls the migration back."""
+    entered: list[tuple[str, Path, bool]] = []
+
+    @contextmanager
+    def refusing_guard(pkg_name, pkg_path, *, trusted):
+        entered.append((pkg_name, Path(pkg_path), trusted))
+        yield
+        raise loader.ModuleLoadError("refused by the guard")
+
+    monkeypatch.setattr(loader, "_activating", refusing_guard)
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert [(n, p.resolve(), t) for n, p, t in entered] == [(pkg.name, pkg.resolve(), False)]
+    assert pkg.name not in surviving
+    assert "refused by the guard" in errors[pkg.name]
+    assert not _table_exists(_probe_table)
 
 
 async def test_migration_phase_uses_verified_first_party_behind_stale_shadow(

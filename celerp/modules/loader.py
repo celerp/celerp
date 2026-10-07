@@ -1498,8 +1498,9 @@ def _guarded_submit(self, fn, /, *args, **kwargs):
 
 @contextmanager
 def _activating(pkg_name: str, pkg_path: Path, *, trusted: bool):
-    """Run part of a third-party module's activation (its import, slot and route
-    setup). A protected import module code attempts meanwhile refuses the module."""
+    """Run part of a third-party module's activation (its migrations, import, slot
+    and route setup). A protected import module code attempts meanwhile refuses the
+    module."""
     global _unguarded
     if trusted:
         yield
