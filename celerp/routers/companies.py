@@ -2138,11 +2138,8 @@ def _marketplace_staging_dir() -> "Path":
 
 
 def _read_staged_marketplace(download: str) -> tuple[str, bytes, bool, bool]:
-    """The slug, bytes and trust flags of the download ``download`` names.
-    official/premium come from what the server recorded at download time, never
-    from the client: the client only hands back the download's token, so it
-    cannot promote a third-party module to official or a paid one to free.
-    """
+    """The slug, bytes and official/paid flags of the download ``download``
+    names, as recorded at download time."""
     from celerp.services import staged_downloads
 
     try:
@@ -2216,9 +2213,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
 
-    # Stage the bytes with the relay's trust verdict, so Install imports with
-    # the right official/paid flags without trusting the client or re-contacting
-    # the relay.
+    # Stage the bytes with the official/paid flags, so Install uses them.
     download = staged_downloads.stage(
         _marketplace_staging_dir(), body.slug, data,
         {"is_official": is_official, "is_paid": is_paid})
@@ -2232,8 +2227,8 @@ async def marketplace_install(
 ) -> dict:
     """Install a staged marketplace module through the shared importer. Installation owner only.
 
-    Reads the archive Download staged (and the trust flags the server recorded
-    beside it) and installs it exactly like every other module package. The
+    Reads the archive Download staged (and the official/paid flags recorded
+    with it) and installs it exactly like every other module package. The
     module lands DISABLED; enabling and restarting are the same deliberate steps
     in the Installed tab that a community module uses - the two tabs behave the
     same way once the package is on disk. A name mismatch is rejected and nothing
