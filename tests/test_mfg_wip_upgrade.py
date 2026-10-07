@@ -388,11 +388,11 @@ async def test_an_older_run_waits_for_a_work_in_progress_account(client, session
 async def test_accounting_places_stock_before_manufacturing_settles_its_runs():
     from pathlib import Path
 
-    from celerp.modules.loader import _topo_sort
+    from celerp.modules.loader import admit_modules
 
     root = Path(__file__).resolve().parents[1] / "default_modules"
-    paths = sorted((p for p in root.iterdir() if (p / "__init__.py").exists()), key=lambda p: p.name)
-    order = [p.name for p in _topo_sort(paths, {p.name for p in paths})]
+    names = {p.name for p in root.iterdir() if (p / "__init__.py").exists()}
+    order = [m.name for m in admit_modules(root, names).admitted]
     assert order.index("celerp-accounting") < order.index("celerp-manufacturing")
 
 

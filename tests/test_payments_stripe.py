@@ -20,7 +20,7 @@ from celerp.services.company_lock import locked_company
 
 # When Stripe reported a payment paid, and the books its page opened with.
 PAID = datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc)
-BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
+BOOKS = {"deposit_account": "1111", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
 
 
 def _h(token: str) -> dict:
@@ -454,11 +454,11 @@ async def _refused_deposit(client, session, tok, kind: str) -> str:
         return "4100"
     if kind == "inactive-bank":
         return await _bank(client, tok, active=False)
-    code = "1110" if "cash" in kind else await _bank(client, tok)
+    code = "1111" if "cash" in kind else await _bank(client, tok)
     if "archived" in kind:
         await _chart_changed(session, tok, code, is_active=False)
     else:
-        await _chart_changed(session, tok, code, account_type="liability" if code == "1110" else "revenue")
+        await _chart_changed(session, tok, code, account_type="liability" if code == "1111" else "revenue")
     return code
 
 
@@ -494,7 +494,7 @@ async def test_a_payment_page_opens_for_cash_or_an_active_bank(client, session, 
     monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
     tok = await _register(client)
     _, token = await _payable_invoice(client, tok)
-    code = "1110" if kind == "cash" else await _bank(client, tok)
+    code = "1111" if kind == "cash" else await _bank(client, tok)
     await _deposit_to(session, tok, code)
 
     assert (await client.get(f"/pay/{token}", follow_redirects=False)).status_code == 303
@@ -573,7 +573,7 @@ async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_defau
     tok = await _register(client)
     code = await _bank(client, tok)
     inactive = await _bank(client, tok, active=False)
-    for value in ("1110", code, ""):
+    for value in ("1111", code, ""):
         r = await client.patch("/companies/me", json={"settings": {key: value}},
                                headers=_h(tok))
         assert r.status_code == 200, (value, r.text)
@@ -1138,7 +1138,7 @@ async def test_a_payment_entered_by_hand_can_still_be_refunded_voided_or_deleted
     tok = await _register(client)
     eid, _ = await _payable_invoice(client, tok)
     r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110", "method": method,
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111", "method": method,
         "reference": "pi_card"})
     assert r.status_code == 200, r.text
 
@@ -1204,7 +1204,7 @@ async def test_a_payment_entered_by_hand_stays_the_users_when_stripe_later_repor
     eid, _ = await _payable_invoice(client, tok)
     cid = _company_id(tok)
     r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110", "method": "stripe",
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111", "method": "stripe",
         "reference": "pi_card"})
     assert r.status_code == 200, r.text
     assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",

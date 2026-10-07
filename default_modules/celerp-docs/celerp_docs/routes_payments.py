@@ -32,6 +32,7 @@ from celerp.services.account_roles import resolve
 from celerp.services.auth import get_current_company_id, get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone
 from celerp.services.doc_balance import outstanding_balance
+from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
 
@@ -94,7 +95,6 @@ async def require_online_deposit_account(session: AsyncSession, company_id, code
     the company that is its default deposit account or behind one of its active bank
     accounts. The bank account and the chart account are read FOR SHARE, so neither can be
     archived or retyped while a payment posts to them."""
-    from celerp_accounting.ledger_accounts import require_money_account
     from celerp_accounting.models import BankAccount
     default = await resolve(session, company_id, AccountRole.DEFAULT_DEPOSIT)
     try:
@@ -102,11 +102,12 @@ async def require_online_deposit_account(session: AsyncSession, company_id, code
                 BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
                 BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
             raise HTTPException(status_code=422, detail="No active bank account uses it.")
-        await require_money_account(session, company_id, code)
+        await require_settlement_account(session, company_id, code)
     except HTTPException as refused:
+        reason = refused.detail["message"] if isinstance(refused.detail, dict) else refused.detail
         raise HTTPException(status_code=422, detail=(
             f"Online payments can be deposited only to the default deposit account ({default}) or an active "
-            f"bank account; '{code}' is neither. {refused.detail}")) from None
+            f"bank account; '{code}' is neither. {reason}")) from None
 
 
 _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")

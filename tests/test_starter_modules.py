@@ -54,7 +54,7 @@ def _without(monkeypatch, *modules: str) -> None:
         monkeypatch.setitem(slots._slots, slot, [c for c in slots.get(slot) if c.get("_module") not in modules])
 
 
-def _load(module_dir, enabled) -> list:
+def _load(module_dir, enabled, *, admission=None) -> list:
     """Loading a module registers its projection handlers and start hooks."""
     from celerp.modules import slots
 
@@ -85,8 +85,8 @@ async def _start(monkeypatch) -> None:
     import celerp.main as main_mod
     from celerp.config import settings
 
-    async def _migrated(_engine, enabled):
-        return set(enabled), {}
+    async def _migrated(_engine, admission):
+        return admission
 
     monkeypatch.setattr("celerp.modules.migrations_runner.run_migration_phase", _migrated)
     monkeypatch.setattr("celerp.modules.loader.load_all", _load)
@@ -104,7 +104,9 @@ async def _start(monkeypatch) -> None:
     begin = MagicMock()
     begin.__aenter__ = AsyncMock(return_value=conn)
     begin.__aexit__ = AsyncMock(return_value=False)
-    with patch("celerp.main.lifecycle_engine", MagicMock(begin=MagicMock(return_value=begin))):
+    with patch("celerp.main.lifecycle_engine", MagicMock(begin=MagicMock(return_value=begin))), \
+         patch("celerp.migrations.compatibility.Fence.join", return_value=MagicMock()), \
+         patch("celerp.db_url.sync_url", return_value="postgresql://unused"):
         async with main_mod.lifespan(main_mod.app):
             pass
 

@@ -30,11 +30,13 @@ async def _company_without_module_settings(client, session) -> tuple[dict, str]:
 async def test_preset_keeps_every_running_module(client, session, monkeypatch, transport):
     from celerp.models.company import Company
     from celerp.modules import loader
+    from celerp.modules import registry
     from celerp.modules.registry import get_enabled
 
     running = set(loader.first_party_names())
     assert "celerp-manufacturing" in running
     monkeypatch.setattr(loader, "_loaded", [{"name": n} for n in sorted(running)])
+    monkeypatch.setattr(registry, "_configured_load_set", lambda: sorted(running))  # the installation's list
     headers, company_id = await _company_without_module_settings(client, session)
 
     if transport == "business-type":

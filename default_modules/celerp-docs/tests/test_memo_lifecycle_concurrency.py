@@ -153,7 +153,7 @@ async def _record_payment_seq(factory, company_id, user, memo_id, amount):
     async with factory() as s:
         await record_payment(
             memo_id, DocPaymentBody(amount=amount, payment_date="2026-06-20", method="cash",
-                                    bank_account="1110"),
+                                    bank_account="1111"),
             company_id=company_id, _=None, user=user, session=s)
 
 
@@ -374,7 +374,7 @@ async def test_close_record_payment_race_no_silent_unclose(_db_engine):
             try:
                 outcome["pay"] = await record_payment(
                     memo_id, DocPaymentBody(amount=5, payment_date="2026-06-21", method="cash",
-                                            bank_account="1110"),
+                                            bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is an allowed outcome
                 outcome["pay"] = exc
@@ -730,7 +730,7 @@ async def test_reopen_payment_race_serialized(_db_engine):
             try:
                 outcome["pay"] = await record_payment(
                     memo_id, DocPaymentBody(amount=3, payment_date="2026-06-22", method="cash",
-                                            bank_account="1110"),
+                                            bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (still closed) is an allowed outcome
                 outcome["pay"] = exc
@@ -821,7 +821,7 @@ async def test_payment_lock_order_no_abba_deadlock(_db_engine):
             try:
                 outcome["A"] = await record_payment(
                     memo_id, DocPaymentBody(amount=total, payment_date="2026-07-01",
-                                            method="cash", bank_account="1110"),
+                                            method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (already/fully paid) is allowed
                 outcome["A"] = exc
@@ -832,7 +832,7 @@ async def test_payment_lock_order_no_abba_deadlock(_db_engine):
             try:
                 outcome["B"] = await bulk_payment(
                     BulkPaymentBody(doc_ids=[memo_id], amount=total, payment_date="2026-07-01",
-                                    method="cash", bank_account="1110"),
+                                    method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (already/fully paid) is allowed
                 outcome["B"] = exc
@@ -908,7 +908,7 @@ async def test_close_bulk_payment_race_no_silent_unclose(_db_engine):
             try:
                 outcome["bulk"] = await bulk_payment(
                     BulkPaymentBody(doc_ids=[memo_id], amount=total, payment_date="2026-07-02",
-                                    method="cash", bank_account="1110"),
+                                    method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is allowed
                 outcome["bulk"] = exc

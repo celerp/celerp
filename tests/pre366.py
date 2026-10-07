@@ -132,18 +132,19 @@ def startup_hooks():
     """The bundled modules' start hooks registered, in the order the module loader loads
     them, for as long as the block runs."""
     from celerp.modules import slots
-    from celerp.modules.loader import _topo_sort, read_manifest
+    from celerp.modules.loader import admit_modules
 
     saved = {s: slots.get(s) for s in _START_SLOTS}
     for s in _START_SLOTS:
         slots._slots[s] = []
-    pkgs = sorted(p for p in (_ROOT / "default_modules").iterdir() if (p / "__init__.py").exists())
-    for pkg in _topo_sort(pkgs, {p.name for p in pkgs}):
-        manifest_slots = read_manifest(pkg).get("slots") or {}
+    root = _ROOT / "default_modules"
+    names = {p.name for p in root.iterdir() if (p / "__init__.py").exists()}
+    for module in admit_modules(root, names).admitted:
+        manifest_slots = module.manifest["slots"]
         for slot in _START_SLOTS:
             contribs = manifest_slots.get(slot) or []
             for c in contribs if isinstance(contribs, list) else [contribs]:
-                slots.register(slot, {**c, "_module": pkg.name, "_first_party": True})
+                slots.register(slot, {**c, "_module": module.name, "_first_party": True})
     try:
         yield
     finally:

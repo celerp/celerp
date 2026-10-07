@@ -4,7 +4,7 @@
 """Give the seeded chart's section headers their cash flow sections.
 
 Revision ID: c7f1a2b3d4e5
-Revises: o2d3e4f5a6b7
+Revises: u8j9k0l1m2n3
 Create Date: 2026-10-01
 
 The cash flow statement used to infer an account's section from its number. It
@@ -23,7 +23,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "c7f1a2b3d4e5"
-down_revision = "o2d3e4f5a6b7"
+down_revision = "u8j9k0l1m2n3"
 branch_labels = None
 depends_on = None
 

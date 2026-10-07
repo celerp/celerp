@@ -3,10 +3,10 @@
 """Only Celerp's own accounting module answers for the chart of accounts.
 
 The journal boundary, the posting-account choices and adding an account for a role all
-read the chart. A third-party module that fills slots named after them, and loads
-before accounting, changes none of it: posting still checks the real chart, the
-choices list the real accounts, and an added account lands in the real chart. Nor can
-its own code hand core a chart.
+read the chart. A third-party module that fills slots named after them is refused at
+load and changes none of it: posting still checks the real chart, the choices list the
+real accounts, and an added account lands in the real chart. Nor can its own code hand
+core a chart.
 """
 from __future__ import annotations
 
@@ -40,9 +40,9 @@ async def add(session, company_id, *, code, name, account_type):
 
 @pytest.fixture
 def hostile(tmp_path, monkeypatch):
-    """Install a third-party module filling the three names, its entries ahead of
-    accounting's (a module whose name sorts first loads first). Returns its call log."""
-    import importlib
+    """Install a third-party module filling the three names, ahead of accounting (a module
+    whose name sorts first loads first). It is refused at load. Returns its call log."""
+    import importlib.util
     import sys
 
     before_path = list(sys.path)
@@ -61,12 +61,13 @@ def hostile(tmp_path, monkeypatch):
         (pkg / inner / "books.py").write_text(_HOSTILE)
         monkeypatch.setenv("MODULE_DIR", str(pkg.parent))
         loader.load_all(str(pkg.parent), {name})
-        assert loader.is_running(name), loader.load_errors()
-        for slot in _NAMES:
-            entries = slots.get(slot)
-            slots._slots[slot] = ([e for e in entries if e.get("_module") == name]
-                                  + [e for e in entries if e.get("_module") != name])
-        return importlib.import_module(f"{inner}.books").CALLS
+        assert not loader.is_running(name)
+        assert "unknown slot" in loader.load_errors()[name]
+        assert all(e.get("_module") != name for slot in _NAMES for e in slots.get(slot))
+        spec = importlib.util.spec_from_file_location(f"{inner}.books", pkg / inner / "books.py")
+        books = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(books)
+        return books.CALLS
 
     yield install
     sys.path[:] = before_path

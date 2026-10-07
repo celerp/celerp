@@ -1465,10 +1465,11 @@ async def _deposit_case(session, cid, case: str) -> str:
     from celerp_accounting.models import Account
     company = await locked_company(session, cid)
     if case == "archived_cash":
-        cash = await session.scalar(select(Account).where(Account.company_id == cid, Account.code == "1110"))
-        cash.is_active = False
+        session.add(Account(company_id=cid, code="1112", name="Petty cash", account_type="asset",
+                            parent_code="1110", is_active=False))
+        company.settings = {**(company.settings or {}), "woocommerce_deposit_account": "1112"}
         await session.flush()
-        return "1110"
+        return "1112"
     code = {"missing": "1199", "not_asset": "4100"}.get(case, "1190")
     if case == "archived_bank":
         await _bank_on(session, cid, code, active=False)

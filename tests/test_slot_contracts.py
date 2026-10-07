@@ -88,5 +88,5 @@ def test_the_loader_refuses_a_guard_without_a_handler_and_registers_nothing_of_t
         'PLUGIN_MANIFEST = {"name": "acme_slot_nh", "version": "1.0", "slots": {'
         '"nav": {"label": "Acme", "href": "/acme", "order": 90}, "item_lineage_guard": {"note": "x"}}}')
     loader.load_all(tmp_path, {"acme_slot_nh"})
-    assert "handler" in loader.load_errors()["acme_slot_nh"]
+    assert "module.path:function" in loader.load_errors()["acme_slot_nh"]
     assert not [c for c in slots.get("nav") if c.get("_module") == "acme_slot_nh"]

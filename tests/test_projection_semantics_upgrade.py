@@ -261,6 +261,8 @@ async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_record
     assert before[2] == {STATUS_DOC_BACKFILL_KEY: None, COGS_BACKFILL_KEY: None}
     assert (await client.get(f"/manufacturing/{run}", headers=old["headers"])).status_code == 200
     monkeypatch.setattr(loader, "_loaded", [{"name": n} for n in sorted(loader.first_party_names())])  # a real start's
+    from celerp.modules import registry  # and the installation's load list a real start reads
+    monkeypatch.setattr(registry, "_configured_load_set", lambda: sorted(loader.first_party_names()))
     enabled = await client.post("/companies/me/modules/celerp-manufacturing/enable", headers=old["headers"])
     assert enabled.status_code != 503, enabled.text
     purged = await client.post("/companies/me/modules/celerp-manufacturing/purge-data", headers=old["headers"])

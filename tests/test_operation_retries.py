@@ -298,7 +298,7 @@ async def test_payment_sent_twice_at_once_is_recorded_once(_db_engine):
         await s.commit()
 
     def body() -> DocPaymentBody:
-        return DocPaymentBody(amount=40.0, payment_date=DATE, bank_account="1110",
+        return DocPaymentBody(amount=40.0, payment_date=DATE, bank_account="1111",
                               idempotency_key="pay-race")
 
     first, second = factory(), factory()
@@ -322,7 +322,7 @@ async def test_payment_sent_twice_at_once_is_recorded_once(_db_engine):
         async with factory() as s:
             row = await s.get(Projection, {"company_id": company_id, "entity_id": inv})
             assert [p["amount"] for p in row.state["payments"]] == [40.0]
-            assert await _account_net(s, company_id, "1110") == 40.0
+            assert await _account_net(s, company_id, "1111") == 40.0
     finally:
         await first.close()
         await second.close()

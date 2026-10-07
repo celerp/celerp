@@ -2792,12 +2792,6 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     # read, rejecting a closed memo via its status allowlist; the row lock serializes
     # this payment against a concurrent close or a second recorder on the same doc.
     key, digest = _operation("payment", entity_id, payload)
-    if payload.bank_account:
-        # The money goes to one of the company's own active asset accounts. The document is
-        # locked first, the same order every other payment takes the two rows in.
-        from celerp_accounting.ledger_accounts import require_money_account
-        await _get_doc(session, company_id, entity_id, for_update=True)
-        await require_money_account(session, company_id, payload.bank_account)
     entry, _amount = await apply_doc_payment(
         session, company_id, entity_id, payload.model_dump(exclude_none=True),
         source="api", actor_id=user.id, idempotency_key=key, request=digest,
@@ -3574,10 +3568,6 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     docs = [(doc_id, dict(rows[doc_id].state)) for doc_id in dict.fromkeys(payload.doc_ids) if doc_id in rows]
     if not docs:
         raise HTTPException(status_code=404, detail="No valid documents found")
-    if payload.bank_account:
-        from celerp_accounting.ledger_accounts import require_money_account
-        await require_money_account(session, company_id, payload.bank_account)
-
     contact_ids = {s.get("contact_id") for _, s in docs if s.get("contact_id")}
     if len(contact_ids) > 1:
         raise HTTPException(status_code=422, detail="All documents must belong to the same contact")

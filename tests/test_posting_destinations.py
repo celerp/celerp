@@ -253,7 +253,13 @@ async def test_a_batch_imported_bill_with_a_line_on_a_header_is_refused_alone(cl
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("why", ["header", "inactive"])
-async def test_a_transfer_into_a_bank_whose_account_cannot_take_a_posting_is_refused(client, auth, why):
+async def test_a_transfer_into_a_bank_whose_account_cannot_take_a_posting_is_refused(session, client, auth, why):
+    """An active bank's account cannot be archived through the app, so the inactive case is
+    one an earlier release left behind."""
+    from sqlalchemy import update
+
+    from celerp_accounting.models import Account
+
     headers = auth["headers"]
     [bank] = (await client.get("/accounting/bank-accounts", headers=headers)).json()["items"]
     r = await client.post("/accounting/bank-accounts", headers=headers, json={
@@ -264,7 +270,11 @@ async def test_a_transfer_into_a_bank_whose_account_cannot_take_a_posting_is_ref
     if why == "header":
         await _account(client, headers, f"{code}1", parent=code, account_type="asset")
     else:
-        assert (await _switch_off(client, headers, code)).status_code == 200
+        r = await _switch_off(client, headers, code)
+        assert r.status_code == 422 and "Archive the bank account" in r.json()["detail"], r.text
+        await session.execute(update(Account).where(
+            Account.company_id == auth["company_id"], Account.code == code).values(is_active=False))
+        await session.flush()
 
     _refused(await client.post("/accounting/transfers", headers=headers, json={
         "from_bank_id": bank["id"], "to_bank_id": savings["id"], "amount": 10, "date": "2026-03-01"}), why, code)
