@@ -581,13 +581,13 @@ def install_from_zip(data: bytes, *, official: bool = False,
                      expected: tuple[str, str] | None = None) -> dict:
     """Validate and install a module from zip bytes. Returns manifest summary.
 
-    `official` is set ONLY by the marketplace installer (relay-authenticated
-    download): it flips the celerp- prefix rule from forbidden to required.
+    `official` is set only by the marketplace installer: it flips the celerp-
+    prefix rule from forbidden to required.
     `premium` drops the license-gate marker for paid modules.
     `source` is recorded in the provenance sidecar and drives the source shield
     and newest-first ordering on the modules page.
-    `expected` is the (name, version) the package must declare; any other
-    package is refused before anything lands."""
+    `expected` is the (name, version) the package must declare; a package
+    declaring anything else is refused and nothing is installed."""
     if len(data) > MAX_ARCHIVE_BYTES:
         raise ModuleImportError("Archive is too large (limit 50 MB).")
     tmp_zip = None
