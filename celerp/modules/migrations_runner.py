@@ -16,8 +16,8 @@ Isolation of blast radius:
     module folder (``loader.module_migration_files``).
   - A third-party module whose migration fails is rolled back and refused,
     along with every module depending on it, its error reported as the module's
-    load error; a first-party module's failure re-raises, matching the loader's
-    trust policy.
+    load error; a first-party module's failure re-raises, as it does in the
+    loader.
   - Each per-module transaction bounds itself with SET LOCAL statement/lock
     timeouts, so a hung upgrade becomes a caught failure instead of a boot stall.
 """
