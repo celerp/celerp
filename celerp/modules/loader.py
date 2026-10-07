@@ -1210,6 +1210,10 @@ def load_all(
     # Every core table is on the metadata before any module code runs, so a table
     # a module adds is told apart from one it merely caused to be imported.
     import celerp.models  # noqa: F401
+    # Bytecode is written under the data directory, never beside module source,
+    # so processes sharing a module folder never find each other's compiled files.
+    from celerp.config import settings
+    sys.pycache_prefix = str(settings.data_dir.resolve() / "bytecode")
     # Module-contributed i18n catalogs are rebuilt from scratch on every pass,
     # exactly like _loaded above, so a re-scan (a module toggled off, or a
     # catalog changed) never leaves a stale or orphaned catalog behind. Lazy

@@ -2954,6 +2954,29 @@ def _stuck_bytecode():
         cache.chmod(0o700)
 
 
+def test_loading_a_module_writes_no_compiled_files_beside_its_source(
+        _modules, tmp_path, monkeypatch):
+    """Two processes loading the same module folder never see each other's bytecode."""
+    from celerp.config import settings
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": "from . import sub\n",
+                               f"{inner}/sub/__init__.py": ""})
+    (pkg / "__init__.py").write_text(
+        (pkg / "__init__.py").read_text() + f"import {inner}\n")
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+
+
 def test_module_whose_compiled_files_cannot_be_removed_is_refused(
         _modules, tmp_path, _stuck_bytecode):
     marker = tmp_path / "ran.txt"
