@@ -268,7 +268,11 @@ def _first_party_lock() -> dict[str, str]:
     only from this committed file - never from CELERP_TRUSTED_MODULE_DIRS or any
     directory listing - so no environment variable can grant first-party trust.
     """
-    path = _lock_path()
+    return _read_lock(_lock_path())
+
+
+def _read_lock(path: Path) -> dict[str, str]:
+    """The {module_name: content_digest} map in the lock at *path*, or {}."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -325,6 +329,31 @@ def first_party_names() -> frozenset[str]:
     lock is a demoted default - the scan reports that as a per-module fact so the
     UI can surface it without keeping any cross-render state."""
     return frozenset(_first_party_lock())
+
+
+def check_module_tree(tree: Path, lock_path: Path | None = None) -> list[str]:
+    """What is wrong with *tree*, a default_modules folder as shipped, measured
+    against the lock at *lock_path* (default: the one inside *tree*); empty when
+    nothing is. The lock inside *tree* must equal that lock, every module it
+    names must be present with matching content, and no other module may be
+    present."""
+    own = tree / "first_party.lock.json"
+    lock = _read_lock(lock_path or own)
+    if not lock:
+        return [f"no usable lock at {lock_path or own}"]
+    problems: list[str] = []
+    if lock_path is not None and _read_lock(own) != lock:
+        problems.append("the lock inside the tree differs from the expected lock")
+    for name, expected in sorted(lock.items()):
+        pkg = tree / name
+        if not (pkg / "__init__.py").is_file():
+            problems.append(f"{name}: missing")
+        elif module_content_digest(pkg) != expected:
+            problems.append(f"{name}: content does not match the lock")
+    if tree.is_dir():
+        problems += [f"{p.name}: not in the lock" for p in sorted(tree.iterdir())
+                     if (p / "__init__.py").is_file() and p.name not in lock]
+    return problems
 
 
 def demoted_first_party(enabled: set[str]) -> list[str]:

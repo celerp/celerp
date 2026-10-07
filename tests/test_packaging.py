@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -118,3 +119,94 @@ def test_removed_trust_symbols_have_no_readers():
             ["grep", "-rn", symbol, "celerp", "ui", "scripts"],
             cwd=str(REPO_ROOT), capture_output=True, text=True).stdout.strip()
         assert not hits, f"{symbol!r} still has readers:\n{hits}"
+
+
+# ── Packaged default_modules check ───────────────────────────────────────────
+
+CHECKER = REPO_ROOT / "scripts" / "check_packaged_modules.py"
+
+
+@pytest.fixture
+def packaged_tree(tmp_path):
+    """A copy of the shipped default_modules folder, laid out as the build packs it."""
+    tree = tmp_path / "app" / "default_modules"
+    shutil.copytree(DEFAULT_MODULES_DIR, tree,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    return tree
+
+
+def _check(tree, lock=LOCK_PATH):
+    from celerp.modules.loader import check_module_tree
+    return check_module_tree(tree, lock)
+
+
+def test_exact_packaged_module_tree_passes(packaged_tree):
+    assert _check(packaged_tree) == []
+    assert _check(packaged_tree, None) == []
+
+
+def test_packaged_tree_missing_a_locked_module_fails(packaged_tree):
+    name = sorted(json.loads(LOCK_PATH.read_text()))[-1]
+    shutil.rmtree(packaged_tree / name)
+
+    assert _check(packaged_tree) == [f"{name}: missing"]
+
+
+def test_packaged_tree_with_a_modified_locked_module_fails(packaged_tree):
+    name = sorted(json.loads(LOCK_PATH.read_text()))[0]
+    with (packaged_tree / name / "__init__.py").open("a") as fh:
+        fh.write("\n# changed\n")
+
+    assert _check(packaged_tree) == [f"{name}: content does not match the lock"]
+
+
+def test_packaged_tree_with_an_extra_module_fails(packaged_tree):
+    (packaged_tree / "acme-extra").mkdir()
+    (packaged_tree / "acme-extra" / "__init__.py").write_text("PLUGIN_MANIFEST = {}\n")
+
+    assert _check(packaged_tree) == ["acme-extra: not in the lock"]
+
+
+@pytest.mark.parametrize("where", ["inside_tree", "expected"])
+def test_stale_or_wrong_lock_fails(where, packaged_tree, tmp_path):
+    lock = json.loads(LOCK_PATH.read_text())
+    name = sorted(lock)[0]
+    stale = {**lock, name: "0" * 64}
+    if where == "inside_tree":
+        (packaged_tree / "first_party.lock.json").write_text(json.dumps(stale))
+        problems = _check(packaged_tree)
+        assert problems == ["the lock inside the tree differs from the expected lock"]
+        assert _check(packaged_tree, None) == [f"{name}: content does not match the lock"]
+    else:
+        wrong = tmp_path / "wrong.lock.json"
+        wrong.write_text(json.dumps(stale))
+        assert _check(packaged_tree, wrong) == [
+            "the lock inside the tree differs from the expected lock",
+            f"{name}: content does not match the lock"]
+
+
+@pytest.mark.parametrize("lock", ["missing", "empty", "malformed"])
+def test_packaged_tree_without_a_usable_lock_fails(lock, packaged_tree):
+    path = packaged_tree / "first_party.lock.json"
+    if lock == "missing":
+        path.unlink()
+    else:
+        path.write_text("{}" if lock == "empty" else "[1, 2]")
+
+    assert _check(packaged_tree, None) == [f"no usable lock at {path}"]
+
+
+def test_packaged_module_checker_script_exit_codes(packaged_tree):
+    """The script the build runs against each packaged artifact: 0 on an exact
+    tree, 1 naming the module otherwise."""
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    run = [sys.executable, str(CHECKER), str(packaged_tree), "--lock", str(LOCK_PATH)]
+
+    ok = subprocess.run(run, capture_output=True, text=True, env=env)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+    name = sorted(json.loads(LOCK_PATH.read_text()))[0]
+    shutil.rmtree(packaged_tree / name)
+    bad = subprocess.run(run, capture_output=True, text=True, env=env)
+    assert bad.returncode == 1
+    assert f"{name}: missing" in bad.stdout

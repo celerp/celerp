@@ -457,6 +457,34 @@ def test_windows_installer_check_covers_every_starting_point():
     assert 'if ($code -ne 2) { Fail "older installer over 999.0.0' in run
 
 
+def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
+    """Every build platform checks the packaged default modules against the lock
+    with the packaged Python, then boots the packaged app with every module in
+    the lock enabled."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    by_name = dict(zip(names, steps))
+    check = by_name["Check bundled modules in the packaged artifact"]
+    assert "if" not in check
+    assert ('PYTHONPATH="$RES/app" "$PY" scripts/check_packaged_modules.py \\\n'
+            '  "$RES/app/default_modules" --lock default_modules/first_party.lock.json'
+            in check["run"])
+    for label, py in (("macos-latest)", "python-arm64/python/bin/python3"),
+                      ("windows-latest)", "python-x64/python/python.exe"),
+                      ("*)", "python-x64/python/bin/python3")):
+        assert f'PY="$RES/{py}"' in check["run"].split(label, 1)[1].split(";;", 1)[0]
+
+    unix = by_name["Boot smoke (launch the packaged app, require db:ok)"]
+    win = by_name["Boot smoke (Windows, require db:ok)"]
+    for smoke in (unix, win):
+        assert names.index(check["name"]) < names.index(smoke["name"])
+    assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
+            and "export ENABLED_MODULES" in unix["run"])
+    assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
+            in win["run"])
+    assert "set ENABLED_MODULES=$enabled" in win["run"]
+
+
 def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
     wf = _workflow("packaged-upgrade-smoke.yml")
     triggers = wf[True]  # YAML 1.1 reads the bare key `on` as True

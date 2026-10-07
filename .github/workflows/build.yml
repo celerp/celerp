@@ -591,9 +591,31 @@ jobs:
           fi
           echo "OK: third-party licenses present in packaged artifact"
 
+      # The packaged default modules must be exactly the ones the lock names, with
+      # the same content. The packaged Python runs the packaged loader's check.
+      - name: Check bundled modules in the packaged artifact
+        shell: bash
+        run: |
+          set -eo pipefail
+          case "${{ matrix.os }}" in
+            macos-latest)
+              RES="$(ls -d electron/dist/mac*/Celerp.app/Contents/Resources | head -1)"
+              PY="$RES/python-arm64/python/bin/python3" ;;
+            windows-latest)
+              RES="electron/dist/win-unpacked/resources"
+              PY="$RES/python-x64/python/python.exe" ;;
+            *)
+              RES="electron/dist/linux-unpacked/resources"
+              PY="$RES/python-x64/python/bin/python3" ;;
+          esac
+          PYTHONPATH="$RES/app" "$PY" scripts/check_packaged_modules.py \
+            "$RES/app/default_modules" --lock default_modules/first_party.lock.json
+
       # Boot smoke: actually LAUNCH the packaged app and require a real, DB-backed
       # boot before this build can ship. /health/ready does a live SELECT 1, so a
       # 200 {"db":"ok"} proves electron -> Python API -> embedded Postgres -> a query.
+      # Every module in the lock is enabled, and a bundled module that is missing
+      # or fails to load stops startup, so readiness also proves they all load.
       # We poll (never sleep) and fail fast if the process dies (crash on launch).
       - name: Boot smoke (launch the packaged app, require db:ok)
         if: runner.os != 'Windows'
@@ -621,6 +643,8 @@ jobs:
           API_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
           export CELERP_API_PORT="$API_PORT"
           export HOME="$RUNNER_TEMP/smoke-home"; mkdir -p "$HOME"   # hermetic, throwaway data dir
+          ENABLED_MODULES="$(python3 -c 'import json; print(",".join(sorted(json.load(open("../default_modules/first_party.lock.json")))))')"
+          export ENABLED_MODULES; echo "smoke: enabling $ENABLED_MODULES"
           LOG="$RUNNER_TEMP/smoke.log"
           LAUNCH=("$APP_BIN")
           [ "$RUNNER_OS" = "Linux" ] && LAUNCH=(xvfb-run -a "$APP_BIN")
@@ -746,7 +770,11 @@ jobs:
           $boot = Join-Path $pub "celerp-boot.out"
           $run  = Join-Path $pub "celerp-run.cmd"
           Remove-Item $boot -EA SilentlyContinue
-          Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$exe`" > `"$boot`" 2>&1"
+          # Every module in the lock is enabled; a bundled module that is missing or
+          # fails to load stops startup, so readiness also proves they all load.
+          $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
+          Write-Host "smoke: enabling $enabled"
+          Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
 
           Write-Host "smoke: launching installed $exe as standard user $u (default data dir $udd, output $boot)"
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
