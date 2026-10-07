@@ -102,7 +102,7 @@ async def _delete_first(committed_engine, component: str, deleted_ids: tuple[str
     deleted, saved = await _race(committed_engine, factory, company_id, user, _deleting(*deleted_ids),
                                  _save_naming(component))
 
-    assert deleted == {"deleted": len(deleted_ids)}
+    assert deleted == {"deleted": len(deleted_ids), "kept": 0}
     assert isinstance(saved, HTTPException) and saved.status_code == 422, saved
     assert component in str(saved.detail)
     states = await _states(factory, company_id)

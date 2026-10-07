@@ -6,6 +6,8 @@ decimals, counts and quantities as plain numbers (also a count of documents in o
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import re
 
 import pytest
@@ -73,5 +75,7 @@ async def test_verify_checks_read_as_names_and_formatted_figures(real_engine, mo
         if row["celerp"] is None:
             continue
         money = row["currency"] and row["check"] not in COUNTED
-        shown = fmt_money(row["celerp"], row["currency"]) if money else fmt_qty(row["celerp"])
+        # A credit-side balance shows as the amount it is.
+        value = -Decimal(row["celerp"]) + 0 if row.get("credit_normal") else row["celerp"]
+        shown = fmt_money(value, row["currency"]) if money else fmt_qty(value)
         assert f">{shown}</td>" in table, (row, shown)

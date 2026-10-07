@@ -373,13 +373,17 @@ async def test_broken_lineage_refuses_correction_atomically(client, session, aut
     await _assert_refused(client, session, auth, a, [c, e], fragment="lineage")
 
 
+async def sold_by_hand(session, auth, item: str) -> None:
+    """A lot an older release let a user mark sold by hand, with no sale document."""
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": item})
+    row.state = {**row.state, "status": "sold"}
+    await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_sale_with_no_document_saves_the_cost_and_posts_nothing(client, session, auth):
     item = await _item(client, auth, 100.0)
-    sku = (await _state(session, auth, item))["sku"]
-    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
-        {"entity_id": item, "sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
-    assert r.status_code == 200, r.text
+    await sold_by_hand(session, auth, item)
     jes = await _count(session, auth, event_type="acc.journal_entry.created")
     r = await _set_cost(client, auth, item, 120.0)
     assert r.status_code == 200, r.text

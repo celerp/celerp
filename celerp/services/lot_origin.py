@@ -474,7 +474,7 @@ async def _notify_locked(session: AsyncSession, company_id) -> None:
     """Older stock left unplaced cannot be sold or moved until its account is known, so a
     company whose upgrade a period lock holds back is told which lock and both ways on: choose
     the account now, or move the lock for the next start. Once per lock date; the notice is
-    marked read when the upgrade runs (_mark)."""
+    removed when the upgrade runs (_mark)."""
     from celerp.notifications import service as notification_service
     from celerp.services.company_lock import locked_company
 

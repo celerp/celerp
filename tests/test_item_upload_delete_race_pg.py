@@ -8,7 +8,7 @@ file and then find the item gone when it records the upload. The upload is refus
 item stays deleted with no event left for it, and the stored file and its thumbnail are
 deleted again. Runs on real PostgreSQL with local storage, the Delete committing while
 the upload is under way. The other way round, an upload that holds the item first is
-saved and the Delete waits for it, then deletes the item as usual.
+saved and the Delete waits for it, then refuses: a draft holding files is not deleted.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ async def _seed(factory) -> tuple[uuid.UUID, types.SimpleNamespace]:
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="admin", is_active=True))
         await emit_event(
             s, company_id=company_id, entity_id=_ITEM, entity_type="item", event_type="item.created",
-            data={"sku": "X", "name": "X", "quantity": 1, "sell_by": "piece", "status": "available"},
+            data={"sku": "X", "name": "X", "quantity": 1, "sell_by": "piece", "status": "draft"},
             actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
         )
         await s.commit()
@@ -199,9 +199,11 @@ async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_waits(co
         await _until_waiting_or_done(committed_engine, delete)
         assert not delete.done(), "the Delete did not wait for the upload holding the item"
         await commit_upload()
-        deleted = await asyncio.wait_for(delete, timeout=30)
+        with pytest.raises(HTTPException) as refused:
+            await asyncio.wait_for(delete, timeout=30)
+        await b.rollback()
 
     assert uploaded and stored
-    assert deleted == {"deleted": 1, "kept": 0}
-    assert await _rows(committed_engine, company_id, "projections") == 0
-    assert await _rows(committed_engine, company_id, "ledger") == 0
+    assert refused.value.status_code == 409 and "remove a draft's files" in refused.value.detail
+    assert await _rows(committed_engine, company_id, "projections") == 1
+    assert any(stored[0] in path for path in _company_files(tmp_path, company_id))

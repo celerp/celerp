@@ -227,6 +227,12 @@ def _anon_client(timeout: float | httpx.Timeout = 10.0) -> httpx.AsyncClient:
     return _local_client(None, timeout=timeout, follow_redirects=True, bulk=False)
 
 
+def _no_response(status: int, message: str) -> APIError:
+    """The request went out and no answer came back. The body carries the message as
+    well as the code, so a caller showing ``e.data`` shows the message."""
+    return APIError(status, message, {"code": NO_RESPONSE, "detail": message})
+
+
 @asynccontextmanager
 async def _local_error_mapping():
     """Map httpx transport errors to the shared APIError statuses/copy.
@@ -244,11 +250,11 @@ async def _local_error_mapping():
     except httpx.PoolTimeout as exc:
         raise APIError(503, saturation_message()) from exc
     except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
-        raise APIError(504, timeout_message(), {"code": NO_RESPONSE}) from exc
+        raise _no_response(504, timeout_message()) from exc
     except httpx.TimeoutException as exc:
         raise APIError(504, timeout_message()) from exc
     except (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
-        raise APIError(503, _connect_message(), {"code": NO_RESPONSE}) from exc
+        raise _no_response(503, _connect_message()) from exc
     except httpx.TransportError as exc:
         raise APIError(503, _connect_message()) from exc
 

@@ -110,8 +110,13 @@ async def legacy_cogs_refusal(session, company_id, doc_id: str, doc_state: dict)
     if _live_finalize_je(je_by_suffix) is None:
         return ("but the invoice has no posted entry of its own, so its cost of goods sold cannot be "
                 "adjusted automatically; correct it with a journal entry instead")
-    if _has_posted_cogs(list(je_by_suffix.values())):
+    company = await session.get(Company, company_id)
+    posted_cogs = _has_posted_cogs((company.settings if company else None) or {}, list(je_by_suffix.values()))
+    if posted_cogs:
         return None
+    if posted_cogs is None:
+        return ("whose entries hold a line on an account with no posting role, so whether its cost of "
+                "goods sold was posted cannot be told; correct it with a journal entry instead")
     conn = await session.connection()
     if not await conn.run_sync(lambda c: get_meta(c, COGS_BACKFILL_KEY)):
         return ("whose cost of goods sold Celerp has not posted yet; it is posted the next time "

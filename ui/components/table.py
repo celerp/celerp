@@ -852,6 +852,7 @@ def paired_display_cell(
     else:
         pri_disp = EMPTY
     sec_disp = display_unit(secondary_value) if secondary_value not in (None, "") else EMPTY
+    both_empty = pri_disp == EMPTY and sec_disp == EMPTY
     pri_span = (
         Span(
             pri_disp,

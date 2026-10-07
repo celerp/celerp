@@ -23,6 +23,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.events.engine import emit_event
 from celerp_docs import routes as docs
+from test_helpers import provision_company_books
 
 pytestmark = pytest.mark.asyncio
 
@@ -39,6 +40,7 @@ async def _seed(factory, settings: dict | None = None) -> tuple[uuid.UUID, types
         await s.flush()
         s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True))
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="admin", is_active=True))
+        await provision_company_books(s, company_id)
         await s.commit()
     return company_id, types.SimpleNamespace(id=user_id)
 
@@ -130,15 +132,19 @@ async def test_an_import_update_is_left_for_the_caller_to_commit(committed_engin
     assert note == "first"
 
 
-async def _import_racing_the_same_file(engine, factory, company_id, record: dict, entity_type: str, run):
+async def _import_racing_the_same_file(engine, factory, company_id, record: dict, entity_type: str, run,
+                                       write=None):
     """Session A writes the record and holds it uncommitted, as a second submission of
-    the same file would. Session B imports it: its check for already imported rows sees
-    nothing, then its write waits on A. A commits, and B's write turns out a duplicate."""
+    the same file would (``write``, when the import writes it its own way). Session B
+    imports it: its write waits on A. A commits, and B's write turns out a duplicate."""
     async with factory() as a, factory() as b:
-        await emit_event(a, company_id=company_id, entity_id=record["entity_id"], entity_type=entity_type,
-                         event_type=record["event_type"], data=record["data"], actor_id=None,
-                         location_id=None, source="import", idempotency_key=record["idempotency_key"],
-                         metadata_={})
+        if write is not None:
+            await write(a)
+        else:
+            await emit_event(a, company_id=company_id, entity_id=record["entity_id"], entity_type=entity_type,
+                             event_type=record["event_type"], data=record["data"], actor_id=None,
+                             location_id=None, source="import", idempotency_key=record["idempotency_key"],
+                             metadata_={})
         importing = asyncio.create_task(run(b))
         async with engine.connect() as probe:
             for _ in range(200):
@@ -199,14 +205,33 @@ async def test_a_run_imported_twice_at_once_is_counted_once(committed_engine):
 
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
-    rec = _record("mfg:RACE", "mfg.order.created", {"name": "Race run", "status": "draft"})
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id="item:out", entity_type="item", event_type="item.created",
+            data={"sku": "OUT", "name": "Output", "quantity": 0, "sell_by": "piece", "status": "available"},
+            actor_id=user.id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()))
+        await s.commit()
+    rec = _record("mfg:RACE", "mfg.order.created", {"description": "Race run", "output_item_id": "item:out"})
 
     async def run(s):
         return (await mfg.batch_import_manufacturing(
             mfg.MfgBatchImportRequest(records=[rec]), company_id=company_id, user=user,
             _=None, __=None, session=s)).model_dump()
 
-    counts = await _import_racing_the_same_file(committed_engine, factory, company_id, rec, "mfg_order", run)
+    async def first_import(a):
+        # A run import holds the company lock from its check to its commit, keyed by its creation key.
+        from celerp.services.company_lock import lock_company
+        from celerp_manufacturing import movements
+        await lock_company(a, company_id)
+        order, quantity = mfg._imported_order(rec["data"])
+        request = {"import": rec["entity_id"], **order, "quantity": quantity}
+        await emit_event(a, company_id=company_id, entity_id=rec["entity_id"], entity_type="mfg_order",
+                         event_type=rec["event_type"], data=rec["data"], actor_id=None, location_id=None,
+                         source="import", idempotency_key=f"mfg:created:{rec['idempotency_key']}",
+                         metadata_={"request": movements._fingerprint(request)})
+
+    counts = await _import_racing_the_same_file(
+        committed_engine, factory, company_id, rec, "mfg_order", run, write=first_import)
     assert (counts["created"], counts["skipped"]) == (0, 1), counts
 
 

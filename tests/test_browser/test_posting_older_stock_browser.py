@@ -125,12 +125,12 @@ def test_a_notice_asking_for_action_leads_the_bell_and_stands_out(page, ui_serve
 
     company = _company_id(fresh_company)
     tag = uuid.uuid4().hex[:6]
-    _db("INSERT INTO notifications (id, company_id, category, title, body, priority, read, created_at)"
-        " VALUES (gen_random_uuid(), %s, 'accounting', %s, 'Act on this', 'high', false,"
+    _db("INSERT INTO notifications (id, company_id, category, title, body, priority, created_at)"
+        " VALUES (gen_random_uuid(), %s, 'accounting', %s, 'Act on this', 'high',"
         " now() - interval '1 hour')", company, f"Act {tag}")
     for n in (1, 2):
-        _db("INSERT INTO notifications (id, company_id, category, title, body, priority, read, created_at)"
-            " VALUES (gen_random_uuid(), %s, 'ai', %s, 'Later news', 'medium', false, now())",
+        _db("INSERT INTO notifications (id, company_id, category, title, body, priority, created_at)"
+            " VALUES (gen_random_uuid(), %s, 'ai', %s, 'Later news', 'medium', now())",
             company, f"News {n} {tag}")
     page.goto(f"{ui_server}/", wait_until="domcontentloaded")
     page.click(".notif-bell-btn")

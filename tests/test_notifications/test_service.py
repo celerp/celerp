@@ -176,9 +176,9 @@ async def test_the_bell_lists_notices_that_ask_for_action_first(session, company
         await session.commit()
 
     bell = await svc.list_notifications(session, company.id, user.id, unread_only=True)
-    assert [n.title for n in bell] == ["Act", "News 2", "News 1"]
+    assert [n.title for n, _ in bell] == ["Act", "News 2", "News 1"]
     every = await svc.list_notifications(session, company.id, user.id)
-    assert [n.title for n in every] == ["News 2", "News 1", "Act"]
+    assert [n.title for n, _ in every] == ["News 2", "News 1", "Act"]
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,8 @@
 
 The books after a late correction must equal the books of the same history with
 the correction made just before the lot first left (sold, merged): every
-account's total, with the opening inventory reconciled in both. Each test builds
+account's total, with the opening inventory reconciled in both and the source of
+the lot's value change (opening equity, stock gains or shrinkage) taken as one. Each test builds
 both histories in two companies and compares them; where the second history
 cannot be reproduced exactly, the correction is refused and nothing changes.
 """
@@ -12,18 +13,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select, text
 
+from celerp.accounting_roles import INVENTORY_VALUE_ROLES, SEEDED_TARGETS, AccountRole as R
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from test_cost_restatement import (
-    TZ, _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state,
-    company_auth,
+    _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
+from test_helpers import TZ, company_auth
+
+# The accounts a finalize entry posts cost of goods sold to on a seeded chart.
+_COGS_ACCOUNTS = {SEEDED_TARGETS[R.COGS], *(SEEDED_TARGETS[r] for r in INVENTORY_VALUE_ROLES)}
 
 EDIT = "edit"   # where the late correction falls in a history
 
@@ -32,9 +38,17 @@ async def _new_company(session) -> dict:
     return await company_auth(session, uuid.uuid4(), uuid.uuid4())
 
 
+# Where a lot's value change comes from: opening equity when the lot is costed while
+# on hand (its opening inventory), stock gains or shrinkage when a sold lot is
+# corrected. The histories compared differ only in which of these sources it is.
+_VALUE_SOURCES = {SEEDED_TARGETS[r] for r in (R.RETAINED_EARNINGS, R.STOCK_GAIN, R.STOCK_SHRINKAGE)}
+
+
 async def _trial_balance(session, auth) -> dict[str, float]:
-    """Every account's posted total (debit positive), opening inventory reconciled."""
-    await auto_je.upsert_opening_inventory_je(session, company_id=auth["company_id"], user_id=auth["user_id"])
+    """Every account's posted total (debit positive), opening inventory reconciled, with
+    the sources of a lot's value change pooled as one."""
+    await auto_je.book_opening_inventory(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
     await session.commit()
     session.expire_all()
     rows = (await session.execute(select(Projection).where(
@@ -45,7 +59,8 @@ async def _trial_balance(session, auth) -> dict[str, float]:
         if (row.state or {}).get("status") != "posted":
             continue
         for e in row.state.get("entries", []):
-            totals[e["account"]] = totals.get(e["account"], 0.0) + float(e.get("debit") or 0) - float(e.get("credit") or 0)
+            account = "value sources" if e["account"] in _VALUE_SOURCES else e["account"]
+            totals[account] = totals.get(account, 0.0) + float(e.get("debit") or 0) - float(e.get("credit") or 0)
     return {acct: round(v, 2) for acct, v in sorted(totals.items()) if round(v, 2)}
 
 
@@ -77,9 +92,16 @@ async def _oracle(client, session, steps, lot: str, new_cost, *, before: int, la
 
 # -- History steps ---------------------------------------------------------
 
-def make(name: str, cost, qty: float = 1, **extra):
+def make(name: str, cost, qty: float = 1, consignment_flag: str | None = None, **extra):
     async def step(client, session, auth, ctx):
-        if extra:
+        if consignment_flag:
+            await make(name, cost, qty, sell_by="piece", **extra)(client, session, auth, ctx)
+            # Consigned-in goods are received through a consignment document; the lot it leaves.
+            row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": ctx[name]})
+            row.consignment_flag = consignment_flag
+            row.state = {**row.state, "consignment_flag": consignment_flag}
+            await session.commit()
+        elif extra:
             data = {"sku": f"SC-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": qty,
                     "sell_by": "piece", "status": "available", **extra}
             if cost is not None:
@@ -134,14 +156,14 @@ def revert_lines(*names: str, doc: str = "doc"):
 
 def mark_sold(name: str):
     async def step(client, session, auth, ctx):
-        r = await client.post(f"/items/{ctx[name]}/status", headers=auth["headers"], json={"new_status": "sold"})
-        assert r.status_code == 200, r.text
+        await sold_by_hand(session, auth, ctx[name])
     return step
 
 
 def reconcile_opening_inventory():
     async def step(client, session, auth, ctx):
-        await auto_je.upsert_opening_inventory_je(session, company_id=auth["company_id"], user_id=auth["user_id"])
+        await auto_je.book_opening_inventory(
+            session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
         await session.commit()
     return step
 
@@ -167,7 +189,7 @@ def legacy_invoice(*names: str, doc: str = "doc"):
         await invoice(*names, doc=doc)(client, session, auth, ctx)
         je_id = f"je:auto:{ctx[doc]}:fin"
         row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": je_id})
-        cogs_free = [e for e in row.state["entries"] if e["account"] not in ("5100", auto_je._INVENTORY_ACCT)]
+        cogs_free = [e for e in row.state["entries"] if e["account"] not in _COGS_ACCOUNTS]
         row.state = {**row.state, "entries": cogs_free}
         created = (await session.execute(select(LedgerEntry).where(
             LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == je_id,
@@ -183,11 +205,9 @@ def legacy_fulfil(*names: str, doc: str = "doc", cycle: int = 0):
     """Fulfilment that booked the lots' cost of sale on its own entry."""
     async def step(client, session, auth, ctx):
         await fulfil(*names, doc=doc)(client, session, auth, ctx)
-        total = 0.0
-        for n in names:
-            total += auto_je.lot_cost_of_sale(await _state(session, auth, ctx[n]))
+        lot_costs = {ctx[n]: auto_je.lot_cost_of_sale(await _state(session, auth, ctx[n])) for n in names}
         await auto_je.create_for_doc_fulfilled(session, company_id=auth["company_id"], user_id=auth["user_id"],
-                                               doc_id=ctx[doc], total_cogs=total, cycle=cycle)
+                                               doc_id=ctx[doc], lot_costs=lot_costs, cycle=cycle)
         await session.commit()
     return step
 
@@ -284,9 +304,8 @@ async def test_cost_added_to_a_merged_source(client, session, b_cost, result_sol
     if result_sold:
         steps.append(sell("c"))
     auth, ctx, _ = await _oracle(client, session, steps, "a", 30.0, before=2)
-    # A merge result costs the sum of its parts only when every part has a cost.
-    expected = None if b_cost is None else 30.0 + b_cost
-    assert (await _state(session, auth, ctx["c"])).get("cost_total") == expected
+    # A merge result costs the sum of its parts' recorded costs, a part with none adding nothing.
+    assert (await _state(session, auth, ctx["c"])).get("cost_total") == 30.0 + (b_cost or 0)
 
 
 @pytest.mark.asyncio
@@ -325,7 +344,14 @@ async def test_cost_added_to_a_sold_service_line(client, session):
 
 @pytest.mark.asyncio
 async def test_lot_marked_sold_by_hand_saves_the_cost_and_posts_nothing(client, session):
-    auth, ctx, response = await _oracle(client, session, [make("a", None), mark_sold("a")], "a", 60.0, before=1)
+    auth = await _new_company(session)
+    ctx: dict = {}
+    for step in (make("a", None), mark_sold("a")):
+        await step(client, session, auth, ctx)
+    jes = await _trial_balance(session, auth)
+    response = await _set_cost(client, auth, ctx["a"], 60.0)
+    assert response.status_code == 200, response.text
+    assert await _trial_balance(session, auth) == jes
     assert (await _state(session, auth, ctx["a"]))["cost_total"] == 60.0
     sku = (await _state(session, auth, ctx["a"]))["sku"]
     assert response.json()["cost_correction"] == {"cogs_adjusted": [], "cogs_unposted": [sku]}

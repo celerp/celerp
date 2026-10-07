@@ -75,6 +75,14 @@ async def _import_rows(client, auth, rows: list[dict], key: str | None = None):
         "rows": rows, "upsert": False, "idempotency_key": key or f"op-{uuid.uuid4().hex[:8]}"})
 
 
+async def main_location(client, headers: dict) -> None:
+    """Add the "Main" location the import rows name, so an import that only adds items can be undone."""
+    listed = await client.get("/companies/me/locations", headers=headers)
+    if not any(loc["name"] == "Main" for loc in listed.json()["items"]):
+        r = await client.post("/companies/me/locations", headers=headers, json={"name": "Main", "type": "warehouse"})
+        assert r.status_code == 200, r.text
+
+
 def _row(sku: str, cost: float | None, qty: int = 2) -> dict:
     row = {"sku": sku, "name": f"Imported {sku}", "sell_by": "piece", "quantity": str(qty), "location_name": "Main"}
     if cost is not None:

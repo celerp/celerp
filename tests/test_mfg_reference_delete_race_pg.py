@@ -133,7 +133,7 @@ async def test_delete_first_refuses_the_waiting_run(committed_engine):
 
     deleted, created = await _race(committed_engine, factory, company_id, user, _delete, _create)
 
-    assert deleted == {"deleted": 1}
+    assert deleted == {"deleted": 1, "kept": 0}
     assert isinstance(created, HTTPException) and created.status_code == 422, created
     assert _PART in created.detail
     part, runs, run_events = await _state(factory, company_id)

@@ -1129,6 +1129,9 @@ async def _bulk_run_action(session: AsyncSession, company_id, user_id, run_ids: 
             detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
             skipped.append({"id": run_id, "reason": detail.get("message"),
                             **{k: v for k, v in detail.items() if k in ("message_key", "params")}})
+        except ValueError as e:
+            # A refused journal entry rolls back everything the run wrote, as a refusal does.
+            skipped.append({"id": run_id, "reason": failure_reason(e)})
     return {"done": done, "skipped": skipped}
 
 

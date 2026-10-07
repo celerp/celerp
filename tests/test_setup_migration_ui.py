@@ -805,8 +805,8 @@ async def test_verify_page_names_records_and_formats_figures(ui, router, fake_ap
     assert r.status_code == 200
     page = _visible(r)
     for text in ("Payables control: 2100 Accounts payable", "Payables by supplier: Northwind Supplies",
-                 "Inventory quantity: Blue widget (WID)", "Document status: Bill, Awaiting Payment",
-                 "Document count: Invoice (USD)", "Settlement allocation: Payments"):
+                 "Inventory quantity: Blue widget (WID)", "Document status: Bill: Awaiting Payment",
+                 "Document count: Invoice (USD)", "Settlement allocation: Payment"):
         assert text in page, text
     # Business-normal sign: a payable balance reads as the amount owed, at currency precision.
     for figure in ("$1,875.40", "$310.50", "$0.00", "$2,200.50"):

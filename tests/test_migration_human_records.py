@@ -63,8 +63,12 @@ async def test_supplier_payment_reads_as_payment_made(real_engine, real_client, 
     """RED before the change: money paid on a bill was listed as 'Payment received'."""
     books = await _migrated(real_engine, monkeypatch, tmp_path)
     bill = books.id("PurchaseInvoice", "BILLU")
+    chart = (await real_client.get("/accounting/chart", headers=books.headers)).json()["items"]
+    parents = {a["parent_code"] for a in chart}
+    bank = next(a["code"] for a in chart if a["is_active"] and a["code"] not in parents
+                and a["account_type"] == "asset" and "cash" in a["name"].lower())
     paid = await real_client.post(f"/docs/{bill}/payment", headers=books.headers, json={
-        "amount": 12.0, "payment_date": "2026-01-20", "bank_account": "1111"})
+        "amount": 12.0, "payment_date": "2026-01-20", "bank_account": bank})
     assert paid.status_code == 200, paid.text
     feed = (await real_client.get("/dashboard/activity", headers=books.headers)).json()["activities"]
     entry = next(a for a in feed if a["event_type"] == "doc.payment.received" and a["entity_id"] == bill)

@@ -53,6 +53,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _BK_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _BK_MODULE = "zz-widgets"
+
 _BK_PREFIX = "zz_"
 _BK_CODE_MARKER = "zz-widget-code-body-7f3a"
 _BK_DROPPED_SETTINGS = ("role_grants", "ai_memory", "lock_date_set_by", "reorder_alert_email", "column_prefs",
@@ -80,6 +81,12 @@ def _bk_running_version(monkeypatch, name: str, version: str) -> None:
 def _bk_not_running(monkeypatch, name: str) -> None:
     from celerp.modules import loader
     monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != name])
+
+
+def _bk_unsupported() -> str:
+    """The export refusal for a table of the test module: it names the module, never the table."""
+    from celerp.modules.loader import module_label
+    return _bk_cb().UNSUPPORTED_MODULE.format(label=module_label(_BK_MODULE))
 
 
 def _bk_cb():
@@ -995,7 +1002,7 @@ async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_droppi
                                "company_id uuid not null references companies(id) on delete cascade, note text)")
     try:
         async with maker(real_engine)() as s:
-            plan = await cb._classify(s, strict=True)
+            plan = await cb._classify(s, cb.installed_modules(), strict=True)
         assert "zz_widgets" in plan.blocked and "zz_widgets" not in plan.owners
         await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id, note) VALUES (:i, :c, 'kept')",
                       i=uuid.uuid4(), c=cid)
@@ -1168,8 +1175,7 @@ async def test_a_key_one_partition_holds_stops_the_export(real_engine, real_clie
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_widgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
@@ -1227,8 +1233,7 @@ async def test_a_key_naming_a_partition_of_a_carried_table_stops_the_export(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_widgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
@@ -1271,8 +1276,7 @@ async def test_a_table_inheriting_from_a_carried_table_stops_the_export(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == (f"The zz-widgets module keeps data in {table} in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
@@ -2051,10 +2055,10 @@ async def test_only_a_table_kept_out_of_reach_refuses_the_hold(real_engine, time
         await _bk_drop(real_engine, "zz_gadgets")
 
 
-async def test_a_refusal_names_a_carried_table_as_the_catalog_does(
+async def test_a_carried_table_another_schema_inherits_from_is_refused(
         real_engine, real_client, tmp_path, monkeypatch):
-    """A table of another schema inherits from the carried table "zz_Gadgets". The refusal
-    names the carried table quoted, as the catalog names tables, so it reads one way only."""
+    """A table of another schema inherits from the carried table "zz_Gadgets". The backup is
+    refused naming the module that keeps the table, never the table."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={"zz_Gadgets": "include"})
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
@@ -2067,8 +2071,7 @@ async def test_a_refusal_names_a_carried_table_as_the_catalog_does(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ('The zz-widgets module keeps data in "zz_Gadgets" in a form Celerp cannot '
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_Gadgets")
@@ -2117,8 +2120,7 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
         assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
@@ -2149,8 +2151,7 @@ async def test_a_carried_table_the_role_cannot_read_is_refused_whole(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
         assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
@@ -2302,28 +2303,29 @@ _BK_ODD = ('CREATE TABLE "zz_Gadgets" (id uuid primary key, company_id uuid not 
            'references companies(id) on delete cascade, note text)')
 
 
-async def test_a_module_table_not_declared_is_named_as_the_catalog_does(
+async def test_a_module_table_not_declared_names_the_module(
         real_engine, real_client, tmp_path, monkeypatch):
-    """The module keeps "zz_Gadgets" without saying whether it belongs in a backup. The
-    refusal names it quoted, as the catalog names tables."""
+    """The module keeps a record of this company in "zz_Gadgets" without saying whether it
+    belongs in a backup. The refusal names the module, never the table."""
+    from celerp.modules.loader import module_label
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={})
-    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
     try:
         await _bk_sql(real_engine, _BK_ODD)
+        await _bk_sql(real_engine, """INSERT INTO "zz_Gadgets" VALUES (gen_random_uuid(), :c, 'kept')""", c=cid)
 
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ('The zz-widgets module has not said whether "zz_Gadgets" belongs in a '
-                                      "company backup. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_cb().UNDECLARED.format(label=module_label(_BK_MODULE))
     finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 
 
 async def test_a_carried_table_a_restore_cannot_name_is_refused(real_engine, real_client, tmp_path, monkeypatch):
     """The module keeps its records in "zz_Gadgets", a name a restore does not take. The
-    backup is refused naming the table, with nothing written, rather than written for a
+    backup is refused naming the module, with nothing written, rather than written for a
     restore to call damaged."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={"zz_Gadgets": "include"})
@@ -2335,8 +2337,7 @@ async def test_a_carried_table_a_restore_cannot_name_is_refused(real_engine, rea
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ('The zz-widgets module keeps data in "zz_Gadgets" in a form Celerp cannot '
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 

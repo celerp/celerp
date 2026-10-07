@@ -354,7 +354,7 @@ class _Restatement:
     repriced: dict[str, list[dict]]          # lot id -> per-invoice-line COGS changes
     lots: list[str]                          # the item and every merge result it reads
     docs: list[str]                          # the invoices it adjusts
-    resold: dict[str, float]                 # invoice without allocations -> COGS change
+    resold: dict[str, dict[str, float]]      # invoice without allocations -> COGS change per inventory account
     unposted: list[str]                      # lots sold by hand, whose cost no entry carries
     sold: list[tuple[str, str, float]]       # (lot id, inventory account, change in its cost of sale)
 
@@ -459,7 +459,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     # change in its unit cost. Two invoices can both allocate one lot before either
     # ships it, so a sold lot can still be allocated on another invoice.
     repriced: dict[str, list[dict]] = {}
-    resold: dict[str, float] = {}
+    resold: dict[str, dict[str, float]] = {}
     unposted: list[str] = []
     sold: list[tuple[str, str, float]] = []
     if cost_changed:
@@ -477,7 +477,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 elif sale.doc_id is None:
                     unposted.append(lot_label(before, lot_id))
                 elif not sale.allocated and change:
-                    resold[sale.doc_id] = resold.get(sale.doc_id, 0.0) + change
+                    by_account, account = resold.setdefault(sale.doc_id, {}), lot_account(before)
+                    by_account[account] = by_account.get(account, 0.0) + change
                 if sale.doc_id is not None and change:
                     sold.append((lot_id, lot_account(before), change))
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
@@ -622,6 +623,8 @@ async def cost_correction_notice(session: AsyncSession, company_id, entry: Ledge
     )).scalars().all()
     adjusted = []
     for metadata_ in rows:
+        if "cogs_delta" not in metadata_:
+            continue   # the sold lot's own value change, booked before its invoice is adjusted
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": metadata_.get("doc_id")})
         doc_state = (doc.state or {}) if doc is not None else {}
         adjusted.append({"doc_number": doc_state.get("doc_number") or doc_state.get("ref_id") or metadata_.get("doc_id"),
@@ -3504,21 +3507,8 @@ async def import_items(
             schema_changed = await _merge_category_schemas(session, company_id, inferred)
 
     counts = outcome.route_counts(cap_rejections=False)
-    reversible = False
-    if batch_id:
-        from celerp_inventory.models_import_batch import ImportBatch
-
-        batch = await session.get(ImportBatch, uuid.UUID(batch_id))
-        side_effects = bool(plan.locations_to_create or schema_changed or outcome.lasting_effects)
-        if counts["created"] or counts["updated"]:
-            # Reversible only when this run wrote the whole entry and did nothing but
-            # create its items; an entry that grew over several runs cannot show that.
-            batch.reversible = batch.row_count == counts["created"] and not counts["updated"] and not side_effects
-        elif side_effects:
-            # A retry that wrote no item can still change what Undo would leave behind
-            # (category fields it may now add, say); once not reversible, never again.
-            batch.reversible = False
-        reversible = batch.reversible
+    reversible = await _record_reversible(
+        session, batch_id, counts, bool(plan.locations_to_create or schema_changed or outcome.lasting_effects))
     await session.commit()
 
     return BatchImportResult(
@@ -3946,6 +3936,25 @@ async def write_import_batch(
             outcome.lasting_effects.add("demo_items")
 
     return outcome, (str(batch.id) if batch is not None else None)
+
+
+async def _record_reversible(session: AsyncSession, batch_id: str | None, counts: dict, side_effects: bool) -> bool:
+    """Record on the import's Import History entry whether Undo can return the company to
+    its state before it (ImportBatch.reversible), and return it."""
+    if not batch_id:
+        return False
+    from celerp_inventory.models_import_batch import ImportBatch
+
+    batch = await session.get(ImportBatch, uuid.UUID(batch_id))
+    if counts["created"] or counts["updated"]:
+        # Reversible only when this run wrote the whole entry and did nothing but
+        # create its items; an entry that grew over several runs cannot show that.
+        batch.reversible = batch.row_count == counts["created"] and not counts["updated"] and not side_effects
+    elif side_effects:
+        # A retry that wrote no item can still change what Undo would leave behind
+        # (category fields it may now add, say); once not reversible, never again.
+        batch.reversible = False
+    return batch.reversible
 
 
 async def commit_import_batch(

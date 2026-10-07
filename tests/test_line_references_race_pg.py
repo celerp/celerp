@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from migration_support import auth, maker
+from test_posting_roles_ingress import main_location
 from test_posting_roles_race_pg_draft import _company, _ok, _race, race  # noqa: F401  (race is a fixture)
 
 pytestmark = pytest.mark.asyncio
@@ -24,6 +25,7 @@ async def _imported(engine, client, tok: str, cid, sku: str) -> tuple[str, str]:
     """An item brought in by an import that can still be undone: (batch id, item id)."""
     from celerp.models.projections import Projection
 
+    await main_location(client, auth(tok))
     r = await client.post("/items/import/rows", headers=auth(tok), json={"rows": [
         {"sku": sku, "name": "Imported", "sell_by": "piece", "quantity": "1", "cost_price": "10",
          "location_name": "Main"}], "upsert": False, "idempotency_key": f"undo-{sku}"})

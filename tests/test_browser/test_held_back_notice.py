@@ -46,15 +46,15 @@ def held(api_server):
 
     def hold(cause: HeldBack) -> None:
         app.state.data_current, app.state.held_back = False, cause
-        _db("UPDATE notifications SET read = true WHERE title = %s", (TITLE,))
+        _db("DELETE FROM notifications WHERE title = %s", (TITLE,))
         _db("INSERT INTO notifications (id, company_id, category, title, body, action_url, i18n,"
-            " priority, read, created_at) SELECT gen_random_uuid(), id, 'system', %s, %s, %s, %s,"
-            " 'high', false, now() FROM companies",
+            " priority, created_at) SELECT gen_random_uuid(), id, 'system', %s, %s, %s, %s,"
+            " 'high', now() FROM companies",
             (TITLE, cause.notice()["message"], cause.action_url, json.dumps(cause.notice_keys())))
 
     yield hold
     app.state.data_current, app.state.held_back = True, None
-    _db("UPDATE notifications SET read = true WHERE title = %s", (TITLE,))
+    _db("DELETE FROM notifications WHERE title = %s", (TITLE,))
 
 
 @pytest.mark.parametrize("cause", list(_CAUSES))

@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from migration_support import auth
+from test_posting_roles_ingress import main_location
 from test_posting_roles_race_pg_draft import (  # noqa: F401  (race is a fixture)
     _available, _books, _company, _draft, _draft_entries, _move, _ok, _race, _state, race,
 )
@@ -117,6 +118,7 @@ async def test_a_quotation_waiting_on_an_import_undo_never_names_an_erased_item(
 
     client, hold = race
     cid, tok = await _company(committed_engine)
+    await main_location(client, auth(tok))
     r = await client.post("/items/import/rows", headers=auth(tok), json={"rows": [
         {"sku": "UNDO-Q", "name": "Imported", "sell_by": "piece", "quantity": "1", "cost_price": "10",
          "location_name": "Main"}], "upsert": False, "idempotency_key": "undo-quote"})

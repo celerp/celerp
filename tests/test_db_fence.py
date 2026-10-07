@@ -649,7 +649,9 @@ def test_a_migrate_that_lost_its_fence_after_restamping_makes_no_further_change(
     """`celerp migrate` restamps a database whose stamp disagrees with its schema and
     then upgrades it one revision at a time. When it loses the fence between the
     restamp and the upgrade and a newer version opens the database, the upgrade
-    changes nothing: neither the revision's DDL nor the stamp past it."""
+    stops naming that version and stamps nothing past the restamp. The newer server
+    finishes starting only once that migration has ended, as no two schema changes
+    run at once."""
     from alembic.script import ScriptDirectory
     from celerp.alembic_config import build_alembic_config
 
@@ -663,15 +665,20 @@ def test_a_migrate_that_lost_its_fence_after_restamping_makes_no_further_change(
         _kill_fence_backend(url, OLDER)
         _send(old, "go")
         _paused(old, 2)
-        new = _hold(NEWER, "api", url, tmp_path / "new")
-        assert _meta(url)["newest_celerp_version"] == NEWER
+        new = _spawn(NEWER, "api", url, tmp_path / "new")
+        deadline = time.monotonic() + 120
+        while _meta(url).get("newest_celerp_version") != NEWER:
+            assert new.poll() is None and time.monotonic() < deadline, _output(new)
+            time.sleep(0.2)
+        time.sleep(2)
+        assert "READY" not in _output(new).splitlines(), _output(new)
         before = snapshot(url)
+        assert before["alembic_version"] == [(head.down_revision,)]
         _send(old, "go")
         old.wait(timeout=60)
         assert old.returncode != 0, _output(old)
         assert f"last opened with Celerp {NEWER}" in _output(old), _output(old)
-        assert snapshot(url) == before
-        assert snapshot(url)["alembic_version"] == [(head.down_revision,)]
+        _ready(new)
         assert [ln for ln in _output(old).splitlines() if ln.startswith("STAMPED")] == [
             f"STAMPED {head.down_revision}"], _output(old)
     finally:

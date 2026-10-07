@@ -134,16 +134,16 @@ async def test_a_connector_update_after_a_hard_delete_does_not_bring_the_item_ba
     assert await _events(committed_engine, company_id) == []
 
 
-async def test_the_next_sync_after_a_hard_delete_creates_the_item_again(committed_engine):
+async def test_the_next_sync_after_a_hard_delete_leaves_the_item_erased(committed_engine):
     factory = _factory(committed_engine)
     company_id = await _seed(factory)
     async with factory() as s:
         await _delete(s, company_id)
     async with factory() as s:
-        assert await _sync(s, company_id, name="Ring v2") == "created"
+        assert await _sync(s, company_id, name="Ring v2") == "noop"
         await s.commit()
 
-    assert (await _state(committed_engine, company_id))["name"] == "Ring v2"
+    assert await _state(committed_engine, company_id) is None
 
 
 # -- a re-import is an update -----------------------------------------------------------

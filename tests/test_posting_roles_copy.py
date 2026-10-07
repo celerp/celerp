@@ -110,8 +110,12 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     old_lot = await _lot(real_client, tok, "LOT-OLD", 30.0)
     older_lot = await _lot(real_client, tok, "LOT-OLDER", 25.0)
     async with maker(real_engine)() as s:  # booked before lots recorded their account
-        await s.execute(text("UPDATE projections SET state = (state::jsonb - 'inventory_account_code')::json "
-                             "WHERE company_id = :c AND entity_id = :e"), {"c": source, "e": older_lot})
+        lot = {"c": source, "e": older_lot}
+        await s.execute(text("DELETE FROM ledger WHERE company_id = :c AND entity_id = :e "
+                             "AND event_type = 'item.inventory_account.recorded'"), lot)
+        for table, column in (("projections", "state"), ("ledger", "data")):
+            await s.execute(text(f"UPDATE {table} SET {column} = ({column}::jsonb - 'inventory_account_code')::json "
+                                 "WHERE company_id = :c AND entity_id = :e"), lot)
         await s.commit()
     await _remap(real_client, tok, "receivable", "1121", "1100")
     await _remap(real_client, tok, "inventory_opening", "1131", "1130")
