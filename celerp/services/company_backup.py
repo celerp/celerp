@@ -149,6 +149,8 @@ NOT_A_MEMBER = ("This backup was already restored here as a company you are not 
                 + _NOT_RESTORED)
 DEACTIVATED = ("This backup was already restored here as a company that is now deactivated. Reactivate it instead."
                + _NOT_RESTORED)
+RESTORE_RUNNING = "A restore of this backup is already running." + _NOT_RESTORED
+OTHER_RESTORE_RUNNING = "A restore of another backup of this company is already running." + _NOT_RESTORED
 STALE_PREVIEW = ("Something changed since this preview. Check the updated preview before continuing."
                  + _NOT_RESTORED)
 ATTACHMENT_MISSING = "This company backup refers to an attachment file it does not carry." + _NOT_RESTORED
@@ -1050,16 +1052,28 @@ async def reconcile_landings() -> None:
             await session.rollback()
 
 
-async def _lock(session: AsyncSession, backup_id: str, *, bootstrapping: bool) -> None:
-    """Wait for any other restore of the same backup (and, when bootstrapping, any other
-    first-owner setup) to finish."""
+async def _wait_for(session: AsyncSession, lock) -> None:
+    """Take ``lock(session)``, waiting as long as its holder runs."""
     await session.execute(text("SET LOCAL lock_timeout = 0"))
     await session.execute(text("SET LOCAL statement_timeout = 0"))
-    if bootstrapping:
-        await bootstrap.lock_bootstrap(session)
-    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _lock_key(backup_id)})
+    await lock(session)
     await session.execute(text("SET LOCAL lock_timeout TO DEFAULT"))
     await session.execute(text("SET LOCAL statement_timeout TO DEFAULT"))
+
+
+async def _lock(session: AsyncSession, backup_id: str) -> None:
+    """Wait for any other restore or reactivation of this backup to finish."""
+    await _wait_for(session, lambda s: s.execute(text("SELECT pg_advisory_xact_lock(:k)"),
+                                                 {"k": _lock_key(backup_id)}))
+
+
+async def _claim(session: AsyncSession, backup_id: str, source: str) -> None:
+    """Claim this backup and the company it was made from for this transaction's restore,
+    refusing at once while another restore of either runs: two of them would create the
+    same company twice, or one under the same web address the other is creating."""
+    for key, refusal in ((backup_id, RESTORE_RUNNING), (f"source:{source}", OTHER_RESTORE_RUNNING)):
+        if not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _lock_key(key)}):
+            raise BackupError(409, refusal)
 
 
 async def _is_member(session: AsyncSession, user_id, company_id) -> bool:
@@ -1315,9 +1329,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
     async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session:
         try:
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+            # Before any lock that waits, so a restore started twice is refused at once.
+            await _claim(session, backup_id, source)
             await hold_module_state(session)
             checked = await check_backup(session, backup)
-            await _lock(session, backup_id, bootstrapping=mode == "bootstrap")
+            if mode == "bootstrap":
+                await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
             if mode == "bootstrap":
                 plan = _planned(backup_id, mode, CREATE)
                 found = await _bootstrap_existing(session, backup_id, owner_account)
@@ -1417,7 +1434,7 @@ async def reactivate_restored(path: Path, *, mode: str, user_id, current_company
     members. Anyone else gets the same refusal as for any company they may not open."""
     backup = await asyncio.to_thread(read_backup, path)
     async with AsyncSession(bind=celerp.db.engine, expire_on_commit=False) as session:
-        await _lock(session, backup.manifest["backup_id"], bootstrapping=False)
+        await _lock(session, backup.manifest["backup_id"])
         plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
         if plan.action == REFUSE:
             raise BackupError(409, NOT_A_MEMBER)

@@ -3646,22 +3646,44 @@ async def test_reopening_same_backup_does_not_clone(real_engine, real_client, tm
     assert await count(real_engine, "projections", "company_id = :c", c=uuid.UUID(first["company_id"])) == 1
 
 
-async def test_concurrent_restore_creates_one_company(real_engine, real_client, tmp_path, monkeypatch):
-    """Two simultaneous restores of the same backup create exactly one company."""
+@pytest.mark.parametrize("second", ["the same backup", "another backup of the same company"])
+async def test_concurrent_restore_creates_one_company(real_engine, real_client, tmp_path, monkeypatch, second):
+    """A restore started while another restore of the same backup (a button pressed twice),
+    or of another backup of the same company, is still running is refused at once with a
+    plain answer, without waiting for it. Exactly one company is created, and no lock is
+    left behind."""
+    from test_company_settings_race_pg import _hold_first_call
+
+    from celerp.services import company_backup as cb
+
     _r_env(tmp_path, monkeypatch)
     _, _, tok = await _r_source(real_engine)
     data = await download(real_client, tok)
+    other = data if second == "the same backup" else await download(real_client, tok)
     previews = []
-    for _ in range(2):
-        r = await read(real_client, tok, data)
+    for backup in (data, other):
+        r = await read(real_client, tok, backup)
         assert r.status_code == 200, r.text
         previews.append(confirm(r))
-    results = await asyncio.gather(*(
-        real_client.post("/company-backups/restore", json=p, headers=auth(tok)) for p in previews))
-    assert sorted(r.status_code for r in results) == [200, 201], [r.text for r in results]
-    assert len({r.json()["company_id"] for r in results}) == 1
-    assert await count(real_engine, "companies") == 2
-    assert await count(real_engine, "projections", "company_id = :c", c=uuid.UUID(results[0].json()["company_id"])) == 1
+    companies = await count(real_engine, "companies")
+    paused, release = _hold_first_call(monkeypatch, cb, "provision_restored_company")
+    first = asyncio.create_task(real_client.post("/company-backups/restore", json=previews[0], headers=auth(tok)))
+    try:
+        await asyncio.wait_for(paused.wait(), timeout=10)
+        refused = asyncio.create_task(
+            real_client.post("/company-backups/restore", json=previews[1], headers=auth(tok)))
+        answered, _ = await asyncio.wait({refused}, timeout=10)
+    finally:
+        release.set()
+    created = _r_created(await first)
+    assert answered, "the second restore waited for the first"
+    r = await refused
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == (cb.RESTORE_RUNNING if second == "the same backup" else cb.OTHER_RESTORE_RUNNING)
+    assert await count(real_engine, "companies") == companies + 1
+    assert await count(real_engine, "projections", "company_id = :c", c=uuid.UUID(created["company_id"])) == 1
+    assert await count(real_engine, "pg_locks", "locktype = 'advisory' AND database = "
+                       "(SELECT oid FROM pg_database WHERE datname = current_database())") == 0
 
 
 # ── Id remapping and reference policy ────────────────────────────────────────
@@ -4730,7 +4752,12 @@ async def test_team_carry_concurrent_membership_change_revalidated(real_engine, 
 
 async def test_concurrent_same_backup_restore_with_existing_destination(real_engine, real_client, tmp_path,
                                                                         monkeypatch):
-    """Two simultaneous Settings restores onto an existing company add the missing team once."""
+    """A Settings restore onto an existing company started while another is adding the
+    missing team is refused at once; the team is added once."""
+    from test_company_settings_race_pg import _hold_first_call
+
+    from celerp.services import company_backup as cb
+
     _r_env(tmp_path, monkeypatch)
     _, cid, tok = await _r_source(real_engine)
     await _ln_team(real_engine, cid, "viewer", "manager")
@@ -4738,10 +4765,17 @@ async def test_concurrent_same_backup_restore_with_existing_destination(real_eng
     dest = await _ln_add_company(real_client, tok, data)
     companies = await count(real_engine, "companies")
     previews = [await _ln_preview(real_client, tok, data) for _ in range(2)]
-    results = await asyncio.gather(*(_ln_commit(real_client, tok, p) for p in previews))
-    assert [r.status_code for r in results] == [200, 200], [r.text for r in results]
-    assert {r.json()["company_id"] for r in results} == {dest}
-    assert sorted(r.json()["team_members"] for r in results) == [0, 2]
+    paused, release = _hold_first_call(monkeypatch, cb, "_apply_existing")
+    first = asyncio.create_task(_ln_commit(real_client, tok, previews[0]))
+    try:
+        await asyncio.wait_for(paused.wait(), timeout=10)
+        refused = await asyncio.wait_for(_ln_commit(real_client, tok, previews[1]), timeout=10)
+    finally:
+        release.set()
+    added = await first
+    assert added.status_code == 200, added.text
+    assert added.json()["company_id"] == dest and added.json()["team_members"] == 2
+    assert (refused.status_code, refused.json()["detail"]) == (409, cb.RESTORE_RUNNING)
     assert len(await _r_memberships(real_engine, dest)) == 3
     assert await count(real_engine, "companies") == companies
 
