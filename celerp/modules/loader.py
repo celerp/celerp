@@ -1002,8 +1002,8 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     celerp- name that is not a default, a free official verdict or a valid
     license (_license_refusal). Survivors are then put in dependency order, a
     module whose dependency is missing or refused being refused too. A
-    first-party module that fails a rule stops startup, as a default module is
-    the product.
+    first-party module that is missing or fails a rule stops startup, as a
+    default module is the product.
     """
     refused: dict[str, str] = {}
     candidates: dict[str, AdmittedModule] = {}
@@ -1012,6 +1012,8 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     for name in sorted(enabled - CORE_FOLDED):
         pkg_path = resolve_runtime_module_path(name, module_dir)
         if pkg_path is None:
+            if name in first_party_names():
+                raise ModuleLoadError(f"Default module {name!r} is not installed.")
             continue
         installed.add(name)
         try:
