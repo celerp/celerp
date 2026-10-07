@@ -211,13 +211,33 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     return findings
 
 
+# A draft deleted while other records still name it: hidden, used by nothing, and
+# brought back as a draft by Restore.
+DELETED = "deleted"
+
+
 def _draft(state: dict) -> bool:
     return str(state.get("status") or "").lower() == "draft"
 
 
+def is_deleted(state: dict) -> bool:
+    return str(state.get("status") or "").lower() == DELETED
+
+
+def refuse_deleted(state: dict, ref: str = "") -> None:
+    """The one refusal for using a deleted item (409), naming the fix. Names the item by
+    its SKU, or by ``ref`` (its id) when it has none."""
+    if is_deleted(state):
+        sku = state.get("sku") or ref or state.get("entity_id") or ""
+        raise HTTPException(status_code=409, detail=refusal(
+            "item.deleted", f"{sku} was deleted: restore it from the Deleted list to use it.", sku=sku))
+
+
 def refuse_draft(state: dict, ref: str = "") -> None:
     """The one refusal for moving a draft lot (409): a draft is not stock until it is made
-    available. Names the lot by its SKU, or by ``ref`` (its id) when it has none."""
+    available. Names the lot by its SKU, or by ``ref`` (its id) when it has none. A
+    deleted lot is refused as deleted (refuse_deleted)."""
+    refuse_deleted(state, ref)
     if _draft(state):
         sku = state.get("sku") or ref or state.get("entity_id") or ""
         raise HTTPException(status_code=409, detail=refusal(
@@ -241,7 +261,8 @@ def is_authoring_event(event_type: str) -> bool:
 def ever_became_stock(events) -> bool:
     """Whether an item's history, as (event_type, data) pairs, shows it was ever stock:
     any status other than draft it was created in, set to or edited to, its books
-    recorded, or any event beyond authoring (a movement, a document, a count)."""
+    recorded, or any event beyond authoring (a movement, a document, a count). Deleted
+    is a draft's own status, not stock."""
     for event_type, data in events:
         data = data or {}
         if event_type == RECORDED or not is_authoring_event(event_type):
@@ -251,7 +272,7 @@ def ever_became_stock(events) -> bool:
         else:
             change = (data.get("fields_changed") or {}).get("status")
             status = change.get("new") if isinstance(change, dict) else data.get("status")
-        if status and str(status).lower() != "draft":
+        if status and str(status).lower() not in ("draft", DELETED):
             return True
     return False
 
@@ -260,11 +281,19 @@ def assert_draft_not_circulated(event_type: str, transition: Transition) -> None
     """A draft is not stock: only authoring may touch it, and it leaves draft only by
     becoming available. Checked on the state the row lock applied the event to, so a
     reservation, fulfilment or any other movement that read the lot as available before
-    it was returned to draft is refused, not applied to the draft."""
+    it was returned to draft is refused, not applied to the draft. A draft may also be
+    deleted, and a deleted item takes nothing but its Restore, back to draft."""
     before = transition.before
-    if before is None or not _draft(before):
+    if before is None:
         return
-    if is_authoring_event(event_type) and str(transition.after.get("status") or "").lower() in ("draft", "available"):
+    after = str(transition.after.get("status") or "").lower()
+    if is_deleted(before):
+        if event_type == "item.status.set" and after == "draft":
+            return
+        refuse_deleted(before)
+    if not _draft(before):
+        return
+    if is_authoring_event(event_type) and after in ("draft", "available", DELETED):
         return
     refuse_draft(before)
 
@@ -474,7 +503,7 @@ async def _notify_locked(session: AsyncSession, company_id) -> None:
     """Older stock left unplaced cannot be sold or moved until its account is known, so a
     company whose upgrade a period lock holds back is told which lock and both ways on: choose
     the account now, or move the lock for the next start. Once per lock date; the notice is
-    marked read when the upgrade runs (_mark)."""
+    removed when the upgrade runs (_mark)."""
     from celerp.notifications import service as notification_service
     from celerp.services.company_lock import locked_company
 
@@ -675,11 +704,12 @@ async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     account is checked as any new entry's is (account_roles.resolve_many), and the entry
     is dated the business day the operation recorded (``ts``) or today. The period lock is
     the event's own (events.engine). With Accounting off, nothing is booked. Anything
-    refused here rolls the event back with it."""
+    refused here rolls the event back with it. Deleting a draft and restoring it book
+    nothing: neither side is stock."""
     from celerp.services.auto_je import entry_day
 
     before, after = transition.before, transition.after
-    if before is None or _draft(before) == _draft(after):
+    if before is None or _draft(before) == _draft(after) or is_deleted(before) or is_deleted(after):
         return None
     settings = await current_settings(session, entry.company_id)
     if SCHEMA_KEY not in settings:

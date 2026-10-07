@@ -18,6 +18,8 @@ from __future__ import annotations
 import ast
 import io
 import json
+import os
+import subprocess
 import sys
 import time
 import uuid
@@ -30,6 +32,8 @@ import pytest
 
 from celerp.modules import loader, slots
 from celerp.modules.importer import PREMIUM_MARKER, install_from_zip
+from celerp.modules.license import UNVERIFIED_MODULE_REFUSAL
+from test_modules.bytecode import plant_bytecode
 
 
 @pytest.fixture(autouse=True)
@@ -166,7 +170,7 @@ def _case_migrations_symlink_escape(base, marker, monkeypatch):
     manifest["migrations"] = "linked"
     (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
     assert not tmp_marker.exists()
-    return pkg, "outside"
+    return pkg, "Cannot check the module's files."
 
 
 def _case_route_outside_module(base, marker, monkeypatch):
@@ -190,7 +194,7 @@ def _case_protected_import_in_init(base, marker, monkeypatch):
     pkg = _migrating_module(base, f"acme-{_uid()}", marker)
     init = pkg / "__init__.py"
     init.write_text("from celerp.ai import quota\n" + init.read_text())
-    return pkg, "celerp.ai.quota"
+    return pkg, "celerp.ai"
 
 
 def _case_unlicensed_premium(base, marker, monkeypatch):
@@ -256,7 +260,7 @@ def _relay_identity(monkeypatch, data_dir: Path, detail: dict | None = None,
 def _case_celerp_name_without_a_licence(base, marker, monkeypatch):
     pkg = _migrating_module(base, f"celerp-{_uid()}", marker)
     _relay_identity(monkeypatch, base.parent / "data")
-    return pkg, "license"
+    return pkg, "verify this module"
 
 
 def _case_package_of_a_core_module(root):
@@ -358,8 +362,17 @@ def _case_lineage_guard_wrong_arity(base, marker, monkeypatch):
                              ), "session, entry, transition"
 
 
+def _lock_as_first_party(monkeypatch, base: Path, keep=lambda pkg: True) -> None:
+    """The first-party lock lists the module folders under base that keep selects,
+    at their content when the lock is read."""
+    monkeypatch.setattr(loader, "_first_party_lock", lambda: {
+        p.name: loader.module_content_digest(p) for p in base.iterdir() if p.is_dir() and keep(p)})
+
+
 def _case_in_production_wrong_arity(base, marker, monkeypatch):
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
+    # First-party content that is not one of the listed defaults is refused, not fatal.
+    _lock_as_first_party(monkeypatch, base)
+    monkeypatch.setattr(loader, "first_party_names", lambda: frozenset())
     return _migrating_module(base, f"acme-{_uid()}", marker,
                              slots={"inventory_in_production": [{"handler": "{inner}.wip:held"}]},
                              code={"wip.py": "async def held(session, company_id, extra):\n    return 0\n"}
@@ -939,7 +952,7 @@ async def test_second_module_shipping_the_same_import_name_is_refused(
 async def test_first_party_module_fills_a_first_party_slot(
         _db_engine, _modules, tmp_path, monkeypatch):
     """Control for the refusal above: Celerp's own module fills the slot."""
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
+    _lock_as_first_party(monkeypatch, _modules)
     marker = tmp_path / "ran.txt"
     pkg, _ = _case_in_production_not_first_party(_modules, marker, monkeypatch)
 
@@ -979,7 +992,7 @@ async def test_first_party_module_claims_its_projection_prefix_first(
     uid = _uid()
     other = _projecting_module(_modules, tmp_path / "a.txt", "acme.", folder=f"acme-a{uid}")
     own = _projecting_module(_modules, tmp_path / "b.txt", "acme.", folder=f"acme-b{uid}")
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: pkg_path.name == own.name)
+    _lock_as_first_party(monkeypatch, _modules, lambda pkg: pkg.name == own.name)
 
     admission, loaded = await _admit_and_migrate(_db_engine, _modules, {other.name, own.name})
 
@@ -1167,9 +1180,23 @@ def test_load_all_refuses_before_import(variant, _modules, tmp_path):
     assert pkg.name in loader.load_errors()
 
 
-def test_runtime_manifest_must_match_the_admitted_one(_modules):
-    """Admission reads the literal (and refuses one the source changes); a
-    manifest changed after admission cannot widen what was admitted."""
+_ALWAYS_EQUAL_STR = (
+    "class _Same(str):\n"
+    "    def __eq__(self, other):\n"
+    "        return True\n"
+    "    __hash__ = str.__hash__\n")
+
+
+@pytest.mark.parametrize("rewrite", [
+    "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n"
+    "PLUGIN_MANIFEST['slots'] = {'nav': {'key': 'x', 'label': 'X', 'href': '/x'}}\n",
+    _ALWAYS_EQUAL_STR
+    + "PLUGIN_MANIFEST['api_routes'] = _Same('celerp.routers.health')\n"
+    + "PLUGIN_MANIFEST['version'] = _Same('9.9.9')\n",
+], ids=["extra-route-and-slot", "always-equal-str"])
+def test_module_rewriting_its_manifest_loads_with_the_admitted_one(_modules, rewrite, files_unchecked):
+    """Admission reads the literal; a module that rewrites PLUGIN_MANIFEST while
+    it imports still loads, with only what was admitted."""
     inner = f"acme_{_uid()}"
     folder = f"acme-{_uid()}"
     pkg = _write_module(
@@ -1178,12 +1205,17 @@ def test_runtime_manifest_must_match_the_admitted_one(_modules):
     admission = loader.admit_modules(str(_modules), {folder})
     assert admission.refused == {}
     init = pkg / "__init__.py"
-    init.write_text(init.read_text() + "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n")
+    init.write_text(init.read_text() + rewrite)
 
     loaded = loader.load_all(str(_modules), {folder}, admission=admission)
 
-    assert loaded == []
-    assert "differs" in loader.load_errors()[folder]
+    assert folder not in loader.load_errors()
+    assert [m["name"] for m in loaded] == [folder]
+    manifest = loaded[0]
+    assert manifest.get("api_routes") is None
+    assert type(manifest["version"]) is str and manifest["version"] == "1.0.0"
+    assert manifest["slots"] == {}
+    assert not any(e.get("_module") == folder for e in slots.get("nav"))
 
 
 # ── A2: route entrypoint provenance ──────────────────────────────────────────
@@ -1309,7 +1341,7 @@ def test_setup_rebound_to_another_module_is_refused(_modules, tmp_path):
     assert "top-level def" in loader.load_errors()[folder]
 
 
-def test_setup_rebound_after_admission_is_refused_at_registration(_modules, tmp_path):
+def test_setup_rebound_after_admission_is_refused_at_registration(_modules, tmp_path, files_unchecked):
     """Registration proves where the setup it calls comes from, not what admission
     read: a route file changed after admission to rebind its setup to another
     module's function never runs that function as this module's."""
@@ -1348,7 +1380,7 @@ def test_owned_route_module_registers(_modules):
 
 
 def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tmp_path):
-    """`from celerp.ai import quota` imports the protected celerp.ai.quota as
+    """`from celerp.ai import quota` reaches the protected celerp.ai namespace as
     surely as `import celerp.ai.quota` does."""
     marker = tmp_path / "setup_ran.txt"
     folder = f"acme-{_uid()}"
@@ -1360,7 +1392,231 @@ def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tm
 
     assert not marker.exists()
     assert not loader.is_running(folder)
-    assert "celerp.ai.quota" in loader.load_errors()[folder]
+    assert "celerp.ai" in loader.load_errors()[folder]
+
+
+_GETATTR_RAISES = "class G:\n    def __getattr__(self, n):\n        raise RuntimeError('no context')\n"
+_CORE_SERVICES = ("celerp.services.company_files", "celerp.services.company_backup",
+                  "celerp.services.company_backup_files", "celerp.services.company_reset",
+                  "celerp.services.migrations", "celerp.routers.company_backup")
+
+# What a third-party module's own code does as it activates, and whether it loads
+# (True) or the text its refusal names.
+_AI = "protected BSL internals (celerp.ai)"
+_CREDENTIALS = "protected BSL internals (celerp.credentials)"
+_ISSUERS = ("issue_token_pair", "create_access_token", "create_refresh_token")
+_ACTIVATIONS = {
+    "direct-import": ("import celerp.ai.llm  # noqa: F401\n", {}, _AI),
+    "computed-import": ("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-builtin-import": ("__import__('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-importlib-import": ("import importlib\nimportlib.__import__('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-import-in-own-submodule": (
+        "from .reach import VALUE  # noqa: F401\n",
+        {"reach.py": "import importlib\nllm = importlib.import_module('celerp.' + 'ai.llm')\nVALUE = 1\n"}, _AI),
+    "computed-import-in-a-class-body": (
+        "import importlib\nclass C:\n    llm = importlib.import_module('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-import-in-a-default": (
+        "import importlib\ndef f(llm=importlib.import_module('celerp.' + 'ai.llm')):\n    return llm\n", {}, _AI),
+    "computed-import-on-a-thread": (
+        "import importlib, threading\nt = threading.Thread(target=lambda: importlib.import_module('celerp.' + 'ai.llm'))\n"
+        "t.start()\nt.join()\n", {}, _AI),
+    "computed-import-in-a-thread-pool": (
+        "import importlib\nfrom concurrent.futures import ThreadPoolExecutor\nwith ThreadPoolExecutor(1) as pool:\n"
+        "    try:\n        pool.submit(importlib.import_module, 'celerp.' + 'ai.llm').result()\n"
+        "    except ImportError:\n        pass\n", {}, _AI),
+    "computed-import-through-asyncio-to-thread": (
+        "import asyncio, importlib\ntry:\n    asyncio.run(asyncio.to_thread(importlib.import_module, 'celerp.' + 'ai.llm'))\n"
+        "except ImportError:\n    pass\n", {}, _AI),
+    **{f"credential-issuer-{name}": (f"from celerp.credentials import {name}  # noqa: F401\n", {}, _CREDENTIALS)
+       for name in _ISSUERS},
+    "own-submodule": ("from .helper import VALUE  # noqa: F401\n", {"helper.py": "VALUE = 1\n"}, True),
+    "unusual-import-arguments": (
+        "__import__('os', 5)\nclass F:\n    def __iter__(self):\n        raise RuntimeError('no names')\n"
+        "__import__('json.decoder', fromlist=F())\n", {}, True),
+    "core-services": ("".join(f"import {s}  # noqa: F401\n" for s in _CORE_SERVICES), {}, True),
+    "core-service-called": (
+        "import asyncio\nfrom celerp.modules.api import ai_query\n"
+        "try:\n    asyncio.run(ai_query('q', 'c'))\nexcept Exception:\n    pass\n", {}, True),
+    "sys-modules-values": ("import sys\nHOLD = list(sys.modules.values())\n", {}, True),
+    "sys-modules-copy": ("import sys\nHOLD = dict(sys.modules)\n", {}, True),
+    "sys-modules-filtered": (
+        "import sys\nHOLD = [m for n, m in sys.modules.items() if n.startswith('celerp.' + 'ai')]\n", {}, True),
+    "sys-modules-lookup": ("import sys\nX = sys.modules.get('celerp.' + 'ai.llm')\n", {}, True),
+    "raising-object": (_GETATTR_RAISES + "X = G()\n", {}, True),
+    "raising-object-in-a-list": (_GETATTR_RAISES + "HOLD = [G()]\n", {}, True),
+}
+
+# The process states modules load in: the API and UI processes as they start, a
+# process that imported a protected internal first, and one that imported nothing.
+_VERDICT = """
+import faulthandler, json, sys, types
+faulthandler.dump_traceback_later(60, exit=True)
+process = sys.argv[2]
+if process == "preloaded":
+    import celerp.ai.llm  # noqa: F401
+elif process == "api":
+    import celerp.main  # noqa: F401
+elif process == "ui":
+    src = open("ui/app.py").read().split("# Register UI routes from the loaded modules.")[0]
+    app = types.ModuleType("ui.app")
+    app.__file__ = "ui/app.py"
+    sys.modules["ui.app"] = app
+    import ui  # noqa: F401
+    exec(compile(src, "ui/app.py", "exec"), app.__dict__)
+from pathlib import Path
+from celerp.modules import loader
+preloaded = bool([n for n in sys.modules if n.startswith("celerp.ai")])
+ui_routes = "celerp_ai.ui_routes" in sys.modules
+folders = set(json.loads(sys.argv[3]))
+loaded = {m["name"] for m in loader.load_all(sys.argv[1], folders)}
+errors = loader.load_errors()
+defaults = {p.name for p in Path("default_modules").iterdir() if (p / "__init__.py").exists()}
+loader.load_all("default_modules", defaults)
+print(json.dumps({"preloaded": preloaded, "ui_routes": ui_routes, "loads": {f: f in loaded for f in folders}, "errors": errors,
+                  "default_errors": loader.load_errors()}))
+"""
+_PROCESSES = ("preloaded", "fresh", "api", "ui")
+
+
+@pytest.mark.process
+@pytest.mark.timeout(120)  # four interpreters each load every default module; slower than the suite guard allows on a shared runner
+def test_module_gets_the_same_verdict_in_every_process(_modules, tmp_path):
+    """A protected import the module's own code attempts as it activates refuses it;
+    what core imports on its own behalf, and what is already loaded, do not count.
+    The API process has imported protected internals before modules load, the UI
+    process others, so each state must give every module the same verdict."""
+    import os
+    import subprocess
+
+    folders = {}
+    for case, (prelude, files, _) in _ACTIVATIONS.items():
+        folder = f"acme-{case}-{_uid()}"
+        _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                      files=files, init_prelude=prelude)
+        folders[folder] = case
+    repo = Path(__file__).resolve().parents[2]
+    # The licensed defaults ask the Marketplace; a relay address that refuses
+    # at once keeps every verdict independent of the network. With no module
+    # enabled, the UI process sets up its own routes without waiting for an API.
+    config = tmp_path / "config.toml"
+    config.write_text("[modules]\nenabled = []\n")
+    env = {**os.environ, "MODULE_DIR": str(_modules), "GATEWAY_HTTP_URL": "http://127.0.0.1:9", "GATEWAY_TOKEN": "",
+           "CELERP_CONFIG": str(config), "ENABLED_MODULES": ""}
+    logs = {p: (tmp_path / f"{p}.out", tmp_path / f"{p}.err") for p in _PROCESSES}
+    runs = {}
+    for p, (out, err) in logs.items():
+        with open(out, "w") as out_file, open(err, "w") as err_file:
+            runs[p] = subprocess.Popen([sys.executable, "-c", _VERDICT, str(_modules), p, json.dumps(list(folders))],
+                                       cwd=repo, env=env, stdin=subprocess.DEVNULL, stdout=out_file, stderr=err_file)
+    results = {}
+    for process, run in runs.items():
+        run.wait()
+        out, err = (path.read_text() for path in logs[process])
+        assert run.returncode == 0, (process, err[-4000:])
+        results[process] = json.loads(out.strip().splitlines()[-1])
+
+    assert results["preloaded"]["preloaded"] and results["api"]["preloaded"]
+    assert not results["fresh"]["preloaded"]
+    assert results["ui"]["ui_routes"]
+    expected = {case: verdict is True for case, (_, _, verdict) in _ACTIVATIONS.items()}
+    for process, result in results.items():
+        assert {folders[f]: v for f, v in result["loads"].items()} == expected, (process, result["errors"])
+        assert result["default_errors"] == {}, process
+    for folder, case in folders.items():
+        if not expected[case]:
+            assert _ACTIVATIONS[case][2] in results["fresh"]["errors"][folder], case
+
+
+def test_core_import_on_another_thread_is_not_charged_to_an_activating_module(_modules):
+    """While a module activates, core code on another thread imports a protected
+    internal; that import is not the module's, so the module still loads."""
+    import importlib
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude="import builtins\nbuiltins._acme_started.set()\nbuiltins._acme_release.wait(10)\n")
+    import builtins
+    builtins._acme_started, builtins._acme_release = started, release
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(loaded=loader.load_all(str(_modules), {folder})))
+    try:
+        worker.start()
+        assert started.wait(10)
+        importlib.import_module("celerp.ai.llm")
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        del builtins._acme_started, builtins._acme_release
+
+    assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
+
+
+def test_core_executor_job_during_an_activation_is_not_charged_to_the_module(_modules):
+    """While a module's activation is held, a core thread-pool job imports a
+    protected internal; the module did not start that work, so it still loads."""
+    import importlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    started, release = threading.Event(), threading.Event()
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude="import builtins\nbuiltins._acme_started.set()\nbuiltins._acme_release.wait(10)\n")
+    import builtins
+    builtins._acme_started, builtins._acme_release = started, release
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(loaded=loader.load_all(str(_modules), {folder})))
+    try:
+        worker.start()
+        assert started.wait(10)
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(importlib.import_module, "celerp.ai.llm").result(10)
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        del builtins._acme_started, builtins._acme_release
+
+    assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
+
+
+@pytest.mark.parametrize("other_state", ["disabled", "refused"])
+def test_protected_import_in_another_installed_modules_file_refuses_the_module(_modules, other_state):
+    """A file in any installed third-party module's folder is module code, whether
+    that module is enabled or not: a protected import it makes while a module
+    activates and runs it refuses the activating module."""
+    other = f"acme-other-{_uid()}"
+    _write_module(_modules, other, {"name": other, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  files={"reach.py": "import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n"},
+                  init_prelude="import celerp.ai.llm  # noqa: F401\n" if other_state == "refused" else "")
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude=f"import os, runpy\nrunpy.run_path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "
+                               f"{other!r}, 'reach.py'))\n")
+
+    loader.load_all(str(_modules), {folder, other} if other_state == "refused" else {folder})
+
+    assert not loader.is_running(folder)
+    assert not loader.is_running(other)
+    assert _AI in loader.load_errors()[folder]
+
+
+def test_module_with_a_linked_file_is_refused(_modules, tmp_path):
+    """A file in the module's folder that links to a file kept elsewhere cannot be
+    checked as the module's own, so the module is refused before it runs."""
+    folder = f"acme-{_uid()}"
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                        init_prelude="from . import linked  # noqa: F401\n")
+    (tmp_path / "linked.py").write_text("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n")
+    (pkg / "linked.py").symlink_to(tmp_path / "linked.py")
+
+    loader.load_all(str(_modules), {folder})
+
+    assert not loader.is_running(folder)
+    assert loader.load_errors()[folder] == "Cannot check the module's files."
 
 
 def test_locale_file_outside_the_module_is_not_registered(_modules):
@@ -1687,22 +1943,21 @@ async def test_route_failure_creates_none_of_the_module_tables(committed_engine,
 
 
 async def test_refused_module_creates_none_of_its_tables(committed_engine, _modules):
-    """Refused at load, after its code ran (the manifest changed after
-    admission, so it differs at runtime)."""
+    """Refused at load, after its code ran (a slot names a handler it lacks)."""
     folder = f"acme-{_uid()}"
     inner = f"acme_{_uid()}"
-    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"},
-                        {f"{inner}/__init__.py": "",
-                         f"{inner}/models.py": _MODELS.replace("{inner}", inner)},
-                        init_prelude=f"import {inner}.models")
-    admission = loader.admit_modules(str(_modules), {folder})
-    init = pkg / "__init__.py"
-    init.write_text(init.read_text() + "PLUGIN_MANIFEST['api_routes'] = 'celerp.routers.health'\n")
+    _write_module(_modules, folder,
+                  {"name": folder, "version": "1.0.0",
+                   "slots": {"on_modules_ready": {"handler": f"{inner}.hooks:missing"}}},
+                  {f"{inner}/__init__.py": "",
+                   f"{inner}/hooks.py": "x = 1\n",
+                   f"{inner}/models.py": _MODELS.replace("{inner}", inner)},
+                  init_prelude=f"import {inner}.models")
 
-    loader.load_all(str(_modules), {folder}, admission=admission)
+    loader.load_all(str(_modules), {folder})
     tables = await _created_tables(committed_engine)
 
-    assert "differs" in loader.load_errors()[folder]
+    assert folder in loader.load_errors()
     assert f"{inner}_things" not in tables
 
 
@@ -2094,7 +2349,7 @@ def test_celerp_module_with_no_verdict_is_refused_while_the_marketplace_is_unrea
     admission = loader.admit_modules(_modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
     assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
 
 
@@ -2180,7 +2435,7 @@ def test_never_activated_install_refuses_with_no_verdict_while_the_marketplace_i
     admission = loader.admit_modules(_modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
     assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
 
 
@@ -2249,7 +2504,7 @@ def test_module_metadata_does_not_affect_admission(
     admission = loader.admit_modules(_modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
     assert calls["licence"] == ([name] if activated else [])
     assert not (data / "license_cache" / f"{name}.free.json").exists()
 
@@ -2317,7 +2572,7 @@ def test_paid_marketplace_install_without_its_marker_is_refused_offline(
     admission = loader.admit_modules(modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
 
 
 def test_marketplace_install_unknown_to_the_marketplace_takes_the_licence_check(
@@ -2356,6 +2611,33 @@ def test_unconfirmed_module_refusal_is_not_shown_as_a_licence_on_another_compute
 
     assert "module-license-upsell" not in html
     assert "bought it on" not in html
+
+
+@pytest.mark.parametrize("activated", [True, False], ids=["activated", "never_activated"])
+def test_unverified_module_is_shown_as_not_loaded_with_its_reason(
+        activated, _modules, tmp_path, monkeypatch):
+    """A celerp- module installed before verdicts were kept, started offline:
+    Celerp keeps running, the module is not running, and the modules page shows
+    the reason with the failed badge."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.modules_page import _local_panel
+
+    _relay_identity(monkeypatch, tmp_path / "data", activated=activated)
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    assert loader.load_all(_modules, {name}) == []
+
+    assert not loader.is_running(name)
+    assert loader.load_errors()[name] == UNVERIFIED_MODULE_REFUSAL
+    row = {"name": name, "label": name, "version": "1.0.0", "author": "",
+           "enabled": True, "running": loader.is_running(name), "is_default": False,
+           "load_error": loader.load_errors().get(name)}
+    html = to_xml(_local_panel([row], "en", owner=True))
+    assert "Connect once to verify this module, then restart. It will work offline afterward." in html
+    assert "badge--danger" in html
+    assert "badge--active" not in html
 
 
 def test_refusal_log_says_why_the_module_did_not_load(_modules, tmp_path, monkeypatch, caplog):
@@ -2443,7 +2725,7 @@ def test_old_cache_dir_carries_no_free_verdict(_modules, tmp_path, monkeypatch):
     _relay_identity(monkeypatch, data, activated=False)
     monkeypatch.setenv("DATA_DIR", str(legacy))
 
-    assert "no valid license" in loader.admit_modules(_modules, {slug}).refused[slug]
+    assert loader.admit_modules(_modules, {slug}).refused[slug] == UNVERIFIED_MODULE_REFUSAL
     assert not (data / "license_cache" / f"{slug}.free.json").exists()
 
 
@@ -2484,7 +2766,7 @@ def test_default_names_are_not_licence_checked(tmp_path):
         raise AssertionError("a default module asked for relay credentials")
 
     for name in sorted(loader.first_party_names()):
-        module = loader.AdmittedModule(name, tmp_path / name, {}, False)
+        module = loader.AdmittedModule(name, tmp_path / name, {}, False, "")
         assert loader._license_refusal(module, _no_relay) is None
 
 
@@ -2520,3 +2802,415 @@ async def test_celerp_module_restored_from_a_backup_needs_a_licence(tmp_path, mo
 
     assert admission.admitted == []
     assert "no valid license" in admission.refused[name]
+
+
+_HELD_PROTECTED_NAMES = """
+import enum, importlib, inspect, pkgutil, sys, types
+from pathlib import Path
+from celerp.modules.loader import _PROTECTED_BSL_INTERNALS
+
+def protected(name):
+    return any(name == p or name.startswith(p + ".") for p in _PROTECTED_BSL_INTERNALS)
+
+def fail(name):
+    raise ImportError(name)
+
+def sources(value, seen):
+    # Where a module or function comes from, for the value itself or anything a
+    # dict, list, tuple, set or frozenset holds, at any depth. Nothing else is
+    # looked into.
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        if id(value) in seen:
+            return
+        seen.add(id(value))
+        items = [x for pair in dict.items(value) for x in pair] if isinstance(value, dict) else value
+        for item in items:
+            yield from sources(item, seen)
+    elif isinstance(value, types.ModuleType):
+        yield value.__name__
+    elif inspect.isclass(value) and issubclass(value, enum.Enum):
+        return
+    elif callable(value):
+        yield getattr(value, "__module__", None) or ""
+
+def packages():
+    if len(sys.argv) > 1:
+        sys.path.insert(0, sys.argv[1])
+        return [importlib.import_module(p.parent.name) for p in sorted(Path(sys.argv[1]).glob("*/__init__.py"))]
+    import celerp, ui
+    found = [celerp, ui]
+    for folder in sorted(Path("default_modules").iterdir()):
+        for inner in sorted(folder.glob("*/__init__.py")):
+            if inner.parent.name == "tests":
+                continue
+            sys.path.insert(0, str(folder.resolve()))
+            found.append(importlib.import_module(inner.parent.name))
+    return found
+
+held = []
+for pkg in packages():
+    for info in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + ".", onerror=fail):
+        if protected(info.name) or ".migrations.versions." in info.name:
+            continue
+        for name, value in vars(importlib.import_module(info.name)).items():
+            if any(protected(source) for source in sources(value, set())):
+                held.append(f"{info.name}.{name}")
+print("\\n".join(held))
+"""
+
+
+def _held_protected_names(*folder: Path) -> list[str]:
+    """The names holding a protected module or function, in the repo's packages or
+    in the packages in *folder*."""
+    import os
+    import subprocess
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    out = subprocess.run([sys.executable, "-c", _HELD_PROTECTED_NAMES, *map(str, folder)], env=env,
+                         cwd=Path(__file__).resolve().parents[2],
+                         capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr[-3000:]
+    return out.stdout.split()
+
+
+def test_core_modules_import_protected_functions_where_they_are_used():
+    """Protected functions are imported inside the code that uses them, so no core
+    module and no bundled first-party module holds one, or a protected module,
+    among its names, directly or in a container. Enum value classes are data, not
+    functions, and are not counted."""
+    assert _held_protected_names() == []
+
+
+def test_protected_names_held_in_containers_are_found(tmp_path):
+    pkg = tmp_path / f"held_{_uid()}"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "holder.py").write_text(
+        "import celerp.ai.llm\n"
+        "from celerp.ai.llm import __name__ as _text\n"
+        "NESTED = {'a': [({1: celerp.ai.llm},)]}\n"
+        "KEYED = {frozenset({celerp.ai.llm}): 1}\n"
+        "LOOP = []\n"
+        "LOOP.append(LOOP)\n"
+        "LOOP.append({'inner': (LOOP, {celerp.ai.llm})})\n"
+        "PLAIN = [_text, {'k': ('celerp.ai.llm',)}]\n"
+        "del celerp\n")
+
+    held = _held_protected_names(tmp_path)
+
+    assert held == [f"{pkg.name}.holder.{n}" for n in ("NESTED", "KEYED", "LOOP")]
+
+
+
+# ── A8: Python runs exactly the files admission checked ─────────────────────
+
+
+@pytest.fixture
+def _first_party(tmp_path, monkeypatch):
+    """Lock the given module folders as first-party, at their current content."""
+    lock_file = tmp_path / "fp.lock.json"
+    monkeypatch.setattr(loader, "_lock_path", lambda: lock_file)
+
+    def lock(*pkgs: Path) -> None:
+        lock_file.write_text(json.dumps({p.name: loader.module_content_digest(p) for p in pkgs}))
+        loader._first_party_lock.cache_clear()
+
+    yield lock
+    loader._first_party_lock.cache_clear()
+
+
+def _bytecode_left(pkg: Path) -> list[str]:
+    return sorted(str(p.relative_to(pkg)) for p in pkg.rglob("*")
+                  if p.name == "__pycache__" or p.suffix == ".pyc")
+
+
+def test_compiled_files_are_removed_before_the_module_runs(_modules, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": "", f"{inner}/sub/__init__.py": ""})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    (pkg / inner / "sub" / "__pycache__").mkdir()
+    (pkg / inner / "sub" / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"\x00")
+    (pkg / inner / "stale.pyc").write_bytes(b"\x00")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "kept.pyc").write_bytes(b"\x00")
+    (pkg / inner / "__pycache__").symlink_to(outside, target_is_directory=True)
+    (pkg / inner / "linked.pyc").symlink_to(outside / "kept.pyc")
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+    assert not (pkg / inner / "__pycache__").is_symlink()
+    assert not (pkg / inner / "linked.pyc").is_symlink()
+    assert (outside / "kept.pyc").is_file()
+
+
+def test_module_whose_compiled_files_are_still_present_after_removal_is_refused(
+        _modules, tmp_path, monkeypatch):
+    """Whether the bytecode is gone is decided by looking again after removing it."""
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    monkeypatch.setattr(loader.shutil, "rmtree", lambda *args, **kwargs: None)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert loaded == []
+    assert not marker.exists()
+    assert loader.load_errors()[folder] == "Cannot remove compiled Python files from the module."
+
+
+@pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
+@pytest.mark.parametrize("where", ["beside_source", "configured_cache_dir"])
+def test_planted_bytecode_never_runs_in_place_of_the_checked_source(
+        where, trusted, _modules, tmp_path, monkeypatch, _first_party):
+    """Valid bytecode left for the module and for an inner package it imports never runs;
+    the checked source does."""
+    prefix = str(tmp_path / "cache") if where == "configured_cache_dir" else None
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", prefix)
+    source, cached = tmp_path / "source.txt", tmp_path / "cached.txt"
+    folder, inner = f"acme-{_uid()}", f"acme_{_uid()}"
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"},
+                        {f"{inner}/__init__.py": _marker_line(source)},
+                        init_prelude=f"import {inner}\n{_marker_line(source)}")
+    if trusted:
+        _first_party(pkg)
+    for path in (pkg / "__init__.py", pkg / inner / "__init__.py"):
+        plant_bytecode(path, _marker_line(cached), pycache_prefix=prefix)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [(m["name"], m["first_party"]) for m in loaded] == [(folder, trusted)]
+    assert source.read_text() == "ran\nran\n"
+    assert not cached.exists()
+
+
+@pytest.fixture
+def _stuck_bytecode():
+    """Make a module's bytecode impossible to remove, and undo that afterwards."""
+    stuck: list[Path] = []
+
+    def stick(pkg: Path) -> None:
+        cache = pkg / "__pycache__"
+        cache.mkdir()
+        (cache / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+        cache.chmod(0o500)
+        stuck.append(cache)
+
+    yield stick
+    for cache in stuck:
+        cache.chmod(0o700)
+
+
+def test_loading_a_module_writes_no_compiled_files_beside_its_source(
+        _modules, tmp_path, monkeypatch):
+    """Loading a module writes no bytecode anywhere in its folder, and the process
+    writes none afterwards either."""
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "cache"))
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": "from . import sub\n",
+                               f"{inner}/sub/__init__.py": ""})
+    (pkg / "__init__.py").write_text(
+        (pkg / "__init__.py").read_text() + f"import {inner}\n")
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+    assert sys.dont_write_bytecode is True
+    assert sys.pycache_prefix is None
+    assert not (tmp_path / "cache").exists()
+
+
+def test_module_in_a_read_only_folder_loads(_modules, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": ""})
+    (pkg / "__init__.py").write_text(
+        (pkg / "__init__.py").read_text() + f"import {inner}\n")
+    dirs = [pkg, *[d for d in pkg.rglob("*") if d.is_dir()]]
+    for d in dirs:
+        d.chmod(0o555)
+    try:
+        loaded = loader.load_all(str(_modules), {folder})
+    finally:
+        for d in dirs:
+            d.chmod(0o755)
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+
+
+def test_module_whose_compiled_files_cannot_be_removed_is_refused(
+        _modules, tmp_path, _stuck_bytecode):
+    marker = tmp_path / "ran.txt"
+    stuck, other = f"acme-{_uid()}", f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, stuck, marker, {"name": stuck, "version": "1.0.0"})
+    _write_module(_modules, other, {"name": other, "version": "1.0.0"})
+    _stuck_bytecode(pkg)
+
+    loaded = loader.load_all(str(_modules), {stuck, other})
+
+    assert [m["name"] for m in loaded] == [other]
+    assert not marker.exists()
+    assert "Cannot remove compiled Python files" in loader.load_errors()[stuck]
+
+
+def test_default_module_whose_compiled_files_cannot_be_removed_stops_startup(
+        _modules, tmp_path, _first_party, _stuck_bytecode):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, name, marker, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    _stuck_bytecode(pkg)
+
+    with pytest.raises(loader.ModuleLoadError, match="Cannot remove compiled Python files"):
+        loader.load_all(str(_modules), {name})
+    assert not marker.exists()
+
+
+def test_module_changed_after_admission_is_refused_before_it_runs(_modules, tmp_path):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    admission = loader.admit_modules(str(_modules), {name})
+    assert [m.name for m in admission.admitted] == [name]
+    (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+
+    loaded = loader.load_all(str(_modules), {name}, admission=admission)
+
+    assert loaded == []
+    assert not marker.exists()
+    assert loader.load_errors()[name] == loader.MODULE_CHANGED
+
+
+def test_default_module_changed_after_admission_stops_startup(_modules, tmp_path, _first_party):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    admission = loader.admit_modules(str(_modules), {name})
+    assert [m.first_party for m in admission.admitted] == [True]
+    (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+
+    with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
+        loader.load_all(str(_modules), {name}, admission=admission)
+    assert not marker.exists()
+
+
+def test_module_changed_while_it_is_checked_never_runs(_modules, tmp_path, monkeypatch, _first_party):
+    """What admission records as checked is the content the lock verified."""
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    check = loader._check_slot_contracts
+
+    def change_then_check(*args, **kwargs):
+        (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+        return check(*args, **kwargs)
+
+    monkeypatch.setattr(loader, "_check_slot_contracts", change_then_check)
+    admission = loader.admit_modules(str(_modules), {name})
+    monkeypatch.setattr(loader, "_check_slot_contracts", check)
+
+    for module in admission.admitted:
+        assert not module.first_party or module.content_digest == json.loads(
+            loader._lock_path().read_text())[name]
+    with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
+        loader.load_all(str(_modules), {name}, admission=admission)
+    assert not marker.exists()
+
+
+def test_compiled_files_another_process_removed_first_do_not_refuse_the_module(
+        _modules, tmp_path, monkeypatch):
+    """Bytecode another worker removed while this one was removing it counts as removed."""
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    listing = loader._bytecode
+    calls = []
+
+    def listed_then_removed_elsewhere(path):
+        found = listing(path)
+        if not calls:
+            calls.append(found)
+            for entry in found:
+                for child in entry.iterdir():
+                    child.unlink()
+                entry.rmdir()
+        return found
+
+    monkeypatch.setattr(loader, "_bytecode", listed_then_removed_elsewhere)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder], loader.load_errors()
+    assert marker.exists()
+    assert calls and calls[0]
+
+
+_LOAD_REPEATEDLY = """
+import sys
+from pathlib import Path
+
+from celerp.config import settings
+from celerp.modules import loader
+
+base, folder, inner, data, rounds = sys.argv[1:6]
+settings.data_dir = Path(data)
+for _ in range(int(rounds)):
+    for name in [n for n in sys.modules if n == folder or n.split(".")[0] == inner]:
+        del sys.modules[name]
+    loader.load_all(base, {folder})
+    if loader.load_errors():
+        sys.exit(f"load errors: {loader.load_errors()}")
+"""
+
+
+def test_two_processes_loading_the_same_module_folder_both_load_it(_modules, tmp_path):
+    """Processes sharing a module folder (several workers) never refuse its bytecode
+    to each other, including bytecode an earlier version left in the folder."""
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    files = {f"{inner}/__init__.py": "from . import a, b\n",
+             f"{inner}/a.py": "A = 1\n", f"{inner}/b.py": "B = 2\n"}
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"}, files,
+                        init_prelude=f"import {inner}\n")
+    for rel in ("__pycache__/__init__.cpython-312.pyc", f"{inner}/__pycache__/a.cpython-312.pyc"):
+        (pkg / rel).parent.mkdir(exist_ok=True)
+        (pkg / rel).write_bytes(b"\x00")
+    env = {**os.environ, "MODULE_DIR": str(_modules)}
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env.pop("PYTHONPYCACHEPREFIX", None)
+    procs = [subprocess.Popen(
+        [sys.executable, "-c", _LOAD_REPEATEDLY, str(_modules), folder, inner,
+         str(tmp_path / f"data{i}"), "25"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for i in range(2)]
+    outputs = [p.communicate(timeout=25)[0] for p in procs]
+
+    assert [p.returncode for p in procs] == [0, 0], outputs
+    assert _bytecode_left(pkg) == []
+

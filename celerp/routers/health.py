@@ -255,6 +255,14 @@ async def cloud_billing_portal() -> dict:
     return {"portal_url": url}
 
 
+@settings_router.get("/backup-active")
+async def backup_active() -> dict:
+    """Whether a backup is running. Writes pause for every login while one does, so any
+    signed-in login can read this, and nothing else about the backups."""
+    from celerp.services import backup_state
+    return {"active": backup_state.is_active()}
+
+
 @settings_router.get("/backup-status", dependencies=[Depends(require_install_owner)])
 async def backup_status() -> dict:
     """Return backup scheduler state: last results and next scheduled run times."""

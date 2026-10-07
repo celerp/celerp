@@ -3,6 +3,7 @@
 
 from contextlib import asynccontextmanager
 import asyncio
+import importlib
 import logging
 import math
 import sys
@@ -23,10 +24,9 @@ from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
-from celerp.gateway.state import load_commercial_context
 load_cloud_config()
 load_backup_config()
-load_commercial_context()
+importlib.import_module("celerp.gateway.state").load_commercial_context()
 assert_secure_jwt()
 # Read before ensure_instance_id() writes the id.
 _FIRST_BOOT = not settings.gateway_instance_id
@@ -485,14 +485,32 @@ async def _serve(_app: FastAPI, held):
             logging.getLogger(__name__).debug(
                 "Demoted-module notification skipped (non-fatal)", exc_info=True)
 
-    # Attachment files of a company restore that stopped before it committed are removed,
-    # so stored files and restored companies agree after a crash. Non-fatal: a later boot
-    # or the next restore retries.
+        # A module table its manifest does not place in or out of a company backup
+        # blocks the backups of companies holding its rows; say so in the bell.
+        try:
+            from celerp.db import LifecycleSessionLocal as _UndeclaredSession
+            from celerp.services.company_backup import notify_undeclared_module_tables
+            async with _UndeclaredSession() as _usess:
+                await notify_undeclared_module_tables(_usess)
+                await _usess.commit()
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Company backup declaration check skipped (non-fatal)", exc_info=True)
+
+    # Expired backup uploads and downloads a stopped process left behind are removed, and
+    # so are the attachment files of a company restore that stopped before it committed,
+    # so stored files and restored companies agree after a crash. Each is non-fatal and
+    # independent of the other: a later boot or the next restore retries.
+    try:
+        from celerp.services.company_backup_files import sweep_transient_files
+        await asyncio.to_thread(sweep_transient_files)
+    except Exception:
+        logging.getLogger(__name__).exception("Removing leftover backup files failed (non-fatal)")
     try:
         from celerp.services.company_backup import reconcile_landings
         await reconcile_landings()
     except Exception:
-        logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
+        logging.getLogger(__name__).exception("Cleaning up after unfinished company restores failed (non-fatal)")
 
     # In the background, and again every few minutes: a System Recovery restore Celerp
     # Cloud has not confirmed is reported, and a company reset that stopped after Cloud

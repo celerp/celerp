@@ -151,7 +151,7 @@ def _assert_clean_url(page) -> None:
 def _through_review(page, company_name: str) -> None:
     _assert_clean_url(page)
     body = page.content()
-    assert ("No blocking issues found" in body) or ("Blocks full history" in body)
+    assert ("No blocking issues found" in body) or ("Cannot move" in body)
     assert "Balances on the cutover date become opening balances." in body
     page.click('button[type="submit"]:has-text("Continue")')
     page.wait_for_url(re.compile(r"/migrate/(mapping|review)$"))
@@ -214,10 +214,9 @@ def _verify_and_finish(page, run_id: str, company_name: str) -> None:
 def test_migration_wizard_browser_first_run(first_run_page):
     page = first_run_page
     page.goto("/setup")
-    for label in ("Start a new company", "Move from another system", "Restore a company backup",
-                  "Try sample company"):
+    for label in ("Restore a Celerp backup", "Move your books from another system"):
         assert page.locator(f"text={label}").count() >= 1, label
-    page.click('a:has-text("Move from another system")')
+    page.click('a:has-text("Move your books from another system")')
     page.wait_for_url(re.compile(r"/setup/migrate$"))
     assert "Don't see your system? Tell us what you use" in page.content()
     _upload(page, "Example Bookkeeping")

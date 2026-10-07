@@ -92,7 +92,7 @@ async def _assert_one_start(client, engine, env, token, scan_token, companies_be
     scheduled = list(env["scheduled"])
 
     again = await _start(client, token, scan_token, name="Another Name")
-    assert again.status_code == 200 and again.json() == {"run_id": str(run.id)}, again.text
+    assert again.status_code == 200 and again.json() == {"run_id": str(run.id), "preparing": False}, again.text
     assert await count(engine, "migration_runs") == 1
     assert await count(engine, "companies") == companies_before + 1
     assert env["scheduled"] == scheduled
@@ -153,7 +153,7 @@ async def test_crash_after_commit_before_move_is_finished_by_a_retry(real_client
     # The repeated start finds the claimed run and finishes starting it; no second company.
     monkeypatch.setattr(store, "claim_for_run", real_claim)
     r = await _start(real_client, admin_token, scan_token)
-    assert r.status_code == 200 and r.json() == {"run_id": str(run.id)}, r.text
+    assert r.status_code == 200 and r.json() == {"run_id": str(run.id), "preparing": False}, r.text
     assert migration_env["scheduled"] == [run.id]
     await _assert_one_start(real_client, real_engine, migration_env, admin_token, scan_token, companies,
                             status="running")

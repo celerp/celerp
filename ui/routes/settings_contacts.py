@@ -180,7 +180,7 @@ def setup_routes(app):
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
                 terms = []
-            content = _terms_tab(terms, prefix="terms", import_path=None)
+            content = _terms_tab(terms, prefix="terms")
 
         return await base_shell(
             _section_breadcrumb(t("dashboard.contacts")),

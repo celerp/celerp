@@ -128,5 +128,5 @@ def test_date_presets_custom_translates():
 def test_date_filter_bar_settings_gear_translates():
     # Mechanism: title attribute on the related-settings gear.
     html = to_xml(_date_filter_bar("/reports/ar-aging", "", "", "this_fy",
-                                   settings_link="/settings/sales?tab=terms", lang="xx"))
+                                   settings_link="/settings/contacts?tab=payment-terms", lang="xx"))
     assert "XX_RELATED" in html

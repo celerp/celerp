@@ -18,9 +18,10 @@ import uuid
 from ui.components.operation_key import (
     kept_operation_key, operation_key_attrs, operation_key_vals, required_operation_key,
 )
+from ui.components.deleted_items import deleted_items, deleted_label
 from ui.components.posting_accounts import account_picker, distinct_name
 from ui.components.shell import base_shell, page_header, page_title, toast_header
-from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
+from ui.components.table import (EMPTY, empty_mark, status_cards, empty_state_cta, format_value, search_bar,
                                  bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
 from ui.i18n import reconcile_reason, refusal_text, t
@@ -93,7 +94,7 @@ _PRIORITIES = ("low", "normal", "high", "urgent")
 def _priority_badge(priority: str | None) -> FT:
     p = (priority or "").lower()
     if p not in _PRIORITIES:
-        return Span(EMPTY)
+        return empty_mark()
     return Span(display_enum(p, domain="mfg_priority"), cls=f"badge badge--prio-{p}")
 
 
@@ -105,12 +106,14 @@ def _sched_sort(runs: list[dict]) -> list[dict]:
     return runs
 
 
-def _order_row(order: dict, today: str = "") -> FT:
+def _order_row(order: dict, deleted: dict[str, dict], today: str = "") -> FT:
     # A run lives on its product's Manufacturing tab; link there (the opaque run page is gone).
     rid = order.get("id")
     out_id = order.get("output_item_id")
     outs = order.get("expected_outputs") or [{}]
     label = outs[0].get("sku") or outs[0].get("name") or order.get("description") or EMPTY
+    if out_id in deleted:
+        label = deleted_label(deleted[out_id].get("sku") or label)
     href = f"/inventory/{out_id}?tab=manufacturing" if out_id else None
     name_cell = A(label, href=href, cls="table-link") if href else Span(label)
     status = order.get("status", "planned")
@@ -272,7 +275,12 @@ def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
 
 
 
-def _order_table(orders: list[dict], today: str = "", kept_key: str = "") -> FT:
+async def _deleted_outputs(token: str, orders: list[dict]) -> dict[str, dict]:
+    """The deleted products among *orders*' outputs, keyed by id."""
+    return await deleted_items(token, [o.get("output_item_id") for o in orders])
+
+
+def _order_table(orders: list[dict], deleted: dict[str, dict], today: str = "", kept_key: str = "") -> FT:
     if not orders:
         return Div(
             empty_state_cta(t("manufacturing.nothing_in_production"),
@@ -289,7 +297,7 @@ def _order_table(orders: list[dict], today: str = "", kept_key: str = "") -> FT:
             Th(t("th.inputs"), cls="cell--number"),
             Th(t("manufacturing.th_source_order")), Th(t("manufacturing.run_sheet"), cls="cell--actions"),
         )),
-        Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
+        Tbody(*[_order_row(o, deleted, today) for o in _sched_sort(orders)]),
         cls="data-table",
         id="mfg-table",
         **operation_key_attrs(kept_key),
@@ -379,7 +387,8 @@ def _reconcile_panel(run_id: str, needs: dict, accounts: list[dict], *, key: str
     values = values or {}
     reason = needs["reason"]
     rows = [
-        Tr(Td(" ".join(x for x in (c.get("sku"), distinct_name(c.get("sku"), c.get("name"))) if x) or c["item_id"]),
+        Tr(Td(deleted_label(c.get("sku") or c["item_id"]) if c.get("deleted") else
+              " ".join(x for x in (c.get("sku"), distinct_name(c.get("sku"), c.get("name"))) if x) or c["item_id"]),
            Td(f"{c['quantity']:g}", cls="cell--number"),
            Td(Input(type="hidden", name="item_id", value=c["item_id"]),
               Input(type="number", name="value", value=values.get(c["item_id"], ""), step="any", min="0",
@@ -565,7 +574,7 @@ def setup_routes(app):
                  "confirm": t("manufacturing.confirm_cancel_runs")},
             ]),
             # The queue swaps in place by #mfg-table; the wrap stays and scrolls it on a narrow screen.
-            Div(_order_table(shown, today=date.today().isoformat()), cls="table-scroll-wrap"),
+            Div(_order_table(shown, await _deleted_outputs(token, shown), today=date.today().isoformat()), cls="table-scroll-wrap"),
             Script(COLUMN_FILTER_JS),
         )
         return await base_shell(
@@ -699,6 +708,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             return HTMLResponse(str(e.detail), status_code=e.status or 404)
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
+        items += (await deleted_items(token, [i.get("item_id") for i in order.get("inputs") or []])).values()
         today = date.today().isoformat()
         return HTMLResponse(to_xml(_run_sheet_print_view(order, items, today)))
 
@@ -727,7 +737,7 @@ def setup_routes(app):
             orders = (await api.list_mfg_orders(token, params)).get("items", [])
         except APIError:
             orders = []
-        return _order_table(orders, today=date.today().isoformat())
+        return _order_table(orders, await _deleted_outputs(token, orders), today=date.today().isoformat())
 
     def _runs_for_status(orders: list[dict], status: str) -> list[dict]:
         if status in ("active", "incomplete", "all"):
@@ -740,7 +750,8 @@ def setup_routes(app):
             orders = (await api.list_mfg_orders(token, {})).get("items", [])
         except APIError:
             orders = []
-        return _order_table(_runs_for_status(orders, "active"), today=date.today().isoformat())
+        runs = _runs_for_status(orders, "active")
+        return _order_table(runs, await _deleted_outputs(token, runs), today=date.today().isoformat())
 
     # Per-action success toast KEY (R1); each holds a count-neutral "...: {n}" template (R7).
     _BULK_RUN_MSG = {"start": "manufacturing.bulk_started", "issue": "manufacturing.bulk_issued",
@@ -786,13 +797,19 @@ def setup_routes(app):
                 msg = ". ".join([msg, t("manufacturing.bulk_skipped", n=skipped),
                                  *(w.rstrip(".") for w in why if w)]) + "."
             kind = "success" if done else "info"
+        runs = _runs_for_status(orders, status)
         return HTMLResponse(
-            to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat(), kept_key=kept)),
+            to_xml(_order_table(runs, await _deleted_outputs(token, runs), today=date.today().isoformat(),
+                                kept_key=kept)),
             headers=toast_header(msg, kind),
         )
 
     async def _reconcile_context(token: str, run_id: str) -> tuple[dict, list[dict]]:
         needs = await api.mfg_reconcile_needs(token, run_id)
+        components = needs.get("components") or []
+        deleted = await deleted_items(token, [c.get("item_id") for c in components])
+        for c in components:
+            c["deleted"] = c.get("item_id") in deleted
         try:
             accounts = _reconcile_accounts(await api.get_posting_accounts(token))
         except APIError as e:
@@ -817,6 +834,8 @@ def setup_routes(app):
             return HTMLResponse(str(e.detail), status_code=e.status or 404)
         out = (run.get("expected_outputs") or [{}])[0]
         product = out.get("sku") or out.get("name") or run.get("output_item_id")
+        if run.get("output_item_id") in await _deleted_outputs(token, [run]):
+            product = deleted_label(product)
         crumbs = [(t("manufacturing.work_in_progress"), "/manufacturing/production")]
         if run.get("output_item_id"):
             crumbs.append((product, f"/inventory/{run['output_item_id']}?tab=manufacturing"))

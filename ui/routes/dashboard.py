@@ -9,12 +9,21 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+import asyncio
+
+from ui.components.demo_items import DEMO_ITEMS_FILTER, DEMO_ITEMS_URL
+from ui.components.icons import import_icon
+from ui.components.import_access import can_import_documents
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
+from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
 from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
+from ui.routes.company_backup import SETTINGS as _RESTORE
+from ui.routes.migrations import COMPANY as _MIGRATE
+from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
@@ -138,7 +147,8 @@ _DASH_LABEL_KEYS: dict[str, str] = {
     "All parts/vehicles": "dashboard.all_parts_vehicles",
     "View and manage stock": "dashboard.view_and_manage_stock",
     "CRM contacts": "dashboard.crm_contacts",
-    "Chart of accounts": "dashboard.chart_of_accounts",
+    "Accounting": "page.accounting",
+    "Journal": "acct.tab_journal",
 }
 
 
@@ -561,7 +571,7 @@ _DEFAULT_CONFIG: dict = {
         ("/docs?type=purchase_order", "Purchase Orders", "Supplier orders"),
         ("/crm",                      "Customers",       "CRM contacts"),
         ("/reports/ar-aging",         "AR Aging",        "Outstanding receivables"),
-        ("/accounting",               "Accounts",        "Chart of accounts"),
+        ("/accounting",               "Accounting",      "Journal"),
     ],
     "charts": ["inventory_cat", "ar_aging"],
     "show_activity": True,
@@ -735,6 +745,9 @@ def setup_routes(app):
         except Exception:
             activities = []
 
+        # The category names the inventory tabs show, so the chart reads the same.
+        category_names = await api.get_category_labels(token)
+
         vertical = company.get("vertical") or ""
         cfg = _VERTICAL_CONFIGS.get(vertical, _DEFAULT_CONFIG)
         currency = company.get("currency")
@@ -749,16 +762,23 @@ def setup_routes(app):
         # Strip margin sub-text unless the caller may see costs.
         if not _role_has_permission(settings, role, "view_inventory_costs"):
             values.pop("margin_pct_sub", None)
+        # The "Bring in your data" card and the star ask share one slot and never show
+        # together; the star also waits for 10 days of use (counted in the browser).
+        welcome = await _getting_started_card(token, settings, role)
+        if welcome is None and _role_has_permission(settings, role, "manage_company_settings"):
+            welcome = star_supporter_card()
         return await base_shell(
             page_header(t("page.dashboard", lang)),
-            # Stargazer/supporter ask shown where setup actually lands (company-settings
-            # managers only; hidden in neutral/dismissed). Self-hides once dismissed install-wide.
-            *([star_supporter_card("dashboard")] if _role_has_permission(settings, role, "manage_company_settings") else []),
+            Script("window.celerpUseDays && window.celerpUseDays(true);"),
+            _finish_setup_banner(company, settings, role),
+            welcome or "",
+            await _demo_note(token, settings, role),
             _kpi_grid(cfg, values, role=role, settings=settings),
             _secondary_kpi_grid(cfg, values, role=role, settings=settings),
             _charts_section(cfg, valuation, ar_aging,
-                            kpis_data.get("sales", {}).get("revenue_trend", []), currency),
-            _activity_feed(activities, currency) if cfg.get("show_activity") else "",
+                            kpis_data.get("sales", {}).get("revenue_trend", []), currency,
+                            category_names),
+            _activity_feed(activities, category_names) if cfg.get("show_activity") else "",
             _quick_links(cfg),
             title=f"{t('nav.dashboard')} - {company.get('name', '')}",
             nav_active="dashboard",
@@ -766,6 +786,27 @@ def setup_routes(app):
             lang=lang,
             request=request,
         )
+
+    @app.post("/dashboard/getting-started/dismiss")
+    async def dismiss_getting_started(request: Request):
+        """Close the card. Without "Don't show this again" ticked nothing is saved and
+        the next dashboard load shows it again; ticked, it is hidden for this company.
+        Undo is not offered: everything on it stays one click away (each list page's
+        Import button, Settings > Backup to restore, Add company to move books in)."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if not (await request.form()).get("forever"):
+            return ""
+        try:
+            company = await api.get_company(token)
+            await api.patch_company(token, {"getting_started_dismissed": True})
+        except APIError as e:
+            return Div(e.detail, cls="error-banner", id="getting-started-card")
+        settings = company.get("settings") or {}
+        if _role_has_permission(settings, _get_role(request), "manage_company_settings"):
+            return star_supporter_card()
+        return ""
 
     @app.get("/history")
     async def history_page(request: Request):
@@ -792,6 +833,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             result = {"activities": [], "total": 0, "page": 1, "per_page": per_page, "pages": 1}
+        category_names = await api.get_category_labels(token)
 
         activities = result.get("activities", [])
         total = result.get("total", 0)
@@ -820,7 +862,7 @@ def setup_routes(app):
             method="get", action="/history",
         )
 
-        table = activity_table(activities, title="", section_cls="")
+        table = activity_table(activities, title="", section_cls="", category_names=category_names)
 
         pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
 
@@ -837,6 +879,119 @@ def setup_routes(app):
             nav_active="dashboard",
             request=request,
         )
+
+
+# The list pages the card links to: label key, page, who sees its Import button, and
+# how the page's own list is read to tell real records from the samples setup adds.
+def _is_demo(item: dict) -> bool:
+    return str(item.get("sku") or "").startswith("DEMO-")
+
+
+def _real_items(page: dict) -> bool:
+    demo = sum(1 for i in page.get("items") or [] if _is_demo(i))
+    return (page.get("total") or 0) > demo
+
+
+async def _demo_note(token: str, settings: dict, role: str) -> FT | str:
+    """The figures below count setup's [DEMO] samples while any untouched ones are
+    left, so say so next to them, for everyone who sees the figures, with a link to
+    the list of them for the roles that may delete items. Nothing when the items cannot be read: the
+    note never claims samples it has not seen."""
+    try:
+        page = await api.list_items(token, {"filter": DEMO_ITEMS_FILTER, "limit": 1})
+    except APIError:
+        return ""
+    if not page.get("total"):
+        return ""
+    link = (A(t("dashboard.remove_demo_items"), href=DEMO_ITEMS_URL, id="remove-demo-items")
+            if _role_has_permission(settings, role, "adjust_inventory") else "")
+    return Div(Span("ℹ️", cls="info-banner-icon"), Span(t("dashboard.demo_note"), " ", link),
+               cls="info-banner", id="demo-note")
+
+
+def _real_contacts(page: dict) -> bool:
+    own = sum(1 for c in page.get("items") or [] if c.get("is_self"))
+    return (page.get("total") or 0) > own
+
+
+def _real_docs(page: dict) -> bool:
+    return (page.get("total") or 0) > 0
+
+
+_IMPORT_TARGETS = (
+    ("dashboard.getting_started_products", "/inventory",
+     lambda s, r: _role_has_permission(s, r, "import_export_data"),
+     lambda tok: api.list_items(tok, {"status": "all", "limit": 50}), _real_items),
+    ("dashboard.getting_started_contacts", "/contacts/customers",
+     lambda s, r: _role_has_permission(s, r, "import_export_data"),
+     lambda tok: api.list_contacts(tok, {"limit": 5}), _real_contacts),
+    ("dashboard.getting_started_documents", "/docs",
+     can_import_documents,
+     lambda tok: api.list_docs(tok, {"limit": 1}), _real_docs),
+)
+
+
+async def _getting_started_card(token: str, settings: dict, role: str) -> FT | None:
+    """Shown to people who manage the company, until it is dismissed or the company
+    holds a real product, contact or document (setup's [DEMO] items and the company's
+    own contact do not count). A list the API cannot serve (module off: 404, no view
+    right: 403) drops its link; any other failure hides the card rather than guess."""
+    if settings.get("getting_started_dismissed"):
+        return None
+    if not _role_has_permission(settings, role, "manage_company_settings"):
+        return None
+    pages = await asyncio.gather(*(load(token) for *_, load, _ in _IMPORT_TARGETS),
+                                 return_exceptions=True)
+    links = []
+    for (label, href, allowed, _, is_real), page in zip(_IMPORT_TARGETS, pages):
+        if isinstance(page, APIError) and page.status in (403, 404):
+            continue
+        if isinstance(page, BaseException):
+            return None
+        if is_real(page):
+            return None
+        if allowed(settings, role):
+            links.append(A(import_icon(), t(label),
+                           href=f"{href}?hint=import", cls="getting-started-link"))
+    if not links:
+        return None
+    options = ""
+    if _role_has_permission(settings, role, "manage_company_lifecycle"):
+        options = start_options(restore_href=_RESTORE.base, move_href=_MIGRATE.base,
+                                sources=await supported_sources())
+    return Div(
+        Div(
+            H2(t("dashboard.getting_started_title"), cls="section-title"),
+            Div(
+                Label(Input(type="checkbox", id="getting-started-forever", name="forever", value="1",
+                            cls="form-checkbox"),
+                      t("dashboard.getting_started_forever"), cls="form-label--inline getting-started-forever"),
+                Button("×", id="getting-started-dismiss", type="button", cls="getting-started-dismiss",
+                       title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
+                       hx_post="/dashboard/getting-started/dismiss", hx_include="#getting-started-forever",
+                       hx_target="#getting-started-card", hx_swap="outerHTML"),
+                cls="getting-started-close",
+            ),
+            cls="getting-started-head",
+        ),
+        P(t("dashboard.getting_started_from_spreadsheet"), cls="getting-started-lead"),
+        Div(*links, cls="getting-started-links"),
+        P(t("dashboard.getting_started_where"), cls="getting-started-note"),
+        options,
+        NotStr("<!-- /getting-started-card -->"),
+        id="getting-started-card",
+        cls="getting-started-card",
+    )
+
+
+def _finish_setup_banner(company: dict, settings: dict, role: str) -> FT | str:
+    """A company left without a business type (setup stopped after the account was
+    made) points the one person who can set it at the retry page."""
+    if has_business_type(company) or not _role_has_permission(settings, role, "manage_company_lifecycle"):
+        return ""
+    return Div(Span("ℹ️", cls="info-banner-icon"),
+               A(t("dashboard.finish_setup"), href="/setup/company"),
+               cls="info-banner", id="finish-setup-banner")
 
 
 async def _load_dashboard(token: str):
@@ -943,7 +1098,8 @@ def _chart_empty(title_key: str, sub_key: str, icon: str) -> FT:
 
 
 def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
-                    revenue_trend: list | None = None, currency: str | None = None) -> FT:
+                    revenue_trend: list | None = None, currency: str | None = None,
+                    category_names: dict | None = None) -> FT:
     import json
     show_charts = cfg.get("charts", [])
 
@@ -959,7 +1115,15 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
     ar_labels = json.dumps(list(buckets.keys())) if ar_has_data else "[]"
     ar_data = json.dumps([float(v) for v in buckets.values()]) if ar_has_data else "[]"
 
-    cats = valuation.get("category_counts", {})
+    # Category keys are schema slugs; chart them under the inventory tabs' display names.
+    names = category_names or {}
+    cats: dict = {}
+    for key, count in valuation.get("category_counts", {}).items():
+        cats[names.get(key, key)] = cats.get(names.get(key, key), 0) + int(count or 0)
+    # Items with no category are still stock: chart them under their own bar.
+    uncategorized = int(valuation.get("total_scoped_count") or 0) - sum(int(v or 0) for v in cats.values())
+    if uncategorized > 0:
+        cats[t("label.uncategorized")] = uncategorized
     cat_has_data = any(int(v or 0) > 0 for v in cats.values())
     cat_labels = json.dumps(list(cats.keys())) if cat_has_data else "[]"
     cat_data = json.dumps([int(v) for v in cats.values()]) if cat_has_data else "[]"
@@ -1016,7 +1180,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
         new Chart(revCtx, {{
           type: 'line',
           data: {{ labels: {rev_labels}, datasets: [{{
-            label: 'Revenue', data: {rev_data}, borderColor: colors[0], backgroundColor: rg,
+            label: {json.dumps(t('acct.section_revenue'))}, data: {rev_data}, borderColor: colors[0], backgroundColor: rg,
             fill: true, tension: 0.35, borderWidth: 2.5, pointRadius: 3,
             pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }}] }},
           options: {{
@@ -1046,7 +1210,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
       if (catCtx && {cat_labels}.length > 0) {{
         new Chart(catCtx, {{
           type: 'bar',
-          data: {{ labels: {cat_labels}, datasets: [{{ label: 'Items', data: {cat_data}, backgroundColor: colors[0] }}] }},
+          data: {{ labels: {cat_labels}, datasets: [{{ label: {json.dumps(t('th.items'))}, data: {cat_data}, backgroundColor: colors[0] }}] }},
           options: {{
             indexAxis: 'y', responsive: true,
             scales: {{ x: {{ ticks: {{ color: textColor }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
@@ -1072,11 +1236,11 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
 # Activity feed
 # ---------------------------------------------------------------------------
 
-def _activity_feed(activities: list[dict], currency: str | None = None) -> FT:
+def _activity_feed(activities: list[dict], category_names: dict) -> FT:
     from ui.components.activity import activity_table
     if not activities:
         return ""
-    return activity_table(activities, max_display=15, history_url="/history")
+    return activity_table(activities, max_display=15, history_url="/history", category_names=category_names)
 
 
 

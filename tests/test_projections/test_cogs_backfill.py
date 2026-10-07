@@ -520,9 +520,7 @@ async def test_backfill_second_boot_while_locked_does_not_duplicate_notification
     assert second["deferred"] == 1
 
     notifs = await _notifications(session, company_id)
-    unread = [n for n in notifs if not n.read]
-    assert len(unread) == 1
-    assert unread[0].title == "Cost of goods posted for past invoices"
+    assert [n.title for n in notifs] == ["Cost of goods posted for past invoices"]
 
 
 @pytest.mark.asyncio

@@ -9,9 +9,12 @@ so nothing depends on an installed module.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -26,6 +29,7 @@ from celerp.modules.migrations_runner import (
 )
 from celerp.db_url import sync_url as sync_db_url
 from celerp.db import _MIGRATION_LOCK_KEY
+from test_modules.bytecode import plant_bytecode
 
 
 # ── fixture builders ──────────────────────────────────────────────────────────
@@ -285,6 +289,222 @@ async def test_third_party_migration_failure_records_load_error_and_rolls_back_w
             assert reg is None
     finally:
         eng.dispose()
+
+
+def _table_exists(name: str) -> bool:
+    eng = create_engine(_sync_url())
+    try:
+        with eng.connect() as c:
+            return c.execute(text("SELECT to_regclass(:n)"), {"n": name}).scalar() is not None
+    finally:
+        eng.dispose()
+
+
+@pytest.fixture
+def _probe_table():
+    """The name of a table a test's migration creates, dropped afterwards in case
+    the migration committed it."""
+    name = f"acme_probe_{uuid.uuid4().hex[:8]}"
+    yield name
+    eng = create_engine(_sync_url())
+    try:
+        with eng.begin() as c:
+            c.execute(text(f'DROP TABLE IF EXISTS "{name}"'))
+    finally:
+        eng.dispose()
+
+
+# Creates a prefixed table, then adds a file to its own module folder.
+_MIG_CHANGES_ITS_MODULE = """
+from pathlib import Path
+
+import sqlalchemy as sa
+from alembic import op
+
+
+def upgrade():
+    op.create_table("__TABLE__", sa.Column("id", sa.Integer(), primary_key=True))
+    Path(__file__).resolve().parents[2].joinpath("added.py").write_text("")
+"""
+
+
+async def test_migration_that_changes_its_module_is_rolled_back(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_CHANGES_ITS_MODULE.replace("__TABLE__", _probe_table)})
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert (pkg / "added.py").is_file()
+    assert pkg.name not in surviving
+    assert loader.MODULE_CHANGED in errors[pkg.name]
+    assert not _table_exists(_probe_table)
+
+
+_MIG_GUARD_PROBE = """
+import sqlalchemy as sa
+from alembic import op
+
+
+def upgrade():
+    op.create_table("__TABLE__", sa.Column("id", sa.Integer(), primary_key=True))
+"""
+
+
+async def test_migration_runs_inside_the_module_guard(_db_engine, tmp_path, monkeypatch, _probe_table):
+    """The migration runs inside the same guard as the module's import: a guard that
+    refuses the module as it closes rolls the migration back."""
+    entered: list[tuple[str, Path, bool]] = []
+
+    @contextmanager
+    def refusing_guard(pkg_name, pkg_path, *, trusted):
+        entered.append((pkg_name, Path(pkg_path), trusted))
+        yield
+        raise loader.ModuleLoadError("refused by the guard")
+
+    monkeypatch.setattr(loader, "_activating", refusing_guard)
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert [(n, p.resolve(), t) for n, p, t in entered] == [(pkg.name, pkg.resolve(), False)]
+    assert pkg.name not in surviving
+    assert "refused by the guard" in errors[pkg.name]
+    assert not _table_exists(_probe_table)
+
+
+async def test_migration_runs_from_source_and_leaves_no_compiled_files(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "cache"))
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert pkg.name in surviving, errors
+    assert _table_exists(_probe_table)
+    assert not [p for p in pkg.rglob("*") if p.name == "__pycache__" or p.suffix == ".pyc"]
+    assert sys.dont_write_bytecode is True
+    assert sys.pycache_prefix is None
+    assert not (tmp_path / "cache").exists()
+
+
+async def test_migration_changed_by_an_earlier_modules_migration_never_runs(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    """A migration whose file changed after startup checks, here by an earlier module's
+    migration, is refused before it runs."""
+    marker = tmp_path / "ran.txt"
+    base = tmp_path / "modules"
+    uid = uuid.uuid4().hex[:8]
+    later = _make_module(base, f"acme-b{uid}",
+                         {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    target = later / "inner" / "migrations" / "m_001.py"
+    appended = f"\nopen({str(marker)!r}, 'w').write('ran')\n"
+    earlier = _make_module(base, f"acme-a{uid}", {"m_001.py": (
+        f"def upgrade():\n    with open({str(target)!r}, 'a') as f:\n        f.write({appended!r})\n")},
+        table_prefix=f"early{uid}_")
+    manifest = {"name": later.name, "version": "1.0.0", "migrations": "inner.migrations",
+                "table_prefix": "acme_", "depends_on": [earlier.name]}
+    (later / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {earlier.name, later.name})
+
+    assert earlier.name in surviving, errors
+    assert later.name not in surviving
+    assert loader.MODULE_CHANGED in errors[later.name]
+    assert not marker.exists()
+    assert not _table_exists(_probe_table)
+
+
+def _writes(marker: Path) -> str:
+    return f"open({str(marker)!r}, 'w').write('ran')\n"
+
+
+async def test_migration_runs_its_checked_source_not_bytecode_beside_it(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    planted = tmp_path / "planted.txt"
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    plant_bytecode(pkg / "inner" / "migrations" / "m_001.py", _writes(planted))
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert pkg.name in surviving, errors
+    assert not planted.exists()
+    assert _table_exists(_probe_table)
+
+
+async def test_bytecode_an_earlier_modules_migration_plants_never_runs_in_place_of_a_migration(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    """Bytecode written beside a migration by an earlier module's migration, after every
+    module was prepared, is removed just before that migration runs."""
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    planted = tmp_path / "planted.txt"
+    base = tmp_path / "modules"
+    uid = uuid.uuid4().hex[:8]
+    later = _make_module(base, f"acme-b{uid}",
+                         {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    target = later / "inner" / "migrations" / "m_001.py"
+    staged = plant_bytecode(tmp_path / "staged" / "m_001.py", _writes(planted))
+    pyc = Path(importlib.util.cache_from_source(str(target)))
+    earlier = _make_module(base, f"acme-a{uid}", {"m_001.py": (
+        "import os\nimport shutil\n\n\ndef upgrade():\n"
+        f"    os.makedirs({str(pyc.parent)!r}, exist_ok=True)\n"
+        f"    shutil.copyfile({str(staged)!r}, {str(pyc)!r})\n")}, table_prefix=f"early{uid}_")
+    manifest = {"name": later.name, "version": "1.0.0", "migrations": "inner.migrations",
+                "table_prefix": "acme_", "depends_on": [earlier.name]}
+    (later / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {earlier.name, later.name})
+
+    assert {earlier.name, later.name} <= surviving, errors
+    assert not planted.exists(), "bytecode ran in place of the migration source"
+    assert _table_exists(_probe_table)
+    assert not pyc.exists()
+
+
+@pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
+async def test_migration_whose_compiled_files_cannot_be_removed_never_runs(
+        trusted, _db_engine, tmp_path, monkeypatch, _probe_table):
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    monkeypatch.setenv("MODULE_DIR", str(base))
+    lock_file = tmp_path / "fp.lock.json"
+    lock_file.write_text(json.dumps({pkg.name: loader.module_content_digest(pkg)} if trusted else {}))
+    monkeypatch.setattr(loader, "_lock_path", lambda: lock_file)
+    loader._first_party_lock.cache_clear()
+    cache = pkg / "inner" / "migrations" / "__pycache__"
+    cache.mkdir()
+    (cache / "m_001.cpython-312.pyc").write_bytes(b"\x00")
+    cache.chmod(0o500)
+    try:
+        if trusted:
+            with pytest.raises(loader.ModuleLoadError, match="Cannot remove compiled Python files"):
+                await _phase(_db_engine, {pkg.name})
+        else:
+            surviving, errors = await _phase(_db_engine, {pkg.name})
+            assert pkg.name not in surviving
+            assert "Cannot remove compiled Python files" in errors[pkg.name]
+        assert not _table_exists(_probe_table)
+    finally:
+        cache.chmod(0o700)
+        loader._first_party_lock.cache_clear()
 
 
 async def test_migration_phase_uses_verified_first_party_behind_stale_shadow(

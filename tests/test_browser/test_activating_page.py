@@ -6,9 +6,10 @@ Setup wizard activating page — Playwright tests.
 
 Covers the two-phase /health poll logic:
   ACT-01: Page renders spinner + status text
-  ACT-02: Redirects to the /onboarding setup hub when server stays up (no restart in flight)
-  ACT-03: Redirects to the /onboarding setup hub after simulated down→up cycle
-  ACT-04: Shows timeout message after exhausting max up-phase attempts
+  ACT-02: Redirects to the dashboard when server stays up (no restart in flight)
+  ACT-03: Redirects to the dashboard after simulated down→up cycle
+  ACT-04: Shows the timeout message, Retry and Open the dashboard after max attempts
+  ACT-05: Shows the module failure, Retry and Open the dashboard when modules stay stuck
 
 NOTE: These tests are excluded from CI (--ignore=tests/test_browser).
 Run locally with:
@@ -26,6 +27,14 @@ def _assert_no_crash(page: Page, context: str = "") -> None:
     assert "Traceback" not in body, f"{context}: Traceback in body"
 
 
+def _assert_failure_links(page: Page) -> None:
+    failed = page.locator("#activating-failed")
+    assert failed.is_visible(), "Expected Retry and Open the dashboard after a failure"
+    hrefs = [a.get_attribute("href") for a in failed.locator("a").all()]
+    assert hrefs == ["/setup/activating", "/dashboard"], hrefs
+    assert not page.locator(".activating-spinner").is_visible(), "Spinner must stop on failure"
+
+
 # ── ACT-01: Page renders ──────────────────────────────────────────────────────
 
 def test_activating_page_renders(page, ui_server):
@@ -40,7 +49,7 @@ def test_activating_page_renders(page, ui_server):
 # ── ACT-02: Redirects when server is already up ───────────────────────────────
 
 def test_activating_page_redirects_when_up(page, ui_server):
-    """ACT-02: When /health responds OK immediately, page redirects to the /onboarding setup hub.
+    """ACT-02: When /health responds OK immediately, page redirects to the dashboard.
 
     Intercepts fetch so pollDown sees an immediate network error (simulating
     server briefly down), then pollUp sees HTTP 200 — triggering the redirect.
@@ -65,9 +74,9 @@ def test_activating_page_redirects_when_up(page, ui_server):
         };
     }""")
 
-    # Wait for redirect to /onboarding (up to 8s; poll interval is 800ms + 3s stability window)
-    page.wait_for_url(f"{ui_server}/onboarding", timeout=8000)
-    assert "/onboarding" in page.url, f"Expected redirect to /onboarding, got {page.url}"
+    # Wait for redirect to /dashboard (up to 8s; poll interval is 800ms + 3s stability window)
+    page.wait_for_url(f"{ui_server}/dashboard", timeout=8000)
+    assert "/dashboard" in page.url, f"Expected redirect to /dashboard, got {page.url}"
 
 
 # ── ACT-03: Status text updates during down→up cycle ─────────────────────────
@@ -99,14 +108,14 @@ def test_activating_page_status_updates(page, ui_server):
         };
     }""")
 
-    page.wait_for_url(f"{ui_server}/onboarding", timeout=8000)
-    assert "/onboarding" in page.url
+    page.wait_for_url(f"{ui_server}/dashboard", timeout=8000)
+    assert "/dashboard" in page.url
 
 
 # ── ACT-04: Timeout message after max attempts ────────────────────────────────
 
 def test_activating_page_timeout_message(page, ui_server):
-    """ACT-04: After exhausting max up-phase attempts, shows 'Taking longer' message."""
+    """ACT-04: After exhausting max attempts, says the modules did not start and offers a way on."""
     page.goto(f"{ui_server}/setup/activating", wait_until="domcontentloaded")
 
     # Fetch always fails — server never comes back up
@@ -132,19 +141,19 @@ def test_activating_page_timeout_message(page, ui_server):
     # Wait for the timeout message to appear (up to 5s with accelerated timers)
     status_el.wait_for(timeout=5000)
     page.wait_for_function(
-        "() => document.getElementById('activating-status').textContent.includes('longer')",
+        "() => document.getElementById('activating-status').textContent.includes('did not start')",
         timeout=5000,
     )
     text = status_el.inner_text()
-    assert "longer" in text.lower(), f"Expected timeout message, got: {text!r}"
-    # Must NOT have redirected
-    assert "/onboarding" not in page.url, "Should not redirect on timeout"
+    assert "did not start" in text.lower(), f"Expected timeout message, got: {text!r}"
+    _assert_failure_links(page)
+    assert "/setup/activating" in page.url, "Should not redirect on timeout"
 
 
 # ── ACT-05: Error message when modules stay stuck in loading ──────────────────
 
 def test_activating_page_error_on_stuck_loading(page, ui_server):
-    """ACT-05: After maxLoadingStreak consecutive 'loading' responses, shows error + back link."""
+    """ACT-05: After maxLoadingStreak consecutive 'loading' responses, shows the error and a way on."""
     page.goto(f"{ui_server}/setup/activating", wait_until="domcontentloaded")
 
     # Always return loading with one stuck module
@@ -182,9 +191,5 @@ def test_activating_page_error_on_stuck_loading(page, ui_server):
     )
     text = status_el.inner_text()
     assert "failed" in text.lower(), f"Expected error message, got: {text!r}"
-    # Must have a 'Go back' link
-    back_link = page.locator("#activating-status a")
-    assert back_link.count() > 0, "Expected a 'Go back' link in error state"
-    assert "/setup" in (back_link.first.get_attribute("href") or ""), "Back link should point to /setup"
-    # Must NOT have redirected
-    assert "/onboarding" not in page.url, "Should not redirect on module failure"
+    _assert_failure_links(page)
+    assert "/setup/activating" in page.url, "Should not redirect on module failure"

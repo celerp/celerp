@@ -55,7 +55,7 @@ async def _content(monkeypatch, *, valuation=None, items=None, p=None):
 
     Passing an APIError instance for valuation or items makes that getter raise.
     """
-    async def _get_valuation(_token, **_kw):
+    async def _get_valuation(_token, _params=None):
         if isinstance(valuation, Exception):
             raise valuation
         return valuation or {}
@@ -145,7 +145,7 @@ def _install_inventory_getters(monkeypatch, *, company=None, company_error=None,
             return retval
         return _f
 
-    async def _valuation(_token, **_kw):
+    async def _valuation(_token, _params=None):
         return {}
 
     async def _list_items(_token, _params):

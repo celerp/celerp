@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 """Group 6: Import flows — upload CSV → preview step reached, no 500."""
-import io
+from urllib.parse import urlparse
 import pytest
 
 pytestmark = pytest.mark.browser
@@ -74,7 +74,8 @@ def test_import_without_location_col_blocked(page, ui_server, api):
 
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body, "Import without location: Internal Server Error"
-    assert "500" not in page.url, "Import without location: URL contains 500"
+    # The path only: the host and port are the test server's and can contain "500".
+    assert "500" not in urlparse(page.url).path, "Import without location: URL contains 500"
 
 
 def test_import_docs_accessible(page, ui_server):

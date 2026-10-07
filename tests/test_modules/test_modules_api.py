@@ -615,7 +615,8 @@ def test_module_descriptions_use_connect_naming():
 # ── module data purge (preview + drop) ────────────────────────────────────────
 
 _PKG_INIT_PREFIX = ('PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0.0", '
-                    '"display_name": "{disp}", "table_prefix": "{prefix}"}}\n')
+                    '"display_name": "{disp}", "table_prefix": "{prefix}", '
+                    '"company_backup": {{"{prefix}things": "include"}}}}\n')
 
 
 def _write_pkg_prefix(dirpath: Path, name: str, prefix: str) -> Path:

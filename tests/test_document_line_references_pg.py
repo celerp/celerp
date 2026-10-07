@@ -53,7 +53,7 @@ async def _seed(factory) -> tuple[uuid.UUID, types.SimpleNamespace, uuid.UUID]:
                 actor_id=user_id, location_id=None, source="csv_import", idempotency_key=idem,
             )
         s.add(ImportBatch(id=batch_id, company_id=company_id, entity_type="item", filename="undone.csv",
-                          row_count=1, entity_ids=[_ITEM], idempotency_keys=[key]))
+                          row_count=1, entity_ids=[_ITEM], idempotency_keys=[key], reversible=True))
         await s.commit()
     return company_id, types.SimpleNamespace(id=user_id), batch_id
 

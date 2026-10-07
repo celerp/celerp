@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Render-time language resolution for the setup / onboarding wizard.
+"""Render-time language resolution for the setup pages.
 
-The setup wizard builds its placeholders, cloud-upsell subtitle, feature list,
+The setup pages build their placeholders, cloud-upsell subtitle, feature list,
 and skip link by calling ``t()`` at render time, so a request in a non-English
 language gets translated output. These tests prove that by registering a
 sentinel language ``xx`` (via the module i18n seam) and asserting the sentinel
@@ -16,11 +16,10 @@ import pytest
 from fasthtml.common import to_xml
 
 from ui import i18n
-from ui.routes.setup import _company_details_form, _cloud_form
+from ui.routes.setup import _cloud_form, company_choice_fields
 
 # Sentinel catalog: one unmistakable value per key the wizard renders at render time.
 _XX = {
-    "setup.address_placeholder": "XX_ADDR_PH",
     "setup.currency_search_placeholder": "XX_CUR_SEARCH",
     "setup.cloud_subtitle": "XX_CLOUD_SUB",
     "setup.feature_connectors_title": "XX_FEAT_CONN",
@@ -44,10 +43,9 @@ def _xx_lang():
     i18n._cached_load.cache_clear()
 
 
-def test_company_details_placeholders_translate():
-    """Textarea / currency-search placeholders resolve through t() at render."""
-    html = to_xml(_company_details_form({}))
-    assert "XX_ADDR_PH" in html
+def test_company_choice_placeholders_translate():
+    """The currency-search placeholder resolves through t() at render."""
+    html = to_xml(company_choice_fields("", ""))
     assert "XX_CUR_SEARCH" in html
 
 

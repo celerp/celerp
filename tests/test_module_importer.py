@@ -617,6 +617,7 @@ def _migrations_manifest(name: str, *, prefix: str | None, migrations: bool = Tr
         lines.append('    "migrations": "inner.migrations",')
     if prefix is not None:
         lines.append(f'    "table_prefix": "{prefix}",')
+        lines.append(f'    "company_backup": {{"{prefix}things": "include"}},')
     lines.append("}\n")
     return "\n".join(lines)
 

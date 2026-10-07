@@ -14,12 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import ensure_instance_id, settings
 from celerp.db import get_session
-from celerp.gateway.state import relay_http_url
 from celerp.services import supporter_badge as _badge
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 from celerp.services.runtime_state import dismiss_star_prompt, star_prompt_dismissed
 from celerp.services.star_cta import get_star_cta, neutral_cta
+from ui.i18n import available_langs
 
 router = APIRouter()
 
@@ -27,14 +27,19 @@ router = APIRouter()
 @router.get("/cta")
 async def star_cta(
     medium: str = "footer",
+    lang: str = "en",
     _company=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Return the relay-resolved CTA for ``medium`` (or the neutral link if the relay
-    is unreachable), plus the install-level dismissed flag. Neutral mode when disabled."""
+    """Return the relay-resolved CTA for ``medium`` with its copy asked for in the UI
+    language ``lang`` (English when it is not one of the app's languages), or the neutral
+    link if the relay is unreachable, plus the install-level dismissed flag. Neutral mode
+    when disabled."""
     if not settings.star_cta_enabled:
         return {"mode": "neutral"}
-    cta = await get_star_cta(medium) or neutral_cta(medium)
+    if lang not in available_langs():
+        lang = "en"
+    cta = await get_star_cta(medium, lang) or neutral_cta(medium)
     return {**cta, "dismissed": await star_prompt_dismissed(session)}
 
 
@@ -43,7 +48,7 @@ async def dismiss(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Dismiss the GitHub-star ask for the whole install (onboarding/milestone cards)."""
+    """Dismiss the GitHub-star ask for the whole install (dashboard card)."""
     await dismiss_star_prompt(session)
     return {"dismissed": True}
 
@@ -56,6 +61,7 @@ async def badge_verify_url(return_url: str, _user=Depends(get_current_user)) -> 
     """The relay verify-start URL to open in the browser. ``return_url`` is where the
     relay redirects back with the credential (the install's own page). Claiming a badge
     lists the founder on the public wall - there is no separate opt-in."""
+    from celerp.gateway.state import relay_http_url
     from urllib.parse import urlencode
 
     iid = ensure_instance_id()
@@ -69,6 +75,7 @@ async def get_badge(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """The current user's supporter badge (or null) + the public founders wall URL."""
+    from celerp.gateway.state import relay_http_url
     return {
         "badge": _badge.to_dict(await _badge.get(session, user.id)),
         "wall_url": f"{relay_http_url()}/github/founders",

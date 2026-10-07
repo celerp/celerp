@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
@@ -335,7 +336,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start
         _card(t("contacts.avg_days_to_pay"), avg_dtp),
         # An unavailable figure shows as EMPTY rather than 0.00, which would wrongly read
         # as "this customer is holding nothing of ours".
-        _card(t("contacts.on_memo"), fmt_money(on_memo_total, None) if on_memo_total is not None else EMPTY,
+        _card(t("inventory.status_on_memo"), fmt_money(on_memo_total, None) if on_memo_total is not None else EMPTY,
               sub_label=t("contacts.out_to_customer"),
               href=f"/inventory?on_memo_to={contact_id}" if (contact_id and on_memo_total is not None) else ""),
         _card(t("contacts.consignment"), fmt_money(total_consigned, None),
@@ -730,11 +731,11 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     return await base_shell(
         page_header(
             label,
-            search_bar(placeholder=t("contacts.search_placeholder", scope=label.lower()), target="#contacts-content", url=search_url, value=q,
-                       label=t("contacts.search_scope", scope=label.lower())),
-            Button(t("contacts.new_type", type=label[:-1]), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
+            search_bar(placeholder=t(f"contacts.search_{nav_key}_placeholder"), target="#contacts-content", url=search_url, value=q,
+                       label=t(f"contacts.search_{nav_key}")),
+            Button(t(f"contacts.new_{contact_type}"), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
-            A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary") if _can_import_export else "",
+            A(import_icon(), t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(contact_type),
@@ -918,6 +919,15 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         extra_head=_phone_head_items(),
         request=request,
     )
+
+
+# The translated name of each contact import target.
+_CONTACT_IMPORT_LABEL_KEYS = {
+    "name": "field.label.name", "company_name": "label.company_name", "website": "import.field.website",
+    "currency": "field.currency", "phone": "field.contact_phone", "email": "field.contact_email",
+    "billing_address": "field.contact_billing_address", "tax_id": "field.contact_tax_id",
+    "credit_limit": "label.credit_limit", "contact_type": "label.contact_type", "payment_terms": "field.payment_terms",
+}
 
 
 def setup_routes(app):
@@ -2155,8 +2165,8 @@ def setup_routes(app):
         validate_column_mapping as _csv_validate_column_mapping,
         apply_column_mapping as _csv_apply_column_mapping,
         import_result_panel as _csv_import_result_panel,
-        entered_from_onboarding as _csv_entered_from_onboarding,
-        onboarding_entry_cookie as _csv_onboarding_entry_cookie,
+        import_back_link as _csv_import_back_link,
+        translated_labels as _csv_translated_labels,
     )
 
     _CONTACT_IMPORT_SPEC = CsvImportSpec(
@@ -2171,7 +2181,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         return await base_shell(
-            page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+            page_header(t("contacts.import_contacts"), _csv_import_back_link("/contacts/customers")),
             _csv_upload_form(
                 cols=_CONTACT_IMPORT_SPEC.cols,
                 template_href="/crm/import/contacts/template",
@@ -2181,7 +2191,7 @@ def setup_routes(app):
             title=page_title("contacts.import_contacts"),
             nav_active="customers",
             request=request,
-        ), _csv_onboarding_entry_cookie(request)
+        )
 
     @app.get("/crm/import/contacts/template")
     async def crm_import_contacts_template(request: Request):
@@ -2210,7 +2220,7 @@ def setup_routes(app):
         rows, csv_ref, err = await stage_tabular_upload(token, form)
         if err:
             return await base_shell(
-                page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+                page_header(t("contacts.import_contacts"), _csv_import_back_link("/contacts/customers")),
                 _csv_upload_form(
                     cols=_CONTACT_IMPORT_SPEC.cols,
                     template_href="/crm/import/contacts/template",
@@ -2225,7 +2235,7 @@ def setup_routes(app):
         import csv as _csv_mod, io as _io
         cols = list(rows[0].keys()) if rows else []
         return await base_shell(
-            page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+            page_header(t("contacts.import_contacts"), _csv_import_back_link("/contacts/customers")),
             _csv_column_mapping_form(
                 csv_cols=cols,
                 target_cols=_CONTACT_IMPORT_SPEC.cols,
@@ -2234,6 +2244,7 @@ def setup_routes(app):
                 confirm_action="/crm/import/contacts/mapped",
                 back_href="/crm/import/contacts",
                 required_targets=_CONTACT_IMPORT_SPEC.required,
+                col_labels=_csv_translated_labels(_CONTACT_IMPORT_LABEL_KEYS),
             ),
             title=page_title("contacts.import_contacts"),
             nav_active="customers",
@@ -2251,7 +2262,7 @@ def setup_routes(app):
         csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
-                page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+                page_header(t("contacts.import_contacts"), _csv_import_back_link("/contacts/customers")),
                 _csv_upload_form(
                     cols=_CONTACT_IMPORT_SPEC.cols,
                     template_href="/crm/import/contacts/template",
@@ -2270,7 +2281,7 @@ def setup_routes(app):
             csv_ref = await stash_import_csv(token, csv_text)
             rows = list(_csv_mod.DictReader(_io.StringIO(csv_text)))
             return await base_shell(
-                page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+                page_header(t("contacts.import_contacts"), _csv_import_back_link("/contacts/customers")),
                 _csv_column_mapping_form(
                     csv_cols=original_cols,
                     target_cols=_CONTACT_IMPORT_SPEC.cols,
@@ -2279,6 +2290,7 @@ def setup_routes(app):
                     confirm_action="/crm/import/contacts/mapped",
                     back_href="/crm/import/contacts",
                     required_targets=_CONTACT_IMPORT_SPEC.required,
+                    col_labels=_csv_translated_labels(_CONTACT_IMPORT_LABEL_KEYS),
                     errors=mapping_errors,
                     form_values=dict(form),
                 ),
@@ -2293,8 +2305,9 @@ def setup_routes(app):
         cols = remapped_cols or (list(rows[0].keys()) if rows else _CONTACT_IMPORT_SPEC.cols)
 
         return await base_shell(
-            page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),
+            page_header(t("contacts.import_contacts"), _csv_import_back_link("/contacts/customers")),
             _csv_validation_result(
+                col_labels=_csv_translated_labels(_CONTACT_IMPORT_LABEL_KEYS),
                 csv_ref=csv_ref,
                 rows=rows,
                 cols=cols,
@@ -2330,6 +2343,7 @@ def setup_routes(app):
         rows = _csv_apply_fixes(form, rows, cols)
         csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
         return _csv_validation_result(
+            col_labels=_csv_translated_labels(_CONTACT_IMPORT_LABEL_KEYS),
             csv_ref=csv_ref,
             rows=rows, cols=cols,
             validate=lambda c, v, r: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v),
@@ -2358,6 +2372,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
 
         import csv, io, uuid
+        from celerp_contacts.services import contact_import_identity
 
         form = await request.form()
         csv_data = await resolve_import_csv(token, form)
@@ -2370,7 +2385,6 @@ def setup_routes(app):
                 continue
             email = str(r.get("email", "")).strip()
             phone = str(r.get("phone", "")).strip()
-            contact_type_val = str(r.get("contact_type", "")).strip() or "customer"
 
             data = {
                 "name": name,
@@ -2381,7 +2395,7 @@ def setup_routes(app):
                 "currency": str(r.get("currency", "")).strip() or None,
                 "billing_address": str(r.get("billing_address", "")).strip() or None,
                 "tax_id": str(r.get("tax_id", "")).strip() or None,
-                "contact_type": contact_type_val,
+                "contact_type": str(r.get("contact_type", "")).strip() or None,
                 "payment_terms": str(r.get("payment_terms", "")).strip() or None,
             }
             credit_limit_raw = str(r.get("credit_limit", "")).strip()
@@ -2391,7 +2405,7 @@ def setup_routes(app):
                 except ValueError:
                     data["credit_limit"] = credit_limit_raw
 
-            idem = f"csv:contact:{email or phone or name}".lower()
+            idem = f"csv:contact:{contact_import_identity(data)}"
             records.append({
                 "entity_id": f"contact:{uuid.uuid4()}",
                 "event_type": "crm.contact.created",
@@ -2416,11 +2430,10 @@ def setup_routes(app):
             created=created,
             skipped=skipped,
             errors=errors,
-            entity_label="contacts",
+            entity_label=t("dashboard.contacts"),
             back_href="/contacts/customers",
             import_more_href="/crm/import/contacts",
             has_mapping=True,
-            from_onboarding=_csv_entered_from_onboarding(request),
         )
 
     # ── Backward compat: /crm/{contact_id:path} → /contacts/{contact_id} ──

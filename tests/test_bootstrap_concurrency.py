@@ -365,7 +365,7 @@ async def test_token_issuance_failure_rolls_back_bootstrap_rows(client, session)
     rows: the register is all-or-nothing through the single commit point."""
     from unittest.mock import AsyncMock, patch
 
-    with patch("celerp.routers.auth.issue_token_pair", new=AsyncMock(side_effect=RuntimeError("issuer down"))):
+    with patch("celerp.credentials.issue_token_pair", new=AsyncMock(side_effect=RuntimeError("issuer down"))):
         r = await client.post(
             "/auth/register",
             json={"company_name": "TokFail", "email": "tokfail@example.com", "name": "Owner", "password": "validpass1"},

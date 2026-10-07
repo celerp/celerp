@@ -43,8 +43,9 @@ def _routes():
 
 
 class _FormReq:
-    def __init__(self, form: dict):
+    def __init__(self, form: dict, method: str = "POST"):
         self._form = form
+        self.method = method
         self.cookies: dict = {}
         self.query_params: dict = {}
 
@@ -115,7 +116,7 @@ def test_parse_share_link_rejects_other_links(link):
 
 @pytest.mark.asyncio
 async def test_import_page_offers_shared_import(ui_routes):
-    page, _cookie = await ui_routes[("GET", "/docs/import")](_FormReq({}))
+    page = await ui_routes[("GET", "/docs/import")](_FormReq({}, "GET"))
     html = to_xml(page)
     assert 'action="/docs/import/shared"' in html
     assert 'action="/docs/import/shared-file"' in html
@@ -129,7 +130,7 @@ async def test_import_page_fills_the_link_it_was_handed(ui_routes, monkeypatch):
         raise AssertionError("Opening the page must not import anything")
 
     monkeypatch.setattr(di.api, "import_shared_doc", _never)
-    page, _cookie = await ui_routes[("GET", "/docs/import")](_FormReq({}), link="https://shop.example.com/share/abc123")
+    page = await ui_routes[("GET", "/docs/import")](_FormReq({}, "GET"), link="https://shop.example.com/share/abc123")
     html = to_xml(page)
     assert 'value="https://shop.example.com/share/abc123"' in html
 
@@ -291,7 +292,7 @@ async def test_received_list_shows_the_inbox_columns(ui_routes, monkeypatch):
         return [_received()]
 
     monkeypatch.setattr(di.api, "list_received", _list)
-    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({})))
+    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({}, "GET")))
 
     assert 'href="/docs/received/rcv:abc"' in html and "Sender Ltd" in html
     assert "INV-0042" in html and "2026-09-01" in html and "2026-09-03" in html
@@ -307,7 +308,7 @@ async def test_received_list_empty_state(ui_routes, monkeypatch):
         return []
 
     monkeypatch.setattr(di.api, "list_received", _list)
-    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({})))
+    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({}, "GET")))
     assert "Nothing received yet" in html
 
 
@@ -317,7 +318,7 @@ async def test_received_list_shows_an_api_failure(ui_routes, monkeypatch):
         raise APIError(500, "Could not load received documents")
 
     monkeypatch.setattr(di.api, "list_received", _fail)
-    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({})))
+    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({}, "GET")))
     assert "Could not load received documents" in html
 
 
@@ -327,7 +328,7 @@ async def _detail(ui_routes, monkeypatch, **over) -> str:
         return _received(**over)
 
     monkeypatch.setattr(di.api, "get_received", _get)
-    return to_xml(await ui_routes[("GET", "/docs/received/{rid}")](_FormReq({}), "rcv:abc"))
+    return to_xml(await ui_routes[("GET", "/docs/received/{rid}")](_FormReq({}, "GET"), "rcv:abc"))
 
 
 @pytest.mark.asyncio

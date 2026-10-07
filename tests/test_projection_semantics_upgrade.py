@@ -55,7 +55,7 @@ async def _state(session, company_id, entity_id: str) -> dict:
 
 
 async def _held_back(session, company_id) -> list:
-    """The unread notices telling the company that a start held its updates back."""
+    """The notices telling the company that a start held its updates back."""
     from sqlalchemy import select
 
     from celerp.held_back import TITLE as _HELD_BACK_TITLE
@@ -63,7 +63,7 @@ async def _held_back(session, company_id) -> list:
 
     return list((await session.execute(select(Notification).where(
         Notification.company_id == company_id, Notification.priority == "high",
-        Notification.title == _HELD_BACK_TITLE, Notification.read == False))).scalars())  # noqa: E712
+        Notification.title == _HELD_BACK_TITLE))).scalars())
 
 
 def _fired(monkeypatch) -> list[str]:

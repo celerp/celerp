@@ -28,7 +28,7 @@ from celerp.importers.schema import (
     ReconciliationExpectations,
     ReconciliationMeasure,
 )
-from celerp.accounting_roles import AccountRole, generated_account_code
+from celerp.accounting_roles import AccountRole
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.services.account_roles import current_settings, record_source_control, source_controls
 from celerp.services.migration_core_sink import (
@@ -53,6 +53,8 @@ from celerp_accounting.routes import (
 ACCOUNT = "account"
 JOURNAL = "journal_entry"
 CONTACT = "contact"
+
+_TYPE_ROOTS = {"asset": 1000, "liability": 2000, "equity": 3000, "revenue": 4000, "cogs": 5000, "expense": 6000}
 
 # The posting role a source control account served. Tax splits by side: an asset is
 # tax paid, a liability tax collected. Bank and cash accounts become bank accounts.
@@ -206,7 +208,7 @@ async def _write_account(
         taken.add(code)
         return code
 
-    code = _free_code(account.code or generated_account_code(deterministic_id(context, ACCOUNT, account.source_external_id)), taken)
+    code = _free_code(account.code, taken) if account.code else _next_code(account.account_type.value, taken)
     existing[code] = await import_service.create_chart_account(
         session, company_id, code=code, name=account.name, account_type=account.account_type.value,
         parent_code=parent_code, is_active=account.is_active, code_generated=not account.code,
@@ -222,6 +224,17 @@ def _control_role(account: CIFAccount) -> AccountRole | None:
     if account.control == AccountControl.TAX:
         return AccountRole.TAX_INPUT if account.account_type.value == "asset" else AccountRole.TAX_OUTPUT
     return _CONTROL_ROLES.get(account.control) if account.control else None
+
+
+def _next_code(account_type: str, taken: set[str]) -> str:
+    """For an account the source gave no code: the first free number in its type's range of the
+    chart, in the chart's own steps of ten where one is free."""
+    root = _TYPE_ROOTS[account_type]
+    for step in (10, 1):
+        for n in range(root + step, root + 1000, step):
+            if str(n) not in taken:
+                return str(n)
+    raise ValueError("no account number is free for this account type")
 
 
 def _free_code(code: str, taken: set[str]) -> str:

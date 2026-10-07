@@ -16,6 +16,8 @@ import csv
 import datetime
 import io
 import math
+import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,9 +44,9 @@ MAX_XLSX_ENTRIES = 4096
 class TabularError(ValueError):
     """A file that cannot be turned into a table. Carries the offending cell
     position (``row``/``column``) for formula errors and the available sheet
-    names (``sheets``) when the caller must choose one, and for a header that
-    would lose values a ``code``: ``no_header``, ``extra_columns`` or
-    ``duplicate_header``."""
+    names (``sheets``) or the leading lines (``header_lines``) when the caller
+    must choose a sheet or a header row, and for a header that would lose
+    values a ``code``: ``no_header``, ``extra_columns`` or ``duplicate_header``."""
 
     def __init__(
         self,
@@ -54,12 +56,14 @@ class TabularError(ValueError):
         column: str | None = None,
         sheets: list[str] | None = None,
         code: str | None = None,
+        header_lines: list[list[str]] | None = None,
     ) -> None:
         super().__init__(message)
         self.row = row
         self.column = column
         self.sheets = sheets
         self.code = code
+        self.header_lines = header_lines
 
 
 # Columns always shown in the error table (identifiers), even if they have no errors.
@@ -109,10 +113,30 @@ def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = 
 # Column mapping
 # ---------------------------------------------------------------------------
 
-# Common aliases: CSV header (lowercase) -> Celerp target field.
+# Header separators and the punctuation that never changes what a header names.
+_HEADER_SEPARATORS = re.compile(r"[\s_\-./\\:|,;]+")
+_HEADER_PUNCTUATION = re.compile(r"[()\[\]{}#*?!'\"`]+")
+
+
+def normalize_header(header: str) -> str:
+    """The one comparable form of a column header.
+
+    Unicode-normalized (NFKC), case-folded and trimmed; runs of whitespace,
+    underscores, hyphens and other separators become one ``_``; brackets,
+    quotes, currency symbols and similar punctuation are dropped. ``Qty On-Hand``, ``qty_on_hand``
+    and ``QTY (on hand)`` all read ``qty_on_hand``. No fuzzy matching: two
+    headers match only when this form is equal. The original header is kept
+    wherever its wording matters (currency, unit and total annotations).
+    """
+    text = unicodedata.normalize("NFKC", str(header or "")).casefold()
+    text = "".join(" " if unicodedata.category(ch) == "Sc" else ch for ch in _HEADER_PUNCTUATION.sub(" ", text))
+    return _HEADER_SEPARATORS.sub("_", text).strip("_")
+
+
+# Common aliases: normalized CSV header -> Celerp target field.
 # Used to pre-fill the mapping dropdown. Not auto-committed - user always sees
 # and confirms the suggestion.
-_COMMON_ALIASES: dict[str, str] = {
+_COMMON_ALIASES: dict[str, str] = {normalize_header(k): v for k, v in {
     "item_type": "category",
     "type": "category",
     "product_type": "category",
@@ -124,8 +148,6 @@ _COMMON_ALIASES: dict[str, str] = {
     "purchase_price": "cost_price",
     "total_cost": "cost_price_total",
     "cost_total": "cost_price_total",
-    "total cost": "cost_price_total",
-    "cost total": "cost_price_total",
     "wholesale": "wholesale_price",
     "weight_ct": "weight",
     "weight_g": "weight",
@@ -135,6 +157,7 @@ _COMMON_ALIASES: dict[str, str] = {
     "ean": "barcode",
     "isbn": "barcode",
     "code": "sku",
+    "sku code": "sku",
     "item_code": "sku",
     "product_code": "sku",
     "product_name": "name",
@@ -144,22 +167,18 @@ _COMMON_ALIASES: dict[str, str] = {
     "qty": "quantity",
     "stock": "quantity",
     "on_hand": "quantity",
-    # spaced variants that don't exact-match underscore targets
-    "sell by": "sell_by",
-    "purchase unit": "purchase_unit",
-    "weight unit": "weight_unit",
-    "location name": "location_name",
-    "hs code": "hs_code",
-    "purchase sku": "purchase_sku",
-    "purchase name": "purchase_name",
-    "purchase conversion factor": "purchase_conversion_factor",
-    "short description": "short_description",
-}
+    "qty on hand": "quantity",
+    "quantity on hand": "quantity",
+    "stock on hand": "quantity",
+    "unit": "sell_by",
+    "uom": "sell_by",
+    "unit of measure": "sell_by",
+}.items()}
 
-# Aliases for category attribute keys (csv_col_lower → attr_key_lower).
+# Aliases for category attribute keys (normalized header → attr key).
 # Used in suggest_mapping Pass 2b to bridge common spreadsheet column names
 # to their canonical category attribute counterparts.
-_COMMON_ATTR_ALIASES: dict[str, str] = {
+_COMMON_ATTR_ALIASES: dict[str, str] = {normalize_header(k): v for k, v in {
     "stone_color": "color",
     "stone_colour": "color",
     "stone_shape": "shape",
@@ -171,7 +190,7 @@ _COMMON_ATTR_ALIASES: dict[str, str] = {
     "certificate_number": "certificate_no",
     "cert_number": "certificate_no",
     "cert_no": "certificate_no",
-}
+}.items()}
 
 # Columns that should always default to Skip (system-managed; never imported)
 _FORCE_SKIP_COLS: frozenset[str] = frozenset({"created_at", "updated_at", "status"})
@@ -189,9 +208,12 @@ def suggest_mapping(
 ) -> dict[str, str]:
     """Return {csv_col: suggested_target} for each CSV column.
 
+    Every comparison is between normalized headers (``normalize_header``), so
+    ``Qty On-Hand``, ``qty_on_hand`` and ``QTY  ON HAND`` are one name.
+
     Priority:
     0. Force-skip columns (created_at, updated_at, status) → always MAPPING_SKIP
-    1. Exact match (case-insensitive) to a core target column
+    1. Exact match to a core target column
     2. Known alias match to a core target column
     2b. Known alias match to a category attribute key
     3. Exact match to a category attribute key (prefixed with MAPPING_ATTR_PREFIX)
@@ -201,22 +223,20 @@ def suggest_mapping(
     """
     mapping: dict[str, str] = {}
     claimed: set[str] = set()
-    target_lower = {item.lower(): item for item in target_cols}
+    target_norm = {normalize_header(item): item for item in target_cols}
     attrs = category_attrs or []
-    attr_lower = {a.lower().replace(" ", "_"): a for a in attrs}
+    attr_norm = {normalize_header(a): a for a in attrs}
 
     # Pass 0: force-skip system columns
     for csv_col in csv_cols:
-        if csv_col.lower().strip() in _FORCE_SKIP_COLS:
+        if normalize_header(csv_col) in _FORCE_SKIP_COLS:
             mapping[csv_col] = MAPPING_SKIP
 
-    # Pass 1: exact matches to core fields (also try space→underscore normalization)
+    # Pass 1: exact matches to core fields
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
-        lc = csv_col.lower().strip()
-        lc_norm = lc.replace(" ", "_")
-        match = target_lower.get(lc) or target_lower.get(lc_norm)
+        match = target_norm.get(normalize_header(csv_col))
         if match and match not in claimed:
             mapping[csv_col] = match
             claimed.add(match)
@@ -225,9 +245,8 @@ def suggest_mapping(
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
-        lc = csv_col.lower().strip()
-        alias_target = _COMMON_ALIASES.get(lc)
-        if alias_target and alias_target in target_lower.values() and alias_target not in claimed:
+        alias_target = _COMMON_ALIASES.get(normalize_header(csv_col))
+        if alias_target and alias_target in target_norm.values() and alias_target not in claimed:
             mapping[csv_col] = alias_target
             claimed.add(alias_target)
 
@@ -236,9 +255,8 @@ def suggest_mapping(
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
-        lc = csv_col.lower().strip().replace(" ", "_")
-        alias_attr = _COMMON_ATTR_ALIASES.get(lc)
-        if alias_attr and alias_attr in attr_lower.values() and alias_attr not in claimed_attrs:
+        alias_attr = _COMMON_ATTR_ALIASES.get(normalize_header(csv_col))
+        if alias_attr and alias_attr in attr_norm.values() and alias_attr not in claimed_attrs:
             mapping[csv_col] = f"{MAPPING_ATTR_PREFIX}{alias_attr}"
             claimed_attrs.add(alias_attr)
 
@@ -246,10 +264,10 @@ def suggest_mapping(
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
-        lc = csv_col.lower().strip().replace(" ", "_")
-        if lc in attr_lower and attr_lower[lc] not in claimed_attrs:
-            mapping[csv_col] = f"{MAPPING_ATTR_PREFIX}{attr_lower[lc]}"
-            claimed_attrs.add(attr_lower[lc])
+        attr = attr_norm.get(normalize_header(csv_col))
+        if attr and attr not in claimed_attrs:
+            mapping[csv_col] = f"{MAPPING_ATTR_PREFIX}{attr}"
+            claimed_attrs.add(attr)
 
     # Pass 4: everything else defaults to custom
     for csv_col in csv_cols:
@@ -590,20 +608,34 @@ async def read_upload_bytes(upload: Any, limit: int = MAX_TABLE_BYTES) -> bytes:
     return b"".join(chunks)
 
 
-def read_csv(text: str) -> tuple[list[str], list[dict]]:
-    """Parse CSV text into (header, rows), BOM stripped and row/cell bounds enforced.
-
-    Rows form the same grid a workbook sheet does (``_grid``). The first line is
-    the header, even when blank; lines after it with no filled cell are skipped,
-    as empty sheet rows are.
-    """
+def _csv_lines(text: str) -> list[list[str]]:
+    """Every line of CSV text as cells, BOM stripped."""
     if text.startswith("\ufeff"):
         text = text[1:]
-    reader = csv.reader(io.StringIO(text))
-    header = next(reader, [])
-    lines = [line for line in reader if any(line)]
-    _enforce_bounds(max(_filled_width(line) for line in [header, *lines]), len(lines))
-    return _grid(header, lines)
+    return list(csv.reader(io.StringIO(text)))
+
+
+def _table(lines: list[list[str]], header_row: int) -> tuple[list[str], list[dict]]:
+    """(header, rows) with line ``header_row`` as the header and bounds enforced.
+
+    Lines above the header (a title, a note) are not data. Lines after it with
+    no filled cell are skipped, as empty sheet rows are.
+    """
+    if header_row < 0 or (lines and header_row >= len(lines)):
+        raise TabularError("The chosen header row is not in the file.", code="header_row")
+    header = lines[header_row] if lines else []
+    data = [line for line in lines[header_row + 1:] if any(line)]
+    _enforce_bounds(max(_filled_width(line) for line in [header, *data]), len(data))
+    return _grid(header, data)
+
+
+def read_csv(text: str, *, header_row: int = 0) -> tuple[list[str], list[dict]]:
+    """Parse CSV text into (header, rows), BOM stripped and row/cell bounds enforced.
+
+    Rows form the same grid a workbook sheet does (``_grid``). Line
+    ``header_row`` (the first by default) is the header, even when blank.
+    """
+    return _table(_csv_lines(text), header_row)
 
 
 def _column_letter(index: int) -> str:
@@ -683,13 +715,14 @@ def _sheet_is_empty(ws) -> bool:
     return True
 
 
-def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]:
-    """Parse an .xlsx workbook into (header, rows).
+def _xlsx_lines(data: bytes, *, sheet: str | None) -> list[list[str]]:
+    """Every row of one workbook sheet as cells.
 
     A zipfile pre-check bounds the entry count and total uncompressed size
     before openpyxl parses anything, so a zip bomb is rejected up front. Exactly
     one non-empty sheet auto-selects; several with no chosen sheet raise with the
-    available names. A formula cell raises with its position.
+    available names. A formula cell raises with its position: formulas and
+    external links are never evaluated.
     """
     if len(data) > MAX_TABLE_BYTES:
         raise TabularError("File is too large.")
@@ -697,7 +730,7 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
-        raise TabularError("File is not a valid .xlsx workbook.") from exc
+        raise TabularError("File is not a valid .xlsx workbook.", code="not_workbook") from exc
     infos = archive.infolist()
     if len(infos) > MAX_XLSX_ENTRIES:
         raise TabularError("Workbook has too many internal entries.")
@@ -707,7 +740,7 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
     except (InvalidFileException, zipfile.BadZipFile, KeyError) as exc:
-        raise TabularError("Could not open the workbook.") from exc
+        raise TabularError("Could not open the workbook.", code="not_workbook") from exc
 
     try:
         names = list(workbook.sheetnames)
@@ -718,7 +751,7 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
         else:
             non_empty = [name for name in names if not _sheet_is_empty(workbook[name])]
             if not non_empty:
-                raise TabularError("The workbook has no data.")
+                raise TabularError("The workbook has no data.", code="empty")
             if len(non_empty) > 1:
                 raise TabularError("Choose a sheet.", sheets=non_empty)
             worksheet = workbook[non_empty[0]]
@@ -726,7 +759,6 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
         # The stored sheet dimension is written by whatever produced the file;
         # read every cell present rather than trusting it to size the rows.
         worksheet.reset_dimensions()
-        header: list[str] = []
         lines: list[list[str]] = []
         width = 0
         for cells in worksheet.iter_rows():
@@ -740,22 +772,39 @@ def read_xlsx(data: bytes, *, sheet: str | None) -> tuple[list[str], list[dict]]
                         "Formula cells are not supported.",
                         row=cell.row,
                         column=getattr(cell, "column_letter", None),
+                        code="formula",
                     )
                 values.append(_stringify(value))
-            if not header:
-                header = values
-                width = _filled_width(header)
-                continue
-            if not any(values):
+            if lines and not any(values):
                 continue
             # The same bounds as CSV, counted on the widest row actually read,
             # so a ragged row wider than the header counts in full.
             width = max(width, _filled_width(values))
-            _enforce_bounds(width, len(lines) + 1)
+            _enforce_bounds(width, len(lines))
             lines.append(values)
-        return _grid(header, lines)
+        return lines
     finally:
         workbook.close()
+
+
+def read_xlsx(data: bytes, *, sheet: str | None, header_row: int = 0) -> tuple[list[str], list[dict]]:
+    """Parse an .xlsx workbook into (header, rows), row ``header_row`` as the header."""
+    return _table(_xlsx_lines(data, sheet=sheet), header_row)
+
+
+def _lines(data: bytes, filename: str, *, sheet: str | None) -> list[list[str]]:
+    """Dispatch on the file suffix. CSV and .xlsx are supported; .xlsm/.xls and
+    everything else raise."""
+    if len(data) > MAX_TABLE_BYTES:
+        raise TabularError("File is too large.")
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".csv":
+        return _csv_lines(data.decode("utf-8-sig"))
+    if suffix == ".xlsx":
+        return _xlsx_lines(data, sheet=sheet)
+    if suffix in (".xlsm", ".xls"):
+        raise TabularError(f"{suffix} files are not supported; save as .xlsx or .csv.", code="unsupported_type")
+    raise TabularError(f"Unsupported file type: {suffix or filename!r}.", code="unsupported_type")
 
 
 def read_table(
@@ -763,16 +812,84 @@ def read_table(
     filename: str,
     *,
     sheet: str | None = None,
+    header_row: int = 0,
 ) -> tuple[list[str], list[dict]]:
-    """Dispatch on the file suffix. CSV and .xlsx are supported; .xlsm/.xls and
-    everything else raise."""
-    if len(data) > MAX_TABLE_BYTES:
-        raise TabularError("File is too large.")
-    suffix = Path(filename).suffix.lower()
-    if suffix == ".csv":
-        return read_csv(data.decode("utf-8-sig"))
-    if suffix == ".xlsx":
-        return read_xlsx(data, sheet=sheet)
-    if suffix in (".xlsm", ".xls"):
-        raise TabularError(f"{suffix} files are not supported; save as .xlsx or .csv.")
-    raise TabularError(f"Unsupported file type: {suffix or filename!r}.")
+    """(header, rows) of a CSV or .xlsx file, line ``header_row`` as the header.
+    Both formats enter the same grid, so a workbook and the same data saved as
+    CSV read identically."""
+    return _table(_lines(data, filename, sheet=sheet), header_row)
+
+
+# Lines searched for the header row: a title, a note and a blank line above the
+# header are common; a header further down is chosen by the user.
+HEADER_SEARCH_LINES = 10
+
+
+def known_headers(target_cols: Collection[str]) -> frozenset[str]:
+    """Normalized headers that name one of ``target_cols`` or a common alias of a field."""
+    return frozenset({normalize_header(c) for c in target_cols} | set(_COMMON_ALIASES))
+
+
+def read_table_at_header(
+    data: bytes,
+    filename: str,
+    *,
+    sheet: str | None = None,
+    header_row: int | None = None,
+    known: Collection[str] = (),
+) -> tuple[list[str], list[dict], int]:
+    """(header, rows, header row) of a CSV or .xlsx file whose header row is
+    chosen (``header_row``) or found among its leading lines (``detect_header_row``).
+
+    When no line is clearly the header, raises with code ``header_row`` and the
+    leading lines, so the caller can ask which one it is. Every importer that
+    reads a file reads it here, so a workbook and a CSV choose their header the
+    same way.
+    """
+    lines = _lines(data, filename, sheet=sheet)
+    if not any(any(line) for line in lines):
+        raise TabularError("The file has no data.", code="empty")
+    if header_row is None:
+        header_row = detect_header_row(lines[:HEADER_SEARCH_LINES], known)
+        if header_row is None:
+            raise TabularError(
+                "Choose the row that holds the column names.", code="header_row",
+                header_lines=lines[:HEADER_SEARCH_LINES],
+            )
+    return (*_table(lines, header_row), header_row)
+
+
+def detect_header_row(lines: list[list[str]], known: Collection[str]) -> int | None:
+    """The header row among ``lines``, or None when it is not clear.
+
+    A line is a candidate when every filled cell is text (no numbers) and at
+    least two cells name a known column (``known`` holds normalized headers).
+    The candidate naming the most known columns is the header when it is the
+    only one with that count; ties and files where no line qualifies return
+    None, except a file whose first line reads as a header (text in two or
+    more cells, or in the only column), which is read as one as before.
+    """
+    def _numeric(cell: str) -> bool:
+        try:
+            float(cell.replace(",", ""))
+            return True
+        except ValueError:
+            return False
+
+    scores: dict[int, int] = {}
+    for index, line in enumerate(lines):
+        filled = [c.strip() for c in line if c.strip()]
+        if len(filled) < 2 or any(_numeric(c) for c in filled):
+            continue
+        hits = sum(1 for c in filled if normalize_header(c) in known)
+        if hits >= 2:
+            scores[index] = hits
+    if scores:
+        best = max(scores.values())
+        winners = [i for i, score in scores.items() if score == best]
+        return winners[0] if len(winners) == 1 else None
+    first = [c.strip() for c in (lines[0] if lines else []) if c.strip()]
+    width = max((_filled_width(line) for line in lines), default=0)
+    if first and not any(_numeric(c) for c in first) and (len(first) >= 2 or width == 1):
+        return 0
+    return None

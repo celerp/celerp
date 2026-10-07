@@ -322,8 +322,15 @@ async def test_export_csv_strips_cost_price_for_role_without_permission(client, 
     viewer_fields = _csv_reader(r_viewer.text).fieldnames or []
     assert "cost_price" not in viewer_fields
     assert "cost_total" not in viewer_fields
-    # The value itself must not leak through any other column either.
-    assert "50.0" not in r_viewer.text
+    # The value itself must not leak through any other column either. Compare whole
+    # cells, not raw text: a timestamp such as 09:19:50.09 contains the substring.
+    def _is_cost(cell: str) -> bool:
+        try:
+            return float(cell) == 50.0
+        except ValueError:
+            return False
+    viewer_rows = {row["sku"]: row for row in _csv_reader(r_viewer.text)}
+    assert not any(_is_cost(cell) for cell in viewer_rows["CW-1"].values())
 
 
 @pytest.mark.asyncio

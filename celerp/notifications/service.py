@@ -13,14 +13,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import event, func, select, delete, update
+import sqlalchemy as sa
+from sqlalchemy import delete, event, exists, func, literal, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, SessionTransaction
 
-from celerp.models.notification import Notification
+from celerp.models.notification import Notification, NotificationRead
 from celerp.notifications.sse import deliver
 
 log = logging.getLogger(__name__)
@@ -175,6 +177,43 @@ async def create(
     return notif
 
 
+def _addressed_to(user_id: uuid.UUID):
+    """A notice reaches a user when it is addressed to them or to the whole company."""
+    return (Notification.user_id == user_id) | (Notification.user_id.is_(None))
+
+
+def _read_by(user_id: uuid.UUID):
+    """The user has a read receipt for the notice."""
+    return exists().where(
+        NotificationRead.notification_id == Notification.id,
+        NotificationRead.user_id == user_id,
+    )
+
+
+async def _standing(session: AsyncSession, company_id: uuid.UUID, category: str, title: str) -> uuid.UUID | None:
+    """The id of a notice with this category and title that no user has dismissed yet."""
+    return (await session.execute(
+        select(Notification.id).where(
+            Notification.company_id == company_id,
+            Notification.category == category,
+            Notification.title == title,
+            ~exists().where(NotificationRead.notification_id == Notification.id),
+        ).limit(1)
+    )).scalar()
+
+
+async def has_standing(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    category: str,
+    title: str,
+) -> bool:
+    """A notice with this category and title that no user has dismissed yet. Notifiers
+    dedupe on it: while it stands nothing new is created, and once someone has
+    dismissed it a state that persists notifies again."""
+    return await _standing(session, company_id, category, title) is not None
+
+
 async def notify_once(
     session: AsyncSession,
     company_id: uuid.UUID,
@@ -215,27 +254,19 @@ async def notify_every_company(
 ) -> int:
     """An instance-wide condition, told to every company as a high-priority notice.
 
-    Deduped on the unread notice: at most one stands per company per title, so a
-    condition that persists re-notifies only after the prior notice was read. A notice
-    that still stands is brought up to date with this body, so it never describes an
-    earlier cause. ``action_url`` and ``i18n`` as for ``create``. Caller commits. Returns
-    the number of notifications created."""
+    Deduped on a standing notice with the same category and title (has_standing): a
+    reboot while it stands creates nothing new, and a condition that persists notifies
+    again only after the notice was dismissed. A notice that still stands is brought up
+    to date with this body, so it never describes an earlier cause. ``action_url`` and
+    ``i18n`` as for ``create``. Caller commits. Returns the number of notifications
+    created."""
     from celerp.models.company import Company
 
     created = 0
     for cid in (await session.execute(select(Company.id))).scalars().all():
-        already = (await session.execute(
-            select(Notification.id)
-            .where(
-                Notification.company_id == cid,
-                Notification.category == category,
-                Notification.title == title,
-                Notification.read == False,  # noqa: E712
-            )
-            .limit(1)
-        )).first()
-        if already:
-            await session.execute(update(Notification).where(Notification.id == already[0])
+        standing = await _standing(session, cid, category, title)
+        if standing is not None:
+            await session.execute(update(Notification).where(Notification.id == standing)
                                   .values(body=body, action_url=action_url, i18n=i18n))
             continue
         await create(session, cid, category, title, body, action_url=action_url, priority="high", i18n=i18n)
@@ -245,16 +276,10 @@ async def notify_every_company(
 
 async def clear_every_company(session: AsyncSession, category: str, title: str) -> int:
     """An instance-wide condition (see notify_every_company) no longer holds: every
-    company's unread notice of it is marked read, so a notice that stands always means
-    the condition holds now. Caller commits. Returns count updated."""
+    company's notice of it is removed, so a notice that stands always means the
+    condition holds now. Caller commits. Returns the number removed."""
     result = await session.execute(
-        update(Notification)
-        .where(
-            Notification.category == category,
-            Notification.title == title,
-            Notification.read == False,  # noqa: E712
-        )
-        .values(read=True)
+        delete(Notification).where(Notification.category == category, Notification.title == title)
     )
     return result.rowcount
 
@@ -264,11 +289,11 @@ async def get_unread_count(
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> int:
-    """Count unread notifications for a user (including company-wide ones)."""
+    """Count notices unread by a user (including company-wide ones)."""
     q = select(func.count()).select_from(Notification).where(
         Notification.company_id == company_id,
-        Notification.read == False,  # noqa: E712
-        (Notification.user_id == user_id) | (Notification.user_id.is_(None)),
+        _addressed_to(user_id),
+        ~_read_by(user_id),
     )
     return (await session.execute(q)).scalar() or 0
 
@@ -281,42 +306,59 @@ async def list_notifications(
     limit: int = 20,
     offset: int = 0,
     unread_only: bool = False,
-) -> list[Notification]:
-    """List notifications for a user, newest first.
+) -> list[tuple[Notification, bool]]:
+    """List notices for a user, newest first, each with whether this user read it.
 
-    unread_only powers the bell, which is an unread inbox: a read (dismissed)
-    notification must not reappear on the next fetch, and the high-priority ones,
+    unread_only powers the bell, which is an unread inbox: a notice the user read
+    (dismissed) must not reappear on their next fetch, and the high-priority ones,
     which ask the user to act, come first.
     """
+    read = _read_by(user_id)
     order = [Notification.created_at.desc(), Notification.id.desc()]  # id tiebreaker → stable pagination
     if unread_only:
         order.insert(0, (Notification.priority == "high").desc())
     q = (
-        select(Notification)
+        select(Notification, read.label("read"))
         .where(
             Notification.company_id == company_id,
-            (Notification.user_id == user_id) | (Notification.user_id.is_(None)),
+            _addressed_to(user_id),
         )
         .order_by(*order)
         .limit(limit)
         .offset(offset)
     )
     if unread_only:
-        q = q.where(Notification.read == False)  # noqa: E712
-    return list((await session.execute(q)).scalars().all())
+        q = q.where(~read)
+    return [(n, bool(r)) for n, r in (await session.execute(q)).all()]
 
 
 async def mark_read(
     session: AsyncSession,
     notification_id: uuid.UUID,
     company_id: uuid.UUID,
+    user_id: uuid.UUID,
 ) -> bool:
-    """Mark a single notification as read. Returns True if found and updated."""
-    notif = await session.get(Notification, notification_id)
-    if notif is None or notif.company_id != company_id:
+    """Mark one notice read for this user. Returns False when no notice with this id
+    reaches the user in this company. Marking it again changes nothing."""
+    found = (await session.execute(
+        select(Notification.id).where(
+            Notification.id == notification_id,
+            Notification.company_id == company_id,
+            _addressed_to(user_id),
+        )
+    )).first()
+    if found is None:
         return False
-    notif.read = True
-    session.add(notif)
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                pg_insert(NotificationRead)
+                .values(notification_id=notification_id, user_id=user_id)
+                .on_conflict_do_nothing()
+            )
+    except IntegrityError:
+        # The notice was deleted after it was found.
+        return False
     return True
 
 
@@ -325,17 +367,14 @@ async def mark_done(
     company_id: uuid.UUID,
     action_url: str,
 ) -> int:
-    """The action a notice asks for has been taken: every unread notice of the company
-    linking to it is marked read, so the bell never asks for it again. Caller commits.
-    Returns count updated."""
+    """The action a notice asks for has been taken: every notice of the company linking
+    to it is removed, so the bell never asks for it again. Caller commits. Returns the
+    number removed."""
     result = await session.execute(
-        update(Notification)
-        .where(
+        delete(Notification).where(
             Notification.company_id == company_id,
             Notification.action_url == action_url,
-            Notification.read == False,  # noqa: E712
         )
-        .values(read=True)
     )
     return result.rowcount
 
@@ -345,15 +384,16 @@ async def mark_all_read(
     company_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> int:
-    """Mark all notifications as read for a user. Returns count updated."""
-    stmt = (
-        update(Notification)
-        .where(
-            Notification.company_id == company_id,
-            Notification.read == False,  # noqa: E712
-            (Notification.user_id == user_id) | (Notification.user_id.is_(None)),
-        )
-        .values(read=True)
+    """Mark every notice that reaches this user read, for this user only. Returns the
+    number newly marked."""
+    unread = select(Notification.id, literal(user_id, sa.Uuid())).where(
+        Notification.company_id == company_id,
+        _addressed_to(user_id),
+        ~_read_by(user_id),
     )
-    result = await session.execute(stmt)
+    result = await session.execute(
+        pg_insert(NotificationRead)
+        .from_select(["notification_id", "user_id"], unread)
+        .on_conflict_do_nothing()
+    )
     return result.rowcount

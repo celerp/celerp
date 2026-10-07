@@ -426,9 +426,12 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     value_change = await value_boundary(session, entry, transition)
     if value_change is not None:
         await book_value_change(session, entry, value_change)
-    # Durable connector work is recorded in the same transaction as the item event.
-    # No network I/O occurs here; the worker re-reads current state before sending.
-    await enqueue_item_change(session, entry, previous_state=transition.before)
+    # Durable connector work belongs to the same savepoint as the item event, so a
+    # caller that catches a failure here keeps neither. No network I/O occurs here;
+    # the worker re-reads current state before sending. ``outbound_queued`` tells
+    # the caller the event will reach a connected store.
+    entry.outbound_queued = await enqueue_item_change(session, entry, previous_state=transition.before)
+    await session.flush()
 
 
 async def emit_event(
@@ -533,6 +536,16 @@ async def emit_event(
         previous = await session.get(Projection, key, populate_existing=True)
         if previous is not None and previous.entity_type == "item":
             previous_item_state = deepcopy(previous.state or {})
+        # A lot's goods cost is never negative, whichever writer sets it. Writers refuse
+        # it first in their own response shape; this is the backstop for the rest.
+        from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
+
+        refusal = negative_cost_error(
+            lot_label({**(previous_item_state or {}), **kwargs["data"]}, kwargs["entity_id"]),
+            *event_goods_costs(kwargs["event_type"], kwargs["data"]),
+        )
+        if refusal:
+            raise HTTPException(status_code=422, detail=refusal)
         check_codes = _touches_physical_codes(
             previous_item_state or {}, kwargs["event_type"], kwargs["data"]
         ) and await find_event_by_idempotency(

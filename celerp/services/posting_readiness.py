@@ -123,9 +123,8 @@ def _labels(roles: list[str]) -> str:
 
 async def notify_unmapped(session: AsyncSession, company_id) -> bool:
     """One high-priority notice when a role the company's workflows need has no
-    account, deduped on the unread notice so a restart never stacks them. Returns
+    account, deduped on the standing notice so a restart never stacks them. Returns
     whether a notice was created. The caller commits."""
-    from celerp.models.notification import Notification
     from celerp.notifications import service as notification_service
 
     settings = await current_settings(session, company_id)
@@ -133,11 +132,7 @@ async def notify_unmapped(session: AsyncSession, company_id) -> bool:
     missing = [r for r in unmapped_roles(settings) if r in needed]
     if not missing:
         return False
-    already = (await session.execute(select(Notification.id).where(
-        Notification.company_id == company_id, Notification.category == NOTICE_CATEGORY,
-        Notification.title == NOTICE_TITLE, Notification.read == False,  # noqa: E712
-    ).limit(1))).first()
-    if already:
+    if await notification_service.has_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE):
         return False
     labels = _labels(missing)
     await notification_service.create(

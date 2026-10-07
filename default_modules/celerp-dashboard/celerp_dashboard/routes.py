@@ -52,8 +52,9 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     # endpoint. Inventory value is what the company's stock holds on the books
     # (lot_origin.held_value), archived and expired stock it keeps included, shown only
     # to a role that may see costs.
-    from celerp_inventory.routes import get_valuation as _get_valuation
-    valuation = await _get_valuation(company_id=company_id, role=role, settings=settings, session=session)
+    from celerp_inventory.routes import ItemListFilters, get_valuation as _get_valuation
+    valuation = await _get_valuation(filters=ItemListFilters(), attr_filters=[], company_id=company_id,
+                                     role=role, settings=settings, session=session)
     held = [(i, held_value(i)) for i in items]
     total_value_cost = (round(float(sum(v for _, v in held if v is not None)), 2)
                         if "cost_total" in valuation else 0.0)
@@ -195,38 +196,23 @@ async def search_activity(
 
 async def _hydrate_entries(rows, company_id: str, session, settings: dict | None = None, role: str | None = None) -> list[dict]:
     """Batch-resolve entity names and actor names for a list of LedgerEntry rows."""
-    entity_ids = list({e.entity_id for e in rows})
-    proj_rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_id.in_(entity_ids))
-    )).scalars().all() if entity_ids else []
-    proj_by_id = {p.entity_id: p.state for p in proj_rows}
-
-    actor_ids = list({e.actor_id for e in rows if e.actor_id})
-    actor_map: dict[str, str] = {}
-    if actor_ids:
-        from celerp.models.company import User
-        user_rows = (await session.execute(
-            select(User.id, User.name).where(User.id.in_(actor_ids))
-        )).all()
-        actor_map = {str(uid): uname for uid, uname in user_rows}
-
     from celerp.services.activity_redaction import can_see_costs, redact_event_costs
+    from celerp.services.ledger_display import display_fields, entry_ts
     show_costs = can_see_costs(settings, role)
 
     activities = []
-    for e in rows:
-        state = proj_by_id.get(e.entity_id, {})
-        name = state.get("name") or state.get("sku") or state.get("doc_number") or state.get("title") or None
+    for e, shown in zip(rows, await display_fields(rows, company_id, session)):
         data = e.data if isinstance(e.data, dict) else {}
         if not show_costs:
             data = redact_event_costs(e.event_type, data)
         activities.append({
-            "ts": e.ts.isoformat() if hasattr(e.ts, "isoformat") else str(e.ts),
+            "ts": entry_ts(e, settings),
             "event_type": e.event_type,
             "entity_id": e.entity_id,
             "entity_type": e.entity_type,
-            "name": name,
-            "actor_name": actor_map.get(str(e.actor_id), str(e.actor_id) if e.actor_id else ""),
+            "name": shown["name"] or None,
+            "entity_doc_type": shown["doc_type"],
+            **{k: v for k, v in shown.items() if k.startswith("actor_")},
             "data": data,
             "metadata_": e.metadata_ if isinstance(e.metadata_, dict) else {},
         })

@@ -120,7 +120,8 @@ def _migrate_to(fresh, revision: str) -> None:
 async def _sign_in_before_the_upgrade(engine, user_id, company_id, role: str) -> tuple[str, str]:
     """An access and refresh token pair as the release before this one issued them, with
     its session registered the way that release registered it."""
-    from celerp.services.auth import create_access_token, create_refresh_token, validate_access_token
+    from celerp.credentials import create_access_token, create_refresh_token
+    from celerp.services.auth import validate_access_token
     from celerp.services.session_tracker import get_nonce
     from migration_support import maker
 

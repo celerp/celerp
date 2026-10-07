@@ -425,7 +425,7 @@ function initCombobox(wrap) {
     }
   }
 
-  input.addEventListener('focus', function() {
+  function openList() {
     // Restore original static options so user sees full list on re-focus after a search
     if (isServerSearch && originalListHTML) {
       list.innerHTML = originalListHTML;
@@ -436,7 +436,10 @@ function initCombobox(wrap) {
     filterOpts('');
     positionList();
     list.classList.add('open');
-  });
+  }
+  input.addEventListener('focus', openList);
+  // A click on the field after Esc closed it opens it again; focus alone would not.
+  input.addEventListener('click', function() { if (!list.classList.contains('open')) openList(); });
   input.addEventListener('input', function() {
     if (isServerSearch) {
       if (!input.value) {
@@ -459,6 +462,8 @@ function initCombobox(wrap) {
   input.addEventListener('blur', function() {
     // Allow mousedown on option to fire first
     setTimeout(function() {
+      // Focus came straight back: the list the user just reopened stays open.
+      if (document.activeElement === input) return;
       list.classList.remove('open');
       // Typing filters the list in multi mode; the selection bag is the state,
       // so restore the summary rather than leaving the search text behind.
@@ -1358,6 +1363,23 @@ window.celerpStarFetch = window.celerpStarFetch || (function(){
     return request;
   };
 })();
+// Distinct local calendar days the dashboard was opened on, newest 30 kept. The star
+// ask on the dashboard waits for the tenth. Storage that is blocked counts as day 0.
+window.celerpUseDays = function(record){
+  try {
+    var key = 'celerp.dashboardDays';
+    var days = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!Array.isArray(days)) days = [];
+    if (record) {
+      var d = new Date();
+      var today = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+      if (days.indexOf(today) === -1) days.push(today);
+      days = days.slice(-30);
+      localStorage.setItem(key, JSON.stringify(days));
+    }
+    return days.length;
+  } catch (e) { return 0; }
+};
 (function(){
   window.celerpStarFetch('/stars/cta?medium=footer').then(function(d){
     var el = document.getElementById('star-cta');
@@ -1379,19 +1401,95 @@ window.celerpStarFetch = window.celerpStarFetch || (function(){
 })();
 """
 
+_LIST_HINT_JS = """
+// A list page opened with ?hint=<name> points an arrow at one control: ?hint=import
+// (the dashboard's import card) at the page's Import button, ?hint=demo (the
+// dashboard's demo note) at the select-all box over the demo items. The parameter is
+// dropped from the address straight away, so a refresh or a shared link never shows
+// the arrow again. The arrow sits in the page flow, so it never covers another
+// control, and goes on any click, its close button included, or on Esc.
+(function(){
+  var HINTS = {
+    // Under the whole header row, pointing up at the button.
+    import: {target: '[data-import-hint]', text: 'importHint',
+             row: function(el){ return el.closest('.page-header') || el.parentElement; }},
+    // Right above the table, pointing down at the box.
+    demo: {target: '#select-all-rows', text: 'demoHint', above: true,
+           row: function(el){ return el.closest('.table-scroll-wrap') || el.closest('table'); }}
+  };
+  var params = new URLSearchParams(location.search);
+  var name = params.get('hint');
+  if (!Object.prototype.hasOwnProperty.call(HINTS, name)) return;
+  var hint = HINTS[name];
+  params.delete('hint');
+  var qs = params.toString();
+  history.replaceState(history.state, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+  function start(){
+    var btn = document.querySelector(hint.target);
+    if (!btn) return;
+    var row = hint.row(btn);
+    var tip = document.createElement('div');
+    tip.className = 'import-arrow' + (hint.above ? ' import-arrow--down' : '');
+    tip.setAttribute('role', 'status');
+    tip.appendChild(document.createTextNode(window.__shellI18n[hint.text]));
+    var x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'import-arrow-close';
+    x.setAttribute('aria-label', window.__shellI18n.close);
+    x.textContent = '\\u00d7';
+    tip.appendChild(x);
+    if (hint.above) row.before(tip); else row.after(tip);
+    btn.classList.add('import-arrow-pulse');
+    // Slide the arrow along its own row so its pointer sits on the control.
+    function place(){
+      var b = btn.getBoundingClientRect();
+      var r = tip.parentElement.getBoundingClientRect();
+      var w = tip.offsetWidth;
+      var mid = b.left + b.width / 2 - r.left;
+      var left = Math.max(0, Math.min(mid - w / 2, r.width - w));
+      tip.style.marginLeft = left + 'px';
+      tip.style.setProperty('--arrow-x', Math.max(12, Math.min(mid - left, w - 12)) + 'px');
+    }
+    function close(){
+      tip.remove();
+      btn.classList.remove('import-arrow-pulse');
+      document.removeEventListener('click', close, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', place);
+      window.removeEventListener('load', place);
+    }
+    function onKey(e){ if (e.key === 'Escape') close(); }
+    document.addEventListener('click', close, true);
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', place);
+    // Late layout (fonts) can still move the control after load.
+    window.addEventListener('load', place);
+    place();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+"""
 
-def star_supporter_card(medium: str = "dashboard") -> FT:
+
+def star_supporter_card() -> FT:
     """The GitHub-star ask: a gold-bordered, dismissable card. The COPY (header + body
     + tooltip) is the relay's single source of truth, hydrated from /stars/cta; the card
     shows only in a non-neutral mode (relay reachable) and when not dismissed. Rendered
-    on the dashboard (where setup lands) and onboarding."""
+    on the dashboard (where setup lands)."""
     # Fetch the CTA copy + the user's badge together. If they've already claimed, show
     # the relay's thank-you copy ({badge} -> their label); otherwise show the ask. All
     # copy stays relay-sourced; the card is hidden in neutral (relay down) or dismissed.
     js = (
-        "(function(){"
+        # Deferred one tick: when htmx swaps this card in for the import card, the
+        # import card is still in the page while the swap runs.
+        "setTimeout(function(){"
+        "if(!window.celerpStarFetch)return;"
+        # The ask waits for 10 days of use and for the import card to be gone.
+        "if(!window.celerpUseDays||window.celerpUseDays(false)<10"
+        "||document.getElementById('getting-started-card'))return;"
         "Promise.all(["
-        "window.celerpStarFetch('/stars/cta?medium=" + medium + "').catch(function(){return null}),"
+        "window.celerpStarFetch('/stars/cta?medium=dashboard').catch(function(){return null}),"
         "window.celerpStarFetch('/stars/badge').catch(function(){return null})"
         "]).then(function(res){"
         "var d=res[0],bd=res[1];"
@@ -1423,7 +1521,7 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "if(dz)dz.addEventListener('click',function(){"
         "fetch('/stars/dismiss',{method:'POST'}).then(function(){"
         "var c=document.getElementById('star-supporter-card');if(c)c.style.display='none';});});"
-        "})();"
+        "},0);"
     )
     gold = "color:#d4af37"
     # Static fallbacks for when the relay does not supply its own copy (R2): translated
@@ -1452,6 +1550,8 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
             # badge is). Hidden once claimed; the wall link below takes its place.
             Div(
                 A(t("shell.claim_your_badge"), id="star-card-claim", href="/stars/claim", cls="btn btn--primary"),
+                P(t("shell.claim_badge_note"), id="star-card-claim-note",
+                  style="margin:8px 0 0;font-size:13px;color:#555"),
                 id="star-card-actions",
                 style="margin-top:22px",
             ),
@@ -1676,8 +1776,8 @@ def page_title(label_key: str) -> str:
 def _shell_js_i18n(lang: str = "en") -> dict:
     """Translated strings the static JS bundle needs (R2): resolved here at render
     time and handed to the client as a single config object, never spliced into
-    the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS and _STAR_CTA_JS; the config
-    is injected by client_scripts, before any of them."""
+    the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS, _STAR_CTA_JS and
+    _LIST_HINT_JS; the config is injected by client_scripts, before any of them."""
     return {
         "copied": t("shell.copied", lang),
         "copyLabel": t("btn.copy", lang),
@@ -1706,6 +1806,9 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "updateBlocked": {code: t(f"shell.update_blocked_{code}", lang) for code in CARD_REASONS},
         "starOnGithub": t("shell.star_on_github", lang),
         "appreciateSupport": t("shell.appreciate_support", lang),
+        "importHint": t("shell.import_hint", lang),
+        "demoHint": t("shell.demo_hint", lang),
+        "close": t("btn.close", lang),
     }
 
 
@@ -1749,14 +1852,27 @@ def client_scripts(lang: str = "en") -> list:
     ]
 
 
+def _favicon_links() -> tuple[FT, ...]:
+    """The Celerp shield icon set, made from the same master as the desktop app icon."""
+    return (
+        Link(rel="icon", type="image/x-icon", href="/static/favicon.ico"),
+        Link(rel="icon", type="image/png", sizes="32x32", href="/static/favicon-32x32.png"),
+        Link(rel="apple-touch-icon", sizes="180x180", href="/static/apple-touch-icon.png"),
+    )
+
+
 def _redirect_notice(request, lang: str) -> list:
     """Why the caller was sent here, on whichever page answers the redirect: the
     dashboard, or the page standing in for it where the company turned it off
-    (ui.security.not_permitted_redirect)."""
+    (ui.security.not_permitted_redirect), and, after setup by someone who cannot
+    restart Celerp, that the business type's modules wait for that restart."""
     from ui.security import take_not_permitted
-    if not take_not_permitted(request):
-        return []
-    return [flash(t("perm.redirected_no_access", lang))]
+    notices = []
+    if take_not_permitted(request):
+        notices.append(flash(t("perm.redirected_no_access", lang)))
+    if request is not None and request.query_params.get("modules") == "pending":
+        notices.append(flash(t("setup.modules_pending", lang), kind="info"))
+    return notices
 
 
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
@@ -1773,7 +1889,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Title(title),
-        Link(rel="icon", type="image/png", href="/static/icon.png"),
+        *_favicon_links(),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang),
         Script(_idle_logout_js()),
@@ -1784,6 +1900,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Script(_USER_MENU_JS),
         Script(_BUG_LINK_JS),
         Script(_STAR_CTA_JS),
+        Script(_LIST_HINT_JS),
         Script(_STICKY_HEADER_JS),
         Script(_INFO_TIP_JS),
     ]
@@ -2150,7 +2267,7 @@ _BUG_LINK_JS = """
     [/^\\/(accounting|finance|payments)/, "Accounting"],
     [/^\\/(contacts|crm)/, "Contacts / CRM"],
     [/^\\/(reports|dashboard|history)/, "Reporting"],
-    [/^\\/(settings|setup|onboarding|subscriptions)/, "Setup / admin / permissions"]
+    [/^\\/(settings|setup|subscriptions)/, "Setup / admin / permissions"]
   ];
   window.celerpBugUrl = function(base) {
     var path = location.pathname;
@@ -2429,13 +2546,13 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
 
 
 def auth_shell(*content, title: str = "Celerp") -> FT:
-    """Minimal shell for login/register/setup/onboarding pages."""
+    """Minimal shell for login/register/setup pages."""
     return Html(
         Head(
             Meta(charset="utf-8"),
             Meta(name="viewport", content="width=device-width, initial-scale=1"),
             Title(title),
-            Link(rel="icon", type="image/png", href="/static/icon.png"),
+            *_favicon_links(),
             Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         ),
         Body(

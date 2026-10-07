@@ -257,8 +257,8 @@ async def test_events_engine_integrity_error_reraise():
     mock_session.flush = AsyncMock(side_effect=IntegrityError("dup", {}, Exception()))
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.add = MagicMock()
-    # emit_event opens a savepoint with `await session.begin_nested()` and rolls it
-    # back before the IntegrityError reaches the dedup handler.
+    # emit_event awaits session.begin_nested() for one savepoint around the insert
+    # and the projection write, and rolls it back when the insert fails.
     mock_session.begin_nested = AsyncMock(return_value=AsyncMock())
 
     with pytest.raises(IntegrityError):
@@ -418,7 +418,7 @@ async def test_events_engine_pg_notify_exception_swallowed():
     # pg_notify raises an exception
     mock_session.execute = AsyncMock(side_effect=Exception("pg_notify failed"))
     mock_session.add = MagicMock()
-    # emit_event opens its savepoint with `await session.begin_nested()`.
+    # begin_nested() is awaited for the savepoint around the insert and the projection write.
     mock_session.begin_nested = AsyncMock(return_value=AsyncMock())
 
     added_entry = None

@@ -43,6 +43,10 @@ _OFFLINE_GRACE_SECONDS: int = 7 * 24 * 3600  # 7 days
 # Why a paid module does not load here: the modules page offers to move it.
 PAID_MODULE_REFUSAL = "Premium module: no valid license."
 
+# Why a module that has not been verified yet does not load while offline.
+UNVERIFIED_MODULE_REFUSAL = ("Connect once to verify this module, then restart. "
+                             "It will work offline afterward.")
+
 # ES256 public key for verifying LIFETIME module licenses OFFLINE. The relay
 # holds the matching private key. A lifetime license is an ES256 JWT the relay
 # signs once; the app verifies it here against this embedded key with NO

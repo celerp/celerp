@@ -322,7 +322,7 @@ async def _render_chips(monkeypatch, p: dict, aggregates: dict) -> tuple[list[st
 
     sent: dict = {}
 
-    async def _get_valuation(_token, **_kw):
+    async def _get_valuation(_token, _params=None):
         # Navigation counts only; its store-wide price totals must not reach the bar.
         return {"item_count": 9, "category_counts": {"ring": 9}, "price_totals": {"Retail": 999999}}
 
@@ -349,10 +349,10 @@ async def test_ui_chip_bar_renders_list_aggregates(monkeypatch):
     assert sent["q"] == "ruby" and sent["category"] == "ring" and sent["attr.metal"] == "gold"
     assert chips == [
         "Items: 1,234",
-        "Quantity: 47 piece",
-        "Quantity: 18.35 carat",
-        "Weight: 21.4 carat",
-        "Weight: 12 gram",
+        "Quantity (piece): 47",
+        "Quantity (carat): 18.35",
+        "Weight (carat): 21.4",
+        "Weight (gram): 12",
         "Pieces: 342",
         "Cost: $12,450.00",
         "Retail: $21,900.50 (3 without a price)",
@@ -364,4 +364,4 @@ async def test_ui_chip_bar_single_unit_and_no_pieces(monkeypatch):
         "item_count": 2, "quantity_by_unit": {"piece": 5}, "weight_by_unit": {},
         "pieces_total": None, "price_totals": {"Retail": 750}, "price_missing": {"Retail": 0},
     })
-    assert chips == ["Items: 2", "Quantity: 5 piece", "Retail: $750.00"]
+    assert chips == ["Items: 2", "Quantity (piece): 5", "Retail: $750.00"]

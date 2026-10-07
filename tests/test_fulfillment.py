@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Tests for the fulfillment engine: pick algorithm, fulfill/un-fulfill, and lifecycle wiring."""
+"""Tests for document fulfillment: fulfill/revert lines, memos, reservations and lifecycle wiring."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytest
 import pytest_asyncio
@@ -14,253 +14,6 @@ import pytest_asyncio
 from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.services.pick import PickResult, compute_pick_plan
-
-
-def _barcode_allocator(session, company_id):
-    """The DI callback a real fulfillment caller injects: allocate split-child
-    barcodes through the inventory code service under its namespace lock."""
-    from celerp_inventory.services import allocate_internal_codes
-
-    async def _alloc(count):
-        return await allocate_internal_codes(session, company_id, count)
-
-    return _alloc
-
-
-# ---------------------------------------------------------------------------
-# Pure pick algorithm tests (no DB needed)
-# ---------------------------------------------------------------------------
-
-
-class TestPickAlgorithm:
-    """Tests for the FIFO/FEFO pick algorithm — pure function, zero side effects."""
-
-    def _inv(self, sku, qty, entity_id=None, created_at=None, expires_at=None, cost_price=0):
-        return {
-            "entity_id": entity_id or f"item:{uuid.uuid4()}",
-            "sku": sku,
-            "quantity": qty,
-            "created_at": created_at or "2026-01-01T00:00:00",
-            "expires_at": expires_at,
-            "cost_total": cost_price * qty,  # cost_total is now the primitive
-        }
-
-    def test_fifo_single_item(self):
-        line_items = [{"sku": "SKU-A", "quantity": 5}]
-        inventory = [self._inv("SKU-A", 10, cost_price=2.0)]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.strategy == "fifo"
-        assert len(result.picks) == 1
-        assert result.picks[0].pick_qty == 5
-        assert result.picks[0].action == "split"
-        assert result.unfulfilled == []
-
-    def test_fifo_full_pick(self):
-        line_items = [{"sku": "SKU-A", "quantity": 10}]
-        inventory = [self._inv("SKU-A", 10, cost_price=3.0)]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].action == "full"
-        assert result.picks[0].pick_qty == 10
-
-    def test_fifo_multiple_batches_oldest_first(self):
-        line_items = [{"sku": "SKU-A", "quantity": 15}]
-        inventory = [
-            self._inv("SKU-A", 10, created_at="2026-01-05", cost_price=2.0),
-            self._inv("SKU-A", 10, created_at="2026-01-01", cost_price=1.5),
-            self._inv("SKU-A", 10, created_at="2026-01-10", cost_price=3.0),
-        ]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.strategy == "fifo"
-        # Oldest batch (Jan 01) picked first (full 10), then next oldest (Jan 05) for remaining 5
-        assert len(result.picks) == 2
-        assert result.picks[0].cost_price == 1.5
-        assert result.picks[0].pick_qty == 10
-        assert result.picks[0].action == "full"
-        assert result.picks[1].cost_price == 2.0
-        assert result.picks[1].pick_qty == 5
-        assert result.picks[1].action == "split"
-        assert result.unfulfilled == []
-
-    def test_fifo_insufficient_stock(self):
-        line_items = [{"sku": "SKU-A", "quantity": 20}]
-        inventory = [self._inv("SKU-A", 5, cost_price=1.0)]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].pick_qty == 5
-        assert len(result.unfulfilled) == 1
-        assert result.unfulfilled[0]["sku"] == "SKU-A"
-        assert result.unfulfilled[0]["short_qty"] == 15
-
-    def test_fifo_no_stock(self):
-        line_items = [{"sku": "SKU-A", "quantity": 5}]
-        result = compute_pick_plan(line_items, [])
-        assert result.picks == []
-        assert len(result.unfulfilled) == 1
-
-    def test_fefo_expires_at_sorting(self):
-        line_items = [{"sku": "SKU-A", "quantity": 8}]
-        inventory = [
-            self._inv("SKU-A", 5, created_at="2026-01-01", expires_at="2026-06-01", cost_price=2.0),
-            self._inv("SKU-A", 5, created_at="2026-01-10", expires_at="2026-03-01", cost_price=1.5),
-            self._inv("SKU-A", 5, created_at="2026-01-05", cost_price=3.0),  # no expiry
-        ]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.strategy == "fefo"
-        # Earliest expiry (Mar 01) first, then next (Jun 01)
-        assert result.picks[0].cost_price == 1.5  # expires Mar 01
-        assert result.picks[0].pick_qty == 5
-        assert result.picks[1].cost_price == 2.0  # expires Jun 01
-        assert result.picks[1].pick_qty == 3
-
-    def test_lifo_newest_first(self):
-        line_items = [{"sku": "SKU-A", "quantity": 15}]
-        inventory = [
-            self._inv("SKU-A", 10, created_at="2026-01-05", cost_price=2.0),
-            self._inv("SKU-A", 10, created_at="2026-01-01", cost_price=1.5),
-            self._inv("SKU-A", 10, created_at="2026-01-10", cost_price=3.0),
-        ]
-        result = compute_pick_plan(line_items, inventory, strategy="lifo")
-        assert result.strategy == "lifo"
-        # Newest batch (Jan 10) first (full 10), then next-newest (Jan 05) for remaining 5.
-        assert result.picks[0].cost_price == 3.0 and result.picks[0].pick_qty == 10
-        assert result.picks[1].cost_price == 2.0 and result.picks[1].pick_qty == 5
-        # COGS = specific cost of the lots drawn (10*3.0 + 5*2.0 = 40).
-        assert sum(p.pick_qty * p.cost_price for p in result.picks) == 40.0
-
-    def test_explicit_strategy_overrides_auto_detect(self):
-        # Inventory HAS an expiry (would auto-detect FEFO), but an explicit FIFO wins.
-        line_items = [{"sku": "SKU-A", "quantity": 5}]
-        inventory = [
-            self._inv("SKU-A", 5, created_at="2026-01-01", expires_at="2026-09-01", cost_price=1.0),
-            self._inv("SKU-A", 5, created_at="2026-01-02", expires_at="2026-03-01", cost_price=2.0),
-        ]
-        result = compute_pick_plan(line_items, inventory, strategy="fifo")
-        assert result.strategy == "fifo"
-        assert result.picks[0].cost_price == 1.0  # oldest received, not soonest-expiry
-
-    def test_resolve_pick_method(self):
-        from celerp.services.pick import resolve_pick_method
-        # Item override wins over company default.
-        assert resolve_pick_method({"pick_method": "lifo"}, {"inventory_method": "fifo"}) == "lifo"
-        # "default"/blank item -> company default.
-        assert resolve_pick_method({"pick_method": "default"}, {"inventory_method": "fefo"}) == "fefo"
-        assert resolve_pick_method({}, {"inventory_method": "lifo"}) == "lifo"
-        # Nothing set -> fifo. Invalid values ignored.
-        assert resolve_pick_method({}, {}) == "fifo"
-        assert resolve_pick_method({"pick_method": "bogus"}, {}) == "fifo"
-
-    def test_sku_exact_match(self):
-        line_items = [{"sku": "SKU-A", "quantity": 5}]
-        inventory = [
-            self._inv("SKU-A", 10, cost_price=1.0),
-            self._inv("SKU-B", 10, cost_price=2.0),
-        ]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].sku == "SKU-A"
-
-    def test_sku_child_prefix_matching(self):
-        """Child SKUs like SKU-A.1 should match parent line item SKU-A."""
-        line_items = [{"sku": "SKU-A", "quantity": 8}]
-        inventory = [
-            self._inv("SKU-A", 3, created_at="2026-01-01", cost_price=1.0),
-            self._inv("SKU-A.1", 5, created_at="2026-01-02", cost_price=1.5),
-            self._inv("SKU-A.2", 4, created_at="2026-01-03", cost_price=2.0),
-        ]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.unfulfilled == []
-        total_picked = sum(p.pick_qty for p in result.picks)
-        assert total_picked == 8
-
-    def test_child_prefix_no_false_match(self):
-        """SKU-AB should NOT match line item SKU-A."""
-        line_items = [{"sku": "SKU-A", "quantity": 5}]
-        inventory = [
-            self._inv("SKU-AB", 10, cost_price=1.0),
-        ]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.picks == []
-        assert len(result.unfulfilled) == 1
-
-    def test_service_items_skipped(self):
-        line_items = [
-            {"sku": "SVC-01", "quantity": 2, "sell_by": "service"},
-            {"sku": "HOUR-01", "quantity": 8, "sell_by": "hour"},
-        ]
-        inventory = []  # no inventory at all
-        result = compute_pick_plan(line_items, inventory)
-        assert result.picks == []
-        assert result.unfulfilled == []
-
-    def test_mixed_physical_and_service(self):
-        line_items = [
-            {"sku": "PHYS-01", "quantity": 3},
-            {"sku": "SVC-01", "quantity": 2, "sell_by": "service"},
-        ]
-        inventory = [self._inv("PHYS-01", 3, cost_price=5.0)]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].sku == "PHYS-01"
-        assert result.unfulfilled == []
-
-    def test_multiple_line_items(self):
-        line_items = [
-            {"sku": "SKU-A", "quantity": 3},
-            {"sku": "SKU-B", "quantity": 5},
-        ]
-        inventory = [
-            self._inv("SKU-A", 10, cost_price=1.0),
-            self._inv("SKU-B", 5, cost_price=2.0),
-        ]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 2
-        assert result.unfulfilled == []
-
-    def test_split_child_keeps_parent_sku(self):
-        """A partial pick splits off the needed qty; the child KEEPS the parent SKU (same
-        product, distinct lot by barcode/entity_id) - no '.N' suffix is generated."""
-        line_items = [{"sku": "SKU-A", "quantity": 3}]
-        inventory = [self._inv("SKU-A", 10, cost_price=1.0)]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.picks[0].action == "split"
-        assert result.picks[0].sku == "SKU-A"
-        assert not hasattr(result.picks[0], "split_sku")  # field removed
-
-    def test_split_child_sku_unaffected_by_existing_lots(self):
-        """Existing same-SKU lots never change the split child's SKU - still the parent SKU."""
-        line_items = [{"sku": "SKU-A", "quantity": 3}]
-        inventory = [
-            self._inv("SKU-A", 4, created_at="2026-01-01", cost_price=1.0),
-            self._inv("SKU-A", 5, created_at="2026-01-02", cost_price=1.0),
-        ]
-        result = compute_pick_plan(line_items, inventory)
-        split_picks = [p for p in result.picks if p.action == "split"]
-        assert split_picks and all(p.sku == "SKU-A" for p in split_picks)
-
-    def test_non_digit_suffix_is_a_distinct_product(self):
-        """A non-digit suffix (e.g. SKU-A.PRO) is a distinct product, NOT a legacy split
-        child, so it must not be picked for a SKU-A line."""
-        line_items = [{"sku": "SKU-A", "quantity": 5}]
-        inventory = [self._inv("SKU-A.PRO", 10, cost_price=1.0)]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.picks == []
-        assert len(result.unfulfilled) == 1
-
-    def test_zero_quantity_line_skipped(self):
-        line_items = [{"sku": "SKU-A", "quantity": 0}]
-        inventory = [self._inv("SKU-A", 10)]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.picks == []
-        assert result.unfulfilled == []
-
-    def test_empty_sku_line_skipped(self):
-        line_items = [{"sku": "", "quantity": 5}]
-        inventory = [self._inv("SKU-A", 10)]
-        result = compute_pick_plan(line_items, inventory)
-        assert result.picks == []
-        assert result.unfulfilled == []
 
 
 # ---------------------------------------------------------------------------
@@ -324,113 +77,12 @@ async def _create_and_finalize_invoice(client, auth, line_items, ref_id=None):
     return doc_id
 
 
-@pytest.mark.asyncio
-async def test_fulfill_creates_events_and_updates_projections(client, session, auth, _setup_ids):
-    """Fulfill execution: creates events and updates projections."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
-
-    item_id = await _create_item(client, auth, "WIDGET-A", 10, cost_price=5.0)
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "WIDGET-A", "quantity": 3, "unit_price": 10.0},
-    ])
-
-    # Get doc state
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    doc_state = doc_row.state
-
-    # Build pick plan
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    available_inv = [{
-        "entity_id": item_id,
-        "sku": inv_row.state["sku"],
-        "quantity": float(inv_row.state["quantity"]),
-        "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
-        "expires_at": inv_row.state.get("expires_at"),
-        "cost_total": float(inv_row.state.get("cost_total", 0)),
-    }]
-    pick_result = compute_pick_plan(doc_state.get("line_items", []), available_inv)
-    result = await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-        allocate_barcodes=_barcode_allocator(session, _setup_ids["company_id"]),
-    )
-    await session.commit()
-
-    assert result["fulfillment_status"] in ("fulfilled", "partial")
-    assert len(result["fulfilled_items"]) >= 1
-    assert result["total_cogs"] == 15.0  # 3 * 5.0
-
-    # Check doc projection
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") in ("fulfilled", "partial")
-
-
-async def _split_pick_setup(client, session, auth, _setup_ids):
-    """Fulfil 3 of a 10-unit lot so the pick plan splits off a child parcel."""
-    from celerp.models.projections import Projection
-    from celerp.services.pick import compute_pick_plan
-
-    item_id = await _create_item(client, auth, "SPLIT-BC", 10, cost_price=5.0)
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "SPLIT-BC", "quantity": 3, "unit_price": 10.0},
-    ])
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": inv_row.state["sku"],
-        "quantity": float(inv_row.state["quantity"]),
-        "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
-        "expires_at": inv_row.state.get("expires_at"),
-        "cost_total": float(inv_row.state.get("cost_total", 0)),
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    assert any(p.action == "split" for p in pick_result.picks), "setup must produce a split pick"
-    return doc_id, doc_row.state, pick_result
-
-
-@pytest.mark.asyncio
-async def test_split_child_gets_fresh_barcode_from_allocator(client, session, auth, _setup_ids):
-    """A fulfillment split carves a new child parcel; it must be born with a fresh
-    barcode from the injected allocator (red at merge-base: the child item.created
-    carried no barcode at all)."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-
-    doc_id, doc_state, pick_result = await _split_pick_setup(client, session, auth, _setup_ids)
-    result = await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-        allocate_barcodes=_barcode_allocator(session, _setup_ids["company_id"]),
-    )
-    await session.commit()
-
-    child = next(fi for fi in result["fulfilled_items"] if fi["action"] == "split")
-    child_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": child["item_id"]})
-    assert child_row.state.get("barcode"), "split child must carry a freshly allocated barcode"
-
-
-@pytest.mark.asyncio
-async def test_split_without_allocator_fails_before_emitting(client, session, auth, _setup_ids):
-    """When a split is planned and no allocator is injected, fulfillment fails cleanly
-    before emitting a single event rather than minting a barcodeless child."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-
-    doc_id, doc_state, pick_result = await _split_pick_setup(client, session, auth, _setup_ids)
-    with pytest.raises(ValueError):
-        await execute_fulfill(
-            session, doc_entity_id=doc_id, doc_state=doc_state,
-            pick_result=pick_result, company_id=_setup_ids["company_id"],
-            user_id=str(_setup_ids["user_id"]),
-        )
-    await session.rollback()
-    # No fulfillment landed on the doc: the failure happened before any emit.
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") is None
+async def _fulfill_lines(client, auth, doc_id, *item_ids):
+    """Helper: fulfill the doc lines bound to *item_ids* through the fulfill-lines route."""
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": list(item_ids)})
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 @pytest.mark.asyncio
@@ -439,29 +91,17 @@ async def test_fulfilled_item_event_carries_doc_number(client, session, auth, _s
     doc_number, and the Activity renderer turns it into a link to the doc."""
     from celerp.models.projections import Projection
     from celerp.models.ledger import LedgerEntry
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
     from sqlalchemy import select
 
-    # qty == line qty -> a "full" pick, so item.fulfilled lands on the item itself
-    # (a partial pick would carve a child and fulfill that instead).
+    # The line draws the whole lot, so item.fulfilled lands on the item itself
+    # (a partial draw would carve a child and fulfill that instead).
     item_id = await _create_item(client, auth, "DOCNUM-A", 2, cost_price=2.0)
     doc_id = await _create_and_finalize_invoice(
-        client, auth, [{"sku": "DOCNUM-A", "quantity": 2, "unit_price": 9.0}], ref_id="INV-DOCNUM-1")
+        client, auth, [{"sku": "DOCNUM-A", "quantity": 2, "unit_price": 9.0, "entity_id": item_id}],
+        ref_id="INV-DOCNUM-1")
+    await _fulfill_lines(client, auth, doc_id, item_id)
 
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    available_inv = [{"entity_id": item_id, "sku": inv_row.state["sku"],
-                      "quantity": float(inv_row.state["quantity"]),
-                      "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
-                      "expires_at": inv_row.state.get("expires_at"),
-                      "cost_total": float(inv_row.state.get("cost_total", 0))}]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(session, doc_entity_id=doc_id, doc_state=doc_row.state,
-                          pick_result=pick_result, company_id=_setup_ids["company_id"],
-                          user_id=str(_setup_ids["user_id"]), doc_type="invoice")
-    await session.commit()
-
     rows = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == _setup_ids["company_id"],
         LedgerEntry.entity_id == item_id,
@@ -488,26 +128,14 @@ async def test_sold_item_state_carries_status_doc_and_is_searchable(client, sess
     (status_doc_id + status_doc_number), so the inventory page can render SOLD with a
     linked doc number and the q search finds sold items by that number."""
     from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
 
     item_id = await _create_item(client, auth, "STATDOC-A", 2, cost_price=2.0)
     doc_id = await _create_and_finalize_invoice(
-        client, auth, [{"sku": "STATDOC-A", "quantity": 2, "unit_price": 9.0}], ref_id="INV-STATDOC-1")
+        client, auth, [{"sku": "STATDOC-A", "quantity": 2, "unit_price": 9.0, "entity_id": item_id}],
+        ref_id="INV-STATDOC-1")
+    await _fulfill_lines(client, auth, doc_id, item_id)
 
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    available_inv = [{"entity_id": item_id, "sku": inv_row.state["sku"],
-                      "quantity": float(inv_row.state["quantity"]),
-                      "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
-                      "expires_at": inv_row.state.get("expires_at"),
-                      "cost_total": float(inv_row.state.get("cost_total", 0))}]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(session, doc_entity_id=doc_id, doc_state=doc_row.state,
-                          pick_result=pick_result, company_id=_setup_ids["company_id"],
-                          user_id=str(_setup_ids["user_id"]), doc_type="invoice")
-    await session.commit()
-
     expected_num = doc_row.state.get("doc_number") or doc_row.state.get("ref_id")
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
     assert inv_row.state["status"] == "sold"
@@ -526,26 +154,12 @@ async def test_void_blocked_while_fulfilled_and_state_untouched(client, session,
     """Voiding a fulfilled doc is REFUSED (goods must come back first), and the
     refused attempt changes nothing: fulfillment state and stock stay as they were."""
     from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
 
     item_id = await _create_item(client, auth, "VOID-A", 5, cost_price=10.0)
     doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "VOID-A", "quantity": 5, "unit_price": 20.0},
+        {"sku": "VOID-A", "quantity": 5, "unit_price": 20.0, "entity_id": item_id},
     ])
-
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": "VOID-A", "quantity": 5,
-        "created_at": "", "expires_at": None, "cost_total": 50.0,
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-    )
-    await session.commit()
+    await _fulfill_lines(client, auth, doc_id, item_id)
 
     # Void via API: blocked while goods are out (revert fulfillment first).
     r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "test"})
@@ -639,8 +253,6 @@ async def test_revert_to_draft_allowed_after_all_lines_reverted(client, session,
 async def test_unvoid_does_not_auto_refulfill(client, session, auth, _setup_ids):
     """Unvoiding a doc must NOT auto-re-fulfill it (fulfillment is always manual)."""
     from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
 
     item_id = await _create_item(client, auth, "UNVOID-A", 10, cost_price=2.0)
     # entity_id binds the line to the parcel, and the FULL quantity is drawn so the
@@ -649,19 +261,7 @@ async def test_unvoid_does_not_auto_refulfill(client, session, auth, _setup_ids)
     doc_id = await _create_and_finalize_invoice(client, auth, [
         {"sku": "UNVOID-A", "quantity": 10, "unit_price": 6.0, "entity_id": item_id},
     ])
-
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": "UNVOID-A", "quantity": 10,
-        "created_at": "", "expires_at": None, "cost_total": 20.0,
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-    )
-    await session.commit()
+    await _fulfill_lines(client, auth, doc_id, item_id)
 
     # Void requires the goods back first: revert fulfillment, then void.
     r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
@@ -685,71 +285,6 @@ async def test_unvoid_does_not_auto_refulfill(client, session, auth, _setup_ids)
 
 
 @pytest.mark.asyncio
-async def test_service_items_auto_fulfilled(client, session, auth, _setup_ids):
-    """Service items should be auto-marked fulfilled, no physical pick."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
-
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "SVC-01", "quantity": 2, "unit_price": 50.0, "sell_by": "service"},
-        {"sku": "SVC-02", "quantity": 4, "unit_price": 25.0, "sell_by": "hour"},
-    ])
-
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), [])
-    result = await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-    )
-    await session.commit()
-
-    # All service items → fulfilled, no picks needed
-    assert result["fulfillment_status"] == "fulfilled"
-    service_items = [fi for fi in result["fulfilled_items"] if fi["action"] == "service"]
-    assert len(service_items) == 2
-    assert result["total_cogs"] == 0.0
-
-
-@pytest.mark.asyncio
-async def test_mixed_invoice_physical_and_service(client, session, auth, _setup_ids):
-    """Mixed invoice: only physical items get picked, service auto-marked."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
-
-    item_id = await _create_item(client, auth, "MIX-PHYS", 5, cost_price=7.0)
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "MIX-PHYS", "quantity": 3, "unit_price": 15.0},
-        {"sku": "MIX-SVC", "quantity": 1, "unit_price": 100.0, "sell_by": "service"},
-    ])
-
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": "MIX-PHYS", "quantity": 5,
-        "created_at": "", "expires_at": None, "cost_total": 35.0,
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    # Picking 3 from a 5-unit lot carves a child parcel (a split), so the caller must inject
-    # the barcode allocator the same way a real fulfillment route does.
-    result = await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-        allocate_barcodes=_barcode_allocator(session, _setup_ids["company_id"]),
-    )
-    await session.commit()
-
-    physical = [fi for fi in result["fulfilled_items"] if fi["action"] != "service"]
-    services = [fi for fi in result["fulfilled_items"] if fi["action"] == "service"]
-    assert len(physical) >= 1
-    assert len(services) == 1
-    assert result["total_cogs"] == 21.0  # 3 * 7.0
-
-
-@pytest.mark.asyncio
 async def test_pick_event_schemas_registered():
     """Verify all fulfillment event types are registered in EVENT_SCHEMA_MAP."""
     from celerp.events.schemas import EVENT_SCHEMA_MAP
@@ -765,60 +300,10 @@ async def test_pick_event_schemas_registered():
         assert event_type in EVENT_SCHEMA_MAP, f"{event_type} not in EVENT_SCHEMA_MAP"
 
 
-class TestPickAllowSplitting:
-    def test_no_split_when_allow_splitting_false(self):
-        """Items with allow_splitting=False must not be split during picking; mark as unfulfilled if no full item available."""
-        line_items = [{"sku": "NS-A", "quantity": 3}]
-        inventory = [{"entity_id": "e1", "sku": "NS-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 50.0, "allow_splitting": False}]
-        result = compute_pick_plan(line_items, inventory)
-        # The item has qty 10 > 3 needed; cannot split -> unfulfilled
-        assert result.picks == []
-        assert len(result.unfulfilled) == 1
-        assert result.unfulfilled[0]["sku"] == "NS-A"
-
-    def test_full_pick_still_works_when_allow_splitting_false(self):
-        """Full pick (no split needed) must still succeed when allow_splitting=False."""
-        line_items = [{"sku": "NS-B", "quantity": 10}]
-        inventory = [{"entity_id": "e2", "sku": "NS-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 20.0, "allow_splitting": False}]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].action == "full"
-        assert result.unfulfilled == []
-
-    def test_split_when_allow_splitting_true(self):
-        """Items with allow_splitting=True must be split as usual."""
-        line_items = [{"sku": "SP-A", "quantity": 3}]
-        inventory = [{"entity_id": "e3", "sku": "SP-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 10.0, "allow_splitting": True}]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].action == "split"
-        assert result.unfulfilled == []
-
-    def test_split_when_allow_splitting_missing_defaults_to_allowed(self):
-        """Items without allow_splitting key default to splittable (backward compat for existing data)."""
-        line_items = [{"sku": "SP-B", "quantity": 3}]
-        inventory = [{"entity_id": "e4", "sku": "SP-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 10.0}]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].action == "split"
-
-    def test_pick_plan_none_item_splittable(self):
-        """An item whose stored allow_splitting is present but None is splittable
-        (routed through splitting_allowed), the same as an absent key. At merge-base pick
-        reads item.get('allow_splitting', True), which returns None (falsy) for a
-        present-None value, so the parcel is wrongly treated as non-splittable."""
-        line_items = [{"sku": "SP-N", "quantity": 3}]
-        inventory = [{"entity_id": "eN", "sku": "SP-N", "quantity": 10, "created_at": "2026-01-01",
-                      "expires_at": None, "cost_total": 10.0, "allow_splitting": None}]
-        result = compute_pick_plan(line_items, inventory)
-        assert len(result.picks) == 1
-        assert result.picks[0].action == "split"
-        assert result.unfulfilled == []
-
-
 # ---------------------------------------------------------------------------
 # consignment_in fulfillment: must NOT deduct inventory
 # ---------------------------------------------------------------------------
+
 
 async def _create_consignment_in(client, auth, line_items) -> str:
     """Create a finalized consignment_in document."""
@@ -2468,29 +1953,11 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
 async def _sell_item(client, session, auth, ids, sku, qty, unit_price, ref_id):
     """Create *qty* of *sku*, sell it on a finalized invoice and fulfill the line, so the
     item is sold with a realized per-unit price of *unit_price*. Returns the item id."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
-
     item_id = await _create_item(client, auth, sku, qty, cost_price=4.0, sell_by="carat")
     doc_id = await _create_and_finalize_invoice(
-        client, auth, [{"sku": sku, "quantity": qty, "unit_price": unit_price}], ref_id=ref_id)
-
-    doc_row = await session.get(Projection, {"company_id": ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": ids["company_id"], "entity_id": item_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": inv_row.state["sku"],
-        "quantity": float(inv_row.state["quantity"]),
-        "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
-        "cost_total": float(inv_row.state.get("cost_total", 0)),
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=ids["company_id"],
-        user_id=str(ids["user_id"]),
-    )
-    await session.commit()
+        client, auth, [{"sku": sku, "quantity": qty, "unit_price": unit_price, "entity_id": item_id}],
+        ref_id=ref_id)
+    await _fulfill_lines(client, auth, doc_id, item_id)
     return item_id
 
 
@@ -2932,14 +2399,20 @@ async def test_cogs_negative_line_clamped(client, session, auth, _setup_ids):
     """A negative per-line cost contributes 0, not a negative that cancels a correctly
     costed sibling. Parcel A: cost_total -20 over 5 (unit -4) -> clamped to 0; Parcel B:
     unit cost 4. Two units each: COGS = 0 + 8 = 8, not 8 + (-8) = 0. At merge-base
-    finalize posts no COGS at all."""
+    finalize posts no COGS at all.
+
+    Every writer now refuses a negative cost, so the negative lot is seeded straight
+    into its projection: it stands for a row stored before that validation existed."""
+    from sqlalchemy.orm.attributes import flag_modified
+    from celerp.models.projections import Projection
+
     sku_n = f"COGSNEG-{uuid.uuid4().hex[:6]}"
     sku_p = f"COGSPOS-{uuid.uuid4().hex[:6]}"
-    rn = await client.post("/items", headers=auth["headers"], json={
-        "status": "available", "sku": sku_n, "name": sku_n, "quantity": 5,
-        "cost_total": -20.0, "sell_by": "piece"})
-    assert rn.status_code == 200, rn.text
-    item_n = rn.json()["id"]
+    item_n = await _create_item(client, auth, sku_n, 5)
+    row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_n})
+    row.state = {**row.state, "cost_total": -20.0, "cost_price": -4.0}
+    flag_modified(row, "state")
+    await session.commit()
     item_p = await _create_item(client, auth, sku_p, 5, cost_price=4.0)
     await _create_and_finalize_invoice(client, auth, [
         {"sku": sku_n, "name": sku_n, "quantity": 2, "unit_price": 9.0, "entity_id": item_n},

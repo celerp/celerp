@@ -17,6 +17,12 @@ from celerp.output.doc_print import (  # noqa: F401
 
 # Statuses that dim a row to indicate it is not actively available for sale/use.
 # Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
+def empty_mark() -> FT:
+    """The EMPTY placeholder as a cell's content. Its class keeps the mark in the body font:
+    inside a monospace number or money cell a bare "--" spreads out to read as "- -"."""
+    return Span(EMPTY, cls="cell-empty")
+
+
 INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out", "disposed"})
 
 
@@ -103,7 +109,7 @@ def format_value(v, fmt: str = "text", currency: str | None = None, domain: str 
             return str(v)
     if fmt == "weight":
         s = str(v).strip()
-        return Span(f"{s} ct", cls="cell-weight") if s else Span(EMPTY)
+        return Span(f"{s} ct", cls="cell-weight") if s else empty_mark()
     return str(v)
 
 # Threshold above which a select must become searchable (UI/UX rule i)
@@ -639,16 +645,23 @@ def empty_state_cta(
     action_label: str | None = None,
     action_url: str | None = None,
     hx_post: bool = False,
+    icon: FT | None = None,
+    hint: str | None = None,
 ) -> FT:
-    """Centered card with message + optional action button for empty pages."""
+    """Centered card with message + optional action button for empty pages. ``icon``
+    goes on the button's left (an import action passes the spreadsheet icon); ``hint``
+    is a line under the message saying what the page is for."""
+    label = (icon, action_label) if icon else (action_label,)
     inner: list[FT] = [P(message, cls="empty-state-cta-msg")]
+    if hint:
+        inner.append(P(hint, cls="empty-state-cta-hint"))
     if action_label:
         if hx_post and action_url:
             inner.append(
-                Button(action_label, hx_post=action_url, hx_swap="none", cls="empty-state-cta-btn")
+                Button(*label, hx_post=action_url, hx_swap="none", cls="empty-state-cta-btn")
             )
         elif action_url:
-            inner.append(A(action_label, href=action_url, cls="empty-state-cta-btn"))
+            inner.append(A(*label, href=action_url, cls="empty-state-cta-btn"))
     return Div(*inner, cls="empty-state-cta")
 
 
@@ -819,7 +832,8 @@ def paired_display_cell(
 ) -> FT:
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
-    Used for quantity+sell_by and weight+weight_unit so they share a column.
+    Used for quantity+sell_by and weight+weight_unit so they share a column; the
+    secondary value is the unit, shown through ``display_unit``.
     Each span is independently double-click-to-edit via the paired-edit endpoint,
     which returns an editable_cell whose restore_url points back to paired-display.
 
@@ -838,6 +852,7 @@ def paired_display_cell(
     else:
         pri_disp = EMPTY
     sec_disp = display_unit(secondary_value) if secondary_value not in (None, "") else EMPTY
+    both_empty = pri_disp == EMPTY and sec_disp == EMPTY
     pri_span = (
         Span(
             pri_disp,
@@ -864,10 +879,10 @@ def paired_display_cell(
         if secondary_editable
         else Span(sec_disp, cls="paired-secondary paired-secondary--readonly")
     )
+    # Nothing to pair yet: one mark, which opens the primary editor (rule k), not "-- --".
+    parts = (pri_span,) if both_empty else (pri_span, Span(" ", cls="paired-sep"), sec_span)
     return Td(
-        pri_span,
-        Span(" ", cls="paired-sep"),
-        sec_span,
+        *parts,
         cls=f"cell cell--paired",
         data_col=primary_field,
     )
@@ -979,12 +994,10 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) if isinstance(o, str) else o for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # ESC: capture scroll position synchronously at keydown (before browser may reset it),
-    # then force-set _scrollSnap so the global htmx:afterSettle handler restores it.
+    # ESC: the restore request targets the cell, so the global htmx handler snapshots
+    # the table's scroll position before it and restores it when it settles.
     escape_js = (
         f"if(event.key==='Escape'){{"
-        f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"this._escaping=true;"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
@@ -994,8 +1007,6 @@ def editable_cell(
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
-        f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
     )
@@ -1134,31 +1145,31 @@ def _display_val(value, cell_type: str, currency: str | None = None,
         return Span(label or EMPTY, cls=badge_cls)
     if cell_type == "money":
         try:
-            return Span(fmt_money(s, currency), cls="cell-money") if s else Span(EMPTY)
+            return Span(fmt_money(s, currency), cls="cell-money") if s else empty_mark()
         except ValueError:
-            return Span(EMPTY)
+            return empty_mark()
     if cell_type == "rate":
-        return Span(fmt_rate(s, currency), cls="cell-money") if s else Span(EMPTY)
+        return Span(fmt_rate(s, currency), cls="cell-money") if s else empty_mark()
     if cell_type == "number":
         if not s:
-            return Span(EMPTY)
+            return empty_mark()
         return Span(_normalize_number_str(s), cls="cell-number")
     if cell_type == "date":
         # Store may hold a full timestamp; the cell shows the day, matching _fmt("date").
-        return Span(s[:10], cls="cell-text") if s else Span(EMPTY)
+        return Span(s[:10], cls="cell-text") if s else empty_mark()
     if cell_type == "weight":
-        return Span(f"{s} ct", cls="cell-weight") if s else Span(EMPTY)
+        return Span(f"{s} ct", cls="cell-weight") if s else empty_mark()
     if cell_type == "tags":
         tags = value if isinstance(value, list) else []
-        return Span(*[Span(t, cls="tag-pill tag-pill--sm") for tag in tags]) if tags else Span(EMPTY)
+        return Span(*[Span(t, cls="tag-pill tag-pill--sm") for tag in tags]) if tags else empty_mark()
     if cell_type == "image":
         if s:
             return Img(src=s, cls="cell-thumbnail", loading="lazy", alt="")
         return Span("＋", cls="cell-image-empty", title=t("table.drop_image_upload_hint"))
     if cell_type == "textarea":
         # Multi-line text: preserve line breaks on display (CSS white-space: pre-wrap).
-        return Span(s, cls="cell-textarea") if s else Span(EMPTY)
-    return Span(s or EMPTY, cls="cell-text")
+        return Span(s, cls="cell-textarea") if s else empty_mark()
+    return Span(s, cls="cell-text") if s else empty_mark()
 
 
 def display_cell(
@@ -1326,12 +1337,13 @@ def data_row(
                 Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
                 Div(
                     A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
-                    # Only a draft can be deleted (the bulk bar's rule); stock is written off.
+                    # Only a draft, or one already Deleted, can be deleted (the bulk bar's
+                    # rule); stock is written off.
                     *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
                               onclick=f"if(!confirm({_confirm_delete_row}))return;"
                                       f"htmx.ajax('DELETE','{_delete_url}',"
                                       f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
-                      if str(row.get("status", "") or "").lower() == "draft" else []),
+                      if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
                     cls="row-menu-dropdown", id=f"menu-{safe_id}",
                 ),
                 cls="row-menu",
@@ -1340,7 +1352,10 @@ def data_row(
         )
     ]
     status_val = str(row.get("status", "") or "").lower()
+    # autocomplete off: the stored selection decides the tick, never the browser
+    # restoring a form on Back or Forward.
     checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
+                 autocomplete="off",
                  data_entity_id=entity_id,
                  data_sku=row.get("sku", ""),
                  data_name=row.get("name", ""),
@@ -1842,8 +1857,13 @@ function bulkActionChanged(action){
     _bulkImmediate('/api/items/bulk/revert-to-draft',null,null);return;
   }
   if(action==='delete'){
-    if(!confirm('Delete selected items? This cannot be undone.')) return;
+    // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
+    var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
+    if(!confirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.')) return;
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
+  }
+  if(action==='restore_deleted'){
+    _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
   }
   if(action==='duplicate'){
     if(!confirm('Duplicate selected items? A copy of each will be created.')) return;
@@ -2115,16 +2135,18 @@ function sendToTypeChanged(docType, docLabel){
     if(toolbar){if(n>0){toolbar.classList.add('is-active')}else{toolbar.classList.remove('is-active')}}
     if(clearBtn){clearBtn.style.display=n>0?'':'none'}
     var all=CelerpSelection.all();
-    var hasDraft=false,hasNonDraft=false;
+    // A deleted row is still a draft mistake: Delete erases it once nothing names it.
+    var hasDraft=false,hasDeleted=false,hasNonDraft=false;
     Object.keys(all).forEach(function(id){
-      if((all[id].status||'')==='draft'){hasDraft=true}else{hasNonDraft=true}
+      var s=all[id].status||'';
+      if(s==='draft'){hasDraft=true}else if(s==='deleted'){hasDeleted=true}else{hasNonDraft=true}
     });
     var makeAvailOpt=document.querySelector('#bulk-action-select option[value="make_available"]');
     var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
     if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
     if(revertOpt) revertOpt.hidden=!hasNonDraft;
     var deleteOpt=document.querySelector('#bulk-action-select option[value="delete"]');
-    if(deleteOpt) deleteOpt.hidden=!(hasDraft&&!hasNonDraft);
+    if(deleteOpt) deleteOpt.hidden=!(deleteOpt.hasAttribute('data-samples')||((hasDraft||hasDeleted)&&!hasNonDraft));
   }
   var table=document.getElementById('data-table');
   if(!table) return;
@@ -2167,22 +2189,24 @@ function sendToTypeChanged(docType, docLabel){
   // Guard: register body-level htmx handlers only once per page load
   if(!window.__celerpHtmxHandlers){
     window.__celerpHtmxHandlers=true;
-  // Preserve horizontal scroll position across any HTMX request that may replace
-  // the table or its scroll container (cell edits, sort, search, pagination, etc.).
-  // Save on htmx:beforeRequest AND eagerly exposed as window.__celerpScrollSnap so
-  // inline ESC handlers can set it synchronously before the browser resets scroll.
-  // Restore on htmx:afterSettle using requestAnimationFrame to run after browser reflow.
+  // Preserve horizontal scroll position across an HTMX request that may replace
+  // the table or its scroll container (cell edits, sort, search, pagination, etc.):
+  // its target holds the scroll container or sits inside it. Other requests (page
+  // chrome refreshes) leave the position alone, even when they settle after the
+  // user scrolled. Saved on htmx:beforeRequest for that request and restored when
+  // that same request settles, using requestAnimationFrame to run after browser reflow.
   window.__celerpScrollSnap=null;
   document.body.addEventListener('htmx:beforeRequest',function(e){
-    var sw=document.querySelector('.table-scroll-wrap');
-    if(sw){window.__celerpScrollSnap=sw.scrollLeft;}
+    var sw=document.querySelector('.table-scroll-wrap'),t=e.detail.target;
+    if(sw&&t&&(t.contains(sw)||sw.contains(t))){window.__celerpScrollSnap={xhr:e.detail.xhr,left:sw.scrollLeft};}
   });
   document.body.addEventListener('htmx:afterSettle',function(e){
-    if(window.__celerpScrollSnap!=null){
-      var s=window.__celerpScrollSnap;window.__celerpScrollSnap=null;
+    var snap=window.__celerpScrollSnap;
+    if(snap&&snap.xhr===e.detail.xhr){
+      window.__celerpScrollSnap=null;
       requestAnimationFrame(function(){
         var sw=document.querySelector('.table-scroll-wrap');
-        if(sw)sw.scrollLeft=s;
+        if(sw)sw.scrollLeft=snap.left;
       });
     }
   });
@@ -2224,6 +2248,7 @@ function sendToTypeChanged(docType, docLabel){
       } else if(col==='pieces'){
         span.textContent=fmt||'--';
       }
+      span.classList.toggle('cell-empty',span.textContent==='--');
     });
   });
   } // end if(!window.__celerpHtmxHandlers)

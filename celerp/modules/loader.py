@@ -12,15 +12,13 @@ module that is not first-party, its protected imports and premium license. The
 migration phase and the loader both consume that verdict, so a refused module
 runs nothing.
 
-Revenue protection
-------------------
-The loader enforces that no third-party module imports protected BSL internals
-(_PROTECTED_BSL_INTERNALS). If a module imports any of these, it is rejected
-with a clear error that names the violation and links to the license and the
-sanctioned alternative.
-
-Module authors who need AI should use celerp.modules.api (public, BSL) —
-NOT celerp.ai.* directly.
+Protected internals
+-------------------
+Protected BSL internals (_PROTECTED_BSL_INTERNALS), among them the AI internals
+and credential issuance, are unsupported for third-party modules. Module authors
+use celerp.modules.api (public, BSL) instead. A module found importing a
+protected internal is refused with a clear error that names the violation and
+links to the license and the sanctioned alternative.
 
 Startup sequence
 ----------------
@@ -44,6 +42,9 @@ the shared metadata, so table creation never builds them.
 from __future__ import annotations
 
 import ast
+import builtins
+import contextvars
+import copy
 import fnmatch
 import functools
 import hashlib
@@ -57,6 +58,8 @@ import os
 import re
 import shutil
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,8 +69,8 @@ from celerp.modules.importer import (
     _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix, is_reserved_name,
 )
 from celerp.modules.license import (
-    PAID_MODULE_REFUSAL, adopt_legacy_license_cache, check_license, exchange_api_key_for_jwt,
-    is_free_official, is_premium_path,
+    PAID_MODULE_REFUSAL, UNVERIFIED_MODULE_REFUSAL, adopt_legacy_license_cache, check_license,
+    exchange_api_key_for_jwt, is_free_official, is_premium_path,
 )
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
@@ -80,14 +83,14 @@ from celerp.services.permissions import is_permission_key
 
 log = logging.getLogger(__name__)
 
-# First-party BSL internals that third-party modules are not allowed to import
-# (licensing boundary). Module authors use celerp.modules.api instead.
+# First-party internals that third-party modules do not import. Module authors
+# use celerp.modules.api instead.
 _PROTECTED_BSL_INTERNALS: frozenset[str] = frozenset({
     "celerp.session_gate",
-    "celerp.ai.service",
-    "celerp.ai.quota",
+    "celerp.ai",
     "celerp.gateway",
     "celerp.connectors",
+    "celerp.credentials",
 })
 
 _BSL_DOCS_URL = "https://celerp.com/licenses/bsl"
@@ -265,7 +268,11 @@ def _first_party_lock() -> dict[str, str]:
     only from this committed file - never from CELERP_TRUSTED_MODULE_DIRS or any
     directory listing - so no environment variable can grant first-party trust.
     """
-    path = _lock_path()
+    return _read_lock(_lock_path())
+
+
+def _read_lock(path: Path) -> dict[str, str]:
+    """The {module_name: content_digest} map in the lock at *path*, or {}."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -298,19 +305,22 @@ def is_first_party(pkg_path: Path) -> bool:
     dropped into any module search dir is not trusted, and a modified default is
     demoted (with a warning) so it stops skipping the BSL import checks.
     """
-    lock = _first_party_lock()
-    expected = lock.get(pkg_path.name)
-    if expected is None:
+    if pkg_path.name not in _first_party_lock():
         return False
-    digest = module_content_digest(pkg_path)
-    if digest is None:
+    return _matches_lock(pkg_path.name, module_content_digest(pkg_path))
+
+
+def _matches_lock(name: str, digest: str | None) -> bool:
+    """True only if *digest* is the locked content digest of the module *name*."""
+    expected = _first_party_lock().get(name)
+    if expected is None or digest is None:
         return False
     if digest != expected:
-        if pkg_path.name not in _demotion_warned:
-            _demotion_warned.add(pkg_path.name)
+        if name not in _demotion_warned:
+            _demotion_warned.add(name)
             log.warning(
                 "Module %r content does not match its first-party lock entry; "
-                "treating it as not first-party.", pkg_path.name)
+                "treating it as not first-party.", name)
         return False
     return True
 
@@ -330,6 +340,31 @@ def first_party_names() -> frozenset[str]:
     lock is a demoted default - the scan reports that as a per-module fact so the
     UI can surface it without keeping any cross-render state."""
     return frozenset(_first_party_lock())
+
+
+def check_module_tree(tree: Path, lock_path: Path | None = None) -> list[str]:
+    """What is wrong with *tree*, a default_modules folder as shipped, measured
+    against the lock at *lock_path* (default: the one inside *tree*); empty when
+    nothing is. The lock inside *tree* must equal that lock, every module it
+    names must be present with matching content, and no other module may be
+    present."""
+    own = tree / "first_party.lock.json"
+    lock = _read_lock(lock_path or own)
+    if not lock:
+        return [f"no usable lock at {lock_path or own}"]
+    problems: list[str] = []
+    if lock_path is not None and _read_lock(own) != lock:
+        problems.append("the lock inside the tree differs from the expected lock")
+    for name, expected in sorted(lock.items()):
+        pkg = tree / name
+        if not (pkg / "__init__.py").is_file():
+            problems.append(f"{name}: missing")
+        elif module_content_digest(pkg) != expected:
+            problems.append(f"{name}: content does not match the lock")
+    if tree.is_dir():
+        problems += [f"{p.name}: not in the lock" for p in sorted(tree.iterdir())
+                     if (p / "__init__.py").is_file() and p.name not in lock]
+    return problems
 
 
 def demoted_first_party(enabled: set[str]) -> list[str]:
@@ -405,21 +440,40 @@ def resolve_runtime_module_path(
     return candidates[0] if candidates else None
 
 
-def _purge_pycache(pkg_path: Path) -> None:
-    """Remove every __pycache__ under pkg_path before the module is imported.
+def _bytecode(pkg_path: Path) -> list[Path]:
+    """Every bytecode cache folder and compiled file under pkg_path, found without
+    following a symlink. Raises OSError when part of the tree cannot be read."""
+    def fail(exc: OSError) -> None:
+        raise exc
 
-    The content digest excludes *.pyc, so a stale or tampered bytecode cache with a
-    matching header would otherwise be executed in preference to recompiling the
-    just-verified source. Purging first guarantees the bytes CPython runs are the
-    bytes that were content-verified. Best effort: a purge failure is logged, not
-    fatal, and Python still validates cache headers against source mtime.
+    found: list[Path] = []
+    for root, dirs, files in os.walk(pkg_path, onerror=fail):
+        found += [Path(root) / n for n in (*dirs, *files)
+                  if n == "__pycache__" or fnmatch.fnmatch(n, "*.pyc")]
+        dirs[:] = [d for d in dirs if d != "__pycache__" and not fnmatch.fnmatch(d, "*.pyc")]
+    return found
+
+
+def _purge_pycache(pkg_path: Path) -> None:
+    """Remove all bytecode under pkg_path before the module is imported, and prove it gone.
+
+    The content digest excludes bytecode, so bytecode left beside the checked source
+    could run in its place. A symlink is removed itself, never followed. The rescan
+    decides: :class:`ModuleLoadError` when any of it is still there.
     """
     try:
-        for cache in pkg_path.rglob("__pycache__"):
-            if cache.is_dir() and not cache.is_symlink():
-                shutil.rmtree(cache, ignore_errors=True)
+        for path in _bytecode(pkg_path):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+        left = _bytecode(pkg_path)
     except OSError as exc:
-        log.warning("Could not purge bytecode cache under %s: %s", pkg_path, exc)
+        raise ModuleLoadError(
+            f"Cannot remove compiled Python files from the module ({type(exc).__name__}).") from exc
+    if left:
+        raise ModuleLoadError("Cannot remove compiled Python files from the module.")
+
 
 # Loaded manifests - populated by load_all()
 _loaded: list[dict] = []
@@ -441,6 +495,9 @@ CORE_FOLDED: frozenset[str] = frozenset({"celerp-ai", "celerp-backup", "celerp-c
 
 class ModuleLoadError(Exception):
     """Raised (and caught) when a module fails validation."""
+
+
+MODULE_CHANGED = "The module's files changed after it was checked."
 
 
 def read_manifest(pkg_path: Path) -> dict:
@@ -483,7 +540,8 @@ def _validated_manifest(raw) -> dict:
     read uses, so a malformed value is refused with its reason here instead of
     raising out of the load pass at some later raw read. ``slots`` is
     normalized to a dict (None means none) and ``depends_on`` to a list; the
-    contents of ``slots`` are checked by :func:`_validate_slots`.
+    contents of ``slots`` are checked by :func:`_check_slot_contracts` at admission
+    and :func:`_resolve_slot_callables` at load.
     """
     if not isinstance(raw, dict):
         raise ModuleLoadError(
@@ -563,11 +621,12 @@ def _dependency_order(
 @dataclass(frozen=True)
 class AdmittedModule:
     """A module that passed admission: the copy to run, its declared manifest
-    (validated) and its first-party verdict."""
+    (validated), its first-party verdict and the content digest of what was checked."""
     name: str
     path: Path
     manifest: dict
     first_party: bool
+    content_digest: str
 
 
 @dataclass(frozen=True)
@@ -791,6 +850,11 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     """Every static rule a module must pass before any of its code runs.
     Raises :class:`ModuleLoadError` (or the importer's ModuleImportError) with
     the reason."""
+    # The one digest of what is checked: first-party is decided from it, and it is
+    # what the module's files must still match when its code runs.
+    digest = module_content_digest(pkg_path)
+    if digest is None:
+        raise ModuleLoadError("Cannot check the module's files.")
     manifest = _declared_manifest(pkg_path)
     if manifest["name"] != name:
         raise ModuleLoadError(
@@ -800,7 +864,7 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     _validate_table_prefix(name, manifest)
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
-    first_party = is_first_party(pkg_path)
+    first_party = _matches_lock(name, digest)
     _check_slot_contracts(pkg_path, manifest["slots"], first_party=first_party)
     _check_import_names(name, pkg_path)
     entry_files = _module_entry_files(pkg_path, manifest)
@@ -811,7 +875,28 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
             violations |= _scan_protected_imports(pkg_path, entry)
         if violations:
             raise ModuleLoadError(_bsl_violation_message(name, violations))
-    return AdmittedModule(name, pkg_path, manifest, first_party)
+    return AdmittedModule(name, pkg_path, manifest, first_party, digest)
+
+
+def check_unchanged(module: AdmittedModule) -> None:
+    """Raise :class:`ModuleLoadError` unless the module's files are exactly those
+    admission checked."""
+    if module_content_digest(module.path) != module.content_digest:
+        raise ModuleLoadError(MODULE_CHANGED)
+
+
+def _prepare_module_execution(module: AdmittedModule) -> None:
+    """Called before any of the module's code runs (its migrations, its import), so
+    Python runs exactly the source admission checked.
+
+    This process writes no bytecode and looks for it only beside the source, where
+    it is removed and proven gone; the files must still be those admission checked.
+    Raises :class:`ModuleLoadError` otherwise.
+    """
+    sys.pycache_prefix = None
+    sys.dont_write_bytecode = True
+    _purge_pycache(module.path)
+    check_unchanged(module)
 
 
 def _license_refusal(module: AdmittedModule, creds) -> str | None:
@@ -849,7 +934,7 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     if unconfirmed:
         log.warning("Module %r not loaded: the Marketplace could not confirm it is free "
                     "and there is no valid license", module.name)
-        return "Not loaded: the Marketplace could not confirm it is free and there is no valid license here. Connect to the internet and restart."
+        return UNVERIFIED_MODULE_REFUSAL
     log.warning("Premium module %r skipped: no valid license", module.name)
     return PAID_MODULE_REFUSAL
 
@@ -977,8 +1062,8 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     celerp- name that is not a default, a free official verdict or a valid
     license (_license_refusal). Survivors are then put in dependency order, a
     module whose dependency is missing or refused being refused too. A
-    first-party module that fails a rule stops startup, as a default module is
-    the product.
+    first-party module that is missing or fails a rule stops startup, as a
+    default module is the product.
     """
     refused: dict[str, str] = {}
     candidates: dict[str, AdmittedModule] = {}
@@ -987,6 +1072,8 @@ def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
     for name in sorted(enabled - CORE_FOLDED):
         pkg_path = resolve_runtime_module_path(name, module_dir)
         if pkg_path is None:
+            if name in first_party_names():
+                raise ModuleLoadError(f"Default module {name!r} is not installed.")
             continue
         installed.add(name)
         try:
@@ -1068,10 +1155,13 @@ def restart_would_load(pkg_name: str) -> bool:
 
 
 def module_label(pkg_name: str) -> str:
-    """The module's display name from its manifest, or the package name."""
+    """The module's display name from its manifest. A module that is not on disk has
+    no manifest, so its package name is shown as words ("celerp-accounting" ->
+    "Accounting") rather than as an identifier."""
     path = resolve_runtime_module_path(pkg_name, module_search_path())
     meta = read_manifest_metadata(path) if path is not None else {}
-    return meta.get("display_name") or meta.get("label") or pkg_name
+    return (meta.get("display_name") or meta.get("label")
+            or pkg_name.removeprefix("celerp-").replace("-", " ").replace("_", " ").title())
 
 
 def modules_owning_events(event_types: set[str]) -> list[str]:
@@ -1172,10 +1262,12 @@ def load_all(
     Returns:
         List of successfully loaded PLUGIN_MANIFEST dicts.
     """
+    global _module_dirs
     _loaded.clear()
     _load_errors.clear()
     _admitted.clear()
     _module_routes.clear()
+    _module_dirs = tuple(e.strip() for e in str(module_dir).split(",") if e.strip())
     # Every core table is on the metadata before any module code runs, so a table
     # a module adds is told apart from one it merely caused to be imported.
     import celerp.models  # noqa: F401
@@ -1208,14 +1300,16 @@ def load_all(
         p_str = str(pkg_path)
         if p_str not in sys.path:
             sys.path.insert(0, p_str)
-        # Run the source just content-verified, never a stale/tampered .pyc that a
-        # matching cache header would execute in preference (the digest omits *.pyc).
-        _purge_pycache(pkg_path)
+        # Admitted before its code runs, so the module can read its own files
+        # while it is imported.
+        _admitted[pkg_name] = module
         try:
+            _prepare_module_execution(module)
             with _recording_tables(pkg_name):
                 manifest = _load_one(pkg_path, pkg_name, trusted=module.first_party,
                                      declared=module.manifest)
         except ModuleLoadError as exc:
+            _admitted.pop(pkg_name, None)
             # A default module IS the product (a boot without documents is not
             # a working app): fail startup naming the module and error.
             # Third-party modules keep load-and-continue; their failure shows
@@ -1230,7 +1324,6 @@ def load_all(
         # it rather than recomputing (and re-hashing) per module.
         manifest["first_party"] = module.first_party
         _loaded.append(manifest)
-        _admitted[pkg_name] = module
 
     log.info(
         "Module loader complete: %d loaded, %d skipped/rejected",
@@ -1347,6 +1440,152 @@ def _sweep_removed_tables() -> None:
         Base.metadata._remove_table(key, None)
 
 
+def admitted_module_root(import_name: str) -> Path | None:
+    """The folder of the admitted module whose code answers to *import_name*
+    (a dotted ``__name__``), as admission recorded it; None for any other code."""
+    top = import_name.split(".", 1)[0]
+    module = _admitted.get(top)
+    if module is not None:
+        return module.path
+    return next((m.path for m in _admitted.values() if top in _import_roots(m.name, m.path)), None)
+
+
+# The module directories the last load_all was given.
+_module_dirs: tuple[str, ...] = ()
+
+
+def _owning_module(filename: str) -> Path | None:
+    """The installed third-party module folder the source file *filename* sits in,
+    enabled or not, by its own path or by the file it links to; None for a file
+    outside every module folder and for a first-party module whose content matches
+    its lock. Module folders are the folders holding an ``__init__.py`` directly
+    in a module directory."""
+    roots = dict.fromkeys(e.strip() for e in (*_module_dirs, *module_search_path().split(",")) if e.strip())
+    for resolve in (os.path.abspath, os.path.realpath):
+        path = Path(resolve(filename))
+        for root in map(Path, map(resolve, roots)):
+            parts = path.relative_to(root).parts if path.is_relative_to(root) else ()
+            if len(parts) < 2:
+                continue
+            folder = root / parts[0]
+            if (folder / "__init__.py").is_file() and not is_first_party(folder):
+                return folder
+    return None
+
+
+# The protected internals the module activation whose code runs in this context
+# has tried to import; work its code hands to a thread or a thread pool carries
+# it along (_handed_over).
+_activation: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar("_activation", default=None)
+# Every activation in progress, on any thread. The guards are installed while any is.
+_live: list[set[str]] = []
+_guard_lock = threading.Lock()
+_unguarded = (builtins.__import__, importlib.import_module, importlib.__import__,
+              threading.Thread.start, ThreadPoolExecutor.submit)
+
+
+def _run_handed_over(fn, *args, **kwargs):
+    """Run work an activating module's code handed to another thread."""
+    return fn(*args, **kwargs)
+
+
+def _module_frame(frame) -> bool:
+    """True when the first caller from *frame* outward that is not the standard
+    library is module code (_owning_module) or work module code handed over."""
+    while frame is not None:
+        code = frame.f_code
+        if code is _run_handed_over.__code__ or _owning_module(code.co_filename):
+            return True
+        if str(frame.f_globals.get("__name__")).partition(".")[0] not in sys.stdlib_module_names:
+            return False
+        frame = frame.f_back
+    return False
+
+
+def _running_activation() -> set[str] | None:
+    activation = _activation.get()
+    return activation if any(a is activation for a in _live) else None
+
+
+def _charge_import(name: str, frame, package=None, fromlist=()) -> None:
+    """Refuse an import of a protected internal that module code asks for while
+    its module activates, on the activating thread or in work it handed over."""
+    activation = _running_activation()
+    if activation is None:
+        return
+    name = importlib.util.resolve_name(name, package) if name.startswith(".") else name
+    hit = next(filter(None, map(_protected_hit, [name, *(f"{name}.{f}" for f in fromlist)])), None)
+    if hit and _module_frame(frame):
+        activation.add(hit)
+        raise ImportError(f"{hit} is not available to modules: {_MODULE_AI_API_URL}")
+
+
+def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    try:
+        fromlist = tuple(fromlist or ())
+    except Exception:
+        return _unguarded[0](name, globals, locals, fromlist, level)
+    package = globals.get("__package__") if isinstance(globals, dict) else None
+    _charge_import("." * level + name, sys._getframe(1), package, fromlist)
+    return _unguarded[0](name, globals, locals, fromlist, level)
+
+
+def _guarded_import_module(name, package=None):
+    _charge_import(name, sys._getframe(1), package)
+    return _unguarded[1](name, package)
+
+
+def _handed_over(fn, frame):
+    """*fn* bound to the running activation when module code calling from *frame*
+    hands it to another thread; None for any other caller."""
+    if _running_activation() is None or not _module_frame(frame):
+        return None
+    return functools.partial(contextvars.copy_context().run, _run_handed_over, fn)
+
+
+def _guarded_thread_start(self):
+    work = _handed_over(self.run, sys._getframe(1))
+    if work is not None:
+        self.run = work
+    return _unguarded[3](self)
+
+
+def _guarded_submit(self, fn, /, *args, **kwargs):
+    return _unguarded[4](self, _handed_over(fn, sys._getframe(1)) or fn, *args, **kwargs)
+
+
+@contextmanager
+def _activating(pkg_name: str, pkg_path: Path, *, trusted: bool):
+    """Run part of a third-party module's activation (its migrations, import, slot
+    and route setup). A protected import module code attempts meanwhile refuses the
+    module."""
+    global _unguarded
+    if trusted:
+        yield
+        return
+    activation: set[str] = set()
+    with _guard_lock:
+        if not _live:
+            _unguarded = (builtins.__import__, importlib.import_module, importlib.__import__,
+                          threading.Thread.start, ThreadPoolExecutor.submit)
+            builtins.__import__, importlib.import_module = _guarded_import, _guarded_import_module
+            importlib.__import__ = _guarded_import
+            threading.Thread.start, ThreadPoolExecutor.submit = _guarded_thread_start, _guarded_submit
+        _live.append(activation)
+    token = _activation.set(activation)
+    try:
+        yield
+    finally:
+        _activation.reset(token)
+        with _guard_lock:
+            _live[:] = [a for a in _live if a is not activation]
+            if not _live:
+                (builtins.__import__, importlib.import_module, importlib.__import__,
+                 threading.Thread.start, ThreadPoolExecutor.submit) = _unguarded
+        if activation:
+            raise ModuleLoadError(_bsl_violation_message(pkg_name, activation))
+
+
 def _evict_module(pkg_name: str) -> None:
     """Drop a refused module and its submodules from sys.modules."""
     for key in list(sys.modules.keys()):
@@ -1359,72 +1598,38 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
 
     Args:
         trusted: If True, skip BSL import checks. Set for first-party bundled modules.
-        declared: The manifest admission validated. The manifest the import
-            produces must equal it, so code that rewrites PLUGIN_MANIFEST at
-            import cannot widen what was admitted.
+        declared: The manifest admission validated. It is the only manifest
+            used here; whatever PLUGIN_MANIFEST holds after import is ignored.
 
-    Returns the manifest dict. Raises :class:`ModuleLoadError` on failure.
+    Returns a copy of the declared manifest. Raises :class:`ModuleLoadError` on failure.
     """
-    before = set(sys.modules.keys())
     existing = sys.modules.get(pkg_name)
     if existing is not None and not _is_module_code(_module_location(existing), _module_homes(pkg_path)):
         raise ModuleLoadError(f"The package name {pkg_name!r} is already in use.")
 
     try:
-        spec = importlib.util.spec_from_file_location(
-            pkg_name,
-            pkg_path / "__init__.py",
-            submodule_search_locations=[str(pkg_path)],
-        )
-        if spec is None or spec.loader is None:
-            raise ModuleLoadError(f"Cannot create import spec for {pkg_path}")
+        with _activating(pkg_name, pkg_path, trusted=trusted):
+            spec = importlib.util.spec_from_file_location(
+                pkg_name,
+                pkg_path / "__init__.py",
+                submodule_search_locations=[str(pkg_path)],
+            )
+            if spec is None or spec.loader is None:
+                raise ModuleLoadError(f"Cannot create import spec for {pkg_path}")
 
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[pkg_name] = mod
-        spec.loader.exec_module(mod)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[pkg_name] = mod
+            spec.loader.exec_module(mod)
 
     except ModuleLoadError:
-        sys.modules.pop(pkg_name, None)
+        _evict_module(pkg_name)
         raise
     except Exception as exc:
         log.error("Module %r failed to import (%s: %s) — skipping", pkg_name, type(exc).__name__, exc)
         sys.modules.pop(pkg_name, None)
         raise ModuleLoadError(f"Failed to import ({type(exc).__name__}: {exc})")
 
-    # Revenue protection, second stage: admission scanned the source statically;
-    # this checks what the import actually bound. First-party bundled modules
-    # are exempt.
-    if not trusted:
-        violations: set[str] = set()
-
-        for val in vars(mod).values():
-            candidate = getattr(val, "__name__", None) or getattr(
-                getattr(val, "__spec__", None), "name", None
-            )
-            if candidate and candidate in _PROTECTED_BSL_INTERNALS:
-                violations.add(candidate)
-            owner = getattr(val, "__module__", None)
-            if owner and owner in _PROTECTED_BSL_INTERNALS:
-                violations.add(owner)
-
-        truly_new = set(sys.modules.keys()) - before
-        violations |= truly_new & _PROTECTED_BSL_INTERNALS
-
-        if violations:
-            _evict_module(pkg_name)
-            raise ModuleLoadError(_bsl_violation_message(pkg_name, violations))
-
-    try:
-        manifest = _validated_manifest(getattr(mod, "PLUGIN_MANIFEST", None))
-    except ModuleLoadError as exc:
-        log.error("Module %r rejected: invalid manifest (%s)", pkg_name, exc)
-        _evict_module(pkg_name)
-        raise
-    if manifest != declared:
-        _evict_module(pkg_name)
-        raise ModuleLoadError(
-            "PLUGIN_MANIFEST at import differs from the manifest declared in __init__.py.")
-
+    manifest = copy.deepcopy(declared)
     slots_manifest = manifest["slots"]
 
     # Check every slot entry BEFORE any is registered, so a module with one bad
@@ -1432,8 +1637,9 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     # instead of first surfacing as a broken page, a link out of Celerp, an entry
     # shown to every role, or a hook bound to code the module does not own.
     try:
-        prepared_search_provider = _resolve_slot_callables(
-            pkg_name, pkg_path, slots_manifest, trusted=trusted)
+        with _activating(pkg_name, pkg_path, trusted=trusted):
+            prepared_search_provider = _resolve_slot_callables(
+                pkg_name, pkg_path, slots_manifest, trusted=trusted)
     except ModuleLoadError:
         log.error("Module %r rejected: invalid slots", pkg_name)
         _evict_module(pkg_name)
@@ -1636,7 +1842,7 @@ def _register_module_routes(app, loaded: list[dict], kind: str) -> None:
             module = _admitted.get(name)
             if module is None:
                 raise ModuleLoadError("module was not admitted in this process.")
-            with _recording_tables(name):
+            with _recording_tables(name), _activating(name, module.path, trusted=module.first_party):
                 setup = _check_owned_callable(
                     name, module.path, f"{manifest_key} setup",
                     f"{route_mod_path}:{setup_attr}",
@@ -1712,6 +1918,8 @@ def register_ui_routes(app, loaded: list[dict]) -> None:
 
 def _protected_hit(name: str) -> str | None:
     """The protected internal `name` names/imports from, or None."""
+    if not isinstance(name, str):
+        return None
     for protected in _PROTECTED_BSL_INTERNALS:
         if name == protected or name.startswith(protected + "."):
             return protected

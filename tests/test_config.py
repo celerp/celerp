@@ -165,7 +165,7 @@ class TestWriteReadRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# replace_enabled_modules — first-boot (no config.toml)
+# replace_enabled_modules - first-boot (no config.toml)
 # ---------------------------------------------------------------------------
 
 class TestReplaceEnabledModulesFirstBoot:
@@ -207,7 +207,7 @@ class TestReplaceEnabledModulesFirstBoot:
 
 
 # ---------------------------------------------------------------------------
-# replace_enabled_modules — idempotency
+# replace_enabled_modules - idempotency
 # ---------------------------------------------------------------------------
 
 class TestReplaceEnabledModulesIdempotency:
@@ -231,7 +231,7 @@ class TestReplaceEnabledModulesIdempotency:
 
 
 # ---------------------------------------------------------------------------
-# replace_enabled_modules — preserves unrelated config
+# replace_enabled_modules - preserves unrelated config
 # ---------------------------------------------------------------------------
 
 class TestReplaceEnabledModulesPreservesConfig:

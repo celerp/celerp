@@ -33,6 +33,9 @@ _XX = {
     "event.file.attached": "XX_FILE_ATTACHED",
     "activity.qty_to": "XX_QTYTO {qty}",
     "field.status": "XX_STATUS",
+    "chip.retail": "XX_RETAIL",
+    "chip.cost": "XX_COST",
+    "field.label.weight": "XX_WEIGHT",
     "time.days_ago": "XX {n} DAYS",
     "activity.recent_activity": "XX_RECENT",
     "activity.empty": "XX_EMPTY",
@@ -72,6 +75,31 @@ def test_fields_changed_summary_translates_label():
     out = _fields_changed_summary({"status": {"old": "draft", "new": "final"}})
     assert "XX_STATUS" in out
 
+
+def test_fields_changed_summary_translates_item_field_names():
+    # Item fields read as the inventory column headers do: a system price list
+    # column and a built-in field translate; a custom attribute stays as named.
+    out = _fields_changed_summary({
+        "retail_price": {"old": 10, "new": 12},
+        "cost_price": {"old": 5, "new": 6},
+        "weight": {"old": 1, "new": 2},
+        "hue": {"old": "red", "new": "blue"},
+    })
+    assert "XX_RETAIL:" in out and "XX_COST:" in out and "XX_WEIGHT:" in out and "Hue:" in out
+    assert "Price" not in out
+
+
+def test_price_set_detail_translates_the_price_field():
+    assert detail_from_entry({"price_type": "retail_price", "new_price": 12}, "item.pricing.set").startswith("XX_RETAIL")
+    assert detail_from_entry({"price_type": "cost_price", "new_price": 5}, "item.pricing.set").startswith("XX_COST")
+
+
+
+def test_price_set_detail_translates_a_price_list_named_by_name():
+    """A price set by a system price list's name (as the API accepts) reads in the user's
+    language, like the list does elsewhere. Red statement: the feed showed "Retail" in
+    every language."""
+    assert detail_from_entry({"price_type": "Retail", "new_price": 12}, "item.pricing.set").startswith("XX_RETAIL →")
 
 def test_relative_time_translates():
     ts = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()

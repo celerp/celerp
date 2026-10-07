@@ -12,21 +12,22 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, unwrap_address
-from celerp.services.currencies import CURRENCY_CODES, currency_label
+from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.field_schema import SYSTEM_ITEM_KEYS
-from ui.components.currency import currency_combobox_td
-from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
-from ui.config import PRIVACY_POLICY_URL
+from ui.components.currency import currency_combobox_td, currency_label
+from ui.components.phone import phone_input_td as _phone_input_td
+from ui.config import PAYMENT_TERMS_URL, PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.security import not_permitted_redirect, owner_refusal
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
-from ui.i18n import get_lang, refusal_text, t, tier_label
+from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
@@ -69,6 +70,22 @@ async def _check_permission(
     return None
 
 
+async def _category_name(token: str, key: str) -> str:
+    """The name a category shows the user, from the company's stored names."""
+    try:
+        names = await api.get_category_display_names(token)
+    except Exception:
+        names = {}
+    return category_label(key, names.get(key))
+
+
+async def _category_field_count(token: str, key: str) -> int:
+    try:
+        return len((await api.get_company_category_schemas(token)).get(key, []))
+    except Exception:
+        return 0
+
+
 def _category_row(key: str, display_name: str, field_count: int) -> FT:
     """Single category Tr for the Your Categories table."""
     from urllib.parse import quote as _q
@@ -78,7 +95,7 @@ def _category_row(key: str, display_name: str, field_count: int) -> FT:
                  hx_get=f"/settings/categories/{_q(key, safe='')}/edit",
                  hx_target="closest tr",
                  hx_swap="outerHTML"),
-            cls="cell",
+            cls="cell your-cats-name",
         ),
         Td(str(field_count), cls="cell cell--center your-cats-fields"),
         Td(
@@ -1150,7 +1167,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         return await base_shell(
-            page_header(t("btn.create_user", lang), A(t("btn.back_to_settings", lang), href="/settings/general?tab=users", cls="btn btn--secondary")),
+            page_header(t("btn.create_user", lang), A(t("btn.back", lang), href="/settings/general?tab=users", cls="btn btn--secondary")),
             Div(
                 H3(t("settings.new_user", lang), cls="settings-section-title"),
                 Form(
@@ -1215,7 +1232,7 @@ def setup_routes(app):
     _register_tax_crud(app, "purchasing-taxes", "get_purchasing_taxes", "patch_purchasing_taxes", "/settings/purchasing?tab=taxes")
 
     # ── Payment Terms PATCH endpoints ────────────────────────────────
-    _register_terms_crud(app, "terms", "get_payment_terms", "patch_payment_terms", "/settings/sales?tab=terms")
+    _register_terms_crud(app, "terms", "get_payment_terms", "patch_payment_terms", PAYMENT_TERMS_URL)
     _register_terms_crud(app, "purchasing-terms", "get_purchasing_payment_terms", "patch_purchasing_payment_terms", "/settings/purchasing?tab=terms")
 
     # ── Price Lists CRUD endpoints ───────────────────────────────────
@@ -1685,7 +1702,7 @@ def setup_routes(app):
         try:
             result = await api.undo_import_batch(token, batch_id)
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            return _R("", status_code=200, headers={"HX-Reswap": "none", **toast_header(str(e.detail), "error")})
         removed = result.get("removed", 0)
         return _R("", status_code=204, headers={"HX-Redirect": f"/settings/inventory?tab=import-history&msg={removed}+undone"})
 
@@ -1843,7 +1860,6 @@ def setup_routes(app):
             return Response(content="", media_type="text/html")
         if len(companies) <= 1:
             return Response(content="", media_type="text/html")
-        current = next((c.get("company_name", "") for c in companies if c.get("is_current")), companies[0].get("company_name", ""))
         options = [
             Option(c.get("company_name", ""), value=c.get("company_id", ""), selected=c.get("is_current", False))
             for c in companies
@@ -1948,7 +1964,7 @@ def setup_routes(app):
             Div(*radio_rows, style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;"),
             Div(
                 Button(t("btn.connect_to_cloud"), type="submit", cls="btn btn--sm btn--primary"),
-                Button(t("btn.back_to_settings"),
+                Button(t("btn.back"),
                     type="button",
                     cls="btn btn--sm btn--outline",
                     hx_get="/settings/cloud-connect",
@@ -2027,7 +2043,7 @@ def setup_routes(app):
                     hx_disabled_elt="this",
                     hx_sync="#cloud-relay-tab:drop",
                 ),
-                Button(t("btn.back_to_settings"),
+                Button(t("btn.back"),
                     type="button",
                     cls="btn btn--sm btn--outline",
                     hx_get="/settings/cloud-connect",
@@ -2238,21 +2254,12 @@ def setup_routes(app):
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         return Div(
-            Span(t("settings.category_added", name=result.get("display_name", name)),
+            Span(t("settings.category_added", name=category_label(name, result.get("display_name"))),
                  cls="flash flash--success"),
             id="verticals-apply-result",
         )
 
     # ── Category CRUD UI routes ─────────────────────────────────────────────
-
-    async def _applied_panel_html(token: str) -> FT:
-        """Re-render the applied-schemas panel for HTMX swap."""
-        try:
-            cat_schemas = await api.get_company_category_schemas(token)
-        except Exception:
-            cat_schemas = {}
-        applied_names = sorted(cat_schemas.keys())
-        return _verticals_applied_panel(applied_names)
 
     @app.post("/settings/categories")
     async def settings_category_create(request: Request):
@@ -2284,7 +2291,7 @@ def setup_routes(app):
             else:
                 msg = str(detail)
             return Tr(
-                Td(category_key, cls="cell"),
+                Td(await _category_name(token, category_key), cls="cell"),
                 Td(
                     A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={category_key}", cls="auth-link"),
                     cls="cell",
@@ -2309,8 +2316,8 @@ def setup_routes(app):
         return Tr(
             Td(
                 Form(
-                    Input(type="text", name="new_name", value=category_key,
-                          cls="form-input form-input--sm",
+                    Input(type="text", name="new_name", value=await _category_name(token, category_key),
+                          cls="form-input form-input--sm cat-add-input",
                           autofocus=True),
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
@@ -2320,31 +2327,20 @@ def setup_routes(app):
                     hx_patch=f"/settings/categories/{category_key}",
                     hx_target="closest tr",
                     hx_swap="outerHTML",
+                    cls="cat-add-form",
                 ),
-                cls="cell",
+                colspan="3", cls="cell",
             ),
-            Td("", cls="cell"),
-            Td("", cls="cell"),
             cls="data-row",
         )
 
     @app.get("/settings/categories/{category_key}/cancel")
     async def settings_category_rename_cancel(request: Request, category_key: str):
         token = _token(request)
-        display_name = category_key
-        if token:
-            try:
-                dn_map = await api.get_category_display_names(token)
-                display_name = dn_map.get(category_key, category_key)
-            except Exception:
-                pass
-        schemas: dict = {}
-        if token:
-            try:
-                schemas = await api.get_company_category_schemas(token)
-            except Exception:
-                pass
-        return _category_row(category_key, display_name, len(schemas.get(category_key, [])))
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        return _category_row(category_key, await _category_name(token, category_key),
+                             await _category_field_count(token, category_key))
 
     @app.patch("/settings/categories/{category_key}")
     async def settings_category_rename(request: Request, category_key: str):
@@ -2355,18 +2351,17 @@ def setup_routes(app):
         new_name = str(form.get("new_name", "")).strip()
         if not new_name:
             return P(t("settings.field_is_required", label=t("settings.new_category_name")), cls="error-banner")
+        # Saving the name as shown (a library category reads in the user's language) is
+        # no rename: the category keeps its library name and keeps translating.
+        if new_name == await _category_name(token, category_key):
+            return _category_row(category_key, new_name, await _category_field_count(token, category_key))
         try:
             await api.rename_category(token, category_key, new_name)
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         import re as _re
         new_key = _re.sub(r"[^a-z0-9]+", "_", new_name.lower()).strip("_")
-        schemas: dict = {}
-        try:
-            schemas = await api.get_company_category_schemas(token)
-        except Exception:
-            pass
-        return _category_row(new_key, new_name, len(schemas.get(new_key, [])))
+        return _category_row(new_key, category_label(new_key, new_name), await _category_field_count(token, new_key))
 
     @app.post("/settings/company/reset")
     async def company_reset_ui(request: Request):
@@ -2454,7 +2449,7 @@ def setup_routes(app):
         """Lightweight poll for the global 'backup in progress' banner (#161).
 
         On success returns {"active": bool} - true while a snapshot is building
-        (writes paused). When the upstream backup-status call cannot be reached,
+        (writes paused). When the upstream backup-active call cannot be reached,
         returns a distinct {"state": "error"} instead of a bare {"active": false}:
         a failed poll must never read as a healthy idle backend, so the banner can
         hold its last known state rather than flip to "not active"."""
@@ -2464,8 +2459,7 @@ def setup_routes(app):
         if not token:
             return JSONResponse({"active": False})
         try:
-            status = await _api.get_backup_status(token)
-            return JSONResponse({"active": bool(status.get("active"))})
+            return JSONResponse({"active": await _api.get_backup_active(token)})
         except Exception:
             return JSONResponse({"state": "error"}, status_code=503)
 
@@ -2739,7 +2733,8 @@ def _business_type_change_lines(changes: dict) -> list[str]:
     settings_changed = [t(_BUSINESS_TYPE_SETTING_LABELS[k]) if k in _BUSINESS_TYPE_SETTING_LABELS else k
                         for k in setting_keys]
     lines = []
-    for key, names in (("categories", changes.get("categories_added")),
+    categories = [category_label(k, v) for k, v in (changes.get("categories_added") or {}).items()]
+    for key, names in (("categories", categories),
                        ("modules", changes.get("modules_enabled")),
                        ("settings", settings_changed)):
         if names:
@@ -3292,7 +3287,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
                hx_on__after_request="window.location.reload()"),
     ]
     if import_path:
-        actions.append(A(t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
+        actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
@@ -3305,7 +3300,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
     )
 
 
-def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms", import_path: str | None = "/settings/import/payment-terms") -> FT:
+def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms") -> FT:
     def _row(idx: int, term: dict) -> FT:
         return Tr(
             _term_display_cell(idx, "name", term, prefix=prefix),
@@ -3326,9 +3321,9 @@ def _terms_tab(terms: list[dict], lang: str = "en", prefix: str = "terms", impor
         Button(t("btn.new_term"), cls="btn btn--primary",
                hx_post=f"/settings/{prefix}/new", hx_swap="none",
                hx_on__after_request="window.location.reload()"),
+        A(import_icon(), t("btn.import_payment_terms_csv"), href="/settings/import/payment-terms",
+          cls="btn btn--secondary ml-sm"),
     ]
-    if import_path:
-        actions.append(A(t("btn.import_payment_terms_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
@@ -3679,106 +3674,6 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, base_pric
     )
 
 
-def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
-    """Item Schema tab with category selector.
-
-    cat_tab="" → global schema (display only); cat_tab="CategoryName" → editable category schema.
-    """
-    from urllib.parse import quote
-    categories = sorted(cat_schemas.keys())
-
-    def _cat_tab_link(key: str, label: str) -> FT:
-        href = f"/settings/inventory?tab=category-library&cat={key}" if key else "/settings/inventory?tab=category-library"
-        active = (cat_tab == key)
-        return A(label, href=href, cls=f"sub-tab {'sub-tab--active' if active else ''}")
-
-    cat_selector = Div(
-        _cat_tab_link("", t("settings.global")),
-        *[_cat_tab_link(c, c) for c in categories],
-        cls="sub-tabs",
-    ) if categories else ""
-
-    is_cat = bool(cat_tab and cat_tab in cat_schemas)
-
-    if is_cat:
-        active_schema = cat_schemas[cat_tab]
-        hint = t("settings.attr_columns_hint", cat_tab=cat_tab)
-        enc = quote(cat_tab, safe="")
-        sorted_schema = sorted(active_schema, key=lambda x: x.get("position", 0))
-
-        def _cat_row(idx: int, f: dict) -> FT:
-            return Tr(
-                _cat_schema_display_cell(cat_tab, idx, "position", f),
-                _cat_schema_display_cell(cat_tab, idx, "key", f),
-                _cat_schema_display_cell(cat_tab, idx, "label", f),
-                _cat_schema_display_cell(cat_tab, idx, "type", f),
-                _cat_schema_display_cell(cat_tab, idx, "required", f),
-                _cat_schema_display_cell(cat_tab, idx, "editable", f),
-                _cat_schema_display_cell(cat_tab, idx, "show_in_table", f),
-                _cat_schema_display_cell(cat_tab, idx, "options", f),
-                Td(
-                    Button("✕", cls="btn btn--danger btn--xs",
-                           hx_delete=f"/settings/cat-schema/{enc}/{idx}",
-                           hx_confirm=t("settings.confirm_delete_field", name=f.get("key", idx)),
-                           hx_swap="none",
-                           hx_on__after_request=f"window.location.href='/settings/inventory?tab=category-library&cat={cat_tab}'"),
-                    cls="cell",
-                ),
-                cls="data-row",
-            )
-
-        add_row = Tr(
-            Td(
-                Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
-                       hx_post=f"/settings/cat-schema/{enc}/add",
-                       hx_swap="none",
-                       hx_on__after_request=f"window.location.href='/settings/inventory?tab=category-library&cat={cat_tab}'"),
-                colspan="9",
-                cls="p-sm",
-            ),
-        )
-
-        return Div(
-            cat_selector,
-            P(hint, cls="settings-hint"),
-            Table(
-                Thead(Tr(Th(t("settings.th_order"), title=t("settings.display_order_hint")), Th(t("th.name")), Th(t("th.doc_type")), Th(t("settings.th_req")), Th(t("settings.edit")), Th(t("settings.th_in_table")), Th(t("th.options")), Th(""))),
-                Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_schema)], add_row),
-                cls="data-table sticky-head",
-            ),
-            cls="settings-card",
-        )
-
-    # Global schema - display only (structural fields, not attribute-driven)
-    active_schema = schema
-    hint = t("msg.schema_hint")
-    sorted_schema = sorted(active_schema, key=lambda x: x.get("position", 0))
-
-    def _row(idx: int, f: dict) -> FT:
-        return Tr(
-            _schema_display_cell(idx, "position", f),
-            _schema_display_cell(idx, "key", f),
-            _schema_display_cell(idx, "label", f),
-            _schema_display_cell(idx, "type", f),
-            _schema_display_cell(idx, "required", f),
-            _schema_display_cell(idx, "editable", f),
-            _schema_display_cell(idx, "show_in_table", f),
-            _schema_display_cell(idx, "options", f),
-            cls="data-row",
-        )
-
-    return Div(
-        cat_selector,
-        P(hint, cls="settings-hint"),
-        Table(
-            Thead(Tr(Th("#"), Th(t("th.key")), Th(t("th.label")), Th(t("th.doc_type")), Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")), Th(t("th.options")))),
-            Tbody(*[_row(i, f) for i, f in enumerate(sorted_schema)]),
-            cls="data-table sticky-head",
-        ),
-        cls="settings-card",
-    )
-
-
 def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
     def _row(loc: dict) -> FT:
         lid = loc.get("id", "")
@@ -3815,7 +3710,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             Button(t("btn.new_location"), cls="btn btn--primary",
                    hx_post="/settings/locations/new", hx_swap="none",
                    hx_on__after_request="window.location.href='/settings/inventory?tab=locations'"),
-            A(t("settings.import_locations_csv"), href="/settings/import/locations", cls="btn btn--secondary ml-sm"),
+            A(import_icon(), t("settings.import_locations_csv"), href="/settings/import/locations", cls="btn btn--secondary ml-sm"),
             cls="page-actions mb-md",
         ),
         Table(
@@ -4388,7 +4283,9 @@ def _import_history_tab(batches: list[dict]) -> FT:
                     hx_post=f"/settings/import-history/{bid}/undo",
                     hx_confirm=t("settings.confirm_undo_import", n=b.get("row_count", 0)),
                     hx_swap="none",
-                ) if status == "active" else Span(undone_display, cls="settings-hint"),
+                ) if status == "active" and b.get("reversible")
+                else Span(t("settings.import_not_undoable"), cls="settings-hint") if status == "active"
+                else Span(undone_display, cls="settings-hint"),
                 cls="cell",
             ),
             cls="data-row",
@@ -4480,72 +4377,4 @@ def _bulk_attach_tab() -> FT:
         Span(t("settings.processing"), id="bulk-attach-spinner", cls="htmx-indicator"),
         Div(id="bulk-attach-result"),
         cls="settings-card",
-    )
-
-
-def _verticals_applied_panel(applied_names: list[str]) -> FT:
-    """Render the applied-schemas panel (reused by HTMX category CRUD routes)."""
-    if applied_names:
-        applied_rows = [
-            Tr(
-                Td(
-                    Span(name, cls="cat-name-display",
-                         hx_get=f"/settings/categories/{name}/edit",
-                         hx_target="closest tr",
-                         hx_swap="outerHTML"),
-                    cls="cell",
-                ),
-                Td(
-                    A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={name}", cls="auth-link"),
-                    cls="cell",
-                ),
-                Td(
-                    Button("✕", cls="btn btn--danger btn--xs",
-                           hx_delete=f"/settings/categories/{name}",
-                           hx_target="closest tr",
-                           hx_swap="outerHTML"),
-                    cls="cell",
-                ),
-                cls="data-row",
-            )
-            for name in sorted(applied_names)
-        ]
-        add_row = Tr(
-            Td(
-                Form(
-                    Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
-                          cls="form-input form-input--sm cat-add-input"),
-                    Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
-                    hx_post="/settings/categories",
-                    hx_target="#vert-applied-panel",
-                    hx_swap="outerHTML",
-                    cls="cat-add-form",
-                ),
-                colspan="3", cls="cell",
-            ),
-        )
-        applied_content = Table(
-            Thead(Tr(Th(t("th.schema")), Th(""), Th(""))),
-            Tbody(*applied_rows, add_row),
-            cls="data-table",
-        )
-    else:
-        applied_content = Div(
-            P(t("settings.no_category_schemas_applied_yet"), cls="settings-hint"),
-            Form(
-                Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
-                      cls="form-input form-input--sm cat-add-input"),
-                Button(t("settings.add_category"), type="submit", cls="btn btn--secondary btn--sm"),
-                hx_post="/settings/categories",
-                hx_target="#vert-applied-panel",
-                hx_swap="outerHTML",
-                cls="cat-add-form",
-            ),
-        )
-    return Div(
-        H3(t("page.applied_schemas"), cls="settings-section-title"),
-        P(t("settings.these_schemas_are_active_on_your_inventory"), cls="settings-hint"),
-        applied_content,
-        cls="vert-applied-panel mt-xl",
-        id="vert-applied-panel",
     )

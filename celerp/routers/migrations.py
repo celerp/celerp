@@ -27,6 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from python_multipart.exceptions import MultipartParseError
@@ -38,16 +39,18 @@ from celerp.db import get_session
 from celerp.importers.adapters.registry import list_adapters
 from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun
-from celerp.routers.auth import limiter
+from celerp.modules import requirements
+from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.services import bootstrap
 from celerp.services import migration_scan_store as store
 from celerp.services import migrations
 from celerp.services import posting_readiness
 from celerp.services.auth import (
+    HAS_COMPANY,
     MIN_PASSWORD_LENGTH,
     AuthContext,
     get_auth_context,
-    issue_token_pair,
+    hold_companyless_login,
     validate_password,
 )
 from celerp.services.permissions import role_has_permission
@@ -80,6 +83,8 @@ router = APIRouter(prefix="/migrations", tags=["migrations"], route_class=_Migra
 
 OWNER_ONLY = "Only the company owner can move a company into Celerp."
 BOOTSTRAPPED = "System already bootstrapped. Contact your admin."
+MODULES_NOT_SAVED = ("Celerp could not turn on the features this migration needs, so nothing was created. "
+                     "Check that Celerp can save its settings, then try again.")
 BOOTSTRAP: store.ScanOwner = ("bootstrap", None)
 
 
@@ -97,6 +102,13 @@ class DecisionsIn(BaseModel):
 
 
 class StartFromScanIn(BaseModel):
+    scan_token: str
+    company_name: str
+
+
+class StartCompanyStartIn(BaseModel):
+    email: str
+    password: str
     scan_token: str
     company_name: str
 
@@ -192,12 +204,8 @@ async def ensure_not_bootstrapped(session: AsyncSession) -> None:
 
 def _company_name(value: str, errors: dict) -> str:
     name = value.strip()
-    if not name:
-        errors["company_name"] = "Enter a company name."
-    elif len(name) > migrations.COMPANY_NAME_MAX:
-        errors["company_name"] = f"The company name must be at most {migrations.COMPANY_NAME_MAX} characters."
-    elif "\x00" in name:
-        errors["company_name"] = "The company name contains a character that cannot be saved."
+    if (error := migrations.company_name_error(name)) is not None:
+        errors["company_name"] = error
     return name
 
 
@@ -231,12 +239,24 @@ async def _save_decisions(owner: store.ScanOwner, payload: DecisionsIn) -> dict:
     return {"scan": migrations.scan_view(store.save_decisions(payload.scan_token, owner=owner, decisions=decisions))}
 
 
+async def _turn_on_modules(plan: migrations.StartPlan) -> bool:
+    """Turn on, in the installation's configuration, the bundled modules the migration
+    needs, before anything is created. Returns whether a restart must load them."""
+    try:
+        return await asyncio.to_thread(requirements.prepare, plan.requirements)
+    except OSError:
+        logger.exception("Could not turn on the modules a migration needs")
+        raise HTTPException(status_code=503, detail=MODULES_NOT_SAVED) from None
+
+
 async def _stage(session: AsyncSession, *, user: User, company_name: str, scan: store.ScanSession,
-                 decisions) -> MigrationRun:
+                 plan: migrations.StartPlan, awaiting: bool) -> MigrationRun:
     """Start, phase one: the staged company and a preparing run holding the scan's claim.
     The caller holds the claim lock and commits."""
-    company = await provision_migration_company(session, owner=user, company_name=company_name)
-    return await migrations.create_run(session, company=company, user=user, scan=scan, decisions=decisions)
+    company = await provision_migration_company(session, owner=user, company_name=company_name,
+                                                settings=migrations.staged_settings(plan.modules))
+    return await migrations.create_run(session, company=company, user=user, scan=scan, decisions=plan.decisions,
+                                       modules=plan.modules, awaiting=awaiting)
 
 
 @asynccontextmanager
@@ -253,13 +273,16 @@ async def _start_errors(session: AsyncSession) -> AsyncIterator[None]:
         raise HTTPException(status_code=500, detail="Migration could not start.") from None
 
 
-async def _claim(session: AsyncSession, run_id: uuid.UUID, scan_token: str) -> None:
+async def _claim(session: AsyncSession, run_id: uuid.UUID, scan_token: str, *, awaiting: bool) -> None:
     """Start, phase two, after phase one committed: move the source into the run and start
-    it. Only the call that started the run schedules the runner."""
+    it, or, while it waits for its modules, restart Celerp to load them; startup then
+    starts the same run. Only the call that started the run schedules the runner."""
     async with _start_errors(session):
-        started = await migrations.claim_source(session, run_id, token=scan_token, start=True)
+        started = await migrations.claim_source(session, run_id, token=scan_token, start=not awaiting)
     if started:
         migrations.schedule_run(run_id)
+    elif awaiting:
+        requirements.schedule_restart()
 
 
 async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) -> MigrationRun:
@@ -310,6 +333,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
     The bootstrap lock serializes racing starts; the loser re-checks and is refused. If the
     response is lost after the commit, the owner signs in and is taken back to the run.
     The setup code is consumed only after the commit."""
+    from celerp.credentials import issue_token_pair
     required = False
     async with _start_errors(session):
         await ensure_not_bootstrapped(session)
@@ -317,25 +341,26 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         await bootstrap.lock_bootstrap(session)
         await ensure_not_bootstrapped(session)
         scan = store.load_scan(payload.scan_token, owner=BOOTSTRAP)
-        decisions = await _prepare(scan)
+        plan = await _prepare(scan)
         errors: dict[str, str] = {}
         company_name = _company_name(payload.company_name, errors)
         name, email = owner_account(payload.name, payload.email, payload.password, errors)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
+        awaiting = await _turn_on_modules(plan)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
-        run = await _stage(session, user=user, company_name=company_name, scan=scan, decisions=decisions)
+        run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
         run_id = run.id
         # The first owner has no other company, so they are signed in to the staged one;
         # its token reaches the migration routes only. Issuing the tokens commits.
-        tokens = await issue_token_pair(session, user=user, company_id=run.company_id)
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
     if required:
         try:
             await asyncio.to_thread(bootstrap.clear_setup_code)
         except Exception:
             logger.warning("Setup-code cleanup failed after bootstrap migration start", exc_info=True)
-    await _claim(session, run_id, payload.scan_token)
-    return {**tokens, "run_id": str(run_id)}
+    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 
 
 # ── Company owner ────────────────────────────────────────────────────────────
@@ -371,20 +396,92 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
         run = await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token))
         if run is None:
             scan = store.load_scan(payload.scan_token, owner=("user", ctx.user.id))
-            decisions = await _prepare(scan)
+            plan = await _prepare(scan)
             errors: dict[str, str] = {}
             company_name = _company_name(payload.company_name, errors)
             if errors:
                 raise HTTPException(status_code=422, detail=errors)
-            run = await _stage(session, user=ctx.user, company_name=company_name, scan=scan, decisions=decisions)
+            awaiting = await _turn_on_modules(plan)
+            run = await _stage(session, user=ctx.user, company_name=company_name, scan=scan, plan=plan,
+                               awaiting=awaiting)
         elif run.created_by_user_id == ctx.user.id:
             response.status_code = 200
+            awaiting = bool(run.source_summary.get("awaiting_modules"))
         else:
             raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
         run_id = run.id
         await session.commit()
-    await _claim(session, run_id, payload.scan_token)
-    return {"run_id": str(run_id)}
+    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    return {"run_id": str(run_id), "preparing": awaiting}
+
+
+# ── A login with no company left ─────────────────────────────────────────────
+# After its last company was reset, a login moves its books in from another system. The
+# upload and the start each check its email and password; the steps between them hold
+# only the scan token, as in bootstrap. The migration's staged company becomes its company.
+
+START_COMPANY = "start_company"
+_basic = HTTPBasic(auto_error=False)
+
+
+def _start_company_owner(scan_token: str) -> store.ScanOwner:
+    owner = store.scan_owner(scan_token)
+    if owner[0] != START_COMPANY:
+        raise store.ScanStoreError(410, store.EXPIRED)
+    return owner
+
+
+@router.post("/start-company/scan")
+@limiter.limit("5/minute")
+async def start_company_scan(request: Request, credentials: HTTPBasicCredentials | None = Depends(_basic),
+                             session: AsyncSession = Depends(get_session)) -> dict:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    user_id = (await companyless_login(session, credentials.username, credentials.password)).id
+    await session.rollback()  # nothing is held while the upload streams in
+    scan = await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id))
+    return {"scan_token": scan.token, "scan": migrations.scan_view(scan)}
+
+
+@router.post("/start-company/scan/read")
+async def start_company_scan_read(payload: ScanTokenIn) -> dict:
+    owner = _start_company_owner(payload.scan_token)
+    return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=owner))}
+
+
+@router.post("/start-company/decisions")
+async def start_company_decisions(payload: DecisionsIn) -> dict:
+    return await _save_decisions(_start_company_owner(payload.scan_token), payload)
+
+
+@router.post("/start-company/start", status_code=201)
+@limiter.limit("5/minute")
+async def start_company_start(request: Request, payload: StartCompanyStartIn,
+                              session: AsyncSession = Depends(get_session)) -> dict:
+    """Start a migration as the company of a login that has none left, then sign it in to
+    that company. The login is held until the commit, so of two starts one creates the
+    company and the other is told the login already has one; a start whose answer was
+    lost is the same, and signing in lands on the company being moved in."""
+    from celerp.credentials import issue_token_pair
+    async with _start_errors(session):
+        user = await companyless_login(session, payload.email, payload.password)
+        await hold_direct_slot(session)
+        if not await hold_companyless_login(session, user.id):
+            raise HTTPException(status_code=409, detail=HAS_COMPANY)
+        if await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token)) is not None:
+            raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
+        scan = store.load_scan(payload.scan_token, owner=(START_COMPANY, user.id))
+        plan = await _prepare(scan)
+        errors: dict[str, str] = {}
+        company_name = _company_name(payload.company_name, errors)
+        if errors:
+            raise HTTPException(status_code=422, detail=errors)
+        awaiting = await _turn_on_modules(plan)
+        run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
+        run_id = run.id
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
+    await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
+    return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 
 
 # ── Runs ─────────────────────────────────────────────────────────────────────

@@ -28,6 +28,7 @@ from celerp.services.money import round_money
 
 ZERO = Decimal(0)
 CONTROL_MEASURES = {"receivable": M.AR_CONTROL, "payable": M.AP_CONTROL, "tax": M.TAX_CONTROL}
+CREDIT_TYPES = frozenset({"liability", "equity", "revenue"})
 
 
 def _stock_from_source(book: Book) -> dict[str, tuple[Decimal, Decimal]]:
@@ -73,10 +74,10 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     base = book.base_code
     rows: list[ReconciliationExpectation] = []
 
-    def add(measure: M, key: str, currency: str | None, expected: Decimal, record=None) -> None:
-        label = " ".join(part for part in (record.code, record.name) if part) if record else ""
-        rows.append(ReconciliationExpectation(measure=measure, key=key, label=label, currency=currency,
-                                              expected=expected, tolerance=exact))
+    def add(measure: M, key: str, currency: str | None, expected: Decimal, label: str = "",
+            credit_normal: bool = False) -> None:
+        rows.append(ReconciliationExpectation(measure=measure, key=key, currency=currency, expected=expected,
+                                              tolerance=exact, label=label, credit_normal=credit_normal))
 
     balances = ledger.balances()
     add(M.DEBITS_EQUAL_CREDITS, "", base, sum(balances.values(), ZERO))
@@ -86,20 +87,23 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
             party[p.contact] += p.amount
     for key, account in sorted(book.accounts.items()):
         balance = balances.get(key, ZERO)
-        add(M.TRIAL_BALANCE, key, base, balance, account)
+        label = f"{account.code} {account.name}" if account.code else account.name
+        credit = account.account_type in CREDIT_TYPES
+        add(M.TRIAL_BALANCE, key, base, balance, label, credit)
         if account.control in CONTROL_MEASURES:
-            add(CONTROL_MEASURES[account.control], key, base, balance, account)
+            add(CONTROL_MEASURES[account.control], key, base, balance, label, credit)
         if account.control == "bank":
-            add(M.BANK_CASH, key, book.currency_code(account.currency), balance, account)
+            add(M.BANK_CASH, key, book.currency_code(account.currency), balance, label, credit)
     for key, contact in sorted(book.contacts.items()):
-        add(M.AR_BY_CUSTOMER if contact.source_type == "Customer" else M.AP_BY_SUPPLIER, key, base, party[key],
-            contact)
+        customer = contact.source_type == "Customer"
+        add(M.AR_BY_CUSTOMER if customer else M.AP_BY_SUPPLIER, key, base, party[key], contact.name, not customer)
 
     held = _stock_from_source(book)
-    for key in sorted(book.items):
+    for key, item in sorted(book.items.items()):
         qty, value = held.get(key, (ZERO, ZERO))
-        add(M.INVENTORY_QUANTITY, key, None, qty, book.items[key])
-        add(M.INVENTORY_VALUE, key, base, value, book.items[key])
+        label = f"{item.name} ({item.code})" if item.code else item.name
+        add(M.INVENTORY_QUANTITY, key, None, qty, label)
+        add(M.INVENTORY_VALUE, key, base, value, label)
 
     counts: Counter = Counter()
     totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)

@@ -330,6 +330,29 @@ async def test_the_reset_everything_route_is_gone(real_engine, real_client):
     assert await count(real_engine, "companies") == 1
 
 
+async def test_a_hidden_star_card_stays_hidden_after_a_reset(real_engine, real_client, tmp_path, monkeypatch):
+    """Hiding the GitHub star card is for the whole installation, so resetting a company
+    never brings it back for anyone."""
+    from celerp.routers import stars
+
+    async def no_relay(medium, lang):
+        return None
+    monkeypatch.setattr(stars, "get_star_cta", no_relay)
+    _local_files(monkeypatch, tmp_path)
+    shared, solo, a, b = await _two_companies(real_engine, tmp_path)
+    assert (await real_client.post("/stars/dismiss", headers=auth(await token(real_engine, shared, a)))).status_code == 200
+
+    r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"},
+                               headers=auth(await token(real_engine, shared, a)))
+
+    assert r.status_code == 200, r.text
+    async with real_engine.connect() as conn:
+        state = (await conn.execute(text("SELECT value FROM system_runtime_state"))).scalars().all()
+    assert [s for s in state if (json.loads(s) if isinstance(s, str) else s).get("star_prompt_dismissed")], state
+    cta = await real_client.get("/stars/cta", params={"medium": "dashboard"},
+                                headers=auth(await token(real_engine, shared, b)))
+    assert cta.status_code == 200, cta.text
+    assert cta.json()["dismissed"] is True, cta.json()
 async def test_a_reset_sent_again_while_the_first_runs_says_the_company_is_gone(real_engine, real_client,
                                                                                tmp_path, monkeypatch):
     import asyncio

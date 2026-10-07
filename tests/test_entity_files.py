@@ -260,3 +260,26 @@ def test_files_section_is_public_symbol():
 
     assert hasattr(files_mod, "files_section")
     assert not hasattr(files_mod, "_files_section")
+
+
+@pytest.mark.asyncio
+async def test_void_doc_still_takes_and_drops_files(client):
+    """A file explaining why a document was voided can be attached after the void, and removed again."""
+    h = await _headers(client)
+    doc_id = await _create_draft_doc(client, h)
+    r = await client.post(f"/docs/{doc_id}/void", json={"reason": "entered twice"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/docs/{doc_id}", headers=h)).json()["status"] == "void"
+
+    r = await client.post(f"/docs/{doc_id}/files",
+                          files={"file": ("why-voided.pdf", _SMALL_PDF, "application/pdf")}, headers=h)
+    assert r.status_code == 200, r.text
+    fid = r.json()["id"]
+    files = (await client.get(f"/docs/{doc_id}", headers=h)).json().get("files", [])
+    assert [f["id"] for f in files] == [fid]
+
+    r = await client.delete(f"/docs/{doc_id}/files/{fid}", headers=h)
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{doc_id}", headers=h)).json()
+    assert doc.get("files", []) == []
+    assert doc["status"] == "void"

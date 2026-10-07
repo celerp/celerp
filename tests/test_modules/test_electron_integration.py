@@ -1,21 +1,13 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Tests for Electron module integration (Phase 5).
+"""Tests for Electron module integration.
 
-These tests verify the JavaScript/Electron functions and the Python module_setup.py
-without needing Electron to be installed.
-
-For Electron JS functions, we verify the logic by inspecting the source and
-testing the Python side-effects (module_setup.py, module seed logic).
+These tests verify the JavaScript/Electron functions without needing Electron to
+be installed, by inspecting the source.
 """
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -42,24 +34,16 @@ class TestElectronMainJS:
     def test_seed_default_modules_function(self):
         assert "function seedDefaultModules" in self._src
 
-    def test_run_module_setup_function(self):
-        assert "function runModuleSetup" in self._src
-
     def test_seed_called_in_boot_sequence(self):
         assert "seedDefaultModules()" in self._src
 
-    def test_module_setup_called_in_boot_sequence(self):
-        assert "runModuleSetup()" in self._src
-
-    def test_migrations_called_after_module_setup(self):
-        """runModuleSetup must appear before runMigrations in boot sequence."""
-        boot_start = self._src.find("seedDefaultModules()")
-        rest = self._src[boot_start:]
-        setup_pos = rest.find("runModuleSetup()")
-        migration_pos = rest.find("runMigrations(dbConfig.url)")
-        assert setup_pos >= 0, "runModuleSetup() call not found in boot sequence"
-        assert migration_pos >= 0, "runMigrations(dbConfig.url) call not found in boot sequence"
-        assert setup_pos < migration_pos, "runModuleSetup() must be called before runMigrations()"
+    def test_desktop_installs_no_module_dependencies(self):
+        """Celerp never installs Python packages for a module: no setup step in the
+        boot sequence, no setup script shipped with the app."""
+        assert "runModuleSetup" not in self._src
+        assert "runModuleSetup" not in (CORE_DIR / "electron" / "boot.js").read_text()
+        assert "module_setup" not in (CORE_DIR / "electron" / "package.json").read_text()
+        assert not (CORE_DIR / "scripts" / "module_setup.py").exists()
 
     def test_seed_called_before_migrations(self):
         """seedDefaultModules must appear before runMigrations in boot sequence."""
@@ -138,10 +122,6 @@ class TestElectronMainJS:
         a user-added module whose name isn't in the bundle is never overwritten."""
         assert "fs.readdirSync(srcDir)" in self._src
 
-    def test_module_setup_failure_is_nonfatal(self):
-        """module_setup.py failure should be caught and logged, not fatal."""
-        assert "non-fatal" in self._src or "warn" in self._src
-
 
 # ── Default modules directory structure ───────────────────────────────────────
 
@@ -162,12 +142,10 @@ class TestDefaultModulesStructure:
     def test_celerp_verticals_has_init(self):
         assert (DEFAULT_MODULES_DIR / "celerp-verticals" / "__init__.py").exists()
 
-    def test_labels_has_requirements(self):
-        assert (DEFAULT_MODULES_DIR / "celerp-labels" / "requirements.txt").exists()
-
-    def test_labels_requirements_not_empty(self):
-        content = (DEFAULT_MODULES_DIR / "celerp-labels" / "requirements.txt").read_text()
-        assert len(content.strip()) > 0
+    def test_bundled_modules_declare_no_python_dependencies(self):
+        """Modules use the packages the Celerp installation provides."""
+        assert sorted(DEFAULT_MODULES_DIR.glob("*/requirements.txt")) == []
+        assert "requirements.txt" not in (DEFAULT_MODULES_DIR / "celerp-labels" / "__init__.py").read_text()
 
     def test_labels_has_package_dir(self):
         """celerp_labels sub-package must exist."""
@@ -181,54 +159,6 @@ class TestDefaultModulesStructure:
 
     def test_labels_has_service(self):
         assert (DEFAULT_MODULES_DIR / "celerp-labels" / "celerp_labels" / "service.py").exists()
-
-
-# ── module_setup.py tests ─────────────────────────────────────────────────────
-
-def _run_setup(data_dir: Path, extra_args=None) -> subprocess.CompletedProcess:
-    cmd = [sys.executable, "scripts/module_setup.py", "--data-dir", str(data_dir)]
-    if extra_args:
-        cmd.extend(extra_args)
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(CORE_DIR))
-
-
-class TestModuleSetupElectron:
-    def test_no_modules_dir_is_noop(self, tmp_path):
-        r = _run_setup(tmp_path)
-        assert r.returncode == 0
-
-    def test_empty_modules_dir_is_noop(self, tmp_path):
-        (tmp_path / "modules").mkdir()
-        r = _run_setup(tmp_path)
-        assert r.returncode == 0
-
-    def test_module_without_requirements_skipped(self, tmp_path):
-        """Module directory without requirements.txt should not cause failure."""
-        mdir = tmp_path / "modules" / "mymod"
-        mdir.mkdir(parents=True)
-        (mdir / "__init__.py").write_text('PLUGIN_MANIFEST = {"name": "mymod", "version": "1.0"}')
-        r = _run_setup(tmp_path)
-        assert r.returncode == 0
-
-    def test_module_with_empty_requirements_is_noop(self, tmp_path):
-        mdir = tmp_path / "modules" / "emptymod"
-        mdir.mkdir(parents=True)
-        (mdir / "requirements.txt").write_text("\n# comment\n")
-        r = _run_setup(tmp_path)
-        assert r.returncode == 0
-
-    def test_invalid_data_dir_exits_gracefully(self, tmp_path):
-        r = _run_setup(tmp_path / "nonexistent" / "path")
-        assert r.returncode == 0  # Should handle gracefully
-
-    def test_dry_run_flag(self, tmp_path):
-        mdir = tmp_path / "modules" / "testmod"
-        mdir.mkdir(parents=True)
-        (mdir / "requirements.txt").write_text("requests>=2.0\n")
-        r = _run_setup(tmp_path, ["--dry-run"])
-        assert r.returncode == 0
-        combined = r.stdout + r.stderr
-        assert "testmod" in combined or "dry-run" in combined.lower()
 
 
 # ── Second-boot / re-init guards ──────────────────────────────────────────────

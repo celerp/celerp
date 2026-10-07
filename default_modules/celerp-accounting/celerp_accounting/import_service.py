@@ -115,7 +115,7 @@ async def import_journal_records(
             entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
             if isinstance(entries, list):
                 await check_line_contacts(session, company_id, [e for e in entries if isinstance(e, dict)])
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=rec.entity_id,
@@ -130,7 +130,8 @@ async def import_journal_records(
             )
             existing_keys.add(rec.idempotency_key)
             existing_entities.add(rec.entity_id)
-            outcome.add(rec.entity_id, "created")
+            # A concurrent import of the same file can write the row first.
+            outcome.add(rec.entity_id, "skipped" if getattr(entry, "was_deduped", False) else "created")
         except Exception as exc:
             outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
     return outcome

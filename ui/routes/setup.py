@@ -1,30 +1,38 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Company setup wizard - step 2 after bootstrap registration.
+"""Company setup: the business type, currency and timezone a company needs.
 
 Flow:
-    /setup           → step 1: create first admin + company name
-    /setup/company   → step 2: company details + business type (vertical)
-    /onboarding      → getting-started hub (bring in data or start manually)
-    /setup/cloud     → optional cloud offer, reachable by direct link
+    /setup              -> the workspace form (ui/routes/auth.py); one POST creates the
+                           owner and company and applies everything below
+    /setup/company      -> the same choices for a company that has no business type yet:
+                           a new company, or a first-run setup whose last step failed
+    /setup/activating   -> waits for the business type's modules, then opens the dashboard
+    /setup/cloud        -> optional cloud offer, reachable by direct link
 """
 
 from __future__ import annotations
+
+import json
+import logging
 
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-import json
-
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import auth_shell, flash, page_title
-from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
+from ui.components.shell import auth_shell, client_scripts, flash, page_title
+from ui.components.currency import currency_options
+from ui.components.table import searchable_select
+from celerp.services.business_time import business_timezone
+from celerp.services.currencies import CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
+
+logger = logging.getLogger(__name__)
 
 
 def _preset_label(preset: dict) -> str:
@@ -52,17 +60,123 @@ def business_type_options() -> list[tuple[str, str]]:
     return (sorted((o for o in options if o[0] != "blank"), key=lambda o: o[1])
             + [o for o in options if o[0] == "blank"])
 
-_TIMEZONES = [
-    "Asia/Bangkok", "Asia/Singapore", "Asia/Tokyo", "Asia/Hong_Kong",
-    "Asia/Kolkata", "Europe/London", "Europe/Paris", "America/New_York",
-    "America/Los_Angeles", "UTC",
-]
+
+def setup_timezone(value: str) -> str:
+    """The timezone the browser reported when it is a real IANA zone (the same check
+    the company settings API makes), otherwise the default business timezone."""
+    try:
+        return business_timezone(value).key
+    except ValueError:
+        return business_timezone(None).key
+
+
+def company_setup_error(currency: str, vertical: str) -> tuple[str, str] | None:
+    """(field, message) for the first invalid choice, or None when both are valid."""
+    if not currency:
+        return "currency", t("setup.currency_required")
+    if currency not in CURRENCY_CODES:
+        return "currency", t("setup.invalid_currency", value=repr(currency))
+    if not vertical:
+        return "vertical", t("setup.business_type_required")
+    if vertical not in {value for value, _ in business_type_options()}:
+        return "vertical", t("setup.unknown_business_type", value=repr(vertical))
+    return None
+
+
+async def apply_company_setup(token: str, currency: str, timezone: str, vertical: str) -> str:
+    """Store the currency and timezone, then apply the business type, and return
+    where the user goes next. Raises APIError when a step fails; the business type
+    is applied last, so a company without one has not finished setup, and applying
+    it again is safe."""
+    await api.patch_company(token, {"currency": currency, "timezone": setup_timezone(timezone)})
+    result = await api.set_business_type(token, vertical)
+    if not result.get("restart_required"):
+        return "/dashboard"
+    if not await api.installation_owner(token):
+        # Only the installation owner restarts Celerp; until then the dashboard says
+        # the new modules are waiting for it.
+        return "/dashboard?modules=pending"
+    # The type's modules load on restart; the activating page waits for them. The
+    # server may drop this request as it goes down, so its outcome is not a failure
+    # of setup.
+    try:
+        await api.restart_system(token)
+    except Exception:
+        pass
+    return "/setup/activating"
+
+
+def has_business_type(company: dict) -> bool:
+    return bool(company.get("vertical") or (company.get("settings") or {}).get("vertical"))
+
+
+def company_choice_fields(currency: str = "", vertical: str = "") -> list:
+    """Business type and currency, both searchable and required, plus the timezone
+    the browser fills in. Shared by the workspace form and /setup/company."""
+    options = business_type_options()
+    offered = {val for val, _ in options}
+    return [
+        Div(
+            Label(t("label.business_type"), cls="form-label"),
+            # Searchable: the catalog holds more than ten types (GDR 2i). There is no
+            # default on purpose; an empty choice is refused by the server with a
+            # message, never by the browser.
+            searchable_select("vertical", options, value=vertical if vertical in offered else "",
+                              placeholder=t("setup.choose_business_type"),
+                              aria_label=t("label.business_type")),
+            P(t("setup.business_type_hint"), cls="form-hint"),
+            cls="form-group",
+        ),
+        Div(
+            Label(t("th.currency"), cls="form-label"),
+            searchable_select("currency", currency_options(),
+                              value=currency if currency in CURRENCY_CODES else "",
+                              placeholder=t("setup.currency_search_placeholder"),
+                              aria_label=t("th.currency")),
+            P(t("setup.currency_hint"), cls="form-hint"),
+            cls="form-group",
+        ),
+        Input(type="hidden", name="timezone", value=""),
+    ]
+
+
+def company_choice_script() -> FT:
+    """Fills the hidden timezone from the browser and suggests a currency from where
+    the browser is, before the dropdowns initialise so the suggestion is the shown
+    choice. A choice already made is never replaced. Without JavaScript the server
+    default timezone applies and the currency is simply required."""
+    return (
+        Script(src="/static/currency-guess.js"),
+        Script("""
+(function () {
+  var tz = '';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
+  if (window.celerpCurrentZone) tz = window.celerpCurrentZone(tz);
+  document.querySelectorAll('input[name="timezone"]').forEach(function (el) { el.value = tz; });
+  var hidden = document.querySelector('input[type="hidden"][name="currency"]');
+  if (!hidden || hidden.value || !window.celerpGuessCurrency) return;
+  var code = window.celerpGuessCurrency(tz, navigator.languages || [navigator.language]);
+  var wrap = hidden.closest('.combobox-wrap');
+  var opt = code && wrap && wrap.querySelector('.combobox-option[data-value="' + code + '"]');
+  if (!opt) return;
+  hidden.value = code;
+  wrap.querySelector('.combobox-input').value = opt.textContent;
+})();
+"""),
+    )
 
 
 def setup_routes(app):
 
+    def _company_page(request: Request, values: dict, error: str | None = None):
+        return auth_shell(
+            *client_scripts(get_lang(request)),
+            _company_setup_form(values, error=error),
+            title=page_title("setup.finish_title"),
+        )
+
     @app.get("/setup/company")
-    async def company_details_page(request: Request):
+    async def company_setup_page(request: Request):
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -70,103 +184,37 @@ def setup_routes(app):
             company = await api.get_company(token)
         except APIError:
             company = {}
-        return auth_shell(
-            _company_details_form(company, lang=get_lang(request)),
-            title=page_title("page.company_setup"),
-        )
+        # Safe to reopen: a company that already has a business type is set up.
+        if has_business_type(company):
+            return RedirectResponse("/dashboard", status_code=302)
+        error = t("setup.finish_failed") if request.query_params.get("failed") else None
+        return _company_page(request, {"currency": company.get("currency") or ""}, error=error)
 
     @app.post("/setup/company")
-    async def company_details_submit(request: Request):
+    async def company_setup_submit(request: Request):
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        lang = get_lang(request)
-
-        # Every failure rerenders from what the user submitted, never from stored
-        # company state, so nothing they typed or chose is lost.
-        submitted = {
-            "currency": str(form.get("currency", "THB")),
-            "timezone": str(form.get("timezone", "Asia/Bangkok")),
-            "tax_id": str(form.get("tax_id", "")).strip(),
-            "phone": str(form.get("phone", "")).strip(),
-            "address": str(form.get("address", "")).strip(),
-            "vertical": str(form.get("vertical", "")).strip(),
-        }
-        data = {k: v for k, v in submitted.items() if k != "vertical"}
-        vertical = submitted["vertical"]
-
-        def _rerender(error: str):
-            return auth_shell(
-                _company_details_form(submitted, error=error, lang=lang),
-                title=page_title("page.company_setup"),
-            )
-
-        if data["currency"] not in CURRENCY_CODES:
-            return _rerender(t("setup.invalid_currency", value=repr(data["currency"])))
-        if not vertical:
-            return _rerender(t("setup.business_type_required"))
-        if vertical not in {value for value, _ in business_type_options()}:
-            return _rerender(t("setup.unknown_business_type", value=repr(vertical)))
-
-        try:
-            await api.patch_company(token, data)
-        except APIError as e:
-            return _rerender(e.detail)
-
-        # Mirror the company identity onto the self-contact - the Company Details page and the document
-        # letterhead read the self-contact, not company settings / the Location. address -> Head Office
-        # location + the self-contact billing address; tax_id / phone -> the self-contact fields.
-        address_text = data.get("address", "").strip()
         try:
             company = await api.get_company(token)
-            sid = (company.get("settings") or {}).get("self_contact_id")
-            if address_text:
-                locs_resp = await api.get_locations(token)
-                locs = locs_resp.get("items") or locs_resp.get("locations") or (locs_resp if isinstance(locs_resp, list) else [])
-                default_loc = next((l for l in locs if l.get("is_default")), None)
-                if default_loc:
-                    await api.patch_location(token, str(default_loc["id"]), {"address": {"text": address_text}})
-            if sid:
-                self_contact = await api.get_contact(token, sid)
-                if address_text and not (self_contact.get("addresses") or []):
-                    await api.add_contact_address(token, sid, {"address_type": "billing",
-                                                               "line1": address_text, "is_default": True})
-                identity = {k: data.get(k) for k in ("tax_id", "phone")
-                            if str(data.get(k) or "").strip() and not str(self_contact.get(k) or "").strip()}
-                if identity:
-                    await api.patch_contact(token, sid, identity)
-        except Exception:
-            pass
-
+        except APIError:
+            company = {}
+        if has_business_type(company):
+            return RedirectResponse("/dashboard", status_code=302)
+        form = await request.form()
+        # Every failure rerenders from what the user submitted, so no choice is lost.
+        values = {
+            "currency": str(form.get("currency", "")).strip(),
+            "vertical": str(form.get("vertical", "")).strip(),
+        }
+        if invalid := company_setup_error(values["currency"], values["vertical"]):
+            return _company_page(request, values, error=invalid[1])
         try:
-            result = await api.set_business_type(token, vertical)
+            nxt = await apply_company_setup(token, values["currency"], str(form.get("timezone", "")),
+                                            values["vertical"])
         except APIError as e:
-            return _rerender(e.detail)
-        # The business type is applied; mark the company's getting-started hub as the
-        # landing page until the user finishes it. Setup is only finished once that
-        # mark is stored, so a failed write keeps the user here to submit again.
-        # Resubmitting is safe because applying a business type is idempotent. The
-        # mark is stored before any restart so a server that goes down mid-restart
-        # still comes back to a company that is being set up.
-        try:
-            await api.patch_company(token, {"onboarding_pending": True})
-        except APIError as e:
-            return _rerender(t("setup.onboarding_not_started", detail=e.detail))
-        if result.get("restart_required"):
-            if not await api.installation_owner(token):
-                # Only the installation owner restarts Celerp; until then the
-                # getting-started hub says the new modules are waiting for it.
-                return RedirectResponse("/onboarding?modules=pending", status_code=302)
-            # The type's modules load on restart; the activating page waits for them.
-            # The server may drop this request as it goes down, so its outcome is not
-            # a failure of the setup step.
-            try:
-                await api.restart_system(token)
-            except Exception:
-                pass
-            return RedirectResponse("/setup/activating", status_code=302)
-        return RedirectResponse("/onboarding", status_code=302)
+            return _company_page(request, values, error=e.detail)
+        return RedirectResponse(nxt, status_code=302)
 
     @app.get("/setup/activating")
     async def activating_page(request: Request):
@@ -185,9 +233,9 @@ def setup_routes(app):
 
         Reads requested modules from config.toml, then queries the API for
         which are currently running.  Responses:
-            phase=down    — API unreachable (restarting)
-            phase=loading — API up but not all requested modules running yet
-            phase=ready   — all requested modules are running
+            phase=down    - API unreachable (restarting)
+            phase=loading - API up but not all requested modules running yet
+            phase=ready   - all requested modules are running
         """
         from starlette.responses import JSONResponse as _JSON
         from celerp.config import read_config as _read_config
@@ -229,43 +277,11 @@ def setup_routes(app):
             ],
         })
 
-    # Redirect legacy setup steps to the correct current step
-    @app.get("/setup/users")
-    async def users_redirect(request: Request):
-        return RedirectResponse("/onboarding", status_code=302)
-
-    @app.post("/setup/users")
-    async def users_post_redirect(request: Request):
-        return RedirectResponse("/onboarding", status_code=302)
-
-    @app.post("/setup/users/done")
-    async def users_done_redirect(request: Request):
-        return RedirectResponse("/onboarding", status_code=302)
-
-    @app.get("/setup/vertical")
-    async def vertical_redirect(request: Request):
-        return RedirectResponse("/setup/company", status_code=302)
-
-    @app.post("/setup/vertical")
-    async def vertical_post_redirect(request: Request):
-        return RedirectResponse("/onboarding", status_code=302)
-
-    @app.get("/setup/modules")
-    async def modules_redirect(request: Request):
-        return RedirectResponse("/onboarding", status_code=302)
-
-    @app.post("/setup/modules")
-    async def modules_post_redirect(request: Request):
-        return RedirectResponse("/onboarding", status_code=302)
-
-    # ------------------------------------------------------------------
-    # Step 3: cloud upsell (optional)
-    # ------------------------------------------------------------------
-
     @app.get("/setup/new-company")
     async def new_company_page(request: Request):
         """Entry point for adding a second (or nth) company workspace: start
-        fresh, move a company in from another system, or restore a company backup."""
+        fresh, move a company in from another system, restore a company backup, or
+        try the sample company."""
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -274,7 +290,7 @@ def setup_routes(app):
         deactivated = request.query_params.get("reason", "") == "deactivated"
         # A deactivated company leaves nothing to go back to.
         back = "" if deactivated else P(
-            A(t("btn.back_to_settings"), href="/settings/general?tab=company", cls="auth-link"),
+            A(t("btn.back"), href="/settings/general?tab=company", cls="auth-link"),
             cls="auth-alt-action",
         )
         return auth_shell(
@@ -287,6 +303,7 @@ def setup_routes(app):
                     choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=COMPANY.base),
                     choice_card(t("setup.card_restore_from_backup"), t("setup.card_restore_desc"),
                                 href=NEW_COMPANY.base),
+                    choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), post_to=f"{COMPANY.base}/sample"),
                 ],
                 back,
             ),
@@ -339,95 +356,25 @@ def setup_routes(app):
 # Components
 # ---------------------------------------------------------------------------
 
-def _wizard_steps(current: int, lang: str = "en") -> FT:
-    steps = [t("setup.welcome", lang), t("setup.company_details", lang)]
+def _company_setup_form(values: dict, error: str | None = None) -> FT:
+    """The retry page: only the choices setup still needs. Reached when the last
+    step of first-run setup failed, from the dashboard banner, or after adding a
+    company."""
     return Div(
-        *[
-            Div(
-                Span(str(i + 1), cls=f"step-num {'step-num--active' if i + 1 == current else 'step-num--done' if i + 1 < current else ''}"),
-                Span(label, cls=f"step-label {'step-label--active' if i + 1 == current else ''}"),
-                cls="wizard-step",
-            )
-            for i, label in enumerate(steps)
-        ],
-        cls="wizard-steps",
-    )
-
-
-def _company_details_form(company: dict, error: str | None = None, lang: str = "en") -> FT:
-    # company is already flattened by api.get_company (_flatten_company); fall back to settings sub-dict too
-    s = {**(company.get("settings") or {}), **company}
-    options = business_type_options()
-    offered = {val for val, _ in options}
-    chosen = s.get("vertical") or ""
-    return Div(
+        Div(
+            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            H1(t("setup.finish_title"), cls="auth-title"),
+            cls="auth-header",
+        ),
+        flash(error) if error else "",
         Form(
-            _wizard_steps(2, lang=lang),
-            Div(
-                H1(t("page.company_details"), cls="auth-title"),
-                P(t("setup.tell_us_a_bit_more_about_your_company"), cls="auth-subtitle"),
-                cls="auth-header",
-            ),
-            flash(error) if error else "",
-            Div(
-                Label(t("label.tax_id_vat_number"), For="tax_id", cls="form-label"),
-                Input(type="text", id="tax_id", name="tax_id",
-                      value=s.get("tax_id", ""), placeholder="0123456789012",
-                      cls="form-input"),
-                cls="form-group",
-            ),
-            Div(
-                Label(t("th.address"), For="address", cls="form-label"),
-                Textarea(s.get("address", ""), id="address", name="address",
-                         placeholder=t("setup.address_placeholder"),
-                         rows="3", cls="form-input form-textarea"),
-                cls="form-group",
-            ),
-            Div(
-                Label(t("th.phone"), For="phone", cls="form-label"),
-                Input(type="tel", id="phone", name="phone",
-                      value=s.get("phone", ""), placeholder="+66 2 123 4567",
-                      cls="form-input"),
-                cls="form-group",
-            ),
-            Div(
-                Label(t("th.currency"), For="currency", cls="form-label"),
-                Input(
-                    type="text", id="currency", name="currency",
-                    value=s.get("currency", "THB"),
-                    placeholder=t("setup.currency_search_placeholder"),
-                    list="currency-list",
-                    autocomplete="off",
-                    cls="form-input",
-                ),
-                Datalist(
-                    *[Option(label, value=code) for code, label in CURRENCIES],
-                    id="currency-list",
-                ),
-                cls="form-group",
-            ),
-            Div(
-                Label(t("label.timezone"), For="timezone", cls="form-label"),
-                Select(
-                    *[Option(tz, value=tz, selected=(tz == s.get("timezone", "Asia/Bangkok"))) for tz in _TIMEZONES],
-                    id="timezone", name="timezone", cls="form-input",
-                ),
-                cls="form-group",
-            ),
-            Div(
-                Label(t("label.business_type"), For="vertical", cls="form-label"),
-                Select(
-                    Option(t("setup.choose_business_type"), value="", disabled=True,
-                           selected=chosen not in offered),
-                    *[Option(label, value=val, selected=(val == chosen)) for val, label in options],
-                    id="vertical", name="vertical", required=True, cls="form-input",
-                ),
-                cls="form-group",
-            ),
+            *company_choice_fields(values.get("currency", ""), values.get("vertical", "")),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
+            P(A(t("setup.finish_later"), href="/dashboard", cls="auth-link"), cls="auth-alt-action"),
             method="post", action="/setup/company", cls="auth-form",
         ),
-        cls="auth-card auth-card--wide",
+        company_choice_script(),
+        cls="auth-card",
     )
 
 
@@ -444,6 +391,12 @@ def _activating_form(lang: str = "en") -> FT:
             Div(cls="activating-spinner"),
             P(t("setup.applying_configuration"), id="activating-status", cls="activating-status"),
             Div(id="activating-modules", cls="activating-modules"),
+            # Shown by the script when the modules do not come up within the wait:
+            # an honest failure with a way on, never an endless spinner.
+            P(A(t("btn.retry", lang), href="/setup/activating", cls="auth-link"),
+              " \u00b7 ",
+              A(t("setup.open_dashboard", lang), href="/dashboard", cls="auth-link"),
+              id="activating-failed", cls="auth-alt-action", hidden=True),
             cls="activating-body",
         ),
         Script(f"""
@@ -453,13 +406,15 @@ def _activating_form(lang: str = "en") -> FT:
   var msgActivatingXofY = {json.dumps(t("setup.activating_module_x_of_y", lang))};
   var msgLoadingModules = {json.dumps(t("setup.loading_modules", lang))};
   var msgAllLoaded = {json.dumps(t("setup.all_modules_loaded", lang))};
-  var msgTakingLonger = {json.dumps(t("setup.taking_longer", lang))};
+  var msgTimedOut = {json.dumps(t("setup.activating_timed_out", lang))};
   var msgRestarting = {json.dumps(t("setup.restarting_server", lang))};
   var msgApplying = {json.dumps(t("setup.applying_configuration", lang))};
   var msgModulesFailed = {json.dumps(t("setup.modules_failed_to_start", lang))};
-  var msgGoBack = {json.dumps(t("setup.go_back_to_setup", lang))};
+  var failedEl = document.getElementById('activating-failed');
+  var spinnerEl = document.querySelector('.activating-spinner');
   var attempts = 0;
-  var maxAttempts = 60;
+  // About two minutes of polling, then the failure message.
+  var maxAttempts = 150;
   var downSeen = false;
   // Track whether we've seen ready, and require a brief stability window
   // before redirecting (the UI server itself restarts alongside the API,
@@ -471,38 +426,33 @@ def _activating_form(lang: str = "en") -> FT:
   var maxLoadingStreak = 30;
 
   function showError(message, modules) {{
-    statusEl.innerHTML = '<span style="color:#c0392b;font-weight:600;">' + message + '</span>' +
-      ' <a href="/setup" style="color:#2980b9;text-decoration:underline;">' + msgGoBack + '</a>';
-    if (modules && modules.length > 0) {{
-      var html = '<ul class="activating-module-list">';
-      for (var i = 0; i < modules.length; i++) {{
-        var m = modules[i];
-        var icon = m.running ? '✓' : '✗';
-        var cls = m.running ? 'activating-module activating-module--done' : 'activating-module activating-module--error';
-        html += '<li class="' + cls + '">' + icon + ' ' + (m.label || m.name) + '</li>';
-      }}
-      html += '</ul>';
-      modulesEl.innerHTML = html;
-    }}
+    statusEl.textContent = message;
+    statusEl.classList.add('activating-status--error');
+    if (spinnerEl) spinnerEl.hidden = true;
+    failedEl.hidden = false;
+    renderModules(modules, true);
   }}
 
-  function renderModules(modules) {{
-    if (!modules || modules.length === 0) {{ modulesEl.innerHTML = ''; return; }}
-    var html = '<ul class="activating-module-list">';
+  function renderModules(modules, failed) {{
+    modulesEl.textContent = '';
+    if (!modules || modules.length === 0) return;
+    var list = document.createElement('ul');
+    list.className = 'activating-module-list';
     for (var i = 0; i < modules.length; i++) {{
       var m = modules[i];
-      var icon = m.running ? '✓' : '◌';
-      var cls = m.running ? 'activating-module activating-module--done' : 'activating-module activating-module--pending';
-      html += '<li class="' + cls + '">' + icon + ' ' + (m.label || m.name) + '</li>';
+      var li = document.createElement('li');
+      var state = m.running ? 'done' : (failed ? 'error' : 'pending');
+      li.className = 'activating-module activating-module--' + state;
+      li.textContent = (m.running ? '\u2713' : (failed ? '\u2717' : '\u25cc')) + ' ' + (m.label || m.name);
+      list.appendChild(li);
     }}
-    html += '</ul>';
-    modulesEl.innerHTML = html;
+    modulesEl.appendChild(list);
   }}
 
   function poll() {{
     attempts++;
     if (attempts > maxAttempts) {{
-      statusEl.textContent = msgTakingLonger;
+      showError(msgTimedOut, null);
       return;
     }}
     fetch('/setup/activating-status', {{cache: 'no-store'}})
@@ -513,7 +463,7 @@ def _activating_form(lang: str = "en") -> FT:
           readyAt = null;
           loadingStreak = 0;
           statusEl.textContent = msgRestarting;
-          modulesEl.innerHTML = '';
+          modulesEl.textContent = '';
           setTimeout(poll, 600);
         }} else if (data.phase === 'loading') {{
           downSeen = true;
@@ -537,7 +487,7 @@ def _activating_form(lang: str = "en") -> FT:
           if (!readyAt) {{ readyAt = Date.now(); }}
           // Wait for the UI itself to be stable after its own restart
           if (Date.now() - readyAt >= readyStableMs) {{
-            window.location.href = '/onboarding';
+            window.location.href = '/dashboard';
           }} else {{
             setTimeout(poll, 600);
           }}
@@ -546,7 +496,7 @@ def _activating_form(lang: str = "en") -> FT:
         }}
       }})
       .catch(function() {{
-        // Network error — either still restarting or not yet down
+        // Network error: either still restarting or not yet down
         readyAt = null;
         loadingStreak = 0;
         if (!downSeen) {{
@@ -630,7 +580,7 @@ def _cloud_form() -> FT:
             ),
             A(
                 t("setup.skip_for_now"),
-                href="/onboarding",
+                href="/dashboard",
                 cls="cloud-upsell-skip",
             ),
             # The see-all-plans link points at direct Celerp pricing, so it is

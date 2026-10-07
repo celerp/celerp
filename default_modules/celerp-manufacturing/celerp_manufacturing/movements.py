@@ -58,6 +58,7 @@ from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.document_lines import listing_record
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import (
+    DELETED,
     RECORDED,
     account_room,
     account_rooms,
@@ -105,6 +106,16 @@ def require_stock(state: dict, item_id: str, http_status: int = 422) -> None:
                      f"{sku} is not a stocked item or component, so it cannot be made or used as a material in "
                      "production. Record services and other costs as labor or overhead.",
                      sku=sku, inventory_type=state.get("inventory_type"))
+
+
+def require_not_deleted(state: dict, item_id: str, http_status: int = 422) -> None:
+    """A deleted component is out of use until it is restored: the recipe or run naming it
+    stays as it was, and using it is refused, naming the two ways out."""
+    if state.get("status") != DELETED:
+        return
+    sku = state.get("sku") or item_id
+    raise refuse(http_status, "component_deleted",
+                 f"Component {sku} was deleted; replace it in the recipe or restore it.", sku=sku)
 
 
 async def require_not_merged(session: AsyncSession, company_id, state: dict, item_id: str,

@@ -272,7 +272,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
     assert err.value.status_code == 409 and url in err.value.detail
     assert list(out.parent.iterdir()) == []
     assert len(seen_while_reading) == 3
-    assert all(len(names) == 1 and names[0].endswith(".celerp-company.partial")
+    assert all(len(names) == 1 and names[0].endswith(".export.partial")
                for names in seen_while_reading[:2]), seen_while_reading
 
 
@@ -319,7 +319,7 @@ async def test_export_snapshot_archive_format_unchanged(real_engine, real_client
     assert set(parts) == ({"manifest.json", "attachments/photo.png"}
                           | {f"tables/{t}.jsonl" for t in m["tables"]})
     assert json.loads(parts["manifest.json"]) == m
-    assert set(m) == {"format", "format_version", "backup_id", "created_at", "company", "provenance",
+    assert set(m) == {"format", "format_version", "celerp_version", "backup_id", "created_at", "company", "provenance",
                       "modules", "tables", "attachments"}
     assert (m["format"], m["format_version"], m["provenance"]) == ("celerp-company-backup", 2, _PROVENANCE)
     assert set(m["company"]) == {"id", "name", "settings"} and m["company"]["id"] == str(cid)
@@ -359,7 +359,7 @@ async def test_download_routes_use_export_company_snapshot(real_engine, real_cli
         assert r.status_code == 200, r.text
         assert r.content == b"backup"
     assert [(c[0], c[2]) for c in calls] == [(cid, None), (cid, _PROVENANCE)]
-    assert all(c[1].name.endswith(".celerp-company") for c in calls)
+    assert all(c[1].name.endswith(".export") for c in calls)
     assert not hasattr(cb, "export_company")
 
 

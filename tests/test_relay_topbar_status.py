@@ -56,7 +56,7 @@ def test_unknown_relay_topbar_probe_is_quiet():
 def test_decorative_star_hydration_is_shared_and_serialized():
     assert "window.celerpStarFetch" in _STAR_CTA_JS
     assert "window.addEventListener('load'" in _STAR_CTA_JS
-    card = to_xml(star_supporter_card("dashboard"))
+    card = to_xml(star_supporter_card())
     assert "celerpStarFetch('/stars/cta?medium=dashboard')" in card
     assert "celerpStarFetch('/stars/badge')" in card
     assert "fetch('/stars/badge')" not in card

@@ -54,7 +54,7 @@ class Books:
 async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0], source: Path = INVENTORY) -> Books:
     from celerp.models.company import Company, User
     from celerp.models.migration import MigrationRun
-    from celerp.services.auth import issue_token_pair
+    from celerp.credentials import issue_token_pair
 
     run, rejected = await migrate(real_engine, source.read_bytes(), source.name, decisions, monkeypatch, tmp_path)
     assert rejected == []
@@ -66,7 +66,7 @@ async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0], sour
     async with maker(real_engine)() as s:
         user = await s.scalar(select(User).where(User.email == OWNER_EMAIL))
         token = (await issue_token_pair(s, user=user,
-                                        company_id=run.company_id))["access_token"]
+                                        company_id=run.company_id, expected_snonce=None))["access_token"]
     return Books(real_engine, run, maps, token, items[maps[("InventoryItem", ref("WID"))]]["location_id"])
 
 

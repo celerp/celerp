@@ -13,10 +13,11 @@ table (one row per line, as Postgres renders it with ``to_jsonb``) and
 
 Which tables are backed up is read from the database itself: every table with a
 ``company_id`` column, and every table named with an installed module's table prefix,
-is either backed up or listed in ``EXCLUDED_TABLES``; anything else stops the export.
-A module says in its manifest's ``company_backup`` which of its tables belong to the
-company (``"include"``) and which to this installation (``"exclude"``, such as
-credentials or caches); a module table it does not name stops the export.
+is either backed up or listed in ``EXCLUDED_TABLES``. A module says in its manifest's
+``company_backup`` which of its tables belong to the company (``"include"``) and which
+to this installation (``"exclude"``, such as credentials or caches). A company table
+nobody classified, or a module table its module does not name, stops the export only of
+a company that holds rows in it; one that cannot be scoped to a company stops every export.
 Tables are written and restored in foreign-key order, a batch at a time.
 
 Restoring creates a new company with fresh ids for the company and every backed-up
@@ -38,26 +39,31 @@ import re
 import uuid
 import zipfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Context, Decimal
 from pathlib import Path
 
-from packaging.version import InvalidVersion, Version
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from packaging.version import InvalidVersion
+
 import celerp.db
 from celerp import db_catalog
+from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.modules.importer import InstalledModules, installed_modules
-from celerp.modules.loader import is_core_folded, is_running, running_version
+from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
+from celerp.modules import requirements
+from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
+from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, locked_company
-from celerp.services.migrations import COMPANY_NAME_MAX
+from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.provisioning import create_install_owner, provision_restored_company
 
 logger = logging.getLogger(__name__)
@@ -92,9 +98,19 @@ EXCLUDED_TABLES = {
 
 # Settings that describe this installation or its people, not the business.
 DROPPED_SETTINGS = frozenset({
-    "role_grants", "ai_memory", "lock_date_set_by", "reorder_alert_email", "column_prefs",
+    "ai_memory", "lock_date_set_by", "reorder_alert_email", "column_prefs",
     "pay_tip_shown", "reorder_last_scan_at", "restored_backup",
 })
+
+# What role permissions allow is installation policy. A backup carries the company's own
+# customizations, but a restore applies them only to a copy beside the company it came
+# from, where the same people work under them; anywhere else the restored company works
+# under this installation's role permissions.
+ROLE_PERMISSIONS_SETTING = "role_grants"
+
+# What a backup carries and what stays with the installation, as the preview states it.
+INCLUDED = ("records", "settings", "attachments")
+EXCLUDED = ("users", "passwords", "sessions", "connections", "share_links")
 
 # Columns every reader expects to hold a JSON object.
 OBJECT_COLUMNS = {"ledger": "data", "projections": "state"}
@@ -131,6 +147,7 @@ _NOT_BACKED_UP = " Nothing was backed up."
 NOT_A_BACKUP = "This file is not a Celerp company backup." + _NOT_RESTORED
 SYSTEM_BACKUP = "This is a whole-installation backup. Use System Recovery instead." + _NOT_RESTORED
 DAMAGED = "This company backup is damaged or was changed after it was made." + _NOT_RESTORED
+INCOMPLETE = "This company backup is damaged or incomplete. Copy the file again, then try again." + _NOT_RESTORED
 NEWER = ("This company backup was made by a newer version of Celerp. Update Celerp, then try again."
          + _NOT_RESTORED)
 OLDER = "This company backup was made by an older version of Celerp and cannot be restored here." + _NOT_RESTORED
@@ -138,11 +155,17 @@ TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
 TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
 TOO_LARGE_TO_BACK_UP = "This company holds more data than a company backup can restore." + _NOT_BACKED_UP
 RESHAPED = "The structure of {table} changed while it was being backed up." + _NOT_BACKED_UP + " Try again."
-ROW_TOO_LARGE_TO_BACK_UP = "One record in {table} is too large for a company backup to restore." + _NOT_BACKED_UP
+ROW_TOO_LARGE_TO_BACK_UP = "One record is too large for a company backup to restore." + _NOT_BACKED_UP
+UNDECLARED = "The {label} module has not said whether its data belongs in a company backup." + _NOT_BACKED_UP
+UNSUPPORTED_MODULE = "The {label} module keeps data in a form Celerp cannot back up yet." + _NOT_BACKED_UP
+UNSUPPORTED = "This company has data Celerp cannot back up yet." + _NOT_BACKED_UP
 UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
 ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
 ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
-MISMATCH = "The restored company did not match the backup ({table})." + _NOT_RESTORED
+MISMATCH = "The restored company did not match the backup." + _NOT_RESTORED
+DISAGREE = "This backup contains business records that do not agree with each other." + _NOT_RESTORED
+CHANGED_COPY = ("This backup was already restored here, but this file holds different records under the same"
+                " backup. Use the original file or make a new backup." + _NOT_RESTORED)
 FOREIGN = "This company backup refers to records of another company." + _NOT_RESTORED
 ALREADY_SET_UP = "This Celerp is already set up." + _NOT_RESTORED
 NOT_A_MEMBER = ("This backup was already restored here as a company you are not a member of."
@@ -154,9 +177,10 @@ OTHER_RESTORE_RUNNING = "A restore of another backup of this company is already 
 STALE_PREVIEW = ("Something changed since this preview. Check the updated preview before continuing."
                  + _NOT_RESTORED)
 ATTACHMENT_MISSING = "This company backup refers to an attachment file it does not carry." + _NOT_RESTORED
+MODULES_REQUIRED = "This company backup needs modules that are not ready here: {labels}." + _NOT_RESTORED
+NAME_TAKEN = "You already have a company with this name. Choose a different name." + _NOT_RESTORED
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-_TABLE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
 _JSON_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
 _BRACKET = re.compile(rb"[\[\]{}]")
@@ -166,18 +190,31 @@ _CHUNK = 1024 * 1024
 
 
 class BackupError(Exception):
-    def __init__(self, status_code: int, detail: str) -> None:
+    """A refusal, with nothing restored. One with a ``code`` is one the owner can put right
+    and continue with the same upload; any other ends the restore of that upload."""
+
+    def __init__(self, status_code: int, detail: str, code: str | None = None) -> None:
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.code = code
 
 
 class StalePreview(BackupError):
     """The restore confirmed a preview that no longer holds; ``plan`` is the current one."""
 
     def __init__(self, plan: RestorePlan) -> None:
-        super().__init__(409, STALE_PREVIEW)
+        super().__init__(409, STALE_PREVIEW, "stale_preview")
         self.plan = plan
+
+
+class ModulesRequired(BackupError):
+    """Modules the backup needs are not ready here; ``modules`` says what each needs."""
+
+    def __init__(self, modules: requirements.RequirementPlan) -> None:
+        waiting = ", ".join(r.label for r in modules.requirements if r.status is not requirements.Status.READY)
+        super().__init__(409, MODULES_REQUIRED.format(labels=waiting), "modules_required")
+        self.modules = modules
 
 
 # ── Schema ───────────────────────────────────────────────────────────────────
@@ -193,6 +230,8 @@ class _Plan:
     owners: dict[str, str]
     # Company tables not carried because of their shape here.
     refused: set[str]
+    # Company tables a backup cannot carry: they stop the export of a company holding rows in them.
+    blocked: dict[str, BackupError] = field(default_factory=dict)
 
     def outside_fks(self, table: str) -> list[tuple[str, ...]]:
         """Foreign keys of ``table`` pointing at a table the backup does not carry."""
@@ -227,17 +266,19 @@ def _declared(modules: InstalledModules, module: str) -> dict:
     return declared if isinstance(declared, dict) else {}
 
 
+def _refusal(table: str, owners: dict[str, str]) -> BackupError:
+    """Why ``table`` stops an export, by module name; the table itself goes to the log only."""
+    if table in owners:
+        return BackupError(409, UNSUPPORTED_MODULE.format(label=module_label(owners[table])))
+    return BackupError(409, UNSUPPORTED)
+
+
 def _unsupported(label: str, owner: str | None, *, restoring: bool) -> BackupError:
     status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "back up", _NOT_BACKED_UP)
     if owner:
         return BackupError(status, f"The {owner} module keeps data in {label} in a form Celerp "
                                    f"cannot {verb} yet." + end)
     return BackupError(status, f"This company has data Celerp cannot {verb} yet: {label}." + end)
-
-
-async def _refusal(session: AsyncSession, table: str, owners: dict[str, str], *,
-                   restoring: bool = False) -> BackupError:
-    return _unsupported(await db_catalog.label(session, table), owners.get(table), restoring=restoring)
 
 
 async def _pin(session: AsyncSession, *, restoring: bool) -> None:
@@ -249,8 +290,11 @@ async def _pin(session: AsyncSession, *, restoring: bool) -> None:
 
 async def _classify(session: AsyncSession, modules: InstalledModules, *, strict: bool) -> _Plan:
     """The tables a backup carries, parents first, as ``modules`` attribute and declare
-    them. Strict (export) refuses any company table it cannot carry; otherwise (restore)
-    such tables are simply not carried."""
+    them. A company table it cannot carry is simply not carried on restore. On export
+    (strict) a company table nobody classified, a module table its module does not name,
+    and a table whose parent is not carried are recorded in ``blocked`` and stop the export
+    of any company holding rows in them; a module table its module includes in a shape the
+    backup cannot carry, or that cannot be scoped to a company, stops every export."""
     schema = await db_catalog.read(session)
     inherited = await db_catalog.inheriting(session)
     hidden = set(await db_catalog.hidden(session))
@@ -261,6 +305,15 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
     owners: dict[str, str] = {}
     carried: list[str] = []
     refused: set[str] = set()
+    blocked: dict[str, BackupError] = {}
+
+    def refuse(name: str, error: BackupError, *, scoped: bool) -> None:
+        if not strict:
+            return
+        logger.warning("A company backup cannot carry %s", name)
+        if not scoped or "company_id" not in schema[name].columns:
+            raise error
+        blocked[name] = error
     for name in sorted(schema):
         table = schema[name]
         owner = _owner(name, prefixes)
@@ -280,10 +333,7 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
                 continue
             owners[name] = owner
             if how != INCLUDE:
-                if strict:
-                    raise BackupError(409, f"The {owner} module has not said whether "
-                                           f"{await db_catalog.label(session, name)} belongs in a company "
-                                           f"backup." + _NOT_BACKED_UP)
+                refuse(name, BackupError(409, UNDECLARED.format(label=module_label(owner))), scoped=True)
                 continue
             ok = _module_shape_ok(table)
         else:
@@ -292,12 +342,11 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
         # its keys bind and which a key can name apart from it. A table this connection
         # cannot read every row of (``hidden``) cannot be carried whole, and a restore
         # takes only the tables a backup can name.
-        if ok and name not in inherited and name not in hidden and _TABLE_NAME.fullmatch(name):
+        if ok and name not in inherited and name not in hidden and TABLE_NAME.fullmatch(name):
             carried.append(name)
-        elif strict:
-            raise await _refusal(session, name, owners)
         else:
             refused.add(name)
+            refuse(name, _refusal(name, owners), scoped=owner is None)
     changed = True
     while changed:
         changed = False
@@ -311,12 +360,46 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
             if (name in unordered or any(fk.partial for fk in fks)
                     or any(schema[name].columns[c].notnull for fk in fks
                            if fk.target != "companies" and fk.target not in keep for c in fk.cols)):
-                if strict:
-                    raise await _refusal(session, name, owners)
+                refuse(name, _refusal(name, owners), scoped=True)
                 carried.remove(name)
                 refused.add(name)
                 changed = True
-    return _Plan(order=order, schema=schema, owners=owners, refused=refused)
+    return _Plan(order=order, schema=schema, owners=owners, refused=refused, blocked=blocked)
+
+
+async def undeclared_module_tables(session: AsyncSession) -> dict[str, list[str]]:
+    """Each installed module's tables in this database that its manifest does not say how
+    to back up, by module. Tables are attributed exactly as the backup attributes them."""
+    schema = await db_catalog.read(session)
+    modules = installed_modules()
+    prefixes = dict(modules.prefixes)
+    found: dict[str, list[str]] = {}
+    for module in sorted(prefixes):
+        declared = _declared(modules, module)
+        tables = [name for name in sorted(schema) if _owner(name, prefixes) == module
+                  and name not in PORTABLE_TABLES and name not in EXCLUDED_TABLES
+                  and declared.get(name) not in (INCLUDE, EXCLUDE)]
+        if tables:
+            found[module] = tables
+    return found
+
+
+async def notify_undeclared_module_tables(session: AsyncSession) -> int:
+    """A bell notice in every company for each installed module keeping data its manifest
+    does not place in or out of a company backup, deduped while it stands. Caller commits.
+    Returns the number of notifications created."""
+    from celerp.notifications import service as notif_service
+
+    created = 0
+    for module, tables in (await undeclared_module_tables(session)).items():
+        logger.warning("The %s module does not declare how %s travel with a company backup", module, tables)
+        label = module_label(module)
+        created += await notif_service.notify_every_company(
+            session, "modules", f"The {label} module needs an update",
+            f"The {label} module keeps data it has not said belongs in a company backup. A company "
+            "holding that data cannot be backed up until the module is updated.",
+            action_url="/modules")
+    return created
 
 
 async def classify(session: AsyncSession) -> list[str]:
@@ -395,8 +478,32 @@ def _dump_rows(rows: list[dict]) -> str:
     return _NUMBER.sub(r"\1", json.dumps(rows))
 
 
+def _number(spelled: str) -> str:
+    """A number by its exact value, whatever its spelling: 0.00, 0.0 and 0 are one value."""
+    value = Decimal(spelled)
+    if not value:
+        return "\x000"
+    return "\x00" + str(value.normalize(Context(prec=max(len(value.as_tuple().digits), 1))))
+
+
+def _canonical(value):
+    """A parsed row with every number in one exact spelling (_number), for comparing
+    records by value rather than by how their numbers were written."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return _number(str(value))
+    if isinstance(value, str):
+        return _number(value[1:-1]) if len(value) > 1 and value[0] == value[-1] == "\x00" else value
+    if isinstance(value, dict):
+        return {k: _canonical(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_canonical(v) for v in value]
+    return value
+
+
 def _row_digest(row: dict) -> int:
-    return int(hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest(), 16)
+    return int(hashlib.sha256(json.dumps(_canonical(row), sort_keys=True).encode()).hexdigest(), 16)
 
 
 def _has_nul(value) -> bool:
@@ -411,7 +518,8 @@ def _has_nul(value) -> bool:
 
 
 def _kept_settings(settings: dict | None) -> dict:
-    return {k: v for k, v in (settings or {}).items() if k not in DROPPED_SETTINGS}
+    return {k: v for k, v in (settings or {}).items()
+            if k not in DROPPED_SETTINGS and k != ROLE_PERMISSIONS_SETTING}
 
 
 async def _batches(session: AsyncSession, table: db_catalog.Table, company_id, expr: str):
@@ -498,6 +606,18 @@ async def _share_schema(session: AsyncSession, *, restoring: bool) -> None:
                           + " Try again in a moment.")
 
 
+# Who made each change travels as a label in the event's metadata: the person's name, and
+# a one-way reference to their account that only recognises them when the backup returns
+# to the installation it came from. User accounts and their ids never travel, so the
+# event's own link to its author is cleared on export.
+_USER_REF = "encode(sha256(convert_to('celerp-backup-actor:' || CAST(u.id AS text), 'UTF8')), 'hex')"
+_ACTOR_LABEL = (
+    "COALESCE((SELECT jsonb_build_object('metadata', COALESCE(CAST(t.metadata AS jsonb), '{}'::jsonb) "
+    f"|| jsonb_build_object('backup_actor', jsonb_build_object('name', u.name, 'user_ref', {_USER_REF}))) "
+    "FROM users u WHERE u.id = t.actor_id "
+    "AND jsonb_typeof(COALESCE(CAST(t.metadata AS jsonb), '{}'::jsonb)) = 'object'), '{}'::jsonb)")
+
+
 async def export_company_snapshot(company_id, out: Path, *, provenance: dict | None = None) -> dict:
     """Write a backup of one company to ``out``; returns its manifest.
 
@@ -567,14 +687,16 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
     plan = await _classify(session, modules, strict=True)
     await _unchanged(session, plan, db_catalog.hold)
     try:
-        tables = []
-        for name in plan.order:
-            if name in plan.owners and not await session.scalar(text(
-                    f"SELECT 1 FROM {db_catalog.ident(name)} t WHERE t.company_id = "
-                    f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
-                    {"c": str(company_id)}):
-                continue
-            tables.append(name)
+        async def holds_rows(name: str) -> bool:
+            return bool(await session.scalar(text(
+                f"SELECT 1 FROM {db_catalog.ident(name)} t WHERE t.company_id = "
+                f"CAST(CAST(:c AS text) AS {db_catalog.ident(plan.schema[name].columns['company_id'].udt)}) LIMIT 1"),
+                {"c": str(company_id)}))
+
+        for name, error in sorted(plan.blocked.items()):
+            if await holds_rows(name):
+                raise error
+        tables = [name for name in plan.order if name not in plan.owners or await holds_rows(name)]
         settings = _kept_settings(company.settings)
         found: dict[str, str] = {}
         types: dict[str, str] = {}
@@ -589,7 +711,8 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                                        f"backup of its data cannot say which version restores it."
                                   + _NOT_BACKED_UP)
         manifest: dict = {
-            "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
+            "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
+            "backup_id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "company": {"id": str(company.id), "name": company.name, "settings": settings},
             **({"provenance": provenance} if provenance else {}),
@@ -599,10 +722,13 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
             "tables": {}, "attachments": [],
         }
         partial.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        partial.unlink(missing_ok=True)
+        with private_file(partial) as raw, zipfile.ZipFile(raw, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for name in tables:
                 table = plan.schema[name]
                 expr = _without([c for c, col in table.columns.items() if col.generated])
+                if name == "ledger":
+                    expr = f"({expr} || {_ACTOR_LABEL})"
                 for cols in plan.outside_fks(name):
                     expr = f"({expr} || jsonb_build_object({', '.join(f'{_literal(c)}, NULL' for c in cols)}))"
                 digest, rows = hashlib.sha256(), 0
@@ -611,8 +737,8 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                         for line in batch:
                             body = line.encode()
                             if len(body) > MAX_ROW_BYTES or _row_too_large(body):
-                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP.format(
-                                    table=await db_catalog.label(session, name)))
+                                logger.warning("Company backup refused: a row of %s is too large", name)
+                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP)
                             _collect_urls(json.loads(line), company_id, found, types)
                             body += b"\n"
                             digest.update(body)
@@ -660,9 +786,11 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
 
 @dataclass(frozen=True)
 class BackupFile:
-    """A backup file whose manifest and every member have been checked."""
+    """A backup file whose manifest and every member have been checked, with the SHA-256
+    of the whole file."""
     path: Path
     manifest: dict
+    sha256: str
 
     def summary(self) -> dict:
         m = self.manifest
@@ -670,7 +798,7 @@ class BackupFile:
         return {
             "backup_id": m["backup_id"], "company_name": m["company"]["name"], "created_at": m["created_at"],
             "records": sum(tables.values()), "tables": tables, "attachments": len(m["attachments"]),
-            "modules": m["modules"]["enabled"], "provenance": m.get("provenance"),
+            "provenance": m.get("provenance"),
         }
 
 
@@ -697,6 +825,16 @@ def _check_manifest(m) -> None:
         raise BackupError(422, DAMAGED)
     if version > FORMAT_VERSION:
         raise BackupError(422, NEWER)
+    # A newer Celerp's records may mean something this copy cannot read, even when
+    # every table and column exists here. Backups made before the version was
+    # recorded come from an older Celerp.
+    if "celerp_version" in m:
+        try:
+            newer = is_newer_than_running(m["celerp_version"])
+        except (InvalidVersion, TypeError):
+            raise BackupError(422, DAMAGED)
+        if newer:
+            raise BackupError(422, NEWER)
     company, modules, tables, files = m.get("company"), m.get("modules"), m.get("tables"), m.get("attachments")
     ok = (_is_uuid(m.get("backup_id")) and isinstance(m.get("created_at"), str)
           and isinstance(company, dict) and _is_uuid(company.get("id"))
@@ -710,7 +848,7 @@ def _check_manifest(m) -> None:
           and isinstance(tables, dict) and isinstance(files, list) and not _has_nul(m))
     if ok:
         for name, meta in tables.items():
-            ok = ok and (_TABLE_NAME.fullmatch(name) is not None and isinstance(meta, dict)
+            ok = ok and (TABLE_NAME.fullmatch(name) is not None and isinstance(meta, dict)
                          and isinstance(meta.get("columns"), list)
                          and all(isinstance(c, str) for c in meta["columns"])
                          and len(set(meta["columns"])) == len(meta["columns"])
@@ -793,10 +931,18 @@ def _within_limits(path: Path) -> bool:
             and sum(i.file_size for i in infos) <= MAX_TOTAL_BYTES)
 
 
+def _starts_like_zip(path: Path) -> bool:
+    with open(path, "rb") as f:
+        return f.read(4) == b"PK\x03\x04"
+
+
 def read_backup(path: Path) -> BackupFile:
     """Check a backup file: its format, its size against the limits, and every member
-    against its hash."""
+    against its hash. A zip cut short or broken is told apart from a file that never was
+    one, and from one whose contents changed."""
     if not zipfile.is_zipfile(path):
+        if _starts_like_zip(path):
+            raise BackupError(422, INCOMPLETE)
         raise BackupError(422, SYSTEM_BACKUP if _looks_like_system_backup(path) else NOT_A_BACKUP)
     try:
         with zipfile.ZipFile(path) as zf:
@@ -822,10 +968,15 @@ def read_backup(path: Path) -> BackupFile:
                 _check_member(budget, zf, f"tables/{table}.jsonl", meta["sha256"], rows=meta["rows"])
             for f in manifest["attachments"]:
                 _check_member(budget, zf, f"attachments/{f['name']}", f["sha256"], size=f["size"])
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, OSError, EOFError, ValueError, KeyError,
-            RuntimeError, NotImplementedError):
+    except (zlib.error, EOFError):
+        raise BackupError(422, INCOMPLETE) from None
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, ValueError, KeyError, RuntimeError, NotImplementedError):
         raise BackupError(422, DAMAGED) from None
-    return BackupFile(path=path, manifest=manifest)
+    whole = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_CHUNK):
+            whole.update(chunk)
+    return BackupFile(path=path, manifest=manifest, sha256=whole.hexdigest())
 
 
 # ── Checking a backup against this installation ──────────────────────────────
@@ -838,35 +989,12 @@ class _Checked:
     digests: dict[str, int]
 
 
-def _check_modules(manifest: dict, modules: InstalledModules) -> None:
-    """Every module the backup needs, enabled or holding its data, is installed here, new
-    enough, and running, so its tables are in place."""
-    versions = manifest["modules"]["versions"]
-    for name in sorted(set(manifest["modules"]["enabled"]) | set(versions)):
-        if name not in modules.manifests:
-            raise BackupError(422, f"This company backup needs the {name} module, which is not installed here."
-                              + _NOT_RESTORED)
-        if not is_running(name):
-            raise BackupError(422, f"This company backup needs the {name} module, which is installed here but "
-                                   f"not turned on. Turn it on in Modules, restart Celerp, then try again."
-                              + _NOT_RESTORED)
-        if name not in versions:
-            continue
-        needed = versions[name]
-        # Core-folded modules ship inside Celerp itself, so their installed copy is the running one.
-        have = modules.version(name) if is_core_folded(name) else running_version(name)
-        if not _new_enough(have, needed):
-            restart = (" A newer copy is installed; restart Celerp, then try again."
-                       if _new_enough(modules.version(name), needed) else "")
-            raise BackupError(422, f"This company backup needs the {name} module version {needed} or later."
-                              + restart + _NOT_RESTORED)
-
-
-def _new_enough(have, needed: str) -> bool:
-    try:
-        return Version(str(have)) >= Version(needed)
-    except InvalidVersion:
-        return have == needed
+def requirement_plan(backup: BackupFile) -> requirements.RequirementPlan:
+    """Every module the backup needs, enabled or holding its data, with what stands
+    between it and running here at a version that will do."""
+    versions = backup.manifest["modules"]["versions"]
+    return requirements.plan_requirements(
+        {name: versions.get(name) for name in set(backup.manifest["modules"]["enabled"]) | set(versions)})
 
 
 def _lines(zf: zipfile.ZipFile, name: str):
@@ -980,21 +1108,22 @@ async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values
 
 
 async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
-    """Refuse a backup this installation cannot restore exactly: a missing or older
-    module, a table or column it does not have, a table it holds in a form a backup
-    cannot carry, or rows that do not hold together. The session's transaction is held to
+    """Refuse a backup this installation cannot restore exactly: a module that is not
+    ready, a table or column it does not have, a table it holds in a form a backup cannot
+    carry, or rows that do not hold together. The session's transaction is held to
     Celerp's own tables and every row of them (``db_catalog.pin``) from here on."""
     await _share_schema(session, restoring=True)
-    modules = installed_modules()
-    _check_modules(backup.manifest, modules)
+    modules = requirement_plan(backup)
+    if not modules.ready:
+        raise ModulesRequired(modules)
     await _pin(session, restoring=True)
-    plan = await _classify(session, modules, strict=False)
+    plan = await _classify(session, installed_modules(), strict=False)
     tables = backup.manifest["tables"]
     for name, meta in tables.items():
         if name not in plan.schema or not set(meta["columns"]) <= set(plan.schema[name].insertable):
             raise BackupError(422, NEWER)
         if name in plan.refused:
-            raise await _refusal(session, name, plan.owners, restoring=True)
+            raise _unsupported(await db_catalog.label(session, name), plan.owners.get(name), restoring=True)
         if name not in plan.order:
             raise BackupError(422, OLDER if _older(backup.manifest) else NEWER)
     order = [t for t in plan.order if t in tables]
@@ -1005,14 +1134,22 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
 
 # ── Restoring ────────────────────────────────────────────────────────────────
 
+CREATED = "created"
+OPENED_EXISTING = "opened_existing"
+TEAM_ADDED = "opened_existing_team_added"
+REACTIVATED = "reactivated"
+
+
 @dataclass(frozen=True)
 class RestoreResult:
     company_id: str
     company_name: str
-    created: bool
+    outcome: str
     backup_created_at: str
     user_id: str
     team_members: int
+    # Whose role permissions a newly created company's team works under: "source" or "destination".
+    role_permissions: str | None = None
 
 
 def _lock_key(backup_id: str) -> int:
@@ -1089,11 +1226,19 @@ def _restored_as(backup_id: str):
             .order_by(Company.is_active.desc(), Company.created_at, Company.id).limit(1))
 
 
-async def _bootstrap_existing(session: AsyncSession, backup_id: str,
+def _same_file(backup: BackupFile, restored: Company | None) -> None:
+    """Refuse a file that claims to be a backup already restored here but holds different
+    bytes. A company restored before its file's hash was kept is not compared."""
+    kept = ((restored.settings or {}).get("restored_backup") or {}).get("sha256") if restored is not None else None
+    if kept is not None and kept != backup.sha256:
+        raise BackupError(409, CHANGED_COPY)
+
+
+async def _bootstrap_existing(session: AsyncSession, backup: BackupFile,
                               owner_account: dict) -> tuple[Company, User] | None:
     """The company a bootstrap restore of this backup already created, with its owner, when
     the same account repeats it; refused for anyone else or when that company is deactivated."""
-    company = await session.scalar(_restored_as(backup_id))
+    company = await session.scalar(_restored_as(backup.manifest["backup_id"]))
     if company is None:
         return None
     user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
@@ -1101,6 +1246,7 @@ async def _bootstrap_existing(session: AsyncSession, backup_id: str,
             or not verify_password(owner_account["password"], user.auth_hash)
             or not await _is_member(session, user.id, company.id)):
         raise BackupError(409, ALREADY_SET_UP)
+    _same_file(backup, company)
     return company, user
 
 
@@ -1114,8 +1260,9 @@ REFUSE = "refuse"
 @dataclass(frozen=True)
 class RestorePlan:
     """What restoring a backup does for one caller: the action, the company it lands in
-    (named only to a caller entitled to it), the team members it gives access and whose
-    role permissions they work under, with the source's role permissions carried.
+    (named only to a caller entitled to it; for a new company, the name it gets unless the
+    owner chooses another), the team members it gives access and whose role permissions
+    they work under, with the source's role permissions carried, and the modules it needs.
     ``fingerprint`` identifies these facts, so a restore can tell whether the preview it
     confirms still holds."""
     action: str
@@ -1123,30 +1270,67 @@ class RestorePlan:
     destination_name: str | None
     team_to_add: tuple[tuple[str, str], ...]
     team_blocked: int
-    carry_role_grants: bool
-    destination_policy: str
+    role_permissions: str
+    modules: requirements.RequirementPlan
     fingerprint: str
     role_grants: dict | None = None
 
     def public(self) -> dict:
         return {"action": self.action, "destination_id": self.destination_id,
                 "destination_name": self.destination_name, "team_members": len(self.team_to_add),
-                "team_blocked": self.team_blocked, "carry_role_grants": self.carry_role_grants,
-                "destination_policy": self.destination_policy, "plan_fingerprint": self.fingerprint}
+                "team_blocked": self.team_blocked,
+                "scope": {"included": list(INCLUDED), "excluded": list(EXCLUDED),
+                          "role_permissions": self.role_permissions},
+                "modules": self.modules.public(), "modules_ready": self.modules.ready,
+                "plan_fingerprint": self.fingerprint}
 
 
-def _planned(backup_id: str, mode: str, action: str, destination: Company | None = None, *,
-             team: tuple[tuple[str, str], ...] = (), blocked: int = 0, carry: bool = False,
-             grants: dict | None = None) -> RestorePlan:
-    facts = {"backup_id": backup_id, "mode": mode, "action": action,
+def _planned(backup: BackupFile, mode: str, action: str, destination: Company | None = None, *,
+             name: str | None = None, team: tuple[tuple[str, str], ...] = (), blocked: int = 0,
+             carry: bool = False, grants: dict | None = None) -> RestorePlan:
+    modules = requirement_plan(backup)
+    facts = {"backup_id": backup.manifest["backup_id"], "file_sha256": backup.sha256, "mode": mode, "action": action,
              "destination_id": str(destination.id) if destination is not None else None,
-             "team": [list(m) for m in team], "blocked": blocked, "carry": carry,
-             "policy": "source" if carry else "destination", "grants": grants if carry else None}
+             "name": destination.name if destination is not None else name,
+             "team": [list(m) for m in team], "blocked": blocked,
+             "policy": "source" if carry else "destination", "grants": grants if carry else None,
+             "modules": modules.public()}
     digest = hashlib.sha256(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return RestorePlan(action=action, destination_id=facts["destination_id"],
-                       destination_name=destination.name if destination is not None else None,
-                       team_to_add=team, team_blocked=blocked, carry_role_grants=carry,
-                       destination_policy=facts["policy"], fingerprint=digest, role_grants=facts["grants"])
+    return RestorePlan(action=action, destination_id=facts["destination_id"], destination_name=facts["name"],
+                       team_to_add=team, team_blocked=blocked, role_permissions=facts["policy"], modules=modules,
+                       fingerprint=digest, role_grants=facts["grants"])
+
+
+def _name_key(name: str) -> str:
+    return name.strip().casefold()
+
+
+async def _taken_names(session: AsyncSession, user_id) -> set[str]:
+    """The names of the caller's active companies, as they are compared."""
+    names = await session.scalars(
+        select(Company.name).join(UserCompany, UserCompany.company_id == Company.id)
+        .where(UserCompany.user_id == uuid.UUID(str(user_id)), UserCompany.is_active.is_(True),
+               Company.is_active.is_(True)))
+    return {_name_key(n) for n in names}
+
+
+def _default_name(source_name: str, taken: set[str]) -> str:
+    """The backup's company name when the caller has no company of that name, otherwise
+    the first free of "<name> (Restored)", "<name> (Restored 2)", ..."""
+    base = source_name.strip()
+    n = 0
+    name = base
+    while _name_key(name) in taken:
+        n += 1
+        suffix = " (Restored)" if n == 1 else f" (Restored {n})"
+        name = base[:COMPANY_NAME_MAX - len(suffix)].rstrip() + suffix
+    return name
+
+
+def plan_bootstrap_restore(backup: BackupFile) -> RestorePlan:
+    """What restoring a backup on a fresh installation does: create its company, under its
+    own name, with this installation's role permissions."""
+    return _planned(backup, "bootstrap", CREATE, name=backup.manifest["company"]["name"].strip())
 
 
 async def _missing_team(session: AsyncSession, source: str, user_id: uuid.UUID,
@@ -1162,6 +1346,11 @@ async def _missing_team(session: AsyncSession, source: str, user_id: uuid.UUID,
     return tuple((uid, role) for uid, role in rows.all())
 
 
+def _same_lineage(mode: str, current_company_id, source: str) -> bool:
+    """A Settings restore of a backup of the company the caller is working in."""
+    return mode == "settings" and current_company_id is not None and str(current_company_id) == source
+
+
 async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, current_company_id, *,
                 lock: bool) -> tuple[RestorePlan, Company | None]:
     """The plan and the destination company. With ``lock`` the source and destination
@@ -1171,15 +1360,17 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
     m = backup.manifest
     backup_id, source = m["backup_id"], m["company"]["id"]
     me = uuid.UUID(str(user_id))
-    same_lineage = mode == "settings" and current_company_id is not None and str(current_company_id) == source
+    same_lineage = _same_lineage(mode, current_company_id, source)
     found = await session.scalar(_restored_as(backup_id))
+    _same_file(backup, found)
     if lock:
         for cid in sorted({*([source] if same_lineage else []), *([str(found.id)] if found is not None else [])}):
             await lock_company(session, uuid.UUID(cid))
     if found is None:
         team = await _missing_team(session, source, me, None) if same_lineage else ()
         grants = await _source_grants(session, source) if same_lineage else None
-        return _planned(backup_id, mode, CREATE, team=team, carry=same_lineage, grants=grants), None
+        name = _default_name(m["company"]["name"], await _taken_names(session, me))
+        return _planned(backup, mode, CREATE, name=name, team=team, carry=same_lineage, grants=grants), None
     destination = await locked_company(session, found.id) if lock else found
     membership = select(UserCompany.role, UserCompany.is_active).where(
         UserCompany.user_id == me, UserCompany.company_id == destination.id)
@@ -1187,19 +1378,19 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
     role = row.role if row is not None and row.is_active else None
     if not destination.is_active:
         if role == "owner":
-            return _planned(backup_id, mode, OFFER_REACTIVATE, destination), destination
-        return _planned(backup_id, mode, REFUSE), None
+            return _planned(backup, mode, OFFER_REACTIVATE, destination), destination
+        return _planned(backup, mode, REFUSE), None
     if role is None:
-        return _planned(backup_id, mode, REFUSE), None
+        return _planned(backup, mode, REFUSE), None
     missing = await _missing_team(session, source, me, destination.id) if same_lineage else ()
     if not missing:
-        return _planned(backup_id, mode, RETURN_EXISTING, destination), destination
+        return _planned(backup, mode, RETURN_EXISTING, destination), destination
     if role != "owner":
-        return _planned(backup_id, mode, RETURN_EXISTING, destination, blocked=len(missing)), destination
+        return _planned(backup, mode, RETURN_EXISTING, destination, blocked=len(missing)), destination
     settings = destination.settings or {}
     carry = not (settings.get("restored_backup") or {}).get("team_policy_carried") and not settings.get("role_grants")
     grants = await _source_grants(session, source) if carry else None
-    return _planned(backup_id, mode, ADD_TEAM, destination, team=missing, carry=carry, grants=grants), destination
+    return _planned(backup, mode, ADD_TEAM, destination, team=missing, carry=carry, grants=grants), destination
 
 
 async def plan_existing_restore(session: AsyncSession, backup: BackupFile, mode: str, user_id,
@@ -1267,7 +1458,42 @@ async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, comp
                 total += _row_digest(remap(_parse_row(line), back))
             rows += len(batch)
         if rows != meta["rows"] or total % (1 << 256) != checked.digests[name]:
-            raise BackupError(422, MISMATCH.format(table=await db_catalog.label(session, name)))
+            logger.warning("Company restore refused: %s did not read back as the backup holds it", name)
+            raise BackupError(422, MISMATCH)
+
+
+async def _projection_states(session: AsyncSession, company_id) -> dict[str, tuple[str, object]]:
+    rows = await session.execute(text(
+        "SELECT entity_id, entity_type, state::text FROM projections WHERE company_id = :c"), {"c": company_id})
+    return {eid: (etype, _canonical(_parse_row(state))) for eid, etype, state in rows.all()}
+
+
+async def _check_replay(session: AsyncSession, company_id) -> None:
+    """Replay the restored ledger with the running modules and refuse the restore unless it
+    produces exactly the records the backup holds. The replay itself is undone, so the
+    restored records keep their own times and versions."""
+    from celerp.projections.engine import ProjectionEngine
+    restored = await _projection_states(session, company_id)
+    savepoint = await session.begin_nested()
+    try:
+        await ProjectionEngine.rebuild(session, company_id)
+        await session.flush()
+        replayed = await _projection_states(session, company_id)
+    finally:
+        await savepoint.rollback()
+    if replayed != restored:
+        differ = sorted(k for k in restored.keys() | replayed.keys() if restored.get(k) != replayed.get(k))
+        logger.warning("Company restore refused: %d records do not agree with the ledger (first: %s)",
+                       len(differ), differ[0])
+        raise BackupError(422, DISAGREE)
+
+
+async def _rebind_actors(session: AsyncSession, company_id) -> None:
+    """Point restored history back at the people who made it, where each is the exact user
+    of this installation the backup's reference names."""
+    await session.execute(text(
+        "UPDATE ledger l SET actor_id = u.id FROM users u WHERE l.company_id = :c AND l.actor_id IS NULL "
+        f"AND CAST(l.metadata AS jsonb) -> 'backup_actor' ->> 'user_ref' = {_USER_REF}"), {"c": company_id})
 
 
 async def _apply_existing(session: AsyncSession, plan: RestorePlan, destination: Company, source: str) -> int:
@@ -1304,17 +1530,28 @@ async def _turn_off_shop_sync(session: AsyncSession, company_id, actor_id) -> No
                          metadata_={})
 
 
+def _chosen_name(name: str) -> str:
+    name = name.strip()
+    if (error := company_name_error(name)) is not None:
+        raise BackupError(422, error + _NOT_RESTORED, "name_invalid")
+    return name
+
+
 async def restore_company(path: Path, *, mode: str, user_id=None, current_company_id=None,
-                          owner_account: dict | None = None, plan_fingerprint: str | None = None) -> RestoreResult:
+                          owner_account: dict | None = None, plan_fingerprint: str | None = None,
+                          company_name: str | None = None) -> RestoreResult:
     """Restore a backup file as a new company and commit it.
 
     ``settings`` and ``new_company`` restore it for the signed-in ``user_id`` as the
     preview identified by ``plan_fingerprint`` showed it; a preview that no longer holds
     raises StalePreview. ``start_company`` does the same for a login left with no company,
     and refuses once it has one. ``bootstrap`` creates the installation's first owner from
-    ``owner_account`` ({name, email, password}) in the same transaction. Restoring a
-    backup that was already restored here returns that company (``created`` False) to its
-    members, never reactivating it when it is deactivated."""
+    ``owner_account`` ({name, email, password}) in the same transaction. A new company
+    takes ``company_name`` when given, which must not be the name of another of the
+    caller's companies, else the preview's name. Restoring a backup that was already
+    restored here opens that company for its members, unrenamed (outcome
+    ``opened_existing``, or ``opened_existing_team_added`` when it gave its team access),
+    never reactivating it when it is deactivated."""
     if mode not in MODES:
         raise ValueError(f"Unknown restore mode: {mode}")
     if mode == "bootstrap" and not (isinstance(owner_account, dict)
@@ -1336,22 +1573,27 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             if mode == "bootstrap":
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
             if mode == "bootstrap":
-                plan = _planned(backup_id, mode, CREATE)
-                found = await _bootstrap_existing(session, backup_id, owner_account)
+                plan = plan_bootstrap_restore(backup)
+                found = await _bootstrap_existing(session, backup, owner_account)
                 if found is not None:
                     company, user = found
-                    result = RestoreResult(company_id=str(company.id), company_name=company.name, created=False,
-                                           backup_created_at=m["created_at"], user_id=str(user.id), team_members=0)
+                    result = RestoreResult(company_id=str(company.id), company_name=company.name,
+                                           outcome=OPENED_EXISTING, backup_created_at=m["created_at"],
+                                           user_id=str(user.id), team_members=0)
                     await session.rollback()
                     return result
+                name = plan.destination_name if company_name is None else _chosen_name(company_name)
             else:
                 if mode == "start_company" and not await hold_companyless_login(session, user_id):
                     raise BackupError(409, HAS_COMPANY)
+                # One restore at a time per owner, so two cannot both take the same free name.
+                await session.execute(text("SELECT pg_advisory_xact_lock(:k)"),
+                                      {"k": _lock_key(f"names:{user_id}")})
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, NOT_A_MEMBER)
                 if plan.action == OFFER_REACTIVATE:
-                    raise BackupError(409, DEACTIVATED)
+                    raise BackupError(409, DEACTIVATED, "deactivated")
                 # Opening the existing company with nothing to add is what any preview of it
                 # led to, so it needs no matching preview.
                 settled = plan.action == RETURN_EXISTING and not plan.team_blocked
@@ -1360,10 +1602,16 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 if destination is not None:
                     team = await _apply_existing(session, plan, destination, source)
                     result = RestoreResult(company_id=str(destination.id), company_name=destination.name,
-                                           created=False, backup_created_at=m["created_at"], user_id=str(user_id),
+                                           outcome=TEAM_ADDED if team else OPENED_EXISTING,
+                                           backup_created_at=m["created_at"], user_id=str(user_id),
                                            team_members=team)
                     await session.commit()
                     return result
+                name = plan.destination_name
+                if company_name is not None:
+                    name = _chosen_name(company_name)
+                    if _name_key(name) in await _taken_names(session, user_id):
+                        raise BackupError(409, NAME_TAKEN, "name_taken")
             if mode == "bootstrap":
                 if await session.scalar(select(User.id).limit(1)) is not None:
                     raise BackupError(409, ALREADY_SET_UP)
@@ -1388,16 +1636,16 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
                 settings = set_enabled(settings, set(m["modules"]["enabled"]))  # the checked list, never the copied key
                 settings["restored_backup"] = {
-                    "backup_id": backup_id, "created_at": m["created_at"],
+                    "backup_id": backup_id, "sha256": backup.sha256, "created_at": m["created_at"],
                     "source_company_name": m["company"]["name"],
                     "restored_at": datetime.now(timezone.utc).isoformat(),
                     **({"provenance": m["provenance"]} if m.get("provenance") else {}),
-                    "team_policy_carried": plan.carry_role_grants,
+                    "team_policy_carried": plan.role_permissions == "source",
                 }
                 # The carried team keeps what its roles may do in the current company.
                 if plan.role_grants:
                     settings["role_grants"] = plan.role_grants
-                company = await provision_restored_company(session, owner=user, company_name=m["company"]["name"],
+                company = await provision_restored_company(session, owner=user, company_name=name,
                                                            company_id=new_id, settings=settings)
                 try:
                     for name in checked.order:
@@ -1405,6 +1653,9 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, UNSAVABLE) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
+            await _check_replay(session, new_id)
+            if _same_lineage(mode, current_company_id, source):
+                await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
             team = await _add_team(session, new_id, plan.team_to_add) if plan.team_to_add else 0
             await session.commit()
@@ -1421,8 +1672,31 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
         await commit_with_load_set(session)
     if stored:
         await asyncio.to_thread(attachments.clear_landing, str(new_id))
-    return RestoreResult(company_id=str(company.id), company_name=company.name, created=True,
-                         backup_created_at=m["created_at"], user_id=str(user.id), team_members=team)
+    return RestoreResult(company_id=str(company.id), company_name=company.name, outcome=CREATED,
+                         backup_created_at=m["created_at"], user_id=str(user.id), team_members=team,
+                         role_permissions=plan.role_permissions)
+
+
+async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None) -> RestoreResult | None:
+    """The company a finished restore opened, for a retry whose response was lost: for the
+    signed-in ``user_id``, or for the first owner's ``owner_account`` on a fresh
+    installation, when they are still an active member of it and it is active. None
+    otherwise."""
+    if not _is_uuid(company_id):
+        return None
+    async with AsyncSession(bind=celerp.db.engine) as session:
+        company = await session.get(Company, uuid.UUID(company_id))
+        if owner_account is not None:
+            user = await session.scalar(select(User).where(User.email == owner_account["email"]).limit(1))
+            if user is None or not user.auth_hash or not verify_password(owner_account["password"], user.auth_hash):
+                return None
+            user_id = user.id
+        if (company is None or not company.is_active or user_id is None
+                or not await _is_member(session, uuid.UUID(str(user_id)), company.id)):
+            return None
+        kept = (company.settings or {}).get("restored_backup") or {}
+        return RestoreResult(company_id=company_id, company_name=company.name, outcome=OPENED_EXISTING,
+                             backup_created_at=kept.get("created_at") or "", user_id=str(user_id), team_members=0)
 
 
 async def reactivate_restored(path: Path, *, mode: str, user_id, current_company_id,

@@ -12,7 +12,7 @@ import pytest
 
 
 def _make_token(subject: str, company_id: str, role: str, expire_minutes: int) -> str:
-    from celerp.services.auth import create_access_token
+    from celerp.credentials import create_access_token
     from unittest.mock import patch
     with patch("celerp.services.auth.settings") as mock_settings:
         mock_settings.jwt_secret = "test-secret"
@@ -97,7 +97,7 @@ async def test_switch_company_updates_refresh_token():
     from unittest.mock import AsyncMock, patch
     from httpx import AsyncClient
     from httpx._transports.asgi import ASGITransport
-    from celerp.services.auth import create_access_token, create_refresh_token
+    from celerp.credentials import create_access_token, create_refresh_token
     from ui.app import app as ui_app
     from test_helpers import authed_cookies as _authed
 

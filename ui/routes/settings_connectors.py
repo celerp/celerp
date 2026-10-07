@@ -19,7 +19,7 @@ from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
-from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY, attention_entries
+from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 from celerp.services.background import spawn_background
 
 log = logging.getLogger(__name__)
@@ -200,6 +200,7 @@ async def _get_last_runs(company_id: str) -> dict[str, object]:
 async def _attention(company_id: str, platform: str) -> list[dict]:
     """Records waiting on a person for one connector. The page still renders
     when the list cannot be read; the failure is logged."""
+    from celerp.connectors.sync_runner import attention_entries
     try:
         return await attention_entries(company_id, platform)
     except Exception:

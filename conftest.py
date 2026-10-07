@@ -147,6 +147,10 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
+# The `client` fixture patches celerp.gateway.state.get_session_token. The session
+# gate keeps its own reference from import time, so it is imported here, before any
+# patch is active, and checks the session a test actually seats.
+import celerp.session_gate  # noqa: E402,F401
 from ui.app import app as _ui_app
 
 import sys as _sys, os as _os
@@ -593,6 +597,16 @@ def _restore_import_path():
 
 
 @pytest.fixture(autouse=True)
+def _restore_bytecode_settings():
+    """Restore the process-wide bytecode settings after each test. Loading a module
+    turns bytecode writing off for the rest of the process; each test starts from
+    the settings the test run began with."""
+    before = (_sys.dont_write_bytecode, _sys.pycache_prefix)
+    yield
+    _sys.dont_write_bytecode, _sys.pycache_prefix = before
+
+
+@pytest.fixture(autouse=True)
 def _mock_get_modules_default():
     """Default get_modules mock — returns empty list so settings page always has a valid response."""
     from unittest.mock import patch, AsyncMock
@@ -852,6 +866,33 @@ async def client(session: AsyncSession):
     _set_session_token(_saved_token or "")
 
 
+@pytest_asyncio.fixture
+async def owner_ui(client):
+    """The UI app signed in as the owner of a newly registered company, talking to the
+    real API in process (the `client` fixture's database and transaction)."""
+    import uuid
+    from unittest.mock import patch
+    from httpx import ASGITransport, AsyncClient
+
+    r = await client.post("/auth/register", json={
+        "company_name": "Owner UI Co", "email": f"owner-ui-{uuid.uuid4().hex[:8]}@test.example",
+        "name": "Owner", "password": "pwvalid1",
+    })
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+
+    def _bridged(tok, timeout=10.0):
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
+
+    with patch("ui.api_client._client", _bridged):
+        async with AsyncClient(transport=ASGITransport(app=_ui_app), base_url="http://ui",
+                               follow_redirects=False, cookies={"celerp_token": token}) as ui:
+            ui.api = _bridged(token)
+            yield ui
+            await ui.api.aclose()
+
+
 _DISABLED_MODULE_TABLES = {"label_": "label_templates", "marketplace_": "marketplace_configs",
                            "bank_": "bank_accounts"}
 
@@ -873,3 +914,11 @@ def bundled_modules_unloaded(monkeypatch):
             table.to_metadata(core)
     monkeypatch.setattr(Base, "metadata", core)
     return dict(_DISABLED_MODULE_TABLES)
+
+
+@pytest.fixture
+def files_unchecked(monkeypatch):
+    """Skip the load-time check that a module's files are those admission read, so a
+    test can change them after admission and reach the checks that follow it."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "check_unchanged", lambda module: None)

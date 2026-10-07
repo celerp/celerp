@@ -12,7 +12,7 @@ from sqlalchemy import select
 from celerp.gateway.client import GatewayClient
 from celerp.models.company import User
 from celerp.modules.api import ai_query
-from test_helpers import invite_user, notice_in, register_admin
+from test_helpers import invite_user, notice_in, register_admin, seed_member, signed_request
 
 
 @pytest.mark.asyncio
@@ -56,22 +56,24 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
 
 
 @pytest.mark.asyncio
-async def test_module_ai_api_keeps_explicit_session_contract(monkeypatch):
+async def test_module_ai_api_keeps_explicit_session_contract(session, monkeypatch):
     monkeypatch.setattr("celerp.session_gate.get_session_token", lambda: "session-1")
     run_query = AsyncMock(return_value=SimpleNamespace(
         answer="ok", model_used="test", tools_called=[]))
     monkeypatch.setattr("celerp.ai.service.run_query", run_query)
+    company_id, user_id = await seed_member(session)
 
-    result = await ai_query(
-        query="hello", company_id="company-1",
-        session_token="session-1", db_session=None)
-    assert result["answer"] == "ok"
-    run_query.assert_awaited_once()
+    async with signed_request(session, company_id, user_id):
+        result = await ai_query(
+            query="hello", company_id=str(company_id),
+            session_token="session-1", db_session=session)
+        assert result["answer"] == "ok"
+        run_query.assert_awaited_once()
 
-    with pytest.raises(HTTPException) as exc:
-        await ai_query(
-            query="hello", company_id="company-1",
-            session_token="wrong", db_session=None)
+        with pytest.raises(HTTPException) as exc:
+            await ai_query(
+                query="hello", company_id=str(company_id),
+                session_token="wrong", db_session=session)
     assert exc.value.status_code == 401
 
 

@@ -43,7 +43,7 @@ def test_valuation_chips_name_the_unit_in_german(german):
     from ui.routes.inventory import _valuation_bar
     xml = to_xml(_valuation_bar({"item_count": 1, "quantity_by_unit": {"piece": 3},
                                  "weight_by_unit": {"gram": 100}}, "USD", "de"))
-    assert "3 Stück" in xml and "100 Gramm" in xml, xml
+    assert "(Stück): 3" in xml and "(Gramm): 100" in xml, xml
 
 
 _RECIPE_ITEM = {"id": "item:p", "name": "Ring", "recipe": {"components": [

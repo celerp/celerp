@@ -20,7 +20,6 @@ async function openData(steps) {
   steps.applyDbModePersist();
   steps.applyStoragePersist();
   steps.seedDefaultModules();
-  steps.runModuleSetup();
   steps.runMigrations();
   await steps.startApi();
   await steps.startUi();

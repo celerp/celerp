@@ -23,7 +23,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 import celerp.gateway.state as gw_state
-from test_helpers import authed_cookies
+from test_helpers import authed_cookies, seed_member, signed_request
 
 
 @pytest.fixture(autouse=True)
@@ -170,14 +170,16 @@ async def test_ai_quota_status_topup_url_direct(auth_client):
 # ── AI-api 401 body (celerp/modules/api.py) ─────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_ai_api_401_is_transport_neutral_in_partner_mode(monkeypatch):
+async def test_ai_api_401_is_transport_neutral_in_partner_mode(monkeypatch, session):
     """Missing service connection never becomes purchase advice."""
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
     _set_partner()
     monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
-    with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id="c1", session_token="", db_session=None)
+    company_id, user_id = await seed_member(session)
+    async with signed_request(session, company_id, user_id):
+        with pytest.raises(HTTPException) as exc:
+            await ai_query(query="hi", company_id=str(company_id), session_token="", db_session=session)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
@@ -186,12 +188,14 @@ async def test_ai_api_401_is_transport_neutral_in_partner_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ai_api_401_is_transport_neutral_in_direct_mode(monkeypatch):
+async def test_ai_api_401_is_transport_neutral_in_direct_mode(monkeypatch, session):
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
     monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
-    with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id="c1", session_token="", db_session=None)
+    company_id, user_id = await seed_member(session)
+    async with signed_request(session, company_id, user_id):
+        with pytest.raises(HTTPException) as exc:
+            await ai_query(query="hi", company_id=str(company_id), session_token="", db_session=session)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail

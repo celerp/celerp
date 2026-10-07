@@ -105,7 +105,7 @@ def _run_view(run_id: str, *, status: str, source: str = "manager_io",
         "id": run_id, "company_id": str(uuid.uuid4()), "company_name": company_name,
         "source_system": source, "mode": "full_history", "cutover_date": None,
         "status": status, "current_phase": "inventory_masters", "phases": phases,
-        "coverage": [], "error_summary": {}, "retention_until": None,
+        "coverage": [], "error": None, "preparing": False, "retention_until": None,
         "source_deleted": False, "prepared_by": "Example Bookkeeping",
         "is_bootstrap_run": False, "is_sample": is_sample,
     }
@@ -403,23 +403,24 @@ _UPLOAD = {"files": ("books.manager", b"source bytes", "application/octet-stream
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_setup_landing_offers_all_setup_paths(ui, router, session, sample_module):
+async def test_setup_form_offers_restore_and_move(ui, router, session, sample_module):
     r = await ui.get("/setup")
     assert r.status_code == 200
     page = _page(r)
-    for label in ("Start a new company", "Move from another system", "Restore a company backup",
-                  "Try sample company", "Recover an entire Celerp installation"):
-        assert label in page
-    assert 'href="/setup/fresh"' in page
-    assert 'href="/setup/migrate"' in page
-    assert re.search(r'<form\b[^>]*action="/setup/migrate/sample"[^>]*method="post"'
-                     r'|<form\b[^>]*method="post"[^>]*action="/setup/migrate/sample"', page)
-    assert 'href="/setup/import-backup"' in page
+    assert re.search(r'<form\b[^>]*action="/setup"', page)
+    assert _link(page, "/setup/restore-backup", "Restore a Celerp backup")
+    assert _link(page, "/setup/migrate", "Move your books from another system")
 
-    for path in ("/setup/fresh", "/setup/migrate", "/setup/import-backup"):
+    for path in ("/setup/restore-backup", "/setup/migrate"):
         r = await ui.get(path)
         assert r.status_code == 200, path
         assert _back(_page(r), "/setup"), path
+    # Recovering a whole installation is offered from the restore page.
+    assert _link(_page(await ui.get("/setup/restore-backup")), "/setup/import-backup",
+                 "Recover an entire Celerp installation")
+    r = await ui.get("/setup/import-backup")
+    assert r.status_code == 200
+    assert _back(_page(r), "/setup")
 
     r = await ui.post("/setup/migrate/sample")
     assert r.status_code == 303
@@ -434,28 +435,23 @@ async def test_setup_landing_offers_all_setup_paths(ui, router, session, sample_
 
     router.overrides[("GET", "/auth/bootstrap-status")] = _respond(
         200, {"bootstrapped": True, "setup_code_required": False})
-    for path in ("/setup", "/setup/fresh", "/setup/migrate"):
+    for path in ("/setup", "/setup/migrate"):
         r = await ui.get(path)
         assert r.status_code == 302, path
         assert r.headers["location"] == "/login"
 
 
-@pytest.mark.asyncio
-async def test_setup_fresh_path_registers_without_migration_state(ui, router, session):
-    r = await ui.get("/setup/fresh")
-    assert r.status_code == 200
-    page = _page(r)
-    assert re.search(r'<form\b[^>]*action="/setup"', page)
-    for field in ("company_name", "name", "email", "password", "confirm_password"):
-        assert _inputs(page, field), field
-    assert _back(page, "/setup")
+_GOOD_SETUP = {"company_name": "Keep Co", "name": "Kept Name", "email": "kept@example.com",
+               "password": "correct-horse-9", "confirm_password": "correct-horse-9",
+               "vertical": "blank", "currency": "USD", "timezone": "UTC"}
 
-    r = await ui.post("/setup", data={
-        "company_name": "Fresh Start Ltd", "name": "First Owner", "email": "owner@example.com",
-        "password": "correct-horse-9", "confirm_password": "correct-horse-9",
-    })
+
+@pytest.mark.asyncio
+async def test_setup_registers_and_applies_without_migration_state(ui, router, session):
+    r = await ui.post("/setup", data={**_GOOD_SETUP, "company_name": "Fresh Start Ltd",
+                                      "email": "owner@example.com"})
     assert r.status_code == 302
-    assert r.headers["location"] == "/setup/company"
+    assert r.headers["location"] in ("/dashboard", "/setup/activating")
     assert _cookie_header(r, "celerp_token") and _cookie_header(r, "celerp_refresh")
     assert await _users_companies(session) == (1, 1)
     assert await _migration_runs(session) == 0
@@ -463,18 +459,16 @@ async def test_setup_fresh_path_registers_without_migration_state(ui, router, se
 
 
 @pytest.mark.asyncio
-async def test_setup_fresh_failure_states_keep_back_to_setup(ui, router, session):
+async def test_setup_failure_states_keep_typed_values(ui, router, session):
     from ui.i18n import t
 
     router.overrides[("GET", "/auth/bootstrap-status")] = _raise(httpx.ConnectError)
-    for path in ("/setup", "/setup/fresh"):
-        r = await ui.get(path)
-        assert r.status_code == 200, path
-        assert t("error.api_unavailable") in _page(r), path
+    r = await ui.get("/setup")
+    assert r.status_code == 200
+    assert t("error.api_unavailable") in _page(r)
     del router.overrides[("GET", "/auth/bootstrap-status")]
 
-    good = {"company_name": "Keep Co", "name": "Kept Name", "email": "kept@example.com",
-            "password": "correct-horse-9", "confirm_password": "correct-horse-9"}
+    good = _GOOD_SETUP
     cases = [
         ({**good, "name": ""}, t("settings.all_fields_required"), None),
         ({**good, "confirm_password": "different-horse-9"}, t("settings.passwords_do_not_match"), None),
@@ -494,7 +488,6 @@ async def test_setup_fresh_failure_states_keep_back_to_setup(ui, router, session
         assert r.status_code == 200, message
         page = _page(r)
         assert message in page
-        assert _back(page, "/setup"), message
         assert _attr(_inputs(page, "company_name")[0], "value") == form["company_name"]
         assert _attr(_inputs(page, "email")[0], "value") == form["email"]
         assert _attr(_inputs(page, "name")[0], "value") == form["name"]
@@ -502,6 +495,25 @@ async def test_setup_fresh_failure_states_keep_back_to_setup(ui, router, session
 
     assert await _users_companies(session) == (0, 0)
     assert await _migration_runs(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_setup_password_mismatch_shown_at_confirm_field(ui, router, session):
+    """A mismatch marks the confirm field and says so under it, not at the top of the form."""
+    from ui.i18n import t
+
+    r = await ui.post("/setup", data={**_GOOD_SETUP, "confirm_password": "different-horse-9"})
+    assert r.status_code == 200
+    page = _page(r)
+    confirm = _inputs(page, "confirm_password")[0]
+    assert _attr(confirm, "aria-invalid") == "true"
+    assert _attr(confirm, "aria-describedby") == "confirm_password-error"
+    assert _attr(_inputs(page, "password")[0], "aria-invalid") is None
+    msg = re.search(r'<p\b[^>]*id="confirm_password-error"[^>]*>(.*?)</p>', page, re.S)
+    assert msg and msg.group(1).strip() == t("settings.passwords_do_not_match")
+    assert "flash--error" not in page, "the message sits at the field, not in a banner"
+    assert page.index('name="confirm_password"') < page.index('id="confirm_password-error"')
+    assert await _users_companies(session) == (0, 0)
 
 
 @pytest.mark.asyncio
@@ -761,6 +773,54 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert "Download company backup" not in page
 
 
+_AP_KEY = "5f1c2a90-3b7e-4d21-9a0c-6e8f1d2b3c4a"
+_SUPPLIER_KEY = "0b9d8c7e-6f5a-4e3d-8c2b-1a0f9e8d7c6b"
+_ITEM_KEY = "7c6b5a4f-3e2d-4c1b-9a0f-8e7d6c5b4a39"
+_LABELLED_ROWS = [
+    {"check": "ap_control", "key": _AP_KEY, "currency": "USD", "label": "2100 Accounts payable",
+     "credit_normal": True, "source": "-1875.4000", "celerp": "-1875.4000", "difference": "0.0000",
+     "rule": "exact", "result": "pass"},
+    {"check": "ap_by_supplier", "key": _SUPPLIER_KEY, "currency": "USD", "label": "Northwind Supplies",
+     "credit_normal": True, "source": "-310.5", "celerp": "-310.5", "difference": "0", "rule": "exact",
+     "result": "pass"},
+    {"check": "inventory_quantity", "key": _ITEM_KEY, "currency": None, "label": "Blue widget (WID)",
+     "credit_normal": False, "source": "12.000", "celerp": "12.000", "difference": "0E-3", "rule": "exact",
+     "result": "pass"},
+    {"check": "document_status", "key": "bill:awaiting_payment", "currency": None, "label": "",
+     "credit_normal": False, "source": "3", "celerp": "3", "difference": "0", "rule": "exact", "result": "pass"},
+    {"check": "document_count", "key": "invoice", "currency": "USD", "label": "", "credit_normal": False,
+     "source": "14", "celerp": "14", "difference": "0", "rule": "exact", "result": "pass"},
+    {"check": "settlement_allocation", "key": "payment", "currency": "USD", "label": "", "credit_normal": False,
+     "source": "2200.5", "celerp": "2200.5", "difference": "0", "rule": "exact", "result": "pass"},
+]
+
+
+@pytest.mark.asyncio
+async def test_verify_page_names_records_and_formats_figures(ui, router, fake_api):
+    """RED before the change: rows showed the source key, raw enums and raw decimals."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.recon[run_id]["rows"] = copy.deepcopy(_LABELLED_ROWS)
+    r = await ui.get(f"/migrations/{run_id}/verify")
+    assert r.status_code == 200
+    page = _visible(r)
+    for text in ("Payables control: 2100 Accounts payable", "Payables by supplier: Northwind Supplies",
+                 "Inventory quantity: Blue widget (WID)", "Document status: Bill: Awaiting Payment",
+                 "Document count: Invoice (USD)", "Settlement allocation: Payment"):
+        assert text in page, text
+    # Business-normal sign: a payable balance reads as the amount owed, at currency precision.
+    for figure in ("$1,875.40", "$310.50", "$0.00", "$2,200.50"):
+        assert f">{figure}<" in page, figure
+    assert ">12<" in page and ">14<" in page and ">3<" in page
+    for raw in (_AP_KEY, _SUPPLIER_KEY, _ITEM_KEY, "bill:awaiting_payment", "awaiting_payment", "1875.4000",
+                "-1,875.40", "0E-3", "12.000"):
+        assert raw not in page, raw
+
+    r = await ui.get(f"/migrations/{run_id}/complete")
+    assert r.status_code == 200
+    assert _AP_KEY not in _visible(r)
+
+
 def _posting_row(role: str, label: str, *, required: bool = True, current: str | None = None,
                  current_name: str | None = None, preselect: str | None = None, candidates: tuple = (),
                  proposal: dict | None = None, generated: tuple = ()) -> dict:
@@ -994,3 +1054,46 @@ def test_cancel_offered_only_where_the_run_can_be_cancelled(status):
     shown = "/cancel" in to_xml(_run_actions({"id": "r1", "status": status}))
     assert shown == can_transition(MigrationStatus(status), MigrationStatus.CANCEL_REQUESTED)
 
+
+
+@pytest.mark.asyncio
+async def test_preparing_run_explains_and_waits_without_a_start_button(ui, fake_api):
+    """While Celerp prepares the features a migration needs, the page says so, keeps
+    checking, and offers no Start that would only be refused."""
+    _owner(ui)
+    run_id = fake_api.add_run("ready")
+    fake_api.runs[run_id]["preparing"] = True
+    r = await ui.get(f"/migrations/{run_id}")
+    assert r.status_code == 200
+    assert "Celerp is preparing features for this company" in _visible(r)
+    assert 'hx-trigger="every 2s"' in _page(r)
+    assert f'action="/migrations/{run_id}/start"' not in _page(r)
+
+
+@pytest.mark.asyncio
+async def test_failed_run_shows_plain_message_and_never_says_still_running(ui, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("failed")
+    fake_api.runs[run_id]["error"] = {"message": "The migration stopped unexpectedly.",
+                                      "missing": ["INV-0042"], "phase": "Invoices"}
+    r = await ui.get(f"/migrations/{run_id}")
+    text = _visible(r)
+    assert "The migration stopped unexpectedly." in text and "INV-0042" in text
+    assert "The migration keeps running" not in text
+    assert 'hx-trigger="every 2s"' not in _page(r)
+
+
+@pytest.mark.asyncio
+async def test_review_shows_company_currency_scope_and_plain_outcomes(ui, fake_api):
+    """The last step before starting names the file, company, currency and dates, and says
+    in plain words what will move, using the source's own record names."""
+    r = await ui.post("/setup/migrate/scan", files=_UPLOAD, data={"source": "manager_io"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    fake_api.scans[token]["scan"]["decisions"] = {"mode": "full_history", "cutover_date": None, "mappings": {}}
+    r = await ui.get("/setup/migrate/review")
+    assert r.status_code == 200, r.text
+    text = _visible(r)
+    for expected in ("Harbor Goods Ltd", "USD", "2024-01-01", "Sales invoice", "Will move", "Will not move"):
+        assert expected in text, expected
+    assert "sales_invoices" not in _page(r) and "sales invoices" not in text

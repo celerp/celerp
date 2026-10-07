@@ -10,7 +10,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
-from ui.i18n import refusal_text
+from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -31,18 +31,23 @@ _LOCAL_KEEPALIVE_EXPIRY = 3.0
 
 # One source of truth for the temporary-failure copy every local client surfaces,
 # so the interactive, anonymous, AI, and bulk context managers cannot drift apart.
-SATURATION_MESSAGE = (
-    "The app is handling too many requests right now. Please try again in a moment."
-)
-TIMEOUT_MESSAGE = (
-    "Request timed out. The server is busy or the payload is too large. "
-    "Try again or reduce the batch size."
-)
+# Each reads in the language of the request it fails.
+def saturation_message() -> str:
+    return t("api.busy")
+
+
+def timeout_message() -> str:
+    return t("api.timed_out")
+
+
+NO_RESPONSE = "no_response"
 
 
 def _connect_message() -> str:
+    """The copy for an unreachable local service. Where it was looked for goes to the log only."""
     from ui.config import API_BASE
-    return f"Cannot reach API at {API_BASE}. Is the server running?"
+    logger.warning("Local API unreachable at %s", API_BASE)
+    return t("api.unreachable")
 
 
 class APIError(Exception):
@@ -222,21 +227,34 @@ def _anon_client(timeout: float | httpx.Timeout = 10.0) -> httpx.AsyncClient:
     return _local_client(None, timeout=timeout, follow_redirects=True, bulk=False)
 
 
+def _no_response(status: int, message: str) -> APIError:
+    """The request went out and no answer came back. The body carries the message as
+    well as the code, so a caller showing ``e.data`` shows the message."""
+    return APIError(status, message, {"code": NO_RESPONSE, "detail": message})
+
+
 @asynccontextmanager
 async def _local_error_mapping():
     """Map httpx transport errors to the shared APIError statuses/copy.
 
     The order matters: PoolTimeout (pool saturated -> 503 retryable) subclasses
-    TimeoutException (slow upstream -> 504), so it is caught first. Every local
+    TimeoutException (slow upstream -> 504), so it is caught first. A failure after the
+    request went out (read/write timeout, dropped connection) carries code
+    ``no_response``: the API may have done the work, so the caller cannot say it did
+    not. Every local
     client context manager wraps its body in this one mapping so the four of them
     can never diverge in status or copy.
     """
     try:
         yield
     except httpx.PoolTimeout as exc:
-        raise APIError(503, SATURATION_MESSAGE) from exc
+        raise APIError(503, saturation_message()) from exc
+    except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+        raise _no_response(504, timeout_message()) from exc
     except httpx.TimeoutException as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+        raise APIError(504, timeout_message()) from exc
+    except (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
+        raise _no_response(503, _connect_message()) from exc
     except httpx.TransportError as exc:
         raise APIError(503, _connect_message()) from exc
 
@@ -372,22 +390,27 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
         return r.json()
 
 
-async def preview_import_rows(token: str, rows: list[dict], *, upsert: bool, idempotency_key: str) -> dict:
-    """Semantic preview of mapped inventory rows: row errors, locations that would
-    be created, and the hash a commit of exactly these rows must echo."""
+async def plan_import_rows(
+    token: str, rows: list[dict], *, upsert: bool, idempotency_key: str, decisions: dict | None = None,
+) -> dict:
+    """The import plan of mapped inventory rows under the user's row decisions:
+    every blocker, the locations that would be created, the row counts, rows
+    that read as totals, SKUs shared by several rows, and the hash a commit of
+    exactly these rows and decisions must echo."""
     async with _bulk_api_client(token, timeout=300.0) as c:
         r = _raise(await c.post(
             "/items/import/rows/preview",
-            json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key},
+            json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
+                  "decisions": decisions or {}},
         ))
         return r.json()
 
 
 async def import_rows(
     token: str, rows: list[dict], upsert: bool = False, idempotency_key: str | None = None,
-    preview_hash: str | None = None,
+    preview_hash: str | None = None, decisions: dict | None = None,
 ) -> dict:
-    """POST mapped inventory CSV rows to the shared import committer.
+    """POST mapped inventory CSV rows, with the user's row decisions, to the shared import committer.
 
     Rows are raw column-to-value dicts; the server owns location resolution and
     creation, unit and quantity derivation, monetary conversion, command
@@ -399,7 +422,8 @@ async def import_rows(
     bulk pool for the same reason batch_import does: a large import holds its
     write connection.
     """
-    body = {"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key, "preview_hash": preview_hash}
+    body = {"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key, "preview_hash": preview_hash,
+            "decisions": decisions or {}}
     async with _bulk_api_client(token, timeout=300.0) as c:
         r = _raise(await c.post("/items/import/rows", json=body))
         return r.json()
@@ -783,7 +807,7 @@ async def patch_company(token: str, data: dict) -> dict:
     top-level fields (name, slug) are patched directly."""
     _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
                         "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
-                        "line_item_identifier", "onboarding_pending"}
+                        "line_item_identifier", "getting_started_dismissed"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
     settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
     dashboard_patch = {}
@@ -861,6 +885,17 @@ async def get_category_display_names(token: str) -> dict:
     """Return display names keyed by category slug."""
     async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/category-display-names")).json()
+
+
+async def get_category_labels(token: str) -> dict:
+    """The company's category names as the user reads them, keyed by category
+    (``ui.i18n.category_labels``); empty when they cannot be fetched, so a category
+    falls back to its library name or key."""
+    from ui.i18n import category_labels
+    try:
+        return category_labels(await get_category_display_names(token))
+    except Exception:
+        return {}
 
 
 async def get_category_schema(token: str, category: str) -> list[dict]:
@@ -1361,22 +1396,9 @@ async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
         )).json()
 
 
-async def get_valuation(
-    token: str,
-    category: str | None = None,
-    status: str | None = None,
-    on_memo_to: str | None = None,
-    consigned_from: str | None = None,
-) -> dict:
-    params: dict = {}
-    if category:
-        params["category"] = category
-    if status:
-        params["status"] = status
-    if on_memo_to:
-        params["on_memo_to"] = on_memo_to
-    if consigned_from:
-        params["consigned_from"] = consigned_from
+async def get_valuation(token: str, params: dict | None = None) -> dict:
+    """Valuation and counts. ``params`` takes the item list's filters, so the counts
+    describe the same items the list returns for them."""
     async with _api_client(token) as c:
         return _raise(await c.get("/items/valuation", params=params)).json()
 
@@ -2163,7 +2185,7 @@ async def _stream_get(token: str, path: str, *, params: dict | None = None,
         resp = await client.send(client.build_request("GET", path, params=params or {}), stream=True)
     except httpx.PoolTimeout as exc:
         await client.aclose()
-        raise APIError(503, SATURATION_MESSAGE) from exc
+        raise APIError(503, saturation_message()) from exc
     except httpx.TimeoutException as exc:
         await client.aclose()
         raise APIError(504, timeout_message) from exc
@@ -2630,9 +2652,15 @@ async def bulk_transfer(token: str, entity_ids: list[str], to_location_id: str) 
         return _raise(await c.post("/items/bulk/transfer", json={"entity_ids": entity_ids, "to_location_id": to_location_id})).json()
 
 
-async def bulk_delete(token: str, entity_ids: list[str]) -> dict:
+async def bulk_delete(token: str, entity_ids: list[str], untouched_samples_only: bool = False) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/items/bulk/delete", json={"entity_ids": entity_ids})).json()
+        return _raise(await c.post("/items/bulk/delete", json={
+            "entity_ids": entity_ids, "untouched_samples_only": untouched_samples_only})).json()
+
+
+async def bulk_restore_deleted(token: str, entity_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/items/bulk/restore-deleted", json={"entity_ids": entity_ids})).json()
 
 
 async def bulk_expire(token: str, entity_ids: list[str]) -> dict:
@@ -3435,6 +3463,12 @@ async def get_billing_portal_url(token: str) -> str:
         return _raise(await c.post("/settings/cloud/billing-portal")).json()["portal_url"]
 
 
+async def get_backup_active(token: str) -> bool:
+    """GET /settings/backup-active - whether a backup is running (writes paused)."""
+    async with _api_client(token) as c:
+        return bool(_raise(await c.get("/settings/backup-active")).json()["active"])
+
+
 async def get_backup_status(token: str) -> dict:
     """GET /settings/backup-status — returns scheduler state from API process."""
     async with _api_client(token) as c:
@@ -3487,7 +3521,7 @@ async def _with_total_timeout(awaitable, timeout: float):
     try:
         return await asyncio.wait_for(awaitable, timeout=timeout)
     except asyncio.TimeoutError as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+        raise APIError(504, timeout_message()) from exc
 
 
 CONTROL_PLANE_TIMEOUT = 20.0
@@ -3685,33 +3719,42 @@ async def migration_sources() -> list[dict]:
         return _raise(await c.get("/migrations/sources")).json()
 
 
+def _migration_path(token: str | None, step: str, group: str) -> str:
+    """A wizard step's API path: the session's own, or, with no session, ``group``'s
+    (``bootstrap`` before the first owner exists, ``start-company`` for a login with no
+    company left)."""
+    return f"/migrations/{step}" if token else f"/migrations/{group}/{step}"
+
+
 async def migration_scan(token: str | None, files: list[tuple[str, BinaryIO]], source: str | None,
-                         setup_code: str | None = None) -> dict:
-    """Upload source files for analysis. Returns {"scan_token", "scan"}."""
-    path = "/migrations/scan" if token else "/migrations/bootstrap/scan"
+                         setup_code: str | None = None, *, group: str = "bootstrap",
+                         credentials: tuple[str, str] | None = None) -> dict:
+    """Upload source files for analysis. Returns {"scan_token", "scan"}. A login with no
+    company signs the upload with its ``credentials`` (email, password)."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
                                  headers=None if token else _setup_code_headers(setup_code)) as c:
             r = await c.post(
-                path,
+                _migration_path(token, "scan", group),
                 files=[("files", (name, content, "application/octet-stream")) for name, content in files],
                 data={"source": source} if source else None,
+                auth=httpx.BasicAuth(*credentials) if credentials else httpx.USE_CLIENT_DEFAULT,
             )
     return _raise(r).json()
 
 
-async def migration_scan_read(token: str | None, scan_token: str) -> dict:
+async def migration_scan_read(token: str | None, scan_token: str, *, group: str = "bootstrap") -> dict:
     """``{"scan": view}`` for a scan token, or ``{"run_id"}`` once the caller started a run from it."""
-    path = "/migrations/scan/read" if token else "/migrations/bootstrap/scan/read"
     async with _local_error_mapping():
         async with _local_client(token) as c:
-            r = await c.post(path, json={"scan_token": scan_token})
+            r = await c.post(_migration_path(token, "scan/read", group), json={"scan_token": scan_token})
     return _raise(r).json()
 
 
-async def migration_save_decisions(token: str | None, scan_token: str, decisions: dict) -> dict:
+async def migration_save_decisions(token: str | None, scan_token: str, decisions: dict, *,
+                                   group: str = "bootstrap") -> dict:
     """Save method, cutover date, mappings and Prepared by. Returns the updated scan."""
-    path = "/migrations/scan/decisions" if token else "/migrations/bootstrap/decisions"
+    path = "/migrations/scan/decisions" if token else f"/migrations/{group}/decisions"
     async with _local_error_mapping():
         async with _local_client(token) as c:
             r = await c.post(path, json={"scan_token": scan_token, **decisions})
@@ -3726,6 +3769,16 @@ async def migration_bootstrap_start(scan_token: str, company_name: str, name: st
             r = await c.post("/migrations/bootstrap/start", json={
                 "scan_token": scan_token, "company_name": company_name,
                 "name": name, "email": email, "password": password,
+            })
+    return _raise(r).json()
+
+
+async def migration_start_company_start(email: str, password: str, scan_token: str, company_name: str) -> dict:
+    """Start a migration as the company of a login that has none left. Returns tokens and run_id."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=30.0) as c:
+            r = await c.post("/migrations/start-company/start", json={
+                "email": email, "password": password, "scan_token": scan_token, "company_name": company_name,
             })
     return _raise(r).json()
 
@@ -3775,7 +3828,7 @@ async def migration_finalize(token: str, run_id: str, posting_accounts: dict) ->
 async def migration_pack(token: str, run_id: str):
     """GET the reconciliation pack CSV, streamed. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, f"/migrations/{run_id}/reconciliation/pack",
-                             timeout_message=TIMEOUT_MESSAGE)
+                             timeout_message=timeout_message())
 
 
 # ── Company backups ──────────────────────────────────────────────────────────
@@ -3784,36 +3837,80 @@ async def company_backup_download(token: str, run_id: str | None = None):
     """GET the session company's backup file, streamed. ``run_id`` names a completed
     migration run of that company, whose provenance the API adds. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, "/company-backups/download", params={"run_id": run_id} if run_id else None,
-                             timeout_message=TIMEOUT_MESSAGE)
+                             timeout_message=timeout_message())
+
+
+def _backup_path(token: str | None, step: str) -> str:
+    """The signed-in route for ``step``, or its first-run route when there is no session."""
+    return f"/company-backups/{step}" if token else f"/company-backups/bootstrap/{step}"
 
 
 async def company_backup_read(token: str | None, filename: str, content: BinaryIO,
                               setup_code: str | None = None, mode: str | None = None) -> dict:
     """Upload a company backup for checking. Nothing is written. Returns the upload token, a
     preview and, for a signed-in owner, what restoring it in ``mode`` does."""
-    path = "/company-backups/read" if token else "/company-backups/bootstrap/read"
     async with _local_error_mapping():
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
                                  headers=None if token else _setup_code_headers(setup_code)) as c:
-            r = await c.post(path, files=[("file", (filename, content, "application/octet-stream"))],
+            r = await c.post(_backup_path(token, "read"),
+                             files=[("file", (filename, content, "application/octet-stream"))],
                              data={"mode": mode} if token and mode else None)
     return _raise(r).json()
 
 
-async def company_backup_restore(token: str, upload_token: str, mode: str, plan_fingerprint: str) -> dict:
+async def company_backup_staged(token: str | None, upload_token: str, mode: str | None = None) -> dict:
+    """The preview of a backup already uploaded, checked again."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.get(_backup_path(token, "staged"),
+                            params={"upload_token": upload_token, **({"mode": mode} if token and mode else {})})
+    return _raise(r).json()
+
+
+async def company_backup_prepare(token: str | None, upload_token: str, consent: list[str],
+                                 setup_code: str | None = None) -> dict:
+    """Turn on the modules an uploaded backup needs. Returns whether Celerp is restarting to load them."""
+    async with _local_error_mapping():
+        async with _local_client(token, headers=None if token else _setup_code_headers(setup_code)) as c:
+            r = await c.post(_backup_path(token, "prepare"), json={"upload_token": upload_token, "consent": consent})
+    return _raise(r).json()
+
+
+async def company_backup_import_module(token: str | None, upload_token: str, filename: str, content: BinaryIO,
+                                       mode: str | None = None, setup_code: str | None = None) -> dict:
+    """Install a module an uploaded backup needs. Returns the backup's preview, checked again."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
+                                 headers=None if token else _setup_code_headers(setup_code)) as c:
+            r = await c.post(_backup_path(token, "import-module"),
+                             files=[("file", (filename, content, "application/zip"))],
+                             data={"upload_token": upload_token, **({"mode": mode} if token and mode else {})})
+    return _raise(r).json()
+
+
+async def company_backup_discard(token: str | None, upload_token: str) -> None:
+    """Delete an uploaded backup that is not going to be restored."""
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            _raise(await c.post(_backup_path(token, "discard"), json={"upload_token": upload_token}))
+
+
+async def company_backup_restore(token: str, upload_token: str, mode: str, plan_fingerprint: str,
+                                 company_name: str | None = None) -> dict:
     """Restore an uploaded backup as the preview showed it (mode "settings" or "new_company"):
-    a new company of the signed-in owner, or the one it was already restored as. Returns the
-    company and tokens for it."""
+    a new company of the signed-in owner, named ``company_name`` when given, or the one it
+    was already restored as. Returns the outcome, the company and tokens for it."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
             r = await c.post("/company-backups/restore", json={
-                "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint})
+                "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint,
+                "company_name": company_name})
     return _raise(r).json()
 
 
 async def company_backup_reactivate(token: str, upload_token: str, mode: str, plan_fingerprint: str) -> dict:
     """Reactivate the deactivated company an uploaded backup was already restored as. Returns
-    the company, whether it was reactivated, connectors to connect again, and tokens for it."""
+    the outcome, the company, connectors to connect again, and tokens for it."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
             r = await c.post("/company-backups/reactivate", json={
@@ -3832,23 +3929,25 @@ async def company_backup_start_read(email: str, password: str, filename: str, co
     return _raise(r).json()
 
 
-async def company_backup_start_restore(email: str, password: str, upload_token: str, plan_fingerprint: str) -> dict:
-    """Restore an uploaded backup as the company of a login with no company left. Returns
-    the company and tokens for it."""
+async def company_backup_start_restore(email: str, password: str, upload_token: str, plan_fingerprint: str,
+                                       company_name: str | None = None) -> dict:
+    """Restore an uploaded backup as the company of a login with no company left, named
+    ``company_name`` when given. Returns the outcome, the company and tokens for it."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
             r = await c.post("/company-backups/start-company/restore", json={
                 "email": email, "password": password, "upload_token": upload_token,
-                "plan_fingerprint": plan_fingerprint})
+                "plan_fingerprint": plan_fingerprint, "company_name": company_name})
     return _raise(r).json()
 
 
 async def company_backup_bootstrap_restore(upload_token: str, name: str, email: str, password: str,
-                                           setup_code: str | None = None) -> dict:
-    """Create the first owner and restore an uploaded backup as their company. Returns tokens and the company."""
+                                           setup_code: str | None = None, company_name: str | None = None) -> dict:
+    """Create the first owner and restore an uploaded backup as their company. Returns the outcome, tokens and the company."""
     async with _local_error_mapping():
         async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, headers=_setup_code_headers(setup_code)) as c:
             r = await c.post("/company-backups/bootstrap/restore", json={
                 "upload_token": upload_token, "name": name, "email": email, "password": password,
+                "company_name": company_name,
             })
     return _raise(r).json()

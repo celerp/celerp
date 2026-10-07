@@ -184,13 +184,17 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
 def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
     """Restore a database from a pg_dump custom-format file, in the database's
     mutating scope (celerp.migrations.compatibility): pg_restore writes from a
-    process of its own, so it runs inside the fence's write window."""
+    process of its own, so it runs inside the fence's write window. The whole
+    replacement holds the schema key alone (``celerp.cli._migration_lock``), on a
+    connection of its own, so it waits for every running company backup or restore
+    and they are refused until it ends."""
     from sqlalchemy import pool, text
 
+    from celerp.cli import _migration_lock
     from celerp.db_url import sync_url
     from celerp.migrations.compatibility import mutating_scope
 
-    with mutating_scope(sync_url(database_url)) as held:
+    with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url):
         if clean_schema:
             with held.engine(poolclass=pool.NullPool) as engine, engine.begin() as conn:
                 conn.execute(text("DROP SCHEMA public CASCADE"))

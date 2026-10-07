@@ -93,8 +93,7 @@ def test_shell_js_config_translates():
 
 
 def test_star_supporter_card_js_fallback_data_attr_translates():
-    # R2, second mechanism: star_supporter_card() also renders inside auth_shell()
-    # pages that carry no window.__shellI18n config, so its JS fallback strings are
-    # translated in Python and passed via the card's own data-* attributes instead.
-    xml = to_xml(star_supporter_card("dashboard"))
+    # R2, second mechanism: star_supporter_card() carries its JS fallback strings,
+    # translated in Python, in the card's own data-* attributes.
+    xml = to_xml(star_supporter_card())
     assert "XX_STAR_ON_GITHUB" in xml

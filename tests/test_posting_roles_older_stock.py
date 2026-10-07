@@ -586,8 +586,8 @@ async def _lock_notices(session, auth) -> list:
 async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when_it_runs(session, client, auth):
     """Older stock the upgrade could not place cannot be sold or moved until its account is
     known: the company is told which lock holds it back and both ways on (choose the account
-    now, or move the lock), once however often it restarts, and the notice is marked read
-    once the upgrade runs."""
+    now, or move the lock), once however often it restarts, and the notice is taken off the
+    bell once the upgrade runs."""
     await _older_release(session, auth)
     await _lot(client, auth, 30.0)
     await _opening_entry(session, auth, 30.0)
@@ -596,7 +596,7 @@ async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when
     await _startup(session)
     await _startup(session)
     (notice,) = await _lock_notices(session, auth)
-    assert day in notice.body and not notice.read
+    assert day in notice.body
     # Choosing the account is open while the period stays locked, so the notice names it.
     assert notice.body == i18n.t("notice.older_stock_locked.body", "en", day=day)
     assert _REPAIR in notice.body and "cannot be sold" not in notice.body
@@ -609,8 +609,7 @@ async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when
     await session.commit()
     await _startup(session)
     assert await _marked(session, auth)
-    (notice,) = await _lock_notices(session, auth)
-    assert notice.read
+    assert await _lock_notices(session, auth) == []
 
 
 # The entry is dated the company's business day, not the server's. Each case puts the

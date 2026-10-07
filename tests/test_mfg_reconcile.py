@@ -288,7 +288,7 @@ async def test_the_notification_links_to_the_run_that_needs_reconciling(client, 
 
 
 async def test_reconciling_the_run_clears_its_notification_from_the_bell(client, session, auth):
-    """The notice asks the user to reconcile the run; once it is reconciled the notice is read,
+    """The notice asks the user to reconcile the run; once it is reconciled the notice is removed,
     so the bell never asks for something already done. A refused attempt leaves it standing."""
     raw, order, ob = await _books_disagree(client, session, auth)
     url = f"/manufacturing/runs/{order}/reconcile"
@@ -305,9 +305,8 @@ async def test_reconciling_the_run_clears_its_notification_from_the_bell(client,
 
     assert await unread() == []
     session.expire_all()
-    notice = (await session.execute(select(Notification).where(
-        Notification.company_id == auth["company_id"], Notification.action_url == url))).scalar_one()
-    assert notice.read is True
+    assert (await session.execute(select(Notification).where(
+        Notification.company_id == auth["company_id"], Notification.action_url == url))).first() is None
 
 
 async def test_the_notification_names_the_run_by_its_product_in_the_readers_language(client, session, auth):

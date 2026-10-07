@@ -19,7 +19,6 @@ may share one control. It is not collapsed into AccountRole.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Mapping
 
 from celerp.compat import StrEnum
@@ -230,12 +229,6 @@ def allowed_types(role: str, role_map: dict[str, str]) -> frozenset[str]:
         if gain and gain == loss:
             return _REVENUE | _EXPENSE
     return ROLE_TYPES[role]
-
-
-def generated_account_code(key: uuid.UUID) -> str:
-    """The chart code a migration gives an account its source books carry without one.
-    The account is stored with code_generated set, so the code is never shown."""
-    return f"M{key.hex[:8]}"
 
 
 def account_label(account: Mapping | None) -> str:

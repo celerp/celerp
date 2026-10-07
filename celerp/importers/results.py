@@ -35,8 +35,10 @@ class RecordOutcome:
 
 @dataclass
 class ImportOutcome:
-    """Per-record outcomes of one import service call, in input order."""
+    """Per-record outcomes of one import service call, in input order, and what else
+    the call changed that removing the records it created would not take back."""
     records: list[RecordOutcome] = field(default_factory=list)
+    lasting_effects: set[str] = field(default_factory=set)
 
     def add(self, entity_id: str, status: OutcomeStatus, message: str | dict | None = None) -> None:
         self.records.append(RecordOutcome(entity_id, status, message))

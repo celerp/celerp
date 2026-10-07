@@ -14,7 +14,7 @@ from celerp.config import settings
 
 # The advisory-lock key every supported change to Celerp's PostgreSQL schema holds
 # exclusively (core and module migrations, the startup create_all, a module's data
-# purge), and every operation that needs the schema to stay as it is holds shared
+# purge, a whole-database restore), and every operation that needs the schema to stay as it is holds shared
 # (a company backup or restore). One key, one source of truth, across every process.
 _MIGRATION_LOCK_KEY = 4207320001
 

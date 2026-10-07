@@ -35,7 +35,7 @@ async def test_returns_relay_cta(monkeypatch):
     cta = {"mode": "founding", "cta_label": "Star on GitHub", "url": "https://celerp.com/github"}
     with patch("httpx.AsyncClient") as mock_httpx:
         mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(return_value=_resp(200, cta))
-        out = await star_cta.get_star_cta("footer")
+        out = await star_cta.get_star_cta("footer", "en")
     assert out == cta  # rendered verbatim, no install-side copy
 
 
@@ -46,8 +46,8 @@ async def test_caches_within_ttl(monkeypatch):
     get = AsyncMock(return_value=_resp(200, {"mode": "founding"}))
     with patch("httpx.AsyncClient") as mock_httpx:
         mock_httpx.return_value.__aenter__.return_value.get = get
-        await star_cta.get_star_cta("footer")
-        await star_cta.get_star_cta("footer")
+        await star_cta.get_star_cta("footer", "en")
+        await star_cta.get_star_cta("footer", "en")
     assert get.await_count == 1
 
 
@@ -58,8 +58,8 @@ async def test_ttl_expiry_refetches(monkeypatch):
     get = AsyncMock(return_value=_resp(200, {"mode": "founding"}))
     with patch("httpx.AsyncClient") as mock_httpx:
         mock_httpx.return_value.__aenter__.return_value.get = get
-        await star_cta.get_star_cta("footer")
-        await star_cta.get_star_cta("footer")
+        await star_cta.get_star_cta("footer", "en")
+        await star_cta.get_star_cta("footer", "en")
     assert get.await_count == 2
 
 
@@ -70,7 +70,7 @@ async def test_relay_connect_error_returns_none(monkeypatch):
     with patch("httpx.AsyncClient") as mock_httpx:
         mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(
             side_effect=httpx.ConnectError("refused"))
-        out = await star_cta.get_star_cta("footer")
+        out = await star_cta.get_star_cta("footer", "en")
     assert out is None  # determinism: no fabricated CTA
 
 
@@ -79,7 +79,7 @@ async def test_non_200_returns_none(monkeypatch):
     monkeypatch.setattr(settings, "star_cta_enabled", True)
     with patch("httpx.AsyncClient") as mock_httpx:
         mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(return_value=_resp(503, {}))
-        out = await star_cta.get_star_cta("footer")
+        out = await star_cta.get_star_cta("footer", "en")
     assert out is None
 
 
@@ -89,7 +89,7 @@ async def test_disabled_skips_fetch(monkeypatch):
     get = AsyncMock(return_value=_resp(200, {"mode": "founding"}))
     with patch("httpx.AsyncClient") as mock_httpx:
         mock_httpx.return_value.__aenter__.return_value.get = get
-        out = await star_cta.get_star_cta("footer")
+        out = await star_cta.get_star_cta("footer", "en")
     assert out is None
     assert get.await_count == 0
 
@@ -100,3 +100,18 @@ def test_neutral_cta_is_static_link():
     assert cta["show_count"] is False
     assert "/github" in cta["url"]
     assert "utm_medium=footer" in cta["url"]
+
+
+@pytest.mark.asyncio
+async def test_relay_is_asked_in_the_given_language_and_cached_per_language(monkeypatch):
+    monkeypatch.setattr(settings, "star_cta_enabled", True)
+    monkeypatch.setattr(settings, "star_cta_cache_ttl_s", 3600)
+    get = AsyncMock(side_effect=lambda url, params: _resp(200, {"mode": "founding", "lang": params["lang"]}))
+    with patch("httpx.AsyncClient") as mock_httpx:
+        mock_httpx.return_value.__aenter__.return_value.get = get
+        en = await star_cta.get_star_cta("dashboard", "en")
+        de = await star_cta.get_star_cta("dashboard", "de")
+        again = await star_cta.get_star_cta("dashboard", "de")
+    assert [c.kwargs["params"] for c in get.await_args_list] == [
+        {"medium": "dashboard", "lang": "en"}, {"medium": "dashboard", "lang": "de"}]
+    assert (en["lang"], de["lang"], again["lang"]) == ("en", "de", "de")

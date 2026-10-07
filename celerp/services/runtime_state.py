@@ -119,7 +119,7 @@ async def star_prompt_dismissed(session: AsyncSession) -> bool:
 
 
 async def dismiss_star_prompt(session: AsyncSession) -> None:
-    """Mark the GitHub-star ask dismissed so the onboarding/milestone cards stop."""
+    """Mark the GitHub-star ask dismissed so the dashboard card stops."""
     row = await _get_or_create(session)
     current = dict(row.value) if row.value else {}
     row.value = {**current, "star_prompt_dismissed": True}

@@ -43,7 +43,8 @@ def _write_module(root: Path, name: str = _NAME) -> Path:
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text(
         f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0.0", '
-        f'"display_name": "Acme Widgets", "table_prefix": "{_PREFIX}"}}\n')
+        f'"display_name": "Acme Widgets", "table_prefix": "{_PREFIX}", '
+                    f'"company_backup": {{"{_PREFIX}things": "include"}}}}\n')
     return pkg
 
 

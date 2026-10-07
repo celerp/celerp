@@ -26,7 +26,6 @@ from celerp.services.auth import (
     get_current_user,
     get_current_role,
     hash_password,
-    issue_token_pair,
     require_install_owner,
     MIN_PASSWORD_LENGTH,
     normalize_role,
@@ -243,6 +242,7 @@ async def create_company(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create a new company linked to the current user. Returns JWT scoped to new company."""
+    from celerp.credentials import issue_token_pair
     user = ctx.user
     company = await provision_additional_company(session, user=user, company_name=payload.name)
     try:
@@ -470,7 +470,7 @@ async def batch_import_settings(
             skipped += 1
             continue
         try:
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=str(company_id),
@@ -484,7 +484,11 @@ async def batch_import_settings(
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
             existing_keys.add(rec.idempotency_key)
-            created += 1
+            # A concurrent import of the same file can write the row first.
+            if getattr(entry, "was_deduped", False):
+                skipped += 1
+            else:
+                created += 1
         except Exception as exc:
             if len(errors) < 10:
                 errors.append(f"{rec.entity_id}: {exc}")
@@ -1188,8 +1192,6 @@ async def import_taxes_batch(
     - Key: name
     - If name exists (case-insensitive): skipped
     - Else: created
-
-    NOTE: This remains the legacy settings-import format (records are raw dicts).
     """
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
@@ -2138,12 +2140,15 @@ class _MarketplaceInstallBody(BaseModel):
     ref: str
 
 
+_INSTALL_FIELDS = ("token", "slug", "version", "is_official", "is_paid", "sha256")
+
+
 def _install_answer(answer: dict, slug: str) -> dict | None:
-    """The install answer if it has exactly the expected fields with plain types
-    and names the requested module, else None."""
+    """The install answer's fields if each is present with a plain type and it names
+    the requested module, else None. Any other field is dropped."""
     from celerp.modules.marketplace_stage import SHA256_RE
 
-    if set(answer) != {"token", "slug", "version", "is_official", "is_paid", "sha256"}:
+    if any(field not in answer for field in _INSTALL_FIELDS):
         return None
     token, version, sha256 = answer["token"], answer["version"], answer["sha256"]
     if (not isinstance(token, str) or not token
@@ -2153,7 +2158,7 @@ def _install_answer(answer: dict, slug: str) -> dict | None:
             or not isinstance(answer["is_paid"], bool)
             or not isinstance(sha256, str) or not SHA256_RE.fullmatch(sha256)):
         return None
-    return answer
+    return {field: answer[field] for field in _INSTALL_FIELDS}
 
 
 @router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
@@ -2275,6 +2280,7 @@ async def reset_company(
     The typed name must equal the company's name exactly. All or nothing: files go only
     after the commit. Returns a token pair for another of the caller's companies, or
     ``{"next": "start_company"}`` when this was their last one."""
+    from celerp.credentials import issue_token_pair
     from celerp.connectors.ownership import lock_connector_maintenance
     from celerp.services import company_reset, payments
     from celerp.services.migrations import run_cleanup_task

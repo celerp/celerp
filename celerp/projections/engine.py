@@ -218,6 +218,12 @@ class ProjectionEngine:
             raise _not_found(entry.entity_type)
 
     @staticmethod
+    def _changes_missing_item(entry: LedgerEntry, projection: Projection | None) -> bool:
+        """A change, not a birth, to an item with no projection: writing it would make
+        an item out of the change alone."""
+        return projection is None and entry.entity_type == "item" and entry.event_type not in ITEM_BIRTHS
+
+    @staticmethod
     async def _write(session, entry: LedgerEntry, projection: Projection | None) -> Transition:
         if projection is None:
             fields = ProjectionEngine._next_fields({}, entry, 0)
@@ -287,4 +293,8 @@ class ProjectionEngine:
             query = query.where(LedgerEntry.company_id == company_id)
         for entry in (await session.execute(query)).scalars().all():
             projection = await ProjectionEngine._locked_projection(session, entry)
+            # A change to an item with no birth before it is skipped, as a live write refuses
+            # it live: replaying it would bring back a removed item as a ghost.
+            if ProjectionEngine._changes_missing_item(entry, projection):
+                continue
             await ProjectionEngine._write(session, entry, projection)

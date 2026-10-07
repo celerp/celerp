@@ -87,13 +87,14 @@ def _token_for(user_id: str, company_id: str) -> str:
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
         from celerp.models.company import Company, User
-        from celerp.services.auth import issue_token_pair
+        from celerp.credentials import issue_token_pair
         engine = create_async_engine(os.environ["DATABASE_URL"])
         try:
             async with AsyncSession(engine, expire_on_commit=False) as s:
                 user = await s.get(User, uuid.UUID(user_id))
                 company = await s.get(Company, uuid.UUID(company_id))
-                out["token"] = (await issue_token_pair(s, user=user, company_id=company.id))["access_token"]
+                out["token"] = (await issue_token_pair(s, user=user, company_id=company.id,
+                                                      expected_snonce=None))["access_token"]
         finally:
             await engine.dispose()
 
@@ -123,6 +124,11 @@ def _named(name: str) -> int:
     return _db("SELECT count(*) FROM companies WHERE name = %s", name)[0][0]
 
 
+def _restored_name(source: dict) -> str:
+    """A restore beside the backed-up company takes the next free name."""
+    return f"{source['name']} (Restored)"
+
+
 def _deactivate(api_server: str, token: str) -> None:
     with _client(api_server, token) as c:
         r = c.delete("/companies/me")
@@ -141,7 +147,11 @@ def test_restore_creates_new_company_browser(page, fresh_company, tmp_path):
     page.wait_for_url(re.compile(r"/setup/new-company/restore-backup/done"), timeout=_WAIT_MS)
     assert page.locator('text="Company restored"').count() == 1
     assert _session_company(page.context) != source["id"]
-    assert _named(source["name"]) == 2
+    assert _named(source["name"]) == 1 and _named(_restored_name(source)) == 1
+    # The company switcher tells the two apart.
+    switcher = page.request.get("/topbar-company-switcher").text()
+    names = re.findall(r"<option[^>]*>([^<]*)</option>", switcher)
+    assert source["name"] in names and _restored_name(source) in names, names
 
 
 def test_restore_existing_destination_adds_team_browser(page, fresh_company, tmp_path):
@@ -153,15 +163,15 @@ def test_restore_existing_destination_adds_team_browser(page, fresh_company, tmp
 
     _upload(page, _SETTINGS, path)
     text = page.content()
-    assert f"This backup was already restored here as {source['name']}." in text
-    assert f"Team members who get access to {source['name']} with their roles in this company: 1" in text
+    assert f"This backup was already restored here as {_restored_name(source)}." in text
+    assert f"Team members who get access to {_restored_name(source)} with their roles in this company: 1" in text
     assert page.locator('button:has-text("Restore company")').count() == 0
     page.click('button:has-text("Add team and open company")')
     page.wait_for_url(re.compile(r"/settings/restore-backup/done"), timeout=_WAIT_MS)
     assert "Team members given access to this company with their current roles: 1" in page.content()
     assert (clerk, "viewer", True) in _members(dest)
     assert _session_company(page.context) == dest
-    assert _named(source["name"]) == 2
+    assert _named(source["name"]) == 1 and _named(_restored_name(source)) == 1
 
 
 def test_restore_inactive_destination_reactivates_browser(page, fresh_company, api_server, tmp_path):
@@ -178,10 +188,10 @@ def test_restore_inactive_destination_reactivates_browser(page, fresh_company, a
     page.click('button:has-text("Reactivate existing company")')
     page.wait_for_url(re.compile(r"/setup/new-company/restore-backup/done"), timeout=_WAIT_MS)
     assert page.locator('text="Company reactivated"').count() == 1
-    assert f"{source['name']} is active again." in page.content()
+    assert f"{_restored_name(source)} is active again." in page.content()
     assert _active(dest) is True
     assert _session_company(page.context) == dest
-    assert _named(source["name"]) == 2
+    assert _named(source["name"]) == 1 and _named(_restored_name(source)) == 1
 
 
 def test_restore_refused_for_non_owner_browser(page, fresh_company, api_server, tmp_path):
@@ -200,7 +210,7 @@ def test_restore_refused_for_non_owner_browser(page, fresh_company, api_server, 
     _cookie(page.context, _token_for(second, source["id"]))
     _upload(page, _SETTINGS, path)
     text = page.content()
-    assert f"Team members not added, because only an owner of {source['name']} can add them: 1" in text
+    assert f"Team members not added, because only an owner of {_restored_name(source)} can add them: 1" in text
     assert page.locator('button:has-text("Add team and open company")').count() == 0
     page.click('button:has-text("Open existing company")')
     page.wait_for_url(re.compile(r"/settings/restore-backup/done"), timeout=_WAIT_MS)
@@ -218,12 +228,12 @@ def test_restore_existing_destination_unchanged_browser(page, fresh_company, tmp
     members = _members(dest)
 
     _upload(page, _NEW_COMPANY, path)
-    assert f"This backup was already restored here as {source['name']}." in page.content()
+    assert f"This backup was already restored here as {_restored_name(source)}." in page.content()
     assert page.locator('button:has-text("Restore company")').count() == 0
     page.click('button:has-text("Open existing company")')
     page.wait_for_url(re.compile(r"/setup/new-company/restore-backup/done"), timeout=_WAIT_MS)
     assert _session_company(page.context) == dest
-    assert _named(source["name"]) == 2
+    assert _named(source["name"]) == 1 and _named(_restored_name(source)) == 1
     assert _db("SELECT to_jsonb(c)::text FROM companies c WHERE id = %s", dest) == company_row
     assert _db("SELECT count(*) FROM ledger WHERE company_id = %s", dest) == ledger
     assert _members(dest) == members
@@ -249,7 +259,7 @@ def test_restore_inactive_destination_refused_browser(page, fresh_company, api_s
     assert page.locator('button:has-text("Reactivate existing company")').count() == 0
     assert page.locator('button:has-text("Restore company")').count() == 0
     assert _active(dest) is False
-    assert _named(source["name"]) == 2
+    assert _named(source["name"]) == 1 and _named(_restored_name(source)) == 1
 
 
 def test_restore_stale_preview_browser(page, fresh_company, tmp_path):
@@ -261,14 +271,14 @@ def test_restore_stale_preview_browser(page, fresh_company, tmp_path):
     dest = _api_restore(fresh_company, data)["company_id"]
 
     _upload(page, _SETTINGS, path)
-    assert f"Team members who get access to {source['name']} with their roles in this company: 1" in page.content()
+    assert f"Team members who get access to {_restored_name(source)} with their roles in this company: 1" in page.content()
     second, _ = _add_user(fresh_company, "manager")
     before = _members(dest)
     page.click('button:has-text("Add team and open company")')
     page.wait_for_load_state("domcontentloaded")
     text = page.content()
     assert "Something changed since this preview. Check the updated preview before continuing." in text
-    assert f"Team members who get access to {source['name']} with their roles in this company: 2" in text
+    assert f"Team members who get access to {_restored_name(source)} with their roles in this company: 2" in text
     assert _members(dest) == before
 
     page.click('button:has-text("Add team and open company")')

@@ -814,7 +814,7 @@ class TestNavigation:
         _TAB_URLS = {
             "company": "/settings/general?tab=company",
             "taxes": "/settings/sales?tab=taxes",
-            "terms": "/settings/sales?tab=terms",
+            "terms": "/settings/contacts?tab=payment-terms",
             "users": "/settings/general?tab=users",
             "schema": "/settings/inventory?tab=categories",
         }

@@ -170,7 +170,7 @@ class TestCallableSlots:
         assert "top-level def" in msg
 
     @pytest.mark.parametrize("slot", list(CALLABLE))
-    def test_not_callable_once_imported_refused(self, slot, tmp_path, monkeypatch):
+    def test_not_callable_once_imported_refused(self, slot, tmp_path, monkeypatch, files_unchecked):
         """Load proves the object import returns, not the source admission read:
         a handler file changed after admission to bind a non-callable is refused."""
         name = f"slotmod_rb_{slot}"

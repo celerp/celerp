@@ -169,24 +169,23 @@ async def test_a_standing_notice_names_the_latest_cause(client, session, auth, m
 
 async def test_the_notice_is_cleared_once_a_later_start_brings_the_records_current(
         client, session, auth, monkeypatch):
-    """Once the records are current, no unread notice still says changes are paused, so
+    """Once the records are current, no notice still says changes are paused, so
     a notice that comes back always means a new failed start."""
     from celerp.main import _bring_data_current, app
 
     guard, hooks, _, _ = _CAUSES["update_failed"]
     await _start(monkeypatch, guard, hooks)
-    assert not (await _notice(session, auth["company_id"])).read
+    await _notice(session, auth["company_id"])
     monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard", _guard_current)
     monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", _no_hook_fails)
     assert await _bring_data_current(app, modules_ready=True) is True
 
-    assert (await _notice(session, auth["company_id"])).read
+    session.expire_all()
+    assert not (await session.execute(select(Notification).where(
+        Notification.company_id == auth["company_id"], Notification.title == _TITLE))).scalars().all()
     await _start(monkeypatch, guard, hooks)
     session.expire_all()
-    unread = (await session.execute(select(Notification).where(
-        Notification.company_id == auth["company_id"], Notification.title == _TITLE,
-        Notification.read == False))).scalars().all()  # noqa: E712
-    assert len(unread) == 1
+    await _notice(session, auth["company_id"])
 
 
 @pytest.mark.parametrize("cause", list(_CAUSES))

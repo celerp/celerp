@@ -1653,12 +1653,25 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
     return [eid for eid in entity_ids if eid not in touched and eid not in used]
 
 
+async def untouched_demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
+    """The demo items the company can still remove as samples: seeded by setup and
+    never edited or used since. Backs the item list's ``filter=demo``."""
+    demo_ids = await demo_item_ids(session, company_id)
+    return await _untouched_demo_items(session, company_id, demo_ids) if demo_ids else []
+
+
 async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UUID) -> tuple[int, int]:
     """Delete the demo items the user never edited or used; the rest stay as they are.
 
     Runs inside the caller's transaction and does not commit. Returns how many demo
-    items were deleted and how many were kept."""
+    items were deleted and how many were kept.
+
+    The items are locked before they are checked, so an edit either commits first and
+    the check sees it (the item is kept), or waits and finds the item gone."""
+    from celerp.services.company_lock import lock_projections
+
     demo_ids = await demo_item_ids(session, company_id)
+    await lock_projections(session, company_id, demo_ids)
     removable = await _untouched_demo_items(session, company_id, demo_ids) if demo_ids else []
     await delete_demo_items(session, company_id, removable)
     return len(removable), len(demo_ids) - len(removable)

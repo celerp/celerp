@@ -25,6 +25,7 @@ import io
 import logging
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -33,6 +34,7 @@ from functools import lru_cache, partial
 from fastapi import HTTPException
 from sqlalchemy import cast, delete, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
@@ -44,6 +46,7 @@ from celerp.importers.adapters.base import (
     SourceAdapter,
     SourceRevisionError,
 )
+from celerp.config import read_config
 from celerp.events.engine import find_event_by_idempotency, write_period_lock
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
@@ -77,10 +80,12 @@ from celerp.models.migration import (
     MigrationStatus,
     can_transition,
 )
+from celerp.modules import requirements
+from celerp.modules.registry import set_enabled
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
 from celerp.services import posting_readiness
-from celerp.services.auth import normalize_role
+from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
 from celerp.services.company_lock import lock_company
 from celerp.services.csv_export import csv_safe
@@ -100,6 +105,13 @@ NOTHING_TO_MIGRATE = "The source file contains no records to migrate."
 OLDER_IMPORTER = "This migration was created by an older importer version and must be restarted."
 CHANGED_LOCK_DATE = ("The lock date in the source file has changed since this migration started. "
                      "Restore the original file or start a new migration.")
+MISSING_FEATURES = ("This migration needs {features}, which this installation does not have or cannot run. "
+                    "Install or update it, then start again. Nothing was created.")
+STILL_PREPARING = ("Celerp is still preparing the features this migration needs. "
+                   "The migration starts by itself once they are ready.")
+FEATURE_STOPPED = ("A feature this migration needs stopped running before anything was moved. "
+                   "Discard this migration and start again.")
+STOPPED = "The migration stopped unexpectedly. Nothing from the failed step was saved. Start it again to resume."
 
 _S = MigrationStatus
 _P = MigrationPhase
@@ -147,6 +159,17 @@ _MODE_LABELS = {CIFMode.FULL_HISTORY: "Full history", CIFMode.CUTOVER: "Cutover"
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PREPARED_BY_MAX = 200
 COMPANY_NAME_MAX = 200
+
+
+def company_name_error(name: str) -> str | None:
+    """Why a trimmed company name cannot be used, or None when it can."""
+    if not name:
+        return "Enter a company name."
+    if len(name) > COMPANY_NAME_MAX:
+        return f"The company name must be at most {COMPANY_NAME_MAX} characters."
+    if "\x00" in name:
+        return "The company name contains a character that cannot be saved."
+    return None
 
 
 class MigrationError(HTTPException):
@@ -259,14 +282,61 @@ def validate_decisions(scan: store.ScanSession, body: dict) -> MigrationDecision
     return decisions
 
 
-def prepare_start(scan: store.ScanSession) -> MigrationDecisions:
-    """Re-validate the saved decisions and refuse an empty source, before anything is created."""
+@dataclass(frozen=True)
+class StartPlan:
+    decisions: MigrationDecisions
+    # The modules the source needs that do not receive it in this process yet.
+    requirements: requirements.RequirementPlan
+
+    @property
+    def modules(self) -> list[str]:
+        return [r.name for r in self.requirements.requirements]
+
+
+def _groups(bundle) -> dict[str, list]:
+    """Every non-empty CIF group of *bundle* with its records, in phase write order."""
+    out = {}
+    for groups in PHASE_GROUPS.values():
+        for group in groups:
+            records = ([bundle.company] if bundle.company else []) if group == "company" else getattr(bundle, group)
+            if records:
+                out[group] = records
+    return out
+
+
+def _unserved_modules(manifest: CIFImportManifest) -> set[str]:
+    """The bundled modules owning a group the source fills that no registered sink receives."""
+    needed = set()
+    for group in _groups(manifest.bundle):
+        try:
+            sink_for(group)
+        except MissingSinkError:
+            if SINK_MODULES[group] != "celerp":
+                needed.add(SINK_MODULES[group])
+    return needed
+
+
+def prepare_start(scan: store.ScanSession) -> StartPlan:
+    """Everything a start checks before anything is created: the saved decisions, a source
+    with records whose manifest and reconciliation totals build, and the modules that must
+    receive it. A module this installation does not have or cannot run refuses the start;
+    a bundled one that is merely off becomes a preparation step. Blocking: run in a thread."""
     if scan.decisions is None:
         raise MigrationError(422, {"mode": "Choose how to move the books before starting."})
     decisions = validate_decisions(scan, store.decisions_json(scan.decisions))
     if sum(scan.scan.object_counts.values()) == 0:
         raise MigrationError(422, NOTHING_TO_MIGRATE)
-    return decisions
+    try:
+        adapter = _adapter(scan.adapter_key)
+        manifest = adapter.build_manifest(scan.artifacts, decisions)
+        adapter.source_expectations(scan.artifacts, decisions)
+    except (ScanError, SourceRevisionError) as exc:
+        raise MigrationError(422, str(exc)) from None
+    plan = requirements.plan_requirements(dict.fromkeys(_unserved_modules(manifest)))
+    unavailable = plan.blocked + plan.needs_consent
+    if unavailable:
+        raise MigrationError(422, MISSING_FEATURES.format(features=", ".join(r.label for r in unavailable)))
+    return StartPlan(decisions, plan)
 
 
 def scan_view(scan: store.ScanSession) -> dict:
@@ -344,10 +414,22 @@ def _illegal(action: str, run: MigrationRun) -> MigrationError:
     return MigrationError(409, f"Cannot {action} a migration that is {run.status}.")
 
 
+def staged_settings(modules: Sequence[str]) -> dict:
+    """The staged company's settings: when the source needs modules that are not receiving
+    it yet, the company has them on, with every module turned on in this installation."""
+    if not modules:
+        return {}
+    return set_enabled({}, set(read_config().get("modules", {}).get("enabled", [])) | set(modules))
+
+
 async def create_run(session: AsyncSession, *, company: Company, user: User, scan: store.ScanSession,
-                     decisions: MigrationDecisions) -> MigrationRun:
+                     decisions: MigrationDecisions, modules: Sequence[str] = (), awaiting: bool = False) -> MigrationRun:
     """A ``preparing`` run of *company* holding the scan's claim; the files stay in the scan
-    until ``claim_source``. The caller holds ``lock_scan_claim`` and commits."""
+    until ``claim_source``. The caller holds ``lock_scan_claim`` and commits.
+
+    *modules* are those the source needs that do not receive it yet (``staged_settings``
+    gives them to the company). *awaiting* marks a run that waits for a restart to bring
+    them up; ``resume_prepared_runs`` starts it then."""
     adapter = _adapter(scan.adapter_key)
     await asyncio.to_thread(store.verify_unchanged, scan.token, owner=scan.owner)
     first = scan.artifacts[0]
@@ -365,6 +447,8 @@ async def create_run(session: AsyncSession, *, company: Company, user: User, sca
                            "size_bytes": a.size_bytes, "sha256": a.sha256} for a in scan.artifacts],
             "bootstrap": scan.owner[0] == "bootstrap",
             "sample": len(scan.artifacts) == 1 and first.sha256 == _sample_sha256(),
+            "modules": sorted(modules),
+            "awaiting_modules": awaiting,
         },
         reconciliation={}, error_summary={},
     )
@@ -418,6 +502,37 @@ async def recover_preparing_runs(session: AsyncSession) -> int:
     return len(rows)
 
 
+def _modules_running(run: MigrationRun) -> bool:
+    return requirements.plan_requirements(dict.fromkeys(run.source_summary.get("modules", []))).ready
+
+
+async def resume_prepared_runs(session: AsyncSession) -> int:
+    """Start each run that waited for its modules, once a restart has them running; a run
+    whose modules are still not running keeps waiting. Returns how many started."""
+    waiting = (await session.scalars(select(MigrationRun.id).where(
+        MigrationRun.status == _S.READY.value,
+        MigrationRun.source_summary["awaiting_modules"].as_boolean().is_(True)))).all()
+    started = []
+    for run_id in waiting:
+        try:
+            run = await session.get(MigrationRun, run_id)
+            await _lock_run(session, run)
+            if not run.source_summary.get("awaiting_modules") or not _modules_running(run):
+                await session.rollback()
+                continue
+            run.source_summary = {**run.source_summary, "awaiting_modules": False}
+            await request_start(session, run)
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("Migration %s could not be resumed: %s", run_id, type(exc).__name__)
+            continue
+        started.append(run_id)
+    for run_id in started:
+        schedule_run(run_id)
+    return len(started)
+
+
 async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user_id: uuid.UUID) -> MigrationRun:
     """The run, if *user_id* started it and still owns its company; otherwise not found.
 
@@ -447,6 +562,8 @@ async def request_start(session: AsyncSession, run: MigrationRun) -> None:
     await _lock_run(session, run)
     if not can_transition(_S(run.status), _S.RUNNING):
         raise _illegal("start", run)
+    if run.source_summary.get("awaiting_modules"):
+        raise MigrationError(409, STILL_PREPARING)
     if run.status != _S.READY and not store.run_dir(run.id).exists():
         raise MigrationError(409, "The source file for this migration has been deleted. Discard it and start again.")
     if not await _try_xact_lock(session, run.id):
@@ -513,15 +630,14 @@ class _Step:
 
 def _phase_steps(manifest: CIFImportManifest) -> dict[MigrationPhase, list[_Step]]:
     """Every record per phase, in write order; raises MissingSinkError before any write."""
-    bundle = manifest.bundle
+    filled = _groups(manifest.bundle)
     steps: dict[MigrationPhase, list[_Step]] = {}
     for phase, groups in PHASE_GROUPS.items():
         steps[phase] = []
         for group in groups:
-            records = ([bundle.company] if bundle.company else []) if group == "company" else getattr(bundle, group)
-            if records:
+            if group in filled:
                 sink = sink_for(group)
-                steps[phase].extend(_Step(group, sink, r) for r in records)
+                steps[phase].extend(_Step(group, sink, r) for r in filled[group])
     return steps
 
 
@@ -595,6 +711,18 @@ def _failure_details(exc: Exception) -> tuple[int, dict]:
     return 0, {}
 
 
+def _failure_message(exc: Exception) -> str:
+    """The owner's reason for a failure. Sinks and domain services raise messages written
+    for the owner; a module gone missing, a database or a storage failure is shown plainly
+    and logged, so no package, query or path reaches the page."""
+    if isinstance(exc, MissingSinkError):
+        return FEATURE_STOPPED
+    if isinstance(exc, (SQLAlchemyError, OSError)) or not str(exc):
+        logger.warning("Migration failed: %s", type(exc).__name__, exc_info=exc)
+        return STOPPED
+    return str(exc)
+
+
 async def _fail(maker, run_id: uuid.UUID, phase: MigrationPhase, cursor: int, exc: Exception) -> None:
     errors, details = _failure_details(exc)
     async with maker() as s:
@@ -604,7 +732,7 @@ async def _fail(maker, run_id: uuid.UUID, phase: MigrationPhase, cursor: int, ex
         run.phase_state = state
         run.current_phase = phase.value
         run.error_summary = {"phase": phase.value, "batch_cursor": cursor,
-                             "error_class": type(exc).__name__, "message": str(exc), **details}
+                             "error_class": type(exc).__name__, "message": _failure_message(exc), **details}
         await _set_status(s, run, _S.FAILED)
         await s.commit()
 
@@ -770,8 +898,8 @@ def _same_places(*figures: Decimal) -> list[str]:
 
 def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict:
     rule, allowance = _rule(expectation)
-    row = {"check": str(expectation.measure), "key": expectation.key, "label": expectation.label,
-           "currency": expectation.currency,
+    row = {"check": str(expectation.measure), "key": expectation.key, "currency": expectation.currency,
+           "label": expectation.label, "credit_normal": expectation.credit_normal,
            "source": str(expectation.expected), "celerp": None, "difference": None, "rule": rule, "result": "fail"}
     if actual is None:
         if expectation.expected == 0:
@@ -946,6 +1074,9 @@ async def company_tables(session: AsyncSession) -> list[str]:
         "ORDER BY c.table_name"))).all())
 
 
+START_COMPANY_PAGE = "/setup/start-company"
+
+
 def _changed_outside(kind: str, table: str) -> dict:
     """The refusal for a table changed outside Celerp (``db_catalog.changed_outside``)."""
     if kind == "outside_reference":
@@ -984,7 +1115,8 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     except db_catalog.TableElsewhere as exc:
         raise MigrationError(409, _changed_outside("partition_key", exc.table)) from None
     await _refuse_changed_outside(session)
-    for table in await company_tables(session):
+    present = await company_tables(session)
+    for table in present:
         if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
             continue
         held = await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'),
@@ -1006,7 +1138,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         MigrationCleanupTask.company_id == company.id, MigrationCleanupTask.attachment.is_not(None)))
     task = MigrationCleanupTask(company_id=company.id, run_ids=[str(r) for r in run_ids])
     session.add(task)
-    for table in _DISCARD_ORDER:
+    for table in [t for t in _DISCARD_ORDER if t in present]:
         await session.execute(text(f'DELETE FROM "{table}" WHERE company_id = :c'), {"c": str(company.id)})
     await session.execute(text("DELETE FROM companies WHERE id = :c"), {"c": str(company.id)})
     redirect = "/"
@@ -1015,6 +1147,8 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
             db_catalog.own_keys(await db_catalog.read(session)))), {"members": [owner_id]})
         if gone.rowcount:
             redirect = "/setup"
+    elif await first_usable_company_link(session, owner_id) is None:
+        redirect = START_COMPANY_PAGE  # the login has no company left
     # A table changed outside Celerp after the first check is reached by the deletes and
     # kept from changing back until the commit, so checking again finds it; the deletes
     # are then rolled back with the refusal.
@@ -1090,6 +1224,17 @@ def _retention_start(run: MigrationRun) -> datetime:
     return run.heartbeat_at or run.created_at
 
 
+def _error_view(run: MigrationRun) -> dict | None:
+    """What the owner is told about a failure: the message and the records it names, never
+    the exception, cursor or module behind it."""
+    summary = run.error_summary or {}
+    if not summary.get("message"):
+        return None
+    phase = summary.get("phase")
+    return {"message": summary["message"], "missing": summary.get("missing"),
+            "phase": PHASE_LABELS.get(_P(phase)) if phase in _P._value2member_map_ else None}
+
+
 async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
     company = await session.get(Company, run.company_id)
     state = run.phase_state or {}
@@ -1108,7 +1253,8 @@ async def run_view(session: AsyncSession, run: MigrationRun) -> dict:
                     **{k: _phase_entry(state, p)[k] for k in ("status", "created", "skipped", "errors")}}
                    for p in PHASE_ORDER],
         "coverage": (run.coverage or {}).get("entries", []),
-        "error_summary": run.error_summary or {},
+        "error": _error_view(run),
+        "preparing": run.status == _S.READY and bool(run.source_summary.get("awaiting_modules")),
         "retention_until": (_retention_start(run) + timedelta(days=RETENTION_DAYS)).isoformat() if retained else None,
         "source_deleted": run.status != _S.PREPARING and not store.run_dir(run.id).exists(),
         "prepared_by": run.prepared_by,
@@ -1152,6 +1298,7 @@ async def housekeeping(session: AsyncSession) -> None:
     """Startup maintenance. Preparing runs claim their scans before expired scans are
     purged, so a start that died just before its files moved never loses them."""
     await recover_preparing_runs(session)
+    await resume_prepared_runs(session)
     store.purge_expired()
     await mark_stale_runs_interrupted(session)
     await purge_run_sources(session)

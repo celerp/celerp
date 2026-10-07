@@ -18,7 +18,7 @@ import respx
 import sqlalchemy as sa
 from sqlalchemy import text
 
-from company_backup_support import company, download, member, owner, restore, token
+from company_backup_support import company, download, member, owner, restore, settle, token
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
 from test_helpers import merge_items
 
@@ -51,13 +51,13 @@ async def _item(client, tok: str, sku: str) -> str:
 
 
 async def _links(engine, cid, eid: str, links: dict) -> None:
-    async with engine.begin() as conn:
-        state = (await conn.execute(text(
-            "SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),
-            {"c": uuid.UUID(str(cid)), "e": eid})).scalar_one()
-        await conn.execute(text(
-            "UPDATE projections SET state = CAST(:s AS json) WHERE company_id = :c AND entity_id = :e"),
-            {"s": json.dumps({**state, "external_links": links}), "c": uuid.UUID(str(cid)), "e": eid})
+    """Record channel links on the item as an update event and rebuild its record from it."""
+    await _sql(engine,
+               "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
+               "VALUES (:c, :e, 'item', 'item.updated', CAST(:d AS json), 'api', :k)",
+               c=uuid.UUID(str(cid)), e=eid, k=f"k-links-{uuid.uuid4()}",
+               d=json.dumps({"fields_changed": {"external_links": {"old": None, "new": links}}}))
+    await settle(engine, cid)
 
 
 async def _by_sku(engine, cid, sku: str) -> str:
@@ -76,11 +76,14 @@ async def _projection(engine, cid, eid: str) -> tuple[dict, bool | None]:
 
 
 async def _doc(engine, cid, entity_id: str, **markers) -> None:
+    """A finalized invoice, recorded as its creating event and rebuilt from it."""
     await _sql(engine,
-               "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
-               "VALUES (:c, :e, 'doc', CAST(:s AS json), 1, now())",
-               c=cid, e=entity_id, s=json.dumps({"doc_type": "invoice", "ref_id": entity_id, "status": "final",
-                                                 "line_items": [], **markers}))
+               "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
+               "VALUES (:c, :e, 'doc', 'doc.created', CAST(:d AS json), 'api', :k)",
+               c=cid, e=entity_id, k=f"k-{entity_id}",
+               d=json.dumps({"doc_type": "invoice", "ref_id": entity_id, "status": "final",
+                             "line_items": [], **markers}))
+    await settle(engine, cid)
 
 
 @pytest_asyncio.fixture

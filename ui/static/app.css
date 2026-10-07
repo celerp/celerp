@@ -124,27 +124,10 @@ a:hover { text-decoration: underline; }
 /* ─── Auth card wide variant ──────────────────────────────────────────── */
 .auth-card--wide { max-width: 520px; }
 
-/* ─── Wizard steps ────────────────────────────────────────────────────── */
-.wizard-steps { display: flex; gap: 0; margin-bottom: 28px; overflow: hidden; }
-.wizard-step { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
-.wizard-step:not(:last-child)::after { content: ""; flex: 1; height: 1px; background: var(--c-border); margin: 0 6px; min-width: 8px; }
-.step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
-.step-num { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text2); flex-shrink: 0; }
-.step-num--active { background: var(--c-accent); border-color: var(--c-accent); color: #fff; }
-.step-num--done { background: var(--c-green); border-color: var(--c-green); color: #fff; }
-.step-label { font-size: 11px; color: var(--c-text2); white-space: nowrap; }
-.step-label--active { color: var(--c-text); font-weight: 600; }
-
 /* ─── Form extras ─────────────────────────────────────────────────────── */
-.form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
+.form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; font-family: inherit; }
 .form-group--inline { flex-direction: row; align-items: center; gap: 8px; }
 .form-label--inline { font-size: 13px; color: var(--c-text); cursor: pointer; margin: 0; }
-
-/* ─── Added users list ────────────────────────────────────────────────── */
-.added-users-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 10px 12px; }
-.added-user-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
-.added-user-name { font-weight: 600; min-width: 120px; }
-.added-user-email { color: var(--c-text2); flex: 1; }
 
 /* ─── Onboarding card ─────────────────────────────────────────────────── */
 .onboarding-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 36px 40px; max-width: 640px; margin: 0 auto; }
@@ -154,10 +137,27 @@ a:hover { text-decoration: underline; }
    submit button, stretched over the whole card. */
 .auth-container:has(.setup-chooser),
 .auth-container:has(.migration-wizard) { max-width: 760px; }
+.auth-container:has(.setup-card) { max-width: 600px; }
+.setup-options { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--c-border); }
+.setup-options-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); margin: 0 0 10px; }
+.setup-options-note { font-size: 11px; color: var(--c-text2); margin: 8px 0 0; }
+/* Restore and Move your books sit side by side, and stack only when a column would
+   be narrower than 240px (phones: the setup card and the dashboard card alike). */
+.start-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.start-option { padding: 10px 12px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); }
+.start-option-head { display: flex; align-items: baseline; gap: 6px; }
+.start-option-icon { font-size: 13px; color: var(--c-accent); flex-shrink: 0; }
+.start-option-title { font-size: 12px; font-weight: 600; }
+.start-option-desc { font-size: 11px; color: var(--c-text2); line-height: 1.5; margin: 4px 0 0; }
+.start-option-note { font-size: 11px; color: var(--c-text2); font-style: italic; margin: 4px 0 0; }
 .quick-link-card:has(.quick-link-action) { position: relative; margin: 0; }
 .quick-link-action { color: inherit; text-decoration: none; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
 .quick-link-action::after { content: ""; position: absolute; inset: 0; }
 .migration-source { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.migration-wizard fieldset { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+.migration-wizard legend { padding: 0; }
+/* The cutover date belongs to the cutover method only. */
+.migration-wizard form:has(input[name="mode"][value="full_history"]:checked) .cutover-date { display: none; }
 /* The wizard card has a fixed width, so its tables fill the card (not the base max-content)
    and their text wraps between words (a coverage note, a check label) instead of pushing
    the table past the card. Figures never wrap. */
@@ -232,6 +232,23 @@ a:hover { text-decoration: underline; }
   }
   .sidebar.sidebar--open { left: 0; }
   .sidebar-toggle { display: block; }
+  /* The menu control stays first and on screen; the other controls shrink to fit. */
+  .topbar { justify-content: flex-start; padding: 8px 12px; gap: 0.5rem; }
+  .topbar > * { min-width: 0; }
+  .topbar .lang-switcher-wrap { flex-shrink: 1; }
+  .topbar .lang-switcher-wrap .combobox-input { min-width: 0; max-width: 4.5rem; }
+  .topbar .global-search-wrap { flex: 1 1 4rem; min-width: 4rem; margin: 0; }
+  .topbar .user-menu__trigger, .topbar .company-switcher-select { max-width: 4.5rem; }
+  .topbar .notif-wrap, .topbar .user-menu { flex-shrink: 0; }
+}
+/* Phones: two rows. Menu, language, bell and user on the first; search and company
+   share the second, so the search box keeps room to type and names show whole. */
+@media (max-width: 480px) {
+  .topbar { flex-wrap: wrap; height: auto; row-gap: 6px; }
+  .topbar .global-search-wrap { order: 1; flex: 1 1 12rem; }
+  .topbar .company-switcher-select { order: 1; max-width: 50%; }
+  .topbar .lang-switcher-wrap { flex-shrink: 0; }
+  .topbar .lang-switcher-wrap .combobox-input { max-width: 8rem; }
 }
 
 /* ─── Main content ────────────────────────────────────────────────────── */
@@ -264,6 +281,19 @@ a:hover { text-decoration: underline; }
 .page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .page-title { font-size: 18px; font-weight: 600; flex: 1; }
 .page-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* The search caption floats above its box; when the header wraps, the row gap leaves
+   it room so it never sits on the title. */
+.page-header:has(.search-scope) { row-gap: 20px; }
+/* Narrow screens: slimmer side margins, and the header stacks. Title, then the search
+   caption directly over a full-width search box, then the action buttons. */
+@media (max-width: 768px) {
+  .main-content { padding: 24px 16px; }
+  .page-header:has(.search-scope) { row-gap: 12px; }
+  .page-header .page-title, .page-header .page-actions, .page-actions .search-scope { flex-basis: 100%; }
+  .search-scope .search-scope-label { position: static; display: block; text-align: left; margin-bottom: 2px; }
+  .search-scope .page-search-wrap { display: block; }
+  .search-scope .search-input { width: 100%; }
+}
 
 /* ─── Buttons ─────────────────────────────────────────────────────────── */
 .btn {
@@ -482,6 +512,8 @@ a:hover { text-decoration: underline; }
 .cell-input--status option { background: var(--c-bg2); color: var(--c-text); }
 .cell--alert { color: var(--c-red); }
 .cell--mono { font-family: var(--font-mono); font-size: 11px; }
+/* The "--" empty mark keeps the body font: monospace spaces it out to "- -". */
+.cell-empty { font-family: var(--font); }
 .cell-money { font-family: var(--font-mono); }
 .cell-weight { font-family: var(--font-mono); }
 .cell-actions { display: flex; gap: 4px; align-items: center; }
@@ -555,6 +587,7 @@ a:hover { text-decoration: underline; }
 .search-input {
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
   border-radius: var(--radius); padding: 6px 10px; font-size: 12px; width: 220px; max-width: 100%;
+  text-overflow: ellipsis;
 }
 .search-input:focus { outline: none; border-color: var(--c-accent); }
 .table-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
@@ -577,7 +610,9 @@ a:hover { text-decoration: underline; }
 .pagination .per-page-select { margin-left: auto; font-size: 12px; padding: 2px 6px; }
 
 /* ─── KPI grid ────────────────────────────────────────────────────────── */
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+/* At most three cards a row, so six split 3 + 3 rather than 5 + 1; both KPI groups share
+   it, and a short row stretches to the full width. Narrow screens fall back to 180px cards. */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(max(180px, calc((100% - 24px) / 3)), 1fr)); gap: 12px; margin-bottom: 24px; }
 .kpi-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 14px 16px; }
 .kpi-label { font-size: 11px; color: var(--c-text2); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
 .kpi-value { font-size: 20px; font-weight: 700; font-family: var(--font-mono); color: var(--c-text); }
@@ -876,6 +911,7 @@ a:hover { text-decoration: underline; }
 .col-sku .li-ident-1st { font-family: monospace; white-space: nowrap; }
 .col-sku .li-ident-2nd { margin-top: 2px; font-size: 11px; color: var(--c-text2);
                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.li-deleted-mark { margin-left: 4px; font-size: 11px; color: var(--c-danger, #b42318); white-space: nowrap; }
 .doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 44px;  }
 .doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 90px;  text-align: right; }
 .doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 44px;  text-align: right; }
@@ -1137,6 +1173,7 @@ a:hover { text-decoration: underline; }
 .global-search-input {
   width: 100%; padding: 6px 30px 6px 12px; font-size: 12px; border-radius: var(--radius);
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
+  text-overflow: ellipsis;
 }
 .global-search-input:focus { outline: none; border-color: var(--c-accent); }
 .global-search-results {
@@ -1280,7 +1317,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .import-spinner-label { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--c-text2); }
 
 /* Step indicator */
-.import-steps { display: flex; align-items: center; gap: 0; margin-bottom: 20px; padding: 0; }
+.import-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 0; margin-bottom: 20px; padding: 0; }
 .import-step { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-text2); padding: 6px 12px; position: relative; }
 .import-step--active { color: var(--c-accent); font-weight: 600; }
 .import-step--done { color: var(--c-green, #22c55e); }
@@ -1427,6 +1464,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   border: 1px dashed var(--c-border); border-radius: var(--radius);
 }
 .empty-state-cta-msg { font-size: 14px; color: var(--c-text2); margin-bottom: 16px; }
+.empty-state-cta-hint { font-size: 13px; color: var(--c-muted, #888); max-width: 32rem; margin: -8px auto 16px; }
 .empty-state-cta-btn {
   display: inline-flex; align-items: center; justify-content: center;
   padding: 8px 18px; border-radius: var(--radius); border: 1px solid var(--c-accent2);
@@ -1487,6 +1525,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .brand-footer { text-align: center; padding: 10px 0 8px; border-top: 1px solid var(--c-border); margin-top: auto; }
 .brand-footer-link { font-size: 11px; color: var(--c-text2); text-decoration: none; opacity: 0.7; }
 .brand-footer-link:hover { opacity: 1; color: var(--c-accent); }
+/* The star stays with its words when the footer wraps. */
+#star-cta { white-space: nowrap; }
 
 /* ─── Document-level branding (visible in doc detail + survives print) ── */
 .doc-brand-footer { text-align: center; margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--c-border); }
@@ -1580,7 +1620,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .list-disc { list-style: disc; padding-left: 20px; }
 .success-banner { color: var(--c-green); font-weight: 500; margin-bottom: var(--spacing-md); }
 .display-contents { display: contents; }
-.form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
 
 /* ─── Image cell (thumbnail + drag-drop) ─────────────────────────────── */
 /* Image column: a fixed 72px column holding a 40px-high preview (width follows the
@@ -1748,11 +1787,14 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .vert-cat-table .cell--action { width: 100px; text-align: right; }
 .vert-cat-table .th--action { width: 100px; text-align: right; }
 /* Your Categories table */
-.your-cats-table { table-layout: fixed; }
+/* Fills its card; the buttons take their own width in every language and the name
+   column the rest, ellipsized (max-width: 0 lets a nowrap cell shrink). */
+.your-cats-table { width: 100%; }
 .your-cats-table td, .your-cats-table th { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.your-cats-name { width: 100%; max-width: 0; }
 .your-cats-fields { width: 80px; text-align: center !important; }
-.your-cats-action { width: 90px; text-align: right !important; }
-.cat-add-form { display: flex; align-items: center; gap: 6px; }
+.your-cats-action { text-align: right !important; }
+.cat-add-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .cat-add-input { width: 200px !important; flex: 0 0 200px; }
 .cell--left { text-align: left; }
 .cell--center { text-align: center; }
@@ -1765,6 +1807,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .activating-body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 0; }
 .activating-spinner { width: 48px; height: 48px; border: 4px solid var(--c-border); border-top-color: var(--c-accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .activating-status { font-size: 14px; color: var(--c-text2); }
+.activating-status--error { color: var(--c-red-dark); }
 .activating-modules { width: 100%; max-width: 320px; }
 .activating-module-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .activating-module { font-size: 13px; padding: 6px 10px; border-radius: 6px; display: flex; align-items: center; gap: 8px; }
@@ -2153,7 +2196,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .tab.active { border-bottom-color: var(--c-primary); font-weight: 600; }
 .financial-cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
 .financial-card { flex: 1; min-width: 140px; border: 1px solid var(--c-border); border-radius: var(--radius); padding: 0.75rem 1rem; text-align: center; }
-.financial-card-label { font-size: 0.8rem; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.financial-card-label { font-size: 0.8rem; color: var(--c-text-muted); text-transform: uppercase; letter-spacing: 0.05em; overflow-wrap: anywhere; }
 .financial-card-sublabel { display: block; font-size: 0.65em; font-weight: 400; opacity: 0.7; }
 .financial-card--link { text-decoration: none; color: inherit; cursor: pointer; }
 .financial-card--link:hover { background: var(--c-bg-hover, #f0f0f0); }
@@ -2962,6 +3005,8 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 
 /* --- Form hints --- */
 .form-hint { font-size: 0.78rem; color: var(--text-muted); margin: 2px 0 0; }
+.form-field-error { font-size: 0.78rem; color: var(--c-red-dark); margin: 4px 0 0; }
+.form-input[aria-invalid="true"] { border-color: var(--c-red); }
 
 /* --- Modal dialog (send email, etc.) --- */
 .modal-dialog {
@@ -3433,6 +3478,39 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .module-build-card { margin-bottom: 24px; }
 /* Keep the file chooser clear of the installed-modules table below it. */
 .module-import { margin-bottom: 20px; }
+
+/* --- Dashboard "Bring in your data" card and the Import arrow it leads to --- */
+.getting-started-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius);
+  padding: 16px 20px; margin-bottom: 20px; }
+.getting-started-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.getting-started-head .section-title { margin: 0 0 12px; }
+.getting-started-close { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.getting-started-forever { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-text2); }
+.getting-started-lead { font-size: 13px; margin: 0 0 8px; }
+.getting-started-dismiss { background: none; border: none; font-size: 22px; line-height: 1; cursor: pointer;
+  color: var(--c-text2); padding: 0; }
+.getting-started-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.getting-started-link { display: inline-block; padding: 8px 14px; border: 1px solid var(--c-border);
+  border-radius: var(--radius); background: var(--c-bg3); color: var(--c-text); text-decoration: none; font-weight: 500; }
+.getting-started-link:hover { border-color: var(--c-accent); color: var(--c-accent); }
+/* The spreadsheet icon on every spreadsheet Import button (ui/components/icons.py). */
+.import-icon { display: inline-flex; vertical-align: -0.125em; margin-inline-end: 6px; }
+.btn--icon > .import-icon { margin-inline-end: 0; font-size: 16px; }
+.getting-started-note { font-size: 13px; color: var(--c-text2); margin: 8px 0; }
+.import-arrow { position: relative; width: fit-content; max-width: 100%; box-sizing: border-box;
+  margin: -4px 0 16px; padding: 8px 12px; border-radius: 6px; background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 500;
+  line-height: 1.4; box-shadow: 0 4px 14px rgba(0,0,0,.2); animation: import-arrow-in .2s ease-out; }
+.import-arrow::before { content: ""; position: absolute; top: -6px; left: var(--arrow-x, 50%); margin-left: -6px;
+  border: 6px solid transparent; border-top: 0; border-bottom-color: var(--c-accent); }
+/* Above its control (the select-all box), pointing down. */
+.import-arrow--down { margin: 0 0 10px; }
+.import-arrow--down::before { top: auto; bottom: -6px; border-bottom: 0; border-top: 6px solid var(--c-accent); }
+.import-arrow-close { margin-left: 10px; padding: 0 2px; border: 0; background: none; color: inherit;
+  font-size: 16px; line-height: 1; vertical-align: middle; cursor: pointer; }
+.import-arrow-pulse { animation: import-arrow-pulse 1.4s ease-in-out infinite; }
+@keyframes import-arrow-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes import-arrow-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(14,165,122,.45); } 50% { box-shadow: 0 0 0 6px rgba(14,165,122,0); } }
+@media (prefers-reduced-motion: reduce) { .import-arrow, .import-arrow-pulse { animation: none; } }
 /* Doctor: a failed step's error is shown whole, wrapped, never cut off. */
 .doctor-failures dt { font-weight: 600; margin-top: 8px; }
 .doctor-failures { margin: 0 0 12px; }

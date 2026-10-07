@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from test_onboarding_import_invariants import _set_company_settings, write_upload  # noqa: F401
+from test_import_invariants import _set_company_settings, write_upload  # noqa: F401
 
 _REPO = Path(__file__).resolve().parents[1]
 

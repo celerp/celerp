@@ -14,8 +14,11 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
-from ui.i18n import t, get_lang
-from ui.components.table import fmt_money, fmt_rate
+from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
+from celerp.services.pricing import PRICE_LISTS_FALLBACK
+from ui.i18n import t, get_lang, category_label, field_label, price_list_label
+from ui.components.table import EMPTY, fmt_money, fmt_rate
+from ui.components.deleted_items import deleted_label
 
 # Known ledger event types. The label for each is resolved at render time via
 # ``t("event.<event_type>")`` (see event_label); values here are those i18n keys,
@@ -37,8 +40,13 @@ _EVENT_TYPES: tuple[str, ...] = (
     "doc.payment.voided", "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
     "doc.fulfillment_reversed", "doc.partially_reverted", "doc.line_received",
     "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft",
-    "contact.created", "contact.updated", "deal.created", "deal.updated",
-    "deal.won", "deal.lost", "memo.created", "memo.returned",
+    "crm.contact.created", "crm.contact.updated", "crm.contact.merged", "crm.contact.tagged",
+    "crm.contact.note_added", "crm.contact.note_updated", "crm.contact.note_removed",
+    "crm.contact.person_added", "crm.contact.person_updated", "crm.contact.person_removed",
+    "crm.contact.address_added", "crm.contact.address_updated", "crm.contact.address_removed",
+    "crm.deal.created", "crm.deal.updated", "crm.deal.stage_changed", "crm.deal.won",
+    "crm.deal.lost", "crm.deal.deleted", "crm.deal.reopened",
+    "memo.created", "memo.returned",
     "scan.checked_in", "scan.checked_out",
 )
 EVENT_TYPE_LABELS: dict[str, str] = {et: f"event.{et}" for et in _EVENT_TYPES}
@@ -239,24 +247,6 @@ _ORIGIN_EVENT_TYPES = frozenset({
     "item.transformed_from",
 })
 
-# Event types that are self-describing via their label; detail column intentionally blank.
-_SELF_DESCRIBING_EVENT_TYPES = frozenset({
-    "doc.finalized",
-    "doc.voided",
-    "doc.reverted_to_draft",
-    "doc.shared",
-    "doc.converted",
-    "doc.converted_to_bill",
-    "item.created",
-    "item.deleted",
-    "contact.created",
-    "deal.created",
-    "deal.won",
-    "deal.lost",
-    "memo.created",
-    "memo.returned",
-})
-
 _SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
 
 # Document totals that are computed from line_items + header fields (see _recalc_list_totals).
@@ -278,6 +268,17 @@ _FIELD_LABEL_KEYS: tuple[str, ...] = (
     "category", "barcode", "location",
 )
 _FIELD_LABELS: dict[str, str] = {k: f"field.{k}" for k in _FIELD_LABEL_KEYS}
+# Item fields not listed above read as their inventory column headers do.
+_ITEM_FIELDS: dict[str, dict] = {f["key"]: f for f in [*DEFAULT_ITEM_SCHEMA, *cost_columns(PRICE_LISTS_FALLBACK)]}
+
+
+def _field_name(key: str) -> str:
+    """Display name for a changed field key; an unknown key (a custom attribute) is
+    title-cased as named."""
+    if key in _FIELD_LABELS:
+        return t(_FIELD_LABELS[key])
+    field = _ITEM_FIELDS.get(key)
+    return field_label(field) if field else key.replace("_", " ").title()
 
 # ID fields that carry a raw entity-ID value; suppressed when a companion
 # human-readable field is present in the same changeset.
@@ -287,13 +288,23 @@ _ID_FIELD_COMPANIONS: dict[str, str] = {
 }
 
 
-def detail_from_entry(data: dict, event_type: str, currency: str | None = None) -> str:
-    """Extract a short human-readable detail string from a ledger entry's data dict."""
+def _category(key: str, category_names: dict | None) -> str:
+    """A category as the page shows it: from the caller's ``category_labels`` map, else
+    ``category_label`` (a library category in the user's language, else the key)."""
+    return (category_names or {}).get(key) or category_label(key)
+
+
+def detail_from_entry(data: dict, event_type: str, currency: str | None = None,
+                      category_names: dict | None = None) -> str:
+    """Extract a short human-readable detail string from a ledger entry's data dict.
+
+    category_names: ``category_labels`` of the company's category names, so a renamed or
+    company-made category reads as named rather than as its key."""
     if not data or not isinstance(data, dict):
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        summary = _fields_changed_summary(fields_changed, currency)
+        summary = _fields_changed_summary(fields_changed, currency, category_names)
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
@@ -316,7 +327,11 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
     if event_type == "item.pricing.set":
         price_type = data.get("price_type", "")
         new_price = data.get("new_price")
-        label = price_type.replace("_", " ").title() if price_type else t("field.price")
+        # price_type is a price field key, or a price list's name as the API also accepts;
+        # a system list named by name reads in the user's language.
+        label = price_list_label(price_type) if price_type else t("field.price")
+        if label == price_type:
+            label = _field_name(price_type)
         return f"{label} → {fmt_price(new_price, price_type, currency)}" if new_price is not None else label
     if event_type == "item.status.set":
         new_status = data.get("new_status", "")
@@ -334,7 +349,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         if child_sku:
             parts.append(f"→ {child_sku}")
         if child_category:
-            parts.append(f"({child_category})")
+            parts.append(f"({_category(child_category, category_names)})")
         return " ".join(parts) if parts else ""
     if event_type == "item.merged":
         sources = data.get("source_entity_ids", [])
@@ -456,7 +471,7 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         target_ref = data.get("target_ref") or data.get("target_doc_number") or ""
         return f"→ {target_ref}" if target_ref else (doc_ref or "")
     if event_type == "doc.updated":
-        return _fields_changed_summary(fields_changed, currency)
+        return _fields_changed_summary(fields_changed, currency, category_names)
     if event_type == "doc.shared":
         return doc_ref or ""
     if event_type == "doc.received":
@@ -486,7 +501,7 @@ def is_money_field(key: str) -> bool:
     return key in _MONEY_FIELD_KEYS or key.endswith("_price") or key.endswith("_total")
 
 
-def _fmt_field_value(key: str, value, currency: str | None) -> str:
+def _fmt_field_value(key: str, value, currency: str | None, category_names: dict | None = None) -> str:
     """Format a single changed-field value by its field type: integer/clean pieces & qty,
     currency money, ISO dates as dates; anything else falls back to capped text."""
     if value is None:
@@ -497,6 +512,8 @@ def _fmt_field_value(key: str, value, currency: str | None) -> str:
         return fmt_price(value, key, currency)
     if key in _DATE_FIELD_KEYS or key.endswith("_date"):
         return str(value)[:10]
+    if key == "category":
+        return _category(str(value), category_names)
     s = str(value)
     return s[:40] + "…" if len(s) > 40 else s
 
@@ -611,7 +628,8 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None):
     return parts, (frozenset({"tax"}) if parts else frozenset())
 
 
-def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -> str:
+def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
+                            category_names: dict | None = None) -> str:
     """Compact summary of field changes from a ledger data dict.
 
     Scalar changes: "field: old → new", each value formatted by its field type.
@@ -732,7 +750,7 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
                 # emit nothing - never fall back to a misleading bare "Lines edited".
                 continue
             label_key = _COMPLEX_LABELS.get(k)
-            label = t(label_key) if label_key else t("activity.generic_updated", field=k.replace('_', ' ').title())
+            label = t(label_key) if label_key else t("activity.generic_updated", field=_field_name(k))
             if label not in complex_labels:
                 complex_labels.append(label)
             continue
@@ -746,10 +764,9 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None) -
         if old == new:
             continue
 
-        old_str = _fmt_field_value(k, old, currency) if not _empty(old) else t("activity.none")
-        new_str = _fmt_field_value(k, new, currency) if not _empty(new) else t("activity.none")
-        label_key = _FIELD_LABELS.get(k)
-        label = t(label_key) if label_key else k.replace("_", " ").title()
+        old_str = _fmt_field_value(k, old, currency, category_names) if not _empty(old) else t("activity.none")
+        new_str = _fmt_field_value(k, new, currency, category_names) if not _empty(new) else t("activity.none")
+        label = _field_name(k)
         if not _empty(new):
             scalar_parts.append(f"{label}: {old_str} → {new_str}")
         else:
@@ -780,6 +797,12 @@ def format_timestamp(ts: str) -> str:
     return clean[:16].strip()
 
 
+def _is_vendor_doc(entry: dict) -> bool:
+    """True when the entry's document is one the company pays (a bill, PO, ...)."""
+    from celerp_docs.doc_constants import VENDOR_DOC_TYPES
+    return str(entry.get("entity_doc_type") or "") in VENDOR_DOC_TYPES
+
+
 def _event_display(entry: dict) -> tuple[str, str]:
     """Return (display_text, url) for the Event column.
 
@@ -788,6 +811,8 @@ def _event_display(entry: dict) -> tuple[str, str]:
     """
     event_type = str(entry.get("event_type") or "")
     label = event_label(event_type)
+    if event_type == "doc.payment.received" and _is_vendor_doc(entry):
+        label = t("event.doc.payment.made")
     entity_id = str(entry.get("entity_id") or "")
     entity_name = str(entry.get("entity_name") or entry.get("name") or "")
     url = entity_url(entity_id)
@@ -801,6 +826,15 @@ def _is_uuid(s: str) -> bool:
     """Return True if string looks like a raw UUID (should not be shown to users)."""
     import re
     return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.I))
+
+
+def actor_label(e: dict) -> str:
+    """Who made a change, for display: a name, a name carried in from a company backup
+    marked as such, or "--" when there is none to show."""
+    actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
+    if not actor or _is_uuid(actor):
+        return "--"
+    return t("activity.actor_historical", name=actor) if e.get("actor_historical") else actor
 
 
 def _item_link(entity_id, label: str, anchor=None) -> FT:
@@ -853,7 +887,7 @@ def _delta_detail(data: dict) -> FT | None:
     return Span(text, **attrs)
 
 
-def _origin_detail(data: dict, with_category: bool = False) -> str:
+def _origin_detail(data: dict, with_category: bool = False, category_names: dict | None = None) -> str:
     """Child origin detail: '0 → received' for each measure the child actually got."""
     parts = [f"{t('activity.m_qty')}: 0 → {fmt_qty(data.get('qty'))}"]
     if data.get("pieces") is not None:
@@ -861,7 +895,7 @@ def _origin_detail(data: dict, with_category: bool = False) -> str:
     if data.get("weight") is not None:
         parts.append(f"{t('activity.m_wt')}: 0 → {fmt_qty(data.get('weight'))}")
     if with_category and data.get("category"):
-        parts.append(f"{t('activity.m_cat')}: {data.get('category')}")
+        parts.append(f"{t('activity.m_cat')}: {_category(data['category'], category_names)}")
     return ", ".join(parts)
 
 
@@ -882,15 +916,24 @@ def _fulfil_verb(doc_type: str, reversed_: bool) -> str:
     return t("activity.consigned") if memo else t("event.item.fulfilled")
 
 
-def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT, str, str]] | None:
+def _lifecycle_rows_spec(e: dict, currency: str | None = None,
+                         category_names: dict | None = None,
+                         deleted: dict[str, dict] | None = None) -> list[tuple[FT, str, str]] | None:
     """For split/transform/merge events and doc-tied item events, return
     [(event_content, detail, anchor_suffix), ...] with linked SKUs/doc-numbers in the
     requested style. Returns None for non-lifecycle events (or legacy rows lacking the
-    enriched payload) so the caller falls back to generic rendering."""
+    enriched payload) so the caller falls back to generic rendering. A parent in
+    *deleted* is named "<SKU> [Deleted]"."""
     etype = str(e.get("event_type") or "")
     data = e.get("data") or {}
     if not isinstance(data, dict):
         return None
+
+    def _parent_link() -> FT:
+        pid, psku = data.get("parent_id"), str(data.get("parent_sku") or "")
+        if pid in (deleted or {}):
+            psku = deleted_label(deleted[pid].get("sku") or psku)
+        return _item_link(pid, psku)
 
     # Doc-tied item events: show a linkable doc number (sold/consigned/fulfilled/reversed).
     if etype in ("item.fulfilled", "item.fulfillment_reversed"):
@@ -928,7 +971,7 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
         return specs
 
     if etype == "item.split_from":
-        content = Span(f"{t('event.item.split_from')} ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
+        content = Span(f"{t('event.item.split_from')} ", _parent_link())
         return [(content, _origin_detail(data), "")]
 
     if etype == "item.transform":
@@ -948,8 +991,8 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT,
         return [(content, detail, "")]
 
     if etype == "item.transformed_from":
-        content = Span(f"{t('event.item.transformed_from')} ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
-        return [(content, _origin_detail(data, with_category=True), "")]
+        content = Span(f"{t('event.item.transformed_from')} ", _parent_link())
+        return [(content, _origin_detail(data, with_category=True, category_names=category_names), "")]
 
     if etype == "item.merged":
         srcs = data.get("source_entity_ids") or []
@@ -982,7 +1025,9 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                    history_url: str | None = None,
                    subject_entity_id: str | None = None,
                    currency: str | None = None,
-                   resizable: bool = False) -> FT:
+                   category_names: dict | None = None,
+                   resizable: bool = False,
+                   deleted: dict[str, dict] | None = None) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
 
     Columns: Event (linked to entity) | When (timestamp) | User | Details
@@ -990,6 +1035,8 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
     subject_entity_id: when set (an entity's own detail page), that entity's split/transform
     origin row is shown; when None (dashboard), origin rows de-dup against the mother summary.
     currency: ISO code used to format money amounts in the Details column.
+    category_names: ``category_labels`` of the company's category names (see detail_from_entry).
+    deleted: deleted items by id; a split or transform parent among them is marked "[Deleted]".
 
     title/empty_msg default to None so their text resolves in the request language
     at render time; a caller may still pass an explicit string to override.
@@ -998,7 +1045,6 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         title = t("activity.recent_activity")
     if empty_msg is None:
         empty_msg = t("activity.empty")
-    EMPTY = "--"
 
     if not ledger:
         header_parts: list = []
@@ -1011,14 +1057,10 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
             cls=section_cls,
         )
 
-    def _assemble(e: dict, content, detail: str, suffix: str, *, blank_detail: bool = False) -> FT:
+    def _assemble(e: dict, content, detail: str, suffix: str) -> FT:
         when_cell = Td(format_timestamp(str(e.get("ts") or "")) or EMPTY)
-        actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
-        user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
-        if blank_detail:
-            detail_cell = Td("")
-        else:
-            detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
+        user_cell = Td(actor_label(e))
+        detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
         rid = e.get("id")
         attrs = {"id": f"evt-{rid}{suffix}"} if rid is not None else {}
         return Tr(Td(content), when_cell, user_cell, detail_cell, **attrs)
@@ -1049,7 +1091,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                 return []
 
         # Rich lifecycle rendering (split/transform/merge): linked SKUs + qty/pcs/wt deltas.
-        spec = _lifecycle_rows_spec(e, currency)
+        spec = _lifecycle_rows_spec(e, currency, category_names, deleted)
         if spec is not None:
             return [_assemble(e, content, detail, suffix) for content, detail, suffix in spec]
 
@@ -1061,14 +1103,13 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         # File events (any entity): filename linked to the file (name only once deleted).
         if _is_file_event(raw_type) and isinstance(data, dict):
             return [_assemble(e, content, _file_event_detail(e, data, raw_type), "")]
-        detail = detail_from_entry(data, raw_type, currency) if isinstance(data, dict) else ""
+        detail = detail_from_entry(data, raw_type, currency, category_names) if isinstance(data, dict) else ""
 
         # Drop rows that carried only noise (empty→empty field changes with no other detail)
         if not detail and isinstance(data, dict) and data.get("fields_changed"):
             return []
 
-        blank_detail = not detail and raw_type in _SELF_DESCRIBING_EVENT_TYPES
-        return [_assemble(e, content, detail, "", blank_detail=blank_detail)]
+        return [_assemble(e, content, detail, "")]
 
     # Filter first, then slice — so max_display counts meaningful rows only
     all_rows: list[FT] = []

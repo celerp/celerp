@@ -60,6 +60,14 @@ async def load_item_rows(
     ).scalars().all()
 
 
+def without_deleted(result: list[dict]) -> list[dict]:
+    """Every status the "all" mode shows: a deleted item appears only when asked for by
+    its own status (lot_origin.DELETED)."""
+    from celerp.services.lot_origin import DELETED
+
+    return [r for r in result if str(r.get("status") or "").lower() != DELETED]
+
+
 async def flatten_item_rows(
     session: AsyncSession, company_id, rows: list[Projection]
 ) -> list[dict]:
@@ -232,7 +240,7 @@ async def global_search(session, company_id, role, q, limit) -> dict:
     """Global-search bar contribution for inventory items (read-only).
 
     Reproduces the inventory list route's search behavior for the shared bar:
-    status="all" (no status filtering), the same flattened item shape, the same
+    status="all" (every status but deleted), the same flattened item shape, the same
     role-dependent field visibility, the same q grammar with q_match attachment,
     and the same ordering. Ordering honors the company's inventory_method so a
     FEFO company's global-search hits lead with the same soonest-expiring items
@@ -243,8 +251,7 @@ async def global_search(session, company_id, role, q, limit) -> dict:
     from celerp.models.company import Company
 
     rows = await load_item_rows(session, company_id)
-    result = await flatten_item_rows(session, company_id, rows)
-    # status="all" - no status filtering, matching the list route's "all" mode.
+    result = without_deleted(await flatten_item_rows(session, company_id, rows))
     result, item_field_sets = await strip_field_visibility(
         session, company_id, role, result
     )

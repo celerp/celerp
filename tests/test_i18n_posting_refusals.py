@@ -150,8 +150,8 @@ async def test_the_work_center_notice_an_upgrade_stored_is_shown_in_the_readers_
     from ui.routes.notifications import _in_reader_language
 
     await session.execute(text("""
-        INSERT INTO notifications (id, company_id, user_id, category, title, body, action_url, priority, read, created_at)
-        VALUES (gen_random_uuid(), :cid, NULL, 'manufacturing', :title, :body, '/settings/manufacturing', 'high', false, NOW())
+        INSERT INTO notifications (id, company_id, user_id, category, title, body, action_url, priority, created_at)
+        VALUES (gen_random_uuid(), :cid, NULL, 'manufacturing', :title, :body, '/settings/manufacturing', 'high', NOW())
     """), {"cid": auth["company_id"], "title": _NOTICE_TITLE, "body": _NOTICE_BODY})
     await session.commit()
 

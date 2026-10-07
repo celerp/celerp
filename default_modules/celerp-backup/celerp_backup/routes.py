@@ -31,7 +31,6 @@ from celerp.db import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token
 from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t

@@ -28,49 +28,53 @@ def ui_client():
 
 
 def _vertical_select(html: str) -> str:
-    m = re.search(r'<select[^>]*name="vertical"[^>]*>.*?</select>', html, re.S)
-    assert m, "no business-type select rendered"
+    """The searchable business-type control: its visible input, value input and options."""
+    m = re.search(r'<div class="combobox-wrap">\s*<input[^>]*>\s*<input type="hidden" name="vertical"'
+                  r'.*?combobox-option--empty.*?</div>', html, re.S)
+    assert m, "no business-type control rendered"
     return m.group(0)
 
 
 def _selected_values(select_html: str) -> list[str]:
-    return [re.search(r'value="([^"]*)"', o).group(1)
-            for o in re.findall(r"<option[^>]*>", select_html) if re.search(r"\sselected", o)]
+    """What the control submits: the value of its single hidden input."""
+    return re.findall(r'<input type="hidden" name="vertical"[^>]*value="([^"]*)"', select_html)
 
 
-_FULL_FORM = {"vertical": "gemstones", "currency": "EUR", "timezone": "Europe/Paris",
-              "tax_id": "TX-778", "phone": "+33 1 23 45 67 89", "address": "12 Rue Exemple"}
+def _shows_only_placeholder(select_html: str) -> bool:
+    """Nothing is chosen: the visible input is empty and shows the prompt."""
+    from ui.i18n import t
+    visible = re.search(r'<input[^>]*class="combobox-input[^>]*>', select_html).group(0)
+    return 'value=""' in visible and f'placeholder="{t("setup.choose_business_type")}"' in visible
 
 
-def _assert_form_kept(html: str, vertical: str = "gemstones") -> None:
+_FULL_FORM = {"vertical": "gemstones", "currency": "EUR", "timezone": "Europe/Paris"}
+
+
+def _assert_form_kept(html: str, vertical: str = "gemstones", currency: str = "EUR") -> None:
     assert _selected_values(_vertical_select(html)) == [vertical]
-    for value in ("TX-778", "+33 1 23 45 67 89", "12 Rue Exemple"):
-        assert value in html, value
     currency_input = re.search(r'<input[^>]*name="currency"[^>]*>', html).group(0)
-    assert 'value="EUR"' in currency_input
+    assert f'value="{currency}"' in currency_input
 
 
 # -- setup: rendering -------------------------------------------------------------
 
 class TestSetupRender:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stored", [None, "general"])
-    async def test_fresh_setup_selects_only_placeholder(self, ui_client, stored):
-        company = {"name": "Co", "settings": {"vertical": stored} if stored else {}}
+    async def test_fresh_setup_selects_only_placeholder(self, ui_client):
+        company = {"name": "Co", "settings": {}}
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
             r = await ui_client.get("/setup/company", cookies=_authed())
         select = _vertical_select(r.text)
         assert _selected_values(select) == [""]
-        placeholder = re.search(r'<option value=""[^>]*>', select).group(0)
-        assert "disabled" in placeholder
-        assert "required" in select.split(">", 1)[0]
+        assert _shows_only_placeholder(select)
 
     @pytest.mark.asyncio
-    async def test_stored_type_is_selected(self, ui_client):
-        company = {"name": "Co", "vertical": "gemstones", "settings": {"vertical": "gemstones"}}
+    @pytest.mark.parametrize("stored", ["general", "gemstones"])
+    async def test_company_with_a_type_goes_to_the_dashboard(self, ui_client, stored):
+        company = {"name": "Co", "vertical": stored, "settings": {"vertical": stored}}
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
             r = await ui_client.get("/setup/company", cookies=_authed())
-        assert _selected_values(_vertical_select(r.text)) == ["gemstones"]
+        assert r.status_code == 302 and r.headers["location"] == "/dashboard"
 
     def test_hidden_presets_not_offered(self):
         from ui.routes.setup import business_type_options
@@ -110,15 +114,13 @@ class TestSetupSubmit:
         m["set_business_type"].assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_invalid_currency_rerender_keeps_every_field(self, ui_client):
+    async def test_invalid_currency_rerender_keeps_business_type_and_clears_currency(self, ui_client):
         with ExitStack() as stack:
             m = self._mocks(stack)
             r = await ui_client.post("/setup/company", data={**_FULL_FORM, "currency": "XXX"},
                                      cookies=_authed())
         assert r.status_code == 200
-        assert _selected_values(_vertical_select(r.text)) == ["gemstones"]
-        for value in ("TX-778", "+33 1 23 45 67 89", "12 Rue Exemple"):
-            assert value in r.text, value
+        _assert_form_kept(r.text, currency="")  # an unknown code is never shown as chosen
         m["patch_company"].assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -267,11 +269,19 @@ class TestSetupRestart:
             stack.enter_context(patch("ui.api_client.installation_owner", new=AsyncMock(return_value=False)))
             r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
         assert r.status_code == 302
-        assert r.headers["location"] == "/onboarding?modules=pending"
+        assert r.headers["location"] == "/dashboard?modules=pending"
         restart.assert_not_awaited()
 
+    def test_the_page_after_setup_says_the_modules_wait_for_the_restart(self):
+        from starlette.requests import Request
+        from ui.components.shell import _redirect_notice
+        from ui.i18n import t
+        request = Request({"type": "http", "method": "GET", "path": "/dashboard", "headers": [],
+                           "query_string": b"modules=pending"})
+        assert t("setup.modules_pending", "en") in str(_redirect_notice(request, "en"))
 
-_CHANGES = {"categories_added": ["Diamond", "Ruby"], "modules_enabled": ["Manufacturing"],
+
+_CHANGES = {"categories_added": {"diamond": "Diamond", "ruby": "Ruby"}, "modules_enabled": ["Manufacturing"],
             "settings_updated": ["inventory_method"], "defaults_updated": ["payment_terms", "terms_conditions"],
             "demo_items_replaced": 9, "demo_items_kept": 1}
 
@@ -298,7 +308,7 @@ class TestCompanyDetailsSummary:
 
     @pytest.mark.asyncio
     async def test_nothing_changed_is_a_plain_confirmation(self, ui_client):
-        empty = {k: ([] if isinstance(v, list) else 0) for k, v in _CHANGES.items()}
+        empty = {k: (type(v)() if isinstance(v, (list, dict)) else 0) for k, v in _CHANGES.items()}
         set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False, "changes": empty})
         with patch("ui.api_client.set_business_type", new=set_type):
             r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())

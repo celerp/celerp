@@ -185,9 +185,28 @@ def _fsync_dir(dir_path: str) -> None:
             pass
 
 
+# Windows refuses to replace a file another process has open, as when the app reads
+# the update state while the updater records a step. Such a read is brief, so the
+# replace is retried for a short while before the write fails.
+_REPLACE_ATTEMPTS = 40
+_REPLACE_RETRY_S = 0.05
+
+
+def _replace(src: str, dst: str) -> None:
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_S)
+
+
 def atomic_write_text(path: str, data: str) -> None:
     """Replace `path` with `data` crash-safely: a unique 0600 temp file is
-    written and fsync'd, swapped in with os.replace, and the directory fsync'd.
+    written and fsync'd, swapped in with os.replace (retried while another process
+    briefly holds the file open), and the directory fsync'd.
     Readers see the complete old or the complete new file, never a torn one; the
     result is mode 0600 whatever the prior mode or umask. On failure the temp
     file is removed, the old file is untouched, and the error is raised."""
@@ -199,7 +218,7 @@ def atomic_write_text(path: str, data: str) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        _replace(tmp_path, path)
     except BaseException:
         try:
             os.remove(tmp_path)

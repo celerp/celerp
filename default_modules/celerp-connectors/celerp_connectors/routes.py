@@ -6,11 +6,10 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import celerp.connectors as connectors
 from celerp.connectors.base import SyncDirection, SyncEntity
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
@@ -20,14 +19,20 @@ from celerp.services.auth import (
     require_install_owner,
 )
 from celerp.services.permissions import require_permission
-from celerp.session_gate import require_session_token
 
 log = logging.getLogger(__name__)
+
+
+async def _require_session(request: Request) -> None:
+    """Refuse connector routes while this installation has no active Connect session."""
+    from celerp.session_gate import require_session_token
+    await require_session_token(request)
+
 
 router = APIRouter(
     prefix="/connectors",
     tags=["connectors"],
-    dependencies=[Depends(get_current_user), Depends(require_session_token)],
+    dependencies=[Depends(get_current_user), Depends(_require_session)],
 )
 local_router = APIRouter(
     prefix="/connector-items", tags=["connectors"],
@@ -74,6 +79,7 @@ async def _connector_context(company_id: str, connector_name: str, **kwargs):
 async def list_connectors(
     _company_id: Annotated[str, Depends(get_current_company_id)],
 ) -> list[ConnectorInfo]:
+    from celerp import connectors
     return [
         ConnectorInfo(
             name=c.name,
@@ -93,6 +99,7 @@ async def trigger_sync(
     _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
+    from celerp import connectors
     try:
         connector = connectors.get(connector_name)
     except KeyError as exc:
@@ -152,6 +159,7 @@ async def trigger_sync_plan(
     _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp import connectors
     try:
         connector = connectors.get(connector_name)
     except KeyError as exc:
@@ -219,6 +227,7 @@ async def store_credentials(
     with error codes: store_rejected, store_unreachable, store_changed,
     subscription_required, relay_not_https, relay_error.
     """
+    from celerp import connectors
     import httpx
     from celerp.gateway.state import relay_http_url, relay_session_headers
 
@@ -542,6 +551,7 @@ async def reset_unassigned_connector(
     """Disconnect a connector set up before companies had their own
     connectors, for the whole installation. No company becomes its owner;
     the company that should use it reconnects it afterwards."""
+    from celerp import connectors
     from celerp.config import ensure_instance_id
     from celerp.connectors.ownership import (
         RESET_STATUS_DISCONNECTED,

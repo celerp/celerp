@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -74,11 +75,29 @@ async def make_authed_token(session, user_id: str, company_id: str, role: str) -
     going through the login gate (which allows only one active session per user).
     The user, its ``UserCompany`` membership and the company must already exist.
     """
-    from celerp.services.auth import create_access_token
+    from celerp.credentials import create_access_token
     from celerp.services.session_tracker import get_nonce
     snonce = await get_nonce(session, str(user_id))
     token, _ = create_access_token(str(user_id), str(company_id), role, snonce=snonce)
     return token
+
+
+@asynccontextmanager
+async def signed_request(session, company_id, user_id, role: str = "operator"):
+    """Run the body as a request *user_id* signed with its own access token: the
+    real get_auth_context dependency, entered on *session*."""
+    from starlette.requests import Request
+
+    from celerp.services.auth import get_auth_context
+    token = await make_authed_token(session, str(user_id), str(company_id), role)
+    request = Request({"type": "http", "method": "POST", "path": "/module/route", "headers": [],
+                       "query_string": b""})
+    dependency = get_auth_context(request, token, session)
+    await dependency.__anext__()
+    try:
+        yield
+    finally:
+        await dependency.aclose()
 
 
 async def provision_company_books(session, company_id) -> None:
@@ -134,6 +153,25 @@ async def ensure_company(session, company_id=None):
         session.add(Company(id=cid, name="Test Co", slug=f"test-{cid.hex}"))
         await session.flush()
     return cid
+
+
+async def seed_member(session, role: str = "operator", *, active: bool = True):
+    """Insert a company, a user and their membership with ``role``; return (company_id, user_id)."""
+    import uuid as _uuid
+    from celerp.models.accounting import UserCompany
+    company_id, user_id = await ensure_company(session), _uuid.uuid4()
+    await ensure_user(session, user_id)
+    session.add(UserCompany(user_id=user_id, company_id=company_id, role=role, is_active=active))
+    await session.flush()
+    return company_id, user_id
+
+
+async def clear_sample_items(session, company_id) -> None:
+    """Remove the sample items a new company starts with, so the test's next item
+    import only adds items (an import that clears them cannot be undone)."""
+    from celerp.services.demo import delete_untouched_demo_items
+    await delete_untouched_demo_items(session, uuid.UUID(str(company_id)))
+    await session.commit()
 
 
 async def default_location_id(client, headers: dict) -> str:

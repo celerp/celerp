@@ -20,6 +20,10 @@ import pytest
 
 from celerp.modules.loader import Admission
 
+# Boot reads and maintains the real database; it needs the schema to exist whichever
+# test runs first.
+pytestmark = pytest.mark.usefixtures("_db_engine")
+
 
 async def _boom_hook(session=None, **kwargs):
     """An on_modules_ready hook that fails, standing in for one whose DB work
@@ -466,6 +470,53 @@ async def test_shutdown_ends_the_process_when_a_task_will_not_stop(monkeypatch, 
     finally:
         release.set()
         await stubborn
+
+
+async def _boot_with(monkeypatch, *, sweep, reconcile) -> bool:
+    import celerp.main as main_mod
+    from celerp.config import settings
+    from celerp.services import company_backup, company_backup_files
+
+    monkeypatch.setattr(company_backup_files, "sweep_transient_files", sweep)
+    monkeypatch.setattr(company_backup, "reconcile_landings", reconcile)
+    monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    entered = False
+    try:
+        with _mock_db():
+            async with main_mod.lifespan(MagicMock()):
+                entered = True
+    finally:
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+    return entered
+
+
+@pytest.mark.asyncio
+async def test_a_failed_backup_file_sweep_still_cleans_up_unfinished_restores(monkeypatch):
+    """The two startup clean-ups are independent: the restore clean-up still runs when the
+    sweep of leftover backup files fails, and neither stops boot."""
+    swept: list[bool] = []
+
+    def _sweep():
+        swept.append(True)
+        raise OSError("backup folder unreadable")
+
+    reconcile = AsyncMock()
+    assert await _boot_with(monkeypatch, sweep=_sweep, reconcile=reconcile)
+    assert swept == [True]
+    reconcile.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_clean_up_does_not_stop_boot(monkeypatch):
+    swept: list[bool] = []
+    reconcile = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    assert await _boot_with(monkeypatch, sweep=lambda: swept.append(True), reconcile=reconcile)
+    assert swept == [True]
+    reconcile.assert_awaited_once()
 
 
 @pytest.mark.asyncio

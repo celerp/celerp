@@ -535,13 +535,9 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
 
     _ALREADY_EXISTS = ("DuplicateTable", "DuplicateObject", "DuplicateColumn", "already exists")
 
-    engine2 = _sa2.create_engine(engine_url, pool_pre_ping=True)
-    try:
-        with engine2.connect() as conn:
-            has_stamp = _sa2.inspect(conn).has_table("alembic_version")
-            current = conn.execute(_sa2.text("SELECT version_num FROM alembic_version")).scalar() if has_stamp else None
-    finally:
-        engine2.dispose()
+    with _db_engine(engine_url, pool_pre_ping=True) as engine2, engine2.connect() as conn:
+        has_stamp = _sa2.inspect(conn).has_table("alembic_version")
+        current = conn.execute(_sa2.text("SELECT version_num FROM alembic_version")).scalar() if has_stamp else None
 
     script = ScriptDirectory.from_config(alembic_cfg)
     oldest_first = list(reversed(list(script.walk_revisions())))
@@ -574,7 +570,6 @@ def _apply_migrations(db_url: str) -> None:
     _os.environ["DATABASE_URL"] = db_url
 
     from alembic import command
-    from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
     import sqlalchemy as _sa
     from celerp.alembic_config import build_alembic_config as _build_alembic_config
@@ -680,7 +675,8 @@ def _migration_lock(db_url: str):
 
     Single source of the lock protocol (acquire, guaranteed release, engine
     disposal), so every path that migrates a database serializes the same way
-    and cannot drift. Reused by `_migrate_to_head` and the restore reconcile.
+    and cannot drift. Reused by `_migrate_to_head`, the restore reconcile and the
+    database restore itself (`services.backup.restore_database_file`).
 
     The lock exists because a service restart overlapping a manual start would
     otherwise have both processes migrating the same database: the loser

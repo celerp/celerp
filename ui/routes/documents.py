@@ -14,6 +14,7 @@ from starlette.responses import RedirectResponse
 from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from celerp.accounting_roles import account_label
 from celerp.services.units import default_receive_as
@@ -26,6 +27,7 @@ from celerp.services.money import to_decimal, to_stored_float, round_money, curr
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import role_has_permission
+from ui.components.import_access import can_import_documents
 from ui.module_slots import connected_connector_ids, required_connectors, visible_slot_contributions
 from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
@@ -279,7 +281,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import get_lang, refusal_text, t
+from ui.i18n import category_label, get_lang, refusal_text, t
 from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -294,6 +296,17 @@ from celerp.services.list_behavior import (
 # Selectable list types come straight from the behaviour registry (one source — adding a type
 # there surfaces it here automatically).
 _LIST_TYPES = list(_REG_LIST_TYPES)
+# Display only: the raw list type stays canonical (URLs, API, persistence). Quotation and
+# shipping document share the document-type labels.
+_LIST_TYPE_LABEL_KEYS = {"quotation": "settings_sales.doc_type_quotation",
+                         "shipping_doc": "settings_sales.doc_type_shipping_doc"}
+
+
+def _list_type_label(list_type: str | None) -> str:
+    """The list type's name in the request language."""
+    key = _LIST_TYPE_LABEL_KEYS.get(list_type or "", f"enum.list_type.{list_type}")
+    label = t(key)
+    return label if label != key else _list_behavior(list_type).label
 _LIST_DATE_FIELDS = {"date", "link_expiry"}
 
 _PER_PAGE = 50
@@ -637,10 +650,11 @@ _RESERVABLE_STATUSES_UI: dict[str, frozenset[str]] = {
 _STATUS_BADGE: dict[str, tuple[str, str]] = {
     "available":     ("documents.status_available",    "badge--available"),
     "reserved":      ("documents.status_reserved",     "badge--reserved"),
-    "memo_out":      ("documents.status_memo_out",     "badge--memo_out"),
+    "memo_out":      ("inventory.status_on_memo",      "badge--memo_out"),
     "sold":          ("enum.item_status.sold",         "badge--sold"),
     "archived":      ("enum.item_status.archived",     "badge--inactive"),
     "expired":       ("enum.item_status.expired",      "badge--expired"),
+    "deleted":       ("enum.item_status.deleted",      "badge--inactive"),
     "not_received":  ("documents.status_not_received", "badge--not_received"),
 }
 
@@ -707,6 +721,10 @@ _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "production_order": "documents.page_stock_orders",
     "subscription_invoice": "documents.page_subscription_templates",
     "subscription_po": "documents.page_subscription_po_templates",
+}
+# The search label per doc-type list, a whole sentence each (same doc types as above).
+_DOC_TYPE_SEARCH_LABELS: dict[str, str] = {
+    dt: "documents.search_lists" if dt == "list" else f"documents.search_{dt}" for dt in _DOC_TYPE_PAGE_LABELS
 }
 # Short explanatory banner shown above certain doc-type lists where the purpose isn't
 # obvious. Values are i18n keys resolved at render time (see _doc_type_intro).
@@ -1232,7 +1250,6 @@ def _send_to_modal(
 # Compact SVG icons for CSV export/import (16x16, matching pair)
 _ICON_CSV_EXPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>'
 _ICON_COPY = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
-_ICON_CSV_IMPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 12 15 15"/></svg>'
 _ICON_PRINT = (
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
     'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
@@ -1342,7 +1359,7 @@ def setup_routes(app):
                     target="#doc-content",
                     url=search_url,
                     value=q,
-                    label=t("documents.search_section", section=section_title.lower()),
+                    label=t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all")),
                 ),
                 Button(
                     new_label,
@@ -1351,7 +1368,7 @@ def setup_routes(app):
                     cls="btn btn--primary",
                 ) if role_has_permission(_settings, _role, "edit_documents") else "",
                 export_link,
-                A(t("btn.import"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") or role_has_permission(_settings, _role, "edit_documents") else "",
+                A(import_icon(), t("btn.import"), href="/docs/import", cls="btn btn--secondary", data_import_hint=True) if can_import_documents(_settings, _role) else "",
             ),
             _doc_type_intro(doc_type),
             date_bar,
@@ -2202,13 +2219,16 @@ celerpUpdateBulkAlloc();
         except Exception:
             locations = []
 
-        item_categories: list[str] = []
+        item_categories: dict[str, str] = {}
         chart_accounts: list[dict] = []
         if doc_type in ("purchase_order", "bill", "consignment_in"):
             try:
-                item_categories = await api.list_item_categories(token)
+                _keys = await api.list_item_categories(token)
+                _names = await api.get_category_display_names(token)
+                item_categories = dict(sorted(((k, category_label(k, _names.get(k))) for k in _keys),
+                                              key=lambda kv: kv[1].lower()))
             except Exception:
-                item_categories = []
+                item_categories = {}
             try:
                 chart_accounts = (await api.get_chart(token)).get("items", [])
             except Exception:
@@ -2328,43 +2348,48 @@ celerpUpdateBulkAlloc();
             doc_type in ("bill", "consignment_in") and status not in ("draft",)
         )
         # Showing barcodes also needs the items (legacy lines predate barcode stamping).
-        if _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES or _ident_mode != "sku":
-            try:
-                _line_eids = list(dict.fromkeys(
-                    li.get("entity_id") or li.get("item_id") or ""
-                    for li in doc.get("line_items", [])
-                    if li.get("entity_id") or li.get("item_id")
-                ))
-                if _line_eids:
-                    # Classify each item's sell_by unit (weight/pieces) so the row can tell
-                    # whether quantity already IS the pieces/weight measure (then it's locked).
-                    from celerp.services.units import build_unit_map
+        # Every other document fetches them only for statuses, so a deleted item's line
+        # reads "[Deleted]" next to its SKU.
+        _need_meta = _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES or _ident_mode != "sku"
+        try:
+            _line_eids = list(dict.fromkeys(
+                li.get("entity_id") or li.get("item_id") or ""
+                for li in doc.get("line_items", [])
+                if li.get("entity_id") or li.get("item_id")
+            ))
+            if _line_eids:
+                # Classify each item's sell_by unit (weight/pieces) so the row can tell
+                # whether quantity already IS the pieces/weight measure (then it's locked).
+                from celerp.services.units import build_unit_map
+                _unit_map = {}
+                if _need_meta:
                     try:
                         _unit_map = build_unit_map(await api.get_units(token))
                     except Exception:
-                        _unit_map = {}
-                    # ONE bulk metadata call for every line, replacing the former per-line fan-out.
-                    _items_by_eid = await api.get_items_metadata(token, _line_eids)
-                    for eid, item in _items_by_eid.items():
-                        if not item:
-                            continue
-                        if item.get("status"):
-                            item_status_map[eid] = item["status"]
-                            _sdoc = str(item.get("status_doc_id") or "")
-                            if _sdoc:
-                                item_status_doc_map[eid] = (
-                                    _sdoc,
-                                    str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                                )
+                        pass
+                # ONE bulk metadata call for every line, replacing the former per-line fan-out.
+                _items_by_eid = await api.get_items_metadata(token, _line_eids)
+                for eid, item in _items_by_eid.items():
+                    if not item:
+                        continue
+                    if item.get("status"):
+                        item_status_map[eid] = item["status"]
+                        _sdoc = str(item.get("status_doc_id") or "")
+                        if _sdoc:
+                            item_status_doc_map[eid] = (
+                                _sdoc,
+                                str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
+                            )
+                    if _need_meta:
                         item_meta_map[eid] = item_measure_meta(item, _unit_map)
-                    if _ident_mode != "sku":
-                        # Lines saved before barcodes were stamped: fill from the catalog item.
-                        for _li in doc.get("line_items", []):
-                            _it = _items_by_eid.get(_li.get("entity_id") or _li.get("item_id") or "")
-                            if _it:
-                                identifier_backfill(_li, _it)
-            except Exception:
-                pass
+                if _ident_mode != "sku":
+                    # Lines saved before barcodes were stamped: fill from the catalog item.
+                    for _li in doc.get("line_items", []):
+                        _it = _items_by_eid.get(_li.get("entity_id") or _li.get("item_id") or "")
+                        if _it:
+                            identifier_backfill(_li, _it)
+        except Exception:
+            pass
         # Draft PO: grey qty placeholder per blank line = velocity suggestion in purchase units.
         line_suggestions: dict[str, str] = {}
         if doc_type == "purchase_order" and status == "draft":
@@ -3875,7 +3900,8 @@ celerpUpdateBulkAlloc();
             total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
         except Exception:
             entries, total = [], 0
-        from ui.components.activity import format_timestamp, detail_from_entry, _event_display, _is_uuid
+        category_names = await api.get_category_labels(token)
+        from ui.components.activity import format_timestamp, detail_from_entry, _event_display, actor_label
         EMPTY = "--"
         def _row(e: dict):
             display_text, url = _event_display(e)
@@ -3883,10 +3909,8 @@ celerpUpdateBulkAlloc();
             ts_display = format_timestamp(str(e.get("ts") or "")) or EMPTY
             data = e.get("data") or {}
             raw_type = str(e.get("event_type") or "")
-            detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
-            actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
-            actor_display = actor if (actor and not _is_uuid(actor)) else EMPTY
-            return Tr(event_cell, Td(ts_display), Td(actor_display), Td(detail or EMPTY))
+            detail = detail_from_entry(data, raw_type, category_names=category_names) if isinstance(data, dict) else ""
+            return Tr(event_cell, Td(ts_display), Td(actor_label(e)), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
         footer = server_pager(
             offset, per_page, total,
@@ -3987,7 +4011,7 @@ celerpUpdateBulkAlloc();
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 export_link,
-                A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(import_icon(), t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
             date_bar,
             _list_type_tabs(list_type, state),
@@ -4294,7 +4318,7 @@ celerpUpdateBulkAlloc();
 
         ref = lst.get("ref_id") or entity_id
         status_label = _list_status_label(lst)
-        list_type_label = _list_behavior(lst.get("list_type")).label
+        list_type_label = _list_type_label(lst.get("list_type"))
         # Locations feed the transfer "Move all to" dropdown; relay state gates the quotation Send
         # modal (same as documents).
         try:
@@ -4367,7 +4391,7 @@ celerpUpdateBulkAlloc();
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         if field == "list_type":
             input_el = Select(
-                *[Option(_list_behavior(lt).label, value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
+                *[Option(_list_type_label(lt), value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
                 cls="cell-input cell-input--select", autofocus=True,
                 onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)}, {_json.dumps(lst.get('status') == 'draft')})",
@@ -5914,7 +5938,7 @@ async def doc_detail_connectors(company: dict) -> set[str]:
         str(company.get("id") or ""), required_connectors("doc_detail_actions", "doc_detail_badges"))
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
@@ -5971,6 +5995,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     can_count_audit = pol["audit"] and status == _LF and _can_edit
     is_editable = can_edit_lines or can_count_audit
 
+    def _deleted_mark(eid: str):
+        """"[Deleted]" beside the SKU of a line whose item was deleted; the line itself is unchanged."""
+        if (item_status_map or {}).get(eid) == "deleted":
+            return Span(t("item.deleted_mark"), cls="li-deleted-mark")
+        return None
+
     def _static_ident_cell_content(li: dict):
         """Identifier for a read-only line cell per the company mode: the primary
         text, with the secondary (SKU under barcode) as a muted second line."""
@@ -6009,7 +6039,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
                 Select(
-                    *[Option(_list_behavior(lt).label, value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
+                    *[Option(_list_type_label(lt), value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
                     onchange=(
                         f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type', "
@@ -6023,7 +6053,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         else:
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
-                Span(_list_behavior(_current_lt).label, cls=f"badge badge--{_current_lt}"),
+                Span(_list_type_label(_current_lt), cls=f"badge badge--{_current_lt}"),
                 cls="list-type-bar",
                 style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;",
             )
@@ -6505,7 +6535,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         )
         if is_draft:
             action_btns_print.append(
-                Button(NotStr(_ICON_CSV_IMPORT), type="button",
+                Button(import_icon(), type="button",
                        cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                        onclick="document.getElementById('csv-import-input').click()"),
             )
@@ -6750,12 +6780,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
-            _cats = item_categories or []
+            _cats = item_categories or {}
             if _show_category and is_draft:
                 _cat_val = li.get("category") or ""
                 _cat_options = [Option("", value="")]
-                for c in _cats:
-                    _cat_options.append(Option(c, value=c, selected=(c == _cat_val)))
+                for c, label in _cats.items():
+                    _cat_options.append(Option(label, value=c, selected=(c == _cat_val)))
                 _cat_options.append(Option(t("label._add_new"), value="__add_new__"))
                 category_cell = Td(Select(
                     *_cat_options,
@@ -6764,7 +6794,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
                 ), cls="col-cat")
             elif _show_category:
-                category_cell = Td(li.get("category") or "--", cls="col-cat")
+                _cat_val = li.get("category") or ""
+                category_cell = Td(category_label(_cat_val, _cats.get(_cat_val)) if _cat_val else "--", cls="col-cat")
             else:
                 category_cell = None
 
@@ -6816,6 +6847,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    cls="col-checkbox li-checkbox-cell"),
                 Td(_static_ident_cell_content(li) if pol["counting"]
                    else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
+                   _deleted_mark(li_entity_id),
                    cls="col-sku"),
                 _desc_cell,
             ]
@@ -6927,11 +6959,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         def _li_empty_row() -> FT:
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
-            _cats = item_categories or []
+            _cats = item_categories or {}
             if _show_category:
                 _cat_options = [Option("", value="")]
-                for c in _cats:
-                    _cat_options.append(Option(c, value=c))
+                for c, label in _cats.items():
+                    _cat_options.append(Option(label, value=c))
                 _cat_options.append(Option(t("label._add_new"), value="__add_new__"))
                 _cat_cell = Td(Select(
                     *_cat_options,
@@ -8840,7 +8872,7 @@ async function celerpCsvImport(input, entityId) {{
         _SHIPPED_LABEL_KEYS = {
             "Returned": "documents.line_label_returned",
             "Not shipped": "documents.line_label_not_shipped",
-            "On Memo": "documents.status_memo_out",
+            "On Memo": "inventory.status_on_memo",
             "Sold": "enum.item_status.sold",
         }
 
@@ -8913,7 +8945,7 @@ async function celerpCsvImport(input, entityId) {{
                           if pol["customs"] else t("documents.view_item_details"))
             _sku_cell = Td(
                 Div(_item_link_eye(li_eid, title=_eye_title),
-                    Span(format_value(_ident_1st or None)), cls="li-ident-view"),
+                    Span(format_value(_ident_1st or None)), _deleted_mark(li_eid), cls="li-ident-view"),
                 _ident_2nd_div, cls="col-sku",
             )
             cells += [
@@ -9670,7 +9702,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.overdue", lang),          "count": overdue,        "total": overdue_total,    "status": "overdue",          "color": "red",    "_url": f"{base_url}&overdue_only=1",                                    "_active_key": "overdue"},
             {"label": t("status.unfulfilled", lang),      "count": unfulfilled,    "total": unfulfilled_total,"status": "unfulfilled",      "color": "orange", "_url": f"{base_url}&unfulfilled_only=1",                                "_active_key": "unfulfilled"},
             {"label": t("label.paid", lang),              "count": paid_cnt,       "total": paid_total,       "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                        "_active_key": "paid"},
-            {"label": t("btn.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, total_override=all_issued_cnt, currency=currency, show_all_card=False)
 
@@ -9697,7 +9729,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
             {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
-            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9720,7 +9752,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.draft", lang),       "count": draft_cnt,         "total": None, "status": "draft",        "color": "gray"},
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt,    "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("documents.not_restocked", lang), "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
-            {"label": t("btn.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9753,7 +9785,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={awaiting_status_param('bill')}","_active_key": "awaiting_payment"},
             {"label": t("status.overdue", lang),         "count": overdue,         "total": None, "status": "overdue",      "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
             {"label": t("label.paid", lang),             "count": paid_cnt,        "total": None, "status": "paid",         "color": "green"},
-            {"label": t("btn.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9780,7 +9812,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
             {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
             {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
-            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9789,7 +9821,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         cards = [
             {"label": t("status.purchase_order", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
             {"label": t("doc.sent", lang),              "count": _cbs.get("sent", 0),  "total": None, "status": "sent",  "color": "blue"},
-            {"label": t("btn.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
@@ -9803,7 +9835,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("status.draft", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
             {"label": t("connectors.open", lang), "count": open_cnt,             "total": None, "status": "open",  "color": "blue",
              "_url": f"{base_url}&status_in={_OPEN_STATUSES}", "_active_key": "open"},
-            {"label": t("btn.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+            {"label": t("enum.doc_status.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=True)
 
@@ -9814,7 +9846,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         ("draft", t("status.draft", lang), "gray"),
         ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
         ("paid", t("label.paid", lang), "green"),
-        ("void", t("btn.void", lang), "gray"),
+        ("void", t("enum.doc_status.void", lang), "gray"),
     ]
     card_defs = _DEFAULT_CARDS
     api_counts = _cbs
@@ -9867,7 +9899,8 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
 def _list_table(lists: list[dict], lang: str = "en") -> FT:
     if not lists:
         return Div(
-            empty_state_cta(t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank", hx_post=True),
+            empty_state_cta(t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank", hx_post=True,
+                            hint=t("lists.empty_hint", lang)),
             id="list-table",
         )
 
@@ -9930,7 +9963,7 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
         {"label": t("status.all_issued"),           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": f"{base_url}&all_issued=1",              "_active_key": "all_issued"},
         {"label": t("status.converted_to_memo"),    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": f"{base_url}&converted_to_type=memo",    "_active_key": "converted_to_memo"},
         {"label": t("status.converted_to_invoice"), "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": f"{base_url}&converted_to_type=invoice","_active_key": "converted_to_invoice"},
-        {"label": t("btn.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
+        {"label": t("enum.doc_status.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
     return status_cards(cards, base_url, _active_key or None, show_all_card=False)
 
@@ -9942,5 +9975,5 @@ def _list_type_tabs(active: str, state: dict[str, str]) -> FT:
     tabs = [A(t("doc.all"), href="/lists" + (f"?{urlencode(kept)}" if kept else ""), cls=all_cls)]
     for lt in _LIST_TYPES:
         cls = "category-tab" + (" category-tab--active" if lt == active else "")
-        tabs.append(A(_list_behavior(lt).label, href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
+        tabs.append(A(_list_type_label(lt), href="/lists?" + urlencode({"type": lt, **kept}), cls=cls))
     return Div(*tabs, cls="category-tabs", id="type-tabs")

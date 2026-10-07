@@ -1251,12 +1251,15 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
 
 
 # The JE families that carry a doc's recognized economics: finalize (fin, and
-# fin:{cycle} after reverts), bill conversion, the one-time COGS backfill, and
-# the fulfillment COGS adjustment (cogs-adj:{cycle_tag}). These are what a doc
-# void reverses and an unvoid restores. Settlement and stock-movement JEs
-# (payments, credit-note applications, fulfillment, receiving, landed cost,
-# returns) are not recognition: they reverse through their own flows.
+# fin:{cycle} after reverts), bill conversion, the one-time COGS backfill, the
+# fulfillment COGS adjustment (cogs-adj:{cycle_tag}), and the COGS an invoice
+# booked at fulfillment before COGS moved into the finalize JE (fulfill,
+# fulfill-{cycle}), which no flow posts or reverses any more. These are what a
+# doc void or revert to draft reverses and an unvoid restores. Settlement and
+# stock-movement JEs (payments, credit-note applications, receiving, landed
+# cost, returns) are not recognition: they reverse through their own flows.
 _RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj")
+_FULFILLMENT_COGS = re.compile(r"fulfill(?:-\d+)?")
 
 
 def _recognition_root(suffix: str) -> str | None:
@@ -1265,10 +1268,12 @@ def _recognition_root(suffix: str) -> str | None:
     The root is the suffix with any unvoid-restore generations stripped, so a
     restore shares its original's root: fin, fin:2, fin:unvoid, fin:2:unvoid:1
     all root to their cycle id; cogs-adj:fulfill-0:l0:unvoid:1 roots to
-    cogs-adj:fulfill-0:l0. A payment (pay:0) or fulfillment (fulfill-1) suffix
-    returns None.
+    cogs-adj:fulfill-0:l0, fulfill-1:unvoid to fulfill-1. A payment (pay:0) or
+    receipt (rcv:0) suffix returns None.
     """
     root = re.sub(r"(?::unvoid(?::\d+)?)+$", "", suffix)
+    if _FULFILLMENT_COGS.fullmatch(root):
+        return root
     for family in _RECOGNITION_FAMILIES:
         if root == family or root.startswith(f"{family}:"):
             return root
@@ -1751,8 +1756,8 @@ async def reconcile_doc_cogs(
     back into stock and no longer holds (Set as available after shipping) take their share
     of the allocation with them, so a lot sold again elsewhere is costed once. The difference from
     the cost of sales the invoice's live entries already book, measured as their net
-    relief of inventory, whichever account carries the expense, is rounded once, for
-    the whole invoice, and posted
+    relief of inventory, whichever account carries the expense, is taken once each
+    account's truth is rounded to the currency, for the whole invoice, and posted
     through create_for_doc_cogs_adjustment. An invoice with no recognized
     allocation on record posts nothing. Raises ValueError when a shipped lot
     cannot be matched to one of the invoice's lines.
@@ -1807,6 +1812,10 @@ async def reconcile_doc_cogs(
             if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING)):
                 booked[e["account"]] = booked.get(e["account"], 0.0) + float(e.get("credit") or 0) - float(
                     e.get("debit") or 0)
+    # Booked amounts are already money, so the truth is compared once it is money too:
+    # half a cent of cost recognized at finalize is not given back at fulfillment.
+    currency = await company_currency(session, company_id)
+    truth = {code: to_stored_float(round_money(amount, currency)) for code, amount in truth.items()}
     await create_for_doc_cogs_adjustment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
         delta={code: truth.get(code, 0.0) - booked.get(code, 0.0) for code in truth.keys() | booked.keys()},

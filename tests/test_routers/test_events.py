@@ -32,7 +32,7 @@ from celerp.models.auth import UserAuthState
 from celerp.models.company import Company, User
 from celerp.notifications.sse import _subscribers, publish, shutdown_all
 from celerp.services import runtime_state
-from celerp.services.auth import create_access_token
+from celerp.credentials import create_access_token
 
 
 async def _bearer(session, snonce: str = "stream-nonce") -> tuple[str, uuid.UUID, uuid.UUID, str]:
@@ -135,7 +135,7 @@ async def test_events_stream_rejects_pre_v2_refresh_and_missing_nonce_at_creatio
     v2 access-token contract, so none of them decodes to usable claims."""
     from jose import jwt as _jwt
     from celerp.config import settings
-    from celerp.services.auth import create_refresh_token
+    from celerp.credentials import create_refresh_token
 
     uid, cid = str(uuid.uuid4()), str(uuid.uuid4())
     # Pre-v2 shape: no auth_ver/type/snonce.

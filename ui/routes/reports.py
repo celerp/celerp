@@ -15,8 +15,8 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
-from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import t, get_lang
+from ui.config import PAYMENT_TERMS_URL, get_token as _token, get_role as _get_role
+from ui.i18n import t, get_lang, category_label
 from celerp.services.permissions import role_has_permission
 
 
@@ -83,7 +83,7 @@ def setup_routes(app):
             data = {"lines": [], "buckets": {}}
         content = [
             page_header(t("page.ar_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
+            _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link=PAYMENT_TERMS_URL, lang=get_lang(request)),
             _aging_view(data, "AR", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
         return await _page_or_fragment(request, *content, title=page_title("page.ar_aging"), nav_active="reports")
@@ -105,7 +105,7 @@ def setup_routes(app):
             data = {"lines": [], "buckets": {}}
         content = [
             page_header(t("page.ap_aging"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
+            _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link=PAYMENT_TERMS_URL, lang=get_lang(request)),
             _aging_view(data, "AP", sort=sort, sort_dir=sort_dir, currency=currency),
         ]
         return await _page_or_fragment(request, *content, title=page_title("page.ap_aging"), nav_active="reports")
@@ -139,7 +139,7 @@ def setup_routes(app):
                 A(t("label.back"), href="/reports", cls="btn btn--secondary"),
             ),
             _date_filter_bar("/reports/sales", date_from, date_to, preset,
-                             settings_link="/settings/sales?tab=terms",
+                             settings_link=PAYMENT_TERMS_URL,
                              extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),
@@ -175,7 +175,7 @@ def setup_routes(app):
                 A(t("label.back"), href="/reports", cls="btn btn--secondary"),
             ),
             _date_filter_bar("/reports/purchases", date_from, date_to, preset,
-                             settings_link="/settings/sales?tab=terms",
+                             settings_link=PAYMENT_TERMS_URL,
                              extra_params=f"&group_by={quote_plus(group_by)}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request, settings)),
@@ -196,10 +196,14 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             data = {"count": 0, "days_threshold": days, "lines": []}
+        try:
+            category_names = await api.get_category_display_names(token)
+        except APIError:
+            category_names = {}
 
         content = [
             page_header(t("page.expiring_items"), A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _expiring_view(data, days=days),
+            _expiring_view(data, days=days, category_names=category_names),
         ]
         return await _page_or_fragment(request, *content, title=page_title("page.expiring_items"), nav_active="reports")
 
@@ -662,7 +666,7 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
     )
 
 
-def _expiring_view(data: dict, days: int = 30) -> FT:
+def _expiring_view(data: dict, days: int = 30, category_names: dict | None = None) -> FT:
     count = data.get("count", 0)
     items = data.get("lines", [])
     threshold = data.get("days_threshold", days)
@@ -684,6 +688,9 @@ def _expiring_view(data: dict, days: int = 30) -> FT:
             empty_state_cta(t("reports.no_expiring")),
         )
 
+    def _category(key: str | None) -> str:
+        return category_label(key, (category_names or {}).get(key)) if key else ""
+
     def _row(i: dict) -> FT:
         dr = i.get("days_remaining")
         item_id = i.get("item_id") or i.get("entity_id") or ""
@@ -694,7 +701,7 @@ def _expiring_view(data: dict, days: int = 30) -> FT:
         return Tr(
             sku_cell,
             name_cell,
-            Td(i.get("category", "") or EMPTY),
+            Td(_category(i.get("category")) or EMPTY),
             Td((i.get("expires_at") or "")[:10] or EMPTY),
             Td(str(dr) if dr is not None else EMPTY),
             Td(Span(i.get("status", "") or EMPTY, cls=f"badge badge--{i.get('status', '')}" if i.get("status") else "")),

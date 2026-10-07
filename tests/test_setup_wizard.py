@@ -4,7 +4,7 @@
 Comprehensive tests for the setup wizard flow and related kernel wiring.
 
 Coverage:
-  A.  GET /setup/company            form rendering and pre-fill
+  A.  GET /setup/company            the finish-setup form and when it is skipped
   B.  POST /setup/company           validation, business type, restart and redirects
   C.  GET /setup/activating         module activation page and poll script
   C2. GET /setup/activating-status  activation status reporting
@@ -14,7 +14,6 @@ Coverage:
   G.  celerp/main.py                ENABLED_MODULES env var vs config.toml fallback
   H.  settings.py                   module-gated tabs
   I.  settings.py                   settings page with modules loaded
-  J.  Company tab                   flat dict field display
   K.  Fringe cases                  unauthenticated, API errors, partial company data
 """
 
@@ -70,17 +69,17 @@ def ui_client(tmp_path):
 # ===========================================================================
 
 class TestSetupCompanyGet:
-    """GET /setup/company rendering."""
+    """GET /setup/company: the business type and currency form."""
 
     @pytest.mark.asyncio
     async def test_renders_with_token(self, ui_client):
-        """Authenticated request renders the company-details form."""
+        """A company without a business type gets the finish-setup form."""
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
             r = await ui_client.get("/setup/company", cookies=_authed())
         assert r.status_code == 200
-        assert b"Company details" in r.content
-        assert b"currency" in r.content.lower()
-        assert b"timezone" in r.content.lower()
+        assert b"Finish setting up your company" in r.content
+        assert b'name="currency"' in r.content and b'name="vertical"' in r.content
+        assert b'name="timezone"' in r.content
 
     @pytest.mark.asyncio
     async def test_unauthenticated_redirects_to_login(self, ui_client):
@@ -91,12 +90,12 @@ class TestSetupCompanyGet:
 
     @pytest.mark.asyncio
     async def test_api_error_falls_back_to_empty_company(self, ui_client):
-        """If get_company raises APIError, form still renders with empty values."""
+        """If get_company raises APIError, the form still renders with empty values."""
         from ui.api_client import APIError
         with patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(500, "err"))):
             r = await ui_client.get("/setup/company", cookies=_authed())
         assert r.status_code == 200
-        assert b"Company details" in r.content
+        assert b"Finish setting up your company" in r.content
 
     @pytest.mark.asyncio
     async def test_renders_all_verticals_in_select(self, ui_client):
@@ -104,33 +103,37 @@ class TestSetupCompanyGet:
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
             r = await ui_client.get("/setup/company", cookies=_authed())
         assert r.status_code == 200
-        # At minimum 'blank' must be present
-        assert b"blank" in r.content
+        assert b'data-value="blank"' in r.content
+        assert b'data-value="gemstones"' in r.content
 
     @pytest.mark.asyncio
-    async def test_wizard_steps_rendered(self, ui_client):
-        """Step indicator shows step 2 as active."""
-        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
-            r = await ui_client.get("/setup/company", cookies=_authed())
-        assert b"wizard-step" in r.content or b"step-num" in r.content
-
-    @pytest.mark.asyncio
-    async def test_form_pre_fills_company_values(self, ui_client):
-        """Existing company values are pre-populated in the form inputs."""
-        company = {**_COMPANY, "currency": "EUR", "tax_id": "9876543",
-                   "settings": {**_COMPANY["settings"], "currency": "EUR", "tax_id": "9876543"}}
+    async def test_form_pre_fills_stored_currency(self, ui_client):
+        company = {**_COMPANY, "currency": "EUR"}
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
             r = await ui_client.get("/setup/company", cookies=_authed())
-        assert b"EUR" in r.content
-        assert b"9876543" in r.content
+        assert b'name="currency" data-name="currency" value="EUR"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_finish_later_goes_to_dashboard(self, ui_client):
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
+            r = await ui_client.get("/setup/company", cookies=_authed())
+        assert b'href="/dashboard"' in r.content
 
 
 # ===========================================================================
 # B. POST /setup/company
 # ===========================================================================
 
+@pytest.fixture()
+def _company_without_type():
+    """The company being set up has no business type yet."""
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):
+        yield
+
+
+@pytest.mark.usefixtures("_company_without_type")
 class TestSetupCompanyPost:
-    """POST /setup/company — form submission logic."""
+    """POST /setup/company: form submission logic."""
 
     @pytest.mark.asyncio
     async def test_unauthenticated_redirects_to_login(self, ui_client):
@@ -139,7 +142,7 @@ class TestSetupCompanyPost:
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
-    async def test_blank_vertical_redirects_to_onboarding(self, ui_client):
+    async def test_blank_vertical_redirects_to_dashboard(self, ui_client):
         """Choosing blank is a deliberate valid type: it is set, needs no restart, and setup moves on."""
         set_type = AsyncMock(return_value={"vertical": "blank", "restart_required": False})
         with (
@@ -148,11 +151,11 @@ class TestSetupCompanyPost:
         ):
             r = await ui_client.post(
                 "/setup/company",
-                data={"vertical": "blank", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01"},
+                data={"vertical": "blank", "currency": "USD", "timezone": "UTC"},
                 cookies=_authed(),
             )
         assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/onboarding")
+        assert r.headers.get("location", "").endswith("/dashboard")
         set_type.assert_awaited_once()
         assert set_type.await_args.args[1] == "blank"
 
@@ -191,39 +194,32 @@ class TestSetupCompanyPost:
             r = await ui_client.post(
                 "/setup/company", data={"vertical": "gemstones", "currency": "USD"}, cookies=_authed(),
             )
-        assert r.headers.get("location", "").endswith("/onboarding")
+        assert r.headers.get("location", "").endswith("/dashboard")
         restart.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_patch_company_error_re_renders_form(self, ui_client):
-        """patch_company raising APIError re-renders the form with error message."""
+        """patch_company raising APIError re-renders the form with its message."""
         from ui.api_client import APIError
-        with (
-            patch("ui.api_client.patch_company", new=AsyncMock(side_effect=APIError(422, "Invalid currency"))),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
-        ):
+        with patch("ui.api_client.patch_company", new=AsyncMock(side_effect=APIError(422, "Currency refused"))):
             r = await ui_client.post(
                 "/setup/company",
-                data={"vertical": "blank", "currency": "BADCUR"},
+                data={"vertical": "blank", "currency": "USD"},
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"Invalid currency" in r.content
+        assert b"Currency refused" in r.content
 
     @pytest.mark.asyncio
-    async def test_patch_company_error_get_company_also_fails(self, ui_client):
-        """Both patch_company and get_company fail — form still renders."""
-        from ui.api_client import APIError
-        with (
-            patch("ui.api_client.patch_company", new=AsyncMock(side_effect=APIError(422, "err"))),
-            patch("ui.api_client.get_company", new=AsyncMock(side_effect=APIError(500, "db error"))),
-        ):
+    async def test_unknown_currency_rejected_before_any_write(self, ui_client):
+        patch_company = AsyncMock()
+        with patch("ui.api_client.patch_company", new=patch_company):
             r = await ui_client.post(
-                "/setup/company",
-                data={"vertical": "blank"},
-                cookies=_authed(),
+                "/setup/company", data={"vertical": "blank", "currency": "BADCUR"}, cookies=_authed(),
             )
-        assert r.status_code == 200  # renders form with empty company
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
+        patch_company.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_business_type_error_does_not_advance(self, ui_client):
@@ -242,52 +238,37 @@ class TestSetupCompanyPost:
             )
         assert r.status_code == 200
         assert b"type failed" in r.content
-        assert b'<option value="gemstones" selected>' in r.content
+        assert b'<input type="hidden" name="vertical" data-name="vertical" value="gemstones">' in r.content
         restart.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_default_currency_is_thb_when_missing(self, ui_client):
-        """Form defaults to THB when no currency submitted."""
-        patched_data = {}
-
-        async def _capture_patch(token, data):
-            patched_data.update(data)
-            return {}
-
-        with patch("ui.api_client.patch_company", new=AsyncMock(side_effect=_capture_patch)):
-            r = await ui_client.post(
-                "/setup/company",
-                data={"vertical": "blank"},  # no currency field
-                cookies=_authed(),
-            )
-        assert patched_data.get("currency") == "THB"
+    async def test_missing_currency_is_refused_not_defaulted(self, ui_client):
+        """No currency submitted: the form says so and nothing is written."""
+        patch_company = AsyncMock()
+        with patch("ui.api_client.patch_company", new=patch_company):
+            r = await ui_client.post("/setup/company", data={"vertical": "blank"}, cookies=_authed())
+        assert r.status_code == 200
+        patch_company.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_all_form_fields_forwarded_to_patch(self, ui_client):
-        """All expected fields reach patch_company."""
+    async def test_currency_and_timezone_forwarded_to_patch(self, ui_client):
+        """Only currency and timezone reach patch_company; nothing else is written from setup."""
         captured = {}
 
         async def _cap(token, data):
             captured.update(data)
 
-        with patch("ui.api_client.patch_company", new=AsyncMock(side_effect=_cap)):
+        with (
+            patch("ui.api_client.patch_company", new=AsyncMock(side_effect=_cap)),
+            patch("ui.api_client.set_business_type",
+                  new=AsyncMock(return_value={"vertical": "blank", "restart_required": False})),
+        ):
             await ui_client.post(
                 "/setup/company",
-                data={
-                    "vertical": "blank",
-                    "currency": "SGD",
-                    "timezone": "Asia/Singapore",
-                    "tax_id": "T12345",
-                    "phone": "+65 1234 5678",
-                    "address": "1 Marina Blvd",
-                },
+                data={"vertical": "blank", "currency": "SGD", "timezone": "Asia/Singapore", "tax_id": "T12345"},
                 cookies=_authed(),
             )
-        assert captured["currency"] == "SGD"
-        assert captured["timezone"] == "Asia/Singapore"
-        assert captured["tax_id"] == "T12345"
-        assert captured["phone"] == "+65 1234 5678"
-        assert captured["address"] == "1 Marina Blvd"
+        assert captured == {"currency": "SGD", "timezone": "Asia/Singapore"}
 
 
 # ===========================================================================
@@ -310,11 +291,11 @@ class TestSetupActivating:
         assert b"activating-status" in r.content
 
     @pytest.mark.asyncio
-    async def test_page_redirects_to_onboarding_after_poll(self, ui_client):
-        """Poll script must redirect to the getting-started hub on success."""
+    async def test_page_redirects_to_dashboard_after_poll(self, ui_client):
+        """Poll script must go to the dashboard on success."""
         r = await ui_client.get("/setup/activating", cookies=_authed())
-        assert b"window.location.href = '/onboarding'" in r.content
-        assert b"/dashboard" not in r.content
+        assert b"window.location.href = '/dashboard'" in r.content
+        assert b"/onboarding" not in r.content
 
     @pytest.mark.asyncio
     async def test_unauthenticated_redirects_to_login(self, ui_client):
@@ -438,53 +419,18 @@ class TestSetupCloud:
 
 
 # ===========================================================================
-# E. Legacy redirect routes
+# E. Legacy setup step URLs
 # ===========================================================================
 
-class TestSetupLegacyRedirects:
-    """Old /setup/users, /setup/vertical, /setup/modules routes must redirect."""
+class TestSetupLegacyStepsGone:
+    """The old per-step setup URLs are not served: setup is one form at /setup."""
 
     @pytest.mark.asyncio
-    async def test_get_setup_users_redirects(self, ui_client):
-        r = await ui_client.get("/setup/users", cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/onboarding")
-
-    @pytest.mark.asyncio
-    async def test_post_setup_users_redirects(self, ui_client):
-        r = await ui_client.post("/setup/users", cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/onboarding")
-
-    @pytest.mark.asyncio
-    async def test_post_setup_users_done_redirects(self, ui_client):
-        r = await ui_client.post("/setup/users/done", cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/onboarding")
-
-    @pytest.mark.asyncio
-    async def test_get_setup_vertical_redirects(self, ui_client):
-        r = await ui_client.get("/setup/vertical", cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert "/setup/company" in r.headers.get("location", "")
-
-    @pytest.mark.asyncio
-    async def test_post_setup_vertical_redirects(self, ui_client):
-        r = await ui_client.post("/setup/vertical", cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/onboarding")
-
-    @pytest.mark.asyncio
-    async def test_get_setup_modules_redirects(self, ui_client):
-        r = await ui_client.get("/setup/modules", cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/onboarding")
-
-    @pytest.mark.asyncio
-    async def test_post_setup_modules_redirects(self, ui_client):
-        r = await ui_client.post("/setup/modules", cookies=_authed())
-        assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/onboarding")
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    @pytest.mark.parametrize("path", ["/setup/users", "/setup/users/done", "/setup/vertical", "/setup/modules"])
+    async def test_legacy_setup_route_is_not_found(self, ui_client, method, path):
+        r = await ui_client.request(method, path, cookies=_authed())
+        assert r.status_code == 404
 
 
 # ===========================================================================
@@ -868,70 +814,6 @@ class TestSettingsModuleTabs:
 
 
 # ===========================================================================
-# J. Company tab — flat dict field display (_company_details_form pre-fill)
-# ===========================================================================
-
-class TestCompanyDetailsFormPreFill:
-    """_company_details_form handles both flat and nested company dicts."""
-
-    def _render(self, company: dict) -> str:
-        from ui.routes.setup import _company_details_form
-        from fasthtml.common import to_xml
-        return to_xml(_company_details_form(company))
-
-    def test_flat_dict_renders_currency(self):
-        """Flat company dict (no settings sub-key) renders currency correctly."""
-        html = self._render({"currency": "JPY", "timezone": "Asia/Tokyo"})
-        assert "JPY" in html
-
-    def test_nested_settings_dict_renders_currency(self):
-        """Nested settings dict renders currency correctly."""
-        html = self._render({"settings": {"currency": "EUR", "timezone": "Europe/London"}})
-        assert "EUR" in html
-
-    def test_both_present_top_level_wins(self):
-        """When both top-level and settings dict present, merged correctly (settings keys complement)."""
-        company = {
-            "currency": "USD",
-            "settings": {"currency": "SGD", "timezone": "Asia/Singapore"},
-        }
-        # s = {**settings, **company} → company top-level overrides
-        html = self._render(company)
-        # Either USD or SGD is present depending on merge order — just assert it renders
-        assert "USD" in html or "SGD" in html
-
-    def test_empty_dict_uses_defaults(self):
-        """Empty company dict renders with placeholder defaults."""
-        html = self._render({})
-        assert "Company details" in html
-
-    def test_tax_id_pre_filled(self):
-        html = self._render({"tax_id": "9999999", "settings": {"tax_id": "9999999"}})
-        assert "9999999" in html
-
-    def test_address_pre_filled(self):
-        html = self._render({"address": "42 Sukhumvit", "settings": {"address": "42 Sukhumvit"}})
-        assert "42 Sukhumvit" in html
-
-    def test_phone_pre_filled(self):
-        html = self._render({"phone": "+66 99 999 9999", "settings": {"phone": "+66 99 999 9999"}})
-        assert "+66 99 999 9999" in html
-
-    def test_error_flash_shown(self):
-        """error parameter renders flash element."""
-        html = self._render({"settings": {}})
-        from ui.routes.setup import _company_details_form
-        from fasthtml.common import to_xml
-        html_with_err = to_xml(_company_details_form({}, error="Something went wrong"))
-        assert "Something went wrong" in html_with_err
-
-    def test_no_error_flash_absent(self):
-        """No error param → no flash element."""
-        html = self._render({})
-        assert "flash" not in html.lower() or "Something went wrong" not in html
-
-
-# ===========================================================================
 # K. Fringe / integration edge cases
 # ===========================================================================
 
@@ -943,8 +825,7 @@ class TestSetupFringe:
         """Poll script must have a max-attempts / timeout fallback message."""
         r = await ui_client.get("/setup/activating", cookies=_authed())
         content = r.content.decode()
-        # "maxAttempts" or "Taking longer" must appear
-        assert "maxAttempts" in content or "Taking longer" in content or "longer than expected" in content.lower()
+        assert "maxAttempts" in content and "msgTimedOut" in content
 
     def test_settings_tabs_active_class_marks_correct_tab(self):
         """Active tab receives 'tab--active' CSS class (live general builder)."""
@@ -969,7 +850,7 @@ class TestSetupFringe:
         with patch("ui.api_client.get_company", new=AsyncMock(return_value={"id": "x"})):
             r = await ui_client.get("/setup/company", cookies=_authed())
         assert r.status_code == 200
-        assert b"Company details" in r.content
+        assert b"Finish setting up your company" in r.content
 
 
 class TestSetupCloudPartnerManaged:

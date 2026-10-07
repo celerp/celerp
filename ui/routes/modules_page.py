@@ -12,7 +12,7 @@ Three tabs:
     listings from the catalog. They sit behind a one-step trust acknowledgment
     and carry no badge; the table uses the same schema as Installed Modules.
   - Marketplace: the official and verified catalog (community-modules
-    index.json, public data), served via the relay with repo-direct and
+    index-v2.json, public data), served via the relay with repo-direct and
     local-cache fallbacks; see ui.marketplace_catalog for why the relay
     endpoint is the one baked-in URL. Carries the List Your Modules entry point.
 
@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -55,7 +54,7 @@ _TEMPLATE_REPO = "https://github.com/celerp/celerp-module-template"
 _DOCS_URL = "https://celerp.com/docs/modules.html"
 # Where a seller lists a PAID module: the author dashboard (GitHub sign-in,
 # Stripe Connect, publish with a price). Distinct from the free community
-# registry, which only takes an index.json PR and carries no price.
+# registry, which only takes an index-v2.json PR and carries no price.
 _AUTHORS_URL = "https://www.celerp.com/authors"
 
 
@@ -901,9 +900,10 @@ def _community_module_cell(m: dict, lang: str) -> FT:
         parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
     parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
     links = []
+    if source := catalog.source_url(m):
+        links.append(A(t("marketplace.view_source", lang), href=source, target="_blank", rel="noopener noreferrer"))
     if m.get("repo"):
-        links.append(A(t("marketplace.view_source", lang), href=m["repo"], target="_blank", rel="noopener noreferrer"))
-        links.append(A(t("marketplace.report_bug", lang), href=m["repo"].rstrip("/") + "/issues", target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.report_bug", lang), href=m["repo"] + "/issues", target="_blank", rel="noopener noreferrer"))
     links.append(A(t("marketplace.feedback", lang),
                    href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
                    target="_blank", rel="noopener noreferrer"))
@@ -912,7 +912,7 @@ def _community_module_cell(m: dict, lang: str) -> FT:
 
 
 def _community_row(m: dict, lang: str, installed: set[str], owner: bool, *,
-                   downloaded_path: str | None = None) -> FT:
+                   downloaded_token: str | None = None) -> FT:
     """One community listing. Three states drive the Status and action cells:
     installed (nothing to do), downloaded (offer Import), or fresh (offer
     Download). Download fetches the author's repo archive and swaps this row in
@@ -928,12 +928,12 @@ def _community_row(m: dict, lang: str, installed: set[str], owner: bool, *,
     elif not owner:
         status_td = Td("--", data_filter_value="--")
         action_td = Td("--")
-    elif downloaded_path:
+    elif downloaded_token:
         status_td = Td(Span(t("marketplace.downloaded", lang), cls="badge badge--active"),
                        data_filter_value=t("marketplace.downloaded", lang))
         action_td = Td(Button(t("btn.import", lang),
             hx_post="/modules/community-import",
-            hx_vals=json.dumps({"id": m["id"], "path": downloaded_path}),
+            hx_vals=json.dumps({"id": m["id"], "token": downloaded_token}),
             hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
             cls="btn btn--sm btn--primary"))
     else:
@@ -1041,7 +1041,7 @@ def _community_table(community: list[dict], installed: set[str], lang: str,
                     Th(""),
                 )),
                 Tbody(*(_community_row(m, lang, installed, owner,
-                                       downloaded_path=(downloaded or {}).get(m["id"]))
+                                       downloaded_token=(downloaded or {}).get(m["id"]))
                         for m in community)),
                 id="community-table",
                 cls="data-table js-table",
@@ -1332,7 +1332,7 @@ def setup_routes(app):
     async def community_download(request: Request):
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
@@ -1344,53 +1344,55 @@ def setup_routes(app):
         # Free downloads ask for the free account (the download itself is the
         # moment the account earns its keep), but a relay outage never blocks
         # one - the gate fails open.
-        gate = await account_gate(token, lang, f"community:{module_id}")
+        gate = await account_gate(session_token, lang, f"community:{module_id}")
         if gate is not None and gate is not GATE_UNREACHABLE:
             return gate_modal_response(gate)
-        m, installed, owner = await _community_entry(token, module_id)
+        m, installed, owner = await _community_entry(session_token, module_id)
         try:
-            path = await catalog.download_community_archive(m.get("repo", ""), module_id)
-        except Exception:
+            download_token = await catalog.download_community_archive(m.get("repo", ""), m.get("commit", ""), module_id)
+        except Exception as exc:
+            reason = t(exc.key if isinstance(exc, catalog.DownloadRefused)
+                       else "marketplace.download_failed", lang)
             if zone:
-                community, installed, owner = await _community_and_installed(token)
-                return _toast(_community_table(community, installed, lang, owner),
-                                         t("marketplace.download_failed", lang))
-            return _toast(_community_row(m, lang, installed, owner),
-                                     t("marketplace.download_failed", lang))
+                community, installed, owner = await _community_and_installed(session_token)
+                return _toast(_community_table(community, installed, lang, owner), reason)
+            return _toast(_community_row(m, lang, installed, owner), reason)
         if zone:
-            community, installed, owner = await _community_and_installed(token)
+            community, installed, owner = await _community_and_installed(session_token)
             return _community_table(community, installed, lang, owner,
-                                    downloaded={module_id: path})
-        return _community_row(m, lang, installed, owner, downloaded_path=path)
+                                    downloaded={module_id: download_token})
+        return _community_row(m, lang, installed, owner, downloaded_token=download_token)
 
     @app.post("/modules/community-import")
     async def community_import(request: Request):
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         module_id = str(form.get("id", ""))
-        path = str(form.get("path", ""))
-        m, installed, owner = await _community_entry(token, module_id)
+        download_token = str(form.get("token", ""))
+        m, installed, owner = await _community_entry(session_token, module_id)
         try:
-            data = catalog.read_staged_archive(path)
-            await api.import_module_zip(token, f"{module_id}.zip", data, source="community")
+            data = catalog.read_staged_archive(module_id, download_token)
+            await api.import_module_zip(session_token, f"{module_id}.zip", data, source="community")
+        except catalog.DownloadRefused as e:
+            return _toast(_community_row(m, lang, installed, owner), t(e.key, lang))
         except APIError as e:
             return _toast(
-                _community_row(m, lang, installed, owner, downloaded_path=path),
+                _community_row(m, lang, installed, owner, downloaded_token=download_token),
                 e.detail or str(e))
         except (ValueError, OSError):
             return _toast(
-                _community_row(m, lang, installed, owner, downloaded_path=path),
+                _community_row(m, lang, installed, owner, downloaded_token=download_token),
                 t("marketplace.import_failed", lang))
         # Installed: drop the staged archive, then land on the Installed tab where
         # the new module's row sits with its Enable button - the next step in the
         # flow - rather than leaving the user on the catalog row.
         try:
-            Path(path).unlink(missing_ok=True)
+            catalog.discard_staged_archive(module_id, download_token)
         except OSError:
             pass
         return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
@@ -1528,42 +1530,45 @@ def setup_routes(app):
         returns the row with a corner toast, so retrying is always possible."""
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        m, installed, licensed, owner = await _marketplace_entry(token, slug)
+        m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            res = await api.marketplace_download(token, slug)
+            download_ref = (await api.marketplace_download(session_token, slug)).get("ref")
         except APIError as e:
             return _toast(
                 _marketplace_row(m, lang, installed, licensed, owner), e.detail or str(e))
         return _marketplace_row(m, lang, installed, licensed, owner,
-                                download_ref=res.get("ref"))
+                                download_ref=download_ref)
 
     @app.post("/modules/marketplace-install")
     async def modules_marketplace_install(request: Request):
-        """Step two: install the staged archive. The module lands disabled, the
+        """Step two: install the download the row names. The module lands disabled, the
         same as a community import - enabling and restarting are the deliberate
         steps in the Installed tab. A failure surfaces as a corner toast with the
         row intact."""
         if refused := await owner_refusal(request):
             return refused
-        token, redirect = await _guard(request)
+        session_token, redirect = await _guard(request)
         if redirect:
             return redirect
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        ref = str(form.get("ref", ""))
-        m, installed, licensed, owner = await _marketplace_entry(token, slug)
+        download_ref = str(form.get("ref", ""))
+        m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            await api.marketplace_install(token, ref)
+            await api.marketplace_install(session_token, download_ref)
         except APIError as e:
+            # A download that is gone (expired or already used) offers Download
+            # again; any other failure keeps Install for a retry.
+            kept = None if e.status == 410 else download_ref
             return _toast(
-                _marketplace_row(m, lang, installed, licensed, owner, download_ref=ref),
+                _marketplace_row(m, lang, installed, licensed, owner, download_ref=kept),
                 e.detail or str(e))
         # Installed: land on the Installed tab where the new module's row sits
         # with its Enable button - the next step in the flow - rather than

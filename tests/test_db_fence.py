@@ -127,11 +127,13 @@ elif path == "migrate":
     result = CliRunner().invoke(main, ["migrate", "--db-url", url])
     print(result.output, flush=True)
     sys.exit(result.exit_code)
-elif path in ("backfill", "ownership"):
-    # `celerp migrate` (backfill) or init's ownership fix (ownership), paused at
-    # chosen points: it prints PAUSED and waits for a "go" line. The first pause
-    # is inside the first backfill or outside write; the second is just before
-    # the next transaction's fence check after it.
+elif path in ("backfill", "ownership", "restamp"):
+    # `celerp migrate` (backfill), init's ownership fix (ownership), or `celerp
+    # migrate` restamping a database whose stamp is wrong and then upgrading it one
+    # revision at a time (restamp), paused at chosen points: it prints PAUSED and
+    # waits for a "go" line. The first pause is inside the first backfill or
+    # outside write, or just after the restamp; the second is just before the next
+    # transaction's fence check after it.
     import sqlalchemy as sa
     from celerp import cli
     from celerp.db_url import sync_url
@@ -160,6 +162,25 @@ elif path in ("backfill", "ownership"):
                     pause()
                     armed.append(True)
         _data_reconcile.data_backfill_scripts = lambda: [Backfill(1), Backfill(2)]
+        cli.main(["migrate", "--db-url", url])
+    if path == "restamp":
+        # The walker finds the head revision's change missing, so the stamp moves
+        # back one; the upgrade then meets that change already present and stamps
+        # past it.
+        from alembic import command
+        from alembic.script import ScriptDirectory
+        from celerp.alembic_config import build_alembic_config
+        from celerp.migrations import _auto_stamp
+        head = ScriptDirectory.from_config(build_alembic_config()).get_revision("head")
+        _auto_stamp.find_safe_stamp = lambda *args, **kwargs: head.down_revision
+        stamp = command.stamp
+        def paused_stamp(*args, **kwargs):
+            stamp(*args, **kwargs)
+            print(f"STAMPED {args[1]}", flush=True)
+            if not armed:
+                pause()
+                armed.append(True)
+        command.stamp = paused_stamp
         cli.main(["migrate", "--db-url", url])
     import subprocess
     observed = []
@@ -618,6 +639,48 @@ def test_a_command_that_lost_its_fence_mid_write_makes_no_write_after_a_newer_ve
         _ready(new)
         observed = [ln.split()[1] for ln in _output(old).splitlines() if ln.startswith("OBSERVED")]
         assert set(observed) <= {OLDER}, observed
+    finally:
+        _stop(old)
+        if new is not None:
+            _stop(new)
+
+
+def test_a_migrate_that_lost_its_fence_after_restamping_makes_no_further_change(scratch, tmp_path):
+    """`celerp migrate` restamps a database whose stamp disagrees with its schema and
+    then upgrades it one revision at a time. When it loses the fence between the
+    restamp and the upgrade and a newer version opens the database, the upgrade
+    stops naming that version and stamps nothing past the restamp. The newer server
+    finishes starting only once that migration has ended, as no two schema changes
+    run at once."""
+    from alembic.script import ScriptDirectory
+    from celerp.alembic_config import build_alembic_config
+
+    head = ScriptDirectory.from_config(build_alembic_config()).get_revision("head")
+    url = scratch()
+    old = _spawn(OLDER, "restamp", url, tmp_path / "old")
+    new = None
+    try:
+        _paused(old, 1)
+        assert snapshot(url)["alembic_version"] == [(head.down_revision,)], _output(old)
+        _kill_fence_backend(url, OLDER)
+        _send(old, "go")
+        _paused(old, 2)
+        new = _spawn(NEWER, "api", url, tmp_path / "new")
+        deadline = time.monotonic() + 120
+        while _meta(url).get("newest_celerp_version") != NEWER:
+            assert new.poll() is None and time.monotonic() < deadline, _output(new)
+            time.sleep(0.2)
+        time.sleep(2)
+        assert "READY" not in _output(new).splitlines(), _output(new)
+        before = snapshot(url)
+        assert before["alembic_version"] == [(head.down_revision,)]
+        _send(old, "go")
+        old.wait(timeout=60)
+        assert old.returncode != 0, _output(old)
+        assert f"last opened with Celerp {NEWER}" in _output(old), _output(old)
+        _ready(new)
+        assert [ln for ln in _output(old).splitlines() if ln.startswith("STAMPED")] == [
+            f"STAMPED {head.down_revision}"], _output(old)
     finally:
         _stop(old)
         if new is not None:

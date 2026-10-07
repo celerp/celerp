@@ -11,6 +11,9 @@ Stages can hold customer, cost and tax data, so the directory and every file in 
 readable by the server's own user only, whatever the process umask.
 
 Each stage is a ``<ref>.meta`` naming its company, written first, and a ``<ref>.csv``.
+A ``table`` stage holds the rows of an import as CSV together with the draft state of
+its review; a ``source`` stage holds an uploaded file (base64) while the user chooses
+its sheet or header row. Each kind is only ever read as itself.
 A stage's files therefore always carry their company, and deleting a company deletes
 its stages."""
 
@@ -65,8 +68,8 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
-def write_stage(company_id: str, csv_text: str) -> str:
-    """Stage ``csv_text`` for ``company_id`` and return its reference."""
+def write_stage(company_id: str, csv_text: str, draft: dict | None = None, *, kind: str = "table") -> str:
+    """Stage ``csv_text`` (with its ``draft`` state) for ``company_id`` and return its reference."""
     if not company_id:
         raise ValueError("import staging requires a company")
     base = stage_dir()
@@ -76,7 +79,10 @@ def write_stage(company_id: str, csv_text: str) -> str:
     ref = f"imp_{uuid.uuid4().hex}"
     csv_path, meta_path = stage_paths(ref)
     try:
-        _write_private(meta_path, json.dumps({"company_id": str(company_id), "created_at": time.time()}))
+        _write_private(meta_path, json.dumps({
+            "company_id": str(company_id), "created_at": time.time(), "draft": draft or {}, "revision": 1,
+            "kind": kind,
+        }))
         _write_private(csv_path, csv_text)
     except BaseException:
         delete_ref(ref)
@@ -84,14 +90,13 @@ def write_stage(company_id: str, csv_text: str) -> str:
     return ref
 
 
-def read_stage(company_id: str, ref: str) -> str | None:
-    """Stage content for ``ref`` if it belongs to ``company_id`` and is fresh."""
+def stage_meta(company_id: str, ref: str, kind: str = "table") -> dict | None:
+    """Metadata of the stage ``ref`` if it is a ``kind`` stage, belongs to ``company_id`` and is fresh."""
     paths = stage_paths(ref)
     if paths is None or not company_id:
         return None
-    csv_path, meta_path = paths
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta = json.loads(paths[1].read_text(encoding="utf-8"))
         created_at = float(meta["created_at"])
         owner = str(meta["company_id"])
     except (OSError, ValueError, KeyError, TypeError):
@@ -99,20 +104,68 @@ def read_stage(company_id: str, ref: str) -> str | None:
     if time.time() - created_at > MAX_AGE_SECONDS:
         delete_ref(ref)
         return None
-    if owner != str(company_id):
+    return meta if owner == str(company_id) and meta.get("kind", "table") == kind else None
+
+
+def read_stage(company_id: str, ref: str) -> str | None:
+    """Stage content for ``ref`` if it belongs to ``company_id`` and is fresh."""
+    draft = read_draft(company_id, ref)
+    return draft[0] if draft else None
+
+
+def read_draft(company_id: str, ref: str, kind: str = "table") -> tuple[str, dict, int] | None:
+    """``(content, draft, revision)`` of a fresh ``kind`` stage owned by ``company_id``."""
+    meta = stage_meta(company_id, ref, kind)
+    if meta is None:
         return None
     try:
-        return csv_path.read_text(encoding="utf-8")
+        content = stage_paths(ref)[0].read_text(encoding="utf-8")
     except OSError:
         return None
+    return content, dict(meta.get("draft") or {}), int(meta.get("revision") or 1)
+
+
+def _lock(fd: int) -> None:
+    """An exclusive lock on ``fd``, held until it is closed. Windows has no flock; it
+    locks the file's first byte instead."""
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def update_draft(company_id: str, ref: str, csv_text: str, draft: dict, revision: int) -> int | None:
+    """Replace a stage's content and draft if it is still at ``revision``; return the new revision.
+
+    The check and both writes happen under an exclusive lock on the stage, so of
+    two edits made from the same revision exactly one lands and the other gets
+    None (it was made against a draft that has since changed).
+    """
+    paths = stage_paths(ref)
+    if paths is None:
+        return None
+    csv_path, meta_path = paths
+    fd = os.open(stage_dir() / f"{ref}.lock", os.O_RDWR | os.O_CREAT, _FILE_MODE)
+    try:
+        _lock(fd)
+        meta = stage_meta(company_id, ref)
+        if meta is None or int(meta.get("revision") or 1) != revision:
+            return None
+        _write_private(csv_path, csv_text)
+        _write_private(meta_path, json.dumps({**meta, "draft": draft, "revision": revision + 1}))
+        return revision + 1
+    finally:
+        os.close(fd)
 
 
 def delete_ref(ref: str) -> None:
-    """Remove a stage pair. Malformed references are ignored."""
+    """Remove a stage and its lock. Malformed references are ignored."""
     paths = stage_paths(ref)
     if paths is None:
         return
-    for path in paths:
+    for path in (*paths, stage_dir() / f"{ref}.lock"):
         path.unlink(missing_ok=True)
 
 

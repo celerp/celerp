@@ -36,8 +36,10 @@ from company_backup_support import (
     members,
     owner,
     read,
+    replayed,
     restore,
     rezip,
+    settle,
     sha256,
     snapshot,
     token,
@@ -51,6 +53,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _BK_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _BK_MODULE = "zz-widgets"
+
 _BK_PREFIX = "zz_"
 _BK_CODE_MARKER = "zz-widget-code-body-7f3a"
 _BK_DROPPED_SETTINGS = ("role_grants", "ai_memory", "lock_date_set_by", "reorder_alert_email", "column_prefs",
@@ -78,6 +81,12 @@ def _bk_running_version(monkeypatch, name: str, version: str) -> None:
 def _bk_not_running(monkeypatch, name: str) -> None:
     from celerp.modules import loader
     monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != name])
+
+
+def _bk_unsupported() -> str:
+    """The export refusal for a table of the test module: it names the module, never the table."""
+    from celerp.modules.loader import module_label
+    return _bk_cb().UNSUPPORTED_MODULE.format(label=module_label(_BK_MODULE))
 
 
 def _bk_cb():
@@ -194,25 +203,26 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
 
 
 async def _bk_extra_ledger(engine, cid, n: int, marker: str) -> None:
-    """n more ledger events and projections for the company."""
+    """n more ledger events, and the records they produce, for the company."""
     async with engine.begin() as conn:
         for i in range(n):
             await conn.execute(text(
                 "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
                 "VALUES (:c, :e, 'item', 'item.created', CAST(:d AS json), 'api', :k)"),
                 {"c": cid, "e": f"item:x{i}", "d": json.dumps({"name": f"{marker}-{i}"}), "k": f"k-{marker}-{i}"})
-            await conn.execute(text(
-                "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
-                "VALUES (:c, :e, 'item', CAST(:d AS json), 1, now())"),
-                {"c": cid, "e": f"item:x{i}", "d": json.dumps({"name": f"{marker}-{i}"})})
+    await settle(engine, cid)
 
 
 async def _bk_point_at(engine, cid, url: str) -> None:
-    """Reference an attachment URL from the company's projection state and ledger data."""
-    await _bk_sql(engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"name": "photo item", "attachments": [{"url": url, "name": "photo.png"}]}))
+    """Reference an attachment URL from the company's ledger data and so its record."""
+    await _bk_set_data(engine, cid, {"name": "photo item", "attachments": [{"url": url, "name": "photo.png"}]})
+
+
+async def _bk_set_data(engine, cid, data: dict) -> None:
+    """Replace the company's ledger event data and rebuild its record from it."""
     await _bk_sql(engine, "UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"name": "photo item", "attachments": [{"url": url}]}))
+                  c=cid, d=json.dumps(data))
+    await settle(engine, cid)
 
 
 def _bk_local_file(tmp_path, cid, name: str, body: bytes) -> str:
@@ -293,6 +303,28 @@ async def _bk_refused(engine, client, tok: str, user_id, tmp_path, data: bytes, 
     assert await count(engine, "companies") == companies
 
 
+async def _bk_modules_required(engine, client, tok: str, user_id, tmp_path, data: bytes, module: str,
+                               status: str) -> None:
+    """The backup is previewed with what ``module`` needs before it can be restored, and a
+    restore through the API or the service is refused naming it; nothing was written."""
+    cb = _bk_cb()
+    before = await snapshot(engine)
+    companies = await count(engine, "companies")
+    r = await read(client, tok, data)
+    assert r.status_code == 200, r.text
+    assert r.json()["modules_ready"] is False
+    needed = {m["name"]: m for m in r.json()["modules"]}
+    assert needed[module]["status"] == status, r.json()["modules"]
+    refused = await client.post("/company-backups/restore", json=confirm(r), headers=auth(tok))
+    assert refused.status_code == 409 and refused.json()["code"] == "modules_required", refused.text
+    assert needed[module]["label"] in refused.json()["detail"]
+    with pytest.raises(cb.ModulesRequired) as err:
+        await cb.restore_company(_bk_file(tmp_path, data), mode="new_company", user_id=user_id)
+    assert err.value.detail.endswith("Nothing was restored."), err.value.detail
+    assert await snapshot(engine) == before
+    assert await count(engine, "companies") == companies
+
+
 async def _bk_restore_new(client, tok: str, data: bytes) -> str:
     """Restore the backup as a new company through the API; returns its id."""
     r = await restore(client, tok, data, mode="new_company")
@@ -321,12 +353,19 @@ async def _bk_run(engine, user_id, cid, *, status: str = "completed", prepared_b
         return run.id
 
 
-async def _bk_normalized_rows(engine, table: str, cid) -> list[str]:
-    """The company's rows in a table with identity and installation-user columns removed and
-    every uuid replaced by a placeholder, sorted."""
+async def _bk_normalized_rows(engine, table: str, cid, *, attributed: bool = False) -> list[str]:
+    """The company's rows in a table with identity columns removed and every uuid replaced
+    by a placeholder, sorted. With ``attributed`` each ledger row is first given the form a
+    restore elsewhere keeps: no link to a user of this installation, and the author's name
+    with a one-way reference to their account in its metadata."""
+    actor = ("(to_jsonb(x) || jsonb_build_object('actor_id', NULL) || COALESCE((SELECT jsonb_build_object("
+             "'metadata', COALESCE(CAST(x.metadata AS jsonb), '{}'::jsonb) || jsonb_build_object("
+             "'backup_actor', jsonb_build_object('name', u.name, 'user_ref', "
+             "encode(sha256(convert_to('celerp-backup-actor:' || CAST(u.id AS text), 'UTF8')), 'hex')))) "
+             "FROM users u WHERE u.id = x.actor_id), '{}'::jsonb))") if attributed else "to_jsonb(x)"
     async with engine.connect() as conn:
         rows = (await conn.execute(text(
-            f"SELECT (to_jsonb(x) - 'id' - 'company_id' - 'actor_id')::text FROM \"{table}\" x "
+            f"SELECT ({actor} - 'id' - 'company_id')::text FROM \"{table}\" x "
             "WHERE company_id::text = :c"), {"c": str(cid)})).scalars().all()
     return sorted(_BK_UUID.sub("<id>", r) for r in rows)
 
@@ -776,21 +815,21 @@ async def test_no_table_in_both_groups():
 
 
 async def test_export_refuses_unclassified_table(real_engine, real_client, tmp_path, monkeypatch):
-    """A company table nobody classified stops the export by name and no file is written."""
+    """A company table nobody classified, holding the company's rows, stops the export
+    without naming the table, and no file is written."""
     cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     user, cid, tok = await _bk_setup(real_engine)
     await _bk_sql(real_engine, "CREATE TABLE bk_unknown_things (id uuid primary key, "
                                "company_id uuid not null references companies(id) on delete cascade, note text)")
+    await _bk_sql(real_engine, "INSERT INTO bk_unknown_things (id, company_id) VALUES (gen_random_uuid(), :c)",
+                  c=str(cid))
     try:
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
-        assert "cannot back up yet: bk_unknown_things" in detail and detail.endswith("Nothing was backed up.")
+        assert r.json()["detail"] == cb.UNSUPPORTED
         async with maker(real_engine)() as s:
-            with pytest.raises(cb.BackupError) as err:
-                await cb.classify(s)
-        assert err.value.status_code == 409 and "bk_unknown_things" in err.value.detail
+            assert "bk_unknown_things" not in await cb.classify(s)
         out = tmp_path / "bk-out" / "books.celerp-company"
         out.parent.mkdir()
         with pytest.raises(cb.BackupError):
@@ -810,7 +849,9 @@ async def test_export_refusal_surfaces_on_settings_and_migration_download(real_e
     if reason == "unclassified_table":
         await _bk_sql(real_engine, "CREATE TABLE bk_unknown_things (id uuid primary key, "
                                    "company_id uuid not null references companies(id) on delete cascade)")
-        named = "bk_unknown_things"
+        await _bk_sql(real_engine, "INSERT INTO bk_unknown_things (id, company_id) VALUES (gen_random_uuid(), :c)",
+                      c=str(cid))
+        named = "cannot back up yet"
     else:
         named = f"/static/attachments/{cid}/missing.png"
         await _bk_point_at(real_engine, cid, named)
@@ -908,6 +949,29 @@ async def test_hand_copied_prefix_claiming_a_core_table_owns_nothing(real_engine
             await _bk_drop(real_engine, "alembic_version")
 
 
+async def test_hand_copied_prefix_claiming_a_core_table_is_not_reported_as_its_undeclared_table(
+        real_engine, tmp_path, monkeypatch):
+    """The startup notice of module tables a manifest leaves undeclared names only tables
+    the module owns: a hand-copied module whose prefix reaches Celerp's own schema stamp
+    is not told the stamp is its table."""
+    cb = _bk_cb()
+    _bk_fake_module(tmp_path, monkeypatch)
+    pkg = tmp_path / "bk-modules" / "zz-stamper"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        'PLUGIN_MANIFEST = {"name": "zz-stamper", "version": "1.0.0", "table_prefix": "alembic_"}\n')
+    async with real_engine.connect() as conn:
+        stamped = (await conn.execute(text("SELECT to_regclass('alembic_version')"))).scalar() is not None
+    if not stamped:
+        await _bk_sql(real_engine, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
+    try:
+        async with maker(real_engine)() as s:
+            assert "zz-stamper" not in await cb.undeclared_module_tables(s)
+    finally:
+        if not stamped:
+            await _bk_drop(real_engine, "alembic_version")
+
+
 @pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
 async def test_hand_copied_prefix_claiming_a_turned_off_bundled_module_table_owns_nothing(
         real_engine, tmp_path, monkeypatch, bundled_modules_unloaded, prefix):
@@ -926,8 +990,10 @@ async def test_hand_copied_prefix_claiming_a_turned_off_bundled_module_table_own
 
 async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_dropping_a_table(
         real_engine, real_client, tmp_path, monkeypatch):
-    """Two modules whose sound prefixes overlap own nothing, so the table is refused by name
-    rather than silently left out of the backup on the copied module's say-so."""
+    """Two modules whose sound prefixes overlap own nothing, so the table stops the export of
+    a company holding rows in it rather than being silently left out of the backup on the
+    copied module's say-so."""
+    cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     _bk_shadow_module(tmp_path, "zz-zshadow", _BK_PREFIX)
@@ -935,10 +1001,15 @@ async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_droppi
     await _bk_sql(real_engine, "CREATE TABLE zz_widgets (id uuid primary key, "
                                "company_id uuid not null references companies(id) on delete cascade, note text)")
     try:
+        async with maker(real_engine)() as s:
+            plan = await cb._classify(s, cb.installed_modules(), strict=True)
+        assert "zz_widgets" in plan.blocked and "zz_widgets" not in plan.owners
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id, note) VALUES (:i, :c, 'kept')",
+                      i=uuid.uuid4(), c=cid)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert "zz_widgets" in detail and detail.endswith("Nothing was backed up."), detail
+        assert detail == cb.UNSUPPORTED and detail.endswith("Nothing was backed up."), detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -954,7 +1025,7 @@ _BK_BAD_SHAPES = {
 
 @pytest.mark.parametrize("shape", sorted(_BK_BAD_SHAPES))
 async def test_module_table_outside_invariants_refused(real_engine, real_client, tmp_path, monkeypatch, shape):
-    """A module prefix table the generic engine cannot carry stops the export, naming the module and table."""
+    """A module prefix table the generic engine cannot carry stops the export, naming the module, never the table."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)
     _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
@@ -963,7 +1034,7 @@ async def test_module_table_outside_invariants_refused(real_engine, real_client,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert _BK_MODULE in detail and "zz_widgets" in detail and detail.endswith("Nothing was backed up.")
+        assert "Widgets" in detail and "zz_" not in detail and detail.endswith("Nothing was backed up.")
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -990,7 +1061,7 @@ async def test_unsupported_module_refusal_names_module_and_table_before_archive(
         with pytest.raises(cb.BackupError) as err:
             await cb.export_company_snapshot(cid, out_dir / "books.celerp-company")
         assert err.value.status_code == 409
-        assert _BK_MODULE in err.value.detail and "zz_widgets" in err.value.detail
+        assert "Widgets" in err.value.detail and "zz_" not in err.value.detail
         assert err.value.detail.endswith("Nothing was backed up.")
         assert opened == [] and list(out_dir.iterdir()) == []
     finally:
@@ -1026,7 +1097,7 @@ async def test_module_tables_referencing_in_a_loop_refused(real_engine, real_cli
             await _bk_sql(real_engine, sql)
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
-        assert _BK_MODULE in r.json()["detail"] and ("zz_widgets" in r.json()["detail"] or "zz_gadgets" in r.json()["detail"])
+        assert "Widgets" in r.json()["detail"] and "zz_" not in r.json()["detail"]
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_gadgets", "zz_widgets")
@@ -1104,8 +1175,7 @@ async def test_a_key_one_partition_holds_stops_the_export(real_engine, real_clie
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_widgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
@@ -1163,8 +1233,7 @@ async def test_a_key_naming_a_partition_of_a_carried_table_stops_the_export(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_widgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
 
@@ -1207,8 +1276,7 @@ async def test_a_table_inheriting_from_a_carried_table_stops_the_export(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == (f"The zz-widgets module keeps data in {table} in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
@@ -1987,10 +2055,10 @@ async def test_only_a_table_kept_out_of_reach_refuses_the_hold(real_engine, time
         await _bk_drop(real_engine, "zz_gadgets")
 
 
-async def test_a_refusal_names_a_carried_table_as_the_catalog_does(
+async def test_a_carried_table_another_schema_inherits_from_is_refused(
         real_engine, real_client, tmp_path, monkeypatch):
-    """A table of another schema inherits from the carried table "zz_Gadgets". The refusal
-    names the carried table quoted, as the catalog names tables, so it reads one way only."""
+    """A table of another schema inherits from the carried table "zz_Gadgets". The backup is
+    refused naming the module that keeps the table, never the table."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={"zz_Gadgets": "include"})
     _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
@@ -2003,8 +2071,7 @@ async def test_a_refusal_names_a_carried_table_as_the_catalog_does(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ('The zz-widgets module keeps data in "zz_Gadgets" in a form Celerp cannot '
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_Gadgets")
@@ -2053,8 +2120,7 @@ async def test_a_carried_table_under_row_security_is_refused_whole(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
         assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
@@ -2085,8 +2151,7 @@ async def test_a_carried_table_the_role_cannot_read_is_refused_whole(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 422, r.text[:200]
         assert r.json()["detail"] == ("The zz-widgets module keeps data in zz_gadgets in a form Celerp cannot "
@@ -2238,28 +2303,29 @@ _BK_ODD = ('CREATE TABLE "zz_Gadgets" (id uuid primary key, company_id uuid not 
            'references companies(id) on delete cascade, note text)')
 
 
-async def test_a_module_table_not_declared_is_named_as_the_catalog_does(
+async def test_a_module_table_not_declared_names_the_module(
         real_engine, real_client, tmp_path, monkeypatch):
-    """The module keeps "zz_Gadgets" without saying whether it belongs in a backup. The
-    refusal names it quoted, as the catalog names tables."""
+    """The module keeps a record of this company in "zz_Gadgets" without saying whether it
+    belongs in a backup. The refusal names the module, never the table."""
+    from celerp.modules.loader import module_label
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={})
-    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
     try:
         await _bk_sql(real_engine, _BK_ODD)
+        await _bk_sql(real_engine, """INSERT INTO "zz_Gadgets" VALUES (gen_random_uuid(), :c, 'kept')""", c=cid)
 
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ('The zz-widgets module has not said whether "zz_Gadgets" belongs in a '
-                                      "company backup. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_cb().UNDECLARED.format(label=module_label(_BK_MODULE))
     finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 
 
 async def test_a_carried_table_a_restore_cannot_name_is_refused(real_engine, real_client, tmp_path, monkeypatch):
     """The module keeps its records in "zz_Gadgets", a name a restore does not take. The
-    backup is refused naming the table, with nothing written, rather than written for a
+    backup is refused naming the module, with nothing written, rather than written for a
     restore to call damaged."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch, backup={"zz_Gadgets": "include"})
@@ -2271,8 +2337,7 @@ async def test_a_carried_table_a_restore_cannot_name_is_refused(real_engine, rea
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ('The zz-widgets module keeps data in "zz_Gadgets" in a form Celerp cannot '
-                                      "back up yet. Nothing was backed up.")
+        assert r.json()["detail"] == _bk_unsupported()
     finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 
@@ -2569,8 +2634,7 @@ async def test_attachments_processed_one_at_a_time(real_engine, real_client, tmp
     _, cid, tok = await _bk_setup(real_engine)
     bodies = {f"photo{i}.png": f"photo-body-{i}".encode() for i in range(3)}
     urls = [_bk_local_file(tmp_path, cid, name, body) for name, body in bodies.items()]
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"attachments": [{"url": u} for u in urls]}))
+    await _bk_set_data(real_engine, cid, {"attachments": [{"url": u} for u in urls]})
 
     events: list[tuple[str, str]] = []
     reading = {"now": 0, "max": 0}
@@ -2683,20 +2747,17 @@ async def test_attachment_urls_rewritten_exactly(real_engine, real_client, tmp_p
     _, cid, tok = await _bk_setup(real_engine)
     url = _bk_local_file(tmp_path, cid, "photo.png", b"alpha-photo")
     elsewhere = "/static/attachments/elsewhere/photo.png"
-    state = {"attachments": [{"url": url}], "gallery": [[url]], "note": "photo.png", "mirror": elsewhere}
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps(state))
-    await _bk_sql(real_engine, "UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps({"files": {"main": url}, "mirror": elsewhere}))
+    await _bk_set_data(real_engine, cid, {"attachments": [{"url": url}], "gallery": [[url]], "note": "photo.png",
+                                          "files": {"main": url}, "mirror": elsewhere})
     new = await _bk_restore_new(real_client, tok, await download(real_client, tok))
     new_url = f"/static/attachments/{new}/photo.png"
     restored = json.loads(await _bk_scalar(real_engine, "SELECT state::text FROM projections WHERE company_id = :c",
                                            c=uuid.UUID(new)))
-    assert restored == {"attachments": [{"url": new_url}], "gallery": [[new_url]], "note": "photo.png",
-                        "mirror": elsewhere}
     data = json.loads(await _bk_scalar(real_engine, "SELECT data::text FROM ledger WHERE company_id = :c",
                                        c=uuid.UUID(new)))
-    assert data == {"files": {"main": new_url}, "mirror": elsewhere}
+    assert data == {"attachments": [{"url": new_url}], "gallery": [[new_url]], "note": "photo.png",
+                    "files": {"main": new_url}, "mirror": elsewhere}
+    assert restored == replayed(data)
 
 
 @pytest.mark.parametrize("backend", ["local", "cloud"])
@@ -2840,20 +2901,19 @@ async def test_record_too_large_to_restore_is_not_backed_up(real_engine, real_cl
     monkeypatch.setattr(cb, "MAX_ROW_BYTES", max(len(line) for line in rows) - 1)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"].startswith("One record in ")
+    assert r.json()["detail"] == cb.ROW_TOO_LARGE_TO_BACK_UP
 
 
 @pytest.mark.parametrize("limit", [("MAX_ROW_NODES", 3), ("MAX_ROW_DEPTH", 1)])
 async def test_record_too_large_to_parse_is_not_backed_up(real_engine, real_client, tmp_path, monkeypatch, limit):
-    """Export applies the restore's parsed-size limits too (values and nesting), and the
-    refusal names the table."""
+    """Export applies the restore's parsed-size limits too (values and nesting)."""
     cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     _, _, tok = await _bk_setup(real_engine)
     monkeypatch.setattr(cb, *limit)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"].startswith("One record in ")
+    assert r.json()["detail"] == cb.ROW_TOO_LARGE_TO_BACK_UP
     assert "too large for a company backup" in r.json()["detail"]
 
 
@@ -2999,6 +3059,47 @@ async def test_newer_schema_refused_before_writes(real_engine, real_client, tmp_
     await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "newer version of Celerp")
 
 
+@pytest.mark.parametrize("recorded", ["999.0.0", "newer_dev"])
+async def test_backup_from_a_newer_celerp_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch,
+                                                                recorded):
+    """A backup made by a newer Celerp is refused before any write, even when its tables and
+    columns all exist here: the newer copy's records may mean something this copy cannot read."""
+    from packaging.version import Version
+    from celerp.migrations.compatibility import running_version
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+    if recorded == "newer_dev":
+        v = Version(running_version())
+        recorded = f"{v.major}.{v.minor}.{v.micro + 1}.dev1"
+
+    def change(m):
+        m["celerp_version"] = recorded
+    data = _bk_edit_manifest(await download(real_client, tok), change)
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "newer version of Celerp")
+
+
+@pytest.mark.parametrize("recorded", ["not a version", 7, ""])
+async def test_backup_with_an_unreadable_celerp_version_refused_before_writes(real_engine, real_client, tmp_path,
+                                                                              monkeypatch, recorded):
+    """A backup whose recorded Celerp version cannot be read is refused as damaged, never guessed."""
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+
+    def change(m):
+        m["celerp_version"] = recorded
+    data = _bk_edit_manifest(await download(real_client, tok), change)
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "damaged or was changed")
+
+
+async def test_backup_records_the_celerp_that_made_it(real_engine, real_client, tmp_path, monkeypatch):
+    """The manifest names the Celerp version that made it, so an older copy can refuse it."""
+    from celerp.migrations.compatibility import running_version
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    m = json.loads(members(await download(real_client, tok))["manifest.json"])
+    assert m["celerp_version"] == running_version()
+
+
 @pytest.mark.parametrize("table", ["locations", "ledger"])
 async def test_unknown_archived_column_refused_before_writes(real_engine, real_client, tmp_path, monkeypatch, table):
     """A backup listing a column this Celerp's table does not have is refused before any write."""
@@ -3029,7 +3130,7 @@ async def test_missing_module_refused_before_writes(real_engine, real_client, tm
         user, tok, _, data = await _bk_module_backup(real_engine, real_client, tmp_path, monkeypatch)
         assert _BK_MODULE in manifest(data)["modules"]["enabled"]
         _bk_uninstall_module(tmp_path, monkeypatch)
-        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, f"needs the {_BK_MODULE} module")
+        await _bk_modules_required(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE, "missing")
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -3040,7 +3141,7 @@ async def test_incompatible_module_version_refused_before_writes(real_engine, re
         user, tok, pkg, data = await _bk_module_backup(real_engine, real_client, tmp_path, monkeypatch)
         assert manifest(data)["modules"]["versions"][_BK_MODULE] == "2.0.0"
         _bk_fake_module(tmp_path, monkeypatch, version="1.0.0")
-        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE)
+        await _bk_modules_required(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE, "incompatible")
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -3052,7 +3153,8 @@ async def test_module_updated_on_disk_but_not_restarted_refused(real_engine, rea
         user, tok, pkg, data = await _bk_module_backup(real_engine, real_client, tmp_path, monkeypatch)
         assert manifest(data)["modules"]["versions"][_BK_MODULE] == "2.0.0"
         _bk_running_version(monkeypatch, _BK_MODULE, "1.0.0")
-        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE, "restart Celerp")
+        await _bk_modules_required(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE,
+                                   "upgrade_restart_required")
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -3114,7 +3216,7 @@ async def test_round_trip_every_portable_table(real_engine, real_client, tmp_pat
     new = await _bk_restore_new(real_client, tok, data)
     assert new != str(cid)
     for table in sorted(cb.PORTABLE_TABLES):
-        source = await _bk_normalized_rows(real_engine, table, cid)
+        source = await _bk_normalized_rows(real_engine, table, cid, attributed=table == "ledger")
         restored = await _bk_normalized_rows(real_engine, table, new)
         assert source, table
         assert restored == source, table
@@ -3151,15 +3253,12 @@ async def _r_location(engine, cid) -> str:
     return await _r_scalar(engine, "SELECT id::text FROM locations WHERE company_id = :c", c=cid)
 
 
-async def _r_set_json(engine, cid, *, state: dict | None = None, data: dict | None = None) -> None:
-    """Replace the company's projection state and/or ledger event data."""
+async def _r_set_data(engine, cid, data: dict) -> None:
+    """Replace the company's ledger event data and rebuild its record from it."""
     async with engine.begin() as conn:
-        if state is not None:
-            await conn.execute(text("UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c"),
-                               {"d": json.dumps(state), "c": cid})
-        if data is not None:
-            await conn.execute(text("UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c"),
-                               {"d": json.dumps(data), "c": cid})
+        await conn.execute(text("UPDATE ledger SET data = CAST(:d AS json) WHERE company_id = :c"),
+                           {"d": json.dumps(data), "c": cid})
+    await settle(engine, cid)
 
 
 async def _r_rows(engine, table: str, cid) -> list[dict]:
@@ -3192,7 +3291,7 @@ def _r_without_sessions(snap: dict) -> dict:
 def _r_created(r) -> dict:
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["created"] is True, body
+    assert body["outcome"] == "created", body
     return body
 
 
@@ -3310,7 +3409,7 @@ async def _r_cloud_files(engine, cloud: _RCloud, cid) -> dict[str, bytes]:
     """Two cloud-stored attachments referenced by the company's projection."""
     files = {cloud.url(cid, "photo.png"): b"alpha-photo", cloud.url(cid, "scan.png"): b"alpha-scan"}
     cloud.files.update(files)
-    await _r_set_json(engine, cid, state={
+    await _r_set_data(engine, cid, {
         "name": _R_MARKER,
         "attachments": [{"url": url, "name": url.rsplit("/", 1)[1], "mime": "image/png"} for url in files]})
     return files
@@ -3615,10 +3714,10 @@ async def test_retry_after_success_returns_same_company(real_engine, real_client
 
     again = await real_client.post("/company-backups/restore", json=upload, headers=auth(tok))
     assert again.status_code == 200, again.text
-    assert again.json()["company_id"] == first["company_id"] and again.json()["created"] is False
+    assert again.json()["company_id"] == first["company_id"] and again.json()["outcome"] == "opened_existing"
     reupload = await restore(real_client, tok, data)
     assert reupload.status_code == 200, reupload.text
-    assert reupload.json()["company_id"] == first["company_id"] and reupload.json()["created"] is False
+    assert reupload.json()["company_id"] == first["company_id"] and reupload.json()["outcome"] == "opened_existing"
     assert await count(real_engine, "companies") == companies
 
     stranger = await owner(real_engine, "stranger@example.com", "Stranger")
@@ -3641,7 +3740,7 @@ async def test_reopening_same_backup_does_not_clone(real_engine, real_client, tm
                      (await token(real_engine, user, other), "new_company")):
         r = await restore(real_client, tk, data, mode)
         assert r.status_code == 200, r.text
-        assert r.json()["company_id"] == first["company_id"] and r.json()["created"] is False
+        assert r.json()["company_id"] == first["company_id"] and r.json()["outcome"] == "opened_existing"
     assert await count(real_engine, "companies") == companies
     assert await count(real_engine, "projections", "company_id = :c", c=uuid.UUID(first["company_id"])) == 1
 
@@ -3686,6 +3785,59 @@ async def test_concurrent_restore_creates_one_company(real_engine, real_client, 
                        "(SELECT oid FROM pg_database WHERE datname = current_database())") == 0
 
 
+def _signed_out_during(engine, monkeypatch, service: str, user) -> None:
+    """The caller signs out everywhere while the named backup service call runs."""
+    from celerp.services.session_tracker import invalidate_sessions
+    cb = _bk_cb()
+    real = getattr(cb, service)
+
+    async def signing_out(*args, **kwargs):
+        result = await real(*args, **kwargs)
+        async with maker(engine)() as s:
+            await invalidate_sessions(s, str(user))
+        return result
+    monkeypatch.setattr(cb, service, signing_out)
+
+
+async def test_sign_out_during_restore_or_reactivation_signs_nothing_in(real_engine, real_client, tmp_path,
+                                                                        monkeypatch):
+    """A sign-out that lands while a restore or a reactivation runs ends that session too:
+    the request gets no new session."""
+    user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
+    preview = await _ln_preview(real_client, tok, data, "new_company")
+    _signed_out_during(real_engine, monkeypatch, "reactivate_restored", user)
+    r = await _ln_reactivate(real_client, tok, preview)
+    assert r.status_code == 401 and "access_token" not in r.text, r.text
+
+    tok = await token(real_engine, user, cid)
+    preview = await _ln_preview(real_client, tok, data, "settings")
+    _signed_out_during(real_engine, monkeypatch, "restore_company", user)
+    r = await _ln_commit(real_client, tok, preview, "settings")
+    assert r.status_code == 401 and "access_token" not in r.text, r.text
+
+
+async def test_restore_cut_off_by_sign_out_opens_after_signing_in_again(real_engine, real_client, tmp_path,
+                                                                        monkeypatch):
+    """A restore that finished while its session was signed out is opened, not restored again,
+    when the same upload is confirmed after signing in again."""
+    _r_env(tmp_path, monkeypatch)
+    user, cid, tok = await _r_source(real_engine)
+    data = await download(real_client, tok)
+    upload = confirm(await _ln_preview(real_client, tok, data, "new_company"), "new_company")
+    _signed_out_during(real_engine, monkeypatch, "restore_company", user)
+    cut_off = await real_client.post("/company-backups/restore", json=upload, headers=auth(tok))
+    assert cut_off.status_code == 401, cut_off.text
+    companies = await count(real_engine, "companies")
+    restored = await _r_scalar(real_engine, "SELECT id::text FROM companies WHERE id <> :c", c=cid)
+
+    again = await real_client.post("/company-backups/restore", json=upload,
+                                   headers=auth(await token(real_engine, user, cid)))
+    assert again.status_code == 200, again.text
+    assert (again.json()["company_id"], again.json()["outcome"]) == (restored, "opened_existing")
+    assert (await _r_me(real_client, again.json()["access_token"]))["id"] == restored
+    assert await count(real_engine, "companies") == companies
+
+
 # ── Id remapping and reference policy ────────────────────────────────────────
 
 async def test_exact_value_id_remap(real_engine, real_client, tmp_path, monkeypatch):
@@ -3704,7 +3856,7 @@ async def test_exact_value_id_remap(real_engine, real_client, tmp_path, monkeypa
         await conn.execute(text("INSERT INTO work_centers (id, company_id, name, wip_location_id, is_default, created_at) "
                                 "VALUES (:i, :c, 'Bench', :l, false, now())"), {"i": wc, "c": cid, "l": loc})
     nested = {"name": _R_MARKER, "location_id": loc, "lines": [{"location_id": loc}, loc], "work_center": wc}
-    await _r_set_json(real_engine, cid, state=nested, data=nested)
+    await _r_set_data(real_engine, cid, nested)
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
@@ -3715,7 +3867,7 @@ async def test_exact_value_id_remap(real_engine, real_client, tmp_path, monkeypa
                 "work_center": new_wc["id"]}
     (proj,) = await _r_rows(real_engine, "projections", new)
     (event,) = await _r_rows(real_engine, "ledger", new)
-    assert proj["state"] == expected and event["data"] == expected
+    assert proj["state"] == replayed(expected) and event["data"] == expected
     assert proj["location_id"] == new_loc and event["location_id"] == new_loc
 
     source_ids = {str(cid), loc, wc}
@@ -3737,14 +3889,14 @@ async def test_uuid_substrings_in_text_not_remapped(real_engine, real_client, tm
     _, cid, tok = await _r_source(real_engine)
     loc = await _r_location(real_engine, cid)
     note = f"see order {loc} and http://x/{loc}"
-    await _r_set_json(real_engine, cid, state={"name": _R_MARKER, "location_id": loc, "note": note},
-                      data={"name": _R_MARKER, "memo": note})
+    await _r_set_data(real_engine, cid, {"name": _R_MARKER, "location_id": loc, "note": note, "memo": note})
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
     (proj,) = await _r_rows(real_engine, "projections", new)
     (event,) = await _r_rows(real_engine, "ledger", new)
-    assert proj["state"]["note"] == note and event["data"]["memo"] == note
+    assert proj["state"] == replayed(event["data"])
+    assert event["data"]["note"] == note and event["data"]["memo"] == note
     assert proj["state"]["location_id"] == await _r_location(real_engine, new)
 
 
@@ -3753,14 +3905,14 @@ async def test_installation_independent_reference_permitted(real_engine, real_cl
     _r_env(tmp_path, monkeypatch)
     _, cid, tok = await _r_source(real_engine)
     external = str(uuid.uuid4())
-    await _r_set_json(real_engine, cid, state={"name": _R_MARKER, "external_ref": external},
-                      data={"name": _R_MARKER, "payment_ref": external})
+    await _r_set_data(real_engine, cid, {"name": _R_MARKER, "external_ref": external, "payment_ref": external})
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
     (proj,) = await _r_rows(real_engine, "projections", new)
     (event,) = await _r_rows(real_engine, "ledger", new)
-    assert proj["state"]["external_ref"] == external and event["data"]["payment_ref"] == external
+    assert proj["state"] == replayed(event["data"])
+    assert event["data"]["external_ref"] == external and event["data"]["payment_ref"] == external
 
 
 async def test_cross_company_reference_refused(real_engine, real_client, tmp_path, monkeypatch):
@@ -3828,11 +3980,13 @@ async def test_unresolved_reference_refused_before_writes(real_engine, real_clie
 
 
 async def test_installation_user_references_policy(real_engine, real_client, tmp_path, monkeypatch):
-    """Columns naming installation users, such as ledger.actor_id, are empty in the restored company."""
+    """Columns naming installation users, such as ledger.actor_id, are empty in a company
+    restored from another company's backup. (A Settings restore of the same company links
+    history back to its exact authors: test_same_company_restore_relinks_exact_authors.)"""
     _r_env(tmp_path, monkeypatch)
     user, cid, tok = await _r_source(real_engine)
     data = await download(real_client, tok)
-    body = _r_created(await restore(real_client, tok, data))
+    body = _r_created(await restore(real_client, tok, data, mode="new_company"))
     new = uuid.UUID(body["company_id"])
     (event,) = await _r_rows(real_engine, "ledger", new)
     assert event["actor_id"] is None
@@ -3861,6 +4015,7 @@ async def test_ledger_generated_ids_policy(real_engine, real_client, tmp_path, m
                 "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
                 "VALUES (:c, :e, 'item', 'item.created', CAST(:d AS json), 'api', :k)"),
                 {"c": cid, "e": f"item:{n + 2}", "d": json.dumps({"name": _R_MARKER}), "k": f"extra-{n}"})
+    await settle(real_engine, cid)
     data = await download(real_client, tok)
     body = _r_created(await restore(real_client, tok, data))
     new = uuid.UUID(body["company_id"])
@@ -3952,7 +4107,7 @@ async def test_database_rollback_on_verification_failure(real_engine, real_clien
     folder = tmp_path / "static" / "attachments" / str(cid)
     folder.mkdir(parents=True)
     (folder / "photo.png").write_bytes(b"alpha-photo")
-    await _r_set_json(real_engine, cid, state={
+    await _r_set_data(real_engine, cid, {
         "name": _R_MARKER, "attachments": [{"url": f"/static/attachments/{cid}/photo.png", "mime": "image/png"}]})
     data = await download(real_client, tok)
     before = await snapshot(real_engine)
@@ -4109,7 +4264,7 @@ async def test_bootstrap_retry_after_success_returns_same_company(real_engine, r
     first = _r_created(await _r_brestore(real_client, upload_token, code_config))
     again = await _r_brestore(real_client, upload_token, code_config)
     assert again.status_code == 200, again.text
-    assert again.json()["company_id"] == first["company_id"] and again.json()["created"] is False
+    assert again.json()["company_id"] == first["company_id"] and again.json()["outcome"] == "opened_existing"
     assert again.json()["access_token"]
     other = await _r_brestore(real_client, upload_token, code_config, email="other@example.com")
     assert other.status_code == 409, other.text
@@ -4225,8 +4380,7 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     _, cid, tok = await _bk_setup(real_engine)
     url = _bk_local_file(tmp_path, cid, "scan.html", b"png-bytes")
     state = {"attachments": [{"url": url, "mime": "image/png", "filename": "scan.html"}]}
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps(state))
+    await _bk_set_data(real_engine, cid, state)
     data = await download(real_client, tok)
     [entry] = manifest(data)["attachments"]
     assert (entry["url"], entry["name"]) == (url, "scan.png")
@@ -4239,8 +4393,7 @@ async def test_attachment_named_before_type_extensions_round_trips(real_engine, 
     assert restored["attachments"][0]["url"] == f"/static/attachments/{new}/scan.png"
 
     state["attachments"][0]["mime"] = "text/html"
-    await _bk_sql(real_engine, "UPDATE projections SET state = CAST(:d AS json) WHERE company_id = :c",
-                  c=cid, d=json.dumps(state))
+    await _bk_set_data(real_engine, cid, state)
     r = await real_client.get("/company-backups/download", headers=auth(tok))
     assert r.status_code == 409, r.text
     assert "a type Celerp does not store" in r.json()["detail"] and r.json()["detail"].endswith("Nothing was backed up.")
@@ -4278,7 +4431,7 @@ async def test_enabled_module_without_version_refused_before_writes(real_engine,
         m["modules"]["enabled"].append("zz-absent")
         m["modules"]["versions"].pop("zz-absent", None)
     data = _bk_edit_manifest(await download(real_client, tok), change)
-    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "needs the zz-absent module")
+    await _bk_modules_required(real_engine, real_client, tok, user, tmp_path, data, "zz-absent", "missing")
 
 
 @pytest.mark.parametrize("need", ["enabled", "data"])
@@ -4298,7 +4451,7 @@ async def test_installed_module_not_running_refused(real_engine, real_client, tm
         data = await download(real_client, tok)
         assert _BK_MODULE in manifest(data)["modules"]["versions"]
         _bk_not_running(monkeypatch, _BK_MODULE)
-        await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE, "not turned on")
+        await _bk_modules_required(real_engine, real_client, tok, user, tmp_path, data, _BK_MODULE, "enable_required")
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -4391,7 +4544,7 @@ async def _ln_stage(tmp_path, user_id, data: bytes) -> str:
     tok = uuid.uuid4().hex
     folder = tmp_path / "company_backups" / "uploads"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{user_id}-{tok}.celerp-company").write_bytes(data)
+    (folder / f"{user_id}-{tok}.upload").write_bytes(data)
     return tok
 
 
@@ -4421,7 +4574,7 @@ async def test_plan_existing_restore_resolves_every_action(real_engine, real_cli
 
     before = await snapshot(real_engine)
     first = await plan("settings", user, cid)
-    assert (first.action, first.destination_id, first.destination_name) == ("create", None, None)
+    assert (first.action, first.destination_id, first.destination_name) == ("create", None, "Alpha Trading (Restored)")
     assert list(first.team_to_add) == [(str(clerk), "viewer")]
     assert first.fingerprint == (await plan("settings", user, cid)).fingerprint
     added = await plan("new_company", user, cid)
@@ -4437,7 +4590,7 @@ async def test_plan_existing_restore_resolves_every_action(real_engine, real_cli
 
     carry = await plan("settings", user, cid)
     assert (carry.action, carry.destination_id, carry.destination_name) == (
-        "return_existing_and_add_team", dest, "Alpha Trading")
+        "return_existing_and_add_team", dest, "Alpha Trading (Restored)")
     assert list(carry.team_to_add) == [(str(clerk), "viewer")] and carry.team_blocked == 0
     existing = await plan("new_company", user, cid)
     assert (existing.action, existing.destination_id, list(existing.team_to_add)) == ("return_existing", dest, [])
@@ -4449,7 +4602,7 @@ async def test_plan_existing_restore_resolves_every_action(real_engine, real_cli
 
     await _ln_deactivate(real_engine, real_client, user, dest)
     offer = await plan("new_company", user, cid)
-    assert (offer.action, offer.destination_id, offer.destination_name) == ("offer_reactivate", dest, "Alpha Trading")
+    assert (offer.action, offer.destination_id, offer.destination_name) == ("offer_reactivate", dest, "Alpha Trading (Restored)")
     for who, current in ((second, cid), (stranger, theirs)):
         denied = await plan("settings", who, current)
         assert (denied.action, denied.destination_id, denied.destination_name) == ("refuse", None, None)
@@ -4505,7 +4658,7 @@ async def test_add_company_then_settings_restore_adds_missing_team(real_engine, 
     assert (preview.json()["destination_id"], preview.json()["team_members"]) == (dest, 2)
     r = await _ln_commit(real_client, tok, preview)
     assert r.status_code == 200, r.text
-    assert (r.json()["company_id"], r.json()["created"], r.json()["team_members"]) == (dest, False, 2)
+    assert (r.json()["company_id"], r.json()["outcome"], r.json()["team_members"]) == (dest, "opened_existing_team_added", 2)
     assert await _r_memberships(real_engine, dest) == {
         (str(user), "owner", True), (str(viewer), "viewer", True), (str(manager), "manager", True)}
     assert await count(real_engine, "companies") == companies
@@ -4641,7 +4794,7 @@ async def test_team_carry_copies_source_role_grants_once(real_engine, real_clien
     assert (await _ln_company(real_engine, dest))["settings"]["restored_backup"]["team_policy_carried"] is False
 
     preview = await _ln_preview(real_client, tok, data)
-    assert (preview.json()["carry_role_grants"], preview.json()["destination_policy"]) == (True, "source")
+    assert preview.json()["scope"]["role_permissions"] == "source"
     r = await _ln_commit(real_client, tok, preview)
     assert r.status_code == 200, r.text
     carried = await _ln_grants(real_engine, dest)
@@ -4652,7 +4805,7 @@ async def test_team_carry_copies_source_role_grants_once(real_engine, real_clien
     await _ln_team(real_engine, cid, "viewer")
     preview = await _ln_preview(real_client, tok, data)
     assert preview.json()["action"] == "return_existing_and_add_team"
-    assert (preview.json()["carry_role_grants"], preview.json()["destination_policy"]) == (False, "destination")
+    assert preview.json()["scope"]["role_permissions"] == "destination"
     r = await _ln_commit(real_client, tok, preview)
     assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
     assert await _ln_grants(real_engine, dest) == carried != await _ln_grants(real_engine, cid)
@@ -4671,7 +4824,7 @@ async def test_team_carry_never_overwrites_destination_role_grants(real_engine, 
     assert own and own != await _ln_grants(real_engine, cid)
 
     preview = await _ln_preview(real_client, tok, data)
-    assert (preview.json()["carry_role_grants"], preview.json()["destination_policy"]) == (False, "destination")
+    assert preview.json()["scope"]["role_permissions"] == "destination"
     r = await _ln_commit(real_client, tok, preview)
     assert r.status_code == 200 and r.json()["team_members"] == 1, r.text
     assert await _ln_grants(real_engine, dest) == own
@@ -4704,15 +4857,15 @@ async def test_team_carry_preview_states_destination_permission_policy(real_engi
     data = await download(real_client, tok)
     await _ln_add_company(real_client, tok, data)
     body = (await _ln_preview(real_client, tok, data)).json()
-    assert (body["action"], body["destination_policy"], body["carry_role_grants"]) == (
-        "return_existing_and_add_team", "source", True)
+    assert (body["action"], body["scope"]["role_permissions"]) == (
+        "return_existing_and_add_team", "source")
 
     data = await download(real_client, tok)
     dest = await _ln_add_company(real_client, tok, data)
     await _ln_set_grant(real_client, await token(real_engine, user, dest), "manage_integrations", "admin", False)
     body = (await _ln_preview(real_client, tok, data)).json()
-    assert (body["action"], body["destination_policy"], body["carry_role_grants"]) == (
-        "return_existing_and_add_team", "destination", False)
+    assert (body["action"], body["scope"]["role_permissions"]) == (
+        "return_existing_and_add_team", "destination")
 
 
 async def test_team_carry_concurrent_membership_change_revalidated(real_engine, real_client, tmp_path, monkeypatch):
@@ -4787,7 +4940,7 @@ async def test_inactive_prior_restore_detected(real_engine, real_client, tmp_pat
     for mode in ("new_company", "settings"):
         body = (await _ln_preview(real_client, tok, data, mode)).json()
         assert (body["action"], body["destination_id"], body["destination_name"]) == (
-            "offer_reactivate", dest, "Alpha Trading"), mode
+            "offer_reactivate", dest, "Alpha Trading (Restored)"), mode
 
 
 async def test_inactive_prior_restore_creates_no_duplicate(real_engine, real_client, tmp_path, monkeypatch):
@@ -4815,7 +4968,7 @@ async def test_inactive_prior_restore_offers_owner_reactivation(real_engine, rea
     assert preview.json()["action"] == "offer_reactivate"
     r = await _ln_reactivate(real_client, tok, preview)
     assert r.status_code == 200, r.text
-    assert (r.json()["company_id"], r.json()["reactivated"]) == (dest, True)
+    assert (r.json()["company_id"], r.json()["outcome"]) == (dest, "reactivated")
     assert (await _ln_company(real_engine, dest))["is_active"] is True
     assert await count(real_engine, "companies") == companies
 
@@ -4831,13 +4984,14 @@ async def test_inactive_prior_restore_refuses_member_and_non_member(real_engine,
     callers = []
     for who, name in ((manager, "Manager Co"), (stranger, "Stranger Co")):
         own = await company(real_engine, who, name, f"{name.lower().replace(' ', '-')}-marker")
-        callers.append((who, await token(real_engine, who, own), await _ln_stage(tmp_path, who, data)))
+        callers.append((who, await token(real_engine, who, own)))
 
     before = await snapshot(real_engine)
     refusals = []
-    for who, who_tok, upload in callers:
+    for who, who_tok in callers:
         refusals.append(await read(real_client, who_tok, data, mode="new_company"))
         for route in ("restore", "reactivate"):
+            upload = await _ln_stage(tmp_path, who, data)
             refusals.append(await real_client.post(f"/company-backups/{route}", headers=auth(who_tok), json={
                 "upload_token": upload, "mode": "new_company", "plan_fingerprint": "0" * 64}))
     assert [r.status_code for r in refusals] == [409] * 6, [r.text for r in refusals]
@@ -4932,13 +5086,13 @@ async def test_reactivate_existing_company_retry_is_idempotent(real_engine, real
     user, cid, tok, data, dest = await _ln_inactive_destination(real_engine, real_client, tmp_path, monkeypatch)
     preview = await _ln_preview(real_client, tok, data, "new_company")
     first = await _ln_reactivate(real_client, tok, preview)
-    assert first.status_code == 200 and first.json()["reactivated"] is True, first.text
+    assert first.status_code == 200 and first.json()["outcome"] == "reactivated", first.text
     state = await _ln_company(real_engine, dest)
     companies = await count(real_engine, "companies")
     for again in (await _ln_reactivate(real_client, tok, preview),
                   await _ln_reactivate(real_client, tok, await _ln_preview(real_client, tok, data, "new_company"))):
         assert again.status_code == 200, again.text
-        assert (again.json()["company_id"], again.json()["reactivated"]) == (dest, False)
+        assert (again.json()["company_id"], again.json()["outcome"]) == (dest, "opened_existing")
     assert await _ln_company(real_engine, dest) == state
     assert await count(real_engine, "companies") == companies
 
@@ -4984,7 +5138,7 @@ async def test_concurrent_reactivation_reactivates_once(real_engine, real_client
     release.set()
     results = [await first, await second]
     assert [r.status_code for r in results] == [200, 200], [r.text for r in results]
-    assert [r.json()["reactivated"] for r in results] == [True, False]
+    assert [r.json()["outcome"] for r in results] == ["reactivated", "opened_existing"]
     assert {r.json()["company_id"] for r in results} == {dest}
 
 
@@ -5053,7 +5207,7 @@ async def test_team_carry_source_permissions_changed_after_preview_is_stale(real
     companies = await count(real_engine, "companies")
 
     preview = await _ln_preview(real_client, tok, data)
-    assert preview.json()["carry_role_grants"] is True
+    assert preview.json()["scope"]["role_permissions"] == "source"
     await _ln_set_grant(real_client, tok, "manage_integrations", "admin", False)
     stale = await _ln_commit(real_client, tok, preview)
     assert stale.status_code == 409 and stale.json()["code"] == "stale_preview", stale.text
@@ -5116,7 +5270,7 @@ async def test_module_tables_travel_only_as_their_manifest_declares(real_engine,
         r = await real_client.get("/company-backups/download", headers=auth(tok))
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert _BK_MODULE in detail and "zz_widgets" in detail and detail.endswith("Nothing was backed up.")
+        assert "Widgets" in detail and "zz_" not in detail and detail.endswith("Nothing was backed up.")
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data)
     finally:
         await _bk_drop(real_engine, "zz_tokens", "zz_widgets")

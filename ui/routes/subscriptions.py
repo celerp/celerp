@@ -19,9 +19,10 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import breadcrumbs, display_enum, pagination, per_page_value, search_bar, status_cards
+from ui.components.table import breadcrumbs, display_enum, empty_state_cta, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.settings import _check_permission
 from ui.i18n import t
@@ -83,7 +84,8 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
 
 def _sub_table(subs: list[dict], direction: str) -> FT:
     if not subs:
-        return Div(P(t("label.no_subscription_templates_found"), cls="text-muted empty-state"), id="sub-table")
+        return Div(empty_state_cta(t("label.no_subscription_templates_found"), t("page.new_subscription"),
+                                   f"/subscriptions/new?direction={direction}", hx_post=True), id="sub-table")
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
@@ -254,17 +256,21 @@ def setup_routes(app) -> None:
 
         total = len(filtered)
         page_items = filtered[(page - 1) * per_page: page * per_page]
-        title = t("nav.subscriptions_sales") if direction == "sales" else t("nav.subscriptions_purchasing")
+        side = "sales" if direction == "sales" else "purchasing"
+        title = t(f"nav.subscriptions_{side}")
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q}.items() if v})
+        can_import = await _check_permission(request, "import_export_data") is None
 
         content = Div(
             page_header(
                 title,
                 search_bar(placeholder=t("subscriptions.search_placeholder"), target="#sub-table",
                            url=f"/subscriptions/search?direction={direction}&status={status}",
-                           label=t("contacts.search_scope", scope=title.lower())),
+                           label=t(f"subscriptions.search_{side}")),
                 Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
+                A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
+                  data_import_hint=True) if can_import else "",
             ),
             _sub_status_cards(all_items, status, direction),
             _sub_table(page_items, direction),

@@ -39,11 +39,12 @@ from celerp.services import auto_je
 from celerp.services.account_roles import current_settings, lot_account
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
+from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.services.lot_origin import book_lot_value, recognize_opening_lots, self_booked
+from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
 from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
 from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
@@ -61,6 +62,7 @@ from celerp.services.units import (
     validate_quantity,
 )
 from celerp_inventory.projections import is_core_item_key
+from ui.i18n import category_label_everywhere
 
 logger = logging.getLogger(__name__)
 
@@ -169,8 +171,17 @@ def goods_basis(state: dict) -> float | None:
     return None if basis is None else round_basis(basis)
 
 
-def _lot_label(state: dict, entity_id: str) -> str:
-    return str(state.get("sku") or state.get("name") or entity_id)
+def _basis_or_conflict(state: dict, label: str) -> float:
+    """A lot's goods cost, 0 when it carries no cost at all. A unit cost with no
+    total has no basis a correction can move, so it is refused."""
+    basis = goods_basis(state)
+    if basis is not None:
+        return basis
+    if state.get("cost_price") not in (None, ""):
+        raise CostRestatementConflict(
+            f"{label} has a unit cost but no total cost, so a correction cannot be carried "
+            "from it automatically; correct it with a journal entry instead")
+    return 0.0
 
 
 async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
@@ -216,52 +227,124 @@ async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, 
     return not any(audits_lowering.values())
 
 
+_COST_KEYS = frozenset({"cost_total", "cost_price", "cost_base"})
+
+
+async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> list[str] | None:
+    """The lots a merge result was made from, while its cost is still the merge's own
+    (no cost was set on it since); else None."""
+    rows = (await session.execute(
+        select(LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
+        .order_by(LedgerEntry.id)
+    )).all()
+    if not rows or rows[0][0] != "item.created":
+        return None
+    for event_type, data, _ in rows[1:]:
+        data = data or {}
+        if event_type == "item.cost_adjusted" or _COST_KEYS & {*data, *(data.get("fields_changed") or {})}:
+            return None
+    parts = (rows[0][2] or {}).get("merged_from")
+    return list(parts) if isinstance(parts, list) and parts else None
+
+
+@dataclass
+class _Sale:
+    """Where a sold lot's cost went: the invoice whose cost of goods sold carries it,
+    and its line when the invoice keeps a per-line allocation; no invoice when the lot
+    was marked sold by hand."""
+    doc_id: str | None = None
+    cycle: str | None = None
+    line: int | None = None
+    doc_number: str = ""
+    allocated: bool = False                  # carried by the invoice's finalize allocation
+
+
+async def _return_after(session: AsyncSession, company_id, sku: str, after_id: int) -> str | None:
+    """The number of a credit note still holding returned stock of this SKU received after
+    ledger entry after_id, or None. A return is valued from a sold lot of its SKU without
+    recording which, so any of them may be the one it drew on."""
+    if not sku:
+        return None
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "doc.return_received",
+            LedgerEntry.id > after_id,
+        ).order_by(LedgerEntry.id)
+    )).scalars().all()
+    for cn_id in dict.fromkeys(rows):
+        cn = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id})
+        cn_state = (cn.state or {}) if cn is not None else {}
+        if any(str(r.get("sku") or "") == sku for r in cn_state.get("return_received_items") or []):
+            return cn_state.get("doc_number") or cn_state.get("ref_id") or cn_id
+    return None
+
+
 async def cost_can_be_restated(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
     """Whether a later change to the lot's cost can still be carried (restate_item_cost): all
     of its cost is on it or went whole into a merge or a sale, it was not written off, and a
-    sale is one exact invoice line whose cost of goods sold the change can adjust."""
+    sale is one whose cost of goods sold the change can adjust (_sale_of_lot)."""
     status = str(state.get("status") or "").lower()
-    return (status != "disposed"
-            and await _cost_is_traceable(session, company_id, entity_id, state)
-            and (status != "sold" or await _sale_line(session, company_id, entity_id, state) is not None))
+    if status == "disposed" or not await _cost_is_traceable(session, company_id, entity_id, state):
+        return False
+    if status == "sold":
+        try:
+            await _sale_of_lot(session, company_id, entity_id, state)
+        except CostRestatementConflict:
+            return False
+    return True
 
+async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state: dict) -> _Sale:
+    """How a sold lot's cost reached cost of goods sold, or CostRestatementConflict.
 
-async def _sale_line(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str] | None:
-    """(doc_id, line_index, doc_number) of the invoice line that sold this lot, or None.
+    A lot fulfilled on one line of an invoice that keeps its allocation is adjusted on
+    that line. A lot fulfilled on an invoice issued before invoices kept allocations is
+    adjusted by the change in its cost of sale, provided that invoice's cost of goods
+    sold is posted or the one-time posting has passed it by. A lot an invoice sold
+    without fulfilling it (a converted memo) is adjusted through that invoice's
+    allocation when it covers the whole lot. A lot marked sold by hand has no sale
+    entry, so nothing is adjusted."""
+    from celerp.services.cogs_backfill import legacy_cogs_refusal
 
-    Only a sale fulfilled from one line of a finalized invoice whose recognized
-    COGS is on record is exact enough to adjust."""
+    label = lot_label(state, entity_id)
     sale = (await session.execute(
         select(LedgerEntry).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_id == entity_id,
-            LedgerEntry.event_type == "item.fulfilled",
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.status.set")),
         ).order_by(LedgerEntry.id.desc()).limit(1)
     )).scalars().first()
     data = (sale.data or {}) if sale is not None else {}
     doc_id = data.get("source_doc_id")
-    line_index = (sale.metadata_ or {}).get("line_index") if sale is not None else None
-    if (
-        data.get("doc_type") != "invoice"
-        or not doc_id
-        or state.get("status_doc_id") != doc_id
-        or not isinstance(line_index, int)
-        or isinstance(line_index, bool)
-        or await auto_je.recognized_cogs(session, company_id, doc_id) is None
-    ):
-        return None
-    return doc_id, line_index, data.get("doc_number") or doc_id
-
-
-async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str]:
-    """_sale_line, refusing a sale it cannot match to one invoice line."""
-    sale = await _sale_line(session, company_id, entity_id, state)
-    if sale is None:
+    returned = await _return_after(session, company_id, str(state.get("sku") or ""), sale.id if sale is not None else 0)
+    if returned:
         raise CostRestatementConflict(
-            f"{_lot_label(state, entity_id)} is sold, but the sale cannot be matched to one invoice "
-            "line, so its cost of goods sold cannot be adjusted automatically"
-        )
-    return sale
+            f"{label} is sold, and {state.get('sku')} was later returned on {returned}, so a correction "
+            "cannot be carried into the returned stock automatically; correct it with a journal entry instead")
+    if sale is not None and sale.event_type == "item.status.set" and not doc_id and not state.get("status_doc_id"):
+        return _Sale()
+    cannot = (f"{label} is sold, but its sale cannot be traced to one invoice line, so its cost "
+              "of goods sold cannot be adjusted automatically; correct it with a journal entry instead")
+    if not doc_id or state.get("status_doc_id") != doc_id:
+        raise CostRestatementConflict(cannot)
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+    doc_state = (doc.state or {}) if doc is not None else {}
+    doc_number = data.get("doc_number") or doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id
+    if sale.event_type == "item.status.set":
+        if doc_state.get("doc_type") != "invoice" or await auto_je.recognized_cogs(session, company_id, doc_id) is None:
+            raise CostRestatementConflict(cannot)
+        return _Sale(doc_id=doc_id, doc_number=doc_number, allocated=True)
+    line_index = (sale.metadata_ or {}).get("line_index")
+    if data.get("doc_type") != "invoice" or not isinstance(line_index, int) or isinstance(line_index, bool):
+        raise CostRestatementConflict(cannot)
+    recognized = await auto_je.recognized_cogs(session, company_id, doc_id)
+    if recognized is not None:
+        return _Sale(doc_id=doc_id, cycle=recognized.cycle, line=line_index, doc_number=doc_number)
+    reason = await legacy_cogs_refusal(session, company_id, doc_id, doc_state)
+    if reason:
+        raise CostRestatementConflict(f"{label} was sold on {doc_number}, {reason}")
+    return _Sale(doc_id=doc_id, doc_number=doc_number)
 
 
 @dataclass
@@ -271,6 +354,8 @@ class _Restatement:
     repriced: dict[str, list[dict]]          # lot id -> per-invoice-line COGS changes
     lots: list[str]                          # the item and every merge result it reads
     docs: list[str]                          # the invoices it adjusts
+    resold: dict[str, dict[str, float]]      # invoice without allocations -> COGS change per inventory account
+    unposted: list[str]                      # lots sold by hand, whose cost no entry carries
     sold: list[tuple[str, str, float]]       # (lot id, inventory account, change in its cost of sale)
 
 
@@ -296,9 +381,14 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     old = root.state or {}
     new = apply_item_event(old, event_type, data)
     old_basis, new_basis = goods_basis(old), goods_basis(new)
-    label = _lot_label(old, entity_id)
+    label = lot_label(old, entity_id)
     status = str(old.get("status") or "").lower()
     cost_changed = old_basis != new_basis
+    # The written values too, not only the basis: a unit cost on a lot with no stock
+    # leaves no basis at all.
+    refusal = negative_cost_error(label, *event_goods_costs(event_type, data), new_basis)
+    if refusal:
+        raise CostRestatementConflict(refusal)
     if cost_changed and not await _cost_is_traceable(session, company_id, entity_id, old):
         raise CostRestatementConflict(
             f"{label}'s cost was already split, transformed, or used, so the correction "
@@ -308,16 +398,19 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     successors: list[tuple[str, float]] = []
     restated: list[tuple[str, dict, dict]] = [(entity_id, old, new)]   # (entity_id, before, after)
     if status in ("merged", "sold", "disposed") and old_basis != new_basis:
-        if old_basis is None or new_basis is None:
-            raise CostRestatementConflict(
-                f"{label} is {status}; its cost can be corrected but not added or cleared"
-            )
         if status == "disposed":
             raise CostRestatementConflict(
                 f"{label} was written off, so a cost correction cannot be carried into the write-off automatically"
             )
-        delta = round_basis(new_basis - old_basis)
+        # A lot that left with no cost left at cost 0, so adding or clearing a cost
+        # moves everything downstream by the whole amount.
+        delta = round_basis((new_basis or 0) - _basis_or_conflict(old, label))
+        if status == "merged" and new_basis is None:
+            raise CostRestatementConflict(
+                f"{label} was merged, and a merge result's cost is the sum of its parts, so clearing "
+                "the cost of one part cannot be carried automatically; correct the merge result's cost instead")
         seen = {entity_id}
+        prev_id, prev_basis = entity_id, new_basis
         current, next_id = label, old.get("merged_into") if status == "merged" else None
         if status == "merged" and not next_id:
             raise CostRestatementConflict(f"{label} is merged, but its merge lineage is not recorded")
@@ -331,20 +424,31 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                     f"{current} was merged into {next_id}, which is not an item; the merge lineage is broken"
                 )
             state = row.state or {}
-            current = _lot_label(state, next_id)
-            basis = goods_basis(state)
+            current = lot_label(state, next_id)
             succ_status = str(state.get("status") or "").lower()
             if not await cost_can_be_restated(session, company_id, next_id, state):
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, which was later split, transformed, used, or "
                     "written off, so the correction cannot be carried through it automatically"
                 )
-            if basis is None or basis + delta < 0:
+            basis = _basis_or_conflict(state, current)
+            if goods_basis(state) is None:
+                # A merge result with no cost had a part with no cost; with this part
+                # corrected it costs the sum of its parts once every part has one.
+                bases = []
+                for part in await _merge_parts(session, company_id, next_id) or []:
+                    part_row = None if part == prev_id else await _read(part)
+                    bases.append(prev_basis if part == prev_id else goods_basis(part_row.state or {}) if part_row else None)
+                if not bases or any(b is None for b in bases):
+                    break
+                delta = round_basis(sum(bases))
+            if basis + delta < 0:
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, whose cost cannot absorb a change of {delta:g}"
                 )
-            successors.append((next_id, round_basis(basis + delta)))
-            restated.append((next_id, state, apply_item_event(state, "item.cost_adjusted", {"cost_total": basis + delta})))
+            prev_id, prev_basis = next_id, round_basis(basis + delta)
+            successors.append((next_id, prev_basis))
+            restated.append((next_id, state, apply_item_event(state, "item.cost_adjusted", {"cost_total": prev_basis})))
             next_id = state.get("merged_into") if succ_status == "merged" else None
             if succ_status == "merged" and not next_id:
                 raise CostRestatementConflict(f"{current} is merged, but its merge lineage is not recorded")
@@ -355,6 +459,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     # change in its unit cost. Two invoices can both allocate one lot before either
     # ships it, so a sold lot can still be allocated on another invoice.
     repriced: dict[str, list[dict]] = {}
+    resold: dict[str, dict[str, float]] = {}
+    unposted: list[str] = []
     sold: list[tuple[str, str, float]] = []
     if cost_changed:
         for lot_id, before, after in restated:
@@ -362,18 +468,30 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             if lot_status in ("merged", "memo_out"):
                 continue
             records: list[dict] = []
-            sold_on = None
+            sale = _Sale()
+            change = auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)
             if lot_status == "sold":
-                sold_on, line_index, _ = await _invoice_line_of_sale(session, company_id, lot_id, before)
-                cycle = (await auto_je.recognized_cogs(session, company_id, sold_on)).cycle
-                change = auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)
-                records.append({"doc_id": sold_on, "cycle": cycle, "line": line_index, "amount": change})
-                if change:
+                sale = await _sale_of_lot(session, company_id, lot_id, before)
+                if sale.line is not None:
+                    records.append({"doc_id": sale.doc_id, "cycle": sale.cycle, "line": sale.line, "amount": change})
+                elif sale.doc_id is None:
+                    unposted.append(lot_label(before, lot_id))
+                elif not sale.allocated and change:
+                    by_account, account = resold.setdefault(sale.doc_id, {}), lot_account(before)
+                    by_account[account] = by_account.get(account, 0.0) + change
+                if sale.doc_id is not None and change:
                     sold.append((lot_id, lot_account(before), change))
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
-            for (doc_id, cycle, line_index), qty in sorted(
-                    (await auto_je.allocations_naming_lot(session, company_id, lot_id)).items()):
-                if doc_id != sold_on:
+            allocations = await auto_je.allocations_naming_lot(session, company_id, lot_id)
+            if sale.allocated:
+                covered = sum(qty for (doc_id, _, _), qty in allocations.items() if doc_id == sale.doc_id)
+                if abs(covered - float(before.get("quantity") or 0)) > 1e-9:
+                    raise CostRestatementConflict(
+                        f"{lot_label(before, lot_id)} was sold on {sale.doc_number}, but that invoice does "
+                        "not price the whole lot, so its cost of goods sold cannot be adjusted "
+                        "automatically; correct it with a journal entry instead")
+            for (doc_id, cycle, line_index), qty in sorted(allocations.items()):
+                if sale.line is None or doc_id != sale.doc_id:
                     records.append({"doc_id": doc_id, "cycle": cycle, "line": line_index, "amount": qty * unit_delta})
             records = [r for r in records if r["amount"]]
             if records:
@@ -381,8 +499,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     return _Restatement(
         label=label, successors=successors, repriced=repriced,
         lots=[eid for eid, _, _ in restated],
-        docs=sorted({r["doc_id"] for records in repriced.values() for r in records}),
-        sold=sold,
+        docs=sorted({r["doc_id"] for records in repriced.values() for r in records} | set(resold)),
+        resold=resold, unposted=unposted, sold=sold,
     )
 
 
@@ -441,7 +559,8 @@ async def restate_item_cost(
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="item",
         event_type=event_type, data=data, actor_id=actor_id, location_id=None,
-        source=source, idempotency_key=idempotency_key, metadata_=_metadata(entity_id, {}),
+        source=source, idempotency_key=idempotency_key,
+        metadata_=_metadata(entity_id, {"cogs_unposted": plan.unposted} if plan.unposted else {}),
     )
     identity = hashlib.sha256(idempotency_key.encode()).hexdigest()[:24]
     # A production run's completion entry books the re-cost of every lot it produced,
@@ -467,17 +586,50 @@ async def restate_item_cost(
                 je_id=f"je:auto:{lot_id}:cost-restated:{identity}", idem=f"cost-restate-value:{identity}:{lot_id}",
                 day=day, metadata={"trigger": "item.cost_restated", "item_id": entity_id, "restatement": identity})
         for doc_id in plan.docs:
+            adjustment = dict(
+                session=session, company_id=company_id, user_id=actor_id, doc_id=doc_id,
+                cycle_tag=f"restate-{hashlib.sha256(f'{identity}:{doc_id}'.encode()).hexdigest()[:16]}",
+                ts=day, trigger="item.cost_restated",
+                memo=f"COGS adjustment: cost of {label} corrected",
+                context={"item_id": entity_id, "restatement": identity},
+            )
+            if doc_id in plan.resold:
+                # An invoice issued before invoices kept allocations books the lot's
+                # cost of sale as it was; the change in it is the whole adjustment.
+                doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+                doc_state = (doc.state or {}) if doc is not None else {}
+                await auto_je.create_for_doc_cogs_adjustment(
+                    delta=plan.resold[doc_id],
+                    doc_number=doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id, **adjustment)
+                continue
             try:
-                await auto_je.reconcile_doc_cogs(
-                    session, company_id=company_id, user_id=actor_id, doc_id=doc_id,
-                    cycle_tag=f"restate-{hashlib.sha256(f'{identity}:{doc_id}'.encode()).hexdigest()[:16]}",
-                    ts=day, trigger="item.cost_restated",
-                    memo=f"COGS adjustment: cost of {label} corrected",
-                    context={"item_id": entity_id, "restatement": identity},
-                )
+                await auto_je.reconcile_doc_cogs(**adjustment)
             except ValueError as exc:
                 raise CostRestatementConflict(str(exc)) from exc
     return entry
+
+
+async def cost_correction_notice(session: AsyncSession, company_id, entry: LedgerEntry) -> dict:
+    """What a cost change posted, for the person who made it: every cost of goods sold
+    adjustment it made ({doc_number, amount}) and the lots sold by hand whose cost no
+    entry carries."""
+    identity = hashlib.sha256((entry.idempotency_key or "").encode()).hexdigest()[:24]
+    rows = (await session.execute(
+        select(LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+            LedgerEntry.metadata_["restatement"].as_string() == identity,
+        ).order_by(LedgerEntry.id)
+    )).scalars().all()
+    adjusted = []
+    for metadata_ in rows:
+        if "cogs_delta" not in metadata_:
+            continue   # the sold lot's own value change, booked before its invoice is adjusted
+        doc = await session.get(Projection, {"company_id": company_id, "entity_id": metadata_.get("doc_id")})
+        doc_state = (doc.state or {}) if doc is not None else {}
+        adjusted.append({"doc_number": doc_state.get("doc_number") or doc_state.get("ref_id") or metadata_.get("doc_id"),
+                         "amount": metadata_.get("cogs_delta")})
+    return {"cogs_adjusted": adjusted, "cogs_unposted": list((entry.metadata_ or {}).get("cogs_unposted") or [])}
 
 
 _CHANNEL_KEY_PREFIXES = tuple(f"{p}:" for p in PRODUCT_CHANNEL_PLATFORMS)
@@ -1702,18 +1854,25 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
                                  *, company_id) -> bool:
     """Apply a changed connector re-import to the item it created, as an edit: only the
     fields that differ, a new SKU handled like a SKU edit, and a cost change restated
-    with its consequences. An item deleted meanwhile is not recreated (404). Returns
-    False when nothing differs."""
+    with its consequences. An item erased meanwhile is not recreated (404). Returns
+    False when nothing differs, or when the item was moved to Deleted: the sync leaves it
+    there, and Restore is the one way back."""
     cid = uuid.UUID(str(company_id))
     row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
                             with_for_update=True, populate_existing=True)
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
     state = row.state or {}
-    fields_changed = {key: {"old": state.get(key), "new": value}
-                      for key, value in data.items() if state.get(key) != value}
+    if is_deleted(state):
+        return False
+    current = {**state, "cost_price": _connector_unit_cost(state)}
+    fields_changed = {key: {"old": current.get(key), "new": value}
+                      for key, value in data.items() if current.get(key) != value}
     if not fields_changed:
         return False
+    if "quantity" in fields_changed and "cost_price" in data:
+        # A changed quantity restates the unit cost against it.
+        fields_changed["cost_price"] = {"old": current.get("cost_price"), "new": data["cost_price"]}
     if "sku" in fields_changed and normalize_sku(state.get("sku")) != normalize_sku(data["sku"]):
         await stamp_catalog_family_members(session, cid, entity_id, source="connector")
     event = dict(event_type="item.updated", data={"fields_changed": fields_changed}, actor_id=None,
@@ -1739,7 +1898,7 @@ async def upsert_from_connector(company_id: str, item) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
     "created", "updated", or "noop" (this exact content was already applied, or the user
-    erased the item here).
+    erased the item here or moved it to Deleted).
 
     `item` must have: sku, name, idempotency_key (stable per external item).
     Optional: sale_price, quantity, cost_price, description.
@@ -1797,6 +1956,14 @@ async def upsert_from_connector(company_id: str, item) -> str:
         return outcome
 
 
+def _connector_unit_cost(state: dict):
+    """The unit cost an item shows, as a connector reports it (stored as cost_total)."""
+    qty = float(state.get("quantity") or 0)
+    if state.get("cost_total") is not None and qty:
+        return round(float(state["cost_total"]) / qty, 10)
+    return state.get("cost_price")
+
+
 # ---------------------------------------------------------------------------
 # Semantic catalog import
 # ---------------------------------------------------------------------------
@@ -1824,6 +1991,10 @@ class BatchImportResult(BaseModel):
     updated: int = 0
     errors: list[str | dict]
     batch_id: str | None = None
+    # Rows an earlier run of this same import already wrote; nothing was duplicated.
+    already_imported: int = 0
+    # The import's Import History entry can be undone (ImportBatch.reversible).
+    reversible: bool = False
 
 
 class BatchImportRequest(BaseModel):
@@ -1844,21 +2015,36 @@ def is_item_field_key(key: str) -> bool:
     Exactly the keys the importer reads as item fields, so it is also the set a
     custom attribute name may not take on any import transport.
     """
-    return is_core_item_key(key) or key in _IMPORT_ROW_KEYS or key.endswith("_price" + PRICE_BASIS_SUFFIX)
+    return (
+        is_core_item_key(key) or key in _IMPORT_ROW_KEYS
+        or key.endswith(("_price" + PRICE_BASIS_SUFFIX, "_price" + PRICE_CURRENCY_SUFFIX, "_price_total" + PRICE_CURRENCY_SUFFIX))
+    )
 
 # Max distinct values before an attribute column is treated as free-text instead
 # of a select field when a schema is inferred from the import.
 _DROPDOWN_THRESHOLD = 30
 
 
+async def company_category_keys(session: AsyncSession, company_id, company_settings: dict) -> set[str]:
+    """Every category a company has: the ones in its category settings and the ones
+    only its items carry."""
+    category = Projection.state["category"].as_string()
+    carried = (await session.execute(
+        select(category).distinct().where(Projection.company_id == company_id, Projection.entity_type == "item")
+    )).scalars()
+    return {k.strip() for k in (*(company_settings.get("category_schemas") or {}), *carried) if k and k.strip()}
+
+
 def resolve_import_category(value: str, category_keys, display_names: dict) -> tuple[str, str | None]:
     """Resolve a source category to the company's canonical category key.
 
     Returns ``(category, error)``. An exact key wins, then a unique case-insensitive
-    key, then a unique case-insensitive display label. Several candidates are an
-    error rather than a guess; an unknown value is kept as a custom category.
+    key, then a unique case-insensitive display label in any UI language. Names
+    compare in Unicode NFC, so a decomposed "ä" matches a composed one. Several
+    candidates are an error rather than a guess; an unknown value is kept as a
+    custom category.
     """
-    value = str(value or "").strip()
+    value = unicodedata.normalize("NFC", str(value or "")).strip()
     if not value:
         return "", None
     keys = set(category_keys) | set(display_names)
@@ -1867,7 +2053,9 @@ def resolve_import_category(value: str, category_keys, display_names: dict) -> t
     folded = value.casefold()
     for candidates in (
         sorted(k for k in keys if k.casefold() == folded),
-        sorted(k for k in keys if str(display_names.get(k) or "").strip().casefold() == folded),
+        sorted(k for k in keys if any(
+            unicodedata.normalize("NFC", label).strip().casefold() == folded for label in category_label_everywhere(k, display_names.get(k) or None)
+        )),
     ):
         if len(candidates) == 1:
             return candidates[0], None
@@ -1893,6 +2081,37 @@ _BASIS_UNIT_WORDS: dict[str, str] = {
 # Row key carrying the unit a mapped source price is quoted per, e.g.
 # ``retail_price_basis``; the importer accepts the price only for items sold by it.
 PRICE_BASIS_SUFFIX = "_basis"
+# Row key carrying the currency a price column's header states, e.g.
+# ``retail_price_currency``. A cell written with a symbol several currencies
+# share (``$12``) is read in that currency only when the header proves it.
+PRICE_CURRENCY_SUFFIX = "_currency"
+
+# Unit words a file uses for a unit the company keeps under another name. Each
+# resolves only to a configured unit; ``pack``, ``set`` and ``box`` are units of
+# their own and are never read as pieces.
+_UNIT_ALIASES: dict[str, str] = {
+    **_BASIS_UNIT_WORDS,
+    "ชิ้น": "piece", "อัน": "piece",
+    "l": "liter", "litre": "liter", "litres": "liter", "liters": "liter",
+    "m": "meter", "metre": "meter", "metres": "meter", "meters": "meter",
+}
+
+
+def _unit_word(value: str) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+
+
+def import_unit_lookup(units: list[dict]) -> dict[str, str]:
+    """``{written unit: configured unit name}`` for reading units from a file.
+
+    A configured name matches in any case; an alias matches only when the unit
+    it means is configured, and never shadows a configured name. Nothing here
+    converts between units.
+    """
+    names = {u["name"] for u in units}
+    lookup = {_unit_word(alias): unit for alias, unit in _UNIT_ALIASES.items() if unit in names}
+    lookup.update({_unit_word(name): name for name in names})
+    return lookup
 
 
 def weight_unit_from_header(header: str, target: str) -> str | None:
@@ -1987,6 +2206,7 @@ class SourceSemantics:
     errors: list[dict]              # {"row": 0, "field": source column, "code", "message"}
     weight_units: dict[str, str]    # weight target -> unit its header names, when no unit column is mapped
     price_basis: dict[str, str]     # price target -> unit its source column is quoted per
+    price_currency: dict[str, str]  # price target -> the company currency its header states
 
 
 def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSemantics:
@@ -2000,6 +2220,7 @@ def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSem
     """
     errors: list[dict] = []
     price_basis: dict[str, str] = {}
+    price_currency: dict[str, str] = {}
     targets = set(mapping.values())
 
     def _error(col: str, code: str, message: str) -> None:
@@ -2013,6 +2234,8 @@ def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSem
         if currency_error:
             _error(col, *currency_error)
             continue
+        if _header_currencies(col) or any(unicodedata.category(ch) == "Sc" for ch in col):
+            price_currency[target] = currency
         basis = _header_basis(col)
         if basis and (is_total or basis not in _BASIS_UNIT_WORDS.values()):
             _error(col, "price_basis_unsupported",
@@ -2029,11 +2252,12 @@ def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSem
         unit = weight_unit_from_header(sources[0], target) if len(sources) == 1 else None
         if unit and f"{target}_unit" not in targets:
             weight_units[target] = unit
-    return SourceSemantics(errors=errors, weight_units=weight_units, price_basis=price_basis)
+    return SourceSemantics(errors=errors, weight_units=weight_units, price_basis=price_basis,
+                           price_currency=price_currency)
 
 
 def apply_source_semantics(rows: list[dict], semantics: SourceSemantics) -> list[dict]:
-    """Carry header meaning onto mapped rows: each weight unit and each price basis."""
+    """Carry header meaning onto mapped rows: each weight unit, price basis and price currency."""
     out: list[dict] = []
     for row in rows:
         row = dict(row)
@@ -2042,6 +2266,8 @@ def apply_source_semantics(rows: list[dict], semantics: SourceSemantics) -> list
                 row[f"{target}_unit"] = unit
         for target, basis in semantics.price_basis.items():
             row[target + PRICE_BASIS_SUFFIX] = basis
+        for target, currency in semantics.price_currency.items():
+            row[target + PRICE_CURRENCY_SUFFIX] = currency
         out.append(row)
     return out
 
@@ -2061,13 +2287,54 @@ def _to_float(val) -> float | None:
         return None
 
 
+# A money cell once its currency marks are removed: digits with optional comma
+# grouping in threes and a point decimal, optionally negative.
+_MONEY_NUMBER = re.compile(r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+
+
+def parse_import_money(value, currency: str, *, stated_currency: str | None = None) -> tuple[float | None, str | None]:
+    """``(amount, error code)`` for a price cell, read in the company currency.
+
+    A plain number is read as it is (``finite_float``). Otherwise the cell may
+    carry the company currency's code or its own symbol and comma grouping:
+    ``฿65.00``, ``฿ 85`` and ``1,250 THB`` are 65, 85 and 1250 for a THB company.
+    Another currency's code or symbol is ``price_currency_mismatch``; a symbol
+    several currencies share (``$``) is ``price_currency_ambiguous`` unless the
+    column's header states the currency (``stated_currency``). Anything else is
+    ``invalid_value``. Nothing is converted.
+    """
+    text = unicodedata.normalize("NFKC", str(value if value is not None else "")).strip()
+    if not text:
+        return None, None
+    try:
+        return finite_float(text), None
+    except ValueError:
+        pass
+    symbols = [ch for ch in text if unicodedata.category(ch) == "Sc"]
+    codes = re.findall(r"[A-Za-z]+", text)
+    number = re.sub(r"\s+", "", re.sub(r"[A-Za-z]+", "", "".join(ch for ch in text if ch not in symbols)))
+    if len(symbols) + len(codes) != 1 or not _MONEY_NUMBER.fullmatch(number):
+        return None, "invalid_value"
+    if codes:
+        code = codes[0].upper()
+        if code not in ISO_4217_CURRENCIES:
+            return None, "invalid_value"
+    else:
+        code = _CURRENCY_SYMBOLS.get(symbols[0]) or (stated_currency if stated_currency == currency else None)
+        if code is None:
+            return None, "price_currency_ambiguous"
+    if code != currency:
+        return None, "price_currency_mismatch"
+    return finite_float(number.replace(",", "")), None
+
+
 def _source_weight(row: dict, unit_canonical: dict[str, str]) -> tuple[float | None, str]:
     """The row's weight and its unit as written (canonical when known).
 
     ``weight_ct`` is a carat weight by name, so it carries its unit.
     """
     raw_unit = str(row.get("weight_unit", "") or "").strip()
-    unit = unit_canonical.get(raw_unit.lower()) or raw_unit
+    unit = unit_canonical.get(_unit_word(raw_unit)) or raw_unit
     weight = _to_float(row.get("weight"))
     if weight is None and _to_float(row.get("weight_ct")) is not None:
         return _to_float(row.get("weight_ct")), unit or "carat"
@@ -2209,12 +2476,16 @@ def _unsupported_item_field_errors(spec: CsvImportSpec, row: dict) -> list[dict]
     importable price list is an unknown target; any other item field is refused
     by name. Neither is written or stored as a custom attribute.
     """
-    importable = {*spec.cols, *_IMPORT_ROW_KEYS, *(col + PRICE_BASIS_SUFFIX for col in spec.cols if col.endswith("_price"))}
+    importable = {
+        *spec.cols, *_IMPORT_ROW_KEYS,
+        *(col + PRICE_BASIS_SUFFIX for col in spec.cols if col.endswith("_price")),
+        *(col + PRICE_CURRENCY_SUFFIX for col in spec.cols if col.endswith(("_price", "_price_total"))),
+    }
     errors = []
     for key, value in row.items():
         if not is_item_field_key(key) or key in importable or not str(value if value is not None else "").strip():
             continue
-        if key.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX)):
+        if key.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX, PRICE_CURRENCY_SUFFIX)):
             errors.append({"field": key, "code": "unknown_target",
                            "message": f"{key} is not a price list of this company; remove the column"})
         else:
@@ -2294,6 +2565,7 @@ async def build_import_records(
     upsert: bool,
     create_missing_locations: bool = False,
     create_key: str | None = None,
+    skip: frozenset[int] = frozenset(),
 ) -> ImportBuild:
     """Transform mapped business rows into semantic item import records.
 
@@ -2310,6 +2582,9 @@ async def build_import_records(
     ``create_key`` is the import's operation key. Items this same import created
     are never upsert targets, so an exact retry plans every row against the state
     before the import, exactly as the first attempt did.
+
+    Rows numbered in ``skip`` (1-based) are the ones the user excluded: they are
+    neither checked nor written, and every other row keeps its own number.
 
     Under the company lock (an import commit) the rows the plan depends on are
     pinned until that commit, in a stable order: the company's locations FOR
@@ -2334,19 +2609,19 @@ async def build_import_records(
                 break
 
     loc_names_needed: list[str] = []
-    for row in rows:
+    for n, row in enumerate(rows, start=1):
         name = str(row.get("location_name", "") or "").strip()
-        if name and name not in location_map and name not in loc_names_needed:
+        if n not in skip and name and name not in location_map and name not in loc_names_needed:
             loc_names_needed.append(name)
 
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
     currency = company_settings.get("currency") or "USD"
-    category_keys = list(company_settings.get("category_schemas") or {})
+    category_keys = await company_category_keys(session, company_id, company_settings)
     category_names = dict(company_settings.get("category_display_names") or {})
 
     units = await get_company_units(session, company_id)
-    unit_canonical = {u["name"].lower(): u["name"] for u in units}
+    unit_canonical = import_unit_lookup(units)
     unit_map = build_unit_map(units)
 
     # Resolve upsert targets once for the batch. Barcode is a physical-lot
@@ -2396,6 +2671,9 @@ async def build_import_records(
     errors: list[dict] = []
     resolved_rows: list[dict] = []
     for i, row in enumerate(rows):
+        if i + 1 in skip:
+            resolved_rows.append(row)
+            continue
         category, category_error = resolve_import_category(row.get("category"), category_keys, category_names)
         row = {**row, "category": category} if category else row
         resolved_rows.append(row)
@@ -2494,7 +2772,7 @@ async def build_import_records(
                 and (field != "weight_unit" or _to_float(row.get("weight")) is not None)
             }}
         sell_by = (
-            unit_canonical.get(str(row.get("sell_by", "") or "").strip().lower())
+            unit_canonical.get(_unit_word(row.get("sell_by")))
             or str(row.get("sell_by", "") or "").strip()
             or defaults.get("sell_by")
             or ""
@@ -2514,7 +2792,21 @@ async def build_import_records(
                 "row": i + 1,
                 "field": "sell_by",
                 "code": "sell_by_invalid",
-                "message": f"sell_by '{sell_by}' is not one of the company's units",
+                "message": (
+                    f"Unit '{sell_by}' is not one of the company's units; add it in "
+                    "Settings > Units, or change the cell to a unit the company has"
+                ),
+            })
+            continue
+        # A mapped quantity column left blank is a missing value, not a zero: a
+        # new item needs one, or the row excluded. With no quantity column mapped
+        # an item may start at zero. An upsert keeps the current quantity.
+        if target is None and ("quantity" in row or "qty" in row) and not any(
+            _has_value(row, k) for k in _AMOUNT_SOURCE_KEYS
+        ):
+            errors.append({
+                "row": i + 1, "field": "quantity" if "quantity" in row else "qty", "code": "quantity_blank",
+                "message": "Quantity is blank; enter the quantity on hand, or exclude the row",
             })
             continue
         qty, qty_error = _derive_import_qty(row, sell_by, unit_map, unit_canonical)
@@ -2535,7 +2827,7 @@ async def build_import_records(
             for key, basis in row.items()
             if key.endswith("_price" + PRICE_BASIS_SUFFIX)
             and _to_float(row.get(key[: -len(PRICE_BASIS_SUFFIX)])) is not None
-            and (unit_canonical.get(str(basis or "").strip().lower()) or str(basis or "").strip()) != item_sell_by
+            and (unit_canonical.get(_unit_word(basis)) or str(basis or "").strip()) != item_sell_by
         ), None)
         if basis_error:
             errors.append(basis_error)
@@ -2564,7 +2856,7 @@ async def build_import_records(
 
         def _unit(key: str, _row: dict = row) -> str | None:
             raw = _text(key, _row)
-            return unit_canonical.get(raw.lower(), raw) if raw else None
+            return unit_canonical.get(_unit_word(raw), raw) if raw else None
 
         data = {
             "sku": sku,
@@ -2625,6 +2917,10 @@ async def build_import_records(
                     data["cost_total"] = total_val
                 else:
                     data[unit_key] = to_stored_float(unit_price_from_total(total_val, price_qty, currency))
+        for col_key in ("cost_price", "cost_price_total"):
+            refusal = negative_cost_error(sku or name or f"Row {i + 1}", _flt(col_key))
+            if refusal:
+                price_errors.append({"row": i + 1, "field": col_key, "code": "negative_value", "message": refusal})
         if price_errors:
             errors.extend(price_errors)
             continue
@@ -2720,36 +3016,90 @@ _CELL_ERROR_MESSAGES = {
 
 
 @dataclass
-class SemanticImportPlan:
-    """What an item import writes, decided before anything is written."""
-    rows: list[dict]                 # the rows as the importer resolved them
+class ImportPlan:
+    """What an item import writes, decided before anything is written.
+
+    The one contract every item import transport previews and commits: the
+    browser review, the file and agent preview, and the commit all read it.
+    """
+    rows: list[dict]                 # the rows as the importer resolved them, prices canonical
     records: list[dict]              # ImportRecord-shaped dicts for the committer
     record_rows: list[int]           # the 1-based input row of each record
-    errors: list[dict]               # {"row", "field", "code", "message"}; the writer's rejections
+    errors: list[dict]               # {"row", "field", "code", "message"}; every blocker, row 0 for the whole file
     locations_to_create: list[str]
+    decisions: dict                  # the canonical row decisions the plan applied
+    summary_rows: list[int]          # rows named like a total, with no SKU
+    duplicate_groups: list[dict]     # {"sku", "rows", "quantity", "conflict"} for each SKU on several rows
+    operation_key: str
     semantic_fingerprint: str        # changes whenever what the rows would write changes
+
+    @property
+    def counts(self) -> dict:
+        """Rows the import creates, updates, leaves out by decision, and is blocked on."""
+        return {
+            "create": sum(1 for r in self.records if r["event_type"] == "item.created"),
+            "update": sum(1 for r in self.records if r["event_type"] == "item.patched"),
+            "excluded": len(self.decisions["exclude"]),
+            "blocked": len({e["row"] for e in self.errors if e["row"]}),
+        }
 
 
 class ImportRejected(Exception):
-    """The preflight rejected rows; nothing was written."""
+    """The plan has blockers; nothing was written."""
 
     def __init__(self, errors: list[dict]):
         super().__init__(f"{len(errors)} import row errors")
         self.errors = errors
 
 
-def import_operation_key(idempotency_key: str | None, rows: list[dict], upsert: bool) -> str:
+_DECISION_ROW_KEYS = ("exclude", "import_summary")
+
+
+def normalize_import_decisions(decisions: dict | None, row_count: int) -> tuple[dict, list[dict]]:
+    """The canonical form of a user's row decisions, and an error for each that names no row.
+
+    ``exclude`` leaves rows out; ``import_summary`` imports a row that reads as a
+    total as an item; ``separate_lots`` keeps rows sharing a SKU as separate lots.
+    Rows are 1-based ordinals of the mapped rows. The canonical form is sorted
+    and duplicate-free, so equal decisions always hash the same.
+    """
+    decisions = decisions or {}
+    errors: list[dict] = []
+    canonical: dict = {}
+    for key in _DECISION_ROW_KEYS:
+        rows: set[int] = set()
+        for value in decisions.get(key) or []:
+            try:
+                ordinal = int(value)
+            except (TypeError, ValueError):
+                ordinal = 0
+            if 1 <= ordinal <= row_count:
+                rows.add(ordinal)
+            else:
+                errors.append({"row": 0, "field": key, "code": "decision_row_unknown",
+                               "message": f"Row {value} named in {key} is not in the import"})
+        canonical[key] = sorted(rows)
+    canonical["separate_lots"] = sorted(
+        {str(sku).strip() for sku in decisions.get("separate_lots") or [] if str(sku).strip()}
+    )
+    return canonical, errors
+
+
+def import_operation_key(
+    idempotency_key: str | None, rows: list[dict], upsert: bool, decisions: dict | None = None,
+) -> str:
     """The retry identity of one import: the caller's key together with the content.
 
-    An exact re-submit of the same mapped rows under the same key (or with no
-    key) is the same import: a no-op, or a resume where an interrupted attempt
-    stopped. The same key sent with different rows names a different import, so
-    those rows are never mistaken for a retry and dropped. Creation identity
-    belongs to this key and the row ordinal, not SKU or barcode, so same-SKU and
-    no-SKU rows stay distinct lots.
+    An exact re-submit of the same mapped rows and decisions under the same key
+    (or with no key) is the same import: a no-op, or a resume where an
+    interrupted attempt stopped. The same key sent with different rows or
+    decisions names a different import, so those rows are never mistaken for a
+    retry and dropped. Creation identity belongs to this key and the row
+    ordinal, not SKU or barcode, so same-SKU and no-SKU rows stay distinct lots.
     """
+    decisions, _errors = normalize_import_decisions(decisions, len(rows))
     canonical = json.dumps(
-        {"key": idempotency_key, "upsert": upsert, "rows": rows},
+        {"key": idempotency_key, "upsert": upsert, "rows": rows, "decisions": decisions},
         sort_keys=True, separators=(",", ":"), default=str,
     )
     return f"import:{hashlib.sha256(canonical.encode()).hexdigest()}"
@@ -2831,8 +3181,8 @@ async def _cost_restatement_error(session: AsyncSession, company_id, record: dic
     return None
 
 
-def _semantic_fingerprint(build: ImportBuild, errors: list[dict]) -> str:
-    """Hash of what the rows would write: each record's target and data, and the errors.
+def _semantic_fingerprint(build: ImportBuild, errors: list[dict], decisions: dict) -> str:
+    """Hash of what the rows would write: each record's target and data, the errors and decisions.
 
     Per-attempt identity (idempotency keys, generated ids of new items) is left
     out. A location the import will create is identified by its name, so the
@@ -2850,10 +3200,103 @@ def _semantic_fingerprint(build: ImportBuild, errors: list[dict]) -> str:
             "entity_id": rec["entity_id"] if rec["event_type"] == "item.patched" else None,
             "data": data,
         })
-    return import_preview_hash({"records": canonical, "errors": errors})
+    return import_preview_hash({"records": canonical, "errors": errors, "decisions": decisions})
 
 
-async def preflight_import_rows(
+# Item names that mark a row as a total or subtotal, compared casefolded with
+# colons and hyphens read as spaces.
+_SUMMARY_LABELS = frozenset({
+    "total", "totals", "subtotal", "sub total", "grand total", "sum",
+    "รวม", "รวมทั้งหมด", "รวมทั้งสิ้น", "ยอดรวม",
+})
+
+
+def _summary_rows(rows: list[dict], included: list[int]) -> list[int]:
+    """Included rows named like a total or subtotal that carry no SKU.
+
+    Such a row never imports unless the user chooses to import it as an item,
+    whatever its numbers add up to: subtotals of sections, grand totals and
+    totals of a filtered sheet all look different arithmetically. An item that
+    is merely named ``TOTAL`` has a SKU and imports as usual.
+    """
+    found: list[int] = []
+    for n in included:
+        row = rows[n - 1]
+        label = " ".join(str(row.get("name") or "").casefold().replace(":", " ").replace("-", " ").split())
+        if label in _SUMMARY_LABELS and not str(row.get("sku") or "").strip():
+            found.append(n)
+    return found
+
+
+def _identity(row: dict) -> tuple:
+    """What two rows must agree on to be lots of one product: category and prices.
+
+    Lots of one SKU often carry their own names, so the name is not compared."""
+    prices = sorted((k, _to_float(v)) for k, v in row.items() if k.endswith(("_price", "_price_total")))
+    return (str(row.get("category") or ""), prices)
+
+
+def _duplicate_sku_groups(rows: list[dict], candidates: list[int]) -> list[dict]:
+    """Each SKU on more than one of ``candidates``, with its rows and combined quantity."""
+    by_sku: dict[str, list[int]] = {}
+    for n in candidates:
+        sku = str(rows[n - 1].get("sku") or "").strip()
+        if sku:
+            by_sku.setdefault(sku, []).append(n)
+    groups = []
+    for sku, members in by_sku.items():
+        if len(members) < 2:
+            continue
+        quantity = math.fsum(
+            next((v for k in _AMOUNT_SOURCE_KEYS if (v := _to_float(rows[n - 1].get(k))) is not None), 0.0)
+            for n in members
+        )
+        conflict = len({repr(_identity(rows[n - 1])) for n in members}) > 1
+        groups.append({"sku": sku, "rows": members, "quantity": quantity, "conflict": conflict})
+    return groups
+
+
+def _is_plain_number(text: str) -> bool:
+    """Whether float() reads ``text``; non-finite values are left to the cell checks."""
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _canonical_money(rows: list[dict], skip: set[int], currency: str) -> tuple[list[dict], list[dict]]:
+    """Rows with each price cell read as a plain number, and an error for each that cannot be.
+
+    The canonical number is what preview and commit both see; a cell that is
+    already a plain number is left exactly as written.
+    """
+    out: list[dict] = []
+    errors: list[dict] = []
+    for n, row in enumerate(rows, start=1):
+        row = dict(row)
+        if n not in skip:
+            for key in [k for k in row if k.endswith(("_price", "_price_total"))]:
+                text = str(row.get(key) if row.get(key) is not None else "").strip()
+                if not text or _is_plain_number(text):
+                    continue
+                amount, code = parse_import_money(text, currency, stated_currency=row.get(key + PRICE_CURRENCY_SUFFIX))
+                if code is None:
+                    row[key] = repr(amount)
+                    continue
+                message = {
+                    "price_currency_mismatch": f"{key} '{text}' is not in the company currency {currency}",
+                    "price_currency_ambiguous": (
+                        f"{key} '{text}' uses a symbol several currencies share; "
+                        f"write the amount in {currency} or state ({currency}) in the column header"
+                    ),
+                }.get(code, f"{key} '{text}' is not an amount")
+                errors.append({"row": n, "field": key, "code": code, "message": message})
+        out.append(row)
+    return out, errors
+
+
+async def build_import_plan(
     session: AsyncSession,
     company_id,
     role: str,
@@ -2861,31 +3304,80 @@ async def preflight_import_rows(
     rows: list[dict],
     *,
     upsert: bool,
-    operation_key: str,
-) -> SemanticImportPlan:
-    """The one semantic check of mapped item rows, with nothing written.
+    decisions: dict | None = None,
+    idempotency_key: str | None = None,
+) -> ImportPlan:
+    """The one semantic plan of mapped item rows, with nothing written.
 
-    Checks each mapped cell against the item spec, builds the records, and
-    applies the writer's own rules (amounts, codes, permissions) to them, so a
-    row the writer would refuse is reported here with its field and code. Every
-    preview and every commit runs this over the same rows, so they cannot
-    disagree about a row.
+    Reads money in the company currency, checks each mapped cell against the
+    item spec, builds the records, applies the writer's own rules (amounts,
+    units, codes, permissions) to them, and finds rows that read as totals and
+    SKUs shared by several rows. Every blocker is reported with its row, field
+    and code; a blocker a decision can settle (a total row, lots sharing a SKU)
+    stays one until ``decisions`` settles it. Every preview and every commit
+    runs this over the same rows and decisions, so they cannot disagree.
     """
-    price_lists, _default_list, _currency = await get_price_config(session, company_id)
+    decisions, errors = normalize_import_decisions(decisions, len(rows))
+    operation_key = import_operation_key(idempotency_key, rows, upsert, decisions)
+    excluded = set(decisions["exclude"])
+    included = [n for n in range(1, len(rows) + 1) if n not in excluded]
+    price_lists, _default_list, currency = await get_price_config(session, company_id)
+    rows, money_errors = _canonical_money(rows, excluded, currency)
+    errors.extend(money_errors)
+    money_cells = {(e["row"], e["field"]) for e in money_errors}
     spec = build_item_import_spec(price_lists)
-    errors: list[dict] = []
-    for i, row in enumerate(rows):
+    for n in included:
+        row = rows[n - 1]
         for col in dict.fromkeys([*spec.cols, *spec.type_map]):
             code = cell_error_code(spec, col, str(row.get(col, "") or ""))
-            if code:
-                errors.append({"row": i + 1, "field": col, "code": code, "message": _CELL_ERROR_MESSAGES[code].format(col=col)})
-        errors.extend({"row": i + 1, **e} for e in _unsupported_item_field_errors(spec, row))
+            if code and (n, col) not in money_cells:
+                errors.append({"row": n, "field": col, "code": code, "message": _CELL_ERROR_MESSAGES[code].format(col=col)})
+        errors.extend({"row": n, **e} for e in _unsupported_item_field_errors(spec, row))
+
+    summary_rows = _summary_rows(rows, included)
+    for n in summary_rows:
+        if n not in decisions["import_summary"]:
+            errors.append({"row": n, "field": "name", "code": "summary_row", "message": (
+                "This row is named like a total and has no SKU; exclude it, or import it as an item"
+            )})
+
     build = await build_import_records(
         session, company_id, rows, upsert=upsert,
         create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
-        create_key=operation_key,
+        create_key=operation_key, skip=frozenset(excluded),
     )
     errors.extend(build.errors)
+
+    # A SKU shared by rows the import creates is either several lots of one
+    # product, kept apart only on the user's say-so, or rows that disagree
+    # about what the product is. Several rows updating one item are never merged.
+    patch_rows = {
+        n: rec["entity_id"] for rec, n in zip(build.records, build.record_rows) if rec["event_type"] == "item.patched"
+    }
+    duplicate_groups = _duplicate_sku_groups(build.rows, [n for n in included if n not in patch_rows])
+    for group in duplicate_groups:
+        if group["conflict"]:
+            code, message = "duplicate_sku_conflict", (
+                f"SKU '{group['sku']}' is on rows {', '.join(map(str, group['rows']))} with a different "
+                "category or price; correct the rows or exclude the wrong ones"
+            )
+        elif group["sku"] not in decisions["separate_lots"]:
+            code, message = "duplicate_sku_lots", (
+                f"SKU '{group['sku']}' is on {len(group['rows'])} rows (combined quantity "
+                f"{group['quantity']:g}); keep them as separate lots, or exclude rows"
+            )
+        else:
+            continue
+        errors.extend({"row": n, "field": "sku", "code": code, "message": message} for n in group["rows"])
+    targets: dict[str, list[int]] = {}
+    for n, entity_id in patch_rows.items():
+        targets.setdefault(entity_id, []).append(n)
+    for members in targets.values():
+        if len(members) > 1:
+            errors.extend({"row": n, "field": "sku", "code": "duplicate_upsert_target", "message": (
+                f"Rows {', '.join(map(str, members))} all update the same item; keep one of them"
+            )} for n in members)
+
     can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
     can_edit_amounts = role_has_permission(settings, role, "edit_inventory_amounts")
     for rec, row_no in zip(build.records, build.record_rows):
@@ -2898,27 +3390,11 @@ async def preflight_import_rows(
         if cost_error:
             errors.append({"row": row_no, **cost_error})
     errors.sort(key=lambda e: e["row"])
-    return SemanticImportPlan(
+    return ImportPlan(
         rows=build.rows, records=build.records, record_rows=build.record_rows, errors=errors,
-        locations_to_create=build.locations_to_create,
-        semantic_fingerprint=_semantic_fingerprint(build, errors),
-    )
-
-
-async def preview_import_rows(
-    session: AsyncSession,
-    company_id,
-    role: str,
-    settings: dict,
-    rows: list[dict],
-    *,
-    upsert: bool,
-    idempotency_key: str | None,
-) -> SemanticImportPlan:
-    """Preview mapped item rows under the operation key their commit will use."""
-    return await preflight_import_rows(
-        session, company_id, role, settings, rows,
-        upsert=upsert, operation_key=import_operation_key(idempotency_key, rows, upsert),
+        locations_to_create=build.locations_to_create, decisions=decisions,
+        summary_rows=summary_rows, duplicate_groups=duplicate_groups, operation_key=operation_key,
+        semantic_fingerprint=_semantic_fingerprint(build, errors, decisions),
     )
 
 
@@ -2958,13 +3434,14 @@ async def import_items(
     upsert: bool,
     filename: str | None,
     idempotency_key: str | None,
-    plan: SemanticImportPlan | None = None,
+    decisions: dict | None = None,
+    plan: ImportPlan | None = None,
 ) -> BatchImportResult:
     """Import mapped business rows through the canonical committer, in one transaction.
 
-    Writes from exactly one semantic plan of the rows: ``plan`` when a bound
-    commit has already made and checked it against its preview, otherwise the
-    preflight run here. Any row error raises ImportRejected and nothing is
+    Writes from exactly one plan of the rows and ``decisions``: ``plan`` when a
+    bound commit has already made and checked it against its preview, otherwise
+    build_import_plan run here. Any row error raises ImportRejected and nothing is
     written. A clean import then creates any missing named locations and fills
     their ids into the planned records, writes the records in chunks of IMPORT_CHUNK into
     one Import History entry named by the operation key, merges newly discovered
@@ -2983,11 +3460,12 @@ async def import_items(
     resulting patch, so the same patch dedupes but a later changed patch still applies.
     """
     await locked_company(session, company_id)
-    batch_key = import_operation_key(idempotency_key, rows, upsert)
     if plan is None:
-        plan = await preflight_import_rows(
-            session, company_id, role, settings, rows, upsert=upsert, operation_key=batch_key,
+        plan = await build_import_plan(
+            session, company_id, role, settings, rows, upsert=upsert, decisions=decisions,
+            idempotency_key=idempotency_key,
         )
+    batch_key = plan.operation_key
     if plan.errors:
         raise ImportRejected(plan.errors)
 
@@ -3017,23 +3495,32 @@ async def import_items(
             session, company_id, user, role, settings, body, operation_key=batch_key,
         )
         outcome.records.extend(chunk_outcome.records)
+        outcome.lasting_effects |= chunk_outcome.lasting_effects
         batch_id = chunk_batch_id or batch_id
     await recognize_opening_lots(
         session, company_id, [r.entity_id for r in outcome.records if r.status == "created"], actor_id, batch_id)
 
     # Mutating category schemas is a settings change, so the caller's role must
     # carry manage_company_settings; without it the merge is skipped.
+    schema_changed = False
     if plan.records and role_has_permission(settings, role, "manage_company_settings"):
-        inferred = _infer_category_schemas(_collect_category_attributes(plan.rows))
+        written = [plan.rows[n - 1] for n in plan.record_rows]
+        inferred = _infer_category_schemas(_collect_category_attributes(written))
         if inferred:
-            await _merge_category_schemas(session, company_id, inferred)
+            schema_changed = await _merge_category_schemas(session, company_id, inferred)
+
+    counts = outcome.route_counts(cap_rejections=False)
+    reversible = await _record_reversible(
+        session, batch_id, counts, bool(plan.locations_to_create or schema_changed or outcome.lasting_effects))
     await session.commit()
 
-    return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)
+    return BatchImportResult(
+        **counts, batch_id=batch_id, already_imported=outcome.count("skipped"), reversible=reversible,
+    )
 
 
-async def _merge_category_schemas(session: AsyncSession, company_id, incoming: dict[str, list[dict]]) -> None:
-    """Append newly discovered attribute keys to the company's category schemas.
+async def _merge_category_schemas(session: AsyncSession, company_id, incoming: dict[str, list[dict]]) -> bool:
+    """Append newly discovered attribute keys to the company's category schemas; True when any was added.
 
     Never overwrites an existing key (user customizations are preserved). This is
     the sole path that grows category schemas from imported attribute columns; it
@@ -3041,7 +3528,7 @@ async def _merge_category_schemas(session: AsyncSession, company_id, incoming: d
     """
     company = await locked_company(session, company_id)
     if company is None:
-        return
+        return False
     settings = dict(company.settings)
     cat_schemas: dict[str, list[dict]] = dict(settings.get("category_schemas") or {})
     added = False
@@ -3061,6 +3548,7 @@ async def _merge_category_schemas(session: AsyncSession, company_id, incoming: d
     if added:
         settings["category_schemas"] = cat_schemas
         company.settings = settings
+    return added
 
 
 async def adjust_item_quantity(
@@ -3171,6 +3659,10 @@ async def write_import_batch(
     # This also prevents two imports from locking the same item set in opposite orders.
     if body.records:
         await lock_item_code_namespace(session, company_id)
+    company = await session.get(Company, company_id)
+    company_settings = (company.settings or {}) if company else {}
+    category_keys = await company_category_keys(session, company_id, company_settings)
+    category_names = dict(company_settings.get("category_display_names") or {})
 
     for rec in body.records:
         data = dict(rec.data)
@@ -3195,6 +3687,11 @@ async def write_import_batch(
         except HTTPException as exc:
             outcome.add(entity_id, "rejected", _row_refused(data, exc.detail))
             continue
+        if data.get("category"):
+            data["category"], category_error = resolve_import_category(data["category"], category_keys, category_names)
+            if category_error:
+                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {category_error}")
+                continue
 
         if event_type == "item.patched":
             if primary is not None:
@@ -3311,6 +3808,10 @@ async def write_import_batch(
             outcome.add(entity_id, "rejected", _row_refused(data, refusal(
                 "import.row.negative", f"{negative_amount} cannot be negative", field=negative_amount)))
             continue
+        cost_refusal = negative_cost_error(lot_label(data, entity_id), *event_goods_costs(event_type, data))
+        if cost_refusal:
+            outcome.add(entity_id, "rejected", _row_refused(data, cost_refusal))
+            continue
 
         # Creation follows the ordinary internal-code primitive, after replay
         # detection, so a retry cannot consume a new SKU/barcode.
@@ -3394,6 +3895,8 @@ async def write_import_batch(
         if getattr(entry, "was_deduped", False):
             outcome.add(entity_id, "skipped")
             continue
+        if getattr(entry, "outbound_queued", False):
+            outcome.lasting_effects.add("connector")
 
         if event_type == "item.patched":
             outcome.add(entity_id, "updated")
@@ -3431,9 +3934,30 @@ async def write_import_batch(
         batch.idempotency_keys = [*batch.idempotency_keys, *created_keys]
 
         # The first real import clears the demo items the user never edited or used.
-        await delete_untouched_demo_items(session, company_id)
+        cleared, _kept = await delete_untouched_demo_items(session, company_id)
+        if cleared:
+            outcome.lasting_effects.add("demo_items")
 
     return outcome, (str(batch.id) if batch is not None else None)
+
+
+async def _record_reversible(session: AsyncSession, batch_id: str | None, counts: dict, side_effects: bool) -> bool:
+    """Record on the import's Import History entry whether Undo can return the company to
+    its state before it (ImportBatch.reversible), and return it."""
+    if not batch_id:
+        return False
+    from celerp_inventory.models_import_batch import ImportBatch
+
+    batch = await session.get(ImportBatch, uuid.UUID(batch_id))
+    if counts["created"] or counts["updated"]:
+        # Reversible only when this run wrote the whole entry and did nothing but
+        # create its items; an entry that grew over several runs cannot show that.
+        batch.reversible = batch.row_count == counts["created"] and not counts["updated"] and not side_effects
+    elif side_effects:
+        # A retry that wrote no item can still change what Undo would leave behind
+        # (category fields it may now add, say); once not reversible, never again.
+        batch.reversible = False
+    return batch.reversible
 
 
 async def commit_import_batch(

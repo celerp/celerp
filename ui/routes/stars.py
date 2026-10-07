@@ -17,7 +17,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 import ui.api_client as api
 from ui.config import get_token as _token
-from ui.i18n import t
+from ui.i18n import get_lang, t
 
 
 def _claim_success_body(escaped_label: str) -> str:
@@ -45,7 +45,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Response("{}", media_type="application/json")
-        params = {"medium": request.query_params.get("medium", "footer")}
+        params = {"medium": request.query_params.get("medium", "footer"), "lang": get_lang(request)}
         async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
                 r = await c.get("/stars/cta", params=params)

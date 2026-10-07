@@ -250,6 +250,12 @@ async def _post(path: str, data: dict | None = None, files: dict | None = None) 
         return await c.post(path, data=data, files=files, cookies=_cookies())
 
 
+async def _get(path: str) -> httpx.Response:
+    transport = ASGITransport(app=_app_for(path), raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://ui") as c:
+        return await c.get(path, cookies=_cookies())
+
+
 async def _confirm(name: str, writer, *, csv_text: str | None = None, company_id: str = _COMPANY_A):
     """Stage the importer's CSV for company A, then confirm it as ``company_id``."""
     spec = _IMPORTERS[name]
@@ -398,27 +404,32 @@ class TestStageSurvivesFlow:
         base = spec["confirm"].rsplit("/", 1)[0]
         cols = spec["csv"].splitlines()[0].split(",")
         writer = _clean_result(name)
-        preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "e" * 64})
-        with _patched_api(_COMPANY_A, **{spec["writer"]: writer, "preview_import_rows": preview}):
+        plan = AsyncMock(return_value={"errors": [], "locations_to_create": [], "counts": {"create": 1},
+                                       "preview_hash": "e" * 64})
+        with _patched_api(_COMPANY_A, **{spec["writer"]: writer, "plan_import_rows": plan}):
             r = await _post(f"{base}/preview", files={"csv_file": ("data.csv", spec["csv"].encode())})
             assert r.status_code == 200, r.text
             ref = _last_ref(r.text)
 
             r = await _post(f"{base}/mapped", data={"csv_ref": ref, **{f"map__{c}": c for c in cols}})
+            if name == "inventory":
+                # Inventory saves the mapped rows as a draft and shows its review.
+                assert r.status_code == 303, r.text
+                r = await _get(r.headers["location"])
             assert r.status_code == 200, r.text
             ref = _last_ref(r.text)
 
-            r = await _post(f"{base}/revalidate", data={"csv_ref": ref})
+            revalidate = {"csv_ref": ref}
+            if name == "inventory":
+                revalidate["revision"] = re.search(r'name="revision" value="(\d+)"', r.text).group(1)
+            r = await _post(f"{base}/revalidate", data=revalidate)
             assert r.status_code == 200, r.text
             ref = _last_ref(r.text)
             assert spec["marker"] in import_stage.read_stage(_COMPANY_A, ref)
 
             confirm = {"csv_ref": ref}
             if name == "inventory":
-                r = await _post(f"{base}/review", data={"csv_ref": ref})
-                assert r.status_code == 200, r.text
-                ref = _last_ref(r.text)
-                confirm = {"csv_ref": ref, "preview_hash": "e" * 64}
+                confirm["preview_hash"] = "e" * 64
 
             r = await _post(spec["confirm"], data=confirm)
         assert r.status_code == 200, r.text

@@ -16,6 +16,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.models.company import Company
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
 from celerp.services.pricing import is_cost_list_name, is_derived, price_key
+from ui.i18n import field_label_key
 
 # Reserved system value for a field whose sources disagreed and cannot be reconciled (e.g. a merge
 # of items holding different values for a dropdown or custom attribute). There is ONE canonical form,
@@ -117,6 +118,12 @@ _BASE_FIELDS: list[dict] = [
 _BASE_FIELD_BY_KEY: dict[str, dict] = {f["key"]: f for f in _BASE_FIELDS}
 
 
+def builtin_label_keys() -> dict[str, str]:
+    """The translation key of each built-in item field's label, keyed by field key.
+    The single source every item import screen names its targets from."""
+    return {f["key"]: f["label_key"] for f in _BASE_FIELDS if f.get("label_key")}
+
+
 def _rehydrate_builtin_metadata(schema: list[dict]) -> list[dict]:
     """Reattach canonical label_key/tooltip_key to built-in fields.
 
@@ -142,6 +149,17 @@ def _rehydrate_builtin_metadata(schema: list[dict]) -> list[dict]:
         if "tooltip_key" not in updated and base.get("tooltip_key"):
             updated["tooltip_key"] = base["tooltip_key"]
         out.append(updated)
+    return out
+
+
+def _rehydrate_category_label_keys(fields: list[dict]) -> list[dict]:
+    """Reattach the label_key of each category field whose label is still a library
+    label (the category PATCH model drops it, as it does for built-ins), so the field
+    reads in the user's language; a renamed field keeps its literal label."""
+    out = []
+    for f in fields:
+        key = None if "label_key" in f else field_label_key(f.get("label") or "")
+        out.append({**f, "label_key": key} if key else f)
     return out
 
 
@@ -215,7 +233,8 @@ def all_category_schemas(company_settings: dict) -> dict:
         if cat and cat not in merged and uses_module(company_settings, contrib.get("_module")):
             merged[cat] = contrib.get("fields") or []
     merged.update(company_settings.get("category_schemas") or {})
-    return merged
+    return {cat: _rehydrate_category_label_keys(fields) if isinstance(fields, list) else fields
+            for cat, fields in merged.items()}
 
 
 def union_category_attr_keys(cat_schemas: dict) -> list[str]:
@@ -298,7 +317,7 @@ async def get_effective_field_schema(
 
     if category:
         cat_schemas: dict[str, list[dict]] = settings.get("category_schemas") or {}
-        cat_fields: list[dict] = cat_schemas.get(category) or []
+        cat_fields: list[dict] = _rehydrate_category_label_keys(cat_schemas.get(category) or [])
         if cat_fields:
             keys_in_cat = {f["key"] for f in cat_fields}
             merged = [f for f in base_schema if f["key"] not in keys_in_cat]

@@ -156,8 +156,9 @@ async def test_modules_added_without_removing_unrelated(client):
     assert "celerp-unrelated-extra" in enabled_cfg
     assert "celerp-inventory" in enabled_cfg
     await _set(client, h, "blank")
-    assert "celerp-inventory" in read_config()["modules"]["enabled"], "a switch never disables modules"
-    assert "celerp-inventory" in get_enabled(await _settings(client, h))
+    # The general type has no manufacturing; switching to it keeps it enabled.
+    assert "celerp-manufacturing" in read_config()["modules"]["enabled"], "a switch never disables modules"
+    assert "celerp-manufacturing" in get_enabled(await _settings(client, h))
 
 
 @pytest.mark.asyncio
@@ -346,7 +347,7 @@ async def test_change_reports_what_it_changed(client):
     r = await _set(client, h, "gemstones")
     assert r.status_code == 200, r.text
     changes = r.json()["changes"]
-    assert "Diamond" in changes["categories_added"]
+    assert changes["categories_added"]["diamond"] == "Diamond", "keyed, so the UI shows them translated"
     assert "Manufacturing" in changes["modules_enabled"], "modules are reported by display name"
     assert "Industry Verticals" not in changes["modules_enabled"], "already enabled by the blank type"
     assert changes["settings_updated"] == []
@@ -368,7 +369,7 @@ async def test_repeat_reports_nothing_changed(client):
     h = await _owner(client)
     await _set(client, h, "gemstones")
     again = (await _set(client, h, "gemstones")).json()["changes"]
-    assert again == {"categories_added": [], "modules_enabled": [], "settings_updated": [],
+    assert again == {"categories_added": {}, "modules_enabled": [], "settings_updated": [],
                      "defaults_updated": [], "demo_items_replaced": 0, "demo_items_kept": 0}
 
 

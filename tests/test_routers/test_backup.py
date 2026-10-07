@@ -78,7 +78,7 @@ def _mock_durable_relay_auth(monkeypatch):
         AsyncMock(return_value="api-key"),
     )
     monkeypatch.setattr(
-        "celerp.services.backup_repo.fetch_relay_bearer",
+        "celerp.gateway.state.fetch_relay_bearer",
         AsyncMock(return_value="relay-jwt"),
     )
 

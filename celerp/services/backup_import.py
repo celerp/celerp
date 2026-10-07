@@ -538,19 +538,8 @@ def _apply_modules(modules: list[str]) -> bool:
     if not replace_enabled_modules(modules):
         log.info("Enabled modules unchanged - skipping restart")
         return False
-    try:
-        import asyncio
-        from celerp.routers.system import _restart_sentinel_path, _send_sigterm
-        sentinel = _restart_sentinel_path()
-        sentinel.parent.mkdir(parents=True, exist_ok=True)
-        sentinel.touch()
-        # Scheduled so the HTTP response flushes before the process restarts.
-        asyncio.get_running_loop().call_later(0.5, _send_sigterm)
-        log.info("Restart scheduled after recovery changed the enabled modules")
-        return True
-    except Exception as exc:
-        log.warning("Failed to schedule restart: %s", exc)
-        return False
+    from celerp.modules.requirements import schedule_restart
+    return schedule_restart()
 
 
 def _missing_module_warnings(modules: list[str]) -> list[str]:

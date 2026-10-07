@@ -13,7 +13,9 @@ Isolation of blast radius:
     (``GuardedOperations``), so a module migration cannot alter core or a sibling
     module's tables through the ``op.*`` proxy.
   - Only admitted modules run, and the files run are only those inside the
-    module folder (``loader.module_migration_files``).
+    module folder (``loader.module_migration_files``). They run under the same
+    activation guard as the module's import (``loader._activating``), and a module
+    whose files changed after admission has its migration rolled back.
   - A third-party module whose migration fails is rolled back and refused,
     along with every module depending on it, its error reported as the module's
     load error; a first-party module's failure re-raises, as it does in the
@@ -192,7 +194,19 @@ async def run_migration_phase(engine, admission: loader.Admission) -> loader.Adm
                 sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
             )
             try:
+                # Every admitted module is prepared before any migration runs, since a
+                # migration may import another module's code, including a module that
+                # has no migrations of its own.
                 for module in admission.admitted:
+                    try:
+                        loader._prepare_module_execution(module)
+                    except loader.ModuleLoadError as exc:
+                        if module.first_party:
+                            raise
+                        failed[module.name] = str(exc)
+                for module in admission.admitted:
+                    if module.name in failed:
+                        continue
                     dep = next((d for d in module.manifest["depends_on"] if d in failed), None)
                     if dep is not None:
                         failed[module.name] = f"Requires {dep!r}, which failed to load."
@@ -201,11 +215,17 @@ async def run_migration_phase(engine, admission: loader.Admission) -> loader.Adm
                     if not migrations_pkg:
                         continue
                     try:
+                        # Both checks raise inside the transaction, so either rolls the
+                        # migration back: the module's code ran as module code, and its
+                        # files are still those admission checked.
                         async with engine.begin() as conn:
-                            await conn.run_sync(
-                                run_module_migrations, module.name, module.path,
-                                migrations_pkg, module.manifest.get("table_prefix") or "",
-                            )
+                            loader._prepare_module_execution(module)
+                            with loader._activating(module.name, module.path, trusted=module.first_party):
+                                await conn.run_sync(
+                                    run_module_migrations, module.name, module.path,
+                                    migrations_pkg, module.manifest.get("table_prefix") or "",
+                                )
+                            loader.check_unchanged(module)
                     except Exception as exc:
                         if module.first_party:
                             raise

@@ -820,29 +820,41 @@ async def test_import_malformed_csv_shows_error(client):
 
 
 @pytest.mark.asyncio
-async def test_import_none_fieldnames_shows_error(client):
-    """CSV that causes DictReader to emit None fieldnames must return a clean error,
-    not propagate to a 500."""
+async def test_import_blank_leading_lines_find_or_ask_for_the_header(client, tmp_path, monkeypatch):
+    """Blank lines above the header are skipped to the header; a file with no
+    recognizable header asks which line holds the column names. Neither is a 500."""
+    from unittest.mock import AsyncMock, patch
     from httpx import AsyncClient
     from httpx._transports.asgi import ASGITransport
     from ui.app import app as ui_app
+    from ui.i18n import t
     from test_helpers import make_test_token
 
-    async with AsyncClient(
-        transport=ASGITransport(app=ui_app),
-        base_url="http://ui",
-        follow_redirects=False,
-    ) as c:
-        # A CSV where the header row is empty / blank triggers None fieldnames
-        empty_header = b"\n\nname,sell_by\ntest,piece\n"
-        r = await c.post(
-            "/inventory/import/preview",
-            cookies={"celerp_token": make_test_token(role="manager")},
-            files={"csv_file": ("items.csv", empty_header, "text/csv")},
-        )
-    assert r.status_code == 200
-    body = r.text
-    assert "unexpected error" not in body.lower()
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
+    company = {"id": "company-a", "currency": "USD", "current_role": "manager", "settings": {}}
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+         patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])), \
+         patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app),
+            base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            found = await c.post(
+                "/inventory/import/preview",
+                cookies={"celerp_token": make_test_token(role="manager")},
+                files={"csv_file": ("items.csv", b"\n\nname,sell_by\ntest,piece\n", "text/csv")},
+            )
+            unclear = await c.post(
+                "/inventory/import/preview",
+                cookies={"celerp_token": make_test_token(role="manager")},
+                files={"csv_file": ("items.csv", b"\n\nalpha,beta\n1,2\n", "text/csv")},
+            )
+    assert found.status_code == 200 and unclear.status_code == 200
+    assert "unexpected error" not in found.text.lower() + unclear.text.lower()
+    assert t("import.err_choose_header", file="items.csv") not in found.text
+    assert t("import.err_choose_header", file="items.csv") in unclear.text
+    assert 'name="header_row"' in unclear.text
 
 
 @pytest.mark.asyncio

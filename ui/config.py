@@ -12,6 +12,8 @@ from celerp.config import settings as _settings
 API_BASE = os.getenv("API_URL", os.getenv("CELERP_API_URL", "http://localhost:8000"))
 RELAY_URL = os.getenv("CELERP_RELAY_URL", "https://relay.celerp.com")
 PRIVACY_POLICY_URL = "https://relay.celerp.com/privacy"
+# Payment terms are edited on the Contacts settings page.
+PAYMENT_TERMS_URL = "/settings/contacts?tab=payment-terms"
 COOKIE_NAME = "celerp_token"
 REFRESH_COOKIE_NAME = "celerp_refresh"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}

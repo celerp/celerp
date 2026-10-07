@@ -3,7 +3,7 @@
 """Company backups and schema changes on real Postgres.
 
 Every schema change (a Celerp or module migration, the start-up table creation, a
-module data purge) holds the schema key alone; a company export or restore shares it
+module data purge, System Recovery replacing the database) holds the schema key alone; a company export or restore shares it
 for its whole transaction and is refused at once while a change holds it. These tests
 hold one side open on its own connection and drive the other.
 """
@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import threading
 import uuid
+from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -50,6 +53,21 @@ async def _holders(engine, key: int = SCHEMA_KEY) -> list[str]:
             "SELECT mode FROM pg_locks WHERE locktype = 'advisory' AND granted "
             "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
             "AND classid = :hi AND objid = :lo AND objsubid = 1"), {"hi": hi, "lo": lo})).scalars())
+
+
+def _holders_now(url: str, key: int = SCHEMA_KEY) -> list[str]:
+    """``_holders`` from a thread of its own, on the database at *url*."""
+    from celerp.db_url import sync_url
+    engine = create_engine(sync_url(url), poolclass=NullPool)
+    hi, lo = _split(key)
+    try:
+        with engine.connect() as conn:
+            return sorted(conn.execute(text(
+                "SELECT mode FROM pg_locks WHERE locktype = 'advisory' AND granted "
+                "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+                "AND classid = :hi AND objid = :lo AND objsubid = 1"), {"hi": hi, "lo": lo}).scalars())
+    finally:
+        engine.dispose()
 
 
 async def _own_keys(session) -> set[str]:
@@ -486,3 +504,124 @@ async def test_owner_installed_twice_with_different_prefixes_refuses_export(real
         assert not out.exists()
     finally:
         await _bk_drop(real_engine, "zz_widgets")
+
+
+# ── 8. System Recovery replaces the database holding the key alone ───────────
+
+def _url(engine) -> str:
+    return engine.url.render_as_string(hide_password=False)
+
+
+class _Recovery:
+    """System Recovery's database restore (``restore_database_file``), run off the event
+    loop with pg_restore stood in for: each run records the key's holders, then waits
+    for ``release`` before answering, or failing with *failure*."""
+
+    def __init__(self, url: str, *, clean_schema: bool = False, failure: str | None = None):
+        from celerp.services.backup import restore_database_file
+
+        self.started, self.release = threading.Event(), threading.Event()
+        self.seen: list[list[str]] = []
+
+        def runner(command, **kwargs):
+            self.seen.append(_holders_now(url))
+            self.started.set()
+            self.release.wait(30)
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(command, 600)
+            return subprocess.CompletedProcess(command, 1 if failure else 0, b"",
+                                               b"ERROR: restore failed" if failure else b"")
+
+        self.task = asyncio.create_task(asyncio.to_thread(
+            restore_database_file, Path("database.dump"), url, clean_schema=clean_schema, runner=runner))
+
+    async def reached(self, seconds: float = 15) -> bool:
+        return await asyncio.to_thread(self.started.wait, seconds)
+
+
+@pytest.fixture
+async def scratch_url(real_engine):  # noqa: F811
+    """A database of its own, so a restore may empty its whole schema."""
+    name = f"zz_recovery_{uuid.uuid4().hex[:10]}"
+    async with real_engine.connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(text(f'CREATE DATABASE "{name}"'))
+    yield _url(real_engine).rpartition("/")[0] + "/" + name
+    async with real_engine.connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+
+
+_MODES = pytest.mark.parametrize("clean_schema", [False, True], ids=["over the schema", "into an emptied schema"])
+
+
+@_MODES
+async def test_system_recovery_holds_the_schema_key_alone_while_it_replaces_the_database(
+        scratch_url, clean_schema):
+    recovery = _Recovery(scratch_url, clean_schema=clean_schema)
+    try:
+        assert await recovery.reached()
+    finally:
+        recovery.release.set()
+    await asyncio.wait_for(recovery.task, 15)
+    assert recovery.seen == [["ExclusiveLock"]]
+    assert await asyncio.to_thread(_holders_now, scratch_url) == []
+
+
+async def test_company_backup_during_system_recovery_is_refused_and_writes_nothing(
+        real_engine, real_client, widgets_company, tmp_path):  # noqa: F811
+    _, cid, tok = widgets_company
+    files_before = sorted(p for p in tmp_path.rglob("*") if p.is_file())  # the download's private folder may exist
+    out = tmp_path / "during.celerp-company"
+    recovery = _Recovery(_url(real_engine))
+    try:
+        assert await recovery.reached()
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+        try:
+            await _bk_cb().export_company_snapshot(cid, out)
+            direct = None
+        except _bk_cb().BackupError as exc:
+            direct = exc
+    finally:
+        recovery.release.set()
+        await asyncio.wait_for(recovery.task, 15)
+    assert r.status_code == 409, r.status_code
+    assert r.json()["detail"].startswith("Celerp is updating its database. Nothing was backed up.")
+    assert direct is not None and direct.status_code == 409
+    assert direct.detail.startswith("Celerp is updating its database. Nothing was backed up.")
+    assert sorted(p for p in tmp_path.rglob("*") if p.is_file()) == files_before
+
+
+async def test_system_recovery_waits_for_a_running_company_backup(
+        real_engine, widgets_company, tmp_path, monkeypatch):  # noqa: F811
+    _, cid, _ = widgets_company
+    paused = _Paused(monkeypatch)
+    out = tmp_path / "a.celerp-company"
+    export = paused.start(cid, out)
+    await asyncio.wait_for(paused.reached.wait(), 15)
+    recovery = _Recovery(_url(real_engine))
+    try:
+        replaced_during_backup = await recovery.reached(1.5)
+    finally:
+        paused.release.set()
+    try:
+        await asyncio.wait_for(export, 15)
+        assert await recovery.reached()
+    finally:
+        recovery.release.set()
+    await asyncio.wait_for(recovery.task, 15)
+    assert not replaced_during_backup
+    assert recovery.seen == [["ExclusiveLock"]]
+    assert b"widget-marker" in members(out.read_bytes())["tables/zz_widgets.jsonl"]
+    assert await _holders(real_engine) == []
+
+
+@_MODES
+@pytest.mark.parametrize("failure", ["error", "timeout"], ids=["pg_restore fails", "pg_restore times out"])
+async def test_failed_system_recovery_restore_releases_the_schema_key(scratch_url, clean_schema, failure):
+    recovery = _Recovery(scratch_url, clean_schema=clean_schema, failure=failure)
+    recovery.release.set()
+    with pytest.raises(RuntimeError, match="pg_restore"):
+        await asyncio.wait_for(recovery.task, 15)
+    assert recovery.seen == [["ExclusiveLock"]]
+    assert await asyncio.to_thread(_holders_now, scratch_url) == []

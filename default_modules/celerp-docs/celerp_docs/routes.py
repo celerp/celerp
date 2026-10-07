@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
                                   refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
+from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -36,6 +37,7 @@ from celerp.services.field_schema import reject_system_item_fields
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
+from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import is_stock_type
 from celerp.services.physical_codes import lock_item_code_namespace
@@ -1711,6 +1713,13 @@ async def create_doc(
 
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)
+    await session.commit()
+    return result
+
+
+async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch) -> dict:
+    """Apply a document edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
@@ -1868,7 +1877,6 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     )
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "doc.updated", entity_id, digest)
-    await session.commit()
     # entry.id is the document's new version, so the client's next versioned write pins
     # exactly the state this patch produced, as patch_list does.
     return {"event_id": entry.id, "version": entry.id}
@@ -2396,7 +2404,7 @@ async def renumber_doc(
 
     Voided documents are immutable records and cannot be renumbered.
     """
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Voided documents cannot be renumbered")
@@ -2425,7 +2433,7 @@ async def renumber_doc(
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=f"renumber:{entity_id}:{new_ref}",
+        idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
     await session.commit()
@@ -2546,12 +2554,12 @@ async def bulk_delete_drafts(
         raise HTTPException(status_code=422, detail="No document IDs specified")
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
-    drafts = []
-    for eid in ids:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-        if row is None or row.entity_type != "doc" or row.state.get("status") != "draft":
-            continue
-        drafts.append(row)
+    # Locked and read fresh, so a finalize that committed while this waited is seen.
+    # Only a document is deleted here: a draft item or List sharing the ID space
+    # is skipped like any other non-draft-document ID.
+    rows = await lock_projections(session, company_id, ids)
+    drafts = [row for eid in dict.fromkeys(ids)
+              if (row := rows.get(eid)) is not None and row.entity_type == "doc" and row.state.get("status") == "draft"]
 
     posted = [row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id
               for row in drafts
@@ -2576,7 +2584,7 @@ async def bulk_delete_drafts(
 
 @router.delete("/{entity_id}")
 async def delete_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("delete_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft documents can be deleted")
     entries = await _posted_journal_entries(session, company_id, entity_id)
@@ -3915,6 +3923,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     detail=(f"{it.sku or it.name or it.item_id}: no line on this {doc_label} prices it, "
                             f"so the received goods cannot be costed. Add it to the {doc_label} first."),
                 )
+        refusal = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
+        if refusal:
+            raise HTTPException(status_code=422, detail=refusal)
         priced.append((conversion, stock_qty, cost))
 
     _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))
@@ -5614,6 +5625,13 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    result = await write_list_patch(session, company_id, role, settings, user, entity_id, payload)
+    await session.commit()
+    return result
+
+
+async def write_list_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: ListPatch) -> dict:
+    """Apply a List edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
@@ -5677,7 +5695,6 @@ async def patch_list(
                              {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "list.updated", entity_id, digest)
-    await session.commit()
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
     return {"event_id": entry.id, "version": entry.id}
@@ -6251,7 +6268,9 @@ async def reserve_list_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set selected lines reserved/available on a draft or finalized list of any type (ledger-neutral)."""
-    row = await _get_list(session, company_id, entity_id)
+    # Company first, as the document path does, so a document being created with one of
+    # these items either sees the reservation or is seen by it.
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail=f"Cannot reserve on a list in status '{row.state.get('status')}'")
     return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
@@ -6267,7 +6286,7 @@ async def revert_list_to_draft(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Go back from finalized to draft, allowed only before a terminal action has run (GDR 2c)."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409,
                             detail="Only a finalized list (before its terminal action) can be reverted to draft")
@@ -6288,7 +6307,7 @@ async def void_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     status = row.state.get("status")
     if status == VOID:
         raise HTTPException(status_code=409, detail="Already voided")
@@ -6308,7 +6327,7 @@ async def delete_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Only draft lists can be deleted")
     from celerp.models.ledger import LedgerEntry
@@ -6621,14 +6640,13 @@ async def batch_import_lists(
                     continue
                 canonical = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
                 upsert_idem = f"{rec.idempotency_key}:upsert:{hashlib.sha256(canonical.encode()).hexdigest()}"
-                result = await patch_list(
-                    replay.entity_id,
+                result = await write_list_patch(
+                    session, company_id, role, settings, user, replay.entity_id,
                     ListPatch(
                         fields_changed=fields_changed,
                         idempotency_key=upsert_idem,
                         expected_version=row.version if "line_items" in fields_changed else None,
                     ),
-                    company_id=company_id, _=None, role=role, settings=settings, user=user, session=session,
                 )
                 if result.get("event_id") is None:
                     skipped += 1
@@ -6636,7 +6654,7 @@ async def batch_import_lists(
                     updated += 1
             except Exception as exc:
                 if len(errors) < 10:
-                    errors.append(f"{replay.entity_id}: {exc}")
+                    errors.append(f"{replay.entity_id}: {failure_reason(exc)}")
             continue
         if rec.entity_id in existing_entities:
             skipped += 1
@@ -6658,7 +6676,7 @@ async def batch_import_lists(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
+                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, updated=updated, errors=errors)
@@ -8115,12 +8133,14 @@ async def upload_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
         except ValueError as exc:
             raise HTTPException(status_code=413, detail=str(exc))
+        # Read after the upload so a document deleted meanwhile, or an uploader who has
+        # lost access, leaves no file behind.
+        await _get_doc(session, company_id, entity_id, for_update=True)
         entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
@@ -8171,7 +8191,7 @@ async def tag_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -8201,7 +8221,7 @@ async def update_doc_file_description(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -8230,7 +8250,7 @@ async def delete_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     entry = await emit_event(
         session,
@@ -9217,7 +9237,7 @@ async def send_list(
     """Record a finalized list as sent (sets the `sent_at` milestone; status stays finalized) and,
     if a recipient is given, fire the relay email — the same Send / Mark-as-sent mechanism documents
     use. `sent_via="manual"` (no recipient) is the Mark-as-sent path."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Issue the list before sending it")
     now = datetime.now(timezone.utc).isoformat()
@@ -9277,7 +9297,7 @@ async def move_transfer(
     """Transfer action: relocate every item on a finalized transfer to one location, by emitting the
     inventory `item.transferred` event per line (stock is owned by inventory; docs only emits the
     event). Repeatable — the transfer stays finalized so it can be moved again."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     if (row.state.get("list_type") or "") != "transfer":
         raise HTTPException(status_code=409, detail="Only transfers can move stock")
     if row.state.get("status") != FINALIZED:

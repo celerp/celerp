@@ -10,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, flash, page_header, page_title
 from celerp.accounting_roles import account_label
@@ -441,7 +442,7 @@ def _chart_tab(chart: list[dict]) -> FT:
     return Div(
         Div(
             A(t("acct.add_account"), href="/settings/accounting/chart/new", cls="btn btn--primary"),
-            A(t("acct.import_chart_csv"), href="/accounting/import/chart", cls="btn btn--secondary"),
+            A(import_icon(), t("acct.import_chart_csv"), href="/accounting/import/chart", cls="btn btn--secondary"),
             Form(
                 Button(t("btn.seed_default_chart"), type="submit", cls="btn btn--secondary"),
                 hx_post="/settings/accounting/chart/seed",
@@ -537,7 +538,7 @@ async def _account_error_page(request: Request, message: str) -> FT:
         _section_breadcrumb(t("page.accounting")),
         page_header(
             t("settings_accounting.chart_of_accounts"),
-            A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+            A(t("btn.back"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
         ),
         Div(P(message, cls="error-banner"), cls="settings-card"),
         title=page_title("settings_accounting.chart_of_accounts"),
@@ -645,7 +646,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("acct.add_bank_account"),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
             ),
             Div(
                 Form(
@@ -750,7 +751,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("settings_accounting.edit_named", name=b.get("bank_name") or t("settings_accounting.bank_account")),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
             ),
             Div(
                 Form(
@@ -948,7 +949,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("acct.add_account"),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
             ),
             Div(_account_form(chart), cls="settings-card"),
             title=page_title("acct.add_account"),
@@ -1005,7 +1006,7 @@ def setup_routes(app):
             _section_breadcrumb(t("page.accounting")),
             page_header(
                 t("settings_accounting.edit_named", name=acct.get("name") or code),
-                A(t("btn.back_to_settings"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
+                A(t("btn.back"), href="/settings/accounting?tab=chart", cls="btn btn--secondary"),
             ),
             Div(_account_form(chart, values=acct), cls="settings-card"),
             title=page_title("settings_accounting.edit_account"),

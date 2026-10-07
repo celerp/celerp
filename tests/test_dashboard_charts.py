@@ -8,6 +8,10 @@ Pure render — no server.
 """
 from __future__ import annotations
 
+import json
+import re
+
+import pytest
 from fasthtml.common import to_xml
 
 from ui.components.activity import activity_table
@@ -75,3 +79,27 @@ def test_activity_footer_no_see_all_without_history_url():
     xml = to_xml(activity_table(rows, max_display=15))
     assert "Showing last 15 events" in xml
     assert "See All" not in xml
+
+
+_TAB_LABEL = re.compile(r'class="category-tab ?[^"]*"[^>]*>([^<(]+?) \(\d+\)</a>')
+
+
+@pytest.mark.asyncio
+async def test_inventory_by_category_chart_uses_the_inventory_tab_labels(owner_ui):
+    """The chart's bars carry the same category names as the inventory page's tabs
+    ("Colored Stone"), never the schema keys ("colored_stone")."""
+    assert (await owner_ui.api.post("/companies/me/business-type", json={"vertical": "gemstones"})).status_code == 200
+    assert (await owner_ui.api.post("/companies/me/demo/reseed")).status_code == 200
+    names = (await owner_ui.api.get("/companies/me/category-display-names")).json()
+    inv = await owner_ui.get("/inventory")
+    tabs = [s for s in _TAB_LABEL.findall(inv.text) if s != "All"]
+    assert "Colored Stone" in tabs, tabs
+    dash = await owner_ui.get("/dashboard")
+    assert dash.status_code == 200
+    m = re.search(r"labels: (\[[^\]]*\]), datasets: \[\{ label: \"Items\", data: \[[^\]]*\], backgroundColor: colors\[0\]", dash.text)
+    assert m, "the category chart is on the dashboard"
+    labels = json.loads(m.group(1))
+    assert set(tabs) <= set(labels), (tabs, labels)
+    assert not set(names) & set(labels), labels
+    de = await owner_ui.get("/dashboard", headers={"Accept-Language": "de"})
+    assert 'datasets: [{ label: "Artikel", data:' in de.text, "the bar tooltip label is translated"
