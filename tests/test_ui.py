@@ -10012,20 +10012,19 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_marketplace_download_stages_and_offers_install(self, ui_client):
         """Download stages the licensed archive and swaps the row to an Install
-        button carrying the staged path."""
+        button carrying the download reference."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.marketplace_download",
-                  new=AsyncMock(return_value={"ok": True,
-                                              "path": "/data/marketplace-downloads/celerp-budgeting.zip"})),
+                  new=AsyncMock(return_value={"ok": True, "ref": "mp_" + "a" * 32})),
         ):
             r = await ui_client.post("/modules/marketplace-download",
                                      data={"slug": "celerp-budgeting"}, cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content
-        assert b"celerp-budgeting.zip" in r.content          # path passed to install
+        assert b"mp_" + b"a" * 32 in r.content               # reference passed to install
         assert b">Install<" in r.content
 
     @pytest.mark.asyncio
@@ -10056,14 +10055,15 @@ class TestMarketplaceUI:
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.marketplace_install",
                   new=AsyncMock(return_value={"ok": True, "name": "celerp-budgeting",
-                                              "display_name": "Budgeting"})),
+                                              "display_name": "Budgeting"})) as install,
         ):
             r = await ui_client.post("/modules/marketplace-install",
                                      data={"slug": "celerp-budgeting",
-                                           "path": "/data/marketplace-downloads/celerp-budgeting.zip"},
+                                           "ref": "mp_" + "a" * 32},
                                      cookies=_authed())
         assert r.status_code == 200
         assert r.headers.get("HX-Redirect") == "/modules?tab=local"
+        assert install.await_args.args[1] == "mp_" + "a" * 32
 
     @pytest.mark.asyncio
     async def test_marketplace_install_failure_keeps_install_button(self, ui_client):
@@ -10080,7 +10080,7 @@ class TestMarketplaceUI:
         ):
             r = await ui_client.post("/modules/marketplace-install",
                                      data={"slug": "celerp-budgeting",
-                                           "path": "/data/marketplace-downloads/celerp-budgeting.zip"},
+                                           "ref": "mp_" + "a" * 32},
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content   # Install button still there

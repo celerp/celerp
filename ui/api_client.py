@@ -3179,19 +3179,19 @@ async def module_licenses(token: str) -> list[str]:
 async def marketplace_download(token: str, slug: str) -> dict:
     """POST /companies/me/modules/marketplace-download - fetch a marketplace
     module from the relay and stage it for install (the download can take a
-    while). Returns the staged path the following Install reads. The long fetch
-    rides the bulk pool so it cannot hold an interactive connection slot."""
+    while). Returns the download reference the following Install takes. The long
+    fetch rides the bulk pool so it cannot hold an interactive connection slot."""
     async with _bulk_api_client(token, timeout=90.0) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-download",
                                    json={"slug": slug})).json()
 
 
-async def marketplace_install(token: str, path: str) -> dict:
-    """POST /companies/me/modules/marketplace-install - install a previously
-    staged marketplace archive. The module lands disabled, ready to enable."""
+async def marketplace_install(token: str, ref: str) -> dict:
+    """POST /companies/me/modules/marketplace-install - install the marketplace
+    download *ref* names. The module lands disabled, ready to enable."""
     async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-install",
-                                   json={"path": path})).json()
+                                   json={"ref": ref})).json()
 
 
 async def installation_owner(token: str) -> bool:
