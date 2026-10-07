@@ -899,7 +899,7 @@ async def test_hand_copied_prefix_claiming_a_core_table_owns_nothing(real_engine
         await _bk_sql(real_engine, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
     try:
         async with maker(real_engine)() as s:
-            plan = await cb._classify(s, strict=False)
+            plan = await cb._classify(s, cb.installed_modules(), strict=False)
         assert "alembic_version" not in plan.owners and "alembic_version" not in plan.order
         data = await download(real_client, tok)
         assert "alembic_version" not in manifest(data)["tables"]
@@ -919,7 +919,7 @@ async def test_hand_copied_prefix_claiming_a_turned_off_bundled_module_table_own
     _bk_shadow_module(tmp_path, "zz-claimer", prefix)
     assert "zz-claimer" not in valid_table_prefixes()
     async with maker(real_engine)() as s:
-        plan = await cb._classify(s, strict=False)
+        plan = await cb._classify(s, cb.installed_modules(), strict=False)
     assert plan.owners.get(bundled_modules_unloaded[prefix]) != "zz-claimer"
     assert "zz-claimer" not in plan.owners.values()
 
@@ -1891,7 +1891,7 @@ async def test_a_carried_table_changed_as_the_export_ends_stops_it(real_engine, 
 
 async def test_a_carried_table_being_changed_as_the_export_ends_stops_it(real_engine, tmp_path, monkeypatch):
     """Another connection is adding a key to zz_widgets, not yet committed, when the
-    export has read every row. The export is refused with nothing written, and
+    export has read every row. The export is refused at once with nothing written, and
     the change then goes through."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)

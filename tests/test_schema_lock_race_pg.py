@@ -223,19 +223,35 @@ async def test_running_export_refuses_module_data_purge(real_engine, real_client
 # ── 3. backups share the key ──────────────────────────────────────────────────
 
 async def test_two_exports_run_together(real_engine, widgets_company, tmp_path, monkeypatch):  # noqa: F811
+    """Both exports hold the key shared at once; each then finishes in turn."""
+    cb = _bk_cb()
+    batches = cb._batches
+    reading, gates = [], [asyncio.Event(), asyncio.Event()]
+
+    async def held(session, table, *args):
+        if table.name == "zz_widgets":
+            gate = gates[len(reading)]
+            reading.append(table.name)
+            await gate.wait()
+        async for batch in batches(session, table, *args):
+            yield batch
+
+    monkeypatch.setattr(cb, "_batches", held)
     _, cid, _ = widgets_company
-    paused = _Paused(monkeypatch)
-    first = paused.start(cid, tmp_path / "a.celerp-company")
-    second = paused.start(cid, tmp_path / "b.celerp-company")
+    first = asyncio.create_task(cb.export_company_snapshot(cid, tmp_path / "a.celerp-company"))
     try:
-        async def both_reading():
-            while paused.count < 2:
-                await asyncio.sleep(0.05)
-        await asyncio.wait_for(both_reading(), 15)
+        while len(reading) < 1:
+            await asyncio.sleep(0.05)
+        second = asyncio.create_task(cb.export_company_snapshot(cid, tmp_path / "b.celerp-company"))
+        while len(reading) < 2:
+            await asyncio.sleep(0.05)
         assert await _holders(real_engine) == ["ShareLock", "ShareLock"]
+        gates[0].set()
+        await asyncio.wait_for(first, 15)
     finally:
-        paused.release.set()
-    await asyncio.wait_for(asyncio.gather(first, second), 15)
+        for gate in gates:
+            gate.set()
+    await asyncio.wait_for(second, 15)
     for name in ("a", "b"):
         data = (tmp_path / f"{name}.celerp-company").read_bytes()
         assert b"widget-marker" in members(data)["tables/zz_widgets.jsonl"]
