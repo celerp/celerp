@@ -492,8 +492,11 @@ def _one_install_at_a_time():
 
 
 def _finish(staged: Path, manifest: dict, *, official: bool = False,
-            premium: bool = False, source: str = "sideloaded") -> dict:
+            premium: bool = False, source: str = "sideloaded",
+            expected: tuple[str, str] | None = None) -> dict:
     name = str(manifest.get("name", ""))
+    if expected is not None and (name, str(manifest.get("version", ""))) != expected:
+        raise ModuleImportError("The downloaded package does not match the requested module.")
     _validate_name(name, official=official)
     _check_min_version(manifest)
     with _one_install_at_a_time():
@@ -574,14 +577,17 @@ def _zip_root(zf: zipfile.ZipFile) -> str:
 
 
 def install_from_zip(data: bytes, *, official: bool = False,
-                     premium: bool = False, source: str = "sideloaded") -> dict:
+                     premium: bool = False, source: str = "sideloaded",
+                     expected: tuple[str, str] | None = None) -> dict:
     """Validate and install a module from zip bytes. Returns manifest summary.
 
-    `official` is set ONLY by the marketplace installer (relay-authenticated
-    download): it flips the celerp- prefix rule from forbidden to required.
+    `official` is set only by the marketplace installer: it flips the celerp-
+    prefix rule from forbidden to required.
     `premium` drops the license-gate marker for paid modules.
     `source` is recorded in the provenance sidecar and drives the source shield
-    and newest-first ordering on the modules page."""
+    and newest-first ordering on the modules page.
+    `expected` is the (name, version) the package must declare; a package
+    declaring anything else is refused and nothing is installed."""
     if len(data) > MAX_ARCHIVE_BYTES:
         raise ModuleImportError("Archive is too large (limit 50 MB).")
     tmp_zip = None
@@ -627,7 +633,7 @@ def install_from_zip(data: bytes, *, official: bool = False,
                     shutil.copyfileobj(src, f, length=1024 * 256)
             module_root, manifest = _locate_module(out)
             return _finish(module_root, manifest, official=official,
-                           premium=premium, source=source)
+                           premium=premium, source=source, expected=expected)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

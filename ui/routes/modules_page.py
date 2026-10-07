@@ -755,7 +755,7 @@ def _checkout_consent(m: dict, lang: str) -> str:
 
 
 def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str],
-                     owner: bool, *, downloaded_path: str | None = None) -> FT:
+                     owner: bool, *, download_ref: str | None = None) -> FT:
     """One marketplace listing. The action cell follows ownership, matching the
     Community tab's Download then Install flow with a Buy step in front of paid
     modules: installed (nothing to do), paid-and-unowned (Buy), then - once free
@@ -795,10 +795,10 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
                            data_filter_value=t("marketplace.owned", lang))
         else:
             status_td = Td("--", data_filter_value="--")
-        if downloaded_path:
+        if download_ref:
             action_td = Td(Button(t("btn.install", lang),
                 hx_post="/modules/marketplace-install",
-                hx_vals=json.dumps({"slug": m["id"], "path": downloaded_path}),
+                hx_vals=json.dumps({"slug": m["id"], "ref": download_ref}),
                 hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
                 cls="btn btn--sm btn--primary"))
         else:
@@ -1541,7 +1541,7 @@ def setup_routes(app):
             return _toast(
                 _marketplace_row(m, lang, installed, licensed, owner), e.detail or str(e))
         return _marketplace_row(m, lang, installed, licensed, owner,
-                                downloaded_path=res.get("path"))
+                                download_ref=res.get("ref"))
 
     @app.post("/modules/marketplace-install")
     async def modules_marketplace_install(request: Request):
@@ -1557,13 +1557,13 @@ def setup_routes(app):
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        path = str(form.get("path", ""))
+        ref = str(form.get("ref", ""))
         m, installed, licensed, owner = await _marketplace_entry(token, slug)
         try:
-            await api.marketplace_install(token, path)
+            await api.marketplace_install(token, ref)
         except APIError as e:
             return _toast(
-                _marketplace_row(m, lang, installed, licensed, owner, downloaded_path=path),
+                _marketplace_row(m, lang, installed, licensed, owner, download_ref=ref),
                 e.detail or str(e))
         # Installed: land on the Installed tab where the new module's row sits
         # with its Enable button - the next step in the flow - rather than
