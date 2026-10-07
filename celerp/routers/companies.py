@@ -2197,7 +2197,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
     if hashlib.sha256(data).hexdigest() != answer["sha256"]:
         raise HTTPException(status_code=502,
-                            detail="The downloaded package does not match its listing. Download it again.")
+                            detail="The downloaded package does not match its listing. Try again.")
 
     ref = await asyncio.to_thread(
         marketplace_stage.write_stage, data, slug=answer["slug"], version=answer["version"],
