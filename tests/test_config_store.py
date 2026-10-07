@@ -117,8 +117,15 @@ def test_locked_writer_waits_on_held_lock(tmp_path, monkeypatch):
     threshold is taken over and the write proceeds, releasing the lock in the
     finally path."""
     monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(config_store, "_LOCK_BUDGET_S", 0.5)
     monkeypatch.setattr(config_store, "_LOCK_RETRY_S", 0.05)
+    # The writer runs the real lock with a 0.5 second budget instead of the
+    # production one.
+    real_acquire = config_store._acquire_lock
+
+    def _acquire_with_test_budget(lock_path, budget=0.5):
+        return real_acquire(lock_path, budget)
+
+    monkeypatch.setattr(config_store, "_acquire_lock", _acquire_with_test_budget)
     config_path = tmp_path / "celerp-config.json"
     config_path.write_text(json.dumps({"db_mode": "local"}))
     lock_path = tmp_path / "celerp-config.json.lock"
@@ -130,7 +137,7 @@ def test_locked_writer_waits_on_held_lock(tmp_path, monkeypatch):
     ok = config_store.merge_packaged_config({"a": 1})
     waited = time.monotonic() - t0
     assert ok is False
-    assert waited >= 0.4, f"did not wait for the lock (waited {waited:.2f}s)"
+    assert 0.4 <= waited < 2.0, f"did not wait for the test budget (waited {waited:.2f}s)"
     assert json.loads(config_path.read_text()) == {"db_mode": "local"}
 
     # Age the lock past the stale threshold: it is taken over via O_EXCL and the
