@@ -330,9 +330,8 @@ def table_prefix_problem(name: str, prefix: object,
     The migration runner scopes DDL by the prefix and the purge drops every table
     carrying it, so a prefix that captures a core table or overlaps another
     module's would put foreign data in reach. Checked wherever the prefix is
-    trusted (install, migrations, purge, backup attribution), because a module
-    copied in by hand never passed the install check. *installed* is the other
-    modules' prefixes, read from MODULE_DIR when not given.
+    used (install, migrations, purge, backup attribution). *installed* is the
+    other modules' prefixes, read from MODULE_DIR when not given.
     """
     if not isinstance(prefix, str) or not prefix:
         return ('"table_prefix" must name the tables the module owns '

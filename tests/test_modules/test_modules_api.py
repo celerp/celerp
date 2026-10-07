@@ -351,11 +351,11 @@ class TestModuleProvenanceAndDelete:
         assert row["source"] == "marketplace"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("sidecar", ['{"source": "trusted"}', '{"source": null}', "{}", "[]",
+    @pytest.mark.parametrize("metadata", ['{"source": "other"}', '{"source": null}', "{}", "[]",
                                          '{"source": []}', '{"source": {}}'],
                              ids=["unknown", "null", "empty", "not_an_object",
                                   "source_list", "source_object"])
-    async def test_scan_reports_an_unknown_source_as_sideloaded(self, client, tmp_path, sidecar):
+    async def test_scan_reports_an_unknown_source_as_sideloaded(self, client, tmp_path, metadata):
         from celerp.modules.importer import install_from_zip
         from celerp.modules.meta import META_FILENAME
 
@@ -367,7 +367,7 @@ class TestModuleProvenanceAndDelete:
             with zipfile.ZipFile(buf, "w") as zf:
                 zf.writestr("acme-odd/__init__.py", _PKG_INIT.format(name="acme-odd", disp="Odd"))
             install_from_zip(buf.getvalue(), source="community")
-            (module_dir / "acme-odd" / META_FILENAME).write_text(sidecar)
+            (module_dir / "acme-odd" / META_FILENAME).write_text(metadata)
             r = await client.get("/companies/me/modules", headers=_h(token))
         assert r.status_code == 200, r.text
         row = next(m for m in r.json() if m["name"] == "acme-odd")
