@@ -6,7 +6,7 @@ The importer writes one of these into every module folder at install time. It
 records where the module came from and when it landed, and it is the single
 source for two user-facing features on the modules page: the source label and
 shield next to each module name, and the newest-imported-first ordering. Both are
-display only; nothing reads the sidecar to decide what a module may do.
+display only. Module metadata does not affect admission.
 
 The sidecar is advisory: a folder without one (a pre-existing import, or a
 default module re-seeded by the desktop app) is simply treated as unknown
@@ -21,8 +21,7 @@ from pathlib import Path
 META_FILENAME = ".celerp-meta.json"
 
 # The sources an uploaded package may record. "marketplace" is written only by
-# the Marketplace install, and a default module is known by its content (see the
-# loader), never by a sidecar.
+# the Marketplace install.
 IMPORT_SOURCES = {"community", "sideloaded"}
 
 # Every source the module list reports; a sidecar without one reads as "sideloaded".

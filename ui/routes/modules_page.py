@@ -554,8 +554,7 @@ def _source_icon(is_default: bool, lang: str):
     """The gold shield shown to the left of a default module's name, or None.
 
     Only the defaults Celerp ships carry one. Every other origin, Marketplace
-    included, shows no shield: the install sidecar that records an origin is
-    advisory. The Source column still states the origin in words.
+    included, shows no shield. The Source column states the origin in words.
     """
     if not is_default:
         return None
@@ -1057,8 +1056,8 @@ def _community_table(community: list[dict], installed: set[str], lang: str,
 
 async def _community_and_installed(token: str) -> tuple[list[dict], set[str], bool]:
     """Fetch the catalog's community listings, the set of installed module
-    names, and whether this login owns the installation. Fetching listing metadata carries no trust risk; only installing a
-    community module runs its code, and that stays behind the acknowledgment."""
+    names, and whether this login owns the installation. Installing a community
+    module stays behind the acknowledgment."""
     modules_list, _ = await catalog.fetch_catalog()
     community = [m for m in modules_list if m["tier"] == "community"]
     installed: set[str] = set()

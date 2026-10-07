@@ -3,10 +3,9 @@
 """The module slot contract, enforced when a module loads.
 
 Every test writes a real module package and loads it through ``load_all`` (the
-complete loader boundary: trust decision, import, protected-import scan, slot
-validation, registration), then checks what was registered and what error was
-recorded. First-party modules are made first-party the way production does it:
-the lock names the folder with its live content digest.
+complete loader path: admission, import, protected-import scan, slot validation,
+registration), then checks what was registered and what error was recorded.
+First-party modules are listed in the first-party lock, as in production.
 """
 from __future__ import annotations
 
@@ -293,7 +292,7 @@ class TestSlotPermission:
         assert "dict" in _refused(tmp_path, name, monkeypatch)
 
     @pytest.mark.parametrize("key", ["_module", "_first_party"])
-    def test_runtime_owned_key_cannot_be_spoofed(self, key, tmp_path, monkeypatch):
+    def test_runtime_owned_key_comes_from_the_loader(self, key, tmp_path, monkeypatch):
         name = "slotmod_underscore"
         _write(tmp_path, name, {"nav": [
             {"key": "k", "label": "L", "href": "/x", key: "celerp-docs", "_note": "kept"}]})
@@ -400,8 +399,8 @@ class TestSlotVisibilityFailsClosed:
 
 # ── S3: app-local destinations ────────────────────────────────────────────────
 
-_OFFSITE = ["https://evil.example/x", "//evil.example/x", "javascript:alert(1)",
-            "/\\evil.example", "relative/path", "", 5, None, ["/x"]]
+_OFFSITE = ["https://other.example/x", "//other.example/x", "javascript:alert(1)",
+            "/\\other.example", "relative/path", "", 5, None, ["/x"]]
 
 
 def _dest_entry(slot: str, key: str, value) -> dict:
@@ -426,7 +425,7 @@ class TestAppLocalDestinations:
 
     def test_bulk_action_single_dict_form_also_checked(self, tmp_path, monkeypatch):
         name = "slotmod_dest_dict"
-        _write(tmp_path, name, {"bulk_action": {"label": "L", "form_action": "https://evil.example"}})
+        _write(tmp_path, name, {"bulk_action": {"label": "L", "form_action": "https://other.example"}})
         assert "form_action" in _refused(tmp_path, name, monkeypatch)
 
     @pytest.mark.parametrize("slot,key,value", [
