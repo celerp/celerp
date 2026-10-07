@@ -9637,8 +9637,8 @@ class TestModulesUI:
         assert "/login" in r.headers.get("location", "")
 
 
-# The token a marketplace Download hands back for celerp-budgeting.
-_PAID_TOK = "celerp-budgeting-" + "0" * 32
+# The reference a marketplace Download hands back for celerp-budgeting.
+_PAID_REF = "mp_" + "a" * 32
 
 _CATALOG_FIXTURE = [
     {"id": "celerp-budgeting", "name": "Budgeting", "description": "Budgets and forecasting.",
@@ -9827,7 +9827,7 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_community_download_stages_and_offers_import(self, ui_client):
         """Download stages the author's archive and swaps the row to a Downloaded
-        state with an Import button carrying that download's token."""
+        state with an Import button carrying the download reference."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -10187,19 +10187,19 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_marketplace_download_stages_and_offers_install(self, ui_client):
         """Download stages the licensed archive and swaps the row to an Install
-        button carrying that download's token."""
+        button carrying the download reference."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.marketplace_download",
-                  new=AsyncMock(return_value={"ok": True, "token": _PAID_TOK})),
+                  new=AsyncMock(return_value={"ok": True, "ref": _PAID_REF})),
         ):
             r = await ui_client.post("/modules/marketplace-download",
                                      data={"slug": "celerp-budgeting"}, cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content
-        assert _PAID_TOK.encode() in r.content                # token passed to install
+        assert _PAID_REF.encode() in r.content                # reference passed to install
         assert b">Install<" in r.content
 
     @pytest.mark.asyncio
@@ -10233,11 +10233,11 @@ class TestMarketplaceUI:
             patch("ui.api_client.marketplace_install", new=install),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
                                      cookies=_authed())
         assert r.status_code == 200
         assert r.headers.get("HX-Redirect") == "/modules?tab=local"
-        assert install.await_args.args[1] == _PAID_TOK          # exactly this download
+        assert install.await_args.args[1] == _PAID_REF          # exactly this download
 
     @pytest.mark.asyncio
     async def test_marketplace_install_failure_keeps_install_button(self, ui_client):
@@ -10253,7 +10253,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(422, "The downloaded package does not match the requested module."))),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content   # Install button still there
@@ -10273,7 +10273,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(410, "This download has expired. Download it again."))),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-download" in r.content

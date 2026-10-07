@@ -754,7 +754,7 @@ def _checkout_consent(m: dict, lang: str) -> str:
 
 
 def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str],
-                     owner: bool, *, downloaded_token: str | None = None) -> FT:
+                     owner: bool, *, download_ref: str | None = None) -> FT:
     """One marketplace listing. The action cell follows ownership, matching the
     Community tab's Download then Install flow with a Buy step in front of paid
     modules: installed (nothing to do), paid-and-unowned (Buy), then - once free
@@ -794,10 +794,10 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
                            data_filter_value=t("marketplace.owned", lang))
         else:
             status_td = Td("--", data_filter_value="--")
-        if downloaded_token:
+        if download_ref:
             action_td = Td(Button(t("btn.install", lang),
                 hx_post="/modules/marketplace-install",
-                hx_vals=json.dumps({"slug": m["id"], "token": downloaded_token}),
+                hx_vals=json.dumps({"slug": m["id"], "ref": download_ref}),
                 hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
                 cls="btn btn--sm btn--primary"))
         else:
@@ -1538,12 +1538,12 @@ def setup_routes(app):
         slug = str(form.get("slug", ""))
         m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            download_token = (await api.marketplace_download(session_token, slug)).get("token")
+            download_ref = (await api.marketplace_download(session_token, slug)).get("ref")
         except APIError as e:
             return _toast(
                 _marketplace_row(m, lang, installed, licensed, owner), e.detail or str(e))
         return _marketplace_row(m, lang, installed, licensed, owner,
-                                downloaded_token=download_token)
+                                download_ref=download_ref)
 
     @app.post("/modules/marketplace-install")
     async def modules_marketplace_install(request: Request):
@@ -1559,16 +1559,16 @@ def setup_routes(app):
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        download_token = str(form.get("token", ""))
+        ref = str(form.get("ref", ""))
         m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            await api.marketplace_install(session_token, download_token)
+            await api.marketplace_install(session_token, ref)
         except APIError as e:
             # A download that is gone (expired or already used) offers Download
             # again; any other failure keeps Install for a retry.
-            kept = None if e.status == 410 else download_token
+            kept = None if e.status == 410 else ref
             return _toast(
-                _marketplace_row(m, lang, installed, licensed, owner, downloaded_token=kept),
+                _marketplace_row(m, lang, installed, licensed, owner, download_ref=kept),
                 e.detail or str(e))
         # Installed: land on the Installed tab where the new module's row sits
         # with its Enable button - the next step in the flow - rather than

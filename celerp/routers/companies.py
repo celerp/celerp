@@ -2125,38 +2125,25 @@ class _MarketplaceDownloadBody(BaseModel):
 
 
 class _MarketplaceInstallBody(BaseModel):
-    token: str
+    ref: str
 
 
-def _marketplace_staging_dir() -> "Path":
-    """Where a licensed marketplace archive waits between Download and Install."""
-    from pathlib import Path
+def _install_answer(answer: dict, slug: str) -> dict | None:
+    """The install answer if it has exactly the expected fields with plain types
+    and names the requested module, else None."""
+    from celerp.modules.marketplace_stage import SHA256_RE
 
-    from celerp.config import settings as _s
-
-    return Path(_s.data_dir) / "marketplace-downloads"
-
-
-def _read_staged_marketplace(download: str) -> tuple[str, bytes, bool, bool]:
-    """The slug, bytes and official/paid flags of the download ``download``
-    names, as recorded at download time."""
-    from celerp.services import staged_downloads
-
-    try:
-        data, flags = staged_downloads.read(_marketplace_staging_dir(), download)
-    except staged_downloads.StagedDownloadUnreadable:
-        raise HTTPException(status_code=410,
-                            detail="This download is unreadable. Download it again.")
-    except staged_downloads.StagedDownloadMissing:
-        flags = None
-    if flags is None:
-        raise HTTPException(status_code=410,
-                            detail="This download has expired. Download it again.")
-    is_official, is_paid = flags.get("is_official"), flags.get("is_paid")
-    if not isinstance(is_official, bool) or not isinstance(is_paid, bool):
-        raise HTTPException(status_code=410,
-                            detail="This download is unreadable. Download it again.")
-    return staged_downloads.owner_of(download), data, is_official, is_paid
+    if set(answer) != {"token", "slug", "version", "is_official", "is_paid", "sha256"}:
+        return None
+    token, version, sha256 = answer["token"], answer["version"], answer["sha256"]
+    if (not isinstance(token, str) or not token
+            or answer["slug"] != slug
+            or not isinstance(version, str) or not version
+            or not isinstance(answer["is_official"], bool)
+            or not isinstance(answer["is_paid"], bool)
+            or not isinstance(sha256, str) or not SHA256_RE.fullmatch(sha256)):
+        return None
+    return answer
 
 
 @router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
@@ -2168,36 +2155,35 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     license, third-party code needs a passed security scan. Never-stuck by design:
     every Download requests a FRESH one-time token, so any failure - relay down,
     download interrupted - is fully recoverable by clicking Download again. The
-    bytes land in the staging area only; nothing is installed until Install.
+    bytes are staged only when their SHA-256 matches the install answer, under a
+    new opaque reference that Install takes back; nothing is installed until then.
     """
+    import asyncio
+    import hashlib
+
     import httpx
 
     from celerp.gateway.state import relay_error_detail
+    from celerp.modules import marketplace_stage
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
-    from celerp.services import staged_downloads
 
-    if not staged_downloads.valid_owner(body.slug):
-        raise HTTPException(status_code=404, detail="This module is not available.")
     url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # The install response carries the download token and the official
-            # and paid flags.
+            # The install answer names the package: its slug, version, flags,
+            # digest, and the token that downloads it.
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
                     detail=relay_error_detail(r, "The relay refused the download."))
-            answer = _json_dict(r)
-            token = answer.get("token")
-            is_official, is_paid = answer.get("is_official"), answer.get("is_paid")
-            if (not isinstance(token, str) or not token
-                    or not isinstance(is_official, bool) or not isinstance(is_paid, bool)):
+            answer = _install_answer(_json_dict(r), body.slug)
+            if answer is None:
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
 
-            d = await c.get(f"{url}/marketplace/download/{token}")
+            d = await c.get(f"{url}/marketplace/download/{answer['token']}")
             if d.status_code != 200:
                 raise HTTPException(
                     status_code=502,
@@ -2212,66 +2198,55 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
+    if hashlib.sha256(data).hexdigest() != answer["sha256"]:
+        raise HTTPException(status_code=502,
+                            detail="The downloaded package was incomplete or changed. Try again.")
 
-    # Stage the bytes with the official/paid flags, so Install uses them.
-    download = staged_downloads.stage(
-        _marketplace_staging_dir(), body.slug, data,
-        {"is_official": is_official, "is_paid": is_paid})
-    return {"ok": True, "token": download}
+    ref = await asyncio.to_thread(
+        marketplace_stage.write_stage, data, slug=answer["slug"], version=answer["version"],
+        is_official=answer["is_official"], is_paid=answer["is_paid"], sha256=answer["sha256"])
+    return {"ok": True, "ref": ref}
 
 
 @router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)])
-async def marketplace_install(
-    body: _MarketplaceInstallBody,
-    session: AsyncSession = Depends(get_session),
-) -> dict:
+async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     """Install a staged marketplace module through the shared importer. Installation owner only.
 
-    Reads the archive Download staged (and the official/paid flags recorded
-    with it) and installs it exactly like every other module package. The
-    module lands DISABLED; enabling and restarting are the same deliberate steps
-    in the Installed tab that a community module uses - the two tabs behave the
-    same way once the package is on disk. A name mismatch is rejected and nothing
-    is left behind, so Install can always be retried.
+    Takes the reference Download returned, rereads that stage and installs its
+    package exactly like every other module package. The package must declare
+    the slug and version it was staged with, or nothing lands. The module lands
+    DISABLED; enabling and restarting are the same deliberate steps in the
+    Installed tab that a community module uses - the two tabs behave the same way
+    once the package is on disk. The stage is removed once installed and kept
+    after a failure, so Install can be retried until it expires.
     """
     import asyncio
 
-    from celerp.modules.importer import (
-        ModuleImportError, install_from_zip, remove_module_dir,
-    )
-    from celerp.modules.registry import hold_module_state
-    from celerp.services import staged_downloads
+    from celerp.modules import marketplace_stage
+    from celerp.modules.importer import ModuleImportError, install_from_zip
 
-    slug, data, is_official, is_paid = _read_staged_marketplace(body.token)
-    # Held until a mismatched package is gone, so no company can turn it on meanwhile.
-    await hold_module_state(session)
+    try:
+        stage = await asyncio.to_thread(marketplace_stage.read_stage, body.ref)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="The download reference is invalid.")
+    except marketplace_stage.StageGone:
+        raise HTTPException(status_code=410,
+                            detail="This download has expired. Download it again.")
     try:
         info = await asyncio.to_thread(
-            install_from_zip, data, official=is_official, premium=is_paid,
-            source="marketplace")
+            install_from_zip, stage.data, official=stage.is_official, premium=stage.is_paid,
+            source="marketplace", expected=(stage.slug, stage.version))
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    if info["name"] != slug:
-        # A package whose manifest name differs from the catalog slug must not
-        # stay installed (it would dodge the slug's license/scan identity).
-        try:
-            await asyncio.to_thread(remove_module_dir, info["name"])
-        except ModuleImportError:
-            pass
-        raise HTTPException(
-            status_code=422,
-            detail="The downloaded package does not match the requested module.")
-
-    if is_official and not is_paid:
+    if stage.is_official and not stage.is_paid:
         # Install is online by definition: keep the free verdict now, so the
         # module never needs the relay to load.
         from celerp.config import settings
         from celerp.modules.license import record_free_verdict
-        record_free_verdict(slug, settings.data_dir)
+        record_free_verdict(stage.slug, settings.data_dir)
 
-    # Landed on disk: drop the staged download.
-    staged_downloads.discard(_marketplace_staging_dir(), body.token)
+    await asyncio.to_thread(marketplace_stage.remove_stage, body.ref)
     return {"ok": True, **info}
 
 

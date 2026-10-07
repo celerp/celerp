@@ -30,7 +30,7 @@ ROUTES = [
     ("POST", "/modules/restart", {}),
     ("POST", "/modules/buy", {"data": {"id": "acme"}}),
     ("POST", "/modules/marketplace-download", {"data": {"id": "acme"}}),
-    ("POST", "/modules/marketplace-install", {"data": {"id": "acme", "path": "x.zip"}}),
+    ("POST", "/modules/marketplace-install", {"data": {"slug": "acme", "ref": "mp_" + "0" * 32}}),
     ("GET", "/settings/billing-portal", {}),
     ("POST", "/settings/cloud-activate", {}),
     ("POST", "/settings/cloud-send-otp", {"data": {"claim_email": "a@example.com"}}),
