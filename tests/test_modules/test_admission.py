@@ -1393,13 +1393,6 @@ _CORE_SERVICES = ("celerp.services.company_files", "celerp.services.company_back
 _AI = "protected BSL internals (celerp.ai)"
 _CREDENTIALS = "protected BSL internals (celerp.credentials)"
 _ISSUERS = ("issue_token_pair", "create_access_token", "create_refresh_token")
-_ROUTER_ISSUERS = (("auth", "issue_token_pair"), ("companies", "issue_token_pair"),
-                   ("migrations", "issue_token_pair"), ("company_backup", "issue_token_pair_by_id"))
-_FIRST_PARTY_HOLDERS = (("celerp-ai", "celerp_ai.routes", "run_agent"),
-                        ("celerp-ai", "celerp_ai.routes", "require_session_token"),
-                        ("celerp-backup", "celerp_backup.routes", "get_session_token"),
-                        ("celerp-connectors", "celerp_connectors.routes", "connectors"),
-                        ("celerp-accounting", "celerp_accounting.routes", "load_file"))
 _ACTIVATIONS = {
     "direct-import": ("import celerp.ai.llm  # noqa: F401\n", {}, _AI),
     "computed-import": ("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n", {}, _AI),
@@ -1424,24 +1417,6 @@ _ACTIVATIONS = {
         "except ImportError:\n    pass\n", {}, _AI),
     **{f"credential-issuer-{name}": (f"from celerp.credentials import {name}  # noqa: F401\n", {}, _CREDENTIALS)
        for name in _ISSUERS},
-    **{f"issuer-at-its-old-path-{name}": (
-        f"from celerp.services.auth import {name}  # noqa: F401\n", {}, f"cannot import name {name!r}")
-       for name in _ISSUERS},
-    "credential-wrapper-at-its-old-path": (
-        "from celerp.routers.company_backup import _tokens  # noqa: F401\n", {}, "cannot import name '_tokens'"),
-    "login-wrapper-at-its-old-path": (
-        "from celerp.routers.auth import _issue_login_tokens  # noqa: F401\n", {},
-        "cannot import name '_issue_login_tokens'"),
-    **{f"issuer-in-{router}-router": (
-        f"from celerp.routers.{router} import {name}  # noqa: F401\n", {}, f"cannot import name {name!r}")
-       for router, name in _ROUTER_ISSUERS},
-    "restore-sign-in-helper": (
-        "from celerp.routers.company_backup import _signed_in  # noqa: F401\n", {},
-        "cannot import name '_signed_in'"),
-    **{f"{name}-through-{folder}": (
-        f"import os, sys\nsys.path.insert(0, os.path.abspath('default_modules/{folder}'))\n"
-        f"from {package} import {name}  # noqa: F401\n", {}, f"cannot import name {name!r}")
-       for folder, package, name in _FIRST_PARTY_HOLDERS},
     "own-submodule": ("from .helper import VALUE  # noqa: F401\n", {"helper.py": "VALUE = 1\n"}, True),
     "unusual-import-arguments": (
         "__import__('os', 5)\nclass F:\n    def __iter__(self):\n        raise RuntimeError('no names')\n"
@@ -2820,16 +2795,7 @@ async def test_celerp_module_restored_from_a_backup_needs_a_licence(tmp_path, mo
 _HELD_PROTECTED_NAMES = """
 import enum, importlib, inspect, pkgutil, sys, types
 from pathlib import Path
-import celerp, ui
 from celerp.modules.loader import _PROTECTED_BSL_INTERNALS
-
-packages = [celerp, ui]
-for folder in sorted(Path("default_modules").iterdir()):
-    for inner in sorted(folder.glob("*/__init__.py")):
-        if inner.parent.name == "tests":
-            continue
-        sys.path.insert(0, str(folder.resolve()))
-        packages.append(importlib.import_module(inner.parent.name))
 
 def protected(name):
     return any(name == p or name.startswith(p + ".") for p in _PROTECTED_BSL_INTERNALS)
@@ -2837,39 +2803,89 @@ def protected(name):
 def fail(name):
     raise ImportError(name)
 
+def sources(value, seen):
+    # Where a module or function comes from, for the value itself or anything a
+    # dict, list, tuple, set or frozenset holds, at any depth. Nothing else is
+    # looked into.
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        if id(value) in seen:
+            return
+        seen.add(id(value))
+        items = [x for pair in dict.items(value) for x in pair] if isinstance(value, dict) else value
+        for item in items:
+            yield from sources(item, seen)
+    elif isinstance(value, types.ModuleType):
+        yield value.__name__
+    elif inspect.isclass(value) and issubclass(value, enum.Enum):
+        return
+    elif callable(value):
+        yield getattr(value, "__module__", None) or ""
+
+def packages():
+    if len(sys.argv) > 1:
+        sys.path.insert(0, sys.argv[1])
+        return [importlib.import_module(p.parent.name) for p in sorted(Path(sys.argv[1]).glob("*/__init__.py"))]
+    import celerp, ui
+    found = [celerp, ui]
+    for folder in sorted(Path("default_modules").iterdir()):
+        for inner in sorted(folder.glob("*/__init__.py")):
+            if inner.parent.name == "tests":
+                continue
+            sys.path.insert(0, str(folder.resolve()))
+            found.append(importlib.import_module(inner.parent.name))
+    return found
+
 held = []
-for pkg in packages:
+for pkg in packages():
     for info in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + ".", onerror=fail):
         if protected(info.name) or ".migrations.versions." in info.name:
             continue
         for name, value in vars(importlib.import_module(info.name)).items():
-            if isinstance(value, types.ModuleType):
-                source = value.__name__
-            elif inspect.isclass(value) and issubclass(value, enum.Enum):
-                continue
-            elif callable(value):
-                source = getattr(value, "__module__", None) or ""
-            else:
-                continue
-            if protected(source):
+            if any(protected(source) for source in sources(value, set())):
                 held.append(f"{info.name}.{name}")
 print("\\n".join(held))
 """
 
 
-def test_core_modules_import_protected_functions_where_they_are_used():
-    """Protected functions are imported inside the code that uses them, so no core
-    module and no bundled first-party module holds one, or a protected module,
-    among its names. Enum value classes are data, not functions, and are not
-    counted."""
+def _held_protected_names(*folder: Path) -> list[str]:
+    """The names holding a protected module or function, in the repo's packages or
+    in the packages in *folder*."""
     import os
     import subprocess
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
-    out = subprocess.run([sys.executable, "-c", _HELD_PROTECTED_NAMES], env=env,
+    out = subprocess.run([sys.executable, "-c", _HELD_PROTECTED_NAMES, *map(str, folder)], env=env,
                          cwd=Path(__file__).resolve().parents[2],
                          capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stderr[-3000:]
-    assert out.stdout.split() == []
+    return out.stdout.split()
+
+
+def test_core_modules_import_protected_functions_where_they_are_used():
+    """Protected functions are imported inside the code that uses them, so no core
+    module and no bundled first-party module holds one, or a protected module,
+    among its names, directly or in a container. Enum value classes are data, not
+    functions, and are not counted."""
+    assert _held_protected_names() == []
+
+
+def test_protected_names_held_in_containers_are_found(tmp_path):
+    pkg = tmp_path / f"held_{_uid()}"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "holder.py").write_text(
+        "import celerp.ai.llm\n"
+        "from celerp.ai.llm import __name__ as _text\n"
+        "NESTED = {'a': [({1: celerp.ai.llm},)]}\n"
+        "KEYED = {frozenset({celerp.ai.llm}): 1}\n"
+        "LOOP = []\n"
+        "LOOP.append(LOOP)\n"
+        "LOOP.append({'inner': (LOOP, {celerp.ai.llm})})\n"
+        "PLAIN = [_text, {'k': ('celerp.ai.llm',)}]\n"
+        "del celerp\n")
+
+    held = _held_protected_names(tmp_path)
+
+    assert held == [f"{pkg.name}.holder.{n}" for n in ("NESTED", "KEYED", "LOOP")]
 
 
 

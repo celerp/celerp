@@ -49,3 +49,24 @@ def test_every_issuance_call_states_session_freshness():
                     silent.append(f"{path.relative_to(REPO)}:{node.lineno}")
     assert calls > 10
     assert silent == []
+
+
+def test_credentials_are_created_only_in_the_credentials_module():
+    """The functions that create or issue credentials, and every token encoding, live
+    in celerp.credentials alone."""
+    owned = {name for name, fn in inspect.getmembers(credentials, inspect.isfunction)
+             if fn.__module__ == credentials.__name__}
+    own_file = REPO / "celerp" / "credentials.py"
+    elsewhere = []
+    for path, tree in _production_sources():
+        if path == own_file:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in owned:
+                elsewhere.append(f"{path.relative_to(REPO)}:{node.lineno} defines {node.name}")
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "encode" and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "jwt"):
+                elsewhere.append(f"{path.relative_to(REPO)}:{node.lineno} encodes a token")
+    assert {"create_access_token", "create_refresh_token", *_ISSUERS} <= owned
+    assert elsewhere == []
