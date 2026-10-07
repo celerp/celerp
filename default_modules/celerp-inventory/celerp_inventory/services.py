@@ -44,7 +44,7 @@ from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.services.lot_origin import book_lot_value, recognize_opening_lots, self_booked
+from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
 from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
 from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
@@ -1854,14 +1854,17 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
                                  *, company_id) -> bool:
     """Apply a changed connector re-import to the item it created, as an edit: only the
     fields that differ, a new SKU handled like a SKU edit, and a cost change restated
-    with its consequences. An item deleted meanwhile is not recreated (404). Returns
-    False when nothing differs."""
+    with its consequences. An item erased meanwhile is not recreated (404). Returns
+    False when nothing differs, or when the item was moved to Deleted: the sync leaves it
+    there, and Restore is the one way back."""
     cid = uuid.UUID(str(company_id))
     row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
                             with_for_update=True, populate_existing=True)
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
     state = row.state or {}
+    if is_deleted(state):
+        return False
     current = {**state, "cost_price": _connector_unit_cost(state)}
     fields_changed = {key: {"old": current.get(key), "new": value}
                       for key, value in data.items() if current.get(key) != value}
@@ -1895,7 +1898,7 @@ async def upsert_from_connector(company_id: str, item) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
     "created", "updated", or "noop" (this exact content was already applied, or the user
-    erased the item here).
+    erased the item here or moved it to Deleted).
 
     `item` must have: sku, name, idempotency_key (stable per external item).
     Optional: sale_price, quantity, cost_price, description.

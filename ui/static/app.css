@@ -911,6 +911,7 @@ a:hover { text-decoration: underline; }
 .col-sku .li-ident-1st { font-family: monospace; white-space: nowrap; }
 .col-sku .li-ident-2nd { margin-top: 2px; font-size: 11px; color: var(--c-text2);
                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.li-deleted-mark { margin-left: 4px; font-size: 11px; color: var(--c-danger, #b42318); white-space: nowrap; }
 .doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 44px;  }
 .doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 90px;  text-align: right; }
 .doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 44px;  text-align: right; }

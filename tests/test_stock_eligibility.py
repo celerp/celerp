@@ -24,6 +24,7 @@ _EXPECTED: dict[str, tuple[str | None, str | None]] = {
     "active": ("free", "free"),
     "reserved": ("reserved", None),
     "draft": (None, None),
+    "deleted": (None, None),
     "sold": (None, None),
     "archived": (None, None),
     "merged": (None, None),

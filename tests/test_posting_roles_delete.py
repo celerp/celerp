@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Delete removes a draft that was a mistake, never stock.
 
-Only a draft that never became stock and is used nowhere can be deleted, and it goes
-without a trace. Anything else refuses the whole selection with the action that fits
-instead: Revert to Draft, Archive, or Write Off Stock. Deleting draft documents never
-deletes an item.
+Only a draft that never became stock can be deleted: one used nowhere goes without a
+trace, and one another record still names moves to Deleted instead
+(test_item_deleted_status.py). Anything that was ever stock refuses the whole selection
+with the action that fits instead: Revert to Draft, Archive, or Write Off Stock.
+Deleting draft documents never deletes an item.
 
 Undoing an import takes off the books exactly the opening stock that import booked,
 in the same step that removes its items, or refuses and changes nothing.
@@ -19,7 +20,6 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.projections.engine import ProjectionEngine
 from stock_books import assert_books_carry_stock
 from test_cost_restatement import _state
 from test_helpers import sell_item
@@ -124,37 +124,6 @@ async def test_a_draft_once_made_available_with_accounting_off_keeps_its_history
     await _refused(session, client, auth, lot)
 
 
-async def test_a_draft_with_a_file_is_deleted_only_once_the_file_is_removed(session, client, auth):
-    lot = await _draft(client, auth)
-    r = await client.post(f"/items/{lot}/files", headers=auth["headers"],
-                          files={"file": ("spec.txt", b"carat 1.02", "text/plain")})
-    assert r.status_code == 200, r.text
-    await _refused(session, client, auth, lot)
-    r = await client.delete(f"/items/{lot}/files/{r.json()['file_id']}", headers=auth["headers"])
-    assert r.status_code == 204, r.text
-    assert (await _delete(client, auth, lot)).status_code == 200
-    assert not await _exists(session, auth, lot)
-
-
-async def test_a_draft_on_a_document_is_not_deleted(session, client, auth):
-    """A draft cannot be added to a document today, but a document an older release
-    wrote can still name one, and deleting the draft would leave the line pointing
-    at nothing."""
-    lot = await _draft(client, auth)
-    # Recorded as the older release wrote it, without today's checks on new lines.
-    legacy = LedgerEntry(company_id=auth["company_id"], entity_id=f"doc:{uuid.uuid4()}",
-                         entity_type="doc", event_type="doc.created",
-                         data={"doc_type": "quotation", "status": "draft", "line_items": [
-                             {"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 50.0}]},
-                         actor_id=auth["user_id"], location_id=None, source="api",
-                         idempotency_key=str(uuid.uuid4()), metadata_={})
-    session.add(legacy)
-    await session.flush()
-    await ProjectionEngine.apply_event(session, legacy)
-    await session.commit()
-    await _refused(session, client, auth, lot)
-
-
 async def test_a_selection_with_one_item_that_cannot_go_deletes_nothing(session, client, auth):
     draft, stock = await _draft(client, auth), await _available(client, auth, 100.0)
     await _refused(session, client, auth, draft, stock)
@@ -254,17 +223,15 @@ async def test_an_import_booked_later_by_turning_accounting_on_is_not_undone(ses
     assert await assert_books_carry_stock(session, auth["company_id"]) == {"1130-P": 0, "1130-OB": 60}
 
 
-async def test_an_imported_draft_is_removed_by_undoing_its_import_not_by_delete(session, client, auth):
+async def test_imported_stock_is_removed_by_undoing_its_import_not_by_delete(session, client, auth):
     await main_location(client, auth["headers"])
     r = await _import_rows(client, auth, [_row("UND-D", None)])
     assert r.status_code == 200 and r.json()["created"] == 1 and r.json()["reversible"], r.text
     batch = r.json()["batch_id"]
     [item] = await _items_by_sku(session, auth["company_id"], "UND-D")
     lot = item.entity_id
-    r = await _delete(client, auth, lot)
-    assert r.status_code == 409 and "Undo Import" in r.text, r.text
-    await session.rollback()  # the refused request's work ends with it, as its own session would
-    assert await _exists(session, auth, lot)
+    assert item.state["status"] == "available"
+    await _refused(session, client, auth, lot)
     assert (await _undo(client, auth, batch)).status_code == 200
     assert not await _exists(session, auth, lot)
 
@@ -280,7 +247,7 @@ async def test_a_raw_imported_draft_that_cannot_be_undone_is_deleted(session, cl
     assert r.status_code == 409 and r.json()["detail"]["code"] == "import_not_reversible", r.text
     await session.rollback()  # the refused request's work ends with it, as its own session would
     r = await _delete(client, auth, lot)
-    assert r.status_code == 200 and r.json() == {"deleted": 1, "kept": 0}, r.text
+    assert r.status_code == 200 and (r.json()["deleted"], r.json()["moved_to_deleted"]) == (1, 0), r.text
     assert not await _exists(session, auth, lot)
     assert await _events(session, auth, lot) == 0
 

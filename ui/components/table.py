@@ -1337,12 +1337,13 @@ def data_row(
                 Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
                 Div(
                     A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
-                    # Only a draft can be deleted (the bulk bar's rule); stock is written off.
+                    # Only a draft, or one already Deleted, can be deleted (the bulk bar's
+                    # rule); stock is written off.
                     *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
                               onclick=f"if(!confirm({_confirm_delete_row}))return;"
                                       f"htmx.ajax('DELETE','{_delete_url}',"
                                       f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
-                      if str(row.get("status", "") or "").lower() == "draft" else []),
+                      if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
                     cls="row-menu-dropdown", id=f"menu-{safe_id}",
                 ),
                 cls="row-menu",
@@ -1856,8 +1857,13 @@ function bulkActionChanged(action){
     _bulkImmediate('/api/items/bulk/revert-to-draft',null,null);return;
   }
   if(action==='delete'){
-    if(!confirm('Delete selected items? This cannot be undone.')) return;
+    // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
+    var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
+    if(!confirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.')) return;
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
+  }
+  if(action==='restore_deleted'){
+    _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
   }
   if(action==='duplicate'){
     if(!confirm('Duplicate selected items? A copy of each will be created.')) return;
@@ -2129,16 +2135,18 @@ function sendToTypeChanged(docType, docLabel){
     if(toolbar){if(n>0){toolbar.classList.add('is-active')}else{toolbar.classList.remove('is-active')}}
     if(clearBtn){clearBtn.style.display=n>0?'':'none'}
     var all=CelerpSelection.all();
-    var hasDraft=false,hasNonDraft=false;
+    // A deleted row is still a draft mistake: Delete erases it once nothing names it.
+    var hasDraft=false,hasDeleted=false,hasNonDraft=false;
     Object.keys(all).forEach(function(id){
-      if((all[id].status||'')==='draft'){hasDraft=true}else{hasNonDraft=true}
+      var s=all[id].status||'';
+      if(s==='draft'){hasDraft=true}else if(s==='deleted'){hasDeleted=true}else{hasNonDraft=true}
     });
     var makeAvailOpt=document.querySelector('#bulk-action-select option[value="make_available"]');
     var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
     if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
     if(revertOpt) revertOpt.hidden=!hasNonDraft;
     var deleteOpt=document.querySelector('#bulk-action-select option[value="delete"]');
-    if(deleteOpt) deleteOpt.hidden=!(deleteOpt.hasAttribute('data-samples')||(hasDraft&&!hasNonDraft));
+    if(deleteOpt) deleteOpt.hidden=!(deleteOpt.hasAttribute('data-samples')||((hasDraft||hasDeleted)&&!hasNonDraft));
   }
   var table=document.getElementById('data-table');
   if(!table) return;

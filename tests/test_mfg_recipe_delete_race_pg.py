@@ -9,14 +9,15 @@ while the second starts; whichever holds the locks first wins:
 
 - delete first: the recipe save waits, then finds the item gone and is refused;
 - recipe first: the Delete waits for the recipe to be saved, then finds the item named
-  by it and deletes nothing.
+  by it and moves it to Deleted instead of erasing it.
 
 The same holds when the recipe names the item through a sub-assembly: a product's recipe
-names sub-assembly S, whose own recipe names X, and S and X are deleted together. A saved
-recipe never names an item that was not there when it was saved.
+names sub-assembly S, whose own recipe names X, and S and X are deleted together. S kept
+as Deleted still names X, so X is kept with it. A saved recipe never names an item that
+is gone.
 
-Delete only removes a draft that nothing depends on, so the deleted items are drafts, and
-each Delete takes the sub-assembly and its part together.
+Delete only takes a draft, so the deleted items are drafts, and each Delete takes the
+sub-assembly and its part together.
 """
 
 from __future__ import annotations
@@ -102,7 +103,7 @@ async def _delete_first(committed_engine, component: str, deleted_ids: tuple[str
     deleted, saved = await _race(committed_engine, factory, company_id, user, _deleting(*deleted_ids),
                                  _save_naming(component))
 
-    assert deleted == {"deleted": len(deleted_ids), "kept": 0}
+    assert (deleted["deleted"], deleted["moved_to_deleted"]) == (len(deleted_ids), 0)
     assert isinstance(saved, HTTPException) and saved.status_code == 422, saved
     assert component in str(saved.detail)
     states = await _states(factory, company_id)
@@ -110,17 +111,19 @@ async def _delete_first(committed_engine, component: str, deleted_ids: tuple[str
     assert not states[_PRODUCT].get("recipe")
 
 
-async def _recipe_first(committed_engine, component: str, deleted_ids: tuple[str, ...] = _DELETED):
+async def _recipe_first(committed_engine, component: str, kept: tuple[str, ...]):
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
 
     saved, deleted = await _race(committed_engine, factory, company_id, user, _save_naming(component),
-                                 _deleting(*deleted_ids))
+                                 _deleting(*_DELETED))
 
     assert not isinstance(saved, HTTPException), saved
-    assert isinstance(deleted, HTTPException) and deleted.status_code == 409, deleted
+    assert not isinstance(deleted, HTTPException), deleted
+    assert {i["entity_id"] for i in deleted["items"] if i["outcome"] == "moved_to_deleted"} == set(kept)
     states = await _states(factory, company_id)
-    assert all(states[i] is not None for i in deleted_ids)
+    assert {i: (states[i] or {}).get("status") for i in _DELETED} == {
+        i: ("deleted" if i in kept else None) for i in _DELETED}
     assert [c["item_id"] for c in states[_PRODUCT]["recipe"]["components"]] == [component]
 
 
@@ -128,13 +131,13 @@ async def test_delete_first_refuses_the_waiting_recipe(committed_engine):
     await _delete_first(committed_engine, _PART)
 
 
-async def test_recipe_first_is_saved_and_the_delete_waits_then_refuses(committed_engine):
-    await _recipe_first(committed_engine, _PART)
+async def test_recipe_first_is_saved_and_the_delete_keeps_the_part_as_deleted(committed_engine):
+    await _recipe_first(committed_engine, _PART, kept=(_PART,))
 
 
 async def test_delete_first_refuses_a_recipe_naming_it_through_a_sub_assembly(committed_engine):
     await _delete_first(committed_engine, _SUB)
 
 
-async def test_recipe_through_a_sub_assembly_first_and_the_delete_refuses(committed_engine):
-    await _recipe_first(committed_engine, _SUB)
+async def test_recipe_through_a_sub_assembly_first_and_the_delete_keeps_both_as_deleted(committed_engine):
+    await _recipe_first(committed_engine, _SUB, kept=(_SUB, _PART))

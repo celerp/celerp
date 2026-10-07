@@ -8,7 +8,7 @@ file and then find the item gone when it records the upload. The upload is refus
 item stays deleted with no event left for it, and the stored file and its thumbnail are
 deleted again. Runs on real PostgreSQL with local storage, the Delete committing while
 the upload is under way. The other way round, an upload that holds the item first is
-saved and the Delete waits for it, then refuses: a draft holding files is not deleted.
+saved and the Delete waits for it, then moves the item to Deleted with its files kept.
 """
 
 from __future__ import annotations
@@ -185,7 +185,7 @@ async def test_an_upload_whose_commit_lands_then_fails_keeps_its_file(committed_
 
 
 @pytest.mark.parametrize("door", [_attachments_door, _files_door], ids=["attachments", "files"])
-async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_waits(committed_engine, tmp_path, monkeypatch, door):
+async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_keeps_it_as_deleted(committed_engine, tmp_path, monkeypatch, door):
     _local_files(monkeypatch, tmp_path)
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
@@ -199,11 +199,13 @@ async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_waits(co
         await _until_waiting_or_done(committed_engine, delete)
         assert not delete.done(), "the Delete did not wait for the upload holding the item"
         await commit_upload()
-        with pytest.raises(HTTPException) as refused:
-            await asyncio.wait_for(delete, timeout=30)
-        await b.rollback()
+        deleted = await asyncio.wait_for(delete, timeout=30)
 
     assert uploaded and stored
-    assert refused.value.status_code == 409 and "remove a draft's files" in refused.value.detail
-    assert await _rows(committed_engine, company_id, "projections") == 1
+    assert [(i["outcome"], i["has_files"]) for i in deleted["items"]] == [("moved_to_deleted", True)]
+    async with committed_engine.connect() as conn:
+        status = (await conn.execute(text(
+            "SELECT state::jsonb ->> 'status' FROM projections WHERE company_id = :c AND entity_id = :e"),
+            {"c": company_id, "e": _ITEM})).scalar_one()
+    assert status == "deleted"
     assert any(stored[0] in path for path in _company_files(tmp_path, company_id))

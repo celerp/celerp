@@ -105,3 +105,29 @@ def test_a_reloaded_row_matches_the_row_the_list_drew(page, ui_server, api):
     assert [(d["delete"], r["delete"]) for d, r in shapes.values()] == [(1, 1), (0, 0)], shapes
     for drawn, reloaded in shapes.values():
         assert reloaded["cells"] == drawn["cells"], (drawn["cells"], reloaded["cells"])
+
+
+def test_a_referenced_draft_moves_to_deleted_says_so_and_restore_brings_it_back(page, ui_server, api):
+    """A draft a variant names is not erased: the toast names what still refers to it, the
+    Deleted tab lists it, and Restore puts it back to draft."""
+    tag = uuid.uuid4().hex[:6]
+    parent_id = api.post("/items", json={"sku": f"DTP-{tag}", "name": "Parent", "sell_by": "piece",
+                                         "quantity": 1}).json()["id"]
+    api.post("/items", json={"sku": f"DTV-{tag}", "name": "Variant", "sell_by": "piece", "quantity": 1,
+                             "parent_item_id": parent_id})
+
+    page.on("dialog", lambda d: d.accept())
+    page.goto(f"{ui_server}/inventory?q=DTP-{tag}", wait_until="domcontentloaded")
+    page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
+    _select(page, parent_id)
+    page.locator("#bulk-action-select").select_option("delete")
+    toast = page.locator(".toast-container .toast", has_text=f"DTP-{tag} moved to Deleted, still referenced by DTV-{tag}.")
+    toast.wait_for(timeout=8000)
+    assert api.get(f"/items/{parent_id}").json()["status"] == "deleted"
+
+    page.goto(f"{ui_server}/inventory?status=deleted&q=DTP-{tag}", wait_until="domcontentloaded")
+    page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
+    _select(page, parent_id)
+    page.locator("#bulk-action-select").select_option("restore_deleted")
+    page.locator("#bulk-action-result .flash", has_text="Restored to draft: 1.").wait_for(state="attached", timeout=8000)
+    assert api.get(f"/items/{parent_id}").json()["status"] == "draft"

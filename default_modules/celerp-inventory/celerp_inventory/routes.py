@@ -53,9 +53,9 @@ from .services import (
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.services.company_lock import lock_company, lock_projections
-from celerp.services.item_erasure import depended_on, erase_items
+from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
 from celerp.services.lot_origin import (
-    RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type, recorded_value, refuse_draft,
+    DELETED, RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type, recorded_value, refuse_draft,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -396,7 +396,7 @@ class ReserveBody(BaseModel):
 
 
 # Statuses hidden from the default inventory view. Users must explicitly request them.
-_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed"})
+_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed", DELETED})
 
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
@@ -406,7 +406,7 @@ _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 # historic events are never rejected.
 ITEM_STATUSES: frozenset[str] = frozenset({
     "draft", "available", "active", "reserved", "sold", "archived",
-    "merged", "expired", "memo_out", "returned", "disposed",
+    "merged", "expired", "memo_out", "returned", "disposed", DELETED,
 })
 
 # Statuses a generic status edit cannot set: each records an outcome its own action
@@ -417,7 +417,10 @@ _ACTION_OWNED_STATUSES: dict[str, str] = {
     "expired": "Use the Expire action to expire an item, not a direct status edit.",
     "reserved": "An item is reserved by the sales order or invoice that holds it, not a direct status edit.",
     "memo_out": "An item goes out on memo by fulfilling its memo, not a direct status edit.",
+    DELETED: "An item is deleted through the Delete action, not a direct status edit.",
 }
+# The only way out of Deleted.
+_RESTORE_ONLY = "A deleted item comes back only through Restore, as a draft."
 
 # Why stock that has left the books cannot come back through a status edit, by the
 # status it left them in; each names the action that undoes it.
@@ -427,7 +430,7 @@ _LEFT_THE_BOOKS: dict[str, str] = {
     "sold": "This item was sold; reverse its fulfilment to bring it back.",
     "fulfilled": "This item was sold; reverse its fulfilment to bring it back.",
     "void": "This item was deleted.",
-    "deleted": "This item was deleted.",
+    DELETED: _RESTORE_ONLY,
 }
 _GAVE_UP_ITS_STOCK = ("This item holds no stock on the books: it was sold, or its stock went into other items "
                       "(a split, transform or merge), or its receipt or return was undone, so a status edit "
@@ -573,12 +576,16 @@ async def reject_draft_status_change_via_generic_path(
     write must never touch draft in either direction. Every non-draft-origin transition
     (e.g. Restore, archived -> available) is untouched."""
     ns = str(new_status or "").lower()
+    if ns == DELETED:
+        raise HTTPException(status_code=422, detail=_ACTION_OWNED_STATUSES[DELETED])
     if ns == "draft":
         raise HTTPException(
             status_code=422,
             detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
         )
     current = _status_of(await lock_item(session, company_id, entity_id))
+    if current == DELETED:
+        raise HTTPException(status_code=422, detail=_RESTORE_ONLY)
     if current == "draft":
         raise HTTPException(
             status_code=422,
@@ -592,6 +599,8 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
     current = _status_of(await lock_item(session, company_id, entity_id))
     if current in ("draft", "available"):
         return
+    if current == DELETED:
+        raise HTTPException(status_code=409, detail=_RESTORE_ONLY)
     raise HTTPException(
         status_code=409,
         detail=f"Only a draft item can be made available; this item is {current}",
@@ -981,6 +990,7 @@ async def query_items(
         flatten_item_rows,
         load_item_rows,
         strip_field_visibility,
+        without_deleted,
     )
     # Load + flatten is the shared front of the search pipeline (single-sourced in
     # celerp_inventory.search). The projection set is read once here and reused:
@@ -999,11 +1009,11 @@ async def query_items(
     rows = await load_item_rows(session, company_id)
     result = await flatten_item_rows(session, company_id, rows)
 
-    # Status filtering: default excludes hidden statuses; "all" skips filtering; "archived" expands
+    # Status filtering: default excludes hidden statuses; "all" shows every status but deleted; "archived" expands
     # to include merged/expired; a comma-separated value matches any (column-filter multi-select).
     status_set = {s.strip().lower() for s in f.status.split(",") if s.strip()} if (f.status and "," in f.status) else None
     if f.status == "all":
-        pass  # no filter
+        result = without_deleted(result)
     elif status_set:
         result = [r for r in result if str(r.get("status") or "").lower() in status_set]
     elif f.status == "archived":
@@ -1259,7 +1269,7 @@ async def list_items(
     """List items with optional filters.
 
     status: exact status to show (e.g. "sold", "archived", "available").
-            Pass "all" to skip status filtering entirely.
+            Pass "all" for every status but deleted.
             Default (None): exclude sold + archived from results.
     category: exact category to filter on.
     filter: semantic filter. "low_stock" keeps only items at or below their
@@ -2928,11 +2938,14 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
 
 @router.post("/bulk/delete")
 async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    """Delete drafts that were a mistake, without a trace. Every selected item must be a
-    draft that never became stock and is used nowhere; otherwise nothing is deleted and
-    the answer names the items and the actions that fit them instead. With
-    ``untouched_samples_only`` the selection is sample items instead: those still untouched
-    are removed with their sample stock, and the rest are kept."""
+    """Delete drafts that were a mistake. Every selected item must be a draft (or already
+    deleted) that never became stock; otherwise nothing is deleted and the answer names the
+    items and the actions that fit them instead. A draft nothing else mentions and holding
+    no file is erased without a trace; any other moves to Deleted, so the records naming it
+    still read, and Restore brings it back. Either way it leaves every import that listed
+    it. The answer says what happened to each item. With ``untouched_samples_only`` the
+    selection is sample items instead: those still untouched are removed with their sample
+    stock, and the rest are kept."""
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     rows = await _lock_selected_items(session, company_id, payload.entity_ids)
@@ -2949,30 +2962,74 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     if blocked:
         skus = ", ".join(sorted(str((rows[e].state or {}).get("sku") or e) for e in blocked))
         raise HTTPException(status_code=409, detail=(
-            f"Nothing was deleted. Only a draft that never became stock and is used nowhere can be deleted, "
-            f"and these cannot: {skus}. Use Undo Import in Import History for items an import that can be undone brought in, "
-            f"remove a draft's files before deleting it, Revert to Draft for stock made available by mistake, "
-            f"Archive to retire a product, or Write Off Stock for goods that left the company."))
-    await erase_items(session, company_id, rows)
+            f"Nothing was deleted. Only a draft that never became stock can be deleted, and these cannot: {skus}. "
+            f"Use Revert to Draft for stock made available by mistake, Archive to retire a product, "
+            f"or Write Off Stock for goods that left the company."))
+    files = await holding_files(session, company_id, rows)
+    # An item kept as Deleted still names what it names (a sub-assembly's recipe names
+    # its parts), so whatever it names in the selection is kept with it.
+    named: dict[str, list[str]] = {}
+    while True:
+        found = await referrers(session, company_id, [e for e in rows if e not in named and e not in files])
+        if not found:
+            break
+        named.update(found)
+    await release_from_imports(session, company_id, rows)
+    at = datetime.now(timezone.utc).isoformat()
+    for eid in sorted(set(named) | files):
+        if (rows[eid].state or {}).get("status") != DELETED:
+            await emit_event(session, company_id=company_id, entity_id=eid, entity_type="item",
+                             event_type="item.status.set", data={"new_status": DELETED, "ts": at},
+                             actor_id=user.id, location_id=None, source="api",
+                             idempotency_key=str(uuid.uuid4()), metadata_={})
+    erased = [e for e in rows if e not in named and e not in files]
+    await erase_items(session, company_id, erased)
     await session.commit()
-    return {"deleted": len(rows), "kept": 0}
+    return {"deleted": len(erased), "moved_to_deleted": len(rows) - len(erased), "items": [
+        {"entity_id": e, "sku": (rows[e].state or {}).get("sku") or "",
+         "outcome": "deleted" if e in erased else "moved_to_deleted",
+         "referenced_by": named.get(e, []), "has_files": e in files} for e in rows]}
 
 
 async def _not_deletable(session: AsyncSession, company_id, rows: dict[str, Projection]) -> set[str]:
-    """The selected items that are not a draft mistake: anything not a draft now, a draft
-    with an inventory account, one that was ever stock or circulated
-    (lot_origin.ever_became_stock), and one something else depends on
-    (item_erasure.depended_on)."""
+    """The selected items that are not a draft mistake: anything not a draft (or already
+    deleted) now, one with an inventory account, and one that was ever stock or circulated
+    (lot_origin.ever_became_stock)."""
     from celerp.models.ledger import LedgerEntry
 
-    blocked = {e for e, row in rows.items() if not _row_is_draft(row) or (row.state or {}).get(LOT_ACCOUNT_FIELD)}
+    blocked = {e for e, row in rows.items()
+               if _status_of(row) not in ("draft", DELETED) or (row.state or {}).get(LOT_ACCOUNT_FIELD)}
     history: dict[str, list] = {e: [] for e in rows}
     for eid, event_type, data in (await session.execute(
             select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
                 LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(rows))))).all():
         history[eid].append((event_type, data))
-    blocked |= {e for e, events in history.items() if ever_became_stock(events)}
-    return blocked | await depended_on(session, company_id, {e: [e] for e in rows})
+    return blocked | {e for e, events in history.items() if ever_became_stock(events)}
+
+
+class RestoreDeletedBody(BaseModel):
+    entity_ids: list[str]
+
+
+@router.post("/bulk/restore-deleted")
+async def bulk_restore_deleted(payload: RestoreDeletedBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Undo a Delete that moved items to Deleted: each comes back as the draft it was.
+    Every selected item must be deleted; otherwise nothing is restored and the answer names
+    the items that are not."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
+    live = sorted(str((row.state or {}).get("sku") or e) for e, row in rows.items() if _status_of(row) != DELETED)
+    if live:
+        raise HTTPException(status_code=409, detail=f"Nothing was restored. These items are not deleted: {', '.join(live)}.")
+    at = datetime.now(timezone.utc).isoformat()
+    for eid in rows:
+        await emit_event(session, company_id=company_id, entity_id=eid, entity_type="item",
+                         event_type="item.status.set", data={"new_status": "draft", "ts": at},
+                         actor_id=user.id, location_id=None, source="api",
+                         idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    return {"restored": len(rows)}
 
 
 class BulkExpireBody(BaseModel):
@@ -4878,7 +4935,7 @@ async def undo_import_batch(
     modified |= {eid for eid, row in rows.items()
                  if (row.state or {}).get(LOT_ACCOUNT_FIELD) and eid not in booked_by_import}
     modified |= await depended_on(session, company_id, {e: [e] for e in entity_ids},
-                                  besides=[e.entity_id for e in entries], undoing_batch=batch.id)
+                                  besides=[e.entity_id for e in entries])
     if modified:
         raise HTTPException(
             status_code=409,

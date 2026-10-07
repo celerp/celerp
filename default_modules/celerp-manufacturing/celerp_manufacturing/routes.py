@@ -35,7 +35,7 @@ from celerp.services import migrations
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.fulfill import outstanding_physical_lines
-from celerp.services.lot_origin import refuse_draft
+from celerp.services.lot_origin import refuse_deleted, refuse_draft
 from celerp.services.goods_cost import lot_label, negative_cost_error
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
@@ -280,6 +280,10 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
         if row is None or row.entity_type != "item":
             raise HTTPException(status_code=422, detail=f"Not an item in this company: {item_id}")
         movements.require_stock(row.state or {}, item_id)
+        if item_id == data["output_item_id"]:
+            refuse_deleted(row.state or {}, item_id)
+        else:
+            movements.require_not_deleted(row.state or {}, item_id)
     data = {**data, "expected_outputs": [output_line(rows[data["output_item_id"]].state or {}, quantity)]}
     return await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
@@ -336,7 +340,7 @@ async def set_item_recipe(
 
     Validates components, rolls the standard cost up from current component costs,
     and emits ``item.recipe.set``. Hard errors (422) on self-reference, unknown
-    component SKUs, items that are not stock, items merged into another, and recipe cycles — per GDR, validation lives
+    component SKUs, items that are not stock, deleted items, items merged into another, and recipe cycles. Per GDR, validation lives
     at the function level. The company lock is taken before anything is read, so the items
     the recipe names are checked and saved in one step that a Delete cannot come between.
     """
@@ -361,6 +365,7 @@ async def set_item_recipe(
     for comp in recipe["components"]:
         cstate = graph.get(comp.get("item_id")) or {}
         movements.require_stock(cstate, comp.get("item_id"))
+        movements.require_not_deleted(cstate, comp.get("item_id"))
         await movements.require_not_merged(session, company_id, cstate, comp.get("item_id"))
         comp["unit"] = cstate.get("sell_by") or cstate.get("unit") or comp.get("unit")
         comp["sku"] = cstate.get("sku") or comp.get("sku")

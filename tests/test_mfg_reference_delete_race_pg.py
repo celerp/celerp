@@ -9,9 +9,9 @@ while the second starts; whichever holds the locks first wins:
 
 - delete first: the run waits, then finds the item gone and is refused, leaving nothing;
 - run first: the Delete waits for the run to be saved, then finds the item named by the
-  run and deletes nothing.
+  run and moves it to Deleted instead of erasing it, so the run still names it.
 
-Delete only removes a draft that nothing depends on, so the item here is a draft.
+Delete only takes a draft, so the item here is a draft.
 """
 
 from __future__ import annotations
@@ -133,21 +133,22 @@ async def test_delete_first_refuses_the_waiting_run(committed_engine):
 
     deleted, created = await _race(committed_engine, factory, company_id, user, _delete, _create)
 
-    assert deleted == {"deleted": 1, "kept": 0}
+    assert (deleted["deleted"], deleted["moved_to_deleted"]) == (1, 0)
     assert isinstance(created, HTTPException) and created.status_code == 422, created
     assert _PART in created.detail
     part, runs, run_events = await _state(factory, company_id)
     assert part is None and runs == [] and run_events == 0
 
 
-async def test_run_first_is_saved_and_the_delete_waits_then_refuses(committed_engine):
+async def test_run_first_is_saved_and_the_delete_waits_then_keeps_the_item_as_deleted(committed_engine):
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
 
     created, deleted = await _race(committed_engine, factory, company_id, user, _create, _delete)
 
     assert not isinstance(created, HTTPException), created
-    assert isinstance(deleted, HTTPException) and deleted.status_code == 409, deleted
+    assert not isinstance(deleted, HTTPException), deleted
+    assert (deleted["deleted"], deleted["moved_to_deleted"]) == (0, 1)
     part, runs, run_events = await _state(factory, company_id)
-    assert part is not None and part.state["status"] == "draft"
+    assert part is not None and part.state["status"] == "deleted"
     assert [r.state["inputs"][0]["item_id"] for r in runs] == [_PART] and run_events == 1

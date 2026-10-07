@@ -22,6 +22,7 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
 from celerp.services.line_measures import splitting_allowed
+from celerp.services.lot_origin import DELETED
 
 # The uniqueness invariant is an OUTBOUND customer-stock rule: a customer-facing
 # invoice or memo must not list the same non-splittable physical lot twice.
@@ -132,7 +133,8 @@ def assert_new_references_eligible(
 ) -> None:
     """Refuse a line set that newly references an item the record may not take.
 
-    A draft item is not stock yet, so no document or List may newly reference it. An
+    A draft item is not stock yet, and a deleted one is out of use until restored, so no
+    document or List may newly reference either. An
     item reserved by another record, or by a status edit that no record owns, is held,
     so an invoice or memo (which claim stock) may not newly reference it; quotations,
     other documents and Lists may. "Newly" counts occurrences: a line beyond the number
@@ -152,7 +154,9 @@ def assert_new_references_eligible(
             continue  # linked_items has already judged a line whose item is gone
         state = items[ident].state or {}
         sku = state.get("sku") or ident
-        if str(state.get("status") or "").lower() == "draft":
+        if state.get("status") == DELETED:
+            reasons.append(f"{sku}: item was deleted - restore it from the Deleted list or pick another item")
+        elif str(state.get("status") or "").lower() == "draft":
             reasons.append(f"{sku}: item is a draft - make it available first")
         elif (doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES and state.get("status") == "reserved"
               and state.get("status_doc_id") != entity_id):

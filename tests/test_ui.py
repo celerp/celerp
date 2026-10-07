@@ -54,6 +54,14 @@ async def ui_client():
         yield c
 
 
+def _delete_answer(n: int, moved: list[dict] | None = None) -> dict:
+    """The items API's Delete answer: ``n`` drafts erased, plus the ``moved`` ones kept as Deleted."""
+    items = [{"entity_id": f"item:{i}", "sku": f"S{i}", "outcome": "deleted", "referenced_by": [], "has_files": False}
+             for i in range(n)]
+    items += [{"outcome": "moved_to_deleted", **m} for m in moved or []]
+    return {"deleted": n, "moved_to_deleted": len(moved or []), "items": items}
+
+
 def _authed(token: str | None = None, role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token."""
     return {"celerp_token": token or make_test_token(role=role)}
@@ -5419,7 +5427,7 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_row_menu_delete_returns_200_removes_row(self, ui_client):
         """DELETE /api/items/{id} returns 200 empty body so htmx removes the row."""
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 1, "kept": 0})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(1))):
             r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
         assert r.content == b""
@@ -5459,7 +5467,7 @@ class TestItemActionRouteCompleteness:
         captured = {}
         async def _mock(token, entity_ids):
             captured["entity_ids"] = entity_ids
-            return {"deleted": len(entity_ids)}
+            return _delete_answer(len(entity_ids))
         with patch("ui.api_client.bulk_delete", new=_mock):
             await ui_client.delete("/api/items/gc:TEST-001", cookies=_authed())
         assert captured["entity_ids"] == ["gc:TEST-001"]
@@ -6331,7 +6339,7 @@ class TestInventoryBulkActions:
 
     @pytest.mark.asyncio
     async def test_bulk_delete_success(self, ui_client):
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(2))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab", headers={"content-type": "application/x-www-form-urlencoded"},
@@ -6341,11 +6349,52 @@ class TestInventoryBulkActions:
         assert b"Deleted: 2." in r.content
 
     @pytest.mark.asyncio
+    async def test_bulk_delete_names_each_item_moved_to_deleted(self, ui_client):
+        moved = [{"entity_id": "item:r", "sku": "REF-1", "referenced_by": ["QUO-7"], "has_files": False},
+                 {"entity_id": "item:f", "sku": "FILE-1", "referenced_by": [], "has_files": True}]
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(1, moved))):
+            r = await ui_client.post(
+                "/api/items/bulk/delete",
+                content=b"selected=item%3A0&selected=item%3Ar&selected=item%3Af",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"Deleted: 1. Moved to Deleted: 2." in r.content
+        toast = json.loads(r.headers["hx-trigger"])["celerpToast"]
+        assert "REF-1 moved to Deleted, still referenced by QUO-7." in toast["message"]
+        assert "FILE-1 moved to Deleted, it still holds files." in toast["message"]
+        assert toast["persist"] is True
+
+    @pytest.mark.asyncio
+    async def test_row_menu_delete_says_when_the_item_moved_to_deleted(self, ui_client):
+        moved = [{"entity_id": "item:r", "sku": "REF-1", "referenced_by": ["QUO-7"], "has_files": False}]
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(0, moved))):
+            r = await ui_client.delete("/api/items/item:r", cookies=_authed())
+        assert r.status_code == 200
+        toast = json.loads(r.headers["hx-trigger"])["celerpToast"]
+        assert toast["message"] == "REF-1 moved to Deleted, still referenced by QUO-7."
+
+    @pytest.mark.asyncio
+    async def test_bulk_restore_deleted_reports_the_count(self, ui_client):
+        restore = AsyncMock(return_value={"restored": 2})
+        with patch("ui.api_client.bulk_restore_deleted", new=restore):
+            r = await ui_client.post(
+                "/api/items/bulk/restore-deleted",
+                content=b"selected=item%3Aa&selected=item%3Ab",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"Restored to draft: 2." in r.content
+        assert restore.await_args.args[1] == ["item:a", "item:b"]
+
+    @pytest.mark.asyncio
     async def test_bulk_delete_passes_ids(self, ui_client):
         captured = {}
         async def _mock(token, entity_ids, untouched_samples_only=False):
             captured["ids"] = entity_ids
-            return {"deleted": 2, "kept": 0}
+            return _delete_answer(2)
         with patch("ui.api_client.bulk_delete", new=_mock):
             await ui_client.post(
                 "/api/items/bulk/delete",
@@ -6964,7 +7013,7 @@ class TestBulkSelectionClear:
     @pytest.mark.asyncio
     async def test_bulk_delete_success_sends_selection_clear_trigger(self, ui_client):
         """Delete success response must include HX-Trigger: celerpSelectionClear."""
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(2))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab",

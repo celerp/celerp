@@ -2658,6 +2658,11 @@ async def bulk_delete(token: str, entity_ids: list[str], untouched_samples_only:
             "entity_ids": entity_ids, "untouched_samples_only": untouched_samples_only})).json()
 
 
+async def bulk_restore_deleted(token: str, entity_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/items/bulk/restore-deleted", json={"entity_ids": entity_ids})).json()
+
+
 async def bulk_expire(token: str, entity_ids: list[str]) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/expire", json={"entity_ids": entity_ids})).json()

@@ -654,6 +654,7 @@ _STATUS_BADGE: dict[str, tuple[str, str]] = {
     "sold":          ("enum.item_status.sold",         "badge--sold"),
     "archived":      ("enum.item_status.archived",     "badge--inactive"),
     "expired":       ("enum.item_status.expired",      "badge--expired"),
+    "deleted":       ("enum.item_status.deleted",      "badge--inactive"),
     "not_received":  ("documents.status_not_received", "badge--not_received"),
 }
 
@@ -2347,43 +2348,48 @@ celerpUpdateBulkAlloc();
             doc_type in ("bill", "consignment_in") and status not in ("draft",)
         )
         # Showing barcodes also needs the items (legacy lines predate barcode stamping).
-        if _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES or _ident_mode != "sku":
-            try:
-                _line_eids = list(dict.fromkeys(
-                    li.get("entity_id") or li.get("item_id") or ""
-                    for li in doc.get("line_items", [])
-                    if li.get("entity_id") or li.get("item_id")
-                ))
-                if _line_eids:
-                    # Classify each item's sell_by unit (weight/pieces) so the row can tell
-                    # whether quantity already IS the pieces/weight measure (then it's locked).
-                    from celerp.services.units import build_unit_map
+        # Every other document fetches them only for statuses, so a deleted item's line
+        # reads "[Deleted]" next to its SKU.
+        _need_meta = _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES or _ident_mode != "sku"
+        try:
+            _line_eids = list(dict.fromkeys(
+                li.get("entity_id") or li.get("item_id") or ""
+                for li in doc.get("line_items", [])
+                if li.get("entity_id") or li.get("item_id")
+            ))
+            if _line_eids:
+                # Classify each item's sell_by unit (weight/pieces) so the row can tell
+                # whether quantity already IS the pieces/weight measure (then it's locked).
+                from celerp.services.units import build_unit_map
+                _unit_map = {}
+                if _need_meta:
                     try:
                         _unit_map = build_unit_map(await api.get_units(token))
                     except Exception:
-                        _unit_map = {}
-                    # ONE bulk metadata call for every line, replacing the former per-line fan-out.
-                    _items_by_eid = await api.get_items_metadata(token, _line_eids)
-                    for eid, item in _items_by_eid.items():
-                        if not item:
-                            continue
-                        if item.get("status"):
-                            item_status_map[eid] = item["status"]
-                            _sdoc = str(item.get("status_doc_id") or "")
-                            if _sdoc:
-                                item_status_doc_map[eid] = (
-                                    _sdoc,
-                                    str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                                )
+                        pass
+                # ONE bulk metadata call for every line, replacing the former per-line fan-out.
+                _items_by_eid = await api.get_items_metadata(token, _line_eids)
+                for eid, item in _items_by_eid.items():
+                    if not item:
+                        continue
+                    if item.get("status"):
+                        item_status_map[eid] = item["status"]
+                        _sdoc = str(item.get("status_doc_id") or "")
+                        if _sdoc:
+                            item_status_doc_map[eid] = (
+                                _sdoc,
+                                str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
+                            )
+                    if _need_meta:
                         item_meta_map[eid] = item_measure_meta(item, _unit_map)
-                    if _ident_mode != "sku":
-                        # Lines saved before barcodes were stamped: fill from the catalog item.
-                        for _li in doc.get("line_items", []):
-                            _it = _items_by_eid.get(_li.get("entity_id") or _li.get("item_id") or "")
-                            if _it:
-                                identifier_backfill(_li, _it)
-            except Exception:
-                pass
+                if _ident_mode != "sku":
+                    # Lines saved before barcodes were stamped: fill from the catalog item.
+                    for _li in doc.get("line_items", []):
+                        _it = _items_by_eid.get(_li.get("entity_id") or _li.get("item_id") or "")
+                        if _it:
+                            identifier_backfill(_li, _it)
+        except Exception:
+            pass
         # Draft PO: grey qty placeholder per blank line = velocity suggestion in purchase units.
         line_suggestions: dict[str, str] = {}
         if doc_type == "purchase_order" and status == "draft":
@@ -5989,6 +5995,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     can_count_audit = pol["audit"] and status == _LF and _can_edit
     is_editable = can_edit_lines or can_count_audit
 
+    def _deleted_mark(eid: str):
+        """"[Deleted]" beside the SKU of a line whose item was deleted; the line itself is unchanged."""
+        if (item_status_map or {}).get(eid) == "deleted":
+            return Span(t("item.deleted_mark"), cls="li-deleted-mark")
+        return None
+
     def _static_ident_cell_content(li: dict):
         """Identifier for a read-only line cell per the company mode: the primary
         text, with the secondary (SKU under barcode) as a muted second line."""
@@ -6835,6 +6847,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    cls="col-checkbox li-checkbox-cell"),
                 Td(_static_ident_cell_content(li) if pol["counting"]
                    else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
+                   _deleted_mark(li_entity_id),
                    cls="col-sku"),
                 _desc_cell,
             ]
@@ -8932,7 +8945,7 @@ async function celerpCsvImport(input, entityId) {{
                           if pol["customs"] else t("documents.view_item_details"))
             _sku_cell = Td(
                 Div(_item_link_eye(li_eid, title=_eye_title),
-                    Span(format_value(_ident_1st or None)), cls="li-ident-view"),
+                    Span(format_value(_ident_1st or None)), _deleted_mark(li_eid), cls="li-ident-view"),
                 _ident_2nd_div, cls="col-sku",
             )
             cells += [

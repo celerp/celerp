@@ -2061,8 +2061,17 @@ function celerpPrintLabel(entityId, templateId) {
         """Fetch item + item list + currency and render the Manufacturing section."""
         item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         items = (await api.list_items(token, {"limit": 1000})).get("items", [])
+        # A component the list hides (deleted, archived) is read on its own, so its row
+        # still names it: "SKU [Deleted]" for a deleted one.
+        listed = {it.get("id") or it.get("entity_id") for it in items}
+        unlisted = [c.get("item_id") for c in (item.get("recipe") or {}).get("components", [])
+                    if c.get("item_id") and c.get("item_id") not in listed]
+        try:
+            hidden = await api.get_items_metadata(token, unlisted) if unlisted else {}
+        except APIError:
+            hidden = {}  # the rows fall back to "(unavailable)", as before
         return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""),
-                               show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind)
+                               show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind, hidden=hidden)
 
     def _recipe_saved_status(msg: str | None = None, kind: str = "saved"):
         return Div(msg if msg is not None else t("inventory.saved_check"), id="recipe-save-status", cls=f"recipe-save-status hint {kind}", hx_swap_oob="true")
@@ -3448,9 +3457,38 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         message = t("inventory.bulk_deleted", n=result["deleted"])
-        if result["kept"]:
-            message += " " + t("settings.business_type_changes.demo_kept", count=result["kept"])
-        return _bulk_destructive_success(request, message, cls="flash--warning" if result["kept"] else "flash--success")
+        if on_demo_list:
+            if result["kept"]:
+                message += " " + t("settings.business_type_changes.demo_kept", count=result["kept"])
+            return _bulk_destructive_success(request, message, cls="flash--warning" if result["kept"] else "flash--success")
+        # Each item kept as Deleted is named with the reason, so nothing moves silently.
+        moved = [_moved_to_deleted_line(i) for i in result["items"] if i["outcome"] == "moved_to_deleted"]
+        if moved:
+            message = f'{message} {t("inventory.bulk_moved_to_deleted", n=len(moved))}'
+        return _bulk_destructive_success(request, message, cls="flash--warning" if moved else "flash--success",
+                                         notice=" ".join(moved))
+
+    def _moved_to_deleted_line(item: dict) -> str:
+        """One item Delete moved to Deleted, with what still names it or the files it holds."""
+        sku = item["sku"] or item["entity_id"]
+        if item["referenced_by"]:
+            return t("inventory.moved_to_deleted_referenced", sku=sku, refs=", ".join(item["referenced_by"]))
+        return t("inventory.moved_to_deleted_files", sku=sku)
+
+    @app.post("/api/items/bulk/restore-deleted")
+    async def bulk_item_restore_deleted(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.bulk_restore_deleted(token, entity_ids)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        return _bulk_destructive_success(request, t("inventory.bulk_restored_deleted", n=result["restored"]))
 
     # ── Bulk expire ──────────────────────────────────────────────────────
 
@@ -4392,6 +4430,17 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
+    @app.post("/api/items/{entity_id}/restore-deleted")
+    async def item_restore_deleted(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.bulk_restore_deleted(token, [entity_id])
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
     @app.post("/api/items/{entity_id}/make-available")
     async def item_make_available(request: Request, entity_id: str):
         token = _token(request)
@@ -4850,16 +4899,19 @@ function celerpPrintLabel(entityId, templateId) {
 
         Returning an empty 200 causes htmx to replace the row element with
         nothing, removing it from the DOM immediately without a page reload. A refusal
-        leaves the row in place and says why in a toast.
+        leaves the row in place and says why in a toast, and an item moved to Deleted
+        rather than erased says so in a toast that stays until dismissed.
         """
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.bulk_delete(token, [entity_id])
+            result = await api.bulk_delete(token, [entity_id])
         except APIError as e:
             return _bulk_toast_error(e.detail)
-        return Response("", status_code=200)
+        moved = [_moved_to_deleted_line(i) for i in result["items"] if i["outcome"] == "moved_to_deleted"]
+        return Response("", status_code=200,
+                        headers=toast_header(" ".join(moved), "info", persist=True) if moved else None)
 
     @app.delete("/api/items/{entity_id}/attachments/{att_id}")
     async def item_delete_attachment(request: Request, entity_id: str, att_id: str):
@@ -4948,6 +5000,8 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
+    if active_status == "deleted" and role_has_permission(settings or {}, role, "adjust_inventory"):
+        action_options.append(Option(t("inv.restore"), value="restore_deleted"))
     # JS shows/hides these three based on the actual checked rows' statuses (updateBulkToolbar).
     # On the demo items list, which the dashboard's "Remove demo items" link opens, Delete
     # removes the untouched samples in any status, so it stays shown there.
@@ -5163,43 +5217,43 @@ def _bulk_context_templates(
 _VERTICAL_STATUS_TABS: dict[str, list[tuple[str, str]]] = {
     "gemstones": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "watches_accessories": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "artwork": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "coins_precious_metals": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "wine_spirits": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "food_beverage": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"),
-        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "agricultural": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"),
-        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
 }
 # The inventory search label per status filter: one whole sentence each, so every
 # language can word it naturally. Any other status gets the plain "Search inventory".
 _STATUS_SEARCH_LABELS: dict[str, str] = {
     s: f"inventory.search_{s}"
-    for s in ("available", "reserved", "sold", "archived", "all", "expired", "memo_out", "draft")
+    for s in ("available", "reserved", "sold", "archived", "all", "expired", "memo_out", "draft", "deleted")
 }
 
 _DEFAULT_STATUS_TABS: list[tuple[str, str]] = [
     ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("sold", "chip.sold"),
-    ("archived", "chip.archived"), ("all", "doc.all"),
+    ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
 ]
 
 # Status card definitions (status_key, label_key, color) per vertical; the label
@@ -6839,8 +6893,12 @@ def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
 
 
 def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
-                    show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+                    show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success",
+                    hidden: dict[str, dict] | None = None) -> FT:
     """The Manufacturing tab: Materials / Labor / Overhead tables + Cost Summary.
+
+    ``hidden`` holds the components the item list leaves out, keyed by id: they label
+    their rows but are never offered in the picker.
 
     The persisted recipe is the single source of truth: every change saves immediately.
     Values use the system-standard double-click-to-edit cells (same as item and document
@@ -6881,9 +6939,11 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
     def _comp_row(i, c):
         cid = c.get("item_id", "")
-        it = by_id.get(cid)
+        it = by_id.get(cid) or (hidden or {}).get(cid)
         orphan = it is None
         label = f"{c.get('sku') or cid} - {it.get('name', '')}".strip(" -") if it else t("inventory.unavailable_suffix", name=c.get('sku') or cid)
+        if it and it.get("status") == "deleted":
+            label = f"{it.get('sku') or cid} {t('item.deleted_mark')}"
         return Tr(
             Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
             _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
@@ -8068,6 +8128,18 @@ function batchSplitSubmit_{safe_id}(form) {{
     _RESTORABLE = {"archived", "expired"}
     if item_status == "draft":
         lifecycle_cards = []
+    elif item_status == "deleted":
+        lifecycle_cards = [Div(
+            Form(
+                Strong(t("inv.u21a9_restore"), cls="action-card-title"),
+                Div(Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"), cls="action-card-row"),
+                P(t("inventory.restore_deleted_hint"), cls="action-card-hint"),
+                hx_post=f"/api/items/{entity_id}/restore-deleted",
+                hx_target="#item-action-error",
+                hx_swap="outerHTML",
+            ),
+            cls="action-card",
+        )]
     elif item_status in _RESTORABLE:
         lifecycle_cards = [restore_card]
     else:
