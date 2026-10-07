@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "Could not create: {error}",
+  "labels.could_not_delete": "Could not delete: {error}",
+  "labels.could_not_save": "Could not save: {error}",
+  "labels.created": "Created '{name}'.",
   "labels.delete_template_confirm": "Delete template '{name}'?",
   "labels.edit_name": "Edit: {name}",
   "labels.height_example": "e.g. 30",
+  "labels.name_required": "Template name required.",
   "labels.new_template_name": "New template name",
   "labels.print_labels": "Print Labels",
   "labels.print_labels_heading": "Print Labels - {n} item(s)",
   "labels.remove_field": "Remove field",
   "labels.selected": "Selected: {ids}{more}",
+  "labels.template_deleted": "Template deleted.",
+  "labels.template_not_found": "Template not found.",
   "labels.width_example": "e.g. 50"
 }

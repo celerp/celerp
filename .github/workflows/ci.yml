@@ -12,6 +12,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   shard:
     name: Test shard ${{ matrix.group }}
@@ -116,11 +120,11 @@ jobs:
   browser:
     name: Browser shard ${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3]
+        group: [1, 2, 3, 4, 5]
 
     services:
       postgres:
@@ -154,22 +158,22 @@ jobs:
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
 
-      - name: Run browser tests (shard ${{ matrix.group }}/3)
+      - name: Run browser tests (shard ${{ matrix.group }}/5)
         env:
           ALLOW_INSECURE_JWT: "true"
           # Each xdist worker gets its own database AND its own server ports (see
           # tests/test_browser/conftest.py), so -n parallelism is safe.
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         # Clear the default `-m 'not browser'` addopts, select browser tests, and shard them across
-        # 3 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
+        # 5 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
         # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
         # A shard takes about 6.5 minutes; the 13 minute cap leaves room for a slow runner
         # inside the 15 minute job limit.
         run: >
-          timeout 780 pytest tests/test_browser -m browser -o addopts=""
+          timeout 900 pytest tests/test_browser -m browser -o addopts=""
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
-          --splits 3 --group ${{ matrix.group }}
+          --splits 5 --group ${{ matrix.group }}
 
       # On failure, upload the Playwright traces + screenshots so CI-only browser flakes
       # (which never reproduce locally) can be diagnosed: `playwright show-trace <name>.trace.zip`.

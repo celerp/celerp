@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.money import round_basis
 
 # Maps old weight_unit abbreviations to new unit names
@@ -20,6 +21,8 @@ _IMAGE_MIME_PREFIXES = ("image/",)
 # Allowlist by design: unknown/new statuses are unavailable until explicitly added here.
 # is_item_available() is the single source of truth — derive at read time, never store.
 _ACTIVE_STATUSES: frozenset[str] = frozenset({"available", "active"})
+# The status an item holds until something sets one; state without a status reads as this.
+DEFAULT_ITEM_STATUS = "available"
 
 # ── Core vs attribute partition (single source of truth for the WRITE side) ──────────────────────
 # Keys that live at the TOP LEVEL of item state: identity, quantities, cost bases, lifecycle markers,
@@ -49,6 +52,10 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # flags / classification
     "allow_splitting", "inventory_type", "pick_method", "consignment_flag", "item_type",
     "is_expired", "expires_at", "landed_cost_kind", "recoverable",
+    # the inventory account the lot's value sits in (celerp.accounting_roles)
+    LOT_ACCOUNT_FIELD,
+    # whether an archived or expired lot still holds its stock (celerp.services.lot_origin)
+    ON_BOOKS_FIELD,
     # purchase side
     "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
     # free-text core fields
@@ -95,7 +102,31 @@ def _normalize_attributes(current: dict) -> None:
 
 def is_item_available(state: dict) -> bool:
     """Derive availability from status. Single authoritative check — no stored flag."""
-    return str(state.get("status") or "").lower() in _ACTIVE_STATUSES
+    return str(state.get("status") or DEFAULT_ITEM_STATUS).lower() in _ACTIVE_STATUSES
+
+
+def is_manufacturable(item_state: dict | None) -> bool:
+    """A product made from a recipe: an order for it is met by making it, whatever is in stock."""
+    recipe = (item_state or {}).get("recipe") or {}
+    return bool(recipe.get("components"))
+
+
+# What demand_claim says a document may do with an item.
+FREE_STOCK = "free"          # any document may draw it
+OWN_RESERVED = "reserved"    # reserved to this document: only it may draw it
+
+
+def demand_claim(state: dict, doc_id: str | None) -> str | None:
+    """Can demand document ``doc_id`` consume this item? FREE_STOCK while the item is available
+    (see is_item_available), OWN_RESERVED while it is reserved to ``doc_id``, and None in every
+    other status: reserved to another document or to none, or not stock at all. The one rule
+    fulfillment draws by and Demand Planning counts supply by."""
+    if is_item_available(state):
+        return FREE_STOCK
+    if (str(state.get("status") or "").lower() == "reserved" and doc_id
+            and state.get("status_doc_id") == doc_id):
+        return OWN_RESERVED
+    return None
 
 # Old attachment type → new document_tag mapping (for lazy migration)
 _ATTACHMENT_TYPE_TO_TAG: dict[str, str] = {
@@ -298,6 +329,32 @@ def _stamp_status_doc(current: dict, data: dict) -> None:
 
 
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
+    current = _apply_item_event(state, event_type, data)
+    _keep_on_books(state, current, event_type, data)
+    return current
+
+
+def _keep_on_books(before: dict, after: dict, event_type: str, data: dict) -> None:
+    """Archive and Expire retire a lot from the catalog while the company still owns its
+    stock: the event says so, and the lot keeps holding its value (lot_origin.in_stock).
+    Any other change of status, including the archived row a split, transform, merge or
+    undone receipt leaves behind, clears it, so it can never hold value it gave up."""
+    from celerp.services.lot_origin import RETIRED, in_stock
+
+    status = str(after.get("status") or "").lower()
+    if event_type == "item.inventory_on_books.recorded":
+        kept = status in RETIRED
+    elif data.get(ON_BOOKS_FIELD) is True and status in RETIRED:
+        kept = in_stock(before)
+    else:
+        kept = bool(before.get(ON_BOOKS_FIELD)) and status == str(before.get("status") or "").lower()
+    if kept:
+        after[ON_BOOKS_FIELD] = True
+    else:
+        after.pop(ON_BOOKS_FIELD, None)
+
+
+def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
     if event_type in {"item.created", "item.snapshot"}:
         current.update(data)
@@ -306,7 +363,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # relocate every non-core top-level field into `attributes`. This makes storage uniform across
         # producers and lets a snapshot self-heal any item stored top-level historically.
         _normalize_attributes(current)
-        current.setdefault("status", "available")
+        current.setdefault("status", DEFAULT_ITEM_STATUS)
         current.setdefault("inventory_type", "stocked")
         # Default purchase unit = sell unit, conversion = 1 (most items bought in same unit as sold)
         if not current.get("purchase_unit") and current.get("sell_by"):
@@ -408,6 +465,10 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # payload is the new absolute cost_base; landed contributions rescale from it.
         current["cost_base"] = float(data["cost_total"])
         _recompute_cost(current)
+    elif event_type == "item.inventory_account.recorded":
+        current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
+    elif event_type == "item.inventory_on_books.recorded":
+        pass  # _keep_on_books
     elif event_type == "item.landed_cost.applied":
         # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so
         # re-running allocation with changed freight self-corrects. amount=0 clears the contribution.
@@ -451,6 +512,16 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = "merged"
         _stamp_status_doc(current, {})
         current["merged_into"] = data.get("merged_into")
+    elif event_type == "item.unmerged":
+        # The merge this lot went into was undone: it holds its stock again.
+        current["status"] = data["restored_status"]
+        _stamp_status_doc(current, data)
+        current.pop("merged_into", None)
+    elif event_type == "item.merge_undone":
+        # The merge result gives its stock back to the sources it was made from.
+        _set_quantity(current, 0.0)
+        current["status"] = "archived"
+        _stamp_status_doc(current, {})
     elif event_type == "item.consumed":
         # What is drawn down carries its share of cost, exactly as a sale relieves COGS.
         qty = float(current.get("quantity") or 0)

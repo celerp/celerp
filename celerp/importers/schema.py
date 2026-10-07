@@ -572,10 +572,17 @@ class ReconciliationMeasure(StrEnum):
     SETTLEMENT_ALLOCATION = "settlement_allocation"
 
 
+# Measures whose figure is a count or a quantity. A currency on one of them says which
+# documents were counted; it is not the figure's unit.
+COUNTED_MEASURES = frozenset({ReconciliationMeasure.DOCUMENT_COUNT, ReconciliationMeasure.DOCUMENT_STATUS,
+                              ReconciliationMeasure.INVENTORY_QUANTITY})
+
+
 class ReconciliationExpectation(BaseModel):
     """One source-side figure the destination must reproduce."""
     measure: ReconciliationMeasure
     key: str = ""                             # account, contact, item/location, doc type, ...
+    label: str = ""                           # the source's own name for the keyed record, shown to people
     currency: str | None = None
     expected: CIFDecimal
     tolerance: CIFTolerance

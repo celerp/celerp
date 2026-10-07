@@ -3121,7 +3121,7 @@ class TestDocumentPolish:
 
 class TestWriteoffListDetail:
     """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
-    (GDR 2f), the account picker is filtered to expense/cogs/equity chart accounts (function-level
+    (GDR 2f), the account picker is filtered to expense and equity chart accounts (function-level
     filter mirrored from the API), and every render path stays column-aligned."""
 
     _WO_CHART = [
@@ -3209,7 +3209,7 @@ class TestWriteoffListDetail:
         assert "/lists/list:WO-1/action/undo-write-off" in html
 
     @pytest.mark.asyncio
-    async def test_account_picker_limited_to_expense_cogs_equity(self, ui_client):
+    async def test_account_picker_limited_to_expense_and_equity(self, ui_client):
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
             patch("ui.api_client.get_chart",
@@ -3219,8 +3219,9 @@ class TestWriteoffListDetail:
                 "/lists/list:WO-1/writeoff-line/ln-abc/account/edit", cookies=_authed())
         assert r.status_code == 200
         html = r.content.decode()
-        # Expense / cogs / equity codes are offered; asset (1130) and revenue (4000) are not.
-        assert "6100" in html and "5100" in html and "3200" in html
+        # Expense and equity codes are offered; cost of sales (5100), asset (1130) and revenue (4000) are not.
+        assert "6100" in html and "3200" in html
+        assert "5100" not in html
         assert "1130" not in html
         assert "4000" not in html
 
@@ -4996,47 +4997,6 @@ class TestSprint5ItemActions:
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert b"Merging" in r.content
-    async def test_merge_items_route_success(self, ui_client):
-        with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new123"})):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "10"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 204
-        assert "HX-Redirect" in r.headers
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_missing_target(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": ""},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert b"required" in r.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_missing_sources(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": [], "target_sku_from": "item:target"},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert b"required" in r.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_api_error(self, ui_client):
-        from ui.api_client import APIError
-        with patch("ui.api_client.merge_items", new=AsyncMock(side_effect=APIError(400, "merge conflict"))):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 200
-        assert b"merge conflict" in r.content
 
     # ── Duplicate ─────────────────────────────────────────────────────────────
 
@@ -5439,13 +5399,26 @@ class TestItemActionRouteCompleteness:
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
-    async def test_row_menu_delete_api_error_returns_inline_error_row(self, ui_client):
-        """On API error, DELETE returns a Tr with an error cell so the row shows the error."""
+    async def test_row_menu_delete_api_error_keeps_the_row_and_raises_a_toast(self, ui_client):
+        """On API error, DELETE leaves the row in place and says why in an error toast."""
         from ui.api_client import APIError
         with patch("ui.api_client.bulk_delete", new=AsyncMock(side_effect=APIError(403, "permission denied"))):
             r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
-        assert b"permission denied" in r.content
+        assert r.headers["HX-Reswap"] == "none"
+        assert "permission denied" in r.headers["HX-Trigger"]
+        assert r.content == b""
+
+    def test_row_menu_offers_delete_only_for_a_draft(self):
+        """Only a draft can be deleted, so stock rows carry no Delete (the bulk bar's rule)."""
+        from ui.components.table import data_table
+        from fasthtml.common import to_xml
+        schema = [{"key": "sku", "label": "SKU"}]
+        rows = [{"entity_id": "item:d", "sku": "D", "status": "draft"},
+                {"entity_id": "item:a", "sku": "A", "status": "available"}]
+        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
+        assert "htmx.ajax('DELETE','/api/items/item:d'" in html
+        assert "/api/items/item:a'" not in html
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_calls_bulk_delete_with_correct_id(self, ui_client):
@@ -5463,7 +5436,7 @@ class TestItemActionRouteCompleteness:
         from ui.components.table import data_table
         from fasthtml.common import to_xml
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
-        rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget"}]
+        rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True))
         assert "htmx.ajax('DELETE','/api/items/gc:ROW-001'" in html, \
             "row-menu delete must use htmx.ajax DELETE to /api/items/{id} (same as bulk pattern)"
@@ -5477,7 +5450,7 @@ class TestItemActionRouteCompleteness:
         from ui.components.table import data_table
         from fasthtml.common import to_xml
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
-        rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget"}]
+        rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
         assert "htmx.ajax('DELETE','/api/items/item:demo-abc123'" in html, \
             "row-menu delete with entity_type='inventory' must target /api/items/{id}, not /api/inventorys/{id}"
@@ -5511,53 +5484,6 @@ class TestItemActionRouteCompleteness:
         children = captured["payload"]["children"]
         assert len(children) == 3
         assert sorted(c["quantity"] for c in children) == [2.0, 3.0, 5.0]
-
-    # ── merge (additional coverage) ──────────────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_merge_redirects_to_new_item(self, ui_client):
-        with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new999"})):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "5"},
-                cookies=_authed(),
-            )
-        assert r.headers.get("HX-Redirect") == "/inventory/item:new999"
-
-    @pytest.mark.asyncio
-    async def test_merge_passes_correct_args(self, ui_client):
-        captured = {}
-        async def _mock(token, source_entity_ids, target_sku_from, resulting_quantity=None,
-                        resulting_cost_total=None, resulting_name=None, resulting_sku=None,
-                        resolved_attributes=None, idempotency_key=None):
-            captured.update({
-                "sources": source_entity_ids,
-                "target": target_sku_from,
-                "qty": resulting_quantity,
-                "sku": resulting_sku,
-            })
-            return {"id": "item:new1"}
-        with patch("ui.api_client.merge_items", new=_mock):
-            await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a",
-                      "resulting_quantity": "8", "resulting_sku": "CUSTOM-1"},
-                cookies=_authed(),
-            )
-        assert captured["target"] == "item:a"
-        assert captured["sources"] == ["item:a", "item:b"]
-        assert captured["qty"] == 8.0
-        assert captured["sku"] == "CUSTOM-1"  # custom SKU flows through
-
-    @pytest.mark.asyncio
-    async def test_merge_invalid_qty_shows_error(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "notanumber"},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert b"Invalid" in r.content
 
 
 class TestSplitCardLiveRefresh:
@@ -6648,8 +6574,9 @@ class TestBulkActionsPhase1to5:
         assert b"Merge" in r.content
         assert b"Archive" in r.content
         assert b"Expire" in r.content
-        # Delete only visible when viewing archived/expired items
-        assert b"Delete" not in r.content
+        # Delete is in the dropdown on every view; the table script shows it only while
+        # every selected row is a draft (test_browser/test_bulk_delete_drafts.py).
+        assert b'value="delete"' in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_module_action_in_dropdown(self, ui_client):
@@ -17013,9 +16940,9 @@ class TestItemRowColumnParity:
 
     When /api/items/{id}/row is used to replace a list-page row (via HX-Retarget),
     the returned <tr> must contain exactly the same <td data-col=...> columns that
-    data_table renders - including hidden-but-present columns (those not in show_cols
-    are rendered with style="display:none"). Missing or extra columns cause a visual
-    column shift for that row.
+    data_table renders, in the same order - including columns the table's script hides
+    (it re-applies their visibility after the row is swapped in). Missing, extra or
+    reordered columns cause a visual column shift for that row.
     """
 
     _SCHEMA = [
@@ -17065,6 +16992,7 @@ class TestItemRowColumnParity:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
@@ -17080,7 +17008,7 @@ class TestItemRowColumnParity:
         assert tr is not None, "item_row must return a <tr>"
         row_data_cols = [td["data-col"] for td in tr.find_all("td") if td.get("data-col")]
 
-        assert sorted(row_data_cols) == sorted(table_data_cols), (
+        assert row_data_cols == table_data_cols, (
             f"item_row columns {row_data_cols} != data_table columns {table_data_cols}. "
             f"Missing from row: {set(table_data_cols) - set(row_data_cols)}. "
             f"Extra in row: {set(row_data_cols) - set(table_data_cols)}."

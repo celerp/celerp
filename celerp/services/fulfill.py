@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Fulfill and un-fulfill execution — emits events, creates JEs.
+"""Fulfill execution - emits events, creates JEs.
 
 Used by core for data-integrity reversals (void, revert, unvoid)
 and by the fulfillment module's toggle/pick screen.
@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
@@ -119,6 +121,8 @@ async def execute_fulfill(
             })
         elif pick.action == "split":
             child_eid = f"item:{_uuid.uuid4()}"
+            parent = await session.get(Projection, {"company_id": cid, "entity_id": pick.item_id})
+            parent_state = parent.state if parent else {}
             await emit_event(
                 session,
                 company_id=cid,
@@ -130,6 +134,10 @@ async def execute_fulfill(
                     "name": pick.sku,
                     "quantity": pick.pick_qty,
                     "barcode": next(split_barcodes),   # fresh per-lot barcode from the injected allocator
+                    # The part carries its share of the lot's cost on the lot's account,
+                    # recorded or not, so a return puts it back where its value sits.
+                    "cost_total": pick.pick_qty * pick.cost_price,
+                    LOT_ACCOUNT_FIELD: parent_state.get(LOT_ACCOUNT_FIELD),
                 },
                 actor_id=uid,
                 location_id=None,
@@ -138,7 +146,6 @@ async def execute_fulfill(
                 metadata_={"parent_id": pick.item_id, "split_for_fulfillment": True},
             )
             # Reduce parent quantity
-            parent = await session.get(Projection, {"company_id": cid, "entity_id": pick.item_id})
             parent_qty = float(parent.state.get("quantity", 0)) if parent else 0
             new_parent_qty = max(0.0, parent_qty - pick.pick_qty)
             await emit_event(
@@ -249,10 +256,13 @@ async def execute_fulfill(
     # COGS journal entry: skip for inbound docs and memos.
     # Memo COGS is recognized when the memo converts to an invoice.
     je_cogs = 0.0 if doc_type in _NO_COGS_DOC_TYPES else total_cogs
+    lot_costs: dict[str, float] = {}
+    for p in pick_result.picks:
+        lot_costs[p.item_id] = lot_costs.get(p.item_id, 0.0) + p.pick_qty * p.cost_price
     if je_cogs > 0:
         await auto_je.create_for_doc_fulfilled(
             session, company_id=cid, user_id=uid,
-            doc_id=doc_entity_id, total_cogs=je_cogs,
+            doc_id=doc_entity_id, lot_costs=lot_costs,
             ts=fulfillment_date,
         )
 
@@ -263,113 +273,148 @@ async def execute_fulfill(
     }
 
 
-async def execute_unfulfill(
-    session: AsyncSession,
-    *,
-    doc_entity_id: str,
-    doc_state: dict,
-    company_id,
-    user_id,
-    reason: str = "manual",
-    doc_type: str = "",
-) -> dict[str, Any]:
-    """Reverse fulfillment: restore item quantities, emit reversal events, reverse COGS JE.
+async def _returned_lots(session: AsyncSession, cid, doc_ids: list[str]) -> dict[str, list[tuple[str | None, str, float]]]:
+    """Per document, the goods still received back on credit notes raised on it: for each
+    returned lot, the sold lot it was valued from (None when it names none), its SKU and
+    its quantity."""
+    from sqlalchemy import select
 
-    Returns: {success: bool, reversed_items: [...]}
-    """
-    fulfilled_items = doc_state.get("fulfilled_items", [])
+    from celerp.models.ledger import LedgerEntry
+
+    notes = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "credit_note",
+        Projection.state["original_doc_id"].as_string().in_(doc_ids),
+    ))).scalars().all()
+    back = {r["item_id"]: (n.state["original_doc_id"], str(r.get("sku") or "").strip(), float(r.get("quantity") or 0))
+            for n in notes for r in n.state.get("return_received_items") or [] if r.get("item_id")}
+    if not back:
+        return {}
+    made = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == cid, LedgerEntry.event_type == "item.created",
+        LedgerEntry.entity_id.in_(list(back)),
+    ))).scalars().all()
+    sold_from = {e.entity_id: (e.metadata_ or {}).get(VALUED_FROM_KEY) for e in made}
+    out: dict[str, list[tuple[str | None, str, float]]] = {}
+    for lot, (doc_id, sku, qty) in back.items():
+        out.setdefault(doc_id, []).append((sold_from.get(lot), sku, qty))
+    return out
+
+
+@dataclass(frozen=True)
+class OutstandingLine:
+    """A physical stock line of a document: what it ordered and what it has received."""
+    index: int
+    item_id: str
+    ordered: float
+    fulfilled: float
+
+    @property
+    def outstanding(self) -> float:
+        return max(0.0, self.ordered - self.fulfilled)
+
+
+async def outstanding_physical_lines(session: AsyncSession, company_id, docs: list[Projection]) -> dict[str, list[OutstandingLine]]:
+    """For each document, its physical stock lines with what each ordered and what has been
+    sent against it and not taken back. Service, freight and other non-stock lines, and lines
+    naming no item, are left out; document lines are never changed.
+
+    What is sent is read from the fulfillment record, as the invoice's cost of sales reads
+    it: each lot whose latest fulfillment event for the document ships it counts at its
+    quantity, on the line it belongs to (auto_je.line_of_lot), so a reversal asks for the
+    goods again. Goods an invoice bills from a memo were sent under the memo, so the memo's
+    record counts for the invoice. A lot no line can claim is put on the document's lines
+    of its SKU in order, each taking at most what it ordered.
+
+    Goods a customer sent back on a credit note raised on the document were taken back too:
+    each returned lot still received comes off the line of the sold lot it was valued from,
+    or, when it names none, off the document's lines of its SKU from the last."""
+    from sqlalchemy import select
+
+    from celerp.models.ledger import LedgerEntry
+
+    docs = [d for d in docs if d is not None]
+    if not docs:
+        return {}
     cid = _to_uuid(company_id)
-    uid = _to_uuid(user_id)
-    doc_number = doc_state.get("doc_number") or doc_state.get("ref_id") or ""
-    reversed_items: list[dict] = []
+    # The document whose deliveries a fulfillment event records: its own, or the invoice a
+    # memo was billed on.
+    owner: dict[str, str] = {d.entity_id: d.entity_id for d in docs}
+    for d in docs:
+        memo = (d.state or {}).get("source_memo_id")
+        if memo:
+            owner[memo] = d.entity_id
+    events = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == cid,
+            LedgerEntry.entity_type == "item",
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
+            LedgerEntry.data["source_doc_id"].as_string().in_(list(owner)),
+        ).order_by(LedgerEntry.id)
+    )).scalars().all()
+    latest: dict[tuple[str, str], LedgerEntry] = {}  # (document, lot) -> latest event
+    recorded: dict[tuple[str, str], int | None] = {}  # (document, lot) -> line its latest fulfillment named
+    for e in events:
+        source = (e.data or {}).get("source_doc_id")
+        key = (owner[source], e.entity_id)
+        latest[key] = e
+        if e.event_type == "item.fulfilled":
+            # A memo's line numbers are the memo's, not the invoice's.
+            recorded[key] = auto_je.recorded_line_index(e) if source == owner[source] else None
+    out_lots = {key: e for key, e in latest.items() if e.event_type == "item.fulfilled"}
+    returned = await _returned_lots(session, cid, [d.entity_id for d in docs])
 
-    if not fulfilled_items:
-        # No items to reverse - still emit the doc event to clear fulfillment_status
-        await emit_event(
-            session,
-            company_id=cid,
-            entity_id=doc_entity_id,
-            entity_type="doc",
-            event_type="doc.fulfillment_reversed",
-            data={
-                "reversed_items": [],
-                "reversed_by": str(uid),
-                "reason": reason,
-            },
-            actor_id=uid,
-            location_id=None,
-            source="fulfillment",
-            idempotency_key=str(_uuid.uuid4()),
-            metadata_={},
-        )
-        return {"success": True, "reversed_items": []}
+    wanted = {lot for _doc, lot in out_lots} | {sold for back in returned.values() for sold, _, _ in back if sold}
+    for d in docs:
+        for li in (d.state or {}).get("line_items") or []:
+            if li.get("entity_id") or li.get("item_id"):
+                wanted.add(li.get("entity_id") or li.get("item_id"))
+    items = {r.entity_id: (r.state or {}) for r in (await session.execute(
+        select(Projection).where(Projection.company_id == cid, Projection.entity_id.in_(list(wanted)))
+    )).scalars().all()} if wanted else {}
 
-    for fi in fulfilled_items:
-        item_id = fi.get("item_id")
-        action = fi.get("action", "full")
-
-        # Inbound and service items have no physical stock to restore.
-        if not item_id or action in ("service", "inbound"):
-            reversed_items.append({
-                "item_id": None,
-                "sku": fi.get("sku", ""),
-                "quantity": fi.get("quantity", 0),
-                "action": action,
-            })
-            continue
-
-        qty = float(fi.get("quantity", 0))
-        await emit_event(
-            session,
-            company_id=cid,
-            entity_id=item_id,
-            entity_type="item",
-            event_type="item.fulfillment_reversed",
-            data={
-                "source_doc_id": doc_entity_id,
-                "doc_number": doc_number,
-                "quantity_restored": qty,
-                "reversed_by": str(uid),
-                "reason": reason,
-                "doc_type": doc_type,
-            },
-            actor_id=uid,
-            location_id=None,
-            source="fulfillment",
-            idempotency_key=str(_uuid.uuid4()),
-            metadata_={"doc_id": doc_entity_id},
-        )
-        reversed_items.append({
-            "item_id": item_id,
-            "sku": fi.get("sku", ""),
-            "quantity": qty,
-            "action": action,
-        })
-
-    # Emit doc.fulfillment_reversed
-    await emit_event(
-        session,
-        company_id=cid,
-        entity_id=doc_entity_id,
-        entity_type="doc",
-        event_type="doc.fulfillment_reversed",
-        data={
-            "reversed_items": reversed_items,
-            "reversed_by": str(uid),
-            "reason": reason,
-        },
-        actor_id=uid,
-        location_id=None,
-        source="fulfillment",
-        idempotency_key=str(_uuid.uuid4()),
-        metadata_={},
-    )
-
-    # Reverse COGS JE (only if there were outbound items; inbound has no COGS)
-    has_outbound = any(fi.get("action") not in ("service", "inbound") for fi in fulfilled_items if fi.get("item_id"))
-    if has_outbound:
-        await auto_je.void_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=doc_entity_id,
-        )
-
-    return {"success": True, "reversed_items": reversed_items}
+    result: dict[str, list[OutstandingLine]] = {}
+    for d in docs:
+        line_items = (d.state or {}).get("line_items") or []
+        physical: dict[int, str] = {}
+        for idx, li in enumerate(line_items):
+            item_id = li.get("entity_id") or li.get("item_id")
+            st = items.get(item_id) if item_id else None
+            if st is not None and not is_non_stock_line(st.get("inventory_type"), st.get("sell_by")):
+                physical[idx] = item_id
+        ordered = {idx: float(line_items[idx].get("quantity") or 0) for idx in physical}
+        sent = dict.fromkeys(physical, 0.0)
+        unclaimed: list[tuple[str, float]] = []
+        line_of: dict[str, int | None] = {}  # lot sent -> the line it went on
+        for (doc_id, lot), e in out_lots.items():
+            if doc_id != d.entity_id:
+                continue
+            lot_state = items.get(lot)
+            qty = float((lot_state or {}).get("quantity") or (e.data or {}).get("quantity_fulfilled") or 0)
+            idx = auto_je.line_of_lot(line_items, lot, lot_state or {}, recorded.get((doc_id, lot)))
+            line_of[lot] = idx
+            if idx in sent:
+                sent[idx] += qty
+            else:
+                unclaimed.append((str((lot_state or {}).get("sku") or "").strip(), qty))
+        for sku, qty in unclaimed:
+            for idx in physical:
+                if qty <= 1e-9:
+                    break
+                if str(line_items[idx].get("sku") or "").strip() != sku:
+                    continue
+                take = min(qty, max(0.0, ordered[idx] - sent[idx]))
+                sent[idx] += take
+                qty -= take
+        for sold, sku, qty in returned.get(d.entity_id, []):
+            lines = [line_of[sold]] if line_of.get(sold) in sent else [
+                idx for idx in reversed(physical) if str(line_items[idx].get("sku") or "").strip() == sku]
+            for idx in lines:
+                take = min(qty, sent[idx])
+                sent[idx] -= take
+                qty -= take
+        result[d.entity_id] = [
+            OutstandingLine(index=idx, item_id=item_id, ordered=ordered[idx], fulfilled=min(sent[idx], ordered[idx]))
+            for idx, item_id in physical.items()
+        ]
+    return result

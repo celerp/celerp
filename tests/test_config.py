@@ -500,7 +500,7 @@ def test_tomli_declared_for_pre_311():
 
 
 # ---------------------------------------------------------------------------
-# remove_enabled_module
+# ensure_connect_identity
 # ---------------------------------------------------------------------------
 
 def test_ensure_connect_identity_persists_pair_in_one_rmw(tmp_path, monkeypatch):

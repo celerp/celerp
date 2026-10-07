@@ -34,7 +34,6 @@ async def _invoice_and_account(engine, client):
 def _hold(monkeypatch, *, after_the_account_check: bool) -> tuple[asyncio.Event, asyncio.Event]:
     """Hold the payment, until released, just before it locks the invoice, or just after
     it judged the account, still inside its transaction."""
-    from celerp_accounting import ledger_accounts
     from celerp_docs import routes
     reached, release = asyncio.Event(), asyncio.Event()
 
@@ -44,13 +43,12 @@ def _hold(monkeypatch, *, after_the_account_check: bool) -> tuple[asyncio.Event,
             await release.wait()
 
     if after_the_account_check:
-        real_check = ledger_accounts.require_money_account
+        real_check = routes.require_settlement_account
 
         async def checked(session, company_id, code):
-            acc = await real_check(session, company_id, code)
+            await real_check(session, company_id, code)
             await wait()
-            return acc
-        monkeypatch.setattr(ledger_accounts, "require_money_account", checked)
+        monkeypatch.setattr(routes, "require_settlement_account", checked)
     else:
         real_doc = routes._get_doc
 
@@ -81,7 +79,7 @@ async def test_an_account_archived_before_the_payment_reaches_it_refuses_the_pay
     r = await paying
 
     assert r.status_code == 422, r.text
-    assert f"Account {CODE} is inactive." in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "posting.destination.inactive"
     assert await _posted_to(real_engine, eid) == []
 
 

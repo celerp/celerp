@@ -175,6 +175,17 @@ def _run_id(page) -> str:
     return m.group(1)
 
 
+def _choose_posting_accounts(page) -> None:
+    """Pick the first account offered for each posting account still unchosen."""
+    for select in page.locator('select[name^="role."]').all():
+        if not select.input_value():
+            select.select_option(index=1)
+    for picker in page.locator('.combobox-wrap:has(input[type="hidden"][name^="role."])').all():
+        if not picker.locator('input[type="hidden"]').input_value():
+            picker.locator(".combobox-input").click()
+            picker.locator(".combobox-option").first.click()
+
+
 def _verify_and_finish(page, run_id: str, company_name: str) -> None:
     page.goto(f"/migrations/{run_id}/verify")
     for header in ("Check", "Source", "Celerp", "Difference", "Result"):
@@ -188,6 +199,7 @@ def _verify_and_finish(page, run_id: str, company_name: str) -> None:
     assert f"Discard the migration into {company_name}?" in page.content()
     page.go_back()
     page.wait_for_url(re.compile(rf"/migrations/{run_id}/verify$"))
+    _choose_posting_accounts(page)
     page.click('button:has-text("Finish migration")')
     page.wait_for_url(re.compile(rf"/migrations/{run_id}/complete$"))
     assert "Your company is ready." in page.content()
@@ -243,6 +255,121 @@ def test_migration_wizard_browser_existing_owner(page, fresh_company):
 
     after = fresh_company.get("/companies/me").json()
     assert after == before
+
+
+def _new_company_run(page, company_name: str) -> str:
+    """Move the example file into a new company; returns the run id once it is ready to verify."""
+    page.goto("/setup/new-company")
+    page.click('a:has-text("Move from another system")')
+    page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
+    _upload(page, "Example Bookkeeping")
+    _through_review(page, company_name)
+    page.click('button:has-text("Create company and migrate")')
+    page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"))
+    run_id = _run_id(page)
+    _wait_ready(page, run_id)
+    return run_id
+
+
+def test_finishing_with_posting_accounts_unchosen_is_refused_in_german(page, ui_server, fresh_company):
+    """The refusal names each posting account still unchosen by its German label."""
+    from ui import i18n
+
+    run_id = _new_company_run(page, "Unchosen Goods Ltd")
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.goto(f"/migrations/{run_id}/verify")
+        unchosen = [s.get_attribute("name").removeprefix("role.")
+                    for s in page.locator('select[name^="role."], input[type="hidden"][name^="role."]').all()
+                    if not s.input_value()]
+        assert unchosen, "every posting account was preselected"
+        page.locator(f"form[action='/migrations/{run_id}/finalize'] button[type='submit']").click()
+        page.wait_for_url(re.compile(rf"/migrations/{run_id}/finalize$"))
+        body = page.locator("body").inner_text()
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert "Wählen Sie das Buchungskonto für:" in body, body[:1500]
+    assert "Choose the posting account" not in body
+    for role in unchosen:
+        assert i18n.t(f"posting.role.{role}", lang="de") in body, (role, body[:1500])
+
+
+_PAST_THE_CARD = """() => {
+  const card = document.querySelector('.auth-card');
+  if (!card || !card.querySelector('table')) return null;
+  const edge = card.getBoundingClientRect().right - parseFloat(getComputedStyle(card).paddingRight);
+  const tables = [...card.querySelectorAll('table')].map(t => t.closest('.table-scroll-wrap') || t);
+  return [document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          ...tables.map(b => Math.round(b.getBoundingClientRect().right - edge))];
+}"""
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_every_wizard_page_fits_the_screen(page, ui_server, fresh_company, width):
+    """No wizard page scrolls sideways and every table stays inside the card: a coverage
+    note or a check label carrying an ID wraps, and on a phone a table still wider than the
+    card scrolls inside its own box. The steps before the run are read as the helper walks
+    them; the run's own pages are read again in German, the longer labels."""
+    over = {}
+
+    def measure(_page=None):
+        found = page.evaluate(_PAST_THE_CARD)
+        if found is not None:
+            over[re.sub(r"[0-9a-f-]{36}", "{run}", urlsplit(page.url).path) + f" ({lang})"] = found
+
+    lang = "en"
+    page.set_viewport_size({"width": width, "height": 900})
+    page.on("load", measure)
+    run_id = _new_company_run(page, "Fitting Goods Ltd")
+    page.remove_listener("load", measure)
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    lang = "de"
+    try:
+        for path in (f"/migrations/{run_id}", f"/migrations/{run_id}/verify"):
+            page.goto(path)
+            measure()
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert {"/setup/new-company/migrate/coverage (en)", "/setup/new-company/migrate/review (en)",
+            "/migrations/{run} (de)", "/migrations/{run}/verify (de)"} <= set(over), sorted(over)
+    wide = {where: px for where, px in over.items() if max(px) > 0}
+    assert not wide, f"past the screen or the card at {width}px (page, then each table): {wide}"
+
+
+def test_an_added_posting_account_the_chart_refuses_is_refused_in_german(page, ui_server, fresh_company, monkeypatch):
+    """Adding the proposed accounts when the chart cannot take them (here a code longer
+    than the chart allows) shows the chart's refusal in German."""
+    from celerp.services import posting_readiness
+
+    real = posting_readiness._proposals
+    monkeypatch.setattr(posting_readiness, "_proposals", lambda chart: {
+        role: {**proposal, "code": "P" * 30 + proposal["code"]} for role, proposal in real(chart).items()})
+    page.goto("/setup/new-company")
+    page.click('a:has-text("Move from another system")')
+    page.wait_for_url(re.compile(r"/setup/new-company/migrate$"))
+    _upload(page, "Example Bookkeeping")
+    _through_review(page, "Refused Account Goods Ltd")
+    page.click('button:has-text("Create company and migrate")')
+    page.wait_for_url(re.compile(r"/migrations/[0-9a-f-]{36}$"))
+    run_id = _run_id(page)
+    _wait_ready(page, run_id)
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.goto(f"/migrations/{run_id}/verify")
+        added = page.evaluate("""() => [...document.querySelectorAll(
+                'select[name^="role."], input[type="hidden"][name^="role."]')]
+            .filter(f => !f.value).map(f => { f.value = "__new__"; return f.name; })""")
+        assert added, "every posting account was preselected"
+        page.locator(f"form[action='/migrations/{run_id}/finalize'] button[type='submit']").click()
+        page.wait_for_url(re.compile(rf"/migrations/{run_id}/finalize$"))
+        body = page.locator("body").inner_text()
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert "Kontonummer darf höchstens 32 Zeichen lang sein." in body, body[:1500]
+    assert "must be 32 characters" not in body
 
 
 @pytest.fixture

@@ -33,7 +33,9 @@ async def _refused(client, engine, tok: str, says: str) -> None:
     before = await snapshot(engine)
     r = await client.post(RESET, json={"company_name": NAME}, headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert says in r.json()["detail"] and r.json()["detail"].endswith("Nothing was deleted.")
+    detail = r.json()["detail"]
+    message = detail["message"] if isinstance(detail, dict) else detail
+    assert says in message and message.endswith("Nothing was deleted.")
     assert await snapshot(engine) == before
 
 
@@ -78,7 +80,7 @@ async def test_company_tables_that_reference_each_other_stop_the_reset_before_an
             await conn.execute(text("INSERT INTO zz_right VALUES (1, 1, 'alpha')"))
             await conn.execute(text("UPDATE zz_left SET right_id = 1"))
 
-        await _refused(real_client, real_engine, await token(real_engine, shared, a), "reference each other")
+        await _refused(real_client, real_engine, await token(real_engine, shared, a), "refer to each other")
     finally:
         await _ddl(real_engine, "DROP TABLE IF EXISTS zz_right CASCADE", "DROP TABLE IF EXISTS zz_left CASCADE")
 

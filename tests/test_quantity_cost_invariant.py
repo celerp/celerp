@@ -14,17 +14,7 @@ import uuid
 import pytest
 
 from celerp_inventory.projections import apply_item_event
-from test_cost_restatement import (  # noqa: F401  (auth and ids are fixtures)
-    _cogs,
-    _cogs_adjustments,
-    _item,
-    _merge,
-    _sell,
-    _set_cost,
-    _state,
-    auth,
-    ids,
-)
+from test_cost_restatement import _cogs, _cogs_adjustments, _item, _merge, _sell, _set_cost, _state
 
 
 def _apply(state: dict, *events: tuple[str, dict]) -> dict:

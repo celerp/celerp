@@ -65,7 +65,6 @@ def allocate_landed_cost(
     return result
 
 
-_KIND_BY_CLEARING = {"1130-FRT": "freight", "1130-INS": "insurance", "1130-DTY": "duty", "1130-IVT": "import_vat"}
 
 
 async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -> dict[int, dict[str, float]]:
@@ -78,7 +77,8 @@ async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -
     """
     from celerp.models.company import Company
     from celerp.models.projections import Projection
-    from celerp.services.auto_je import bill_line_kind, landed_account_for_line
+    from celerp.accounting_roles import LANDED_KIND_BY_ROLE, AccountRole
+    from celerp.services.auto_je import bill_line_kind, landed_role_for_line
     from celerp.services.money import require_doc_rate, to_base
     from celerp.services.units import is_non_stock_line
 
@@ -91,12 +91,12 @@ async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -
         line_total = float(li.get("line_total") or
                            (float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)))
         base_amt = to_base(line_total, rate, base_currency)
-        acct = await landed_account_for_line(session, company_id, li)
-        if acct in _KIND_BY_CLEARING:
+        role = await landed_role_for_line(session, company_id, li)
+        if role in LANDED_KIND_BY_ROLE:
             if base_amt:
-                components.append({"kind": _KIND_BY_CLEARING[acct], "amount": base_amt})
+                components.append({"kind": LANDED_KIND_BY_ROLE[role], "amount": base_amt})
             continue
-        if acct == "1150":
+        if role == AccountRole.TAX_INPUT:
             continue  # recoverable import VAT: not capitalised
         # Goods line: include if the bill brings it in as stock (skip service/non-stock lines).
         if bill_line_kind(li) != "stock":

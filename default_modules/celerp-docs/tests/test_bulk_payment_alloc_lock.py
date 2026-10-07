@@ -24,8 +24,8 @@ from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
-from celerp_accounting.routes import seed_chart_of_accounts
-from celerp_accounting.models import Account
+from celerp_accounting.routes import seed_chart_of_accounts_hook
+from celerp_accounting.models import Account, BankAccount
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -42,7 +42,7 @@ async def _seed_company(factory):
         s.add(User(id=user_id, email=f"bulk-{user_id.hex[:8]}@bulk.test", name="Bulk User",
                    auth_hash="x"))
         await s.flush()
-        await seed_chart_of_accounts(s, company_id)
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
 
@@ -51,6 +51,7 @@ async def _cleanup(factory, company_id, user_id):
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
         await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.execute(delete(User).where(User.id == user_id))
@@ -115,12 +116,12 @@ async def test_bulk_payment_pays_what_a_payment_in_flight_left(_db_engine):
         try:
             single = asyncio.create_task(record_payment(
                 inv, DocPaymentBody(amount=60.0, payment_date="2026-02-01", method="cash",
-                                    bank_account="1110"),
+                                    bank_account="1111"),
                 company_id=company_id, _=None, user=user, session=first))
             await asyncio.sleep(0.3)
             bulk = asyncio.create_task(bulk_payment(
                 BulkPaymentBody(doc_ids=[inv], amount=100.0, payment_date="2026-02-02",
-                                method="cash", bank_account="1110"),
+                                method="cash", bank_account="1111"),
                 company_id=company_id, _=None, user=user, session=second))
             await asyncio.sleep(0.3)
             release.set()
@@ -158,7 +159,7 @@ async def test_stripe_overpay_is_refused_whole(_db_engine):
                     s, company_id, inv, dict(doc_state),
                     reference="pi_test_123", amount_minor=20000, currency="usd",
                     paid_at=datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc),
-                    context={"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"},
+                    context={"deposit_account": "1111", "timezone": "UTC", "base_currency": "USD", "rate": "1"},
                     managed=True)
         assert refused.value.status_code == 409
 
@@ -190,7 +191,7 @@ async def test_bulk_payment_that_cannot_take_a_document_records_nothing(_db_engi
             with pytest.raises(DBAPIError):
                 await bulk_payment(
                     BulkPaymentBody(doc_ids=[held, other], amount=250.0, payment_date="2026-02-05",
-                                    method="cash", bank_account="1110"),
+                                    method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=s_bulk)
         finally:
             await s_hold.close()
@@ -217,7 +218,7 @@ async def test_bulk_payments_in_opposite_order_both_finish(_db_engine):
             results = await asyncio.wait_for(asyncio.gather(*(
                 bulk_payment(
                     BulkPaymentBody(doc_ids=order, amount=30.0, payment_date="2026-02-06",
-                                    method="cash", bank_account="1110"),
+                                    method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
                 for session, order in ((s_a, [d0, d1]), (s_b, [d1, d0])))), timeout=10)
         finally:

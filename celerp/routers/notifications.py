@@ -29,9 +29,8 @@ class NotificationOut(BaseModel):
     category: str
     title: str
     body: str
-    message_key: str | None
-    message_params: dict | None
     action_url: str | None
+    i18n: dict | None = None
     priority: str
     read: bool
     created_at: str
@@ -63,8 +62,10 @@ async def list_notifications(
             NotificationOut(
                 id=n.id,
                 category=n.category,
-                **notif_svc.readable(n.title, n.body),
+                title=n.title,
+                body=n.body,
                 action_url=n.action_url,
+                i18n=notif_svc.message_keys(n),
                 priority=n.priority,
                 read=n.read,
                 created_at=n.created_at.isoformat(),

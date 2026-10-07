@@ -17,11 +17,14 @@ from celerp.services.auto_je import (
     void_for_doc_voided,
 )
 
+from test_helpers import provision_company_books
+
 
 async def _seed_company(session) -> uuid.UUID:
     company_id = uuid.uuid4()
     session.add(Company(id=company_id, name="SweepCo", slug=f"sw-{company_id.hex[:8]}"))
     await session.flush()
+    await provision_company_books(session, company_id)
     return company_id
 
 

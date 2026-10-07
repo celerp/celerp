@@ -642,9 +642,10 @@ async def test_manufacturing_create_order_empty_description(client):
     r = await client.post("/manufacturing", headers=_h(tok), json={
         "description": "   ",
         "inputs": [{"item_id": "item:x", "quantity": 1}],
-        "outputs": [{"sku": "OUT", "name": "Output", "quantity": 1}],
+        "output_item_id": "item:y", "quantity": 1,
     })
     assert r.status_code == 422
+    assert r.json()["detail"] == "description is required"
 
 
 # ---------------------------------------------------------------------------
@@ -660,11 +661,14 @@ async def test_manufacturing_start_order_already_completed(client, session):
         "sku": f"MFG-IN-{uuid.uuid4().hex[:4]}", "sell_by": "piece", "name": "Input Item", "quantity": 100,
     })
     item_id = item_r.json()["id"]
+    output_id = (await client.post("/items", headers=_h(tok), json={
+        "sku": f"MFG-OUT-{uuid.uuid4().hex[:4]}", "sell_by": "piece", "name": "Output", "quantity": 0,
+    })).json()["id"]
 
     r = await client.post("/manufacturing", headers=_h(tok), json={
         "description": "Test Order",
         "inputs": [{"item_id": item_id, "quantity": 1}],
-        "outputs": [{"sku": "OUT-01", "name": "Output", "quantity": 1}],
+        "output_item_id": output_id, "quantity": 1,
     })
     assert r.status_code == 200
     order_id = r.json()["id"]

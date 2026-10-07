@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, owner, token
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
+from test_helpers import merge_items
 
 pytestmark = pytest.mark.asyncio
 
@@ -120,7 +121,7 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
         ("SYNC", "requires the connector to be owned before changing a link"),
     ("default_modules/celerp-docs/celerp_docs/doc_service.py", "_set_woocommerce_order_stock_paused"): ("SYNC", _SYNC),
     ("default_modules/celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_woocommerce"): ("SYNC", _SYNC),
-    (f"{INVENTORY}/routes.py", "merge_items"): ("ACTIVE", "refuses a merge for a live channel link"),
+    (f"{INVENTORY}/routes.py", "_plan_merge"): ("ACTIVE", "refuses a merge for a live channel link"),
     (f"{INVENTORY}/routes.py", "query_items"): ("ACTIVE", "Catalog channel state and the source filter"),
     (f"{INVENTORY}/services.py", "build_channel_states"): ("ACTIVE", "Catalog linked/historical state"),
     (f"{INVENTORY}/services.py", "_assert_external_identity_available"): ("SYNC", _SYNC),
@@ -218,7 +219,7 @@ def _legacy_id() -> str:
 
 
 async def _merge(client, headers, a: str, b: str):
-    return await client.post("/items/merge", headers=headers,
+    return await merge_items(client, headers=headers,
                              json={"source_entity_ids": [a, b], "target_sku_from": a})
 
 
@@ -550,8 +551,8 @@ async def test_connector_state_and_catalog_state_agree(real_engine, real_client)
         assert state["linked"] is active, (expected, state)
         assert state.get("historical", False) is (not active), (expected, state)
         assert ("shopify" in await connected_connector_ids(str(cid), {"shopify"})) is active, expected
-        r = await real_client.post("/items/merge", headers=auth(tok),
-                                   json={"source_entity_ids": [a, b], "target_sku_from": a})
+        r = await merge_items(real_client, headers=auth(tok),
+                              json={"source_entity_ids": [a, b], "target_sku_from": a})
         assert r.status_code == (409 if active else 200), (expected, r.text)
 
 
@@ -581,7 +582,7 @@ async def _hold_connector(session, platform: str) -> None:
 
 
 def _merge_task(client, tok: str, a: str, b: str) -> asyncio.Task:
-    return asyncio.create_task(client.post("/items/merge", headers=auth(tok),
+    return asyncio.create_task(merge_items(client, headers=auth(tok),
                                            json={"source_entity_ids": [a, b], "target_sku_from": a}))
 
 
@@ -615,8 +616,9 @@ async def test_merge_takes_shared_fences_sorted_before_item_locks(real_engine, r
 
 
 async def test_merge_racing_disconnect_is_clean(real_engine, real_client):
-    """A merge that starts while the connector is being disconnected waits for the
-    disconnect, then sees the detached identity and merges."""
+    """A merge sent while the connector is being disconnected waits for the disconnect.
+    Its preview was refused while the item was still listed, so it is refused too and
+    changes nothing; previewed again, it sees the detached identity and merges."""
     from celerp.models.connector_config import ConnectorConfig
     from celerp_inventory.services import detach_external_links_for_platform
     _, cid, tok = await _real_setup(real_engine)
@@ -635,10 +637,13 @@ async def test_merge_racing_disconnect_is_clean(real_engine, real_client):
         finally:
             await holder.commit()
         r = await task
-        assert r.status_code == 200, r.text
+        assert r.status_code == 422, r.text
+        assert "Preview this merge first" in r.json()["detail"]
     finally:
         await holder.close()
     assert await count(real_engine, "connector_configs", "company_id = :c", c=str(cid)) == 0
+    r = await _merge(real_client, auth(tok), a, b)
+    assert r.status_code == 200, r.text
 
 
 async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client):

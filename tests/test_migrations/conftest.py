@@ -17,6 +17,7 @@ alembic creates.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -204,6 +205,37 @@ def head_rev() -> str:
     return ScriptDirectory.from_config(build_alembic_config()).get_current_head()
 
 
+def upgrade_to(sync_url: str, revision: str) -> None:
+    """Run plain alembic upgrade to `revision` against `sync_url`, as an older release did."""
+    from alembic import command
+
+    from celerp.alembic_config import build_alembic_config
+
+    os.environ["DATABASE_URL"] = sync_url
+    command.upgrade(build_alembic_config(), revision)
+
+
+def schema_of(sync_url: str) -> dict[str, set]:
+    """Every column, index and constraint in the public schema plus the stamp, as
+    comparable text, so two databases reached by different paths can be compared."""
+    eng = create_engine(sync_url)
+    try:
+        with eng.connect() as conn:
+            columns = {tuple(r) for r in conn.execute(text(
+                "SELECT table_name, column_name, data_type, character_maximum_length, is_nullable, "
+                "column_default FROM information_schema.columns WHERE table_schema = 'public'"))}
+            indexes = {tuple(r) for r in conn.execute(text(
+                "SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'"))}
+            constraints = {tuple(r) for r in conn.execute(text(
+                "SELECT c.conrelid::regclass::text, c.conname, pg_get_constraintdef(c.oid) "
+                "FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace "
+                "WHERE n.nspname = 'public'"))}
+            stamp = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    finally:
+        eng.dispose()
+    return {"columns": columns, "indexes": indexes, "constraints": constraints, "stamp": {stamp}}
+
+
 def swap_db(url: str, dbname: str) -> str:
     """Replace the database name in a SQLAlchemy URL.
 
@@ -214,17 +246,17 @@ def swap_db(url: str, dbname: str) -> str:
     return make_url(url).set(database=dbname).render_as_string(hide_password=False)
 
 
-@pytest.fixture()
-def fresh_db():
+@contextlib.contextmanager
+def throwaway_db(prefix: str = "advtest"):
     """Provision a throwaway database, yield (async_url, sync_url), then drop it.
 
-    Restores os.environ['DATABASE_URL'] on teardown - `_run_migrations` mutates
-    it, which would otherwise leak the throwaway DB into later tests.
+    Restores os.environ['DATABASE_URL'] on exit - `_apply_migrations` mutates it,
+    which would otherwise leak the throwaway DB into later tests.
     """
     base_async = os.environ["DATABASE_URL"]
     base_sync = base_async.replace("+asyncpg", "+psycopg2")
     saved_env = os.environ.get("DATABASE_URL")
-    dbname = f"advtest_{uuid.uuid4().hex[:8]}"
+    dbname = f"{prefix}_{uuid.uuid4().hex[:8]}"
 
     admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
     with admin.connect() as c:
@@ -252,6 +284,13 @@ def fresh_db():
             )
             c.execute(text(f'DROP DATABASE IF EXISTS "{dbname}"'))
         admin.dispose()
+
+
+@pytest.fixture()
+def fresh_db():
+    """A throwaway database as (async_url, sync_url), dropped afterwards."""
+    with throwaway_db() as urls:
+        yield urls
 
 
 @pytest.fixture()

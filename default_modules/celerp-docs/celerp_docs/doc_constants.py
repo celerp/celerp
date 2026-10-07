@@ -65,7 +65,7 @@ LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
     "fulfilled_items", "fulfillment_status", "fulfilled_at", "fulfilled_by", "fulfill_cycle",
     "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "linked",
     "result", "close_reason", "void_reason", "revert_count", "files",
-    "pre_close_status", "pre_void_status", "pre_void_fulfillment",
+    "pre_close_status", "pre_void_status", "pre_void_fulfillment", "pre_receipt_status",
     "entity_type", "company_id", "doc_number",
 })
 
@@ -104,3 +104,8 @@ NON_FINANCIAL_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
 # Statuses where Send is suppressed even for sendable doc types. A closed memo is
 # settled paperwork: re-sending it would silently un-close it, so Send is hidden.
 NO_SEND_STATUSES: frozenset[str] = frozenset({"paid", "void", "closed"})
+
+# Account classes a write-off may post to: expense for spoilage, samples and shrinkage, equity for
+# owner drawings and family use. Never cogs: cost of sales belongs to sold stock alone. Shared by the
+# API check and the UI picker so the two never diverge.
+WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "equity"})

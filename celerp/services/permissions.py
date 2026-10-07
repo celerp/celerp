@@ -12,7 +12,9 @@ independently: a grant to one role never implies a grant to any other.
 """
 from __future__ import annotations
 
+import copy
 import uuid
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from fastapi import Depends, HTTPException, status
@@ -23,7 +25,7 @@ from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, normalize_role
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import AUTHORITY, locked_company
 
 
 class Role(NamedTuple):
@@ -129,9 +131,14 @@ def role_has_permission(settings: dict | None, role: str, key: str) -> bool:
     """True when *role* is in the permission's resolved grant set.
 
     *role* is the already-migrated role key from get_current_role; an
-    unrecognized role is absent from every set and so fails closed.
+    unrecognized role is absent from every set and so fails closed. A grant the
+    request relied on (its own role, its own settings) is recorded on the request's
+    authority, so the company lock judges it again.
     """
-    return role in resolved_grant_roles(settings, key)
+    granted = role in resolved_grant_roles(settings, key)
+    if granted and isinstance(settings, AuthoritySettings) and settings.authority.role == role:
+        settings.authority.keys.add(key)
+    return granted
 
 
 def assert_role_permission(settings: dict | None, role: str, key: str) -> None:
@@ -141,6 +148,85 @@ def assert_role_permission(settings: dict | None, role: str, key: str) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Requires the {key} permission",
         )
+
+
+ROLE_CHANGED = "Your access to this company changed while this was being saved. Nothing was saved; try again."
+
+
+class AuthoritySettings(dict):
+    """The company settings a request was authorized with (get_current_company_settings).
+    The company lock replaces their contents with the settings as committed, so every
+    gate the handler applies after it reads fresh values. A copy is a plain dict."""
+
+    __slots__ = ("authority",)
+
+    def __copy__(self) -> dict:
+        return dict(self)
+
+    def __deepcopy__(self, memo) -> dict:
+        return copy.deepcopy(dict(self), memo)
+
+    def __reduce__(self):
+        return dict, (dict(self),)
+
+
+@dataclass(eq=False)
+class RequestAuthority:
+    """What a request was authorized as: its company, user and role, the permissions
+    it relied on, and the settings it was handed. Registered on the request's session
+    by get_auth_context and judged again under the company lock (company_lock)."""
+
+    company_id: uuid.UUID
+    user_id: uuid.UUID
+    role: str
+    keys: set[str] = field(default_factory=set)
+    views: list[AuthoritySettings] = field(default_factory=list)
+
+    async def judge_again(self, session: AsyncSession) -> None:
+        """403 unless the caller still holds the same role, active, with every
+        permission the request relied on; then refresh the settings it was handed."""
+        role, settings = await read_authority(session, self.company_id, self.user_id)
+        if role != self.role:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=ROLE_CHANGED)
+        for key in sorted(self.keys):
+            assert_role_permission(settings, role, key)
+        for view in self.views:
+            view.clear()
+            view.update(settings)
+
+
+def authorize_request(session: AsyncSession, company_id, user_id, role: str) -> RequestAuthority:
+    """Register the request's authority on its session (get_auth_context)."""
+    authority = RequestAuthority(company_id=company_id, user_id=user_id, role=role)
+    session.info[AUTHORITY] = authority
+    return authority
+
+
+def end_request(session: AsyncSession, authority: RequestAuthority) -> None:
+    if session.info.get(AUTHORITY) is authority:
+        session.info.pop(AUTHORITY, None)
+
+
+def _authority_for(session: AsyncSession, company_id) -> RequestAuthority | None:
+    authority = session.info.get(AUTHORITY)
+    if authority is None or str(authority.company_id) != str(company_id):
+        return None
+    return authority
+
+
+async def read_authority(session: AsyncSession, company_id, user_id) -> tuple[str, dict]:
+    """The caller's role and the company settings as committed, for a caller holding the
+    company lock. The membership row is held until the transaction ends, so the role
+    cannot change before the write commits; a membership that is gone or inactive reads
+    as no role. Settings are read as a column, leaving any loaded Company untouched."""
+    link = (await session.execute(
+        select(UserCompany).where(
+            UserCompany.user_id == user_id, UserCompany.company_id == company_id,
+            UserCompany.is_active == True,  # noqa: E712
+        ).with_for_update(read=True).execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    settings = (await session.execute(select(Company.settings).where(Company.id == company_id))).scalar_one_or_none()
+    return (normalize_role(link.role) if link is not None else ""), dict(settings or {})
 
 
 async def locked_authority(session: AsyncSession, company_id, user_id, keys: tuple[str, ...]) -> tuple[str, dict]:
@@ -154,15 +240,8 @@ async def locked_authority(session: AsyncSession, company_id, user_id, keys: tup
     membership row is held too, so the role cannot change until the caller
     commits. A membership that is gone reads as no role.
     """
-    company = await locked_company(session, company_id)
-    link = (await session.execute(
-        select(UserCompany).where(
-            UserCompany.user_id == user_id, UserCompany.company_id == company_id,
-            UserCompany.is_active == True,  # noqa: E712
-        ).with_for_update(read=True).execution_options(populate_existing=True)
-    )).scalar_one_or_none()
-    role = normalize_role(link.role) if link is not None else ""
-    settings = dict((company.settings if company else None) or {})
+    await locked_company(session, company_id)
+    role, settings = await read_authority(session, company_id, user_id)
     for key in keys:
         assert_role_permission(settings, role, key)
     return role, settings
@@ -189,7 +268,14 @@ async def get_current_company_settings(
     toggle takes effect on the next request; a missing company row yields {}.
     """
     company = await session.get(Company, company_id)
-    return (company.settings if company else {}) or {}
+    settings = (company.settings if company else {}) or {}
+    authority = _authority_for(session, company_id)
+    if authority is None:
+        return settings
+    view = AuthoritySettings(settings)
+    view.authority = authority
+    authority.views.append(view)
+    return view
 
 
 def require_permission(key: str):
@@ -209,6 +295,9 @@ def require_permission(key: str):
     ) -> None:
         company = await session.get(Company, company_id)
         assert_role_permission(company.settings if company else {}, role, key)
+        authority = _authority_for(session, company_id)
+        if authority is not None and authority.role == role:
+            authority.keys.add(key)
 
     # Recorded on the guard so a test can read back what each route requires.
     # Without it the key is only visible inside this closure, and "did exactly the

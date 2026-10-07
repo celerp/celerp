@@ -873,5 +873,5 @@ async def test_import_refuses_fields_the_app_manages(client, session, event_type
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 0
-    assert any(field in e for e in body["errors"]), body["errors"]
+    assert any(f"set by the app and cannot be entered: {field}." in e["message"] for e in body["errors"]), body["errors"]
     assert (await client.get(f"/items/{entity_id}", headers=headers)).status_code == 404

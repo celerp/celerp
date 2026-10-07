@@ -284,8 +284,9 @@ async def auth(session, _setup_ids):
     session.add(User(id=uid, email="admin@test.co", name="Admin", auth_hash="x", is_active=True))
     await session.flush()  # parents before membership for Postgres FK checks
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    from test_helpers import make_authed_token, provision_company_books
+    await provision_company_books(session, cid)
     await session.commit()
-    from test_helpers import make_authed_token
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {
         "headers": {"Authorization": f"Bearer {token}"},
@@ -518,60 +519,6 @@ async def test_sold_item_state_carries_status_doc_and_is_searchable(client, sess
     match = [i for i in r.json()["items"] if i.get("entity_id") == item_id or i.get("id") == item_id]
     assert match, "sold item must be findable by its status doc number"
     assert match[0]["status_doc_number"] == expected_num
-
-
-@pytest.mark.asyncio
-async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _setup_ids):
-    """Un-fulfill: restores stock and reverses JE."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill, execute_unfulfill
-    from celerp.services.pick import compute_pick_plan
-
-    item_id = await _create_item(client, auth, "RESTORE-A", 10, cost_price=3.0)
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "RESTORE-A", "quantity": 10, "unit_price": 8.0},
-    ])
-
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": "RESTORE-A", "quantity": 10,
-        "created_at": "", "expires_at": None, "cost_total": 30.0,
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-    )
-    await session.commit()
-
-    # Verify item is sold and qty preserved (= fulfilled qty) after fulfillment
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 10
-
-    # Re-read doc state (now has fulfilled_items)
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") == "fulfilled"
-
-    # Un-fulfill
-    result = await execute_unfulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]), reason="test",
-    )
-    await session.commit()
-
-    assert result["success"] is True
-
-    # Verify stock restored
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 10
-    assert inv_row.state.get("status") == "available"
-
-    # Verify doc fulfillment cleared
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") is None
 
 
 @pytest.mark.asyncio
@@ -1375,8 +1322,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "available", f"Expected available after revert, got {item_state['status']}"
-    # Un-fulfilling (revert-lines) does not void the finalize COGS.
-    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "revert-lines must not void finalize COGS"
+    # The goods are back in stock, so revert-lines gives their cost of sales back.
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 0.0, "revert-lines must take the COGS back"
 
     # Re-fulfill — must succeed without idempotency key collision
     r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
@@ -1386,8 +1333,8 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "sold", f"Expected sold after re-fulfill, got {item_state['status']}"
-    # Re-fulfill posts no new COGS either.
-    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "re-fulfill must not double-post COGS"
+    # Re-fulfill recognizes the cost once more, never twice.
+    assert (await _je_net(client, auth["headers"])).get("5100", 0.0) == 100.0, "re-fulfill must recognize COGS once"
 
 
 @pytest.mark.asyncio
@@ -2489,7 +2436,7 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
         assert c["doc_number"] == owner_number
         assert "release it there first" in c["message"]
 
-    # PATCH guard (_assert_no_foreign_reserved).
+    # Edit path.
     rd = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "line_items": [],
     })
@@ -2502,7 +2449,7 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
     assert rp.status_code == 422, rp.text
     _check_detail(rp.json()["detail"])
 
-    # List-convert path (its own 422 raise from _scan_reserved_lines).
+    # List-convert path.
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
         "contact_name": "Buyer",
@@ -2606,12 +2553,14 @@ async def test_list_items_sold_total_over_full_set(client, session, auth, _setup
 
 
 async def _je_net(client, headers) -> dict[str, float]:
-    """Net debit-credit per account across all non-voided posted journal entries."""
+    """Net debit-credit per account across the non-voided posted journal entries documents
+    wrote, leaving out the entry each lot was booked with as it was made available."""
     led = (await client.get("/ledger?entity_type=journal_entry", headers=headers)).json()["items"]
     voided = {e["entity_id"] for e in led if str(e.get("event_type", "")).endswith(".voided")}
     by_acct: dict[str, float] = {}
     for e in led:
-        if not str(e.get("event_type", "")).endswith(".created") or e["entity_id"] in voided:
+        if (not str(e.get("event_type", "")).endswith(".created") or e["entity_id"] in voided
+                or ":made-available:" in e["entity_id"]):
             continue
         for x in (e.get("data") or {}).get("entries", []):
             by_acct[x["account"]] = round(
@@ -2895,7 +2844,7 @@ async def test_invoice_line_legacy_item_splittable():
 
 @pytest.mark.asyncio
 async def test_cogs_posts_at_finalize(client, session, auth, _setup_ids):
-    """Finalizing an invoice posts COGS (Dr 5100 / Cr 1130-P), not only revenue. At
+    """Finalizing an invoice posts COGS (Dr 5100 / Cr 1130-OB), not only revenue. At
     merge-base finalize posts revenue only; COGS waits until fulfillment."""
     sku = f"COGSFIN-{uuid.uuid4().hex[:6]}"
     item_id = await _create_item(client, auth, sku, 10, cost_price=5.0)  # unit cost 5
@@ -2904,7 +2853,7 @@ async def test_cogs_posts_at_finalize(client, session, auth, _setup_ids):
     ])
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 10.0, f"finalize must debit COGS 5100 = 2*5, got {nets.get('5100')} (nets={nets})"
-    assert nets.get("1130-P") == -10.0, f"finalize must credit inventory 1130-P, got {nets.get('1130-P')} (nets={nets})"
+    assert nets.get("1130-OB") == -10.0, f"finalize must credit inventory 1130-OB, got {nets.get('1130-OB')} (nets={nets})"
 
 
 @pytest.mark.asyncio
@@ -3102,8 +3051,8 @@ async def test_cogs_finalize_spans_sibling_lots(client, session, auth, _setup_id
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 110.0, (
         f"cross-lot finalize COGS must be 2*10 + 3*30 = 110, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-P") == -110.0, (
-        f"inventory relief must match at -110, got {nets.get('1130-P')} (nets={nets})")
+    assert nets.get("1130-OB") == -110.0, (
+        f"inventory relief must match at -110, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -3121,8 +3070,8 @@ async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, ses
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 90.0, (
         f"oversold line must post 2*10 + 2*30 + 1*10 = 90, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-P") == -90.0, (
-        f"inventory relief must match at -90, got {nets.get('1130-P')} (nets={nets})")
+    assert nets.get("1130-OB") == -90.0, (
+        f"inventory relief must match at -90, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -3173,8 +3122,8 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
                for e in adj.state.get("entries", [])}
     assert by_acct.get("5100") == (60.0, 0.0), (
         f"adjustment must debit 5100 by exactly 60, got {by_acct.get('5100')}")
-    assert by_acct.get("1130-P") == (0.0, 60.0), (
-        f"adjustment must credit 1130-P by exactly 60, got {by_acct.get('1130-P')}")
+    assert by_acct.get("1130-OB") == (0.0, 60.0), (
+        f"adjustment must credit 1130-OB by exactly 60, got {by_acct.get('1130-OB')}")
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, (
@@ -3188,7 +3137,7 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
         select(func.count()).select_from(LedgerEntry)
         .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_id))).scalar()
     await auto_je_service.create_for_doc_cogs_adjustment(
-        session, company_id=cid, user_id=None, doc_id=doc1, delta=60.0,
+        session, company_id=cid, user_id=None, doc_id=doc1, delta={"1130-P": 60.0},
         cycle_tag="fulfill-0:l0", doc_number="RETRY", ts="2026-01-01")
     await session.commit()
     rows_after = (await session.execute(
@@ -3275,7 +3224,7 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
         select(func.count()).select_from(LedgerEntry)
         .where(LedgerEntry.company_id == cid, LedgerEntry.entity_id == adj_l1_id))).scalar()
     await auto_je_service.create_for_doc_cogs_adjustment(
-        session, company_id=cid, user_id=None, doc_id=doc1, delta=42.0,
+        session, company_id=cid, user_id=None, doc_id=doc1, delta={"1130-P": 42.0},
         cycle_tag="fulfill-0:l1", doc_number="RETRY", ts="2026-01-01")
     await session.commit()
     rows_after = (await session.execute(
@@ -3315,8 +3264,8 @@ async def test_cogs_finalize_skips_service_and_freight_lines(client, session, au
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 8.0, (
         f"service/freight lines must post no COGS; only stock 2*4=8, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-P") == -8.0, (
-        f"service/freight lines must not relieve inventory; expected -8, got {nets.get('1130-P')} (nets={nets})")
+    assert nets.get("1130-OB") == -8.0, (
+        f"service/freight lines must not relieve inventory; expected -8, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -3441,8 +3390,8 @@ async def test_live_fulfillment_business_date_controls_lock_and_adjustment(
 async def test_split_fulfillment_period_lock_uses_company_timezone(
     client, session, auth, _setup_ids, monkeypatch
 ):
-    from datetime import date, timezone
-    import celerp.events.engine as event_engine
+    from datetime import timezone
+    import celerp.services.business_time as business_time
     import celerp_docs.routes as doc_routes
 
     cid = _setup_ids["company_id"]
@@ -3463,14 +3412,8 @@ async def test_split_fulfillment_period_lock_uses_company_timezone(
         def now(cls, tz=None):
             return fixed if tz is not None else fixed.replace(tzinfo=None)
 
-    class FixedDate(date):
-        @classmethod
-        def today(cls):
-            return cls(2026, 9, 24)
-
     monkeypatch.setattr(doc_routes, "datetime", FixedDateTime)
-    monkeypatch.setattr(event_engine, "datetime", FixedDateTime)
-    monkeypatch.setattr(event_engine, "date", FixedDate)
+    monkeypatch.setattr(business_time, "datetime", FixedDateTime)
 
     r = await client.post(
         f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
@@ -3520,7 +3463,8 @@ async def test_invoice_cross_lot_revert_trues_back_and_refulfill_posts_new_cycle
     assert adj0.state.get("status") == "posted"
     back = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc1}:cogs-adj:reverse-0:l0"})
     assert back is not None and back.state.get("status") == "posted"
-    assert (await _je_net(client, auth["headers"])).get("5100") == 200.0
+    # Every lot doc1 shipped is back in stock: only doc2's 90 stays recognized.
+    assert (await _je_net(client, auth["headers"])).get("5100") == 90.0
 
     rf = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
                            json={"line_entity_ids": [lot_a]})
@@ -3589,7 +3533,7 @@ async def test_finalize_cogs_keeps_another_lines_bound_lot_for_that_line(client,
     await _two_bound_lots_invoice(client, auth)
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, nets
-    assert nets.get("1130-P") == -260.0, nets
+    assert nets.get("1130-OB") == -260.0, nets
 
 
 @pytest.mark.asyncio

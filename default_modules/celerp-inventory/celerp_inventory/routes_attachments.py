@@ -48,6 +48,7 @@ from celerp.services.attachments import (
     storing,
 )
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.company_lock import lock_projections
 from celerp.services.cost_visibility import restricted_field_keys
 from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import require_permission
@@ -94,6 +95,17 @@ async def _patch_item_attachments(
     )
 
 
+async def _locked_item(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    """The item row, locked and fresh, for a write that replaces its whole attachment list.
+
+    Two such writes at once would each start from the same list and the later one would
+    drop the earlier one's change, so each waits for the last to commit before reading."""
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    if row is None or row.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+    return row
+
+
 @router.post("/{entity_id}/attachments")
 async def upload_attachment(
     entity_id: str,
@@ -111,7 +123,7 @@ async def upload_attachment(
     if attachment_type is not None and attachment_type not in _VALID_TYPES:
         raise HTTPException(status_code=422, detail=f"Invalid attachment_type: {attachment_type!r}")
 
-    row = await get_item_projection(session, company_id, entity_id)
+    await get_item_projection(session, company_id, entity_id)
 
     async with storing(session, company_id) as store:
         try:
@@ -119,6 +131,7 @@ async def upload_attachment(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+        row = await _locked_item(session, company_id, entity_id)
         existing: list[dict] = row.state.get("attachments") or []
         updated = merge_attachments(existing, att)
         existing_preview: str | None = row.state.get("preview_image_id")
@@ -137,7 +150,7 @@ async def delete_attachment(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Remove one attachment from an item."""
-    row = await get_item_projection(session, company_id, entity_id)
+    row = await _locked_item(session, company_id, entity_id)
 
     existing: list[dict] = row.state.get("attachments") or []
     updated = remove_attachment(existing, att_id)
@@ -161,7 +174,7 @@ async def set_preview_image(
     The referenced attachment must exist and have type == "image".
     Returns {"preview_image_id": att_id}.
     """
-    row = await get_item_projection(session, company_id, entity_id)
+    row = await _locked_item(session, company_id, entity_id)
 
     attachments: list[dict] = row.state.get("attachments") or []
     target = next((a for a in attachments if a["id"] == att_id), None)
@@ -239,7 +252,6 @@ async def bulk_attach_files(
     Returns:
       {matched, unmatched, errors, report: [{sku, file, status, url, tag, is_hero}]}
     """
-    from datetime import datetime, timezone
     import mimetypes as _mt
     from starlette.datastructures import Headers as _Headers
 
@@ -284,7 +296,7 @@ async def bulk_attach_files(
             for info in sorted(entries, key=lambda i: i.filename):  # sorted for deterministic hero selection
                 name = info.filename
                 # Check the BASENAME, not the full ZIP path, so nested junk like
-                # sub/.DS_Store is skipped too (the full name doesn't start with '.') - F5.
+                # sub/.DS_Store is skipped too (the full name doesn't start with '.') — F5.
                 base = _Path(name).name
                 if base.startswith("__") or base.startswith("."):
                     continue
@@ -334,39 +346,16 @@ async def bulk_attach_files(
                         and sku_key not in hero_assigned
                         and (not existing_hero or override_hero)
                     )
+                    await attach_file(session, company_id, "item", row.entity_id, meta, user.id,
+                                      document_tag=tag, is_hero=is_hero, description=label)
+                    # Only an image that was attached takes the slot; one that failed leaves it to the next.
                     if is_hero:
                         hero_assigned.add(sku_key)
-
-                    await emit_event(
-                        session,
-                        company_id=company_id,
-                        entity_id=row.entity_id,
-                        entity_type="item",
-                        event_type="item.file.attached",
-                        data={
-                            "entity_id": row.entity_id,
-                            "entity_type": "item",
-                            "file_id": meta["id"],
-                            "filename": meta["filename"],
-                            "mime": meta["mime"],
-                            "size": meta["size"],
-                            "url": meta.get("url", ""),
-                            "document_tag": tag,
-                            "description": label,
-                            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                            "is_hero": is_hero,
-                        },
-                        actor_id=user.id,
-                        location_id=None,
-                        source="api",
-                        idempotency_key=str(uuid.uuid4()),
-                        metadata_={},
-                    )
                     # NOTE: do NOT re-apply the event here. emit_event() ->
                     # ProjectionEngine.apply_event already appended the file to this
                     # same projection row (session identity map), so row.state is
                     # current for the next file on this SKU. Re-applying double-counts
-                    # the file (two entries with the same file_id) - see F1.
+                    # the file (two entries with the same file_id) — see F1.
 
                     matched += 1
                     report.append({"sku": sku_part, "file": name, "status": "ok",

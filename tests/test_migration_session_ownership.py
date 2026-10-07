@@ -20,6 +20,7 @@ from migration_support import (
     OWNER_PASSWORD,
     auth,
     fake_bytes,
+    finalize_run,
     load_run,
     maker,
     migrate_as_owner,
@@ -74,7 +75,7 @@ async def test_staged_flag_is_server_controlled_and_cleared_by_finalize(real_cli
 
     await migrations.run_migration(run_id)
     async with maker(real_engine)() as s:
-        await migrations.finalize(s, await migrations.get_owned_migration_run(s, run_id, user_id))
+        await finalize_run(s, await migrations.get_owned_migration_run(s, run_id, user_id))
     done = await _company(real_engine, company_id)
     assert (done.is_active, done.is_migration_staged) == (True, False)
 

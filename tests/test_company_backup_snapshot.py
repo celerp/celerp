@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from celerp import db_catalog
 from company_backup_support import manifest, members, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_backup import (
@@ -184,8 +185,10 @@ async def test_export_snapshot_transaction_is_repeatable_read_read_only_utc(real
 @pytest.mark.parametrize("caller", _CALLERS)
 async def test_export_snapshot_reads_through_one_dedicated_session(real_engine, real_client, tmp_path, monkeypatch,
                                                                    caller):
-    """The company, its schema and every table are read through one session of the backup's own,
-    never the request session that authenticated the download."""
+    """The company, the schema the backup is made from and every table are read through one
+    session of the backup's own, never the request session that authenticated the download.
+    The schema is read again, once the tables are held and once every row is read, each
+    time through a short session of its own, to see it still holds."""
     from celerp.db import get_session
     from celerp.main import app
     from celerp.models.company import Company
@@ -206,7 +209,7 @@ async def test_export_snapshot_reads_through_one_dedicated_session(real_engine, 
 
     app.dependency_overrides[get_session] = recording
     reads: dict[str, list] = {"schema": [], "rows": [], "company": []}
-    real_schema, real_batches, real_get = cb._schema, cb._batches, AsyncSession.get
+    real_schema, real_batches, real_get = db_catalog.read, cb._batches, AsyncSession.get
 
     async def schema(session):
         reads["schema"].append(session)
@@ -222,17 +225,18 @@ async def test_export_snapshot_reads_through_one_dedicated_session(real_engine, 
             reads["company"].append(self)
         return await real_get(self, entity, ident, *args, **kwargs)
 
-    monkeypatch.setattr(cb, "_schema", schema)
+    monkeypatch.setattr(db_catalog, "read", schema)
     monkeypatch.setattr(cb, "_batches", batches)
     monkeypatch.setattr(AsyncSession, "get", get)
     r = await real_client.get("/company-backups/download", params=params, headers=auth(tok))
     assert r.status_code == 200, r.text
     assert members(r.content)["attachments/photo.png"] == b"alpha-photo"
-    used = {id(s) for s in reads["schema"] + reads["rows"]}
+    [snapshot, *checks] = reads["schema"]
+    used = {id(s) for s in [snapshot, *reads["rows"]]}
     assert len(used) == 1 and reads["rows"], used
-    [snapshot] = reads["schema"][:1]
     assert any(s is snapshot for s in reads["company"])
-    assert request_sessions and not any(s is snapshot for s in request_sessions)
+    assert len({id(s) for s in checks}) == 2 and not used & {id(s) for s in checks}
+    assert request_sessions and not any(s is snapshot or s in checks for s in request_sessions)
 
 
 @pytest.mark.parametrize("failure", ["missing", "read_error"])
@@ -317,7 +321,7 @@ async def test_export_snapshot_archive_format_unchanged(real_engine, real_client
     assert json.loads(parts["manifest.json"]) == m
     assert set(m) == {"format", "format_version", "backup_id", "created_at", "company", "provenance",
                       "modules", "tables", "attachments"}
-    assert (m["format"], m["format_version"], m["provenance"]) == ("celerp-company-backup", 1, _PROVENANCE)
+    assert (m["format"], m["format_version"], m["provenance"]) == ("celerp-company-backup", 2, _PROVENANCE)
     assert set(m["company"]) == {"id", "name", "settings"} and m["company"]["id"] == str(cid)
     assert set(m["modules"]) == {"enabled", "versions"}
     async with maker(real_engine)() as s:
@@ -393,3 +397,50 @@ async def test_export_snapshot_sqlite_dialect_uses_one_plain_transaction(tmp_pat
     assert statements[0] == "SELECT 1" and len(statements) == 2
     assert not any(s.lstrip().upper().startswith("SET") for s in statements)
     assert out.read_bytes() == b"backup" and [p.name for p in tmp_path.iterdir() if "partial" in p.name] == []
+
+
+@pytest.mark.parametrize("caller", _CALLERS)
+async def test_downloads_started_together_up_to_the_connection_ceiling_are_all_answered(
+        real_engine, real_client, tmp_path, monkeypatch, caller):
+    """As many downloads as the request pool's base size, started at the same moment
+    through a pool sized as in production, each get the backup or the answer to try
+    again; none waits for a connection until it fails."""
+    import celerp.db
+    from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
+    from celerp.db import get_session
+    from celerp.main import app
+
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    user, cid, tok = await _bk_setup(real_engine)
+    params = await _download_params(real_engine, user, cid, caller)
+    pooled = create_async_engine(real_engine.url, pool_size=REQUEST_DB_POOL_SIZE, max_overflow=REQUEST_DB_MAX_OVERFLOW,
+                                 pool_timeout=5, connect_args=celerp.db.REQUEST_CONNECT_ARGS)
+
+    async def session():
+        async with maker(pooled)() as s:
+            yield s
+
+    together = asyncio.Barrier(REQUEST_DB_POOL_SIZE)
+    export = cb.export_company_snapshot
+
+    async def export_together(*args, **kwargs):
+        await together.wait()
+        return await export(*args, **kwargs)
+
+    monkeypatch.setattr(celerp.db, "engine", pooled)
+    monkeypatch.setattr(cb, "export_company_snapshot", export_together)
+    monkeypatch.setitem(app.dependency_overrides, get_session, session)
+    try:
+        answers = await asyncio.wait_for(asyncio.gather(*(
+            real_client.get("/company-backups/download", params=params, headers=auth(tok))
+            for _ in range(REQUEST_DB_POOL_SIZE)), return_exceptions=True), timeout=25)
+    finally:
+        await pooled.dispose()
+
+    first, rest = cb.RESHAPED.split("{table}")
+    seen = [repr(r) if isinstance(r, Exception) else (r.status_code, r.text[:120]) for r in answers]
+    assert all(not isinstance(r, Exception) and r.status_code in (200, 409) for r in answers), seen
+    assert 200 in [r.status_code for r in answers], seen
+    assert all(r.json()["detail"].startswith(first) and r.json()["detail"].endswith(rest)
+               for r in answers if r.status_code == 409)

@@ -29,7 +29,7 @@ async def migrate_boms_to_recipes(session: AsyncSession, company_id, actor_id) -
         if state.get("deleted") or not output_item_id:
             continue
         recipe = {
-            "output_qty": state.get("output_qty", 1) or 1,
+            "output_qty": state.get("output_qty", 1),
             "components": [
                 {
                     "item_id": c.get("item_id"),

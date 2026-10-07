@@ -24,7 +24,8 @@ from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
-from celerp_accounting.routes import seed_chart_of_accounts
+
+from test_helpers import provision_company_books
 
 
 async def _seed_company(session, name: str) -> uuid.UUID:
@@ -42,9 +43,7 @@ async def _seed_company(session, name: str) -> uuid.UUID:
     session.add(UserCompany(
         user_id=uid, company_id=cid, role="owner", is_active=True,
     ))
-    # Every company gets the default chart of accounts when it is created.
-    await seed_chart_of_accounts(session, cid)
-    await session.flush()
+    await provision_company_books(session, cid)
     return cid
 
 
@@ -1265,7 +1264,7 @@ async def test_woocommerce_payment_applies_the_outstanding_balance_not_the_total
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
-         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+         "method": "cash", "reference": "hand-4", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:2001", commit=False,
     )
     await session.commit()
@@ -1299,7 +1298,7 @@ async def test_woocommerce_paid_order_with_a_balance_again_goes_to_a_person(use_
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
-         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+         "method": "cash", "reference": "hand-4", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:2002", commit=False,
     )
     await session.commit()
@@ -1366,7 +1365,7 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
-         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+         "method": "cash", "reference": "hand-4", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:772", commit=False,
     )
     await session.commit()
@@ -1399,7 +1398,7 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
     await apply_doc_payment(
         session, cid, doc_id,
         {"amount": 4.0, "payment_date": "2024-06-03", "currency": "USD",
-         "method": "bank_transfer", "reference": "hand-4-again", "bank_account": "1110"},
+         "method": "bank_transfer", "reference": "hand-4-again", "bank_account": "1111"},
         source="api", actor_id=None, idempotency_key="manual:772:again", commit=False,
     )
     await session.commit()
@@ -1431,11 +1430,11 @@ async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_te
 @pytest.mark.parametrize("settings, expected", [
     ({"woocommerce_deposit_account": "1191", "stripe_deposit_account": "1192"}, "1191"),
     ({"stripe_deposit_account": "1192"}, "1192"),
-    ({}, "1110"),
+    ({}, "1111"),
 ])
 async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_session, settings, expected):
     """Store payments land on the connector's own deposit account, else the
-    company's online-payments default, else Cash."""
+    company's online-payments default, else the default deposit account."""
     session = use_test_session
     cid = await _seed_company(session, "WooDeposit")
     for code in ("1191", "1192"):
@@ -1466,10 +1465,11 @@ async def _deposit_case(session, cid, case: str) -> str:
     from celerp_accounting.models import Account
     company = await locked_company(session, cid)
     if case == "archived_cash":
-        cash = await session.scalar(select(Account).where(Account.company_id == cid, Account.code == "1110"))
-        cash.is_active = False
+        session.add(Account(company_id=cid, code="1112", name="Petty cash", account_type="asset",
+                            parent_code="1110", is_active=False))
+        company.settings = {**(company.settings or {}), "woocommerce_deposit_account": "1112"}
         await session.flush()
-        return "1110"
+        return "1112"
     code = {"missing": "1199", "not_asset": "4100"}.get(case, "1190")
     if case == "archived_bank":
         await _bank_on(session, cid, code, active=False)

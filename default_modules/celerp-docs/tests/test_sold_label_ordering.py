@@ -44,6 +44,16 @@ async def _memo(client, h, item_ids: list[str]) -> str:
     return r.json()["id"]
 
 
+async def _invoice(client, h, item_id: str) -> None:
+    """The customer keeps a consigned item: an invoice for it, finalized, sells it."""
+    r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
+        {"entity_id": item_id, "sku": "S", "name": "S", "quantity": 1, "unit_price": 10, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/items/{item_id}", headers=h)).json()["status"] == "sold"
+
+
 def _label_for(doc: dict, eid: str):
     for li in doc.get("line_items") or []:
         if (li.get("entity_id") or li.get("item_id")) == eid:
@@ -69,12 +79,16 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     stale = await _item(client, h, "SL-STALE")
     fresh = await _item(client, h, "SL-FRESH")
 
-    # `stale`: sold in a prior cycle, then returned to stock (available again) BEFORE this
-    # memo exists. The sold ledger event now predates this memo's fulfilled event.
-    assert (await client.post("/items/bulk/status", headers=h,
-                              json={"entity_ids": [stale], "status": "sold"})).status_code == 200
-    assert (await client.post("/items/bulk/status", headers=h,
-                              json={"entity_ids": [stale], "status": "available"})).status_code == 200
+    # `stale`: sold off an earlier memo, then returned to stock (available again) BEFORE
+    # this memo exists. The sold ledger event now predates this memo's fulfilled event.
+    earlier = await _memo(client, h, [stale])
+    assert (await client.post(f"/docs/{earlier}/finalize", headers=h)).status_code == 200
+    assert (await client.post(f"/docs/{earlier}/fulfill-lines", headers=h,
+                              json={"line_entity_ids": [stale]})).status_code == 200
+    await _invoice(client, h, stale)
+    r = await client.post(f"/docs/{earlier}/revert-lines", headers=h, json={"line_entity_ids": [stale]})
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/items/{stale}", headers=h)).json()["status"] == "available"
 
     memo = await _memo(client, h, [stale, fresh])
     assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
@@ -84,8 +98,7 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
                               json={"line_entity_ids": [stale, fresh]})).status_code == 200
 
     # A genuine post-consignment sale on `fresh` only (its sold id > its fulfilled id).
-    assert (await client.post("/items/bulk/status", headers=h,
-                              json={"entity_ids": [fresh], "status": "sold"})).status_code == 200
+    await _invoice(client, h, fresh)
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, stale) == "On Memo", (

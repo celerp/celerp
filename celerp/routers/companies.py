@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_session
+from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
@@ -886,6 +886,7 @@ async def patch_user(
 from celerp.services.field_schema import COST_SCHEMA_KEYS  # noqa: F401 re-export
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA  # noqa: F401 re-export
 from celerp.services.field_schema import get_effective_field_schema  # noqa: F401 re-export
+from celerp.services.field_schema import reject_system_item_fields
 
 
 @router.get("/me/item-schema")
@@ -906,6 +907,7 @@ async def patch_item_schema(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
+    reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     settings["item_schema"] = [f.model_dump() for f in payload.fields]
     company.settings = settings
@@ -937,6 +939,7 @@ async def patch_category_schema(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
+    reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     cat_schemas = dict(settings.get("category_schemas") or {})
     cat_schemas[category] = [f.model_dump() for f in payload.fields]
@@ -1913,11 +1916,7 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     """True when a DROP was refused because an object outside the drop set still
     depends on a table in it (Postgres SQLSTATE 2BP01), so the caller can explain
     the refusal in plain words instead of leaking SQL."""
-    orig = getattr(exc, "orig", None)
-    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
-    if code == "2BP01":
-        return True
-    return "depend" in str(exc).lower()
+    return sqlstate(exc) == "2BP01" or "depend" in str(exc).lower()
 
 
 @router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)])
@@ -1928,16 +1927,29 @@ async def purge_module_data(
     """Drop every table carrying the module's declared prefix, in one transaction. Installation owner only.
 
     Refused while any company uses the module or it is still running: its data
-    must be quiet before it is dropped. The drop list is read from the manifest prefix at the time of the
+    must be quiet before it is dropped. Holds the schema key (lock_schema) from
+    before the tables are listed until the drop commits, so it waits for, or is
+    refused during, a company backup or restore. The drop list is read from the manifest prefix at the time of the
     drop, not from the preview. A module with no matching tables is a clean
     no-op success. A table outside the module still depending on one of these
     tables blocks the whole drop, which rolls back with a plain explanation.
     Deleting the module folder is a separate action and does not touch these tables.
     """
+    from sqlalchemy.exc import DBAPIError
+
+    from celerp.db import lock_schema, sqlstate
     from celerp.modules.loader import read_manifest, resolve_module_path
     from celerp.modules.registry import hold_module_state
 
     await hold_module_state(session)
+    try:
+        await lock_schema(session)
+    except DBAPIError as exc:
+        if sqlstate(exc) != "55P03":
+            raise
+        raise HTTPException(status_code=409, detail=(
+            "Could not purge while a company backup or restore is running. "
+            "Nothing was deleted. Try again when it finishes.")) from None
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail="Module not found.")

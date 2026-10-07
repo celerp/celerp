@@ -21,6 +21,7 @@ from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.journal_accounts import require_line_destinations
 from celerp_docs.routes import (
     DocImportRecord,
     DocPatch,
@@ -134,6 +135,8 @@ async def import_doc_records(
             await _assert_import_number_free(session, company_id, "doc", rec.data)
             if auto_je.import_auto_je_kind(rec.data) is not None:
                 _require_doc_rate_http(rec.data, base_currency)
+            if post_ledger and auto_je.import_auto_je_kind(rec.data) == "bill":
+                await require_line_destinations(session, company_id, rec.data.get("line_items"))
             entry = await emit_event(
                 session,
                 company_id=company_id,

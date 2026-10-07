@@ -73,9 +73,10 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     base = book.base_code
     rows: list[ReconciliationExpectation] = []
 
-    def add(measure: M, key: str, currency: str | None, expected: Decimal) -> None:
-        rows.append(ReconciliationExpectation(measure=measure, key=key, currency=currency, expected=expected,
-                                              tolerance=exact))
+    def add(measure: M, key: str, currency: str | None, expected: Decimal, record=None) -> None:
+        label = " ".join(part for part in (record.code, record.name) if part) if record else ""
+        rows.append(ReconciliationExpectation(measure=measure, key=key, label=label, currency=currency,
+                                              expected=expected, tolerance=exact))
 
     balances = ledger.balances()
     add(M.DEBITS_EQUAL_CREDITS, "", base, sum(balances.values(), ZERO))
@@ -85,19 +86,20 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
             party[p.contact] += p.amount
     for key, account in sorted(book.accounts.items()):
         balance = balances.get(key, ZERO)
-        add(M.TRIAL_BALANCE, key, base, balance)
+        add(M.TRIAL_BALANCE, key, base, balance, account)
         if account.control in CONTROL_MEASURES:
-            add(CONTROL_MEASURES[account.control], key, base, balance)
+            add(CONTROL_MEASURES[account.control], key, base, balance, account)
         if account.control == "bank":
-            add(M.BANK_CASH, key, book.currency_code(account.currency), balance)
+            add(M.BANK_CASH, key, book.currency_code(account.currency), balance, account)
     for key, contact in sorted(book.contacts.items()):
-        add(M.AR_BY_CUSTOMER if contact.source_type == "Customer" else M.AP_BY_SUPPLIER, key, base, party[key])
+        add(M.AR_BY_CUSTOMER if contact.source_type == "Customer" else M.AP_BY_SUPPLIER, key, base, party[key],
+            contact)
 
     held = _stock_from_source(book)
     for key in sorted(book.items):
         qty, value = held.get(key, (ZERO, ZERO))
-        add(M.INVENTORY_QUANTITY, key, None, qty)
-        add(M.INVENTORY_VALUE, key, base, value)
+        add(M.INVENTORY_QUANTITY, key, None, qty, book.items[key])
+        add(M.INVENTORY_VALUE, key, base, value, book.items[key])
 
     counts: Counter = Counter()
     totals: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)

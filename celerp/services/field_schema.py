@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import uuid as _uuid
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.models.company import Company
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
 from celerp.services.pricing import is_cost_list_name, is_derived, price_key
@@ -26,14 +28,31 @@ MIXED_VALUE = "Mixed"
 AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "gross_weight"})
 
 # Item keys only the app's own item events write: the cost components derived from cost_total
-# and landed cost, reservation and fulfilment counters, lineage and document links, and files.
-# An import may set cost_total and the prices (permission-gated), never these.
+# and landed cost, reservation and fulfilment counters, lineage and document links, files, the
+# lot's inventory account and books state, ownership, expiry and catalog aliases. A create, an
+# import or an edit may set cost_total and the prices (permission-gated), never these.
 SYSTEM_ITEM_KEYS: frozenset[str] = COST_DERIVED_ITEM_KEYS | {
     "entity_id", "company_id", "reserved_quantity", "quantity_fulfilled",
     "children", "child_skus", "merged_into", "split_from", "transformed_from", "transformed_into",
     "fulfilled_for_docs", "status_doc_id", "status_doc_number", "manufacturing_order_id",
     "files", "attachments", "preview_image_id",
+    LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, "consignment_flag", "is_expired", "_catalog_sku_aliases",
 }
+
+
+def reject_system_item_fields(data: dict) -> None:
+    """Refuse item data from outside the app that names a SYSTEM_ITEM_KEYS field, at the top
+    level or under attributes. Called where item data enters (create, edit, import); the
+    app's own events set these fields, so emit_event never calls it."""
+    attributes = data.get("attributes")
+    keys = set(data) | (set(attributes) if isinstance(attributes, dict) else set())
+    managed = sorted(SYSTEM_ITEM_KEYS & keys)
+    if managed:
+        fields = ", ".join(managed)
+        raise HTTPException(status_code=422, detail=refusal(
+            "item.app_owned_fields",
+            f"These fields are set by the app and cannot be entered: {fields}. Remove them and try again.",
+            fields=fields))
 
 # Fields whose edit is gated by edit_inventory_amounts. Superset of the numeric
 # amount keys with sell_by added: changing the sell unit rewrites quantity, so it

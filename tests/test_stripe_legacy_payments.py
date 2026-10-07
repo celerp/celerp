@@ -63,7 +63,7 @@ async def test_a_page_opened_before_the_upgrade_and_paid_after_is_recorded_once_
     assert await _paid(real_engine, invoice) == [("pi_7", 1070.0)]
     (recorded,) = (await _doc(real_engine, invoice))["payments"]
     assert (recorded["bank_account"], recorded["payment_date"], recorded["method"]) == (
-        "1110", "2026-09-01", "stripe")
+        "1111", "2026-09-01", "stripe")
     assert await _held_by(real_client, real_engine, boss, a, invoice) == [None]
     r = await real_client.post(f"/docs/{invoice}/void-payment", json={"payment_index": recorded["index"]},
                                headers=auth(await token(real_engine, boss, a)))

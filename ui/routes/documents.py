@@ -15,6 +15,7 @@ from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
+from celerp.accounting_roles import account_label
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
@@ -278,7 +279,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import t, get_lang
+from ui.i18n import get_lang, refusal_text, t
 from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -1251,7 +1252,6 @@ _ICON_GLOBE = (
 
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
     """Fetch notes and return the rendered notes section (innerHTML target)."""
-    from starlette.responses import Response as _Res
     tz = "UTC"
     try:
         _co = await api.get_company(token)
@@ -2639,7 +2639,7 @@ celerpUpdateBulkAlloc();
                 await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
@@ -2693,13 +2693,13 @@ celerpUpdateBulkAlloc();
                 accts = acct_resp.get("items", [])
             except Exception:
                 accts = []
-            acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in accts if a.get("code")]
+            acct_opts = [(a.get("code", ""), account_label(a)) for a in accts if a.get("code")]
             input_el = Div(
                 searchable_select(
                     name="value",
                     options=acct_opts,
                     value=current,
-                    placeholder=t("documents.eg_account_code"),
+                    placeholder=t("documents.line_account_default"),
                     cls_extra="cell-input",
                     allow_custom=True,
                     hx_trigger="change",
@@ -2750,13 +2750,13 @@ celerpUpdateBulkAlloc();
             line_items[idx] = {**line_items[idx], field: value}
             await api.patch_doc(token, entity_id, {"line_items": line_items})
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         display_value = value
         if field == "account_code" and value:
             try:
                 acct_resp = await api.get_chart(token)
                 accts = acct_resp.get("items", [])
-                acct_map = {a.get("code", ""): f"{a.get('code','')} – {a.get('name','')}" for a in accts if a.get("code")}
+                acct_map = {a.get("code", ""): account_label(a) for a in accts if a.get("code")}
                 display_value = acct_map.get(value) or value
             except Exception:
                 pass
@@ -2833,7 +2833,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_doc_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(refusal_text(e.data or e.detail))
         return await _doc_notes_section_response(token, entity_id, is_list=False)
 
     @app.delete("/docs/{entity_id}/notes/{note_id}")
@@ -2903,7 +2903,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_list_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(refusal_text(e.data or e.detail))
         return await _doc_notes_section_response(token, entity_id, is_list=True)
 
     @app.delete("/lists/{entity_id}/notes/{note_id}")
@@ -3078,7 +3078,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             # Return error inline
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T4: Record payment
@@ -3113,7 +3113,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T1: Convert quotation to invoice
@@ -3129,7 +3129,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
     # T2: Receive PO goods
@@ -3173,7 +3173,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T7: Refund payment
@@ -3205,7 +3205,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # ---- Payment management routes ----
@@ -3224,7 +3224,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/delete-payment")
@@ -3258,7 +3258,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/refund-credit")
@@ -3279,7 +3279,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.delete("/docs/bulk-draft")
@@ -3298,7 +3298,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.delete_bulk_drafts(token, doc_ids)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         # Reload once the docs are actually gone (htmx triggers a full refresh).
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
@@ -3318,7 +3318,7 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.create_shipment_from_docs(token, doc_ids)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         ship_id = result.get("entity_id") or result.get("id", "")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
 
@@ -3341,7 +3341,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         # A doc concurrently closed, already paid, or shrunk under its row lock is skipped
         # by the API, not paid. Report every skipped doc by name and reason so the user is
         # never told a partial run fully succeeded; only a clean run refreshes the list.
@@ -3498,11 +3498,11 @@ celerpUpdateBulkAlloc();
                 cls=row_cls,
             )
 
-        payment_table = Table(
+        payment_table = Div(Table(
             Thead(Tr(Th(t("th.date")), Th(t("th.document")), Th(t("page.contact_detail")), Th(t("label.method")), Th(t("label.reference")), Th(t("label.amount")), Th(t("th.status")))),
             Tbody(*[_pay_row(p) for p in payments_list]) if payments_list else Tbody(Tr(Td(t("doc.no_payments_found"), colspan="7", cls="empty-state-msg"))),
             cls="data-table sticky-head", id="payments-table",
-        )
+        ), cls="table-scroll-wrap")
 
         lang = get_lang(request)
         return await base_shell(
@@ -3628,7 +3628,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.get_share_status(token, entity_id))
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
 
     @app.post("/docs/{entity_id}/share")
     async def create_share_link_route(request: Request, entity_id: str):
@@ -3641,7 +3641,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at))
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
 
     @app.delete("/docs/{entity_id}/share")
     async def revoke_share_link_route(request: Request, entity_id: str):
@@ -3652,7 +3652,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.revoke_share_link(token, entity_id))
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
 
     # -----------------------------------------------------------------------
     # Fulfillment toggle routes
@@ -3671,7 +3671,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            detail = e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
+            detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
             return _action_error(detail)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3699,7 +3699,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            detail = e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
+            detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
             return _action_error(detail)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -3716,7 +3716,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            detail = e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
+            detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
             return _action_error(detail)
         return _R("", status_code=204)
 
@@ -3760,7 +3760,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -3779,7 +3779,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -3810,7 +3810,7 @@ celerpUpdateBulkAlloc();
             await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.delete("/docs/{entity_id}/files/{file_id}")
@@ -3822,7 +3822,7 @@ celerpUpdateBulkAlloc();
             await api.delete_doc_file(token, entity_id, file_id)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/tag")
@@ -3836,7 +3836,7 @@ celerpUpdateBulkAlloc();
             await api.tag_doc_file(token, entity_id, file_id, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/description")
@@ -3850,7 +3850,7 @@ celerpUpdateBulkAlloc();
             await api.patch_doc_file_description(token, entity_id, file_id, description)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.get("/docs/{entity_id}/history")
@@ -3918,7 +3918,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
@@ -3937,7 +3937,7 @@ celerpUpdateBulkAlloc();
         try:
             r = await api.download_doc_file(token, entity_id, file_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
 
     @app.get("/lists")
@@ -4433,7 +4433,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(refusal_text(e.data or e.detail))
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         if field == "contact_id":
             if value == "__new__":
@@ -4442,14 +4442,14 @@ celerpUpdateBulkAlloc();
                 # The backend copies the customer's details, currency and prices in the same save.
                 await api.patch_list(token, entity_id, {"contact_id": value}, expected_version=_form_version(form))
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(refusal_text(e.data or e.detail))
             # Customer details and repriced lines change together - re-render the page.
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             result = await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
         return _R(
             to_xml(cell),
@@ -4547,7 +4547,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(refusal_text(e.data or e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
     async def _audit_line_tbody(token: str, entity_id: str, offset: int, limit: int) -> FT:
@@ -4737,7 +4737,6 @@ celerpUpdateBulkAlloc();
     @app.get("/lists/{entity_id}/line/{item_id}/counted/edit")
     async def list_audit_counted_edit(request: Request, entity_id: str, item_id: str):
         """Return an inline edit input for the Counted cell (standard editable-cell idiom)."""
-        from ui.components.table import EMPTY as _EMPTY
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -5201,15 +5200,11 @@ def _li_field_display_cell(entity_id: str, li_index: str, field: str, value: str
 _WRITEOFF_FIELDS: frozenset[str] = frozenset({"qty_out", "account", "comment"})
 _WRITEOFF_CELL_TYPES: dict[str, str] = {"qty_out": "number", "account": "select", "comment": "text"}
 _WRITEOFF_COL_CLASS: dict[str, str] = {"qty_out": "col-qtyout", "account": "col-account", "comment": "col-comment"}
-# A write-off destination is an expense/cogs/equity account (spoilage/samples -> expense or cogs;
-# owner drawings / family use -> equity). Single source of the picker filter, mirroring the API's
-# _WRITEOFF_ACCOUNT_TYPES so the dropdown and the function-level validation never diverge.
-_WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "cogs", "equity"})
-
-
 def _writeoff_account_choices(chart_items: list | None) -> tuple[list[str], dict[str, str]]:
     """(codes, {code: 'CODE Name'}) for the chart accounts a write-off may post to."""
-    accts = [a for a in (chart_items or []) if a.get("account_type") in _WRITEOFF_ACCOUNT_TYPES]
+    from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES
+
+    accts = [a for a in (chart_items or []) if a.get("account_type") in WRITEOFF_ACCOUNT_TYPES]
     options = [a.get("code", "") for a in accts if a.get("code")]
     labels = {a.get("code", ""): f"{a.get('code','')} {a.get('name','')}".strip() for a in accts if a.get("code")}
     return options, labels
@@ -5939,7 +5934,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     pol = _list_column_policy(doc_type, list_type, status)
     # Write-off entry columns (qty_out / account / comment). Built once for every render path (draft
     # editable, finalized static) so the finalized _li_row - shared with non-list docs - always sees a
-    # bound helper. The account picker options are the expense/cogs/equity chart codes.
+    # bound helper. The account picker options are the expense and equity chart codes.
     _wo_acct_options, _wo_acct_labels = _writeoff_account_choices(chart_accounts)
 
     def _writeoff_cells(li: dict) -> list:
@@ -6739,15 +6734,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             account_cell = None
             if doc_type in ("purchase_order", "bill"):
                 _acct_list = chart_accounts or []
-                _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in _acct_list if a.get("code")]
-                _receive_as = li.get("receive_as") or "stock"
-                _default_acct = li.get("account_code") or ("1130" if _receive_as == "stock" else "6950")
+                _acct_opts = [(a.get("code", ""), account_label(a)) for a in _acct_list if a.get("code")]
+                # Blank posts the line to the company's account for its kind (stock or expense).
                 account_cell = Td(
                     searchable_select(
                         name="account_code",
                         options=_acct_opts,
-                        value=_default_acct,
-                        placeholder=t("documents.eg_account_code"),
+                        value=li.get("account_code") or "",
+                        placeholder=t("documents.line_account_default"),
                         cls_extra="cell-input cell-input--xs",
                         allow_custom=True,
                     ),
@@ -6781,7 +6775,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Option(t("doc.expense"), value="expense", selected=(_ra_val == "expense")),
                     data_name="receive_as",
                     cls="cell-input cell-input--select cell-input--xs",
-                    onchange="celerpReceiveAsChanged(this); celerpAutoSave()",
+                    onchange="celerpAutoSave()",
                 ), cls="col-type")
             elif _show_receive_as:
                 receive_as_cell = Td(li.get("receive_as", "stock").capitalize(), cls="col-type")
@@ -7008,10 +7002,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(_tax_select(), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
-                _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in (chart_accounts or []) if a.get("code")]
+                _acct_opts = [(a.get("code", ""), account_label(a)) for a in (chart_accounts or []) if a.get("code")]
                 cells.append(Td(
-                    searchable_select(name="account_code", options=_acct_opts, value="1130",
-                                      placeholder=t("documents.eg_account_code"), cls_extra="cell-input cell-input--xs", allow_custom=True),
+                    searchable_select(name="account_code", options=_acct_opts, value="",
+                                      placeholder=t("documents.line_account_default"), cls_extra="cell-input cell-input--xs", allow_custom=True),
                     cls="col-account",
                 ))
             cells.extend([
@@ -7369,7 +7363,10 @@ function _celerpDocTypeParam() {{
         return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
             : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
     }}
-    function _clearStatusSoon() {{ setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
+    // One clear timer for the status line: a new scan cancels it, so an earlier notice's timer
+    // never wipes a newer message before its own time is up.
+    let _statusTimer = null;
+    function _clearStatusSoon() {{ clearTimeout(_statusTimer); _statusTimer = setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
     // Install a fresh #line-body tbody in place and, ONLY on a successful install, advance the tracked
     // optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
     // true iff the rows were installed - callers keep Add locked when it returns false rather than let
@@ -7411,6 +7408,7 @@ function _celerpDocTypeParam() {{
         scanInput.disabled = true;
         if (addBtn) addBtn.disabled = true;
         if (plSelect) plSelect.disabled = true;
+        clearTimeout(_statusTimer);
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
         // Draft scans rewrite line_items from the persisted projection. Freeze only
@@ -7548,6 +7546,7 @@ function _celerpDocTypeParam() {{
             return;
         }}
         // Documents (invoices, POs, ...): client-side catalog lookup + append, per scan.
+        clearTimeout(_statusTimer);
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
         try {{
@@ -7587,7 +7586,7 @@ function _celerpDocTypeParam() {{
         }}
         scanInput.value = '';
         scanInput.focus();
-        setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000);
+        _clearStatusSoon();
     }});
 }})();
 function celerpFindPhysicalDuplicate(row, data) {{
@@ -7901,27 +7900,6 @@ function celerpAcKey(e, input) {{
         active.dispatchEvent(new MouseEvent('mousedown'));
     }} else if (e.key === 'Escape') {{
         list.style.display = 'none';
-    }}
-}}
-function celerpReceiveAsChanged(sel) {{
-    const row = sel.closest('tr');
-    if (!row) return;
-    const acctWrap = row.querySelector('.col-account .combobox-wrap');
-    if (!acctWrap) return;
-    const hiddenInput = acctWrap.querySelector('input[type="hidden"]');
-    const displayInput = acctWrap.querySelector('.combobox-input');
-    if (!hiddenInput) return;
-    // Only update if user hasn't already set a non-default value
-    const current = hiddenInput.value;
-    const defaultStock = '1130', defaultExpense = '6950';
-    if (current === '' || current === defaultStock || current === defaultExpense) {{
-        const newDefault = sel.value === 'expense' ? defaultExpense : defaultStock;
-        hiddenInput.value = newDefault;
-        if (displayInput) {{
-            // Update display: find matching option text or show code
-            const opt = acctWrap.querySelector(`.combobox-option[data-value="${{newDefault}}"]`);
-            displayInput.value = opt ? opt.textContent.trim() : newDefault;
-        }}
     }}
 }}
 function celerpLineTotalInput(input) {{
@@ -8866,9 +8844,9 @@ async function celerpCsvImport(input, entityId) {{
             "Sold": "enum.item_status.sold",
         }
 
-        # Build account code -> "CODE – Name" lookup for finalized line display
+        # Account code -> its label (account_label), for finalized line display
         _acct_map: dict[str, str] = {
-            a["code"]: f"{a['code']} \u2013 {a['name']}"
+            a["code"]: account_label(a)
             for a in (chart_accounts or [])
             if a.get("code") and a.get("name")
         }

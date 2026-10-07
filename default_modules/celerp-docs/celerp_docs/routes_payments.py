@@ -22,14 +22,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import AccountRole
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import payments as pay
+from celerp.services.account_roles import resolve
 from celerp.services.auth import get_current_company_id, get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone
 from celerp.services.doc_balance import outstanding_balance
+from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
 
@@ -40,9 +43,8 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Only these can be paid online (a bill/PO is money you owe, not money owed to you).
 _PAYABLE_TYPES = frozenset({"invoice", "proforma"})
-# GL account online payments clear to; overridable per company. Cash is seeded on
-# every chart of accounts, so it's a safe default until a company picks one.
-DEFAULT_DEPOSIT_ACCOUNT = "1110"
+# GL account online payments clear to, per channel and for online payments generally.
+# With neither chosen, payments land on the company's default deposit account.
 ONLINE_DEPOSIT_ACCOUNT_KEY = "stripe_deposit_account"
 WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY = "woocommerce_deposit_account"
 
@@ -78,33 +80,34 @@ async def deposit_account(
 ) -> str:
     """GL account a received online payment clears to: the channel's own
     setting when one is chosen, else the company's online-payments default,
-    else Cash."""
+    else the default deposit account."""
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
     return (
         (settings.get(override_key) if override_key else None)
         or settings.get(ONLINE_DEPOSIT_ACCOUNT_KEY)
-        or DEFAULT_DEPOSIT_ACCOUNT
+        or await resolve(session, company_id, AccountRole.DEFAULT_DEPOSIT)
     )
 
 
 async def require_online_deposit_account(session: AsyncSession, company_id, code: str) -> None:
     """422 unless online payments may be deposited to *code*: an active asset account of
-    the company that is Cash (the default) or behind one of its active bank accounts. The
-    bank account and the chart account are read FOR SHARE, so neither can be archived or
-    retyped while a payment posts to them."""
-    from celerp_accounting.ledger_accounts import require_money_account
+    the company that is its default deposit account or behind one of its active bank
+    accounts. The bank account and the chart account are read FOR SHARE, so neither can be
+    archived or retyped while a payment posts to them."""
     from celerp_accounting.models import BankAccount
+    default = await resolve(session, company_id, AccountRole.DEFAULT_DEPOSIT)
     try:
-        if code != DEFAULT_DEPOSIT_ACCOUNT and (await session.execute(select(BankAccount.id).where(
+        if code != default and (await session.execute(select(BankAccount.id).where(
                 BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
                 BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
             raise HTTPException(status_code=422, detail="No active bank account uses it.")
-        await require_money_account(session, company_id, code)
+        await require_settlement_account(session, company_id, code)
     except HTTPException as refused:
+        reason = refused.detail["message"] if isinstance(refused.detail, dict) else refused.detail
         raise HTTPException(status_code=422, detail=(
-            f"Online payments can be deposited only to Cash ({DEFAULT_DEPOSIT_ACCOUNT}) or an active "
-            f"bank account; '{code}' is neither. {refused.detail}")) from None
+            f"Online payments can be deposited only to the default deposit account ({default}) or an active "
+            f"bank account; '{code}' is neither. {reason}")) from None
 
 
 _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")

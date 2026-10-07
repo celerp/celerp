@@ -42,6 +42,7 @@ from celerp.routers.auth import limiter
 from celerp.services import bootstrap
 from celerp.services import migration_scan_store as store
 from celerp.services import migrations
+from celerp.services import posting_readiness
 from celerp.services.auth import (
     MIN_PASSWORD_LENGTH,
     AuthContext,
@@ -98,6 +99,12 @@ class DecisionsIn(BaseModel):
 class StartFromScanIn(BaseModel):
     scan_token: str
     company_name: str
+
+
+class FinalizeIn(BaseModel):
+    """Posting-account choices; ``posting_readiness.apply_choices`` checks them so every problem is explained."""
+    roles: Any = None
+    add_accounts: Any = None
 
 
 class BootstrapStartIn(BaseModel):
@@ -458,12 +465,21 @@ async def cancel_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_cont
     return await migrations.run_view(session, run)
 
 
+@router.get("/{run_id}/posting-accounts")
+async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                               session: AsyncSession = Depends(get_session)) -> dict:
+    """The posting accounts finishing this migration will set, and the choices for each."""
+    run = await _owned_run(session, run_id, ctx)
+    return {"roles": await posting_readiness.readiness(session, run.company_id) or []}
+
+
 @router.post("/{run_id}/finalize")
-async def finalize_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
+                       ctx: AuthContext = Depends(get_auth_context),
                        session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
     try:
-        await migrations.finalize(session, run)
+        await migrations.finalize(session, run, body.model_dump() if body else None)
     except BaseException:
         await session.rollback()
         raise
