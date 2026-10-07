@@ -16,8 +16,12 @@ nothing depends on an installed module or on another test's imports.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import io
 import json
+import os
+import py_compile
+import subprocess
 import sys
 import time
 import uuid
@@ -359,8 +363,17 @@ def _case_lineage_guard_wrong_arity(base, marker, monkeypatch):
                              ), "session, entry, transition"
 
 
+def _lock_as_first_party(monkeypatch, base: Path, keep=lambda pkg: True) -> None:
+    """The first-party lock lists the module folders under base that keep selects,
+    at their content when the lock is read."""
+    monkeypatch.setattr(loader, "_first_party_lock", lambda: {
+        p.name: loader.module_content_digest(p) for p in base.iterdir() if p.is_dir() and keep(p)})
+
+
 def _case_in_production_wrong_arity(base, marker, monkeypatch):
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
+    # First-party content that is not one of the listed defaults is refused, not fatal.
+    _lock_as_first_party(monkeypatch, base)
+    monkeypatch.setattr(loader, "first_party_names", lambda: frozenset())
     return _migrating_module(base, f"acme-{_uid()}", marker,
                              slots={"inventory_in_production": [{"handler": "{inner}.wip:held"}]},
                              code={"wip.py": "async def held(session, company_id, extra):\n    return 0\n"}
@@ -940,7 +953,7 @@ async def test_second_module_shipping_the_same_import_name_is_refused(
 async def test_first_party_module_fills_a_first_party_slot(
         _db_engine, _modules, tmp_path, monkeypatch):
     """Control for the refusal above: Celerp's own module fills the slot."""
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
+    _lock_as_first_party(monkeypatch, _modules)
     marker = tmp_path / "ran.txt"
     pkg, _ = _case_in_production_not_first_party(_modules, marker, monkeypatch)
 
@@ -980,7 +993,7 @@ async def test_first_party_module_claims_its_projection_prefix_first(
     uid = _uid()
     other = _projecting_module(_modules, tmp_path / "a.txt", "acme.", folder=f"acme-a{uid}")
     own = _projecting_module(_modules, tmp_path / "b.txt", "acme.", folder=f"acme-b{uid}")
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: pkg_path.name == own.name)
+    _lock_as_first_party(monkeypatch, _modules, lambda pkg: pkg.name == own.name)
 
     admission, loaded = await _admit_and_migrate(_db_engine, _modules, {other.name, own.name})
 
@@ -2956,7 +2969,7 @@ def _stuck_bytecode():
 
 def test_loading_a_module_writes_no_compiled_files_beside_its_source(
         _modules, tmp_path, monkeypatch):
-    """Two processes loading the same module folder never see each other's bytecode."""
+    """Loading a module writes no bytecode anywhere in its folder."""
     from celerp.config import settings
     monkeypatch.setattr(sys, "dont_write_bytecode", False)
     monkeypatch.setattr(sys, "pycache_prefix", None)
@@ -3032,3 +3045,144 @@ def test_default_module_changed_after_admission_stops_startup(_modules, tmp_path
     with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
         loader.load_all(str(_modules), {name}, admission=admission)
     assert not marker.exists()
+
+
+def _plant_bytecode(source: Path, marker: Path, cache: Path) -> None:
+    """Bytecode at *cache* that Python would take for *source*, writing *marker*
+    instead of running the source. Unchecked, so it is never compared to the source."""
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    other = cache.parent / f"other_{_uid()}.py"
+    other.write_text(_marker_line(marker))
+    py_compile.compile(str(other), cfile=str(cache), dfile=str(source), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+    other.unlink()
+
+
+@pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
+@pytest.mark.parametrize("where", ["beside_source", "under_data_dir", "configured_cache_dir"])
+def test_planted_bytecode_never_runs_in_place_of_the_checked_source(
+        where, trusted, _modules, tmp_path, monkeypatch, _first_party):
+    from celerp.config import settings
+    data = tmp_path / "data"
+    monkeypatch.setattr(settings, "data_dir", data)
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    cache_dir = {"beside_source": None,
+                 "under_data_dir": str(data.resolve() / "bytecode"),
+                 "configured_cache_dir": str(tmp_path / "cache")}[where]
+    monkeypatch.setattr(sys, "pycache_prefix",
+                        cache_dir if where == "configured_cache_dir" else None)
+    ran, planted = tmp_path / "ran.txt", tmp_path / "planted.txt"
+    folder = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, folder, ran, {"name": folder, "version": "1.0.0"})
+    if trusted:
+        _first_party(pkg)
+    source = pkg / "__init__.py"
+    previous, sys.pycache_prefix = sys.pycache_prefix, cache_dir
+    cache = Path(importlib.util.cache_from_source(str(source)))
+    sys.pycache_prefix = previous
+    _plant_bytecode(source, planted, cache)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [(m["name"], m["first_party"]) for m in loaded] == [(folder, trusted)]
+    assert ran.exists()
+    assert not planted.exists()
+
+
+def test_module_changed_while_it_is_checked_never_runs(_modules, tmp_path, monkeypatch, _first_party):
+    """What admission records as checked is the content the lock verified."""
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    check = loader._check_slot_contracts
+
+    def change_then_check(*args, **kwargs):
+        (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+        return check(*args, **kwargs)
+
+    monkeypatch.setattr(loader, "_check_slot_contracts", change_then_check)
+    admission = loader.admit_modules(str(_modules), {name})
+    monkeypatch.setattr(loader, "_check_slot_contracts", check)
+
+    for module in admission.admitted:
+        assert not module.first_party or module.content_digest == json.loads(
+            loader._lock_path().read_text())[name]
+    with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
+        loader.load_all(str(_modules), {name}, admission=admission)
+    assert not marker.exists()
+
+
+def test_compiled_files_another_process_removed_first_do_not_refuse_the_module(
+        _modules, tmp_path, monkeypatch):
+    """Bytecode another worker removed while this one was removing it counts as removed."""
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    listing = loader._bytecode
+    calls = []
+
+    def listed_then_removed_elsewhere(path):
+        found = listing(path)
+        if not calls:
+            calls.append(found)
+            for entry in found:
+                for child in entry.iterdir():
+                    child.unlink()
+                entry.rmdir()
+        return found
+
+    monkeypatch.setattr(loader, "_bytecode", listed_then_removed_elsewhere)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder], loader.load_errors()
+    assert marker.exists()
+    assert calls and calls[0]
+
+
+_LOAD_REPEATEDLY = """
+import sys
+from pathlib import Path
+
+from celerp.config import settings
+from celerp.modules import loader
+
+base, folder, inner, data, rounds = sys.argv[1:6]
+settings.data_dir = Path(data)
+for _ in range(int(rounds)):
+    for name in [n for n in sys.modules if n == folder or n.split(".")[0] == inner]:
+        del sys.modules[name]
+    loader.load_all(base, {folder})
+    if loader.load_errors():
+        sys.exit(f"load errors: {loader.load_errors()}")
+"""
+
+
+def test_two_processes_loading_the_same_module_folder_both_load_it(_modules, tmp_path):
+    """Processes sharing a module folder (several workers) never refuse its bytecode
+    to each other, including bytecode an earlier version left in the folder."""
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    files = {f"{inner}/__init__.py": "from . import a, b\n",
+             f"{inner}/a.py": "A = 1\n", f"{inner}/b.py": "B = 2\n"}
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"}, files,
+                        init_prelude=f"import {inner}\n")
+    for rel in ("__pycache__/__init__.cpython-312.pyc", f"{inner}/__pycache__/a.cpython-312.pyc"):
+        (pkg / rel).parent.mkdir(exist_ok=True)
+        (pkg / rel).write_bytes(b"\x00")
+    env = {**os.environ, "MODULE_DIR": str(_modules)}
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env.pop("PYTHONPYCACHEPREFIX", None)
+    procs = [subprocess.Popen(
+        [sys.executable, "-c", _LOAD_REPEATEDLY, str(_modules), folder, inner,
+         str(tmp_path / f"data{i}"), "25"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for i in range(2)]
+    outputs = [p.communicate(timeout=25)[0] for p in procs]
+
+    assert [p.returncode for p in procs] == [0, 0], outputs
+    assert _bytecode_left(pkg) == []
+

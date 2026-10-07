@@ -9,8 +9,11 @@ so nothing depends on an installed module.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import py_compile
+import sys
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -373,6 +376,65 @@ async def test_migration_runs_inside_the_module_guard(_db_engine, tmp_path, monk
     assert pkg.name not in surviving
     assert "refused by the guard" in errors[pkg.name]
     assert not _table_exists(_probe_table)
+
+
+def _plant_bytecode(source: Path, marker: Path) -> None:
+    """Unchecked bytecode beside *source* that writes *marker* instead of running it."""
+    cache = Path(importlib.util.cache_from_source(str(source)))
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    other = cache.parent / "other.py"
+    other.write_text(f"open({str(marker)!r}, 'w').write('ran')\n")
+    py_compile.compile(str(other), cfile=str(cache), dfile=str(source), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+    other.unlink()
+
+
+async def test_migration_runs_its_checked_source_not_bytecode_beside_it(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    planted = tmp_path / "planted.txt"
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    _plant_bytecode(pkg / "inner" / "migrations" / "m_001.py", planted)
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert pkg.name in surviving, errors
+    assert not planted.exists()
+    assert _table_exists(_probe_table)
+    assert not list(pkg.rglob("__pycache__"))
+
+
+@pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
+async def test_migration_whose_compiled_files_cannot_be_removed_never_runs(
+        trusted, _db_engine, tmp_path, monkeypatch, _probe_table):
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    monkeypatch.setenv("MODULE_DIR", str(base))
+    lock_file = tmp_path / "fp.lock.json"
+    lock_file.write_text(json.dumps({pkg.name: loader.module_content_digest(pkg)} if trusted else {}))
+    monkeypatch.setattr(loader, "_lock_path", lambda: lock_file)
+    loader._first_party_lock.cache_clear()
+    cache = pkg / "inner" / "migrations" / "__pycache__"
+    cache.mkdir()
+    (cache / "m_001.cpython-312.pyc").write_bytes(b"\x00")
+    cache.chmod(0o500)
+    try:
+        if trusted:
+            with pytest.raises(loader.ModuleLoadError, match="Cannot remove compiled Python files"):
+                await _phase(_db_engine, {pkg.name})
+        else:
+            surviving, errors = await _phase(_db_engine, {pkg.name})
+            assert pkg.name not in surviving
+            assert "Cannot remove compiled Python files" in errors[pkg.name]
+        assert not _table_exists(_probe_table)
+    finally:
+        cache.chmod(0o700)
+        loader._first_party_lock.cache_clear()
 
 
 async def test_migration_phase_uses_verified_first_party_behind_stale_shadow(

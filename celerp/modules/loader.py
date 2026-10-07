@@ -56,7 +56,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -305,19 +304,22 @@ def is_first_party(pkg_path: Path) -> bool:
     dropped into any module search dir is not trusted, and a modified default is
     demoted (with a warning) so it stops skipping the BSL import checks.
     """
-    lock = _first_party_lock()
-    expected = lock.get(pkg_path.name)
-    if expected is None:
+    if pkg_path.name not in _first_party_lock():
         return False
-    digest = module_content_digest(pkg_path)
-    if digest is None:
+    return _matches_lock(pkg_path.name, module_content_digest(pkg_path))
+
+
+def _matches_lock(name: str, digest: str | None) -> bool:
+    """True only if *digest* is the locked content digest of the module *name*."""
+    expected = _first_party_lock().get(name)
+    if expected is None or digest is None:
         return False
     if digest != expected:
-        if pkg_path.name not in _demotion_warned:
-            _demotion_warned.add(pkg_path.name)
+        if name not in _demotion_warned:
+            _demotion_warned.add(name)
             log.warning(
                 "Module %r content does not match its first-party lock entry; "
-                "treating it as not first-party.", pkg_path.name)
+                "treating it as not first-party.", name)
         return False
     return True
 
@@ -452,16 +454,29 @@ def _purge_pycache(pkg_path: Path) -> None:
     """
     try:
         for path in _bytecode(pkg_path):
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
+            _remove(path)
         left = _bytecode(pkg_path)
     except OSError as exc:
         raise ModuleLoadError(
             f"Cannot remove compiled Python files from the module ({type(exc).__name__}).") from exc
     if left:
         raise ModuleLoadError("Cannot remove compiled Python files from the module.")
+
+
+def _remove(path: Path) -> None:
+    """Remove *path* (a directory with its contents; a symlink itself, never followed).
+    Already gone counts as removed: another process loading the same folder may
+    remove it first."""
+    try:
+        if path.is_dir() and not path.is_symlink():
+            for entry in path.iterdir():
+                _remove(entry)
+            path.rmdir()
+        else:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
 
 # Loaded manifests - populated by load_all()
 _loaded: list[dict] = []
@@ -838,6 +853,9 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     """Every static rule a module must pass before any of its code runs.
     Raises :class:`ModuleLoadError` (or the importer's ModuleImportError) with
     the reason."""
+    # The one digest of what is checked: first-party is decided from it, and it is
+    # what the module's files must still match when its code runs.
+    digest = module_content_digest(pkg_path)
     manifest = _declared_manifest(pkg_path)
     if manifest["name"] != name:
         raise ModuleLoadError(
@@ -847,7 +865,7 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
     _validate_table_prefix(name, manifest)
     for kind in ("api", "ui"):
         _check_route_source(pkg_path, manifest, kind)
-    first_party = is_first_party(pkg_path)
+    first_party = _matches_lock(name, digest)
     _check_slot_contracts(pkg_path, manifest["slots"], first_party=first_party)
     _check_import_names(name, pkg_path)
     entry_files = _module_entry_files(pkg_path, manifest)
@@ -858,7 +876,6 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
             violations |= _scan_protected_imports(pkg_path, entry)
         if violations:
             raise ModuleLoadError(_bsl_violation_message(name, violations))
-    digest = module_content_digest(pkg_path)
     if digest is None:
         raise ModuleLoadError("Cannot check the module's files.")
     return AdmittedModule(name, pkg_path, manifest, first_party, digest)
@@ -869,6 +886,20 @@ def check_unchanged(module: AdmittedModule) -> None:
     admission checked."""
     if module_content_digest(module.path) != module.content_digest:
         raise ModuleLoadError(MODULE_CHANGED)
+
+
+def ready_to_run(module: AdmittedModule) -> None:
+    """Called before any of the module's code runs (its migrations, its import), so
+    Python runs exactly the source admission checked.
+
+    This process writes no bytecode and looks for it only beside the source, where
+    it is removed and proven gone; the files must still be those admission checked.
+    Raises :class:`ModuleLoadError` otherwise.
+    """
+    sys.dont_write_bytecode = True
+    sys.pycache_prefix = None
+    _purge_pycache(module.path)
+    check_unchanged(module)
 
 
 def _license_refusal(module: AdmittedModule, creds) -> str | None:
@@ -1210,10 +1241,6 @@ def load_all(
     # Every core table is on the metadata before any module code runs, so a table
     # a module adds is told apart from one it merely caused to be imported.
     import celerp.models  # noqa: F401
-    # Bytecode is written under the data directory, never beside module source,
-    # so processes sharing a module folder never find each other's compiled files.
-    from celerp.config import settings
-    sys.pycache_prefix = str(settings.data_dir.resolve() / "bytecode")
     # Module-contributed i18n catalogs are rebuilt from scratch on every pass,
     # exactly like _loaded above, so a re-scan (a module toggled off, or a
     # catalog changed) never leaves a stale or orphaned catalog behind. Lazy
@@ -1247,10 +1274,7 @@ def load_all(
         # while it is imported.
         _admitted[pkg_name] = module
         try:
-            # Python runs the source admission checked: no bytecode beside it, and
-            # nothing changed since.
-            _purge_pycache(pkg_path)
-            check_unchanged(module)
+            ready_to_run(module)
             with _recording_tables(pkg_name):
                 manifest = _load_one(pkg_path, pkg_name, trusted=module.first_party,
                                      declared=module.manifest)

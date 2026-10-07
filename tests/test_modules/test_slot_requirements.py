@@ -118,8 +118,11 @@ def module_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("MODULE_DIR", str(base))
     # A module filling a first-party slot stands in for one of Celerp's own (the
     # first-party rule itself: test_admission).
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: bool(
-        set(loader.read_manifest(pkg_path).get("slots") or {}) & slots.FIRST_PARTY_SLOTS))
+    monkeypatch.setattr(loader, "_first_party_lock", lambda: {
+        p.name: loader.module_content_digest(p) for p in base.iterdir()
+        if set(loader.read_manifest(p).get("slots") or {}) & slots.FIRST_PARTY_SLOTS})
+    # Not one of the listed defaults, so a bad entry is refused rather than stopping startup.
+    monkeypatch.setattr(loader, "first_party_names", lambda: frozenset())
     before_path, before_mods = list(sys.path), dict(sys.modules)
     slots.clear()
     yield base

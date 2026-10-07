@@ -194,7 +194,18 @@ async def run_migration_phase(engine, admission: loader.Admission) -> loader.Adm
                 sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
             )
             try:
+                # Every admitted module is made ready before any migration runs, since
+                # a migration may import another module's code.
                 for module in admission.admitted:
+                    try:
+                        loader.ready_to_run(module)
+                    except loader.ModuleLoadError as exc:
+                        if module.first_party:
+                            raise
+                        failed[module.name] = str(exc)
+                for module in admission.admitted:
+                    if module.name in failed:
+                        continue
                     dep = next((d for d in module.manifest["depends_on"] if d in failed), None)
                     if dep is not None:
                         failed[module.name] = f"Requires {dep!r}, which failed to load."
