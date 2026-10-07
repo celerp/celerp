@@ -33,6 +33,7 @@ import pytest
 from celerp.modules import loader, slots
 from celerp.modules.importer import PREMIUM_MARKER, install_from_zip
 from celerp.modules.license import UNVERIFIED_MODULE_REFUSAL
+from test_modules.bytecode import plant_bytecode
 
 
 @pytest.fixture(autouse=True)
@@ -2965,6 +2966,32 @@ def test_module_whose_compiled_files_are_still_present_after_removal_is_refused(
     assert loaded == []
     assert not marker.exists()
     assert loader.load_errors()[folder] == "Cannot remove compiled Python files from the module."
+
+
+@pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
+@pytest.mark.parametrize("where", ["beside_source", "configured_cache_dir"])
+def test_planted_bytecode_never_runs_in_place_of_the_checked_source(
+        where, trusted, _modules, tmp_path, monkeypatch, _first_party):
+    """Valid bytecode left for the module and for an inner package it imports never runs;
+    the checked source does."""
+    prefix = str(tmp_path / "cache") if where == "configured_cache_dir" else None
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", prefix)
+    source, cached = tmp_path / "source.txt", tmp_path / "cached.txt"
+    folder, inner = f"acme-{_uid()}", f"acme_{_uid()}"
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"},
+                        {f"{inner}/__init__.py": _marker_line(source)},
+                        init_prelude=f"import {inner}\n{_marker_line(source)}")
+    if trusted:
+        _first_party(pkg)
+    for path in (pkg / "__init__.py", pkg / inner / "__init__.py"):
+        plant_bytecode(path, _marker_line(cached), pycache_prefix=prefix)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [(m["name"], m["first_party"]) for m in loaded] == [(folder, trusted)]
+    assert source.read_text() == "ran\nran\n"
+    assert not cached.exists()
 
 
 @pytest.fixture

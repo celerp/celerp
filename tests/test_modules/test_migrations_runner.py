@@ -9,6 +9,7 @@ so nothing depends on an installed module.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -28,6 +29,7 @@ from celerp.modules.migrations_runner import (
 )
 from celerp.db_url import sync_url as sync_db_url
 from celerp.db import _MIGRATION_LOCK_KEY
+from test_modules.bytecode import plant_bytecode
 
 
 # ── fixture builders ──────────────────────────────────────────────────────────
@@ -421,6 +423,59 @@ async def test_migration_changed_by_an_earlier_modules_migration_never_runs(
     assert loader.MODULE_CHANGED in errors[later.name]
     assert not marker.exists()
     assert not _table_exists(_probe_table)
+
+
+def _writes(marker: Path) -> str:
+    return f"open({str(marker)!r}, 'w').write('ran')\n"
+
+
+async def test_migration_runs_its_checked_source_not_bytecode_beside_it(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    planted = tmp_path / "planted.txt"
+    base = tmp_path / "modules"
+    pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    plant_bytecode(pkg / "inner" / "migrations" / "m_001.py", _writes(planted))
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {pkg.name})
+
+    assert pkg.name in surviving, errors
+    assert not planted.exists()
+    assert _table_exists(_probe_table)
+
+
+async def test_bytecode_an_earlier_modules_migration_plants_never_runs_in_place_of_a_migration(
+        _db_engine, tmp_path, monkeypatch, _probe_table):
+    """Bytecode written beside a migration by an earlier module's migration, after every
+    module was prepared, is removed just before that migration runs."""
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    planted = tmp_path / "planted.txt"
+    base = tmp_path / "modules"
+    uid = uuid.uuid4().hex[:8]
+    later = _make_module(base, f"acme-b{uid}",
+                         {"m_001.py": _MIG_GUARD_PROBE.replace("__TABLE__", _probe_table)})
+    target = later / "inner" / "migrations" / "m_001.py"
+    staged = plant_bytecode(tmp_path / "staged" / "m_001.py", _writes(planted))
+    pyc = Path(importlib.util.cache_from_source(str(target)))
+    earlier = _make_module(base, f"acme-a{uid}", {"m_001.py": (
+        "import os\nimport shutil\n\n\ndef upgrade():\n"
+        f"    os.makedirs({str(pyc.parent)!r}, exist_ok=True)\n"
+        f"    shutil.copyfile({str(staged)!r}, {str(pyc)!r})\n")}, table_prefix=f"early{uid}_")
+    manifest = {"name": later.name, "version": "1.0.0", "migrations": "inner.migrations",
+                "table_prefix": "acme_", "depends_on": [earlier.name]}
+    (later / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
+    monkeypatch.setenv("MODULE_DIR", str(base))
+
+    surviving, errors = await _phase(_db_engine, {earlier.name, later.name})
+
+    assert {earlier.name, later.name} <= surviving, errors
+    assert not planted.exists(), "bytecode ran in place of the migration source"
+    assert _table_exists(_probe_table)
+    assert not pyc.exists()
 
 
 @pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
