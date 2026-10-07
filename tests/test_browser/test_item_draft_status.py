@@ -5,28 +5,15 @@ badge, the Drafts counter card shows it, and making it available flips both.
 """
 from __future__ import annotations
 
-import os
 import time
 import uuid
 
 import httpx
 import pytest
 
+from .conftest import clear_session_registry
+
 pytestmark = pytest.mark.browser
-
-
-def _clear_session_registry() -> None:
-    """Wipe session_registry rows so a second user can log in (the direct
-    connection limit allows one active session; nonces stay valid)."""
-    import psycopg2
-    from urllib.parse import urlsplit
-    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
-    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                            password=parts.password, dbname=parts.path.lstrip("/"))
-    conn.autocommit = True
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM session_registry;")
-    conn.close()
 
 
 def _set_cookie(browser_context, token: str) -> None:
@@ -94,7 +81,7 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
             r2 = api.post("/items/bulk/make-available", json={"entity_ids": [r.json()["id"]]})
             assert r2.status_code == 200, r2.text
 
-    _clear_session_registry()
+    clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
@@ -146,7 +133,7 @@ def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api,
             r2 = api.post("/items/bulk/make-available", json={"entity_ids": [r.json()["id"]]})
             assert r2.status_code == 200, r2.text
 
-    _clear_session_registry()
+    clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": f"opp-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
@@ -196,7 +183,7 @@ def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_serv
             r2 = api.post("/items/bulk/make-available", json={"entity_ids": [item_ids[sku]]})
             assert r2.status_code == 200, r2.text
 
-    _clear_session_registry()
+    clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": f"opd-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
@@ -239,7 +226,7 @@ def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_serve
     assert created.status_code == 200, created.text
     item_id = created.json()["id"]
 
-    _clear_session_registry()
+    clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
@@ -273,7 +260,7 @@ def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_ser
     assert created.status_code == 200, created.text
     item_id = created.json()["id"]
 
-    _clear_session_registry()
+    clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": f"op2-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text

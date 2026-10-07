@@ -43,38 +43,6 @@ from celerp.models.auth import SessionRegistry, UserAuthState
 
 
 # ---------------------------------------------------------------------------
-# Retired nonce-cache compatibility seams
-# ---------------------------------------------------------------------------
-# Postgres is the sole nonce authority. A process-local cache can be repopulated
-# with an old value after a concurrent revocation commits, temporarily reviving
-# a revoked credential and making revocation inconsistent across workers. Keep
-# these helper names temporarily for current callers/tests, but never store or
-# return authentication state from them.
-# ---------------------------------------------------------------------------
-
-
-def _nonce_cache_set(user_id: str, nonce: str) -> None:
-    return None
-
-
-def _nonce_cache_get(user_id: str) -> str | None:
-    return None
-
-
-def _nonce_cache_bust(user_id: str) -> None:
-    return None
-
-
-def _nonce_cache_bust_all() -> None:
-    return None
-
-
-def get_nonce_from_cache(user_id: str) -> str | None:
-    """Always miss so session-watch falls through to the authoritative DB row."""
-    return None
-
-
-# ---------------------------------------------------------------------------
 # Public API  (all async, take an AsyncSession)
 # ---------------------------------------------------------------------------
 
@@ -104,9 +72,9 @@ async def lock_auth_state(session: AsyncSession, user_id: str) -> UserAuthState:
 
 
 async def register_token(
-    session: AsyncSession, jti: str, user_id: str, expiry: datetime, *, commit: bool = True
+    session: AsyncSession, jti: str, user_id: str, company_id: str, expiry: datetime, *, commit: bool = True
 ) -> None:
-    """Record a newly-issued access token, extending the stored expiry when the
+    """Record a newly-issued access token for *company_id*, extending the stored expiry when the
     JTI is re-minted.  Sliding refresh reuses the original JTI, so its registry
     slot must slide forward to match the refreshed token's expiry; otherwise a
     continuously active session would fall out of the registry at its original
@@ -117,7 +85,8 @@ async def register_token(
     atomic unit under the row lock."""
     existing = await session.get(SessionRegistry, jti)
     if existing is None:
-        session.add(SessionRegistry(jti=jti, user_id=_uuid_mod.UUID(user_id), expiry=expiry))
+        session.add(SessionRegistry(jti=jti, user_id=_uuid_mod.UUID(user_id),
+                                    company_id=_uuid_mod.UUID(str(company_id)), expiry=expiry))
     else:
         existing.expiry = expiry
     if commit:
@@ -141,14 +110,14 @@ async def get_nonce(session: AsyncSession, user_id: str) -> str:
 
     Auto-creates a ``user_auth_state`` row with a fresh nonce on first call
     (new user, first login).  Returns empty string if the user no longer exists
-    (e.g. after factory-reset) so callers treat it as an eviction (nonce mismatch).
+    (e.g. after it was removed) so callers treat it as an eviction (nonce mismatch).
     """
     uid = _uuid_mod.UUID(user_id)
     row = await session.get(UserAuthState, uid, populate_existing=True)
     if row is not None:
         return row.nonce
     # Check the user exists before creating a new auth-state row.
-    # If the user was deleted (e.g. factory-reset), return "" so the caller
+    # If the user was deleted, return "" so the caller
     # detects a nonce mismatch and treats the session as evicted — no FK insert.
     from celerp.models.company import User as _User
     user_exists = await session.get(_User, uid)
@@ -205,7 +174,6 @@ async def invalidate_sessions(
     else:
         session.add(UserAuthState(user_id=uid, nonce=new_nonce, evicted_by_ip=evicting_ip))
     await session.commit()
-    _nonce_cache_bust(user_id)  # bust cache so next get_nonce reads fresh nonce
 
 
 async def _rotate_every_nonce(session: AsyncSession) -> list[UserAuthState]:
@@ -239,7 +207,8 @@ async def invalidate_all_sessions(
     evicting_user_id: str,
     evicting_ip: str | None = None,
 ) -> None:
-    """Wipe ALL JTIs globally and rotate nonces for every affected user.
+    """Wipe ALL JTIs globally and rotate nonces for every affected user. The caller
+    commits, together with the replacement session it issues.
 
     Called by login-force when a user takes over the session slot.
     - The force-logging user's nonce is rotated (invalidates their own old tokens).
@@ -259,10 +228,7 @@ async def invalidate_all_sessions(
     # Ensure the evicting user also has a rotated nonce even with no prior row.
     if evicting_uid not in seen:
         session.add(UserAuthState(user_id=evicting_uid, nonce=str(_uuid_mod.uuid4())))
-
-    await session.commit()
-    # Every nonce moved: drop the whole in-process cache.
-    _nonce_cache_bust_all()
+    await session.flush()
 
 
 async def end_all_sessions(session: AsyncSession) -> None:

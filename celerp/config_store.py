@@ -12,6 +12,7 @@ module never open or replace celerp-config.json directly.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -64,10 +65,20 @@ def _acquire_lock(lock_path: str, budget: float = _LOCK_BUDGET_S):
     deadline = time.monotonic() + budget
     while True:
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             token = _lock_token()
-            os.write(fd, token)
-            os.fsync(fd)
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, token)
+                os.fsync(fd)
+            except BaseException:
+                # A stop signal included. The lock was created a moment ago, so
+                # it is still this writer's even if the token is half written.
+                os.close(fd)
+                body = _read_lock_token(lock_path)
+                if body is not None and token.startswith(body):
+                    with contextlib.suppress(OSError):
+                        os.unlink(lock_path)
+                raise
             return fd, token
         except FileExistsError:
             try:
@@ -117,6 +128,17 @@ def hold_lock(lock_path: str, budget: float = _LOCK_BUDGET_S):
     if acquired is None:
         return None
     fd, token = acquired
+    # Anything raised before the caller holds `release` (a stop signal's
+    # SystemExit included) gives the lock back instead of leaving it to go stale.
+    try:
+        return _refreshing_release(lock_path, fd, token)
+    except BaseException:
+        _release_lock(fd, lock_path, token)
+        raise
+
+
+def _refreshing_release(lock_path: str, fd: int, token: bytes):
+    """Start the refresher for a lock just acquired; return its release."""
     stop = threading.Event()
 
     def _refresh() -> None:

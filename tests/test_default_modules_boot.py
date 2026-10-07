@@ -15,6 +15,7 @@ test with the real ImportError. It runs on the CI 3.10 matrix leg with
 from __future__ import annotations
 
 import importlib
+import types
 
 import pytest
 
@@ -46,9 +47,11 @@ def _clear_loader_state():
     each test too so earlier suite tests cannot leak loader state in."""
     loader._loaded.clear()
     loader._load_errors.clear()
+    loader._admitted.clear()
     yield
     loader._loaded.clear()
     loader._load_errors.clear()
+    loader._admitted.clear()
 
 
 def _pluggable_default_names() -> set[str]:
@@ -75,25 +78,48 @@ def test_all_default_modules_load_and_reimport_cleanly():
                 importlib.import_module(route_mod)
 
 
-def test_default_module_import_failure_fails_boot():
+class _App:
+    def __init__(self):
+        self.router = types.SimpleNamespace(routes=[])
+
+
+def test_default_module_import_failure_fails_boot(monkeypatch):
     """A first-party module whose route code fails to import must fail boot with
     an error naming the module, never boot without the feature. First-party-ness
     travels on the manifest (load_all sets it from the content lock); the route
     registrar trusts that verdict rather than re-deriving it."""
-    manifest = {"name": "celerp-docs", "first_party": True,
-                "api_routes": "celerp_docs_broken_x",
-                "ui_routes": "celerp_docs_broken_x"}
+    loaded = load_all(_BUNDLED_MODULES_DIRS[0],
+                      {"celerp-docs", "celerp-inventory", "celerp-contacts"})
+    docs = [m for m in loaded if m["name"] == "celerp-docs"]
+    assert docs and docs[0]["first_party"] is True
+
+    def _broken(dotted):
+        raise ImportError(f"cannot import {dotted}")
+
+    monkeypatch.setattr(loader, "resolve_handler", _broken)
     with pytest.raises(ModuleLoadError, match="celerp-docs"):
-        register_api_routes(app=None, loaded=[manifest])
+        register_api_routes(_App(), docs)
     with pytest.raises(ModuleLoadError, match="celerp-docs"):
-        register_ui_routes(app=None, loaded=[manifest])
+        register_ui_routes(_App(), docs)
 
 
-def test_third_party_route_failure_keeps_booting():
+def test_third_party_route_failure_keeps_booting(tmp_path):
     """Third-party modules keep load-and-continue: a broken route import is
-    recorded for the Modules UI badge, and boot proceeds."""
-    manifest = {"name": "vendor-widget", "api_routes": "vendor_widget_broken_x",
-                "ui_routes": "vendor_widget_broken_x"}
-    register_api_routes(app=None, loaded=[manifest])
-    register_ui_routes(app=None, loaded=[manifest])
-    assert "vendor-widget" in load_errors()
+    recorded for the Modules UI badge, the module stops running, and boot
+    proceeds."""
+    inner = tmp_path / "vendor-widget" / "vendor_widget"
+    inner.mkdir(parents=True)
+    (inner / "__init__.py").write_text("")
+    (inner / "routes.py").write_text(
+        "import vendor_widget_missing_dependency_x  # noqa: F401\n\n"
+        "def setup_api_routes(app):\n    pass\n")
+    (tmp_path / "vendor-widget" / "__init__.py").write_text(
+        "PLUGIN_MANIFEST = {'name': 'vendor-widget', 'version': '1.0.0', "
+        "'api_routes': 'vendor_widget.routes'}\n")
+    loaded = load_all(tmp_path, {"vendor-widget"})
+    assert [m["name"] for m in loaded] == ["vendor-widget"]
+
+    register_api_routes(_App(), loaded)
+
+    assert "ModuleNotFoundError" in load_errors()["vendor-widget"]
+    assert not loader.is_running("vendor-widget")

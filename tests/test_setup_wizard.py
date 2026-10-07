@@ -167,6 +167,7 @@ class TestSetupCompanyPost:
             patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
             patch("ui.api_client.set_business_type", new=set_type),
             patch("ui.api_client.restart_system", new=restart),
+            patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)),
         ):
             r = await ui_client.post(
                 "/setup/company",

@@ -1231,3 +1231,53 @@ async def test_apply_cn_void_then_reapply_same_invoice(client):
     # CN outstanding must be 0 (fully applied)
     cn_state = (await client.get(f"/docs/{cn}", headers=h)).json()
     assert cn_state["amount_outstanding"] == pytest.approx(0.0, abs=0.01)
+
+
+async def _deleted_before_upgrade(session, inv: str, index: int) -> None:
+    """Delete the payment at *index* as Celerp did before deletions kept their place:
+    it leaves the list and every later payment moves up one place."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from celerp.projections.engine import ProjectionEngine
+    from sqlalchemy import select as _sel
+    doc_row = (await session.execute(_sel(Projection).where(Projection.entity_id == inv))).scalar_one()
+    entry = LedgerEntry(company_id=doc_row.company_id, entity_id=inv, entity_type="doc",
+                        event_type="doc.payment.deleted", data={"payment_index": index}, actor_id=None,
+                        location_id=None, source="api", idempotency_key=f"legacy-delete:{inv}:{index}",
+                        metadata_={})
+    session.add(entry)
+    await session.flush()
+    await ProjectionEngine.apply_event(session, entry)
+    await session.flush()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["void", "refund"])
+async def test_a_payment_moved_up_by_an_older_deletion_is_given_back_on_the_books(client, session, action):
+    """An older deletion moved a payment into the place of one already voided or
+    refunded: giving it back posts its own entry, never taken for the earlier one's."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 300.0)
+    for d in ("2026-01-10", "2026-01-11", "2026-01-12"):
+        r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                              json={"payment_date": d, "amount": 100.0, "bank_account": "1111"})
+        assert r.status_code == 200, r.text
+    give_back = {"void": ("void-payment", {"refund_date": "2026-01-20"}),
+                 "refund": ("refund", {"amount": 100.0, "payment_date": "2026-01-20"})}
+    path, body = give_back[action]
+    r = await client.post(f"/docs/{inv}/{path}", headers=_h(token), json={"payment_index": 1, **body})
+    assert r.status_code == 200, r.text
+    await _deleted_before_upgrade(session, inv, 0)
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert [(p["index"], p["payment_date"]) for p in doc["payments"]] == [(0, "2026-01-11"), (1, "2026-01-12")]
+
+    path, body = give_back[action]
+    r = await client.post(f"/docs/{inv}/{path}", headers=_h(token),
+                          json={"payment_index": 1, **body, **({"refund_date": "2026-01-21"} if action == "void"
+                                                                else {"payment_date": "2026-01-21"})})
+    assert r.status_code == 200, r.text
+
+    ledger = (await client.get("/accounting/ledger/1111", headers=_h(token))).json()
+    given_back = [line for line in ledger["lines"] if line["date"] in ("2026-01-20", "2026-01-21")]
+    assert sorted((line["date"], line["credit"]) for line in given_back) == [
+        ("2026-01-20", pytest.approx(100.0)), ("2026-01-21", pytest.approx(100.0))]

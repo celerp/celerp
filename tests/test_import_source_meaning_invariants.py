@@ -22,6 +22,8 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 
 from test_onboarding_import_invariants import (  # noqa: F401  (fixtures)
@@ -39,7 +41,6 @@ from test_onboarding_import_invariants import (  # noqa: F401  (fixtures)
     perm,
     stage_dir,
 )
-from ui.routes import csv_import as ci
 
 _PRICE_LISTS = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
 _CURRENCY_CODES = {"price_currency_mismatch", "price_currency_ambiguous"}
@@ -116,7 +117,7 @@ async def _browser_mapped(csv_text: str, mapping: dict[str, str], currency: str)
     from fasthtml.common import Div
 
     from ui.app import app as ui_app
-    ref = ci._write_stage(_COMPANY_A, csv_text)
+    ref = import_stage.write_stage(_COMPANY_A, csv_text)
     company = {"id": _COMPANY_A, "currency": currency, "current_role": "owner", "settings": {}}
     check = AsyncMock(return_value=Div("mapped rows checked"))
     with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \

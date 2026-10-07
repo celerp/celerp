@@ -18,12 +18,14 @@ from ui.api_client import APIError
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
+from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import role_has_permission
+from ui.module_slots import connected_connector_ids, required_connectors, visible_slot_contributions
 from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
@@ -2236,12 +2238,14 @@ celerpUpdateBulkAlloc();
         company_currency: str = "USD"
         _ident_mode = "sku"
         _co_settings: dict = {}
+        _co_connectors: set[str] = set()
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
             company_currency = _co.get("currency") or "USD"
             _ident_mode = _ident_mode_from(_co)
             _co_settings = _co.get("settings") or {}
+            _co_connectors = await doc_detail_connectors(_co)
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -2368,7 +2372,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -3223,6 +3227,22 @@ celerpUpdateBulkAlloc();
             return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
+    @app.post("/docs/{entity_id}/delete-payment")
+    async def delete_payment_route(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            form = await request.form()
+            payment_index = int(form.get("payment_index", -1))
+            await api.delete_payment(token, entity_id, payment_index, **submitted_operation_key(form))
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(str(e.detail))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+
     @app.post("/docs/{entity_id}/apply-credit")
     async def apply_credit_route(request: Request, entity_id: str):
         from starlette.responses import Response as _R
@@ -3351,7 +3371,7 @@ celerpUpdateBulkAlloc();
             company = {}
         currency = company.get("currency") or None
         if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_payments"):
-            return RedirectResponse("/dashboard", status_code=302)
+            return not_permitted_redirect(request)
 
         # Fetch all docs and extract payments
         try:
@@ -4242,11 +4262,13 @@ celerpUpdateBulkAlloc();
         tz: str = "UTC"
         _ident_mode = "sku"
         _co_settings: dict = {}
+        _co_connectors: set[str] = set()
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
             _ident_mode = _ident_mode_from(_co)
             _co_settings = _co.get("settings") or {}
+            _co_connectors = await doc_detail_connectors(_co)
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -4307,7 +4329,7 @@ celerpUpdateBulkAlloc();
                 _chart_accounts = (await api.get_chart(token)).get("items", [])
             except Exception:
                 _chart_accounts = []
-        _detail = _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
+        _detail = _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors,
                         notes=list_notes, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, locations=_list_locations,
                         email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
                         chart_accounts=_chart_accounts,
@@ -5340,6 +5362,21 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         if voided:
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
+        elif p.get("unmatched") and is_operator:
+            # Recorded here from the unmatched payments: taking it off puts it back on that list.
+            void_cell = Td(Details(
+                Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.return_to_unmatched")),
+                Form(
+                    Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                    operation_key_input(),
+                    Button(t("btn.confirm_return_to_unmatched"), type="submit", cls="btn btn--danger btn--xs"),
+                    hx_post=f"/docs/{entity_id}/delete-payment", hx_swap="none",
+                    cls="inline-form inline-form--compact",
+                ),
+                cls="void-inline",
+            ))
+        elif p.get("held_by") == "stripe":
+            void_cell = Td(Span(t("documents.refund_in_stripe"), cls="text-muted small"))
         elif not voided and is_operator:
             refund_form = ""
             p_left = round_money(p_amount, currency) - round_money(p.get("refunded") or 0, currency)
@@ -5359,6 +5396,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     cls="void-inline",
                 )
             void_cell = Td(
+                Span(t("documents.stripe_released"), cls="text-muted small") if p.get("stripe_released_at") else "",
                 refund_form,
                 Details(
                     Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.void_this_payment")),
@@ -5875,7 +5913,14 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100) -> FT:
+async def doc_detail_connectors(company: dict) -> set[str]:
+    """The connectors this company is connected to among those the document detail slots require."""
+    return await connected_connector_ids(
+        str(company.get("id") or ""), required_connectors("doc_detail_actions", "doc_detail_badges"))
+
+
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
+                connected_connectors: set[str] | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -6472,8 +6517,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     action_btns_print.append(Span("", id="share-result"))
 
     # --- Slot: doc_detail_actions (module-contributed action buttons - go left) ---
-    from celerp.modules.slots import get as _get_slot
-    for _contrib in _get_slot("doc_detail_actions"):
+    # Only contributions from modules the company has on, and only those whose
+    # permission the role holds; the module's own route still checks it.
+    for _contrib in visible_slot_contributions("doc_detail_actions", settings or {}, role, connected_connectors):
         _render_path = _contrib.get("render", "")
         if _render_path:
             try:
@@ -6494,7 +6540,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _fulfill_badge = _render_fulfillment_badge(doc)
     if _fulfill_badge is not None:
         _slot_badges.append(_fulfill_badge)
-    for _contrib in _get_slot("doc_detail_badges"):
+    for _contrib in visible_slot_contributions("doc_detail_badges", settings or {}, role, connected_connectors):
         _render_path = _contrib.get("render", "")
         if _render_path:
             try:

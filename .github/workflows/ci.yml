@@ -56,15 +56,60 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
-        # The suite is ~3.5k small tests (no slow outliers), so wall time is bound by
-        # core count. ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
+        # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
         # pytest-split fans the suite across 6 parallel runners; each still uses -n auto
-        # within its 2 cores. 4 shards left one shard ~340s (it hit the old 300s cap); 6
-        # shards drop each to ~1/6 of the suite and the 600s cap is a generous backstop.
+        # within its 2 cores.
+        # Process tests run in their own job so the count split stays even.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           --timeout=30
+          -m "not browser and not embedded_pg and not process"
           --splits 6 --group ${{ matrix.group }}
+          --ignore=tests/test_visual.py
+          --ignore=tests/test_browser
+
+  process:
+    name: Process tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+
+      - name: Run process tests
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          # Run on the Postgres service (each xdist worker gets its own database).
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          timeout 600 pytest tests/ default_modules/*/tests/ -m process -n auto -q --tb=short --no-cov
+          --timeout=30
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 
@@ -119,8 +164,10 @@ jobs:
         # 3 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
         # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
+        # A shard takes about 6.5 minutes; the 13 minute cap leaves room for a slow runner
+        # inside the 15 minute job limit.
         run: >
-          timeout 600 pytest tests/test_browser -m browser -o addopts=""
+          timeout 780 pytest tests/test_browser -m browser -o addopts=""
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
           --splits 3 --group ${{ matrix.group }}
 
@@ -349,10 +396,10 @@ jobs:
           if-no-files-found: ignore
 
   # Aggregator: the single required status check. Branch protection should require "Test"
-  # (this job), which passes only when every unit, browser, electron, AND lockfile job passed.
+  # (this job), which passes only when every unit, process, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
+    needs: [shard, process, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -360,6 +407,10 @@ jobs:
         run: |
           if [ "${{ needs.shard.result }}" != "success" ]; then
             echo "One or more unit-test shards failed (result: ${{ needs.shard.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.process.result }}" != "success" ]; then
+            echo "Process tests failed (result: ${{ needs.process.result }})"
             exit 1
           fi
           if [ "${{ needs.browser.result }}" != "success" ]; then
@@ -394,4 +445,4 @@ jobs:
             echo "Self-update end to end failed (result: ${{ needs.update-e2e.result }})"
             exit 1
           fi
-          echo "All unit, browser, embedded, electron, lockfile, constraints, and self-update checks passed."
+          echo "All unit, process, browser, embedded, electron, lockfile, constraints, and self-update checks passed."

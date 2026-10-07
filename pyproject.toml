@@ -111,6 +111,7 @@ pythonpath = [".", ".."]
 markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
     "embedded_pg: bundled-PostgreSQL integration tests (boot a real pgserver cluster; ~slow). Run separately with: pytest -m embedded_pg",
+    "process: spawns OS processes or races separate database connections (slow). CI runs these in their own job.",
 ]
 
 # NOTE: do NOT set [tool.coverage.run] core = "sysmon" here. The sys.monitoring

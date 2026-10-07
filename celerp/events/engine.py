@@ -21,6 +21,104 @@ def apply_event(state: dict, event: LedgerEntry) -> dict:
     return ProjectionEngine._apply(state, event.event_type, event.data)
 
 
+STRIPE_OWNED_PAYMENT = (
+    "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
+)
+STRIPE_RECEIPT_KEPT = (
+    "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
+)
+PAYMENT_NOT_NAMED = "A payment can be taken off a document only by naming it, and a deletion keeps its place."
+# Every event that takes a received payment back off a document.
+PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
+
+
+async def _stripe_receipts(session, company_id, entity_id) -> list[dict]:
+    """The ``doc.payment.received`` events the Stripe intake wrote on this document.
+    The ledger records which writer received each payment; the method is free text
+    that a connector or a person can also set to "stripe"."""
+    return list((await session.execute(
+        select(LedgerEntry.data).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == entity_id,
+            LedgerEntry.event_type == "doc.payment.received",
+            LedgerEntry.source == "stripe",
+        )
+    )).scalars().all())
+
+
+async def stripe_receipt_references(session, company_id, entity_id, *, managed: bool = False) -> set[str]:
+    """References (Stripe PaymentIntents) of the payments on this document received
+    through Stripe: each is real for good, managed or not, linked to Stripe or not, so
+    it is never deleted. With *managed*, only those the intake recorded as Stripe's
+    to manage: paid on a page that carried the books it is recorded on
+    (``stripe_managed``). A payment taken before payment pages carried their books is
+    the company's to manage, like any other.
+
+    A payment is found by its reference, never by its index: a deletion made before
+    deletions kept their place renumbered the payments after it, so the index a
+    receipt was recorded at can since belong to another payment."""
+    return {data["reference"] for data in await _stripe_receipts(session, company_id, entity_id)
+            if data.get("reference") and (not managed or data.get("stripe_managed") is True)}
+
+
+def is_stripe_receipt(payment: dict, references: set[str]) -> bool:
+    """Whether *payment* is one of the Stripe receipts *references* names."""
+    return payment.get("method") == "stripe" and payment.get("reference") in references
+
+
+async def stripe_payment_indexes(session, company_id, entity_id, payments: list[dict]) -> set[int]:
+    """Indexes of the payments on this document that Stripe manages
+    (``stripe_receipt_references``) and that are still linked to Stripe.
+
+    Stripe holds the money for these, so only Stripe can give it back. Once Stripe is
+    disconnected a payment is no longer linked to it (``stripe_released_at``) and is
+    refunded or voided here like any other.
+    """
+    if not any(p.get("method") == "stripe" for p in payments):
+        return set()
+    managed = await stripe_receipt_references(session, company_id, entity_id, managed=True)
+    return {p.get("index") for p in payments if is_stripe_receipt(p, managed) and not p.get("stripe_released_at")}
+
+
+async def refuse_stripe_payment_removal(session, company_id, entity_id, payments: list[dict],
+                                        index, event_type: str) -> None:
+    """422 when *event_type* would take the payment at *index* off the document while
+    Stripe holds its money (``stripe_payment_indexes``), or would delete a payment
+    received through Stripe (``stripe_receipt_references``). A payment a person
+    recorded on the document from the unmatched payments, and that was never
+    refunded, may be deleted: that puts it back with them (``payments.return_unmatched``)."""
+    payment = next((p for p in payments if p.get("index") == index), None)
+    if event_type == "doc.payment.deleted" and payment is not None and not payment.get("refunded"):
+        from celerp.services.payments import recorded_unmatched
+        if payment.get("reference") in await recorded_unmatched(session, company_id, entity_id):
+            return
+    if index in await stripe_payment_indexes(session, company_id, entity_id, payments):
+        raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
+    if (event_type == "doc.payment.deleted" and payment is not None
+            and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
+        raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)
+
+
+async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
+    """``refuse_stripe_payment_removal`` for every writer, except a refund Stripe
+    itself reports (``payments.receive_refund``)."""
+    if kwargs.get("event_type") == "doc.payment.refunded" and kwargs.get("source") == "stripe":
+        return
+    row = await session.get(Projection, (kwargs.get("company_id"), kwargs.get("entity_id")))
+    if row is None or row.entity_type != "doc":
+        return
+    # A refund naming no payment, or a deletion by list position (the shape deletions
+    # had before they kept their place), cannot be checked against the payment it
+    # takes off; no writer may emit either.
+    data = kwargs.get("data") or {}
+    if data.get("payment_index") is None or (kwargs["event_type"] == "doc.payment.deleted"
+                                             and data.get("tombstone") is not True):
+        raise HTTPException(status_code=422, detail=PAYMENT_NOT_NAMED)
+    await refuse_stripe_payment_removal(session, kwargs["company_id"], kwargs["entity_id"],
+                                        (row.state or {}).get("payments", []),
+                                        data["payment_index"], kwargs["event_type"])
+
+
 async def find_event_by_idempotency(session, company_id, idempotency_key: str | None) -> LedgerEntry | None:
     """Return the event already committed for this company/key, if any.
 
@@ -292,6 +390,9 @@ async def emit_event(
             await assert_document_item_uniqueness(
                 session, kwargs.get("company_id"), doc_type, line_set
             )
+
+    if kwargs.get("entity_type") == "doc" and kwargs.get("event_type") in PAYMENT_REMOVAL_EVENTS:
+        await _refuse_stripe_payment_removal(session, kwargs)
 
     if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
         from celerp.connectors.ownership import lock_connector_key

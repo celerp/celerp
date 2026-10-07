@@ -3,7 +3,8 @@
 """License verification for premium modules.
 
 Called by the module loader at startup for every module loaded from the
-``premium_modules/`` directory.  Uses the relay's ``/marketplace/license/verify``
+``premium_modules/`` directory or carrying the paid marker, and for every
+``celerp-`` module that is not one of the defaults Celerp ships.  Uses the relay's ``/marketplace/license/verify``
 endpoint and caches the result locally to allow a 7-day offline grace period.
 
 Public API
@@ -13,12 +14,23 @@ Public API
 
 ``is_premium_path(pkg_path) -> bool``
     True when the module lives inside a ``premium_modules/`` parent directory.
+
+``is_free_official(slug, relay_url, cache_dir) -> bool | None``
+    True when the Marketplace lists *slug* as a free official module (cached);
+    None when the Marketplace could not be asked.
+
+``record_free_verdict(slug, cache_dir)``
+    Keeps that verdict, without expiry; also written at Marketplace install.
+
+``adopt_legacy_license_cache(data_dir)``
+    Carries licences kept under the old default data dir into *data_dir*.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -27,6 +39,9 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _OFFLINE_GRACE_SECONDS: int = 7 * 24 * 3600  # 7 days
+
+# Why a paid module does not load here: the modules page offers to move it.
+PAID_MODULE_REFUSAL = "Premium module: no valid license."
 
 # ES256 public key for verifying LIFETIME module licenses OFFLINE. The relay
 # holds the matching private key. A lifetime license is an ES256 JWT the relay
@@ -91,7 +106,7 @@ def check_license(
         slug:         Module slug to verify (e.g. ``"celerp-warehousing"``).
         relay_url:    Base URL of the Celerp relay service (no trailing slash).
         instance_jwt: Bearer JWT obtained from relay ``/auth/token``.
-        cache_dir:    DATA_DIR for this Celerp instance — cache is stored in a
+        cache_dir:    The instance data dir (settings.data_dir); the cache is stored in a
                       ``license_cache/`` subdirectory.
         instance_id:  This instance's canonical id; a lifetime license only
                       counts when its ``sub`` claim matches it (see
@@ -151,13 +166,114 @@ def check_license(
     return _read_cache(cache_file, slug)
 
 
+def marketplace_flags(meta: dict) -> tuple[bool, bool]:
+    """``(is_official, is_paid)`` from a Marketplace module-detail response.
+
+    Any price listed, in any form, reads as paid; only a literal ``True`` reads
+    as official."""
+    is_paid = any(meta.get(k) is not None for k in ("price_monthly", "price_once"))
+    return meta.get("is_official") is True, is_paid
+
+
+def is_free_official(slug: str, relay_url: str, cache_dir: Path) -> bool | None:
+    """Whether the Marketplace lists *slug* as a free official module.
+
+    A free answer is kept in ``cache_dir/license_cache/{slug}.free.json`` and
+    reused from then on without a network call. Any other answer (paid,
+    unofficial, unknown module) is False and is kept as ``{slug}.not-free.json``.
+    When the Marketplace cannot be asked (unreachable, failing, or an unreadable
+    reply) the kept answer stands: False after a not-free answer, else None."""
+    cached = _cache_data(_free_verdict_file(slug, cache_dir))
+    if isinstance(cached, dict) and cached.get("free") is True:
+        return True
+    url = relay_url.rstrip("/") + f"/marketplace/modules/{slug}"
+    meta = None
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            meta = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        log.info("Module %r: Marketplace details unavailable (%s)", slug, exc)
+        if exc.code == 404:
+            meta = {}
+    except Exception as exc:
+        log.info("Module %r: Marketplace details unavailable (%s)", slug, exc)
+    if not isinstance(meta, dict):
+        return False if _not_free_file(slug, cache_dir).is_file() else None
+    is_official, is_paid = marketplace_flags(meta)
+    if not is_official or is_paid:
+        _write_verdict(_not_free_file(slug, cache_dir), slug, free=False)
+        return False
+    record_free_verdict(slug, cache_dir)
+    return True
+
+
+def record_free_verdict(slug: str, cache_dir: Path) -> None:
+    """Keep the Marketplace's free official verdict for *slug* on this instance.
+    It does not expire: a module once listed free stays loadable offline."""
+    _write_verdict(_free_verdict_file(slug, cache_dir), slug, free=True)
+
+
+def _write_whole(path: Path, data: bytes) -> None:
+    """Write *path* whole or not at all, through a temp file of its own so
+    concurrent writers never collide. Raises OSError, leaving no temp file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def _write_verdict(path: Path, slug: str, *, free: bool) -> None:
+    """Write a Marketplace verdict whole or not at all."""
+    try:
+        _write_whole(path, json.dumps({"free": free, "cached_at": time.time()}).encode())
+    except OSError as exc:
+        log.warning("Could not write the Marketplace verdict for %s: %s", slug, exc)
+
+
+def adopt_legacy_license_cache(data_dir: Path) -> None:
+    """Copy licences kept under the old default data dir into *data_dir*'s
+    cache, once: a file already in *data_dir* is never replaced, and only
+    plain ``<slug>.json`` licence entries are carried over. An entry that
+    cannot be read is skipped without stopping the rest."""
+    legacy = Path(os.environ.get("DATA_DIR", "/tmp/celerp-data")) / "license_cache"
+    target = Path(data_dir) / "license_cache"
+    try:
+        if not legacy.is_dir() or legacy.resolve() == target.resolve():
+            return
+        sources = sorted(legacy.glob("*.json"))
+    except OSError as exc:
+        log.warning("Could not carry over licences from %s: %s", legacy, exc)
+        return
+    for src in sources:
+        dest = target / src.name
+        if "." in src.stem or dest.exists():
+            continue
+        try:
+            _write_whole(dest, src.read_bytes())
+        except OSError as exc:
+            log.warning("Could not carry over the licence %s: %s", src, exc)
+
+
+def _free_verdict_file(slug: str, cache_dir: Path) -> Path:
+    return Path(cache_dir) / "license_cache" / f"{slug}.free.json"
+
+
+def _not_free_file(slug: str, cache_dir: Path) -> Path:
+    return Path(cache_dir) / "license_cache" / f"{slug}.not-free.json"
+
+
 def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:
     """Exchange the permanent gateway api_key for a short-lived instance JWT via
     POST /auth/token - same pattern as celerp.routers.health's async relay
     calls, but synchronous since the module loader runs at process startup
     before the event loop is serving requests. Returns None on any failure
-    (network error, invalid key, malformed response) so the caller can fall
-    back to skipping the license check rather than crashing startup."""
+    (network error, invalid key, malformed response) so the caller decides from
+    the offline lifetime licence and grace cache rather than crashing startup."""
     if not relay_url or not api_key:
         return None
     url = relay_url.rstrip("/") + "/auth/token"

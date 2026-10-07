@@ -36,14 +36,24 @@ def clean_state(tmp_path):
     from celerp.modules import loader
     loader._loaded.clear()
     loader._load_errors.clear()
+    loader._admitted.clear()
     yield
     slots.clear()
     loader._loaded.clear()
     loader._load_errors.clear()
-    # Remove any test module packages added to sys.modules
-    for key in list(sys.modules.keys()):
-        if key.startswith("test_mod_") or key.startswith("good_module") or key.startswith("bad_module"):
-            sys.modules.pop(key, None)
+
+
+def _scan(pkg: Path, dotted: str) -> set[str]:
+    """Protected internals reachable from the module file ``dotted`` names."""
+    from celerp.modules import loader
+    return loader._scan_protected_imports(pkg, loader._module_source_file(pkg, dotted))
+
+
+def _load(pkg: Path, name: str, *, trusted: bool = False) -> dict:
+    """Admit and import a module the way load_all does."""
+    from celerp.modules import loader
+    return _load_one(pkg, name, trusted=trusted,
+                     declared=loader._admission_checks(name, pkg).manifest)
 
 
 def _make_module(base: Path, name: str, manifest: str, extra_code: str = "") -> Path:
@@ -148,6 +158,62 @@ class TestLoadAll:
         assert result == []
 
 
+# ── Malformed manifests ───────────────────────────────────────────────────────
+# One third-party module with a malformed manifest is refused with its reason;
+# the load pass never raises and every other module still loads.
+
+def _load_bad_beside_good(tmp_path, manifest: str) -> list[dict]:
+    _make_module(tmp_path, "test_mod_good", '{"name": "test_mod_good", "version": "1.0"}')
+    _make_module(tmp_path, "test_mod_bad", manifest)
+    return load_all(tmp_path, {"test_mod_good", "test_mod_bad"})
+
+
+class TestMalformedManifest:
+    @pytest.mark.parametrize("value", ["[]", "0", '""', "False"])
+    def test_falsy_non_dict_slots_refused_others_load(self, tmp_path, value):
+        result = _load_bad_beside_good(
+            tmp_path, f'{{"name": "test_mod_bad", "version": "1.0", "slots": {value}}}')
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert "'slots' must be a dict" in load_errors()["test_mod_bad"]
+
+    def test_none_slots_means_no_slots(self, tmp_path):
+        result = _load_bad_beside_good(
+            tmp_path, '{"name": "test_mod_bad", "version": "1.0", "slots": None}')
+        assert sorted(m["name"] for m in result) == ["test_mod_bad", "test_mod_good"]
+        assert "test_mod_bad" not in load_errors()
+
+    @pytest.mark.parametrize("value", ["5", "True", '"test_mod_good"', "[1]", "[[1]]", '[""]'])
+    def test_malformed_depends_on_refused_others_load(self, tmp_path, value):
+        result = _load_bad_beside_good(
+            tmp_path, f'{{"name": "test_mod_bad", "version": "1.0", "depends_on": {value}}}')
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert "'depends_on' must be a list" in load_errors()["test_mod_bad"]
+
+    @pytest.mark.parametrize("value", ["[1]", '"x"', "(1, 2)"])
+    def test_non_dict_manifest_refused_others_load(self, tmp_path, value):
+        result = _load_bad_beside_good(tmp_path, value)
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert "PLUGIN_MANIFEST must be a dict" in load_errors()["test_mod_bad"]
+
+    @pytest.mark.parametrize("field,value", [
+        ("name", "1"), ("name", "['a']"), ("version", "1.0"), ("version", "{'v': 1}"),
+    ])
+    def test_non_string_name_or_version_refused(self, tmp_path, field, value):
+        fields = {"name": '"test_mod_bad"', "version": '"1.0"', field: value}
+        result = _load_bad_beside_good(
+            tmp_path, "{" + ", ".join(f'"{k}": {v}' for k, v in fields.items()) + "}")
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert f"'{field}' must be a non-empty string" in load_errors()["test_mod_bad"]
+
+    @pytest.mark.parametrize("key", ["api_routes", "ui_routes"])
+    @pytest.mark.parametrize("value", ["1", "['x']", "True"])
+    def test_non_string_route_module_refused(self, tmp_path, key, value):
+        result = _load_bad_beside_good(
+            tmp_path, f'{{"name": "test_mod_bad", "version": "1.0", "{key}": {value}}}')
+        assert [m["name"] for m in result] == ["test_mod_good"]
+        assert f"'{key}' must be a dotted module path string" in load_errors()["test_mod_bad"]
+
+
 # ── Premium license gate ──────────────────────────────────────────────────────
 # is_premium_path() (celerp.modules.license) treats a directory carrying the
 # marketplace installer's PREMIUM_MARKER as license-gated. load_all resolves a
@@ -164,14 +230,17 @@ class TestPremiumLicenseGate:
         (pkg / PREMIUM_MARKER).write_text("")
         return pkg
 
-    def test_no_gateway_token_skips_check_dev_mode(self, tmp_path, monkeypatch):
-        """Never-activated instance (no gateway_token at all): the check is
-        skipped gracefully, not treated as a license failure."""
+    def test_no_gateway_token_still_checks_the_license(self, tmp_path, monkeypatch):
+        """Never-activated instance (no gateway_token at all): the license is
+        decided offline, so with no stored license the module is not loaded."""
         from celerp.config import settings as _s
+        from celerp.modules import loader as _loader
         monkeypatch.setattr(_s, "gateway_token", "")
+        monkeypatch.setattr(_s, "data_dir", tmp_path / "data")
         self._make_premium_module(tmp_path)
         result = load_all(tmp_path, {"paid-mod"})
-        assert len(result) == 1
+        assert result == []
+        assert "no valid license" in _loader.load_errors()["paid-mod"]
 
     def test_no_premium_module_makes_zero_token_exchanges(self, tmp_path, monkeypatch):
         """No premium module present -> the relay token exchange (a blocking
@@ -312,7 +381,7 @@ class TestBSLProtection:
             "PLUGIN_MANIFEST = {'name': 'violator', 'version': '1.0'}"
         )
         with pytest.raises(ModuleLoadError, match="protected BSL internals"):
-            _load_one(pkg, "violator")
+            _load(pkg, "violator")
 
     def test_bsl_violation_error_message_contains_urls(self, tmp_path):
         pkg = tmp_path / "violator2"
@@ -323,7 +392,7 @@ class TestBSLProtection:
             "PLUGIN_MANIFEST = {'name': 'violator2', 'version': '1.0'}"
         )
         with pytest.raises(ModuleLoadError) as exc_info:
-            _load_one(pkg, "violator2")
+            _load(pkg, "violator2")
         msg = str(exc_info.value)
         assert "celerp.com/licenses/bsl" in msg
         assert "celerp.com/docs/modules/ai-api" in msg
@@ -331,7 +400,7 @@ class TestBSLProtection:
     def test_clean_module_not_rejected(self, tmp_path):
         _make_module(tmp_path, "clean-mod", '{"name": "clean-mod", "version": "1.0"}')
         pkg = tmp_path / "clean-mod"
-        result = _load_one(pkg, "clean-mod")
+        result = _load(pkg, "clean-mod")
         assert result is not None
         assert result["name"] == "clean-mod"
 
@@ -339,46 +408,37 @@ class TestBSLProtection:
 # ── Route registration ────────────────────────────────────────────────────────
 
 class TestRouteRegistration:
-    def test_register_api_routes_calls_setup(self, tmp_path):
-        import types
-        called = []
-
-        class _FakeApp:
-            def __init__(self):
-                self.router = types.SimpleNamespace(routes=[])
-
-        pkg = tmp_path / "route-mod"
-        pkg.mkdir()
-        (pkg / "__init__.py").write_text(
+    @staticmethod
+    def _route_module(base: Path, kind: str, calls: Path) -> list[dict]:
+        """An on-disk module whose ``kind`` setup appends to ``calls``, loaded."""
+        inner = base / "route-mod" / f"route_mod_{kind}"
+        inner.mkdir(parents=True)
+        (inner / "__init__.py").write_text("")
+        (inner / "routes.py").write_text(
+            f"def setup_{kind}_routes(app):\n"
+            f"    open({str(calls)!r}, 'a').write({kind!r})\n")
+        (base / "route-mod" / "__init__.py").write_text(
             "PLUGIN_MANIFEST = {'name': 'route-mod', 'version': '1.0', "
-            "'api_routes': 'route_mod_api'}"
-        )
-        import types
-        api_mod = types.ModuleType("route_mod_api")
-        api_mod.setup_api_routes = lambda app: called.append("api")
-        sys.modules["route_mod_api"] = api_mod
+            f"'{kind}_routes': 'route_mod_{kind}.routes'}}")
+        return load_all(base, {"route-mod"})
 
-        manifests = [{"name": "route-mod", "version": "1.0", "api_routes": "route_mod_api"}]
-        register_api_routes(_FakeApp(), manifests)
-        assert called == ["api"]
-        sys.modules.pop("route_mod_api", None)
-
-    def test_register_ui_routes_calls_setup(self, tmp_path):
+    @pytest.mark.parametrize("kind", ["api", "ui"])
+    def test_register_routes_calls_setup(self, tmp_path, kind):
         import types
-        called = []
 
         class _FakeApp:
             def __init__(self):
                 self.router = types.SimpleNamespace(routes=[])
 
-        ui_mod = types.ModuleType("route_mod_ui")
-        ui_mod.setup_ui_routes = lambda app: called.append("ui")
-        sys.modules["route_mod_ui"] = ui_mod
-
-        manifests = [{"name": "route-mod", "version": "1.0", "ui_routes": "route_mod_ui"}]
-        register_ui_routes(_FakeApp(), manifests)
-        assert called == ["ui"]
-        sys.modules.pop("route_mod_ui", None)
+        calls = tmp_path / "calls.txt"
+        manifests = self._route_module(tmp_path / "mods", kind, calls)
+        register = register_api_routes if kind == "api" else register_ui_routes
+        try:
+            register(_FakeApp(), manifests)
+        finally:
+            for key in [k for k in sys.modules if k.startswith(f"route_mod_{kind}")]:
+                sys.modules.pop(key)
+        assert calls.read_text() == kind
 
     def test_broken_route_module_skipped_gracefully(self):
         class _FakeApp:
@@ -423,7 +483,7 @@ class TestDependencySystem:
     """Comprehensive tests for module dependency resolution and enforcement.
 
     These tests cover the full dependency lifecycle:
-    - _topo_sort correctly orders modules
+    - _dependency_order correctly orders modules
     - load_all enforces declared dependencies at load time
     - Missing deps (not enabled, not on disk) cause the dependent to be skipped
     - Cascade: A→B→C where C fails causes A and B to be skipped
@@ -441,7 +501,7 @@ class TestDependencySystem:
         )
         return pkg
 
-    # ── _topo_sort ordering ────────────────────────────────────────────────────
+    # ── _dependency_order ordering ───────────────────────────────────────────
 
     def test_dependency_loads_before_dependent(self, tmp_path):
         """dep must appear before the module that requires it."""
@@ -602,7 +662,7 @@ class TestDependencySystem:
 
     def test_resolve_install_order_survives_a_cycle(self, tmp_path):
         """resolve_install_order must terminate (no RecursionError) on a cyclic
-        depends_on graph; the loader's own _topo_sort is the enforcement point, so
+        depends_on graph; the loader's own _dependency_order is the enforcement point, so
         here we only pin that this helper returns rather than blowing the stack."""
         from celerp.config import resolve_install_order
         self._make(tmp_path, "cyc-a", depends_on=["cyc-b"])
@@ -880,10 +940,7 @@ class TestElectronTrustedModuleDirs:
         assert real_default_modules.resolve() in _loader._BUNDLED_MODULES_DIRS
 
     def test_ast_scan_catches_bsl_import_in_routes_file(self, tmp_path):
-        """_ast_scan_module_file correctly detects BSL imports in route files."""
-        from celerp.modules.loader import _ast_scan_module_file
-        # _ast_scan_module_file resolves 'scan_test.routes' relative to pkg_path:
-        # parts = ['scan_test', 'routes'] → pkg_path / 'scan_test' / 'routes.py'
+        """The protected-import scan detects BSL imports in route files."""
         pkg = tmp_path / "scan-test"
         inner = pkg / "scan_test"
         inner.mkdir(parents=True)
@@ -891,13 +948,12 @@ class TestElectronTrustedModuleDirs:
             "from celerp.session_gate import require_session_token\n"
             "from celerp.ai.quota import check_ai_quota\n"
         )
-        violations = _ast_scan_module_file(pkg, "scan_test.routes")
+        violations = _scan(pkg, "scan_test.routes")
         assert "celerp.session_gate" in violations
         assert "celerp.ai.quota" in violations
 
     def test_ast_scan_catches_lazy_bsl_import_inside_function(self, tmp_path):
         """AST scan catches BSL imports nested inside function bodies (lazy imports)."""
-        from celerp.modules.loader import _ast_scan_module_file
         pkg = tmp_path / "lazy-test"
         inner = pkg / "lazy_test"
         inner.mkdir(parents=True)
@@ -906,7 +962,7 @@ class TestElectronTrustedModuleDirs:
             "    from celerp.gateway.client import get_client\n"
             "    return get_client()\n"
         )
-        violations = _ast_scan_module_file(pkg, "lazy_test.routes")
+        violations = _scan(pkg, "lazy_test.routes")
         assert "celerp.gateway" in violations, (
             "AST scan must catch lazy imports inside function bodies"
         )
@@ -914,7 +970,6 @@ class TestElectronTrustedModuleDirs:
     def test_ast_scan_follows_indirection_into_sibling_file(self, tmp_path):
         """The scan follows local imports transitively: a protected import in a
         helper file the entry module pulls in is still detected."""
-        from celerp.modules.loader import _ast_scan_module_file
         pkg = tmp_path / "indir-test"
         inner = pkg / "indir_test"
         inner.mkdir(parents=True)
@@ -923,24 +978,22 @@ class TestElectronTrustedModuleDirs:
             "import celerp.session_gate\n"
             "def setup_api_routes(app):\n    pass\n"
         )
-        violations = _ast_scan_module_file(pkg, "indir_test.routes")
+        violations = _scan(pkg, "indir_test.routes")
         assert "celerp.session_gate" in violations
 
     def test_ast_scan_follows_absolute_intra_package_indirection(self, tmp_path):
         """Same, via an absolute intra-package import (from pkg.impl import ...)."""
-        from celerp.modules.loader import _ast_scan_module_file
         pkg = tmp_path / "abs-test"
         inner = pkg / "abs_test"
         inner.mkdir(parents=True)
         (inner / "routes.py").write_text("from abs_test import helper\n")
         (inner / "helper.py").write_text("from celerp.ai.quota import check\n")
-        violations = _ast_scan_module_file(pkg, "abs_test.routes")
+        violations = _scan(pkg, "abs_test.routes")
         assert "celerp.ai.quota" in violations
 
     def test_ast_scan_catches_dynamic_importlib(self, tmp_path):
         """A dynamic importlib.import_module(...) with a string-literal target is
         flagged (a plain Import/ImportFrom walk would not see a Call)."""
-        from celerp.modules.loader import _ast_scan_module_file
         pkg = tmp_path / "dyn-test"
         inner = pkg / "dyn_test"
         inner.mkdir(parents=True)
@@ -950,23 +1003,21 @@ class TestElectronTrustedModuleDirs:
             "    m = importlib.import_module('celerp.ai.quota')\n"
             "    return m\n"
         )
-        violations = _ast_scan_module_file(pkg, "dyn_test.routes")
+        violations = _scan(pkg, "dyn_test.routes")
         assert "celerp.ai.quota" in violations
 
     def test_ast_scan_catches_dunder_import(self, tmp_path):
         """__import__('celerp.session_gate') is likewise flagged."""
-        from celerp.modules.loader import _ast_scan_module_file
         pkg = tmp_path / "dunder-test"
         inner = pkg / "dunder_test"
         inner.mkdir(parents=True)
         (inner / "routes.py").write_text("x = __import__('celerp.session_gate')\n")
-        violations = _ast_scan_module_file(pkg, "dunder_test.routes")
+        violations = _scan(pkg, "dunder_test.routes")
         assert "celerp.session_gate" in violations
 
     def test_ast_scan_clean_transitive_no_false_positive(self, tmp_path):
         """A clean module that imports local + stdlib helpers must NOT be flagged
         (guards against the transitive walk over-reporting)."""
-        from celerp.modules.loader import _ast_scan_module_file
         pkg = tmp_path / "clean-test"
         inner = pkg / "clean_test"
         inner.mkdir(parents=True)
@@ -976,7 +1027,7 @@ class TestElectronTrustedModuleDirs:
             "from celerp.modules.api import public_api\n"   # PUBLIC api is allowed
         )
         (inner / "helper.py").write_text("import json\ndef util():\n    return json.dumps({})\n")
-        violations = _ast_scan_module_file(pkg, "clean_test.routes")
+        violations = _scan(pkg, "clean_test.routes")
         assert violations == set()
 
     def test_bundled_first_party_modules_load_with_bsl_imports(self):
@@ -1385,7 +1436,7 @@ class TestSearchProviderSlot:
               as_list=False, handler_code=_ASYNC_HANDLER, trusted=False):
         pkg = _sp_module(tmp_path, name, descriptor,
                          as_list=as_list, handler_code=handler_code)
-        return _load_one(pkg, name, trusted=trusted)
+        return _load(pkg, name, trusted=trusted)
 
     def test_valid_single_dict_registers_with_runtime_trust(self, tmp_path):
         self._load(tmp_path, "good_module_sp_ok", {
@@ -1469,18 +1520,25 @@ class TestSearchProviderSlot:
                 "handler": "celerp.services.auth:get_current_user",
                 "result_key": "items", "permission": "view_inventory"})
 
-    def test_missing_handler_function_rejected_at_load(self, tmp_path):
-        with pytest.raises(ModuleLoadError, match="failed to resolve"):
+    def test_missing_handler_function_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="top-level def"):
             self._load(tmp_path, "good_module_sp_nofn", {
                 "handler": "good_module_sp_nofn:nope", "result_key": "items",
                 "permission": "view_inventory"})
 
     def test_non_callable_handler_rejected(self, tmp_path):
+        """Load proves what import returns, not what admission read: a source
+        that changes after admission to bind a non-callable is refused."""
+        from celerp.modules import loader
+        name = "good_module_sp_nc"
+        pkg = _sp_module(tmp_path, name, {
+            "handler": f"{name}:prov", "result_key": "items",
+            "permission": "view_inventory"})
+        declared = loader._admission_checks(name, pkg).manifest
+        init = pkg / "__init__.py"
+        init.write_text(init.read_text() + "prov = 'not a function'\n")
         with pytest.raises(ModuleLoadError, match="not callable"):
-            self._load(tmp_path, "good_module_sp_nc", {
-                "handler": "good_module_sp_nc:prov", "result_key": "items",
-                "permission": "view_inventory"},
-                handler_code="prov = 'not a function'\n")
+            _load_one(pkg, name, trusted=False, declared=declared)
 
     def test_sync_handler_rejected(self, tmp_path):
         with pytest.raises(ModuleLoadError, match="must be async"):
@@ -1525,7 +1583,7 @@ class TestSearchProviderSlot:
             f'"result_key": "items", "permission": "view_inventory"}}}}}}'
         )
         with pytest.raises(ModuleLoadError):
-            _load_one(pkg, name)
+            _load(pkg, name)
 
     def test_trusted_decoy_shadowing_core_still_rejected(self, tmp_path, monkeypatch):
         # A content-verified FIRST-PARTY module (trusted) ships a decoy source at a
@@ -1557,7 +1615,7 @@ class TestSearchProviderSlot:
         monkeypatch.setattr(_fpt_loader, "_first_party_lock", lambda: {name: digest})
         assert _fpt_loader.is_first_party(pkg) is True
         with pytest.raises(ModuleLoadError):
-            _load_one(pkg, name, trusted=True)
+            _load(pkg, name, trusted=True)
 
     def test_handler_separate_file_importing_protected_internal_rejected(self, tmp_path):
         # No api/ui routes, but the lazily-imported search handler pulls a protected
@@ -1576,21 +1634,4 @@ class TestSearchProviderSlot:
             "    return {'items': []}\n"
         )
         with pytest.raises(ModuleLoadError, match="protected BSL internals"):
-            _load_one(pkg, name)
-
-
-class TestRecordLoadError:
-    def test_record_load_error_sets_and_load_errors_reads_it(self):
-        from celerp.modules import loader
-        loader.record_load_error("broken-mod", "boom while loading")
-        assert loader.load_errors()["broken-mod"] == "boom while loading"
-
-    def test_record_load_error_masks_database_url_credentials(self):
-        from celerp.modules import loader
-        loader.record_load_error(
-            "db-mod",
-            "connect failed: postgresql+asyncpg://celerp:s3cret@db.example.com:5432/celerp",
-        )
-        recorded = loader.load_errors()["db-mod"]
-        assert "s3cret" not in recorded
-        assert "celerp:***@db.example.com" in recorded
+            _load(pkg, name)

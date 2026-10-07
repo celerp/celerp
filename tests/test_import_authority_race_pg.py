@@ -30,7 +30,7 @@ from celerp_docs import routes as docs
 from celerp_inventory import routes as inventory
 from celerp_inventory.services import BatchImportRequest
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.process]
 
 
 def _rec(entity_id: str, event_type: str, data: dict) -> dict:

@@ -210,19 +210,10 @@ async def sse_stats() -> dict[str, Any]:
 
 @router.get("/caches", dependencies=[require_permission("manage_company_settings")])
 async def cache_stats() -> dict[str, Any]:
-    """In-process cache state (nonce cache, drain cache).
-
-    If _nonce_cache grows unboundedly, we have a user-id accumulation bug.
-    """
-    import celerp.services.session_tracker as _st
+    """In-process cache state (the drain cache)."""
     import celerp.services.runtime_state as _rs
 
     now = time.monotonic()
-    nonce_entries = [
-        {"user_id": uid, "age_s": round(now - ts, 2)}
-        for uid, (_val, ts) in _st._nonce_cache.items()
-    ]
-
     drain_entry = None
     cached = _rs._drain_cache_get()
     if cached is not None:
@@ -231,11 +222,7 @@ async def cache_stats() -> dict[str, Any]:
             "cache_age_s": round(now - _rs._drain_cache_at, 2) if _rs._drain_cache is not None else None,
         }
 
-    return {
-        "nonce_cache_count": len(_st._nonce_cache),
-        "nonce_entries": nonce_entries,
-        "drain_cache": drain_entry,
-    }
+    return {"drain_cache": drain_entry}
 
 
 @router.get("/requests", dependencies=[require_permission("manage_company_settings")])

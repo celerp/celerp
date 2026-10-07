@@ -17,7 +17,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from celerp.models.company import Company
 from celerp.models.notification import Notification
@@ -85,7 +85,7 @@ class TestDemotedFirstParty:
 class TestNotifyDemotedModules:
     @pytest.mark.asyncio
     async def test_creates_company_wide_notice_per_company(self, session, company, company_b):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             created = await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
         assert created == 2  # one per company
@@ -101,7 +101,7 @@ class TestNotifyDemotedModules:
     @pytest.mark.asyncio
     async def test_dedups_against_unread_notice(self, session, company):
         # A reboot while an unread notice already stands must not pile up a second.
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             first = await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
             second = await notify_demoted_modules(session, ["celerp-widgets"])
@@ -114,7 +114,7 @@ class TestNotifyDemotedModules:
     async def test_renotifies_after_dismissal(self, session, company):
         # Persistent-until-fixed: once the prior notice is read (dismissed), a still
         # demoted module notifies again on the next boot.
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
             rows = await _modules_notifs(session, company.id)
@@ -127,7 +127,7 @@ class TestNotifyDemotedModules:
 
     @pytest.mark.asyncio
     async def test_empty_list_creates_nothing(self, session, company):
-        with patch("celerp.notifications.service.publish", new_callable=AsyncMock):
+        with patch("celerp.notifications.service.deliver"):
             created = await notify_demoted_modules(session, [])
             await session.commit()
         assert created == 0

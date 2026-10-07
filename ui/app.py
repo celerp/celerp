@@ -51,10 +51,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, clear_session_cookies, cookie_domain, is_stale_cookie
+from ui.security import NoticeMiddleware, hx_redirect
 from ui.routes import (
     auth, setup, search, settings, settings_import,
-    settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-    settings_contacts, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
+    settings_general, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
     modules_page, account, commercial, system_update, migrations, company_backup,
 )
 from fasthtml.common import *
@@ -93,7 +93,7 @@ def _auth_guard(req: Request):
     # An HTMX request follows a 302 and swaps the login page into the fragment (a silent, broken
     # in-page failure). HX-Redirect makes the browser do a real navigation instead.
     if req.headers.get("hx-request"):
-        return Response(status_code=200, headers={"HX-Redirect": f"/login?reason=expired{_next_qs(req)}"})
+        return hx_redirect(f"/login?reason=expired{_next_qs(req)}")
     nxt = _next_qs(req)
     return RedirectResponse(f"/login?{nxt[1:]}" if nxt else "/login", status_code=302)
 
@@ -267,12 +267,45 @@ async def _close_ui_api_client() -> None:
     await close_shared_client()
 
 
+_version_fence = None
+
+
+def _join_version_fence() -> None:
+    """Hold this version's database fence while the UI runs: it writes to the
+    database directly, so another Celerp version must not run alongside it
+    (celerp.migrations.compatibility)."""
+    global _version_fence
+    from celerp.config import settings as _settings
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import Fence
+    try:
+        _version_fence = Fence.join(sync_url(_settings.database_url))
+    except Exception as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        sys.exit(1)
+    from celerp.db import engine, lifecycle_engine
+    _version_fence.guard(engine, lifecycle_engine)
+
+
+def _report_module_stops() -> None:
+    """A module that failed here stops in the API process too. Written at
+    startup, through the fence this process has just joined."""
+    if _admission is not None:
+        from celerp.modules.outcome import report_stopped
+        report_stopped(_version_fence, _api_record)
+
+
+def _release_version_fence() -> None:
+    if _version_fence is not None:
+        _version_fence.release()
+
+
 def _cleanup_import_stages() -> None:
     """Remove expired staged import files at startup, so they do not linger on
     an installation where nobody imports again."""
-    from ui.routes.csv_import import cleanup_expired_import_refs
+    from celerp.services.import_stage import cleanup_expired
     try:
-        cleanup_expired_import_refs()
+        cleanup_expired()
     except OSError:
         logging.getLogger(__name__).exception("Could not clean up staged import files at startup")
 
@@ -280,10 +313,85 @@ def _cleanup_import_stages() -> None:
 app = FastHTML(
     before=Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
     secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
-    on_startup=[_cleanup_import_stages],
-    on_shutdown=[_close_ui_api_client],
+    on_startup=[_join_version_fence, _report_module_stops, _cleanup_import_stages],
+    on_shutdown=[_close_ui_api_client, _release_version_fence],
 )
 
+
+
+class ModuleGateMiddleware:
+    """Pure ASGI middleware: a module's pages answer only for a company that
+    uses the module. Inside TokenRefreshMiddleware, so it reads the refreshed
+    token."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        from celerp.modules.loader import route_module
+        module = route_module(scope) if scope["type"] == "http" else None
+        if module is None:
+            await self._app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        refusal = await _module_refusal(request, module)
+        await (refusal or self._app)(scope, receive, send)
+
+
+async def _module_refusal(request: Request, module: str) -> Response | None:
+    from celerp.modules.registry import uses_module
+    import ui.api_client as api
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return _auth_guard(request)
+    from fasthtml.common import to_xml
+    from ui.components.shell import base_shell, minimal_shell, page_header
+    from ui.i18n import t
+    try:
+        company = await api.get_company(token)
+    except _APIError as exc:
+        if exc.status == 401:
+            return _401_redirect(str(exc.detail or ""), request)
+        # Celerp could not say whether the module is on: report that, never "off".
+        # No company was read, so the page carries no menu built from guesses.
+        page = minimal_shell(
+            page_header(t("page.api_unavailable")),
+            Div(P(str(exc.detail or ""), cls="flash flash--error"),
+                A(t("btn.retry"), href=str(request.url.replace(scheme="", netloc="")), cls="btn btn--primary"),
+                cls="content-area"),
+            title=t("page.api_unavailable"),
+            request=request,
+        )
+        return HTMLResponse(to_xml(page), status_code=exc.status)
+    settings = company.get("settings")
+    if uses_module(settings, module):
+        return None
+    if request.headers.get("hx-request"):
+        # The full page at this same address is the refusal that says the module is off.
+        return hx_redirect(str(request.url.replace(scheme="", netloc="")))
+    from celerp.modules.loader import module_label
+    from ui.routes.modules_page import manages_modules
+    from ui.security import not_permitted_pending
+    if not_permitted_pending(request):
+        # Sent here by a refusal: the caller never asked for this module, so the
+        # shell's no-access notice is the whole answer.
+        body = ()
+    else:
+        way_on = (A(t("nav.modules"), href="/modules", cls="btn btn--primary")
+                  if manages_modules(api.role_from_company(company)) else P(t("modules.ask_admin_to_turn_on")))
+        body = (page_header(t("modules.off_for_company_title")),
+                Div(P(t("modules.off_for_company", module=module_label(module)), cls="flash flash--error"), way_on))
+    page = await base_shell(
+        *body,
+        title=t("modules.off_for_company_title"),
+        request=request,
+        company_settings=settings or {},
+    )
+    return HTMLResponse(to_xml(page), status_code=403)
+
+
+app.add_middleware(ModuleGateMiddleware)
+app.add_middleware(NoticeMiddleware)
 app.add_middleware(TokenRefreshMiddleware)
 
 
@@ -318,6 +426,7 @@ async def ui_404_handler(request: Request, exc) -> HTMLResponse:
             cls="content-area",
         ),
         title=t("error.not_found_title"),
+        request=request,
     )
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=404)
@@ -335,10 +444,11 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
         page_header(t("error.something_went_wrong")),
         Div(
             P(t("error.unexpected_error_body"), cls="flash flash--error"),
-            A(t("error.back_to_dashboard"), href="/dashboard", cls="btn btn--primary"),
+            A(t("error.back_to_dashboard"), href="/", cls="btn btn--primary"),
             cls="content-area",
         ),
         title=t("error.server_error_title"),
+        request=request,
     )
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=500)
@@ -369,7 +479,7 @@ def _401_redirect(detail: str, request: Request | None = None):
         params = "reason=expired"
     url = f"/login?{params}{_next_qs(request) if request is not None else ''}"
     if request is not None and request.headers.get("hx-request"):
-        resp = Response(status_code=200, headers={"HX-Redirect": url})
+        resp = hx_redirect(url)
     else:
         resp = _RR(url, status_code=302)
     clear_session_cookies(resp, request)
@@ -414,23 +524,18 @@ async def proxy_attachment(request: Request, path: str) -> Response:
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
-# In dev mode (MODULE_DIR not set), default_modules live next to the repo root.
-# Add each default module package dir to sys.path so _CONDITIONAL_UI imports work.
-# In production, the module loader (load_all) handles sys.path itself.
-_DEFAULT_MODULES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "default_modules")
-if not os.environ.get("MODULE_DIR") and os.path.isdir(_DEFAULT_MODULES_DIR):
-    import sys as _sys
-    for _dm in os.listdir(_DEFAULT_MODULES_DIR):
-        _dm_path = os.path.join(_DEFAULT_MODULES_DIR, _dm)
-        if os.path.isdir(_dm_path) and _dm_path not in _sys.path:
-            _sys.path.insert(0, _dm_path)
+# Correct a bundled-dir first entry so the UI lists imports from the writable drop-in;
+# an unset MODULE_DIR (a bare dev run) means the bundled trees.
+from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
+os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR"))
+_MODULE_DIR = os.environ["MODULE_DIR"]
 
 # Determine enabled modules from env (set by cli.py _config_to_env).
-# Fall back to config.toml when env is absent (e.g. Electron binary restart).
+# Fall back to config.toml when env is absent (e.g. Electron binary restart, a dev run).
 _ENABLED_MODULES: set[str] = set(
     m.strip() for m in os.environ.get("ENABLED_MODULES", "").split(",") if m.strip()
 )
-if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
+if not _ENABLED_MODULES and _MODULE_DIR:
     try:
         from celerp.config import read_config as _read_config
         _cfg = _read_config()
@@ -438,38 +543,28 @@ if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
     except Exception:
         pass
 
+# The API process decides which modules run. Offer only the ones it reports as
+# running; every other enabled module, and anything depending on it, is skipped
+# with the API's reason. Blocks until the API has finished starting.
+_admission = None
+_OFFERED_MODULES: set[str] = set()
+if _MODULE_DIR and _ENABLED_MODULES:
+    from celerp.config import settings as _settings
+    from celerp.modules.outcome import admission_as_reported, reported_by_api
+    from ui.config import API_BASE as _API_BASE
+    _api_record = reported_by_api(_API_BASE, _settings.database_url)
+    _admission = admission_as_reported(_MODULE_DIR, _ENABLED_MODULES, _api_record)
+    _OFFERED_MODULES = {m.name for m in _admission.admitted}
+
 # Kernel UI routes — always registered
 for mod in (auth, setup, search, settings, settings_import,
-            settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-            settings_contacts, settings_cloud, settings_connectors, settings_payments,
+            settings_general, settings_cloud, settings_connectors, settings_payments,
             notifications, events, stars, modules_page, account, commercial, system_update):
     mod.setup_routes(app)
 migrations.migrations_routes(app)
 company_backup.company_backup_routes(app)
 
-# Module-conditional UI routes
-# Import order matters: import/* routes must precede their parent /{entity_id} routes
-_CONDITIONAL_UI: list[tuple[str, str]] = [
-    # (backend_module_name, ui_route_module_dotted_path)
-    ("celerp-docs",        "ui.routes.docs_import"),
-    ("celerp-docs",        "ui.routes.lists_import"),
-    ("celerp-accounting",  "ui.routes.accounting_import"),
-    ("celerp-docs",        "ui.routes.documents"),
-    # ui.routes.lists / ui.routes.audits omitted: an audit is a list (list_type="audit")
-    # rendered by ui.routes.documents at /lists/{id}; there is no separate /audits page tree.
-    ("celerp-labels",      "celerp_labels.ui_routes"),
-    ("celerp-accounting",  "ui.routes.reconciliation"),
-    ("celerp-dashboard",   "ui.routes.dashboard"),
-]
-
 import importlib as _importlib
-for _backend_mod, _ui_mod_path in _CONDITIONAL_UI:
-    if _backend_mod in _ENABLED_MODULES or not os.environ.get("MODULE_DIR"):
-        try:
-            _ui_mod = _importlib.import_module(_ui_mod_path)
-            _ui_mod.setup_routes(app)
-        except ImportError:
-            pass  # UI route module not present — skip silently
 
 # AI is proprietary cloud-gated core (not a pluggable module): register its UI + nav directly so it is
 # always present and cannot be replaced by a user-supplied module. Mirrors the API wiring in main.py.
@@ -488,14 +583,10 @@ try:
 except ImportError:
     pass  # AI package not present — skip silently
 
-# Register UI routes from external loaded modules (opt-in: no-op if MODULE_DIR not set).
-# Correct a bundled-dir first entry so the UI lists imports from the writable drop-in.
-from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
-os.environ["MODULE_DIR"] = _with_writable_module_dir(os.environ.get("MODULE_DIR", ""))
-_MODULE_DIR = os.environ["MODULE_DIR"]
-if _MODULE_DIR and _ENABLED_MODULES:
+# Register UI routes from the loaded modules.
+if _admission is not None:
     from celerp.modules.loader import load_all, register_ui_routes
-    _ui_loaded = load_all(_MODULE_DIR, _ENABLED_MODULES)
+    _ui_loaded = load_all(_MODULE_DIR, _ENABLED_MODULES, admission=_admission)
     register_ui_routes(app, _ui_loaded)
 
 if __name__ == "__main__":

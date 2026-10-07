@@ -3,6 +3,7 @@
 """Browser tests for the update status card in the notifications panel."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -225,19 +226,12 @@ def test_card_reads_the_real_status_without_contacting_pypi(page, ui_server):
     assert not [u for u in requests if "pypi.org" in u]
 
 
-def test_bell_badge_counts_downloaded_update(page, ui_server):
-    """A downloaded update must light the bell badge, not just the panel card.
+def _pin_empty_inbox(page):
+    """Pin the inbox to empty so the bell badge counts only the update.
 
-    Without the fix the Electron update-downloaded handler updates the card text
-    and restart button but never the badge, so the icon shows nothing and users
-    never notice a waiting upgrade. Here we stub the Electron preload, capture the
-    update-downloaded callback, fire it as the main process would, and require the
-    bell badge to show a count.
+    Ambient notifications left by earlier tests on the shared session company
+    would otherwise make the count non-deterministic.
     """
-    # The badge count is the shared company's unread notifications plus one for a
-    # ready update. This test asserts only the update's contribution, so pin the
-    # inbox to empty; otherwise ambient notifications left by earlier tests on the
-    # shared session company make the count non-deterministic.
     page.route(
         "**/notifications*",
         lambda route: route.fulfill(
@@ -247,37 +241,412 @@ def test_bell_badge_counts_downloaded_update(page, ui_server):
         ),
     )
 
-    # Define the preload stub before page scripts run so initUpdateCard takes the
-    # Electron path and registers against it. The stub stores the downloaded
-    # callback so the test can fire it deterministically (no real download).
+
+_UPDATE_STATE_JS = Path(__file__).parents[2] / "electron" / "update-state.js"
+
+
+def _fake_electron(page, seed=(), *, hold_replay=False):
+    """Stand in for the Electron main process and preload bridge.
+
+    The real electron/update-state.js runs in the page as the main process.
+    Every updater event is kept in sessionStorage and replayed into a fresh
+    tracker on each page load, so the "main process" outlives navigation just
+    as the real one does, while each page load gets a fresh renderer. `seed`
+    holds events the updater fired before the first page opened. A check the
+    user asks for goes through the real check-for-updates handler and is kept
+    in the same event list as "user-check". With `hold_replay`, the page's
+    get-update-state answer is read when asked but delivered only when the page
+    calls window.__releaseReplay(), as a slow IPC reply would be.
+    """
+    _pin_empty_inbox(page)
     page.add_init_script(
         """
-        window.__fireUpdateDownloaded = null;
-        window.celerp = {
-          getVersion: () => Promise.resolve('2.0.0'),
-          onUpdateLog: () => {},
-          onUpdateAvailable: () => {},
-          onDownloadProgress: () => {},
-          onUpdateNotAvailable: () => {},
-          onUpdateDownloaded: (cb) => { window.__fireUpdateDownloaded = cb; },
-          onUpdateError: () => {},
-          checkForUpdates: () => Promise.resolve(),
-          installUpdate: () => {},
-        };
-        """
+        (function() {
+          var KEY = '__fakeUpdaterEvents';
+          if (sessionStorage.getItem(KEY) === null) sessionStorage.setItem(KEY, JSON.stringify(%s));
+          var module = { exports: {} };
+          (function(module) { %s })(module);
+          var listeners = {};
+          var updater = {
+            on: function(name, fn) { (listeners[name] = listeners[name] || []).push(fn); },
+            checkForUpdates: function() { return Promise.resolve(); },
+          };
+          var ipcHandlers = {};
+          var ipcMain = { handle: function(channel, fn) { ipcHandlers[channel] = fn; } };
+          var windowCallbacks = {};
+          var live = false;
+          var win = { webContents: { send: function(channel, state) {
+            if (live && windowCallbacks[channel]) windowCallbacks[channel](state);
+          } } };
+          module.exports.serveUpdateState(ipcMain, function() { return win; }, updater, false);
+          function fire(name, payload) {
+            if (name === 'user-check') ipcHandlers['check-for-updates']();
+            else (listeners[name] || []).forEach(function(fn) { fn(payload); });
+          }
+          JSON.parse(sessionStorage.getItem(KEY)).forEach(function(e) { fire(e[0], e[1]); });
+          live = true;
+          window.__updaterEmit = function(name, payload) {
+            var events = JSON.parse(sessionStorage.getItem(KEY));
+            events.push([name, payload]);
+            sessionStorage.setItem(KEY, JSON.stringify(events));
+            fire(name, payload);
+          };
+          function on(channel) { return function(cb) { windowCallbacks[channel] = cb; }; }
+          window.celerp = {
+            getVersion: function() { return Promise.resolve('2.0.0'); },
+            getUpdateState: function() {
+              var state = ipcHandlers['get-update-state']();
+              if (!%s) return Promise.resolve(state);
+              return new Promise(function(resolve) { window.__releaseReplay = function() { resolve(state); }; });
+            },
+            onUpdateLog: on('update-log'),
+            onUpdateAvailable: on('update-available'),
+            onDownloadProgress: on('download-progress'),
+            onUpdateNotAvailable: on('update-not-available'),
+            onUpdateDownloaded: on('update-downloaded'),
+            onUpdateError: on('update-error'),
+            checkForUpdates: function() { window.__updaterEmit('user-check', null); return Promise.resolve(); },
+            installUpdate: function() {},
+          };
+        })();
+        """ % (json.dumps(list(seed)), _UPDATE_STATE_JS.read_text(), json.dumps(hold_replay))
     )
+
+
+# What the user can see of the updater: the bell badge and the update card.
+_VISIBLE_STATE_JS = """() => {
+  var q = function(s) { return document.querySelector(s); };
+  var shown = function(el) { return !!el && el.style.display !== 'none'; };
+  var badge = q('#notif-badge');
+  return {
+    badge: shown(badge) ? badge.textContent : '',
+    state: q('.update-card__state').textContent,
+    restart: shown(q('.update-card__restart-btn')),
+    check: shown(q('.update-card__check-btn')),
+    progress: shown(q('.update-card__progress-bar')) ? q('.update-card__progress-fill').style.width : '',
+    log: shown(q('.update-card__log')) ? q('.update-card__log').textContent : '',
+  };
+}"""
+
+_FOUND = ("update-available", {"version": "2.0.1"})
+_PROGRESS = ("download-progress", {"percent": 40})
+_DOWNLOADED = ("update-downloaded", {"version": "2.0.1"})
+_ERROR = ("error", {"message": "getaddrinfo ENOTFOUND github.com"})
+
+
+def _open(page, url):
+    """Load `url` and wait until the update card has rendered the replayed state."""
+    page.goto(url, wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    return page.evaluate(_VISIBLE_STATE_JS)
+
+
+def test_bell_badge_counts_downloaded_update(page, ui_server):
+    """A downloaded update must light the bell badge, not just the panel card."""
+    _fake_electron(page)
+    assert _open(page, f"{ui_server}/")["badge"] == ""
+    page.evaluate("() => window.__updaterEmit('update-downloaded', { version: '2.0.1' })")
+    assert page.evaluate(_VISIBLE_STATE_JS)["badge"] == "1"
+
+
+def test_downloaded_state_replays_on_page_load(page, ui_server):
+    """An update downloaded before this page loaded shows as ready to install."""
+    _fake_electron(page, [_FOUND, _PROGRESS, _DOWNLOADED])
+    seen = _open(page, f"{ui_server}/")
+    assert seen["badge"] == "1"
+    assert "2.0.1" in seen["state"]
+    assert seen["restart"] is True
+    assert seen["check"] is False
+    assert seen["progress"] == "100%"
+
+
+def test_downloading_state_replays_on_page_load(page, ui_server):
+    """A download in progress before this page loaded shows with its percent."""
+    _fake_electron(page, [_FOUND, _PROGRESS])
+    seen = _open(page, f"{ui_server}/")
+    assert seen["badge"] == "1"
+    assert "40" in seen["state"]
+    assert seen["progress"] == "40%"
+    assert seen["restart"] is False
+    assert seen["check"] is False
+
+
+def test_error_state_replays_on_page_load(page, ui_server):
+    """A failed check before this page loaded still shows the failure and its reason."""
+    _fake_electron(page, [_ERROR])
+    seen = _open(page, f"{ui_server}/")
+    assert seen["state"] == "Update check failed"
+    assert "getaddrinfo ENOTFOUND github.com" in page.locator(".update-card__log").text_content()
+    assert seen["check"] is True
+    assert seen["restart"] is False
+    assert seen["badge"] == ""
+
+
+def _emit(page, *events):
+    for name, payload in events:
+        page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
+
+
+def _reloaded(page):
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    return page.evaluate(_VISIBLE_STATE_JS)
+
+
+_CHECKING = ("checking-for-update", None)
+_UP_TO_DATE = ("update-not-available", {})
+
+
+@pytest.mark.parametrize("result, state", [
+    (_UP_TO_DATE, "Up to date"), (_FOUND, "Downloading v2.0.1..."),
+], ids=["up-to-date", "update-found"])
+def test_failed_check_clears_to_the_next_result(page, ui_server, result, state):
+    """A failed check stays on the card, also after a reload, until a later check
+    has a result; the card then shows that result and the log keeps the failure."""
+    _fake_electron(page, [_ERROR])
+    failed = _open(page, f"{ui_server}/")
+    assert failed["state"] == "Update check failed"
+    assert _reloaded(page) == failed
+    _emit(page, _CHECKING, result)
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["state"] == state
+    assert "Update error: getaddrinfo ENOTFOUND github.com" in seen["log"]
+    assert _reloaded(page) == seen
+
+
+def test_failed_download_survives_background_checks(page, ui_server):
+    """A failed download is named as one, stays on the card and lights the bell
+    through the app's own checks and reloads, until the user checks again."""
+    _fake_electron(page, [_FOUND, _PROGRESS, ("error", {"message": "sha512 checksum mismatch"})])
+    failed = _open(page, f"{ui_server}/")
+    assert (failed["state"], failed["badge"], failed["check"]) == ("Update download failed", "1", True)
+    _emit(page, _CHECKING, _UP_TO_DATE, _CHECKING, _FOUND, _PROGRESS)
+    assert page.evaluate(_VISIBLE_STATE_JS) == failed
+    assert _reloaded(page) == failed
+    page.evaluate("() => document.querySelector('.update-card__check-btn').click()")
+    _emit(page, _CHECKING, _UP_TO_DATE)
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert (seen["state"], seen["badge"]) == ("Up to date", "")
+    assert "Update error: sha512 checksum mismatch" in seen["log"]
+    assert _reloaded(page) == seen
+
+
+@pytest.mark.parametrize("found", [_FOUND, ("update-available", {})], ids=["with-version", "no-version"])
+def test_failed_download_lights_bell(page, ui_server, found):
+    """A failed download lights the bell whether or not the update had a version."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    _emit(page, found, _ERROR)
+    assert page.evaluate(_VISIBLE_STATE_JS)["badge"] == "1"
+
+
+def test_update_found_lights_bell_live(page, ui_server):
+    """The bell lights as soon as an update is found, before the download ends."""
+    _fake_electron(page)
+    assert _open(page, f"{ui_server}/")["badge"] == ""
+    page.evaluate("() => window.__updaterEmit('update-available', { version: '2.0.1' })")
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["badge"] == "1"
+    assert "2.0.1" in seen["state"]
+    assert seen["check"] is False
+
+
+def test_downloaded_survives_later_noise_across_reload(page, ui_server):
+    """Later re-checks and failures cannot take a downloaded update away."""
+    _fake_electron(page, [_FOUND, _DOWNLOADED])
+    ready = _open(page, f"{ui_server}/")
+    assert ready["restart"] is True and ready["badge"] == "1"
+    page.evaluate("""() => {
+      window.__updaterEmit('update-not-available', {});
+      window.__updaterEmit('download-progress', { percent: 5 });
+      window.__updaterEmit('error', { message: 'net::ERR_INTERNET_DISCONNECTED' });
+    }""")
+    after = page.evaluate(_VISIBLE_STATE_JS)
+    # The failure is logged, and nothing else on the card changes.
+    assert after == {**ready, "log": ready["log"] + "\nUpdate error: net::ERR_INTERNET_DISCONNECTED"}
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == after
+
+
+@pytest.mark.parametrize("seed", [[], [_ERROR]], ids=["idle", "after-error"])
+def test_check_shows_checking_until_it_has_a_result(page, ui_server, seed):
+    """A check the user starts shows "Checking..." and no Check button until the
+    updater has a result, also once the updater reports that it is checking."""
+    _fake_electron(page, seed)
+    _open(page, f"{ui_server}/")
+    page.evaluate("() => document.querySelector('.update-card__check-btn').click()")
+    page.evaluate("() => window.__updaterEmit('checking-for-update', null)")
+    checking = page.evaluate(_VISIBLE_STATE_JS)
+    assert (checking["state"], checking["check"]) == ("Checking...", False)
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == checking
+    page.evaluate("() => window.__updaterEmit('update-not-available', {})")
+    done = page.evaluate(_VISIBLE_STATE_JS)
+    assert (done["state"], done["check"]) == ("Up to date", True)
+
+
+def test_recheck_after_downloaded_keeps_the_card(page, ui_server):
+    """A later re-check that finds the same update leaves the ready card and its
+    log as they were, live and after a reload."""
+    _fake_electron(page, [("checking-for-update", None), _FOUND, _DOWNLOADED])
+    ready = _open(page, f"{ui_server}/")
+    assert ready["log"].split("\n")[-1] == "v2.0.1 ready. Restart to install."
+    for name, payload in [("checking-for-update", None), _FOUND, _DOWNLOADED]:
+        page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
+    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+
+
+@pytest.mark.parametrize("events", [
+    [_FOUND],
+    [_FOUND, _PROGRESS],
+    [_FOUND, _PROGRESS, _DOWNLOADED],
+    [_ERROR],
+    [_FOUND, _PROGRESS, _ERROR],
+], ids=["found", "downloading", "downloaded", "check-error", "download-error"])
+def test_reload_and_navigation_preserve_visible_state(page, ui_server, events):
+    """What the live events drew is exactly what a reload or another page shows."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    for name, payload in events:
+        page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
+    live = page.evaluate(_VISIBLE_STATE_JS)
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == live
+    assert _open(page, f"{ui_server}/settings") == live
+
+
+def test_not_available_restores_check_button(page, ui_server):
+    """A check that finds nothing says so and offers the check button again."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    page.evaluate("() => document.querySelector('.update-card__check-btn').click()")
+    assert page.evaluate(_VISIBLE_STATE_JS)["check"] is False
+    page.evaluate("() => window.__updaterEmit('update-not-available', {})")
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["check"] is True
+    assert seen["state"] == "Up to date"
+    assert seen["badge"] == ""
+
+
+def test_update_found_without_version_lights_bell(page, ui_server):
+    """An update found with no version number still lights the bell."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    page.evaluate("() => window.__updaterEmit('update-available', {})")
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["badge"] == "1"
+    assert seen["check"] is False
+
+
+@pytest.mark.parametrize("events, state", [
+    (["update-available"], "Downloading update..."),
+    (["update-available", "update-downloaded"], "Update ready to install"),
+])
+def test_update_without_version_reads_plainly(page, ui_server, events, state):
+    """An update with no version number is named plainly, never as "vupdate"."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    for event in events:
+        page.evaluate(f"() => window.__updaterEmit('{event}', {{}})")
+    assert page.evaluate(_VISIBLE_STATE_JS)["state"] == state
+
+
+def test_back_to_cached_page_shows_current_state(page, ui_server):
+    """Going Back to a page htmx restores from its history cache shows the
+    updater as it is now, and the card keeps following later events."""
+    _fake_electron(page, [_FOUND, _PROGRESS])
+    _open(page, f"{ui_server}/inventory")
+    page.fill("#search-input", "zzzz")
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.evaluate("() => window.__updaterEmit('update-downloaded', { version: '2.0.1' })")
+    ready = page.evaluate(_VISIBLE_STATE_JS)
+    assert ready["restart"] is True
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    page.wait_for_function("() => document.querySelector('.update-card__restart-btn').style.display !== 'none'")
+    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+
+
+def test_card_follows_live_events_after_back_to_cached_page(page, ui_server):
+    """After Back restores a cached page, later updater events still reach its card."""
+    _fake_electron(page, [_FOUND])
+    _open(page, f"{ui_server}/inventory")
+    page.fill("#search-input", "zzzz")
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    page.evaluate("() => window.__updaterEmit('download-progress', { percent: 70 })")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent.indexOf('70') !== -1")
+    assert page.evaluate(_VISIBLE_STATE_JS)["progress"] == "70%"
+
+
+def test_back_to_cached_page_does_not_repeat_the_error_log(page, ui_server):
+    """Going Back after a failed check shows the failure once, as it was shown live."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/inventory")
+    page.evaluate("() => window.__updaterEmit('error', { message: 'getaddrinfo ENOTFOUND github.com' })")
+    failed = page.evaluate(_VISIBLE_STATE_JS)
+    assert failed["log"].count("getaddrinfo ENOTFOUND github.com") == 1
+    page.fill("#search-input", "zzzz")
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    page.go_forward()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') !== -1")
+    page.go_back()
+    page.wait_for_function("() => location.search.indexOf('q=zzzz') === -1")
+    assert page.evaluate(_VISIBLE_STATE_JS) == failed
+
+
+def test_update_log_lines_survive_reload(page, ui_server):
+    """The update log, including a failure after the download finished, shows the
+    same lines after a reload as it did live."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    for name, payload in [("checking-for-update", None), _FOUND, _DOWNLOADED,
+                          ("error", {"message": "net::ERR_INTERNET_DISCONNECTED"})]:
+        page.evaluate(f"() => window.__updaterEmit({json.dumps(name)}, {json.dumps(payload)})")
+    live = page.evaluate(_VISIBLE_STATE_JS)
+    assert live["log"].split("\n") == [
+        "Checking for update...",
+        "Found v2.0.1, downloading...",
+        "v2.0.1 ready. Restart to install.",
+        "Update error: net::ERR_INTERNET_DISCONNECTED",
+    ]
+    assert live["restart"] is True
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent !== ''")
+    assert page.evaluate(_VISIBLE_STATE_JS) == live
+
+
+@pytest.mark.parametrize("percent, bar, state", [
+    (-3, "0%", "2.0.1"), ("abc", "0%", "2.0.1"), (150, "100%", "100%"),
+])
+def test_malformed_progress_shows_a_percent_in_range(page, ui_server, percent, bar, state):
+    """A download percent outside 0 to 100, or not a number, still shows a sane bar."""
+    _fake_electron(page, [_FOUND])
+    _open(page, f"{ui_server}/")
+    page.evaluate(f"() => window.__updaterEmit('download-progress', {{ percent: {json.dumps(percent)} }})")
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["progress"] == bar
+    assert state in seen["state"]
+
+
+def test_replay_answered_after_a_live_event_does_not_undo_it(page, ui_server):
+    """A page's replay that was read before a live event but arrives after it is older,
+    so the card keeps the live event's state."""
+    _fake_electron(page, [_FOUND, _PROGRESS], hold_replay=True)
     page.goto(f"{ui_server}/", wait_until="domcontentloaded")
-
-    # Init ran and captured the callback.
-    page.wait_for_function("() => typeof window.__fireUpdateDownloaded === 'function'")
-
-    badge = page.locator("#notif-badge")
-    assert not badge.is_visible(), "badge should be hidden before any update is ready"
-
-    # Fire the event exactly as the Electron main process does on download.
-    page.evaluate("() => window.__fireUpdateDownloaded({ version: '2.0.1' })")
-
-    assert badge.is_visible(), "bell badge did not appear when an update was downloaded"
-    assert badge.text_content() == "1", (
-        f"expected badge count 1 for a ready update, got {badge.text_content()!r}"
-    )
+    page.wait_for_function("() => typeof window.__releaseReplay === 'function'")
+    page.evaluate("() => window.__updaterEmit('update-downloaded', { version: '2.0.1' })")
+    page.evaluate("() => window.__releaseReplay()")
+    page.wait_for_timeout(100)
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert "2.0.1" in seen["state"] and seen["restart"] is True, seen
+    assert seen["progress"] == "100%"

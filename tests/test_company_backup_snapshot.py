@@ -145,7 +145,8 @@ async def test_export_snapshot_never_mixes_concurrent_write(real_engine, real_cl
 @pytest.mark.parametrize("caller", _CALLERS)
 async def test_export_snapshot_transaction_is_repeatable_read_read_only_utc(real_engine, real_client, tmp_path,
                                                                            monkeypatch, caller):
-    """The backup's transaction starts as REPEATABLE READ READ ONLY before any query, then sets UTC."""
+    """The backup's connection is REPEATABLE READ READ ONLY before its transaction begins, so no
+    SET TRANSACTION statement runs inside it; its first statement sets UTC."""
     cb = _bk_cb()
     _bk_local(monkeypatch, tmp_path)
     user, cid, tok = await _bk_setup(real_engine)
@@ -176,8 +177,8 @@ async def test_export_snapshot_transaction_is_repeatable_read_read_only_utc(real
     assert r.status_code == 200, r.text
     assert (seen["transaction_isolation"], seen["transaction_read_only"], seen["TimeZone"]) == (
         "repeatable read", "on", "UTC")
-    assert seen["own"][:2] == ["SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
-                               "SET LOCAL TimeZone = 'UTC'"], seen["own"][:3]
+    assert seen["own"][0] == "SET LOCAL TimeZone = 'UTC'", seen["own"][:3]
+    assert not any(s.lstrip().upper().startswith("SET TRANSACTION") for s in seen["own"]), seen["own"]
 
 
 @pytest.mark.parametrize("caller", _CALLERS)
@@ -360,10 +361,14 @@ async def test_download_routes_use_export_company_snapshot(real_engine, real_cli
 
 async def test_export_snapshot_sqlite_dialect_uses_one_plain_transaction(tmp_path, monkeypatch):
     """On SQLite the backup reads through its own session in one plain transaction, with no
-    PostgreSQL isolation or time zone statement."""
+    PostgreSQL isolation or time zone statement, and is published only while its company exists."""
     import celerp.db
     cb = _bk_cb()
+    cid = uuid.uuid4()
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'books.sqlite'}")
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE companies (id CHAR(32) PRIMARY KEY)"))
+        await conn.execute(text("INSERT INTO companies (id) VALUES (:c)"), {"c": cid.hex})
     statements: list[str] = []
     event.listen(engine.sync_engine, "before_cursor_execute",
                  lambda conn, cursor, statement, *args: statements.append(statement))
@@ -374,14 +379,17 @@ async def test_export_snapshot_sqlite_dialect_uses_one_plain_transaction(tmp_pat
         seen.update(bind=session.get_bind(), in_transaction=session.in_transaction(),
                     args=(company_id, out, provenance))
         await session.execute(text("SELECT 1"))
+        out.write_bytes(b"backup")
         return {"written": True}
 
     monkeypatch.setattr(cb, "_export_company", export, raising=False)
     out = tmp_path / "books.celerp-company"
     try:
-        assert await cb.export_company_snapshot("company-1", out, provenance=_PROVENANCE) == {"written": True}
+        assert await cb.export_company_snapshot(cid, out, provenance=_PROVENANCE) == {"written": True}
     finally:
         await engine.dispose()
-    assert seen["bind"] is engine.sync_engine and seen["in_transaction"]
-    assert seen["args"] == ("company-1", out, _PROVENANCE)
-    assert statements == ["SELECT 1"]
+    assert seen["bind"].engine is engine.sync_engine and seen["in_transaction"]
+    assert seen["args"][0] == cid and seen["args"][2] == _PROVENANCE
+    assert statements[0] == "SELECT 1" and len(statements) == 2
+    assert not any(s.lstrip().upper().startswith("SET") for s in statements)
+    assert out.read_bytes() == b"backup" and [p.name for p in tmp_path.iterdir() if "partial" in p.name] == []

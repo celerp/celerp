@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
 from celerp.db import get_session
+from celerp.modules.outcome import BOOT_TOKEN
 from celerp.services.auth import (
     ROLE_LEVELS,
     get_current_company_id,
@@ -46,6 +47,8 @@ async def health() -> dict:
         "status": "ok",
         "version": os.environ.get("CELERP_APP_VERSION") or __version__,
         "install_channel": os.environ.get("CELERP_INSTALL_CHANNEL", "pypi"),
+        # Lets the UI process match the API's module record to this process.
+        "boot": BOOT_TOKEN,
     }
 
 

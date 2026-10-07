@@ -30,8 +30,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.fulfilled", "item.fulfillment_reversed", "item.consumed", "item.produced",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
-    "doc.payment.received", "doc.payment.refunded", "doc.payment.voided",
-    "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
+    "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",
+    "doc.payment.voided", "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
     "doc.fulfillment_reversed", "doc.partially_reverted", "doc.line_received",
     "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft",
     "contact.created", "contact.updated", "deal.created", "deal.updated",
@@ -397,6 +397,12 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
         parts = [doc_ref] if doc_ref else []
         if amount is not None:
             parts.append(t("activity.refunded", amount=fmt_money(amount, currency)))
+        return " - ".join(parts) if parts else ""
+    if event_type == "doc.payment.refund_reversed":
+        amount = data.get("amount")
+        parts = [doc_ref] if doc_ref else []
+        if amount is not None:
+            parts.append(t("activity.amount", amount=fmt_money(amount, currency)))
         return " - ".join(parts) if parts else ""
     if event_type in ("doc.payment.voided", "doc.payment.deleted"):
         amount = data.get("amount")

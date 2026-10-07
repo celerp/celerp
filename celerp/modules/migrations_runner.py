@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Core-owned, forward-only runtime migration runner for enabled modules.
 
-At API startup, before ``load_all``, each enabled module's manifest-declared
-migration files are applied against the live database under the shared Postgres
+At API startup, after admission (``loader.admit_modules``) and before
+``load_all``, each admitted module's manifest-declared migration files are applied against the live database under the shared Postgres
 advisory lock. Migrations are expected to be inspector-guarded so a re-run is a
 no-op: the runner re-applies them every boot and relies on those guards for
 idempotence rather than tracking a per-module version stamp.
@@ -12,9 +12,12 @@ Isolation of blast radius:
   - Every touched table name must start with the module's declared table_prefix
     (``GuardedOperations``), so a module migration cannot alter core or a sibling
     module's tables through the ``op.*`` proxy.
-  - A third-party module whose migration fails is rolled back and dropped from
-    the enabled set, its error held for the caller to surface; a first-party
-    module's failure re-raises, matching the loader's trust policy.
+  - Only admitted modules run, and the files run are only those inside the
+    module folder (``loader.module_migration_files``).
+  - A third-party module whose migration fails is rolled back and refused,
+    along with every module depending on it, its error reported as the module's
+    load error; a first-party module's failure re-raises, as it does in the
+    loader.
   - Each per-module transaction bounds itself with SET LOCAL statement/lock
     timeouts, so a hung upgrade becomes a caught failure instead of a boot stall.
 """
@@ -32,18 +35,9 @@ from alembic.runtime.migration import MigrationContext
 from celerp.db import _MIGRATION_LOCK_KEY, lifecycle_timeouts_disabled, mask_db_credentials
 from celerp.modules import loader
 
-# A prefix is well-formed when it is a non-empty string of at least this length
-# that ends in an underscore, so "acme_" scopes cleanly and can never be a bare
-# word that swallows unrelated tables.
-_MIN_PREFIX_LEN = 3
-
 # Bounds every per-module migration transaction. A lock wait or runaway statement
 # past this becomes a caught per-module failure, never an unbounded boot stall.
 _MIGRATION_TIMEOUT = "30s"
-
-
-def _prefix_ok(prefix: str) -> bool:
-    return bool(prefix) and len(prefix) >= _MIN_PREFIX_LEN and prefix.endswith("_")
 
 
 class GuardedOperations(Operations):
@@ -130,32 +124,26 @@ def run_module_migrations(sync_conn, module_name, module_path, migrations_pkg,
 
     ``sync_conn`` is the plain Connection handed by ``AsyncConnection.run_sync``,
     already inside a transaction the caller commits or rolls back. The migration
-    files are discovered under ``module_path/<migrations_pkg dotted path>`` and
-    run sorted by filename; files starting with ``_`` are skipped. Each file must
-    define ``upgrade()``, which is executed with the guarded ``op.*`` proxy bound.
+    files are ``loader.module_migration_files`` (inside the module folder, sorted
+    by filename, ``_`` files skipped). Each file must define ``upgrade()``, which
+    is executed with the guarded ``op.*`` proxy bound.
 
-    Fails closed on a malformed prefix. Exceptions propagate to the caller (the
+    Fails closed on a prefix that fails table_prefix_problem. Exceptions propagate to the caller (the
     phase), which decides isolate-or-reraise. An absent or empty migrations
     directory is a no-op, not an error.
     """
-    if not _prefix_ok(table_prefix):
+    from celerp.modules.importer import table_prefix_problem
+
+    problem = table_prefix_problem(module_name, table_prefix)
+    if problem:
         raise ValueError(
-            f"Module {module_name!r} declares migrations but its table_prefix "
-            f"{table_prefix!r} is malformed (need >= {_MIN_PREFIX_LEN} characters, "
-            "ending in '_'); refusing to run its migrations."
+            f"Module {module_name!r}: {problem} Refusing to run its migrations."
         )
 
     sync_conn.execute(sa.text(f"SET LOCAL lock_timeout = '{_MIGRATION_TIMEOUT}'"))
     sync_conn.execute(sa.text(f"SET LOCAL statement_timeout = '{_MIGRATION_TIMEOUT}'"))
 
-    mig_dir = Path(module_path).joinpath(*migrations_pkg.split("."))
-    if not mig_dir.is_dir():
-        return
-    files = sorted(
-        p for p in mig_dir.glob("*.py")
-        if p.is_file() and not p.name.startswith("_")
-    )
-    for path in files:
+    for path in loader.module_migration_files(Path(module_path), migrations_pkg):
         _run_migration_file(sync_conn, path, table_prefix)
 
 
@@ -176,23 +164,22 @@ def _run_migration_file(sync_conn, path: Path, table_prefix: str) -> None:
         upgrade()
 
 
-async def run_migration_phase(engine, enabled):
-    """Run the enabled modules' migrations under the shared advisory lock.
+async def run_migration_phase(engine, admission: loader.Admission) -> loader.Admission:
+    """Run the admitted modules' migrations, in dependency order, under the
+    shared advisory lock.
 
-    Returns ``(surviving, held_errors)``: ``surviving`` is the enabled set minus
-    any third-party module whose migration failed, and ``held_errors`` maps each
-    such module to its masked failure message for the caller to record with
-    ``loader.record_load_error`` AFTER ``load_all`` (which clears the load-error
-    map on entry). A first-party module's failure re-raises.
+    Returns the admission with every third-party module whose migration failed
+    refused (its masked failure as the reason), together with every module that
+    depends on it; a dependent's migrations are never run. A first-party
+    module's failure re-raises.
 
-    Postgres only: on any other dialect the phase is skipped and
-    ``(set(enabled), {})`` is returned unchanged, leaving the SQLite dev path on
-    its ``create_all`` fallback.
+    Postgres only: on any other dialect the phase is skipped and the admission
+    is returned unchanged, leaving the SQLite dev path on its ``create_all``
+    fallback.
     """
-    surviving = set(enabled)
-    held_errors: dict[str, str] = {}
     if engine.dialect.name != "postgresql":
-        return surviving, held_errors
+        return admission
+    failed: dict[str, str] = {}
 
     lock_conn = await engine.connect()
     lock_conn = await lock_conn.execution_options(isolation_level="AUTOCOMMIT")
@@ -205,32 +192,30 @@ async def run_migration_phase(engine, enabled):
                 sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
             )
             try:
-                for name in sorted(enabled):
-                    module_path = loader.resolve_runtime_module_path(name)
-                    if module_path is None:
+                for module in admission.admitted:
+                    dep = next((d for d in module.manifest["depends_on"] if d in failed), None)
+                    if dep is not None:
+                        failed[module.name] = f"Requires {dep!r}, which failed to load."
                         continue
-                    manifest = loader.read_manifest(module_path)
-                    migrations_pkg = manifest.get("migrations")
+                    migrations_pkg = module.manifest.get("migrations")
                     if not migrations_pkg:
                         continue
-                    table_prefix = manifest.get("table_prefix") or ""
                     try:
                         async with engine.begin() as conn:
                             await conn.run_sync(
-                                run_module_migrations, name, module_path,
-                                migrations_pkg, table_prefix,
+                                run_module_migrations, module.name, module.path,
+                                migrations_pkg, module.manifest.get("table_prefix") or "",
                             )
                     except Exception as exc:
-                        if loader.is_first_party(module_path):
+                        if module.first_party:
                             raise
-                        held_errors[name] = mask_db_credentials(
+                        failed[module.name] = mask_db_credentials(
                             f"Migration failed: {type(exc).__name__}: {exc}"
                         )
-                        surviving.discard(name)
             finally:
                 await lock_conn.execute(
                     sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
                 )
     finally:
         await lock_conn.close()
-    return surviving, held_errors
+    return admission.without(failed)

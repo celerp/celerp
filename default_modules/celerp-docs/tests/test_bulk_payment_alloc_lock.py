@@ -15,6 +15,7 @@ on real Postgres via the session-scoped _db_engine with independent sessions."""
 from __future__ import annotations
 
 import asyncio
+import datetime
 import types
 import uuid
 
@@ -114,12 +115,12 @@ async def test_bulk_payment_pays_what_a_payment_in_flight_left(_db_engine):
         try:
             single = asyncio.create_task(record_payment(
                 inv, DocPaymentBody(amount=60.0, payment_date="2026-02-01", method="cash",
-                                    bank_account="1111"),
+                                    bank_account="1110"),
                 company_id=company_id, _=None, user=user, session=first))
             await asyncio.sleep(0.3)
             bulk = asyncio.create_task(bulk_payment(
                 BulkPaymentBody(doc_ids=[inv], amount=100.0, payment_date="2026-02-02",
-                                method="cash", bank_account="1111"),
+                                method="cash", bank_account="1110"),
                 company_id=company_id, _=None, user=user, session=second))
             await asyncio.sleep(0.3)
             release.set()
@@ -136,14 +137,10 @@ async def test_bulk_payment_pays_what_a_payment_in_flight_left(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_stripe_overpay_still_clamps_and_records_charged(_db_engine):
-    """Regression guard (GREEN on both trees): a genuine source=='stripe' overshoot still
-    clamps to the fresh outstanding and records the original charge as charged_amount.
-
-    This pins that re-gating the clamp off `reference` and onto `source` does NOT narrow
-    the Stripe overpay behavior. record_stripe_payment is the sole source=='stripe' caller;
-    driving it exercises the clamp branch via its real contract, independent of the helper's
-    return shape, so this guard is green on both trees."""
+async def test_stripe_overpay_is_refused_whole(_db_engine):
+    """A confirmed online charge larger than what the invoice still owes is refused
+    whole, like any other payment: nothing is clamped onto the invoice."""
+    from fastapi import HTTPException
     from celerp_docs import routes_payments
 
     factory = _factory(_db_engine)
@@ -156,18 +153,18 @@ async def test_stripe_overpay_still_clamps_and_records_charged(_db_engine):
             doc_state = (await s.get(
                 Projection, {"company_id": company_id, "entity_id": inv},
                 populate_existing=True)).state
-            await routes_payments.record_stripe_payment(
-                s, company_id, inv, dict(doc_state),
-                reference="pi_test_123", amount_minor=20000, currency="usd")
+            with pytest.raises(HTTPException) as refused:
+                await routes_payments.record_stripe_payment(
+                    s, company_id, inv, dict(doc_state),
+                    reference="pi_test_123", amount_minor=20000, currency="usd",
+                    paid_at=datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc),
+                    context={"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"},
+                    managed=True)
+        assert refused.value.status_code == 409
 
         st = await _state(factory, company_id, inv)
-        # The clamp settled only what the invoice could absorb; the raw charge is on record.
-        assert await _outstanding(factory, company_id, inv) < 0.01, (
-            "the invoice must be settled to its outstanding, not overpaid")
-        payments = [p for p in (st.get("payments") or []) if p.get("status") != "deleted"]
-        assert payments, f"the stripe payment must be recorded; state={st!r}"
-        assert any(abs(float(p.get("charged_amount") or 0) - 200.0) < 0.01 for p in payments), (
-            f"the raw stripe charge (200) must be recorded as charged_amount; payments={payments!r}")
+        assert abs(await _outstanding(factory, company_id, inv) - 50.0) < 0.01
+        assert not [p for p in (st.get("payments") or []) if p.get("status") != "deleted"]
     finally:
         await _cleanup(factory, company_id, user_id)
 
@@ -193,7 +190,7 @@ async def test_bulk_payment_that_cannot_take_a_document_records_nothing(_db_engi
             with pytest.raises(DBAPIError):
                 await bulk_payment(
                     BulkPaymentBody(doc_ids=[held, other], amount=250.0, payment_date="2026-02-05",
-                                    method="cash", bank_account="1111"),
+                                    method="cash", bank_account="1110"),
                     company_id=company_id, _=None, user=user, session=s_bulk)
         finally:
             await s_hold.close()
@@ -220,7 +217,7 @@ async def test_bulk_payments_in_opposite_order_both_finish(_db_engine):
             results = await asyncio.wait_for(asyncio.gather(*(
                 bulk_payment(
                     BulkPaymentBody(doc_ids=order, amount=30.0, payment_date="2026-02-06",
-                                    method="cash", bank_account="1111"),
+                                    method="cash", bank_account="1110"),
                     company_id=company_id, _=None, user=user, session=session)
                 for session, order in ((s_a, [d0, d1]), (s_b, [d1, d0])))), timeout=10)
         finally:

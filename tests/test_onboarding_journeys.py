@@ -296,7 +296,6 @@ async def test_setup_transition_table(row, client, session):
     assert not after.get("category_display_names")
     assert "inventory_method" not in after
     assert after.get("onboarding_pending") is True
-    assert r.status_code == 302 and r.headers["location"] == "/onboarding"
     await _lands_on_onboarding(r, owner["token"])
 
 

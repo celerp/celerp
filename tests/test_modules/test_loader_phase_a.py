@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from celerp.modules import slots
-from celerp.modules.loader import ModuleLoadError, _load_one, load_all
+from celerp.modules.loader import load_all
 from celerp.modules import loader as _loader_mod
 
 
@@ -184,8 +184,8 @@ def test_loader_loads_in_dep_order(tmp_path):
     assert names.index("test_phaseA_dep") < names.index("test_phaseA_main")
 
 
-def test_load_one_raises_for_unloaded_dep(tmp_path):
-    """_load_one validates dep is in _loaded, raises ModuleLoadError if not."""
+def test_module_with_missing_dep_is_refused(tmp_path):
+    """A dependency that is not enabled refuses the module before it is imported."""
     pkg = tmp_path / "test_phaseA_nodep"
     pkg.mkdir()
     (pkg / "__init__.py").write_text(textwrap.dedent("""
@@ -196,5 +196,8 @@ def test_load_one_raises_for_unloaded_dep(tmp_path):
             "slots": {},
         }
     """))
-    with pytest.raises(ModuleLoadError):
-        _load_one(pkg, "test_phaseA_nodep")
+    loaded = load_all(tmp_path, {"test_phaseA_nodep"})
+    assert loaded == []
+    assert "test_phaseA_nodep" not in sys.modules
+    assert _loader_mod.load_errors()["test_phaseA_nodep"] == (
+        "Requires 'celerp-missing', which is not enabled.")

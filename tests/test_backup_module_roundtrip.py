@@ -39,9 +39,9 @@ def test_build_archive_bundles_modules_and_excludes_bytecode(tmp_path):
 def _archive(path, members: list[tuple[str, bytes]]):
     import json
 
-    from celerp.services.backup_import import _safe_test_version
+    from celerp import __version__
 
-    meta = json.dumps({"celerp_version": _safe_test_version(), "pg_version": "16",
+    meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
                        "created_at": "2026-06-04T00:00:00Z", "company_name": "T"}).encode()
     with tarfile.open(path, mode="w:gz") as tar:
         for name, body in [("database.dump", b"PGDMP"), ("meta.json", meta), *members]:

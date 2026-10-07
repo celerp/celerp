@@ -154,6 +154,10 @@ def setup_routes(app):
         except APIError as e:
             return _rerender(t("setup.onboarding_not_started", detail=e.detail))
         if result.get("restart_required"):
+            if not await api.installation_owner(token):
+                # Only the installation owner restarts Celerp; until then the
+                # getting-started hub says the new modules are waiting for it.
+                return RedirectResponse("/onboarding?modules=pending", status_code=302)
             # The type's modules load on restart; the activating page waits for them.
             # The server may drop this request as it goes down, so its outcome is not
             # a failure of the setup step.

@@ -933,6 +933,7 @@ def editable_cell(
     patch_url: str | None = None,
     aria_label: str | None = None,
     cls_extra: str = "",
+    searchable: bool = False,
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map.
@@ -941,7 +942,9 @@ def editable_cell(
     patch_url: where the edit saves to. Defaults to the item field route, so a caller that
                owns its own REST surface (a module) points the cell at its own endpoint.
     aria_label: accessible name for the control. A cell editor replaces the cell it sits
-               in, so the column header is no longer beside it once the editor opens."""
+               in, so the column header is no longer beside it once the editor opens.
+    searchable: a select is the searchable combobox however few options it holds now,
+               for a list that could hold more than ten."""
     # Grey hint for empty inputs (e.g. a reorder suggestion). Kept separate from `value`
     # so it can never be saved: HTML placeholder is shown only while the input is empty and
     # is never part of the submitted form data.
@@ -983,7 +986,7 @@ def editable_cell(
 
     if cell_type in ("select", "status") and options is not None:
         options = _options_with_mixed(options, display_val)
-        if len(options) > _SEARCHABLE_THRESHOLD or allow_custom:
+        if len(options) > _SEARCHABLE_THRESHOLD or allow_custom or searchable:
             # Searchable combobox for large option sets or allow-custom fields
             input_el = Div(
                 searchable_select(

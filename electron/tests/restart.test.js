@@ -5,6 +5,7 @@
 const path = require("path");
 const { EventEmitter } = require("events");
 const { restartSentinelPath, watchForRestart } = require("../restart");
+const { reopenData } = require("../boot");
 
 // ── restartSentinelPath ───────────────────────────────────────────────────────
 
@@ -130,6 +131,28 @@ describe("watchForRestart", () => {
     await new Promise(r => setTimeout(r, 10));
 
     expect(onRestart).not.toHaveBeenCalled();
+  });
+
+  test("a refused restart starts no UI and stops watching", async () => {
+    const { deps, startUi, onCrash } = makeTestDeps({ sentinelExists: true });
+    const onRestart = jest.fn();
+    deps.onRestart = onRestart;
+    // The restart's own check refused the database: nothing came back up.
+    deps.startApi = jest.fn(async () => reopenData({
+      mayOpenData: async () => false,
+      runMigrations: () => { throw new Error("must not migrate"); },
+      startApi: async () => { throw new Error("must not start the API"); },
+    }));
+    const api = deps.getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    api.emit("exit", 0);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(deps.startApi).toHaveBeenCalledTimes(1);
+    expect(startUi).not.toHaveBeenCalled();
+    expect(onRestart).not.toHaveBeenCalled();
+    expect(onCrash).not.toHaveBeenCalled();
   });
 
   test("sentinel absent, exit code 0: no crash, no respawn", async () => {

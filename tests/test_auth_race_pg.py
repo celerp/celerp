@@ -68,9 +68,7 @@ async def seeded(engine, sessionmaker):
     """Seed one user, one company (plus a second for switch/create paths), an
     active membership on each, and the user's UserAuthState with nonce N0.
 
-    Truncates first so a reused database from a prior run starts clean, and busts
-    the in-process nonce cache so N0 is read from the committed row, not a stale
-    cache entry left by another test.
+    Truncates first so a reused database from a prior run starts clean.
     """
     async with sessionmaker() as s:
         # Clean slate: order respects FKs.
@@ -97,9 +95,6 @@ async def seeded(engine, sessionmaker):
             "company_b_id": company_b.id,
             "n0": n0,
         }
-
-    # The committed nonce is authoritative; drop any cache so N0 is read fresh.
-    session_tracker._nonce_cache_bust(str(ids["user_id"]))
     return ids
 
 
@@ -131,7 +126,6 @@ async def _token_is_usable(sessionmaker, access_token: str) -> bool:
     from fastapi import HTTPException
 
     async with sessionmaker() as s:
-        session_tracker._nonce_cache_bust_all()
         try:
             await auth_svc.validate_access_token(s, access_token)
             return True
@@ -150,7 +144,7 @@ def _is_neutral_401(exc: BaseException) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def _run_revoke_first(engine, seeded, *, issuance_role="owner", company_id_key="company_a_id"):
+async def _run_revoke_first(engine, seeded, *, company_id_key="company_a_id"):
     """Revoke commits FIRST, then the continuation issuance (pinned to N0) runs.
 
     Returns (issuance_result, issuance_exc): exactly one is non-None. Post-fix,
@@ -184,8 +178,7 @@ async def _run_revoke_first(engine, seeded, *, issuance_role="owner", company_id
                 result = await auth_svc.issue_token_pair(
                     s,
                     user=user,
-                    company=company,
-                    role=issuance_role,
+                    company_id=company.id,
                     expected_snonce=n0,
                 )
                 return result, None
@@ -245,7 +238,7 @@ async def test_17_sliding_bearer_refresh_loses_to_concurrent_logout(engine, seed
             company = await s.get(Company, company_id)
             try:
                 return await auth_svc.issue_token_pair(
-                    s, user=user, company=company, role="owner",
+                    s, user=user, company_id=company.id,
                     jti=reused_jti, expected_snonce=n0,
                 ), None
             except BaseException as exc:  # noqa: BLE001
@@ -281,7 +274,7 @@ async def test_19_create_company_continuation_loses_to_concurrent_logout(engine,
     The create-company continuation issues role="owner"; the invariant is
     identical to switch-company - the N0 snonce no longer matches the locked row."""
     result, exc = await _run_revoke_first(
-        engine, seeded, issuance_role="owner", company_id_key="company_b_id"
+        engine, seeded, company_id_key="company_b_id"
     )
 
     assert result is None, "create-company minted onto a revoked generation"
@@ -307,7 +300,7 @@ async def test_20_issuance_first_then_logout_deletes_jti_and_rotates(engine, see
         user = await s.get(User, user_id)
         company = await s.get(Company, company_id)
         pair = await auth_svc.issue_token_pair(
-            s, user=user, company=company, role="owner", expected_snonce=n0
+            s, user=user, company_id=company.id, expected_snonce=n0
         )
     finally:
         await s.close()
@@ -370,7 +363,7 @@ async def test_22_fresh_login_after_revocation_mints_on_current_generation(engin
         user = await s2.get(User, user_id)
         company = await s2.get(Company, company_id)
         pair = await auth_svc.issue_token_pair(
-            s2, user=user, company=company, role="owner", expected_snonce=None
+            s2, user=user, company_id=company.id, expected_snonce=None
         )
     finally:
         await s2.close()

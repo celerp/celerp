@@ -96,6 +96,7 @@ async def test_migration_advisory_lock_wait_survives_statement_timeout():
 
     from celerp.config import settings
     from celerp.db import _MIGRATION_LOCK_KEY
+    from celerp.modules.loader import Admission
     from celerp.modules.migrations_runner import run_migration_phase
 
     if not settings.database_url.startswith("postgresql"):
@@ -118,10 +119,9 @@ async def test_migration_advisory_lock_wait_survives_statement_timeout():
         releaser = asyncio.create_task(_release_after(2.0))
         # No modules enabled: the phase just contends for the lock (blocking ~2s),
         # then releases it. It must not raise a cancelled-statement error.
-        surviving, errors = await run_migration_phase(engine, set())
+        admission = await run_migration_phase(engine, Admission(admitted=[], refused={}))
         await releaser
-        assert surviving == set()
-        assert errors == {}
+        assert admission == Admission(admitted=[], refused={})
     finally:
         await hconn.close()
         await engine.dispose()

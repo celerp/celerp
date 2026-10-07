@@ -126,6 +126,18 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+def localize_notification(item: dict, lang: str | None = None) -> dict:
+    """*item* with its title and body in *lang* when it carries a ``message_key``
+    (celerp.notifications.service.create_keyed); a param given as ``{"key": k}`` is
+    itself translated. A plain-text notification is returned unchanged."""
+    key = item.get("message_key")
+    if not key:
+        return item
+    params = {k: t(v["key"], lang) if isinstance(v, dict) else v
+              for k, v in (item.get("message_params") or {}).items()}
+    return {**item, "title": t(f"{key}.title", lang, **params), "body": t(f"{key}.body", lang, **params)}
+
+
 def field_label(f: dict) -> str:
     """Display label for an item-schema field, resolved through t() at render time.
 

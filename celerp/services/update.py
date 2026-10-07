@@ -60,17 +60,17 @@ ROLLBACK_FAILED = "rollback_failed"  # the database could not be restored; Celer
 
 # Why an attempt did not install, as recorded in last_result["reason"]. Error
 # detail goes to the log only; everything recorded here can be shown to anyone.
-REASONS = {
-    "backup_failed": "the database backup taken before updating failed",
-    "install_failed": "the new version could not be installed",
-    "migrate_failed": "the database update failed",
-    "verify_failed": "the new version did not start",
-    "interrupted": "the update was interrupted",
-}
+# Why an update did not go ahead; each code is the message ``update.reason.<code>``.
+REASON_CODES = ("backup_failed", "install_failed", "migrate_failed", "verify_failed", "interrupted")
+
+
+def reason_key(code: str) -> str:
+    return f"update.reason.{code if code in REASON_CODES else 'unknown'}"
 
 
 def reason_text(code: str) -> str:
-    return REASONS.get(code, "the update did not complete")
+    from ui.i18n import t
+    return t(reason_key(code), "en")
 
 
 class UpdateError(RuntimeError):
@@ -119,6 +119,11 @@ def read_state() -> dict:
                                "repair or remove it") from exc
     if not isinstance(state, dict):
         raise UpdateStateError(f"{path} does not hold an update record; repair or remove it")
+    pending = state.get("in_progress")
+    if pending and not (isinstance(pending, dict)
+                        and all(isinstance(pending.get(k), str) for k in ("from", "to", "step"))):
+        raise UpdateStateError(f"{path} records an unfinished update without its versions and step; "
+                               "repair or remove it")
     return state
 
 
@@ -386,18 +391,15 @@ async def _owner_timezone(session) -> str | None:
     return (settings or {}).get("timezone")
 
 
-def result_message(result: dict) -> tuple[str, str]:
-    """(title, body) for the notification about an update attempt."""
+def result_message(result: dict) -> tuple[str, dict]:
+    """(message key, parameters) for the notification about an update attempt."""
     if result.get("ok"):
-        return (f"Celerp was updated to {result['to']}",
-                f"Celerp is now on version {result['to']}.")
-    title = f"Celerp could not update to {result['to']}"
-    reason = reason_text(result.get("reason", ""))
+        return "notif.update_ok", {"to": result["to"]}
+    params = {"to": result["to"], "from": result["from"],
+              "reason": {"key": reason_key(result.get("reason", ""))}}
     if result.get("outcome") == ROLLBACK_FAILED:
-        return title, (f"The update to {result['to']} failed ({reason}) and the database "
-                       "could not be restored. The backup taken before the update is kept; "
-                       "see the update instructions to restore it.")
-    return title, f"Celerp is still on {result['from']}: {reason}. Your data was not changed."
+        return "notif.update_rollback_failed", params
+    return "notif.update_failed", params
 
 
 async def notify_last_result(session) -> int:
@@ -417,11 +419,11 @@ async def notify_last_result(session) -> int:
     result = state.get("last_result")
     if not result or result.get("notified"):
         return 0
-    title, body = result_message(result)
+    key, params = result_message(result)
     company_ids = (await session.execute(
         select(Company.id).where(Company.is_active.is_(True)))).scalars().all()
     for company_id in company_ids:
-        await notif_service.create(session, company_id, "system", title, body, priority="high")
+        await notif_service.create_keyed(session, company_id, "system", key, params, priority="high")
     await session.commit()
     result["notified"] = True
     write_state(state)
@@ -476,7 +478,7 @@ class Steps:
     def migrate(self, target: str) -> None: ...
     def verify(self, target: str) -> tuple: ...
     def stop_children(self, children: tuple) -> None: ...
-    def restore(self, path: Path) -> None: ...
+    def restore(self, path: Path, target: str) -> None: ...
 
 
 def _mark(state: dict, current: str, target: str, step: str, reason: str = "") -> None:
@@ -511,7 +513,7 @@ def _undo(steps: Steps, state: dict, current: str, target: str, reason: str) -> 
     dump = dump_path()
     _mark(state, current, target, "rollback", reason)
     try:
-        steps.restore(dump)
+        steps.restore(dump, target)
     except Exception:
         log.exception("Restoring the database failed; it is retried at every start. The "
                       "pre-update database is at %s (pg_restore --clean -d <url> %s).", dump, dump)
@@ -729,7 +731,8 @@ def _step(*args: str, env: dict | None = None) -> str:
     return result.stdout
 
 
-def _terminate(proc: subprocess.Popen) -> None:
+def stop_process(proc: subprocess.Popen) -> None:
+    """Ask a server to stop; kill it if it has not stopped within 15 seconds."""
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -818,9 +821,8 @@ class SupervisorSteps(Steps):
         ui_port = _free_loopback_port({self.api_port, self.ui_port, api_port})
         env = self._env_for(runtime.release_dir(target))
         env[runtime.UPDATE_VERIFY_ENV] = "1"
-        env["API_URL"] = f"http://127.0.0.1:{api_port}"
+        base = env["API_URL"] = runtime.api_url(api_port)
         api = self._spawn_api(env, api_port)
-        base = f"http://127.0.0.1:{api_port}"
         deadline = time.time() + VERIFY_TIMEOUT_SECONDS
         version = None
         while time.time() < deadline and api.poll() is None:
@@ -830,7 +832,7 @@ class SupervisorSteps(Steps):
                     break
             time.sleep(0.5)
         if version != target:
-            _terminate(api)
+            stop_process(api)
             raise UpdateError(f"reported version {version}" if version else "not healthy")
         ui = self._spawn_ui(env, ui_port)
         if not self._wait_ready((api, api_port), (ui, ui_port), VERIFY_TIMEOUT_SECONDS):
@@ -840,12 +842,19 @@ class SupervisorSteps(Steps):
 
     def stop_children(self, children: tuple) -> None:
         for proc in children:
-            _terminate(proc)
+            stop_process(proc)
 
-    def restore(self, path: Path) -> None:
-        self._backup.restore_database_file(
-            path, self.db_url, clean_schema=True, runner=_bound_run
-        )
+    def restore(self, path: Path, target: str) -> None:
+        """Restore the pre-update dump. `target` may already be recorded as having
+        opened the database, so this copy is let in under that record; the fence
+        still waits for every process of the target version to have stopped."""
+        from celerp.db_url import sync_url
+        from celerp.migrations.compatibility import mutating_scope
+
+        with mutating_scope(sync_url(self.db_url), accept=target):
+            self._backup.restore_database_file(
+                path, self.db_url, clean_schema=True, runner=_bound_run
+            )
 
     def stop_cluster(self) -> None:
         """Stop the embedded database, so the next supervisor starts it with

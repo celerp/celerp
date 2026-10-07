@@ -610,6 +610,14 @@ class DocSent(BaseModel):
     sent_to: str | None = None
 
 
+class PaymentBooks(BaseModel):
+    """The books a payment posted on, which every refund and void of it reverses."""
+    bank_account: str
+    base_currency: str
+    doc_rate: float
+    settlement_rate: float
+
+
 class DocPaymentReceived(BaseModel):
     amount: float
     currency: str | None = None
@@ -626,6 +634,7 @@ class DocPaymentReceived(BaseModel):
     # credit-note application.
     index: int | None = None
     paired_index: int | None = None
+    books: PaymentBooks | None = None
 
 
 class PaymentBatchRecorded(BaseModel):
@@ -645,6 +654,27 @@ class DocPaymentRefunded(BaseModel):
     method: str | None = None
     payment_index: int | None = None  # the payment the money is given back from
     refund_date: str | None = None
+    refund_number: int | None = None  # which refund of the payment; names its journal entry
+    refund_id: str | None = None  # the Stripe refund, for a refund Stripe reported
+
+
+class DocPaymentRefundReversed(BaseModel):
+    """A refund Stripe reported failed or was canceled after it was applied: its money
+    came back to the payment."""
+    payment_index: int
+    refund_number: int
+    amount: float
+    refund_id: str | None = None
+    reversal_date: str | None = None
+
+
+class DocPaymentStripeReleased(BaseModel):
+    """Stripe was disconnected: the payment is no longer linked to Stripe, for good, and
+    is refunded or voided here like any other payment. It was received through Stripe,
+    so it is never deleted."""
+    payment_index: int
+    reference: str
+    released_at: str
 
 
 class DocPaymentVoided(BaseModel):
@@ -891,6 +921,7 @@ class MfgOrderScheduled(BaseModel):
 # The standalone BOM entity was retired (recipes live on the inventory item). Its bom.* event
 # schemas are gone too: nothing emits them, and historical bom.* events replay through the
 # projection engine's default merge handler, which does not validate against EVENT_SCHEMA_MAP.
+RETIRED_EVENT_TYPES = frozenset({"bom.created", "bom.updated", "bom.deleted"})
 
 # -----------------
 # Scanning
@@ -1273,6 +1304,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.sent": DocSent,
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
+    "doc.payment.refund_reversed": DocPaymentRefundReversed,
+    "doc.payment.stripe_released": DocPaymentStripeReleased,
     "payment_batch.recorded": PaymentBatchRecorded,
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,

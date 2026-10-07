@@ -20,6 +20,7 @@ from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import (
     AuthContext,
+    first_usable_company_link,
     get_auth_context,
     get_current_company_id,
     get_current_user,
@@ -48,7 +49,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
-from celerp.services.company_lock import lock_company, locked_company
+from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -252,9 +253,7 @@ async def create_company(
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
     # Creating a company is a continuation of the current owner session: pass the
     # snonce it authenticated on so a concurrent revocation cannot be jumped over.
-    return await issue_token_pair(
-        session, user=user, company=company, role="owner", expected_snonce=ctx.snonce
-    )
+    return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
 
 
 @router.get("/me")
@@ -339,12 +338,28 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 status_code=422,
                 detail="The restored backup record is set only by restoring a company backup, not company settings",
             )
+        # The company's module choice changes only through the enable/disable endpoints,
+        # which check installation and dependencies and keep the load list in step.
+        if "enabled_modules" in payload.settings:
+            raise HTTPException(
+                status_code=422,
+                detail="Modules are turned on and off on the Modules page, not company settings",
+            )
         merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        from celerp_docs.routes_payments import (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
+                                                 require_online_deposit_account)
+        for key in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY):
+            value = payload.settings.get(key)
+            if value in (None, ""):  # empty: the default
+                continue
+            if not isinstance(value, str):
+                raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+            await require_online_deposit_account(session, company_id, value)
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
         if "price_lists" in payload.settings or "base_price_list" in payload.settings:
@@ -639,7 +654,8 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
         )
     ).all()
     items = [
-        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active}
+        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active,
+         "is_install_owner": bool(u.is_install_owner)}
         for u, role, uc_active in rows
     ]
     return {"items": items, "total": len(items)}
@@ -672,11 +688,16 @@ async def transfer_install_owner(
         ).with_for_update()
     )).scalar_one_or_none()
     if target is None or not target.is_active or membership is None:
-        raise HTTPException(status_code=400, detail="Installation owner must be an active user")
+        raise HTTPException(status_code=400, detail="Installation owner must be an active user in this company")
 
     current.is_install_owner = False
     await session.flush()
     target.is_install_owner = True
+    from celerp.notifications import service as notif_service
+    await notif_service.create_keyed(
+        session, company_id, "system", "notif.install_owner", {"name": current.name or current.email},
+        user_id=target.id, action_url="/settings/general?tab=users", priority="high",
+    )
     await session.commit()
     return {"ok": True}
 
@@ -901,16 +922,8 @@ async def get_category_schema(category: str, company_id=Depends(get_current_comp
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    cat_schemas: dict = company.settings.get("category_schemas") or {}
-    saved = cat_schemas.get(category)
-    if saved is not None:
-        return saved
-    # Fall back to module-contributed defaults (category_schema slot)
-    from celerp.modules.slots import get as get_slot
-    for contrib in get_slot("category_schema"):
-        if contrib.get("category") == category:
-            return contrib.get("fields") or []
-    return []
+    from celerp.services.field_schema import all_category_schemas
+    return all_category_schemas(company.settings or {}).get(category, [])
 
 
 @router.patch("/me/category-schema/{category}")
@@ -1652,15 +1665,15 @@ async def list_modules(
     from datetime import datetime, timezone
     from pathlib import Path
     from celerp.modules.loader import (
-        first_party_names, is_first_party, is_running, load_errors,
+        first_party_names, is_core_folded, is_first_party, is_running, load_errors,
         loaded_modules, read_manifest_metadata,
     )
     from celerp.modules.meta import read_meta
-    from celerp.modules.registry import get_enabled
+    from celerp.modules.registry import company_modules
 
     company = await session.get(Company, company_id)
     settings_dict: dict = company.settings or {} if company else {}
-    enabled_names = get_enabled(settings_dict)
+    enabled_names = company_modules(settings_dict)
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
     load_errs = load_errors()
     module_dir_raw = os.environ.get("MODULE_DIR", "")
@@ -1691,19 +1704,18 @@ async def list_modules(
                 loaded = loaded_by_name.get(pkg_name)
                 manifest_source = loaded or read_manifest_metadata(pkg_path)
                 # Provenance and install time drive the source shield and the
-                # newest-imported-first ordering. A default is identified by
-                # content (its digest matches the committed first-party lock), not
-                # by name or sidecar, and never carries an install time (the desktop
-                # app re-seeds them on every version bump). A non-default folder
-                # with no sidecar (a pre-existing import) falls back to its
-                # folder ctime so ordering still has something to sort on.
+                # newest-imported-first ordering. A default never carries an
+                # install time (the desktop app re-seeds them on every version
+                # bump). A non-default folder with no recorded install time (a
+                # pre-existing import) falls back to its folder ctime so ordering
+                # still has something to sort on.
                 is_default = is_first_party(pkg_path)
                 if is_default:
                     source = "default"
                     installed_at = None
                 else:
                     meta = read_meta(pkg_path)
-                    source = meta.get("source")
+                    source = meta.get("source", "sideloaded")
                     installed_at = meta.get("installed_at")
                     if installed_at is None:
                         ctime = pkg_path.stat().st_ctime
@@ -1720,7 +1732,8 @@ async def list_modules(
                     # gate the irreversible Purge action on a module that owns
                     # tables. None when the manifest declares none.
                     "table_prefix": manifest_source.get("table_prefix") or None,
-                    "enabled": pkg_name in enabled_names,
+                    # A module built into Celerp is on for every company.
+                    "enabled": pkg_name in enabled_names or is_core_folded(pkg_name),
                     # Core-folded modules (ai/backup/connectors) are wired at app
                     # construction, never in loaded_by_name - is_running() counts them.
                     "running": is_running(pkg_name),
@@ -1749,18 +1762,26 @@ async def enable_module(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Enable a module. Requires admin. A restart is required for changes to take effect."""
-    from celerp.modules.registry import enable, get_enabled
-    from celerp.config import set_enabled_modules
+    """Turn a module on for this company, with the modules it needs. Refused
+    for a name that is not an installed module."""
+    from celerp.modules.registry import (
+        commit_with_load_set, enable_for_company, get_enabled, hold_module_state, is_installed, restart_needed,
+    )
 
+    await hold_module_state(session)
+    if not is_installed(module_name):
+        raise HTTPException(status_code=404, detail="Module not found.")
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    company.settings = enable(company.settings or {}, module_name)
-    await session.commit()
-    await asyncio.to_thread(set_enabled_modules, [module_name])
-    enabled_list = sorted(get_enabled(company.settings))
-    return {"ok": True, "name": module_name, "enabled": True, "restart_required": True, "enabled_modules": enabled_list}
+    company.settings, also_enabled = enable_for_company(company.settings, module_name)
+    await commit_with_load_set(session)
+    return {
+        "ok": True, "name": module_name, "enabled": True,
+        "also_enabled": also_enabled,
+        "restart_required": restart_needed([module_name, *also_enabled]),
+        "enabled_modules": sorted(get_enabled(company.settings)),
+    }
 
 
 @router.post("/me/modules/{module_name}/disable", dependencies=[require_permission("manage_company_settings")])
@@ -1769,45 +1790,63 @@ async def disable_module(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Disable a module. Requires admin. A restart is required for changes to take effect."""
-    from celerp.modules.registry import disable, get_enabled
-    from celerp.config import remove_enabled_module
+    """Turn a module off for this company. Other companies keep using it. Refused for a
+    module built into Celerp, which is always on."""
+    from celerp.modules.loader import is_core_folded, module_label
+    from celerp.modules.registry import (
+        ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled, hold_module_state,
+    )
 
+    if is_core_folded(module_name):
+        raise HTTPException(status_code=409, detail=(
+            f"{module_label(module_name)} is part of Celerp and is always on."))
+
+    await hold_module_state(session)
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    company.settings = disable(company.settings or {}, module_name)
-    await session.commit()
-    # Remove from config file so the next restart honours the disable, keeping
-    # DB and file in sync.
-    await asyncio.to_thread(remove_enabled_module, module_name)
-    enabled_list = sorted(get_enabled(company.settings))
-    return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
+    try:
+        company.settings = disable_for_company(company.settings, module_name)
+    except ModuleStillNeeded as exc:
+        raise HTTPException(status_code=409, detail=(
+            f"{', '.join(module_label(n) for n in exc.needed_by)} needs this module. "
+            "Turn that off first."))
+    await commit_with_load_set(session)
+    return {
+        "ok": True, "name": module_name, "enabled": False, "restart_required": False,
+        "enabled_modules": sorted(get_enabled(company.settings)),
+    }
 
 
-@router.post("/me/modules/{module_name}/delete", dependencies=[require_permission("manage_company_settings")])
+async def _refuse_while_in_use(session: AsyncSession, module_name: str, action: str) -> None:
+    """409 while any company uses the module or it is still running."""
+    from celerp.modules.loader import is_running
+    from celerp.modules.registry import load_set
+    if module_name in await load_set(session) or is_running(module_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"A company still uses this module, or it is still running. "
+                   f"Turn it off in every company and restart before {action}.")
+
+
+@router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)])
 async def delete_module(
     module_name: str,
-    company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Delete a disabled, non-default module, freeing its name for re-import. Admin only.
+    """Delete a non-default module no company uses, freeing its name for re-import.
+    Installation owner only.
 
-    Refused for default modules (bundled, undeletable) and for any module that is
-    still enabled or running - a running module is disabled first, from the same
-    row. Removing the folder frees the name so the same package can be imported
+    Refused for default modules (bundled, undeletable) and for any module a
+    company still uses or that is still running. Removing the folder frees the name so the same package can be imported
     again later.
     """
     import asyncio
     from celerp.modules.importer import ModuleImportError, remove_module_dir
-    from celerp.modules.loader import is_first_party, is_running, resolve_module_path
-    from celerp.modules.registry import disable, get_enabled
-    from celerp.config import remove_enabled_module
+    from celerp.modules.loader import is_first_party, resolve_module_path
+    from celerp.modules.registry import hold_module_state
 
-    company = await locked_company(session, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
+    await hold_module_state(session)
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail="Module not found.")
@@ -1816,21 +1855,14 @@ async def delete_module(
     # after a default is shielded from deletion.
     if is_first_party(pkg_path):
         raise HTTPException(status_code=409, detail="Default modules cannot be deleted.")
-    if module_name in get_enabled(company.settings or {}) or is_running(module_name):
-        raise HTTPException(
-            status_code=409,
-            detail="Disable this module and restart before deleting it.")
+    await _refuse_while_in_use(session, module_name, "deleting it")
 
     try:
         await asyncio.to_thread(remove_module_dir, module_name)
     except ModuleImportError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-
-    # Prune the freed name from both enabled stores so a later re-import starts
-    # clean (mirrors disable's dual-store write: settings + config file).
-    company.settings = disable(company.settings or {}, module_name)
     await session.commit()
-    await asyncio.to_thread(remove_enabled_module, module_name)
+
     return {"ok": True, "name": module_name}
 
 
@@ -1888,38 +1920,37 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     return "depend" in str(exc).lower()
 
 
-@router.post("/me/modules/{module_name}/purge-data", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)])
 async def purge_module_data(
     module_name: str,
-    company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Drop every table carrying the module's declared prefix, in one transaction. Admin only.
+    """Drop every table carrying the module's declared prefix, in one transaction. Installation owner only.
 
-    Refused while the module is still enabled or running: its data must be quiet
-    before it is dropped, so the admin disables and restarts first, from the same
-    row. The drop list is re-derived from the manifest prefix server-side; no
-    client-sent preview is trusted. A module with no matching tables is a clean
+    Refused while any company uses the module or it is still running: its data
+    must be quiet before it is dropped. The drop list is read from the manifest prefix at the time of the
+    drop, not from the preview. A module with no matching tables is a clean
     no-op success. A table outside the module still depending on one of these
     tables blocks the whole drop, which rolls back with a plain explanation.
     Deleting the module folder is a separate action and does not touch these tables.
     """
-    from celerp.modules.loader import is_running, read_manifest, resolve_module_path
-    from celerp.modules.registry import get_enabled
+    from celerp.modules.loader import read_manifest, resolve_module_path
+    from celerp.modules.registry import hold_module_state
 
-    company = await session.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
+    await hold_module_state(session)
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail="Module not found.")
-    if module_name in get_enabled(company.settings or {}) or is_running(module_name):
-        raise HTTPException(
-            status_code=409,
-            detail="Disable this module and restart before purging its data.")
+    await _refuse_while_in_use(session, module_name, "purging its data")
 
     prefix = (read_manifest(pkg_path) or {}).get("table_prefix") or ""
+    if prefix:
+        # Re-checked here: a module copied in by hand never passed the install check.
+        from celerp.modules.importer import table_prefix_problem
+        problem = table_prefix_problem(module_name, prefix)
+        if problem:
+            raise HTTPException(status_code=409,
+                                detail=f"Could not purge: {problem} Nothing was deleted.")
     tables = await _module_tables_with_row_counts(session, prefix)
     names = [t["name"] for t in tables]
     if not names:
@@ -1943,13 +1974,13 @@ class _ImportPathBody(BaseModel):
     path: str
 
 
-@router.post("/me/modules/import", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/import", dependencies=[Depends(require_install_owner)])
 async def import_module_upload(
     request: Request,
     file: UploadFile = File(...),
     source: str = Form("sideloaded"),
 ) -> dict:
-    """Install a module package from an uploaded .zip archive. Admin only.
+    """Install a module package from an uploaded .zip archive. Installation owner only.
 
     Validation and installation share one code path with every other way a
     module package arrives (celerp.modules.importer), so the security posture
@@ -1963,9 +1994,9 @@ async def import_module_upload(
     from celerp.modules.importer import (
         MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip,
     )
-    from celerp.modules.meta import VALID_SOURCES
+    from celerp.modules.meta import IMPORT_SOURCES
 
-    if source not in VALID_SOURCES:
+    if source not in IMPORT_SOURCES:
         raise HTTPException(status_code=422, detail="Unknown module source.")
     # Reject on the declared length before reading, then read with a hard cap so
     # an oversize (or lying-Content-Length) body cannot be buffered whole in RAM.
@@ -1982,9 +2013,9 @@ async def import_module_upload(
     return {"ok": True, **info}
 
 
-@router.post("/me/modules/import-path", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/import-path", dependencies=[Depends(require_install_owner)])
 async def import_module_from_path(body: _ImportPathBody) -> dict:
-    """Install a module from a local folder path (desktop folder picker). Admin only.
+    """Install a module from a local folder path (desktop folder picker). Installation owner only.
 
     The API runs on the user's own machine in desktop mode, so a path is the
     natural handoff from the native folder picker. Same importer core as the
@@ -2045,10 +2076,10 @@ class _BuyBody(BaseModel):
     custom_text: str | None = None   # buyer-language purchase disclosures for the Checkout page
 
 
-@router.post("/me/modules/buy", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/buy", dependencies=[Depends(require_install_owner)])
 async def buy_module(body: _BuyBody) -> dict:
     """Start a purchase: ask the relay for a Stripe Checkout URL for this module.
-    The UI opens it in the browser, then polls the license. Admin only."""
+    The UI opens it in the browser, then polls the license. Installation owner only."""
     import httpx
     url, jwt = await _relay_creds()
     payload: dict = {"slug": body.slug, "kind": body.kind}
@@ -2092,103 +2123,64 @@ class _MarketplaceDownloadBody(BaseModel):
 
 
 class _MarketplaceInstallBody(BaseModel):
-    path: str
+    ref: str
 
 
-def _marketplace_staging_dir() -> "Path":
-    """Where a licensed marketplace archive waits between Download and Install.
-    Server-owned; the client only ever sees an opaque path into it."""
-    from pathlib import Path
+def _install_answer(answer: dict, slug: str) -> dict | None:
+    """The install answer if it has exactly the expected fields with plain types
+    and names the requested module, else None."""
+    from celerp.modules.marketplace_stage import SHA256_RE
 
-    from celerp.config import settings as _s
-
-    d = Path(_s.data_dir) / "marketplace-downloads"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _read_staged_marketplace(path: str) -> tuple[bytes, bool, bool]:
-    """Read a staged archive and the trust flags the server recorded beside it,
-    refusing any path outside the staging directory so a client-supplied path
-    cannot read arbitrary files. official/premium come from the server-written
-    sidecar, never from the client: the client only hands back the opaque path,
-    so it cannot promote a third-party module to official or a paid one to free.
-    """
-    import json
-    from pathlib import Path
-
-    base = _marketplace_staging_dir().resolve()
-    p = Path(path).resolve()
-    if base not in p.parents:
-        raise HTTPException(status_code=400, detail="Staged archive path is invalid.")
-    sidecar = p.with_suffix(".json")
-    if not p.is_file() or not sidecar.is_file():
-        raise HTTPException(status_code=410,
-                            detail="This download has expired. Download it again.")
-    try:
-        flags = json.loads(sidecar.read_text())
-    except (ValueError, OSError):
-        raise HTTPException(status_code=410,
-                            detail="This download is unreadable. Download it again.")
-    flags = flags if isinstance(flags, dict) else {}
-    return p.read_bytes(), bool(flags.get("is_official")), bool(flags.get("is_paid"))
+    if set(answer) != {"token", "slug", "version", "is_official", "is_paid", "sha256"}:
+        return None
+    token, version, sha256 = answer["token"], answer["version"], answer["sha256"]
+    if (not isinstance(token, str) or not token
+            or answer["slug"] != slug
+            or not isinstance(version, str) or not version
+            or not isinstance(answer["is_official"], bool)
+            or not isinstance(answer["is_paid"], bool)
+            or not isinstance(sha256, str) or not SHA256_RE.fullmatch(sha256)):
+        return None
+    return answer
 
 
-@router.post("/me/modules/marketplace-download", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
 async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     """Stage a marketplace module for install: fetch it from the relay and hold
-    the archive on disk, ready for a following Install. Admin only.
+    the archive on disk, ready for a following Install. Installation owner only.
 
-    The relay enforces the gates at token issuance: a paid module needs an active
-    license, third-party code needs a passed security scan. Never-stuck by design:
-    every Download requests a FRESH one-time token, so any failure - relay down,
-    download interrupted - is fully recoverable by clicking Download again. The
-    bytes land in the staging area only; nothing is installed until Install.
+    A paid module needs an active license and a third-party module a passed
+    security scan. Every Download requests a fresh one-time token, so after any
+    failure (relay down, download interrupted) clicking Download again works. The
+    package is staged only when its SHA-256 matches the install answer, under a
+    new reference that Install takes; nothing is installed until then.
     """
-    import json
-    from pathlib import Path
+    import asyncio
+    import hashlib
 
     import httpx
 
     from celerp.gateway.state import relay_error_detail
+    from celerp.modules import marketplace_stage
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
 
     url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # Module metadata drives the trust decision (celerp- prefix required
-            # for official, forbidden for third-party) and the license-gate marker.
-            m = await c.get(f"{url}/marketplace/modules/{body.slug}")
-            if m.status_code != 200:
-                raise HTTPException(
-                    status_code=404 if m.status_code == 404 else 502,
-                    detail=relay_error_detail(m, "This module is not available."))
-            meta = _json_dict(m)
-            if not meta:
-                raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
-            is_official = bool(meta.get("is_official"))
-            # Type-safe: only a real, positive number counts as paid. A string or
-            # other truthy-but-wrong type must not misclassify a free module as
-            # paid (which would wrongly gate it behind a license check forever).
-            price_monthly = meta.get("price_monthly")
-            price_once = meta.get("price_once")
-            is_paid = any(
-                isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
-                for v in (price_monthly, price_once)
-            )
-
+            # The install answer names the package: its slug, version, flags,
+            # digest, and the token that downloads it.
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
                     detail=relay_error_detail(r, "The relay refused the download."))
-            token = str(_json_dict(r).get("token") or "")
-            if not token:
+            answer = _install_answer(_json_dict(r), body.slug)
+            if answer is None:
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
 
-            d = await c.get(f"{url}/marketplace/download/{token}")
+            d = await c.get(f"{url}/marketplace/download/{answer['token']}")
             if d.status_code != 200:
                 raise HTTPException(
                     status_code=502,
@@ -2203,60 +2195,119 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
+    if hashlib.sha256(data).hexdigest() != answer["sha256"]:
+        raise HTTPException(status_code=502,
+                            detail="The downloaded package does not match its listing. Try again.")
 
-    # Stage the bytes plus a server-owned sidecar carrying the relay's trust
-    # verdict, so Install imports with the right official/paid flags without
-    # trusting the client or re-contacting the relay.
-    dest = _marketplace_staging_dir() / f"{body.slug}.zip"
-    dest.write_bytes(data)
-    dest.with_suffix(".json").write_text(
-        json.dumps({"is_official": is_official, "is_paid": is_paid}))
-    return {"ok": True, "path": str(dest)}
+    ref = await asyncio.to_thread(
+        marketplace_stage.write_stage, data, slug=answer["slug"], version=answer["version"],
+        is_official=answer["is_official"], is_paid=answer["is_paid"], sha256=answer["sha256"])
+    return {"ok": True, "ref": ref}
 
 
-@router.post("/me/modules/marketplace-install", dependencies=[require_permission("manage_company_settings")])
+@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)])
 async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
-    """Install a staged marketplace module through the shared importer. Admin only.
+    """Install a staged marketplace module through the shared importer. Installation owner only.
 
-    Reads the archive Download staged (and the trust flags the server recorded
-    beside it) and installs it exactly like every other module package. The
-    module lands DISABLED; enabling and restarting are the same deliberate steps
-    in the Installed tab that a community module uses - the two tabs behave the
-    same way once the package is on disk. A name mismatch is rejected and nothing
-    is left behind, so Install can always be retried.
+    Takes the reference Download returned, rereads that stage and installs its
+    package exactly like every other module package. The package must declare
+    the slug and version it was staged with, or nothing lands. The module lands
+    DISABLED; enabling and restarting are the same deliberate steps in the
+    Installed tab that a community module uses - the two tabs behave the same way
+    once the package is on disk. The stage is removed once installed and kept
+    after a failure, so Install can be retried until it expires.
     """
     import asyncio
-    from pathlib import Path
 
-    from celerp.modules.importer import (
-        ModuleImportError, install_from_zip, remove_module_dir,
-    )
+    from celerp.modules import marketplace_stage
+    from celerp.modules.importer import ModuleImportError, install_from_zip
 
-    data, is_official, is_paid = _read_staged_marketplace(body.path)
+    try:
+        stage = await asyncio.to_thread(marketplace_stage.read_stage, body.ref)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="The download reference is invalid.")
+    except marketplace_stage.StageGone:
+        raise HTTPException(status_code=410,
+                            detail="This download has expired. Download it again.")
     try:
         info = await asyncio.to_thread(
-            install_from_zip, data, official=is_official, premium=is_paid,
-            source="marketplace")
+            install_from_zip, stage.data, official=stage.is_official, premium=stage.is_paid,
+            source="marketplace", expected=(stage.slug, stage.version))
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    staged = Path(body.path).resolve()
-    slug = staged.stem
-    if info["name"] != slug:
-        # A package whose manifest name differs from the catalog slug must not
-        # stay installed (it would dodge the slug's license/scan identity).
-        try:
-            await asyncio.to_thread(remove_module_dir, info["name"])
-        except ModuleImportError:
-            pass
-        raise HTTPException(
-            status_code=422,
-            detail="The downloaded package does not match the requested module.")
+    if stage.is_official and not stage.is_paid:
+        # Install is online by definition: keep the free verdict now, so the
+        # module never needs the relay to load.
+        from celerp.config import settings
+        from celerp.modules.license import record_free_verdict
+        record_free_verdict(stage.slug, settings.data_dir)
 
-    # Landed on disk: drop the staged archive and its sidecar.
-    staged.unlink(missing_ok=True)
-    staged.with_suffix(".json").unlink(missing_ok=True)
+    await asyncio.to_thread(marketplace_stage.remove_stage, body.ref)
     return {"ok": True, **info}
+
+
+class CompanyReset(BaseModel):
+    company_name: str
+
+
+@router.post("/me/reset", dependencies=[require_permission("manage_company_lifecycle")])
+async def reset_company(
+    payload: CompanyReset,
+    ctx: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove the current company: its records, settings, chart of accounts, attachments
+    and memberships. Logins and other companies stay.
+
+    The typed name must equal the company's name exactly. All or nothing: files go only
+    after the commit. Returns a token pair for another of the caller's companies, or
+    ``{"next": "start_company"}`` when this was their last one."""
+    from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.services import company_reset, payments
+    from celerp.services.migrations import run_cleanup_task
+
+    await lock_connector_maintenance(session)
+    # A reset that waited for another to finish finds the company gone, not its role.
+    if not await lock_company_for_deletion(session, ctx.company_id):
+        raise HTTPException(status_code=404, detail="Company not found")
+    await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
+    company = await session.get(Company, ctx.company_id)
+    closure = task_id = None
+    try:
+        try:
+            done = await company_reset.reset(session, company, payload.company_name)
+        except company_reset.ResetRefused as exc:
+            closure = exc.closure
+            if exc.__cause__ is not None:
+                logger.error("Company reset failed: %s", type(exc.__cause__).__name__)
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+        closure, task_id = done.closure, done.task_id
+        link = await first_usable_company_link(session, ctx.user.id)
+        if link is None:
+            await session.commit()
+            result = {"next": "start_company"}
+        else:
+            # The new session continues this one, so it cannot jump a concurrent sign-out.
+            result = await issue_token_pair(
+                session, user=ctx.user, company_id=link.company_id,
+                expected_snonce=ctx.snonce,
+            )
+    except BaseException:
+        await session.rollback()
+        # Reopens the company's online payments, or closes them for good if the
+        # deletion committed after all.
+        await payments.settle_company_closure(closure)
+        # A commit that landed but reported failure leaves the cleanup task behind;
+        # one that did not land leaves none, and this finds nothing to do.
+        if task_id is not None:
+            session.expunge_all()
+            await run_cleanup_task(session, task_id)
+        raise
+    await payments.settle_company_closure(closure)
+    session.expunge_all()
+    await run_cleanup_task(session, task_id)
+    return result
 
 
 @router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")])

@@ -36,7 +36,7 @@ class TestSlotRegistry:
         slots.register("bulk_action", {"label": "B"})
         assert len(slots.get("nav")) == 1
         assert len(slots.get("bulk_action")) == 1
-        assert slots.get("settings_tab") == []
+        assert slots.get("item_action") == []
 
     def test_get_returns_copy_not_reference(self):
         slots.register("nav", {"label": "X"})

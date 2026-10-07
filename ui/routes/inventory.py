@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import uuid
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,11 @@ from ui.components.files import files_section as _shared_files_section
 from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
+from ui.security import not_permitted_redirect
 from celerp.services.permissions import role_has_permission
+from ui.module_slots import (
+    connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
+)
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
@@ -1043,10 +1047,11 @@ async def _inventory_content(
 
     from celerp.modules.slots import get as get_slot
     _settings = company.get("settings") or {}
-    connected_connectors = await _connected_connector_ids(str(company.get("id") or ""))
+    connected_connectors = await connected_connector_ids(
+        str(company.get("id") or ""), required_connectors("catalog_channel", "send_to_targets", "bulk_action"))
     catalog_channels = [
         ch for ch in get_slot("catalog_channel")
-        if _module_contribution_visible(ch, _settings, role, connected_connectors)
+        if module_contribution_visible(ch, _settings, role, connected_connectors)
     ]
 
     currency = company.get("currency")
@@ -1248,7 +1253,7 @@ def setup_routes(app):
         _settings = company.get("settings") or {}
         _role = _get_role(request)
         if not role_has_permission(_settings, _role, "view_inventory"):
-            return RedirectResponse("/dashboard", status_code=302)
+            return not_permitted_redirect(request)
 
         # Company is fresh and valid here; a static-metadata or list/valuation
         # failure degrades to an honest content error inside the normal shell,
@@ -1801,6 +1806,8 @@ def setup_routes(app):
 
         _item_role = _get_role(request)
         _item_settings = company.get("settings") or {}
+        _item_connectors = await connected_connector_ids(
+            str(company.get("id") or ""), required_connectors("item_action", "pricing_action"))
         _make_available_btn = (
             Button(
                 t("inventory.make_available"),
@@ -1830,7 +1837,7 @@ def setup_routes(app):
             Span("", id="item-header-error"),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings, connected_connectors=_item_connectors),
             title=page_title("page.item_detail"),
             nav_active="inventory",
             request=request,
@@ -2941,7 +2948,9 @@ function celerpPrintLabel(entityId, templateId) {
             split_preview = await api.split_preview(token, entity_id)
         except APIError:
             split_preview = None
-        return _advanced_panel(entity_id, item, split_preview, role=_get_role(request), settings=company.get("settings") or {})
+        connected = await connected_connector_ids(str(company.get("id") or ""), required_connectors("item_action"))
+        return _advanced_panel(entity_id, item, split_preview, role=_get_role(request), settings=company.get("settings") or {},
+                               connected_connectors=connected)
 
     @app.get("/api/items/{entity_id}/row")
     async def item_row(request: Request, entity_id: str):
@@ -3586,7 +3595,6 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
 
-        from urllib.parse import quote
         remaining_qty = mother_qty_override if mother_qty_override is not None else (current_qty - child_qty)
         exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
@@ -3812,7 +3820,6 @@ function celerpPrintLabel(entityId, templateId) {
 
         child_sku = result.get("child_sku", "")
         parent_sku = result.get("parent_sku", "")
-        from urllib.parse import quote
         exact_skus = f"{quote(parent_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
             t("inventory.transformed", parent=parent_sku, child=child_sku),
@@ -4320,7 +4327,6 @@ function celerpPrintLabel(entityId, templateId) {
     @app.post("/api/items/{entity_id}/split")
     async def item_split(request: Request, entity_id: str):
         import json as _json
-        from urllib.parse import quote
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -4785,36 +4791,14 @@ def _slot_label(slot: dict, fallback: str = "") -> str:
     return t(key) if key else slot.get("label", fallback)
 
 
+def _slot_action_link(action: dict, **values: str) -> FT:
+    """A module action's button. Each placeholder value is URL-encoded, so an id or a
+    price-list name holding "/", "?", "&" or a space stays one value in the link."""
+    href = action.get("href_template", "")
+    for name, value in values.items():
+        href = href.replace("{" + name + "}", quote(str(value), safe=""))
+    return A(_slot_label(action, t("inv.action")), href=href, cls="btn btn--secondary btn--sm")
 
-def _module_contribution_visible(
-    contribution: dict, settings: dict, role: str,
-    connected_connectors: set[str] | None = None,
-) -> bool:
-    """Apply company-module, permission, and optional connector gates uniformly."""
-    from celerp.modules.loader import CORE_FOLDED
-    from celerp.modules.registry import get_enabled
-    module = contribution.get("_module")
-    if module and module not in CORE_FOLDED and "enabled_modules" in settings:
-        if module not in get_enabled(settings):
-            return False
-    permission = contribution.get("permission")
-    if permission and not role_has_permission(settings, role, permission):
-        return False
-    required = contribution.get("requires_connector")
-    if required and required not in (connected_connectors or set()):
-        return False
-    return True
-
-
-async def _connected_connector_ids(company_id: str) -> set[str]:
-    """Read the channels this company is connected to once per catalog render."""
-    try:
-        from celerp.connectors.ownership import connected_connector_platforms
-        from celerp.db import get_session_ctx
-        async with get_session_ctx() as session:
-            return await connected_connector_platforms(session, company_id)
-    except Exception:
-        return set()
 
 def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0,
                   settings: dict | None = None, role: str = "owner",
@@ -4832,7 +4816,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     _settings = settings or {}
     send_to_targets = [
         tgt for tgt in get_slot("send_to_targets")
-        if _module_contribution_visible(tgt, _settings, role, connected_connectors)
+        if module_contribution_visible(tgt, _settings, role, connected_connectors)
     ]
     send_to_opts = [
         Option(tgt.get("label", ""), value=tgt.get("doc_type", ""))
@@ -4844,7 +4828,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     # action_type="htmx" (default) → HTMX POST into #bulk-action-result.
     visible_bulk_actions = [
         action for action in get_slot("bulk_action")
-        if _module_contribution_visible(action, _settings, role, connected_connectors)
+        if module_contribution_visible(action, _settings, role, connected_connectors)
     ]
     module_action_opts = []
     for action in visible_bulk_actions:
@@ -7126,6 +7110,7 @@ def _item_detail_tabs(
     split_preview: dict | None = None,
     role: str = "owner",
     settings: dict | None = None,
+    connected_connectors: set[str] | None = None,
 ) -> FT:
     """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
     tabs = [("details", t("th.details")), ("pricing", t("page.pricing")), ("manufacturing", t("nav.manufacturing")), ("activity", t("inventory.tab_activity"))]
@@ -7143,7 +7128,8 @@ def _item_detail_tabs(
     if active_tab == "pricing":
         if price_lists:
             # _pricing_form owns its own Cost / Sell-prices grid; no single-column wrapper.
-            panel = _pricing_form(entity_id, item, price_lists, currency, pricing_fields, base_price_list)
+            panel = _pricing_form(entity_id, item, price_lists, currency, pricing_fields, base_price_list,
+                                  role=role, settings=settings, connected_connectors=connected_connectors)
         else:
             panel = Div(
                 _detail_table(entity_id, item, pricing_fields, title=t("page.pricing"), currency=currency),
@@ -7188,7 +7174,11 @@ def _item_detail_tabs(
         )
     # Files + item operations belong with the item's core details — keep them off the
     # Pricing / Manufacturing / Activity tabs so each tab shows only its own concern.
-    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item, split_preview, role=role, settings=settings)) if active_tab == "details" else ()
+    extras = (
+        _item_files_section(entity_id, item, show_preview=True),
+        _advanced_panel(entity_id, item, split_preview, role=role, settings=settings,
+                        connected_connectors=connected_connectors),
+    ) if active_tab == "details" else ()
     return Div(
         tab_bar,
         panel,
@@ -7259,7 +7249,9 @@ def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: di
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,
-                  pricing_fields: list[dict] | None = None, base_price_list: str = "") -> FT:
+                  pricing_fields: list[dict] | None = None, base_price_list: str = "",
+                  role: str = "owner", settings: dict | None = None,
+                  connected_connectors: set[str] | None = None) -> FT:
     """Pricing tab: Cost on the left, Sell prices on the right. Every field saves automatically.
 
     Each input autosaves on change (no Save button), consistent with the rest of the system.
@@ -7267,6 +7259,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     edited on the Manufacturing tab — so the single source of truth stays the recipe.
     Derived price lists render read-only the same way: their values are computed from the base
     price list, and the schema (config-driven) marks their columns non-editable for every role.
+
+    Modules add per-row actions through the pricing_action slot. A card gains an Actions
+    column only when one of its rows shows an action, so without one the tab is unchanged.
     """
     qty = float(item.get("quantity") or 0)
     sell_by = str(item.get("sell_by") or "unit")
@@ -7286,10 +7281,26 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     # Schema editability is config-driven: derived lists' price columns are marked
     # non-editable by the effective field schema for every role.
     schema_editable = {f.get("key") for f in (pricing_fields or []) if f.get("editable")}
+    pricing_actions = visible_slot_contributions("pricing_action", settings or {}, role, connected_connectors)
 
-    def _row(pl_name: str, editable: bool) -> FT:
+    def _row_actions(pl: dict, editable: bool) -> list[FT]:
+        pl_name = pl.get("name", "")
+        traits = {
+            "editable" if editable else "readonly",
+            "cost" if is_cost_list_name(pl_name) else "sell",
+            "derived" if is_derived(pl) else "manual",
+        }
+        return [
+            _slot_action_link(action, entity_id=entity_id, price_list=pl_name, field_name=price_key(pl_name))
+            for action in pricing_actions if set(action.get("show_on") or ()) <= traits
+        ]
+
+    def _row(pl: dict, editable: bool) -> tuple[FT, list[FT]]:
+        """The row's value cells and the module actions it shows."""
+        pl_name = pl.get("name", "")
         conventional_key = price_key(pl_name)
         editable = editable and (not pricing_fields or conventional_key in schema_editable)
+        actions = _row_actions(pl, editable)
         price_val = resolve_price(item, pl_name)
         unit_val = _fmt_rate(price_val, rdp) if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
@@ -7298,11 +7309,11 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             # or a derived price list (computed from the base price list). The value spans
             # carry ids so a base-price save can refresh them out-of-band.
             unit_span, total_span = _readonly_price_cells(conventional_key, price_val, qty, has_qty, rdp)
-            return Tr(
+            return (
                 Td(pl_name, cls="detail-label"),
                 Td(_cur(unit_span)),
                 Td(_cur(total_span) if has_qty else Span(EMPTY)),
-            )
+            ), actions
         unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the
         # rest of the system where Enter always commits an inline edit.
@@ -7320,14 +7331,20 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                             onkeydown=enter_commits,
                             # Editing the total back-fills the unit, then re-fires its autosave.
                             onchange=f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))")
-        return Tr(Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input)))
+        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input))), actions
 
     def _card(title: str, lists: list[dict], editable: bool, note: str | None = None) -> FT:
+        rows = [_row(pl, editable) for pl in lists]
+        with_actions = any(actions for _, actions in rows)
+        headers = [Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr)]
+        if with_actions:
+            headers.append(Th(t("th.actions")))
+            body = [Tr(*cells, Td(*actions)) for cells, actions in rows]
+        else:
+            body = [Tr(*cells) for cells, _ in rows]
         return Div(
             H3(title, cls="section-title"),
-            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
-                  Tbody(*[_row(pl.get("name", ""), editable) for pl in lists]),
-                  cls="detail-table"),
+            Table(Thead(Tr(*headers)), Tbody(*body), cls="detail-table"),
             P(note, cls="hint") if note else "",
             cls="detail-card",
         )
@@ -7745,17 +7762,15 @@ def _resolve_visible_cols(
 # T3: Advanced operations panel (non-inline-editable actions only)
 # ---------------------------------------------------------------------------
 
-def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None, role: str = "owner", settings: dict | None = None) -> FT:
+def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None, role: str = "owner", settings: dict | None = None,
+                    connected_connectors: set[str] | None = None) -> FT:
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
     current_qty = float(item.get("quantity", 0) or 0)
 
-    from celerp.modules.slots import get as get_slot
-    module_item_actions = []
-    for action in get_slot("item_action"):
-        href = action.get("href_template", "").replace("{entity_id}", entity_id)
-        module_item_actions.append(
-            A(_slot_label(action, t("inv.action")), href=href, cls="btn btn--secondary btn--sm")
-        )
+    module_item_actions = [
+        _slot_action_link(action, entity_id=entity_id)
+        for action in visible_slot_contributions("item_action", settings or {}, role, connected_connectors)
+    ]
 
     safe_id = re.sub(r"[^a-zA-Z0-9]", "_", entity_id)
 

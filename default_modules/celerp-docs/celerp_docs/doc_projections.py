@@ -212,6 +212,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             # payment raced the checkout): the applied amount is clamped and
             # the real charge stays on record to refund or credit.
             "charged_amount": data.get("charged_amount"),
+            "books": data.get("books"),
             "status": "active",
         })
     elif event_type == "doc.payment.voided":
@@ -282,6 +283,20 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
         current["status"] = _payment_status(paid, outstanding)
+    elif event_type == "doc.payment.refund_reversed":
+        restored = to_decimal(data["amount"])
+        target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
+        if target is not None:
+            target["refunded"] = to_stored_float(max(Decimal(0), to_decimal(target.get("refunded", 0)) - restored))
+        paid, outstanding = _payment_balances(
+            current, to_decimal(current.get("amount_paid", 0)) + restored)
+        current["amount_paid"] = to_stored_float(paid)
+        current["amount_outstanding"] = to_stored_float(outstanding)
+        current["status"] = _payment_status(paid, outstanding)
+    elif event_type == "doc.payment.stripe_released":
+        target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
+        if target is not None:
+            target["stripe_released_at"] = data["released_at"]
     elif event_type == "doc.converted":
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]
