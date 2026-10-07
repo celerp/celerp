@@ -398,6 +398,10 @@ class ReserveBody(BaseModel):
 # Statuses hidden from the default inventory view. Users must explicitly request them.
 _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed", DELETED})
 
+# Statuses of an item that is not stock yet or any more: never valued, never low stock,
+# and the only ones Delete takes.
+_UNCOMMITTED_STATUSES = frozenset({"draft", DELETED})
+
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 
@@ -1176,14 +1180,14 @@ async def query_items(
     # Semantic "low stock" filter: at or below reorder point (backs the dashboard
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
     if f.filter == "low_stock":
-        # Drafts are not stock: an unfinished item must not raise a reorder alarm.
+        # Drafts and deleted items are not stock: they must not raise a reorder alarm.
         # Guarded on a visible quantity: is_below_reorder reads quantity defaulting a
         # missing value to 0, so a stripped (role-hidden) quantity would falsely include
         # the item - excluding it keeps low_stock from being an oracle over the hidden
         # quantity / reorder point.
         result = [r for r in result
                   if "quantity" in r and is_below_reorder(r)
-                  and str(r.get("status") or "").lower() != "draft"]
+                  and str(r.get("status") or "").lower() not in _UNCOMMITTED_STATUSES]
 
     # Semantic "demo" filter: setup's samples that are still removable, by their origin
     # (seeded and never edited or used), never by name, so an edited sample or the
@@ -1346,8 +1350,8 @@ async def get_valuation(
         # Only goods the company holds have physical value; services and non-stocked do not.
         if not is_stock_type(state):
             continue
-        # Drafts are not stock yet: listed and counted above, valued once available.
-        if str(state.get("status") or "").lower() == "draft":
+        # Drafts and deleted items are not stock: listed and counted above, valued once available.
+        if str(state.get("status") or "").lower() in _UNCOMMITTED_STATUSES:
             continue
         active_item_count += 1
         # Value from the flattened item so cost (recipe standard / lot total) and derived
@@ -2998,7 +3002,7 @@ async def _not_deletable(session: AsyncSession, company_id, rows: dict[str, Proj
     from celerp.models.ledger import LedgerEntry
 
     blocked = {e for e, row in rows.items()
-               if _status_of(row) not in ("draft", DELETED) or (row.state or {}).get(LOT_ACCOUNT_FIELD)}
+               if _status_of(row) not in _UNCOMMITTED_STATUSES or (row.state or {}).get(LOT_ACCOUNT_FIELD)}
     history: dict[str, list] = {e: [] for e in rows}
     for eid, event_type, data in (await session.execute(
             select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(

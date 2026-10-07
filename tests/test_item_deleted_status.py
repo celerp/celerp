@@ -271,6 +271,32 @@ async def test_a_deleted_item_is_hidden_from_lists_and_search_but_shown_by_its_f
     assert lot not in await _searched(session, auth, sku)
 
 
+async def test_the_deleted_view_counts_a_deleted_item_but_values_it_at_nothing(session, client, auth):
+    lot = await _draft(client, auth, cost=40.0)
+    sku = await _sku(session, auth, lot)
+    await _legacy_doc(session, auth, lot)
+    await _moved(client, auth, lot, sku)
+    r = await client.get("/items/valuation", headers=auth["headers"], params={"status": "deleted"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total_scoped_count"] == 1, body
+    assert body["active_item_count"] == 0, body
+    assert body["cost_total"] == 0, body
+    assert not any(body["price_totals"].values()), body
+
+
+async def test_a_deleted_item_is_never_low_stock_even_in_the_deleted_view(session, client, auth):
+    lot = (await _ok(client, auth, "POST", "/items", {
+        "sku": f"DEL-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": 1, "sell_by": "piece",
+        "cost_total": 40.0, "reorder_point": 5}))["id"]
+    sku = await _sku(session, auth, lot)
+    assert (await _state(session, auth, lot))["reorder_point"] == 5
+    await _legacy_doc(session, auth, lot)
+    await _moved(client, auth, lot, sku)
+    assert await _listed(client, auth, lot, status="deleted")
+    assert not await _listed(client, auth, lot, status="deleted", filter="low_stock")
+
+
 async def test_restore_puts_a_deleted_item_back_as_a_usable_draft(session, client, auth):
     lot = await _draft(client, auth)
     sku = await _sku(session, auth, lot)
