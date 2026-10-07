@@ -30,6 +30,7 @@ import pytest
 
 from celerp.modules import loader, slots
 from celerp.modules.importer import PREMIUM_MARKER, install_from_zip
+from celerp.modules.license import UNVERIFIED_MODULE_REFUSAL
 
 
 @pytest.fixture(autouse=True)
@@ -256,7 +257,7 @@ def _relay_identity(monkeypatch, data_dir: Path, detail: dict | None = None,
 def _case_celerp_name_without_a_licence(base, marker, monkeypatch):
     pkg = _migrating_module(base, f"celerp-{_uid()}", marker)
     _relay_identity(monkeypatch, base.parent / "data")
-    return pkg, "license"
+    return pkg, "verify this module"
 
 
 def _case_package_of_a_core_module(root):
@@ -2361,7 +2362,7 @@ def test_celerp_module_with_no_verdict_is_refused_while_the_marketplace_is_unrea
     admission = loader.admit_modules(_modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
     assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
 
 
@@ -2447,7 +2448,7 @@ def test_never_activated_install_refuses_with_no_verdict_while_the_marketplace_i
     admission = loader.admit_modules(_modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
     assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
 
 
@@ -2516,7 +2517,7 @@ def test_module_metadata_does_not_affect_admission(
     admission = loader.admit_modules(_modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
     assert calls["licence"] == ([name] if activated else [])
     assert not (data / "license_cache" / f"{name}.free.json").exists()
 
@@ -2584,7 +2585,7 @@ def test_paid_marketplace_install_without_its_marker_is_refused_offline(
     admission = loader.admit_modules(modules, {name})
 
     assert admission.admitted == []
-    assert "no valid license" in admission.refused[name]
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
 
 
 def test_marketplace_install_unknown_to_the_marketplace_takes_the_licence_check(
@@ -2623,6 +2624,33 @@ def test_unconfirmed_module_refusal_is_not_shown_as_a_licence_on_another_compute
 
     assert "module-license-upsell" not in html
     assert "bought it on" not in html
+
+
+@pytest.mark.parametrize("activated", [True, False], ids=["activated", "never_activated"])
+def test_unverified_module_is_shown_as_not_loaded_with_its_reason(
+        activated, _modules, tmp_path, monkeypatch):
+    """A celerp- module installed before verdicts were kept, started offline:
+    Celerp keeps running, the module is not running, and the modules page shows
+    the reason with the failed badge."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.modules_page import _local_panel
+
+    _relay_identity(monkeypatch, tmp_path / "data", activated=activated)
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    assert loader.load_all(_modules, {name}) == []
+
+    assert not loader.is_running(name)
+    assert loader.load_errors()[name] == UNVERIFIED_MODULE_REFUSAL
+    row = {"name": name, "label": name, "version": "1.0.0", "author": "",
+           "enabled": True, "running": loader.is_running(name), "is_default": False,
+           "load_error": loader.load_errors().get(name)}
+    html = to_xml(_local_panel([row], "en", owner=True))
+    assert "Connect once to verify this module, then restart. It will work offline afterward." in html
+    assert "badge--danger" in html
+    assert "badge--active" not in html
 
 
 def test_refusal_log_says_why_the_module_did_not_load(_modules, tmp_path, monkeypatch, caplog):
@@ -2710,7 +2738,7 @@ def test_old_cache_dir_carries_no_free_verdict(_modules, tmp_path, monkeypatch):
     _relay_identity(monkeypatch, data, activated=False)
     monkeypatch.setenv("DATA_DIR", str(legacy))
 
-    assert "no valid license" in loader.admit_modules(_modules, {slug}).refused[slug]
+    assert loader.admit_modules(_modules, {slug}).refused[slug] == UNVERIFIED_MODULE_REFUSAL
     assert not (data / "license_cache" / f"{slug}.free.json").exists()
 
 

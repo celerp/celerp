@@ -69,8 +69,8 @@ from celerp.modules.importer import (
     _read_manifest as _read_literal_manifest, _validate_name_chars, _validate_table_prefix, is_reserved_name,
 )
 from celerp.modules.license import (
-    PAID_MODULE_REFUSAL, adopt_legacy_license_cache, check_license, exchange_api_key_for_jwt,
-    is_free_official, is_premium_path,
+    PAID_MODULE_REFUSAL, UNVERIFIED_MODULE_REFUSAL, adopt_legacy_license_cache, check_license,
+    exchange_api_key_for_jwt, is_free_official, is_premium_path,
 )
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
@@ -874,7 +874,7 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     if unconfirmed:
         log.warning("Module %r not loaded: the Marketplace could not confirm it is free "
                     "and there is no valid license", module.name)
-        return "Not loaded: the Marketplace could not confirm it is free and there is no valid license here. Connect to the internet and restart."
+        return UNVERIFIED_MODULE_REFUSAL
     log.warning("Premium module %r skipped: no valid license", module.name)
     return PAID_MODULE_REFUSAL
 
