@@ -35,7 +35,10 @@ import stat
 import tempfile
 import uuid
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Mapping
 
 from celerp.modules.meta import write_meta
 
@@ -489,6 +492,52 @@ def _one_install_at_a_time():
                 yield
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@dataclass(frozen=True)
+class InstalledModules:
+    """The installed modules as they stood at one moment: each name's manifest, from the
+    copy resolve_module_path picks over module_search_path, and the table prefixes
+    valid_table_prefixes accepts."""
+    manifests: Mapping[str, dict]
+    prefixes: Mapping[str, str]
+
+    def version(self, name: str) -> str | None:
+        """The version *name*'s manifest declares, or None when it declares none or only
+        blank text."""
+        version = self.manifests.get(name, {}).get("version")
+        return version if isinstance(version, str) and version.strip() else None
+
+
+def installed_modules() -> InstalledModules:
+    """Read the installed modules while no install or removal can land
+    (_one_install_at_a_time). With no writable module directory nothing can be
+    installed or removed, so the read needs no lock."""
+    try:
+        _module_dir()
+    except ModuleImportError:
+        return _read_installed()
+    with _one_install_at_a_time():
+        return _read_installed()
+
+
+def _read_installed() -> InstalledModules:
+    from celerp.modules.loader import module_search_path, read_manifest
+
+    manifests: dict[str, dict] = {}
+    for entry in filter(None, module_search_path().split(",")):
+        base = Path(entry)
+        if not base.is_dir():
+            continue
+        for child in sorted(base.iterdir()):
+            if child.name in manifests or not (child / "__init__.py").exists():
+                continue
+            try:
+                _validate_name_chars(child.name)
+            except ModuleImportError:
+                continue  # never a module name, so resolve_module_path never picks it
+            manifests[child.name] = read_manifest(child)
+    return InstalledModules(MappingProxyType(manifests), MappingProxyType(valid_table_prefixes()))
 
 
 def _finish(staged: Path, manifest: dict, *, official: bool = False,

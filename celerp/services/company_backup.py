@@ -51,10 +51,8 @@ import celerp.db
 from celerp import db_catalog
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.modules.importer import valid_table_prefixes
-from celerp.modules.loader import (
-    is_core_folded, is_running, module_search_path, read_manifest, resolve_module_path, running_version,
-)
+from celerp.modules.importer import InstalledModules, installed_modules
+from celerp.modules.loader import is_core_folded, is_running, running_version
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
@@ -221,10 +219,9 @@ def _module_shape_ok(table: db_catalog.Table) -> bool:
 INCLUDE, EXCLUDE = "include", "exclude"
 
 
-def _declared(module: str) -> dict:
+def _declared(modules: InstalledModules, module: str) -> dict:
     """How the module's manifest says each of its tables travels with a company backup."""
-    path = _installed(module)
-    declared = (read_manifest(path) if path is not None else {}).get("company_backup")
+    declared = modules.manifests.get(module, {}).get("company_backup")
     return declared if isinstance(declared, dict) else {}
 
 
@@ -248,16 +245,17 @@ async def _pin(session: AsyncSession, *, restoring: bool) -> None:
         raise _unsupported(exc.table, None, restoring=restoring) from None
 
 
-async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
-    """The tables a backup carries, parents first. Strict (export) refuses any company
-    table it cannot carry; otherwise (restore) such tables are simply not carried."""
+async def _classify(session: AsyncSession, modules: InstalledModules, *, strict: bool) -> _Plan:
+    """The tables a backup carries, parents first, as ``modules`` attribute and declare
+    them. Strict (export) refuses any company table it cannot carry; otherwise (restore)
+    such tables are simply not carried."""
     schema = await db_catalog.read(session)
     inherited = await db_catalog.inheriting(session)
     hidden = set(await db_catalog.hidden(session))
     # Only prefixes that pass the install check attribute tables: a hand-copied
     # module claiming a core or another module's table must not take it over.
-    prefixes = valid_table_prefixes()
-    declarations = {module: _declared(module) for module in prefixes}
+    prefixes = dict(modules.prefixes)
+    declarations = {module: _declared(modules, module) for module in prefixes}
     owners: dict[str, str] = {}
     carried: list[str] = []
     refused: set[str] = set()
@@ -267,6 +265,14 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
         if name in EXCLUDED_TABLES or (owner is None and "company_id" not in table.columns):
             continue
         if owner is not None and name not in PORTABLE_TABLES:
+            if modules.manifests.get(owner, {}).get("table_prefix") != prefixes[owner]:
+                # The prefix came from another installed copy of the module than the one
+                # whose declarations and version a backup records.
+                if strict:
+                    raise BackupError(409, f"The {owner} module is installed more than once, with "
+                                           f"different table prefixes." + _NOT_BACKED_UP)
+                refused.add(name)
+                continue
             how = declarations[owner].get(name)
             if how == EXCLUDE:
                 continue
@@ -313,7 +319,7 @@ async def _classify(session: AsyncSession, *, strict: bool) -> _Plan:
 
 async def classify(session: AsyncSession) -> list[str]:
     """The tables a backup of this database carries, in foreign-key insertion order."""
-    return (await _classify(session, strict=True)).order
+    return (await _classify(session, installed_modules(), strict=True)).order
 
 
 # ── Values ───────────────────────────────────────────────────────────────────
@@ -482,18 +488,12 @@ def _backup_name(name: str, url: str, types: dict[str, str]) -> str:
     return backup_name
 
 
-def _installed(name: str):
-    return resolve_module_path(name, module_search_path())
-
-
-def _module_versions(names: set[str]) -> dict[str, str]:
-    versions = {}
-    for name in sorted(names):
-        path = _installed(name)
-        version = read_manifest(path).get("version") if path is not None else None
-        if isinstance(version, str) and version:
-            versions[name] = version
-    return versions
+async def _share_schema(session: AsyncSession, *, restoring: bool) -> None:
+    """Hold the schema key shared until the transaction ends, so no schema change runs
+    meanwhile; refused at once while one runs or waits."""
+    if not await celerp.db.share_schema(session):
+        raise BackupError(409, "Celerp is updating its database." + (_NOT_RESTORED if restoring else _NOT_BACKED_UP)
+                          + " Try again in a moment.")
 
 
 async def export_company_snapshot(company_id, out: Path, *, provenance: dict | None = None) -> dict:
@@ -520,6 +520,7 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
             async with AsyncSession(bind=conn, expire_on_commit=False) as session, session.begin():
                 if conn.dialect.name != "sqlite":
                     await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
+                    await _share_schema(session, restoring=False)
                     await _pin(session, restoring=False)
                 manifest = await _export_company(session, company_id, partial, provenance=provenance)
         # The snapshot does not hold the company, so it can be reset meanwhile. The file is
@@ -560,7 +561,8 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
     company = await session.get(Company, company_id)
     if company is None:
         raise BackupError(404, "Company not found.")
-    plan = await _classify(session, strict=True)
+    modules = installed_modules()
+    plan = await _classify(session, modules, strict=True)
     await _unchanged(session, plan, db_catalog.hold)
     try:
         tables = []
@@ -577,14 +579,21 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
         _collect_urls(settings, company_id, found, types)
         # A module enabled in settings but not installed here is not something this company's
         # data depends on, so it is not a requirement of the backup.
-        enabled = {name for name in company_modules(settings) if _installed(name) is not None}
+        enabled = {name for name in company_modules(settings) if name in modules.manifests}
+        owners = {plan.owners[t] for t in tables if t in plan.owners}
+        for owner in sorted(owners):
+            if modules.version(owner) is None:
+                raise BackupError(409, f"The {owner} module does not declare a valid version, so a "
+                                       f"backup of its data cannot say which version restores it."
+                                  + _NOT_BACKED_UP)
         manifest: dict = {
             "format": FORMAT, "format_version": FORMAT_VERSION, "backup_id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "company": {"id": str(company.id), "name": company.name, "settings": settings},
             **({"provenance": provenance} if provenance else {}),
             "modules": {"enabled": sorted(enabled),
-                        "versions": _module_versions(enabled | {plan.owners[t] for t in tables if t in plan.owners})},
+                        "versions": {name: modules.version(name) for name in sorted(enabled | owners)
+                                     if modules.version(name) is not None}},
             "tables": {}, "attachments": [],
         }
         partial.parent.mkdir(parents=True, exist_ok=True)
@@ -827,13 +836,12 @@ class _Checked:
     digests: dict[str, int]
 
 
-def _check_modules(manifest: dict) -> None:
+def _check_modules(manifest: dict, modules: InstalledModules) -> None:
     """Every module the backup needs, enabled or holding its data, is installed here, new
     enough, and running, so its tables are in place."""
     versions = manifest["modules"]["versions"]
     for name in sorted(set(manifest["modules"]["enabled"]) | set(versions)):
-        path = _installed(name)
-        if path is None:
+        if name not in modules.manifests:
             raise BackupError(422, f"This company backup needs the {name} module, which is not installed here."
                               + _NOT_RESTORED)
         if not is_running(name):
@@ -844,10 +852,10 @@ def _check_modules(manifest: dict) -> None:
             continue
         needed = versions[name]
         # Core-folded modules ship inside Celerp itself, so their installed copy is the running one.
-        have = read_manifest(path).get("version") if is_core_folded(name) else running_version(name)
+        have = modules.version(name) if is_core_folded(name) else running_version(name)
         if not _new_enough(have, needed):
             restart = (" A newer copy is installed; restart Celerp, then try again."
-                       if _new_enough(read_manifest(path).get("version"), needed) else "")
+                       if _new_enough(modules.version(name), needed) else "")
             raise BackupError(422, f"This company backup needs the {name} module version {needed} or later."
                               + restart + _NOT_RESTORED)
 
@@ -974,9 +982,11 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
     module, a table or column it does not have, a table it holds in a form a backup
     cannot carry, or rows that do not hold together. The session's transaction is held to
     Celerp's own tables and every row of them (``db_catalog.pin``) from here on."""
-    _check_modules(backup.manifest)
+    await _share_schema(session, restoring=True)
+    modules = installed_modules()
+    _check_modules(backup.manifest, modules)
     await _pin(session, restoring=True)
-    plan = await _classify(session, strict=False)
+    plan = await _classify(session, modules, strict=False)
     tables = backup.manifest["tables"]
     for name, meta in tables.items():
         if name not in plan.schema or not set(meta["columns"]) <= set(plan.schema[name].insertable):

@@ -18,7 +18,7 @@ from slowapi.util import get_remote_address
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
-from celerp.db import engine, lifecycle_engine, mask_db_credentials
+from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.auto_je import UnbalancedJournalEntry
@@ -44,7 +44,6 @@ from celerp.held_back import (
     unowned_error,
 )
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
-from celerp.models.base import Base
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
@@ -394,8 +393,7 @@ async def _serve(_app: FastAPI, held):
     # stops early below leaves an older copy refusing the database.
     try:
         await asyncio.to_thread(held.admit)
-        async with lifecycle_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await create_tables(lifecycle_engine)
     except Exception as exc:
         _refuse_start(exc)
 
@@ -447,8 +445,7 @@ async def _serve(_app: FastAPI, held):
             # Module models register on Base.metadata at import time (a module
             # that is not running has its tables taken off again). Run
             # create_all again so module tables are created (idempotent).
-            async with lifecycle_engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+            await create_tables(lifecycle_engine)
             # The UI process offers only the modules recorded here as running.
             from celerp.modules.outcome import publish as _publish_outcome
             async with lifecycle_engine.begin() as conn:

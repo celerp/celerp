@@ -1891,7 +1891,7 @@ async def test_a_carried_table_changed_as_the_export_ends_stops_it(real_engine, 
 
 async def test_a_carried_table_being_changed_as_the_export_ends_stops_it(real_engine, tmp_path, monkeypatch):
     """Another connection is adding a key to zz_widgets, not yet committed, when the
-    export has read every row. The export is refused at once with nothing written, and
+    export has read every row. The export is refused with nothing written, and
     the change then goes through."""
     _bk_local(monkeypatch, tmp_path)
     _bk_fake_module(tmp_path, monkeypatch)

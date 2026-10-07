@@ -12,10 +12,10 @@ from sqlalchemy.pool import NullPool
 from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
 from celerp.config import settings
 
-# Shared advisory-lock key that serialises schema migrations across every process
-# that might run them (the CLI upgrade command and the API startup phase). One
-# key, one source of truth, so two boots can never migrate the same database at
-# once.
+# The advisory-lock key every supported change to Celerp's PostgreSQL schema holds
+# exclusively (core and module migrations, the startup create_all, a module's data
+# purge), and every operation that needs the schema to stay as it is holds shared
+# (a company backup or restore). One key, one source of truth, across every process.
 _MIGRATION_LOCK_KEY = 4207320001
 
 # Redacts the password in any Postgres URL: "://user:secret@host" -> "://user:***@host".
@@ -96,6 +96,37 @@ lifecycle_engine = create_async_engine(settings.database_url, future=True, poolc
 LifecycleSessionLocal = async_sessionmaker(
     lifecycle_engine, class_=AsyncSession, expire_on_commit=False
 )
+
+
+def _dialect(conn) -> str:
+    return (conn.dialect if hasattr(conn, "dialect") else conn.get_bind().dialect).name
+
+
+async def lock_schema(conn) -> None:
+    """Hold the schema key exclusively until *conn*'s transaction ends, waiting for any
+    backup or restore using the schema to finish first. A no-op off Postgres."""
+    if _dialect(conn) == "postgresql":
+        await conn.execute(_sql_text("SELECT pg_advisory_xact_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+
+
+async def share_schema(conn) -> bool:
+    """Hold the schema key shared until *conn*'s transaction ends, so the schema stays as
+    it is; False at once, holding nothing, while a schema change holds or awaits it.
+    Always True off Postgres."""
+    if _dialect(conn) != "postgresql":
+        return True
+    return bool(await conn.scalar(_sql_text("SELECT pg_try_advisory_xact_lock_shared(:k)"),
+                                  {"k": _MIGRATION_LOCK_KEY}))
+
+
+async def create_tables(engine) -> None:
+    """Create every table registered on ``Base.metadata`` that the database lacks, in one
+    transaction holding the schema key (``lock_schema``)."""
+    from celerp.models.base import Base
+
+    async with engine.begin() as conn:
+        await lock_schema(conn)
+        await conn.run_sync(Base.metadata.create_all)
 
 
 @asynccontextmanager

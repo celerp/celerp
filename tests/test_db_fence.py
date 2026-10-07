@@ -191,10 +191,13 @@ elif path == "reset":
 """
 
 
-def _env(url: str) -> dict:
+def _env(url: str, data_dir) -> dict:
+    """Each process keeps its own config file, so the modules one process turns on are
+    not read by another."""
     env = {k: v for k, v in os.environ.items()
            if k not in ("MODULE_DIR", "ENABLED_MODULES", "CELERP_UPDATE_VERIFY")}
-    env.update({"DATABASE_URL": url, "ALLOW_INSECURE_JWT": "true", "PYTHONUNBUFFERED": "1"})
+    env.update({"DATABASE_URL": url, "ALLOW_INSECURE_JWT": "true", "PYTHONUNBUFFERED": "1",
+                "CELERP_CONFIG": f"{data_dir}.toml"})
     return env
 
 
@@ -219,7 +222,7 @@ def _spawn(version: str, path: str, url: str, data_dir, *, wait: float = 60.0) -
     proc = subprocess.Popen(
         [sys.executable, "-c", _RUN, version, path, url, str(wait), str(data_dir)],
         stdin=subprocess.PIPE, stdout=open(log, "w"), stderr=subprocess.STDOUT,
-        text=True, env=_env(url))
+        text=True, env=_env(url, data_dir))
     proc.log = log
     _SPAWNED.append(proc)
     return proc
@@ -232,7 +235,11 @@ def _output(proc: subprocess.Popen) -> str:
 
 def _hold(version: str, path: str, url: str, data_dir) -> subprocess.Popen:
     """A process of *version* that opened the database through *path* and keeps it open."""
-    proc = _spawn(version, path, url, data_dir)
+    return _ready(_spawn(version, path, url, data_dir))
+
+
+def _ready(proc: subprocess.Popen) -> subprocess.Popen:
+    """*proc*, once it has opened the database and holds it open."""
     deadline = time.monotonic() + 120
     while "READY" not in _output(proc).splitlines():
         assert proc.poll() is None and time.monotonic() < deadline, _output(proc)
@@ -574,7 +581,9 @@ def test_a_command_that_lost_its_fence_mid_write_makes_no_write_after_a_newer_ve
         scratch, tmp_path, path):
     """`celerp migrate` replaying data backfills, and init changing table ownership
     through psql, lose the fence session part way. A newer version stays out until
-    that write ends, and once it is in, the older command writes nothing more."""
+    that write ends, and once it is in, the older command writes nothing more. A newer
+    server finishes starting only once an older migration still running has ended, as
+    no two schema changes run at once."""
     url = scratch()
     old = _spawn(OLDER, path, url, tmp_path / "old")
     new = None
@@ -588,14 +597,25 @@ def test_a_command_that_lost_its_fence_mid_write_makes_no_write_after_a_newer_ve
         assert snapshot(url) == before
         _send(old, "go")
         _paused(old, 2)
-        new = _hold(NEWER, "api", url, tmp_path / "new")
-        assert _meta(url)["newest_celerp_version"] == NEWER
-        before = snapshot(url)
+        new = _spawn(NEWER, "api", url, tmp_path / "new")
+        deadline = time.monotonic() + 120
+        while _meta(url).get("newest_celerp_version") != NEWER:
+            assert new.poll() is None and time.monotonic() < deadline, _output(new)
+            time.sleep(0.2)
+        if path == "backfill":  # its start waits for the migration to end
+            time.sleep(2)
+            assert "READY" not in _output(new).splitlines(), _output(new)
+            seen = lambda: snapshot(url)["sentinel"]  # noqa: E731  (the start goes on after it)
+        else:
+            _ready(new)
+            seen = lambda: snapshot(url)  # noqa: E731
+        before = seen()
         _send(old, "go")
         old.wait(timeout=60)
         assert old.returncode != 0, _output(old)
         assert f"last opened with Celerp {NEWER}" in _output(old), _output(old)
-        assert snapshot(url) == before
+        assert seen() == before
+        _ready(new)
         observed = [ln.split()[1] for ln in _output(old).splitlines() if ln.startswith("OBSERVED")]
         assert set(observed) <= {OLDER}, observed
     finally:
