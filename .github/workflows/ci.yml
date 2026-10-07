@@ -64,15 +64,17 @@ jobs:
         # pytest-split fans the suite across 6 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
-        # The split balances measured time from .test_durations (refresh it with
-        # --store-durations when a shard nears the cap); a test missing from it counts as
-        # the average, so a split by count alone would put the slow backup and reset files
-        # in one shard.
+        # The split balances measured time from tests/.test_durations (refresh it with
+        # --store-durations when a shard nears the cap); it sits under tests/ so the
+        # repo-wide name checks, which skip tests/, never read its test ids. A test missing
+        # from it counts as the average, so a split by count alone would put the slow
+        # backup and reset files in one shard.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           --timeout=30
           -m "not browser and not embedded_pg and not process"
           --splits 6 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 
