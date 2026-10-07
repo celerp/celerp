@@ -882,3 +882,11 @@ def bundled_modules_unloaded(monkeypatch):
             table.to_metadata(core)
     monkeypatch.setattr(Base, "metadata", core)
     return dict(_DISABLED_MODULE_TABLES)
+
+
+@pytest.fixture
+def files_unchecked(monkeypatch):
+    """Skip the load-time check that a module's files are those admission read, so a
+    test can change them after admission and reach the checks that follow it."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "check_unchanged", lambda module: None)

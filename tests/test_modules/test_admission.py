@@ -1182,7 +1182,7 @@ _ALWAYS_EQUAL_STR = (
     + "PLUGIN_MANIFEST['api_routes'] = _Same('celerp.routers.health')\n"
     + "PLUGIN_MANIFEST['version'] = _Same('9.9.9')\n",
 ], ids=["extra-route-and-slot", "always-equal-str"])
-def test_module_rewriting_its_manifest_loads_with_the_admitted_one(_modules, rewrite):
+def test_module_rewriting_its_manifest_loads_with_the_admitted_one(_modules, rewrite, files_unchecked):
     """Admission reads the literal; a module that rewrites PLUGIN_MANIFEST while
     it imports still loads, with only what was admitted."""
     inner = f"acme_{_uid()}"
@@ -1329,7 +1329,7 @@ def test_setup_rebound_to_another_module_is_refused(_modules, tmp_path):
     assert "top-level def" in loader.load_errors()[folder]
 
 
-def test_setup_rebound_after_admission_is_refused_at_registration(_modules, tmp_path):
+def test_setup_rebound_after_admission_is_refused_at_registration(_modules, tmp_path, files_unchecked):
     """Registration proves where the setup it calls comes from, not what admission
     read: a route file changed after admission to rebind its setup to another
     module's function never runs that function as this module's."""
@@ -1617,9 +1617,9 @@ def test_protected_import_in_another_installed_modules_file_refuses_the_module(_
     assert _AI in loader.load_errors()[folder]
 
 
-def test_protected_import_in_a_symlinked_own_file_refuses_the_module(_modules, tmp_path):
-    """A file in the module's folder is the module's own code even when it is a
-    link to a file kept elsewhere."""
+def test_module_with_a_linked_file_is_refused(_modules, tmp_path):
+    """A file in the module's folder that links to a file kept elsewhere cannot be
+    checked as the module's own, so the module is refused before it runs."""
     folder = f"acme-{_uid()}"
     pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
                         init_prelude="from . import linked  # noqa: F401\n")
@@ -1629,7 +1629,7 @@ def test_protected_import_in_a_symlinked_own_file_refuses_the_module(_modules, t
     loader.load_all(str(_modules), {folder})
 
     assert not loader.is_running(folder)
-    assert "celerp.ai" in loader.load_errors()[folder]
+    assert loader.load_errors()[folder] == "Cannot check the module's files."
 
 
 def test_locale_file_outside_the_module_is_not_registered(_modules):
@@ -2779,7 +2779,7 @@ def test_default_names_are_not_licence_checked(tmp_path):
         raise AssertionError("a default module asked for relay credentials")
 
     for name in sorted(loader.first_party_names()):
-        module = loader.AdmittedModule(name, tmp_path / name, {}, False)
+        module = loader.AdmittedModule(name, tmp_path / name, {}, False, "")
         assert loader._license_refusal(module, _no_relay) is None
 
 
@@ -2871,3 +2871,125 @@ def test_core_modules_import_protected_functions_where_they_are_used():
     assert out.returncode == 0, out.stderr[-3000:]
     assert out.stdout.split() == []
 
+
+
+# ── A8: Python runs exactly the files admission checked ─────────────────────
+
+
+@pytest.fixture
+def _first_party(tmp_path, monkeypatch):
+    """Lock the given module folders as first-party, at their current content."""
+    lock_file = tmp_path / "fp.lock.json"
+    monkeypatch.setattr(loader, "_lock_path", lambda: lock_file)
+
+    def lock(*pkgs: Path) -> None:
+        lock_file.write_text(json.dumps({p.name: loader.module_content_digest(p) for p in pkgs}))
+        loader._first_party_lock.cache_clear()
+
+    yield lock
+    loader._first_party_lock.cache_clear()
+
+
+def _bytecode_left(pkg: Path) -> list[str]:
+    return sorted(str(p.relative_to(pkg)) for p in pkg.rglob("*")
+                  if p.name == "__pycache__" or p.suffix == ".pyc")
+
+
+def test_compiled_files_are_removed_before_the_module_runs(_modules, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": "", f"{inner}/sub/__init__.py": ""})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    (pkg / inner / "sub" / "__pycache__").mkdir()
+    (pkg / inner / "sub" / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"\x00")
+    (pkg / inner / "stale.pyc").write_bytes(b"\x00")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "kept.pyc").write_bytes(b"\x00")
+    (pkg / inner / "__pycache__").symlink_to(outside, target_is_directory=True)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+    assert not (pkg / inner / "__pycache__").is_symlink()
+    assert (outside / "kept.pyc").is_file()
+
+
+@pytest.fixture
+def _stuck_bytecode():
+    """Make a module's bytecode impossible to remove, and undo that afterwards."""
+    stuck: list[Path] = []
+
+    def stick(pkg: Path) -> None:
+        cache = pkg / "__pycache__"
+        cache.mkdir()
+        (cache / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+        cache.chmod(0o500)
+        stuck.append(cache)
+
+    yield stick
+    for cache in stuck:
+        cache.chmod(0o700)
+
+
+def test_module_whose_compiled_files_cannot_be_removed_is_refused(
+        _modules, tmp_path, _stuck_bytecode):
+    marker = tmp_path / "ran.txt"
+    stuck, other = f"acme-{_uid()}", f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, stuck, marker, {"name": stuck, "version": "1.0.0"})
+    _write_module(_modules, other, {"name": other, "version": "1.0.0"})
+    _stuck_bytecode(pkg)
+
+    loaded = loader.load_all(str(_modules), {stuck, other})
+
+    assert [m["name"] for m in loaded] == [other]
+    assert not marker.exists()
+    assert "Cannot remove compiled Python files" in loader.load_errors()[stuck]
+
+
+def test_default_module_whose_compiled_files_cannot_be_removed_stops_startup(
+        _modules, tmp_path, _first_party, _stuck_bytecode):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, name, marker, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    _stuck_bytecode(pkg)
+
+    with pytest.raises(loader.ModuleLoadError, match="Cannot remove compiled Python files"):
+        loader.load_all(str(_modules), {name})
+    assert not marker.exists()
+
+
+def test_module_changed_after_admission_is_refused_before_it_runs(_modules, tmp_path):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    admission = loader.admit_modules(str(_modules), {name})
+    assert [m.name for m in admission.admitted] == [name]
+    (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+
+    loaded = loader.load_all(str(_modules), {name}, admission=admission)
+
+    assert loaded == []
+    assert not marker.exists()
+    assert loader.load_errors()[name] == loader.MODULE_CHANGED
+
+
+def test_default_module_changed_after_admission_stops_startup(_modules, tmp_path, _first_party):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    admission = loader.admit_modules(str(_modules), {name})
+    assert [m.first_party for m in admission.admitted] == [True]
+    (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+
+    with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
+        loader.load_all(str(_modules), {name}, admission=admission)
+    assert not marker.exists()

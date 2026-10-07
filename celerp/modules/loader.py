@@ -429,21 +429,39 @@ def resolve_runtime_module_path(
     return candidates[0] if candidates else None
 
 
-def _purge_pycache(pkg_path: Path) -> None:
-    """Remove every __pycache__ under pkg_path before the module is imported.
+def _bytecode(pkg_path: Path) -> list[Path]:
+    """Every bytecode cache folder and compiled file under pkg_path, found without
+    following a symlink. Raises OSError when part of the tree cannot be read."""
+    def fail(exc: OSError) -> None:
+        raise exc
 
-    The content digest excludes *.pyc, so a stale or tampered bytecode cache with a
-    matching header would otherwise be executed in preference to recompiling the
-    just-verified source. Purging first guarantees the bytes CPython runs are the
-    bytes that were content-verified. Best effort: a purge failure is logged, not
-    fatal, and Python still validates cache headers against source mtime.
+    found: list[Path] = []
+    for root, dirs, files in os.walk(pkg_path, onerror=fail):
+        found += [Path(root) / n for n in (*dirs, *files)
+                  if n == "__pycache__" or fnmatch.fnmatch(n, "*.pyc")]
+        dirs[:] = [d for d in dirs if d != "__pycache__" and not fnmatch.fnmatch(d, "*.pyc")]
+    return found
+
+
+def _purge_pycache(pkg_path: Path) -> None:
+    """Remove all bytecode under pkg_path before the module is imported, and prove it gone.
+
+    The content digest excludes bytecode, so bytecode left beside the checked source
+    could run in its place. A symlink is removed itself, never followed. Raises
+    :class:`ModuleLoadError` when any of it cannot be removed.
     """
     try:
-        for cache in pkg_path.rglob("__pycache__"):
-            if cache.is_dir() and not cache.is_symlink():
-                shutil.rmtree(cache, ignore_errors=True)
+        for path in _bytecode(pkg_path):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        left = _bytecode(pkg_path)
     except OSError as exc:
-        log.warning("Could not purge bytecode cache under %s: %s", pkg_path, exc)
+        raise ModuleLoadError(
+            f"Cannot remove compiled Python files from the module ({type(exc).__name__}).") from exc
+    if left:
+        raise ModuleLoadError("Cannot remove compiled Python files from the module.")
 
 # Loaded manifests - populated by load_all()
 _loaded: list[dict] = []
@@ -465,6 +483,9 @@ CORE_FOLDED: frozenset[str] = frozenset({"celerp-ai", "celerp-backup", "celerp-c
 
 class ModuleLoadError(Exception):
     """Raised (and caught) when a module fails validation."""
+
+
+MODULE_CHANGED = "The module's files changed after it was checked."
 
 
 def read_manifest(pkg_path: Path) -> dict:
@@ -588,11 +609,12 @@ def _dependency_order(
 @dataclass(frozen=True)
 class AdmittedModule:
     """A module that passed admission: the copy to run, its declared manifest
-    (validated) and its first-party verdict."""
+    (validated), its first-party verdict and the content digest of what was checked."""
     name: str
     path: Path
     manifest: dict
     first_party: bool
+    content_digest: str
 
 
 @dataclass(frozen=True)
@@ -836,7 +858,17 @@ def _admission_checks(name: str, pkg_path: Path) -> AdmittedModule:
             violations |= _scan_protected_imports(pkg_path, entry)
         if violations:
             raise ModuleLoadError(_bsl_violation_message(name, violations))
-    return AdmittedModule(name, pkg_path, manifest, first_party)
+    digest = module_content_digest(pkg_path)
+    if digest is None:
+        raise ModuleLoadError("Cannot check the module's files.")
+    return AdmittedModule(name, pkg_path, manifest, first_party, digest)
+
+
+def check_unchanged(module: AdmittedModule) -> None:
+    """Raise :class:`ModuleLoadError` unless the module's files are exactly those
+    admission checked."""
+    if module_content_digest(module.path) != module.content_digest:
+        raise ModuleLoadError(MODULE_CHANGED)
 
 
 def _license_refusal(module: AdmittedModule, creds) -> str | None:
@@ -1207,13 +1239,14 @@ def load_all(
         p_str = str(pkg_path)
         if p_str not in sys.path:
             sys.path.insert(0, p_str)
-        # Run the source just content-verified, never a stale/tampered .pyc that a
-        # matching cache header would execute in preference (the digest omits *.pyc).
-        _purge_pycache(pkg_path)
         # Admitted before its code runs, so the module can read its own files
         # while it is imported.
         _admitted[pkg_name] = module
         try:
+            # Python runs the source admission checked: no bytecode beside it, and
+            # nothing changed since.
+            _purge_pycache(pkg_path)
+            check_unchanged(module)
             with _recording_tables(pkg_name):
                 manifest = _load_one(pkg_path, pkg_name, trusted=module.first_party,
                                      declared=module.manifest)

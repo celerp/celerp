@@ -180,7 +180,8 @@ def test_entry_a_slot_cannot_read_is_refused_before_module_code_runs(module_dir,
     ("inventory_in_production", "async def handler(session, company_id):\n    return 0\n",
      "async def target(*, session):\n    return 0\n"),
 ])
-def test_handler_whose_signature_only_loading_shows_is_refused_at_load(module_dir, slot, shown, wrapped):
+def test_handler_whose_signature_only_loading_shows_is_refused_at_load(module_dir, slot, shown, wrapped,
+                                                                    files_unchecked):
     """Admission read the right signature, but the source changed before load
     to rebind the name; loading refuses the wrong one before it is
     registered."""
