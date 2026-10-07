@@ -39,14 +39,13 @@ from celerp.services.attachments import (
     AttachmentType,
     attach_file,
     check_file_size,
-    discarded_if_refused,
     get_or_create_thumbnail,
     item_file_role,
     local_attachment_url_path,
     merge_attachments,
     remove_attachment,
     resolve_preview_image_id,
-    store_upload,
+    storing,
 )
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import lock_projections
@@ -126,25 +125,18 @@ async def upload_attachment(
 
     await get_item_projection(session, company_id, entity_id)
 
-    try:
-        att = await store_upload(
-            company_id,
-            file,
-            attachment_type=attachment_type,  # type: ignore[arg-type]
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    async with storing(session, company_id) as store:
+        try:
+            att = await store.upload(file, attachment_type=attachment_type)  # type: ignore[arg-type]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    async with discarded_if_refused(company_id, att):
         row = await _locked_item(session, company_id, entity_id)
         existing: list[dict] = row.state.get("attachments") or []
         updated = merge_attachments(existing, att)
         existing_preview: str | None = row.state.get("preview_image_id")
         new_preview = resolve_preview_image_id(existing_preview, updated)
         await _patch_item_attachments(session, company_id, entity_id, user.id, updated, new_preview)
-    # Committed outside the discard: a commit that lands and then reports a failure
-    # leaves the item pointing at the file, so the file must stay.
-    await session.commit()
     return att
 
 
@@ -299,78 +291,81 @@ async def bulk_attach_files(
     # Track which SKUs have already had a hero assigned in this batch
     hero_assigned: set[str] = set()
 
-    with zf:
-        for info in sorted(entries, key=lambda i: i.filename):  # sorted for deterministic hero selection
-            name = info.filename
-            # Check the BASENAME, not the full ZIP path, so nested junk like
-            # sub/.DS_Store is skipped too (the full name doesn't start with '.') — F5.
-            base = _Path(name).name
-            if base.startswith("__") or base.startswith("."):
-                continue
+    async with storing(session, company_id) as store:
+        with zf:
+            for info in sorted(entries, key=lambda i: i.filename):  # sorted for deterministic hero selection
+                name = info.filename
+                # Check the BASENAME, not the full ZIP path, so nested junk like
+                # sub/.DS_Store is skipped too (the full name doesn't start with '.') — F5.
+                base = _Path(name).name
+                if base.startswith("__") or base.startswith("."):
+                    continue
 
-            stem = _Path(name).stem
-            tag, label, is_hero_candidate = _detect_tag_and_label(stem)
+                stem = _Path(name).stem
+                tag, label, is_hero_candidate = _detect_tag_and_label(stem)
 
-            # SKU is always the stem up to the first marker (or full stem for bare)
-            # _detect_tag_and_label returns the full stem as sku for bare files.
-            # For marked files it returns sku_part inside the function but we need it here.
-            # Re-derive sku_part:
-            sku_part = stem
-            for marker in ("-cert-", "-spec-", "-safety-", "-360-", "-img-", "-doc-"):
-                idx = stem.rfind(marker)
-                if idx != -1:
-                    sku_part = stem[:idx]
-                    break
+                # SKU is always the stem up to the first marker (or full stem for bare)
+                # _detect_tag_and_label returns the full stem as sku for bare files.
+                # For marked files it returns sku_part inside the function but we need it here.
+                # Re-derive sku_part:
+                sku_part = stem
+                for marker in ("-cert-", "-spec-", "-safety-", "-360-", "-img-", "-doc-"):
+                    idx = stem.rfind(marker)
+                    if idx != -1:
+                        sku_part = stem[:idx]
+                        break
 
-            sku_key = sku_part.strip().lower()
-            row = sku_index.get(sku_key)
-            if row is None:
-                unmatched += 1
-                report.append({"sku": sku_part, "file": name, "status": "unmatched"})
-                continue
+                sku_key = sku_part.strip().lower()
+                row = sku_index.get(sku_key)
+                if row is None:
+                    unmatched += 1
+                    report.append({"sku": sku_part, "file": name, "status": "unmatched"})
+                    continue
 
-            try:
-                check_file_size(info.file_size)  # before anything is decompressed
-                raw = zf.read(info)
-                guessed_mime = _mt.guess_type(name)[0] or "application/octet-stream"
-                upload = UploadFile(
-                    file=io.BytesIO(raw),
-                    filename=name.split("/")[-1],
-                    headers=_Headers({"content-type": guessed_mime}),
-                )
-                meta = await store_upload(company_id, upload)
+                meta = None
+                try:
+                    check_file_size(info.file_size)  # before anything is decompressed
+                    raw = zf.read(info)
+                    guessed_mime = _mt.guess_type(name)[0] or "application/octet-stream"
+                    upload = UploadFile(
+                        file=io.BytesIO(raw),
+                        filename=name.split("/")[-1],
+                        headers=_Headers({"content-type": guessed_mime}),
+                    )
+                    meta = await store.upload(upload)
 
-                # Determine is_hero: hero candidate + no hero yet in batch +
-                # (no existing hero OR override_hero) + must be image MIME
-                is_image = guessed_mime.startswith("image/")
-                existing_hero = any(
-                    f.get("is_hero") for f in (row.state.get("files") or [])
-                )
-                is_hero = (
-                    is_hero_candidate
-                    and is_image
-                    and sku_key not in hero_assigned
-                    and (not existing_hero or override_hero)
-                )
-                await attach_file(session, company_id, "item", row.entity_id, meta, user.id,
-                                  document_tag=tag, is_hero=is_hero, description=label)
-                # Only an image that was attached takes the slot; one that failed leaves it to the next.
-                if is_hero:
-                    hero_assigned.add(sku_key)
-                # NOTE: do NOT re-apply the event here. emit_event() ->
-                # ProjectionEngine.apply_event already appended the file to this
-                # same projection row (session identity map), so row.state is
-                # current for the next file on this SKU. Re-applying double-counts
-                # the file (two entries with the same file_id) — see F1.
+                    # Determine is_hero: hero candidate + no hero yet in batch +
+                    # (no existing hero OR override_hero) + must be image MIME
+                    is_image = guessed_mime.startswith("image/")
+                    existing_hero = any(
+                        f.get("is_hero") for f in (row.state.get("files") or [])
+                    )
+                    is_hero = (
+                        is_hero_candidate
+                        and is_image
+                        and sku_key not in hero_assigned
+                        and (not existing_hero or override_hero)
+                    )
+                    await attach_file(session, company_id, "item", row.entity_id, meta, user.id,
+                                      document_tag=tag, is_hero=is_hero, description=label)
+                    # Only an image that was attached takes the slot; one that failed leaves it to the next.
+                    if is_hero:
+                        hero_assigned.add(sku_key)
+                    # NOTE: do NOT re-apply the event here. emit_event() ->
+                    # ProjectionEngine.apply_event already appended the file to this
+                    # same projection row (session identity map), so row.state is
+                    # current for the next file on this SKU. Re-applying double-counts
+                    # the file (two entries with the same file_id) — see F1.
 
-                matched += 1
-                report.append({"sku": sku_part, "file": name, "status": "ok",
-                                "url": meta.get("url", ""), "tag": tag, "is_hero": is_hero})
-            except Exception as exc:
-                errors.append(f"{name}: {exc}")
-                report.append({"sku": sku_part, "file": name, "status": "error", "detail": str(exc)})
+                    matched += 1
+                    report.append({"sku": sku_part, "file": name, "status": "ok",
+                                    "url": meta.get("url", ""), "tag": tag, "is_hero": is_hero})
+                except Exception as exc:
+                    if meta is not None:
+                        await store.discard(meta)
+                    errors.append(f"{name}: {exc}")
+                    report.append({"sku": sku_part, "file": name, "status": "error", "detail": str(exc)})
 
-    await session.commit()
     return {"matched": matched, "unmatched": unmatched, "errors": errors, "report": report}
 
 
@@ -398,17 +393,17 @@ async def upload_item_file(
     hero when the item has none yet, or when ``as_hero`` asks for it to replace the current one."""
     row = await get_item_projection(session, company_id, entity_id)
 
-    try:
-        meta = await store_upload(company_id, file)
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    async with storing(session, company_id) as store:
+        try:
+            meta = await store.upload(file)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
 
-    is_hero, document_tag = item_file_role(
-        row.state.get("files", []), meta.get("mime", ""), as_hero=as_hero, document_tag=document_tag,
-    )
-    await attach_file(session, company_id, "item", entity_id, meta, user.id,
-                      document_tag=document_tag, is_hero=is_hero)
-    await session.commit()
+        is_hero, document_tag = item_file_role(
+            row.state.get("files", []), meta.get("mime", ""), as_hero=as_hero, document_tag=document_tag,
+        )
+        await attach_file(session, company_id, "item", entity_id, meta, user.id,
+                          document_tag=document_tag, is_hero=is_hero)
     return {"file_id": meta["id"], **meta, "is_hero": is_hero}
 
 
@@ -563,7 +558,7 @@ async def item_file_thumbnail(
     if not str(match.get("mime", "")).startswith("image/"):
         raise HTTPException(status_code=404, detail="File is not an image")
     await _assert_image_visible(session, company_id, role, row, match)
-    data = await get_or_create_thumbnail(str(company_id), match)
+    data = await get_or_create_thumbnail(session, str(company_id), match)
     if data is None:
         raise HTTPException(status_code=404, detail="Thumbnail unavailable")
     return Response(

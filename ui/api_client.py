@@ -465,6 +465,15 @@ async def login_force(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
+async def start_company(email: str, password: str, company_name: str) -> tuple[str, str]:
+    """Create a company for a login that has none. Returns (access_token, refresh_token)."""
+    async with _anon_api_client() as c:
+        r = _raise(await c.post("/auth/start-company",
+                                json={"email": email, "password": password, "company_name": company_name}))
+        data = r.json()
+        return data["access_token"], data["refresh_token"]
+
+
 async def change_password(token: str, current_password: str, new_password: str) -> None:
     """Change password for the authenticated user."""
     async with _api_client(token) as c:
@@ -910,6 +919,11 @@ async def create_user(token: str, data: dict) -> dict:
 async def patch_user(token: str, user_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.patch(f"/companies/me/users/{user_id}", json=data)).json()
+
+
+async def transfer_install_owner(token: str, user_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/companies/me/users/{user_id}/installation-owner")).json()
 
 
 async def get_taxes(token: str) -> list[dict]:
@@ -2845,6 +2859,14 @@ async def void_payment(token: str, entity_id: str, payment_index: int, void_reas
         })).json()
 
 
+async def delete_payment(token: str, entity_id: str, payment_index: int, delete_reason: str = "",
+                         idempotency_key: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.request("DELETE", f"/docs/{entity_id}/payments/{payment_index}", json={
+            "delete_reason": delete_reason, "idempotency_key": idempotency_key,
+        })).json()
+
+
 async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: float, date: str | None = None,
                             idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
@@ -2937,6 +2959,22 @@ async def revoke_share_link(token: str, entity_id: str) -> dict:
 async def get_payments_status(token: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/payments/status")).json()
+
+
+async def get_unmatched_payments(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/payments/unmatched")).json()
+
+
+async def get_unmatched_invoices(token: str, reference: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/payments/unmatched/invoices", params={"reference": reference})).json()
+
+
+async def record_unmatched_payment(token: str, reference: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/payments/unmatched/record",
+                                   json={"reference": reference, "entity_id": entity_id})).json()
 
 
 async def get_payments_enabled(token: str) -> bool:
@@ -3131,9 +3169,23 @@ async def undo_import_batch(token: str, batch_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def get_modules(token: str) -> list[dict]:
-    """GET /companies/me/modules — list installed modules with enabled state."""
+    """GET /companies/me/modules — list installed modules with enabled state.
+
+    The API reports what its own process loaded. A module can also fail in this
+    (UI) process, for example when its UI routes do not register, so this
+    process's own load failures are laid over the rows: such a module shows as
+    not running, with its reason."""
+    from celerp.modules.loader import load_errors
+
     async with _api_client(token) as c:
-        return _raise(await c.get("/companies/me/modules")).json()
+        rows = _raise(await c.get("/companies/me/modules")).json()
+    local_errors = load_errors()
+    for row in rows:
+        error = local_errors.get(row.get("name"))
+        if error:
+            row["running"] = False
+            row["load_error"] = error
+    return rows
 
 
 async def enable_module(token: str, module_name: str) -> dict:
@@ -3225,6 +3277,19 @@ async def marketplace_install(token: str, path: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-install",
                                    json={"path": path})).json()
+
+
+async def installation_owner(token: str) -> bool:
+    """GET /system/installation-owner - whether this login owns the installation.
+
+    Any error reads as not the owner, so installation-wide controls are offered
+    only on a confirmed answer."""
+    try:
+        async with _api_client(token) as c:
+            r = _raise(await c.get("/system/installation-owner"))
+        return r.json().get("installation_owner") is True
+    except Exception:
+        return False
 
 
 async def restart_system(token: str) -> dict:
@@ -3753,6 +3818,28 @@ async def company_backup_reactivate(token: str, upload_token: str, mode: str, pl
         async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
             r = await c.post("/company-backups/reactivate", json={
                 "upload_token": upload_token, "mode": mode, "plan_fingerprint": plan_fingerprint})
+    return _raise(r).json()
+
+
+async def company_backup_start_read(email: str, password: str, filename: str, content: BinaryIO) -> dict:
+    """Upload a company backup for a login with no company left, for checking. Nothing is
+    written. Returns the upload token, a preview and what restoring it does."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True) as c:
+            r = await c.post("/company-backups/start-company/read",
+                             files=[("file", (filename, content, "application/octet-stream"))],
+                             data={"email": email, "password": password})
+    return _raise(r).json()
+
+
+async def company_backup_start_restore(email: str, password: str, upload_token: str, plan_fingerprint: str) -> dict:
+    """Restore an uploaded backup as the company of a login with no company left. Returns
+    the company and tokens for it."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-backups/start-company/restore", json={
+                "email": email, "password": password, "upload_token": upload_token,
+                "plan_fingerprint": plan_fingerprint})
     return _raise(r).json()
 
 

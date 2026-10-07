@@ -50,8 +50,8 @@ ROLES: list[Role] = [
 # floor_role: the lowest role an owner may set as a key's minimum. Every grantable
 # key floors at viewer, so the owner-editable matrix can grant any read or write down
 # to viewer. The one exception is manage_company_settings, whose floor is admin: it
-# reaches the module data purge, which drops tables, so no override may hand it below
-# admin. The floor also clamps every stored override up to at least the floor on read,
+# changes company-wide settings, including which modules the company uses, so no
+# override may hand it below admin. The floor also clamps every stored override up to at least the floor on read,
 # so the invariant holds for grandfathered overrides, not only at save time.
 PERMISSIONS: list[Permission] = [
     Permission("view_dashboards", "View dashboards", "viewer", True, "viewer"),
@@ -97,11 +97,11 @@ PERMISSIONS: list[Permission] = [
 _PERMISSIONS_BY_KEY: dict[str, Permission] = {p.key: p for p in PERMISSIONS}
 
 
-def is_permission_key(key: str) -> bool:
-    """True when *key* is in the closed permission registry. Gating surfaces
+def is_permission_key(key) -> bool:
+    """True when *key* is a string in the closed permission registry. Gating surfaces
     index the registry directly, so anything naming a key from outside core
     (a module manifest) must be checked here before it reaches them."""
-    return key in _PERMISSIONS_BY_KEY
+    return isinstance(key, str) and key in _PERMISSIONS_BY_KEY
 
 
 def resolved_grant_roles(settings: dict | None, key: str) -> set[str]:

@@ -27,7 +27,7 @@ from celerp.services.account_roles import (
     scope_codes,
 )
 from celerp.services.business_time import business_date_of
-from celerp.services.je_keys import je_idempotency_key, je_void_data
+from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
@@ -163,11 +163,13 @@ async def _emit_auto_posted_je(
     entries: list[dict],
     metadata_: dict,
     ts: str | None = None,
+    currency: str | None = None,
 ) -> None:
     """Post an automatic JE. The one place its amounts become money: every line is rounded
-    to the company currency, and an entry that does not balance after rounding is refused,
-    so producers build their lines to balance once rounded."""
-    currency = await company_currency(session, company_id)
+    to the company currency (*currency* when the producer already holds the books it posts
+    on), and an entry that does not balance after rounding is refused, so producers build
+    their lines to balance once rounded."""
+    currency = currency or await company_currency(session, company_id)
     entries = [
         {**e,
          "debit": to_stored_float(round_money(e.get("debit") or 0, currency)),
@@ -503,6 +505,34 @@ async def _settlement_accounts(session, company_id, *, doc_id: str, control: Acc
     return _balanced_with_fx_difference(entries, _line(acc[fx_role], fx_role) if fx_role else None)
 
 
+def payment_amounts(*, amount: float, base_currency: str, doc_rate: float, settlement_rate: float,
+                    already_given_back: float = 0.0) -> tuple[float, float]:
+    """What *amount* of a payment moves on its receivable or payable (at *doc_rate*) and
+    on its bank (at *settlement_rate*), after *already_given_back* of it was given back.
+    Each side is what the running total converts to, less what *already_given_back*
+    converts to, so the pieces of a payment add up to exactly what it posted, in
+    whatever order they are given back and restored."""
+    def _piece(rate: float) -> float:
+        rate = checked_exchange_rate(rate)
+        before = to_decimal(to_base(already_given_back, rate, base_currency))
+        return to_stored_float(to_decimal(to_base(to_decimal(already_given_back) + to_decimal(amount), rate, base_currency)) - before)
+
+    return _piece(doc_rate), _piece(settlement_rate)
+
+
+def payment_lines(doc_type: str, control, bank: dict, ledger_amount: float, bank_amount: float, *,
+                  returning: bool = False) -> list[dict]:
+    """The two lines a payment posts, or with *returning* the two that give it back:
+    the line on *bank* moving *bank_amount* and ``control(debit=, credit=)``, the
+    receivable or payable line, moving *ledger_amount*. A bill payment clears AP and a
+    credit note's cash refund clears the credit balance it held against AR, so money
+    leaves the bank; any other payment brings it in. Giving back moves it the other way."""
+    bank_line = {**bank, "debit": 0.0, "credit": 0.0}
+    if (doc_type in _PURCHASE_TYPES or doc_type == "credit_note") != returning:
+        return [control(debit=ledger_amount), {**bank_line, "credit": bank_amount}]
+    return [{**bank_line, "debit": bank_amount}, control(credit=ledger_amount)]
+
+
 async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
     """Create JE for a payment.
 
@@ -525,17 +555,12 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     one would post a fabricated exchange difference, so a caller that omits either raises
     TypeError at call time instead.
     """
-    ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
-    bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
     paid_key = str(payment_index)
+    ledger_amount, bank_amount = payment_amounts(amount=amount, base_currency=base_currency, doc_rate=doc_rate,
+                                                 settlement_rate=settlement_rate)
 
     def entries_for(control, bank):
-        bank_line = {"account": bank, "debit": 0.0, "credit": 0.0}
-        if doc_type in _PURCHASE_TYPES or doc_type == "credit_note":
-            # A bill payment clears AP; a credit note's cash refund clears the credit
-            # balance it held against AR. Either way money leaves the bank.
-            return [control(debit=ledger_amount), {**bank_line, "credit": bank_amount}]
-        return [{**bank_line, "debit": bank_amount}, control(credit=ledger_amount)]
+        return payment_lines(doc_type, control, {"account": bank}, ledger_amount, bank_amount)
 
     entries = await _settlement_accounts(
         session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
@@ -549,6 +574,7 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         idem_posted=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         memo=f"Auto JE for {doc_id} payment",
         ts=payment_date,
+        currency=base_currency.upper(),
         entries=entries,
         metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": payment_index},
     )
@@ -560,6 +586,45 @@ def _reversal_template(entry: dict) -> dict:
     if entry.get("account_roles") is not None:
         out["account_roles"] = list(entry["account_roles"])
     return out
+
+
+async def payment_return_entries(session, company_id, *, doc_id: str, payment_index: int, doc_type: str,
+                                 bank_account_code: str | None, amount: float, already_given_back: float,
+                                 base_currency: str, doc_rate: float, settlement_rate: float) -> list[dict]:
+    """The balanced lines that give back *amount* of a payment after *already_given_back*
+    of it was given back (``payment_amounts``), on the accounts the payment's own entry
+    posted to - its bank, its receivable or payable, and its exchange difference -
+    never on what the company's roles point at today. A payment with no entry of its
+    own (recorded before automatic entries existed) gives back on its document's origin
+    account and *bank_account_code*. A restored piece posts these lines swapped."""
+    ledger_amount, bank_amount = payment_amounts(
+        amount=amount, base_currency=base_currency, doc_rate=doc_rate, settlement_rate=settlement_rate,
+        already_given_back=already_given_back)
+    outflow = doc_type in _PURCHASE_TYPES or doc_type == "credit_note"
+
+    def entries_for(control, bank):
+        bank_line = bank if isinstance(bank, dict) else {"account": bank}
+        return payment_lines(doc_type, control, bank_line, ledger_amount, bank_amount, returning=True)
+
+    original = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{doc_id}:pay:{payment_index}"})
+    posted = (original.state or {}).get("entries") or [] if original is not None else []
+    if len(posted) < 2:
+        return await _settlement_accounts(
+            session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
+            entries_for=entries_for)
+    # The payment's entry is [control, bank] for an outflow and [bank, control] for
+    # a receipt, then its exchange difference, if any.
+    control_entry, bank_entry = (posted[0], posted[1]) if outflow else (posted[1], posted[0])
+    control_template = _reversal_template(control_entry)
+
+    def control_line(debit=0.0, credit=0.0):
+        return {**control_template, "debit": debit, "credit": credit}
+    entries = entries_for(control_line, _reversal_template(bank_entry))
+    difference = _reversal_template(posted[2]) if len(posted) > 2 else None
+    if difference is None and _fx_difference_role(entries) is not None:
+        fx_role = _fx_difference_role(entries)
+        difference = _line((await resolve_many(session, company_id, [fx_role]))[fx_role], fx_role)
+    return _balanced_with_fx_difference(entries, difference)
 
 
 async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str | None, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
@@ -584,57 +649,29 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         reverses what the payment's total so far converts to, less what the earlier pieces
         did, so the pieces add up to exactly what the payment posted.
     """
-    def _piece(rate: float) -> float:
-        rate = checked_exchange_rate(rate)
-        before = to_decimal(to_base(already_given_back, rate, base_currency))
-        return to_stored_float(to_decimal(to_base(to_decimal(already_given_back) + to_decimal(amount), rate, base_currency)) - before)
-
-    ledger_amount = _piece(doc_rate)
-    bank_amount = _piece(settlement_rate)
     if refund_number is None:
         kind, key, trigger = "payvoid", f"void_{payment_index}", "doc.payment.voided"
         memo = f"Auto JE for {doc_id} payment void (index {payment_index})"
     else:
         kind, key, trigger = "payrefund", f"refund_{payment_index}_{refund_number}", "doc.payment.refunded"
         memo = f"Auto JE for {doc_id} payment refund (index {payment_index})"
-    outflow = doc_type in _PURCHASE_TYPES or doc_type == "credit_note"
-
-    def entries_for(control, bank):
-        bank_line = bank if isinstance(bank, dict) else {"account": bank, "debit": 0.0, "credit": 0.0}
-        if outflow:
-            # The reverse of an outflow: the money comes back into the bank.
-            return [{**bank_line, "debit": bank_amount}, control(credit=ledger_amount)]
-        return [control(debit=ledger_amount), {**bank_line, "credit": bank_amount}]
-
-    original = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{doc_id}:pay:{payment_index}"})
-    posted = (original.state or {}).get("entries") or [] if original is not None else []
-    if len(posted) >= 2:
-        # The payment's entry is [control, bank] for an outflow and [bank, control] for
-        # a receipt, then its exchange difference, if any.
-        control_entry, bank_entry = (posted[0], posted[1]) if outflow else (posted[1], posted[0])
-        control_template = _reversal_template(control_entry)
-
-        def control_line(debit=0.0, credit=0.0):
-            return {**control_template, "debit": debit, "credit": credit}
-        entries = entries_for(control_line, _reversal_template(bank_entry))
-        difference = _reversal_template(posted[2]) if len(posted) > 2 else None
-        if difference is None and _fx_difference_role(entries) is not None:
-            fx_role = _fx_difference_role(entries)
-            difference = _line((await resolve_many(session, company_id, [fx_role]))[fx_role], fx_role)
-        entries = _balanced_with_fx_difference(entries, difference)
-    else:
-        entries = await _settlement_accounts(
-            session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
-            entries_for=entries_for)
+    op = trigger.removeprefix("doc.")
+    key = await unminted_payment_key(session, company_id, doc_id, op, key)
+    entries = await payment_return_entries(
+        session, company_id, doc_id=doc_id, payment_index=payment_index, doc_type=doc_type,
+        bank_account_code=bank_account_code, amount=amount, already_given_back=already_given_back,
+        base_currency=base_currency, doc_rate=doc_rate, settlement_rate=settlement_rate,
+    )
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
         je_id=f"je:auto:{doc_id}:{kind}:{key}",
-        idem_create=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "p"),
+        idem_create=je_idempotency_key(doc_id, f"{op}:{key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"{op}:{key}", "p"),
         memo=memo,
         ts=refund_date,
+        currency=base_currency.upper(),
         entries=entries,
         metadata_={"trigger": trigger, "doc_id": doc_id, "payment_index": payment_index},
     )

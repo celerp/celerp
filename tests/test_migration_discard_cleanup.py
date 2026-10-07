@@ -29,7 +29,7 @@ from migration_support import (
     save_decisions,
     scan_upload,
 )
-from test_factory_reset_live import _PARTITIONED, _PT
+from test_company_reset_live import _PARTITIONED, _PT
 from test_helpers import create_item, default_location_id, in_language, register_admin
 
 TASKS = "migration_cleanup_tasks"

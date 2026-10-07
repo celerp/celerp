@@ -190,14 +190,11 @@ def _make_archive(
 ) -> bytes:
     """Build a minimal .celerp-backup in memory and return bytes.
 
-    `version` defaults to a value guaranteed to be <= the current
-    installed version, so tests never trip the version policy in any
-    environment (CI's 0.1.dev1 vs local 1.1.11.dev20). Pass an explicit
-    string to test a specific version scenario.
+    `version` defaults to the running version: a backup this copy made itself.
+    Pass an explicit string to test a specific version scenario.
     """
     if version is None:
-        from celerp.services.backup_import import _safe_test_version
-        version = _safe_test_version()
+        from celerp import __version__ as version
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         if include_meta:
@@ -380,7 +377,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
     from contextlib import asynccontextmanager
 
     from celerp.config import settings
-    from celerp.services import backup_export, backup_import
+    from celerp.services import backup_import
 
     captured: dict = {}
     data = tmp_path / "data"
@@ -394,7 +391,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         return backup_import.SafetyResult(ok=True, path=tmp_path / "safety.celerp-backup")
 
     async def _every_company(session):
-        return set()
+        return []
 
     def _apply(modules):
         captured["modules"] = list(modules)
@@ -408,11 +405,13 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         monkeypatch.setattr(backup_import, name, _none)
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
     monkeypatch.setattr(backup_import, "_apply_modules", _apply)
-    monkeypatch.setattr(backup_export, "required_installation_modules", _every_company)
+    monkeypatch.setattr("celerp.modules.registry.load_set", _every_company)
     monkeypatch.setattr("celerp.connectors.ownership.connector_maintenance_guard", _guard)
     return captured
 
 
+# run_recovery reads the restored companies, so the schema must exist.
+@pytest.mark.usefixtures("_db_engine")
 class TestRecoveryMissingModuleWarnings:
     """run_recovery must populate BackupResult.warnings with missing module names.
 
@@ -472,6 +471,8 @@ class TestRecoveryMissingModuleWarnings:
             path.unlink(missing_ok=True)
 
 
+# run_recovery reads the restored companies, so the schema must exist.
+@pytest.mark.usefixtures("_db_engine")
 class TestRecoveryAppliesModules:
     """run_recovery makes the enabled modules the ones listed in meta.json."""
 
@@ -734,6 +735,8 @@ class TestRestoreFlashContinuation:
         assert "celerp-labels" in body and "/data/pre.celerp-backup" in body
 
 
+# run_recovery reads the restored companies, so the schema must exist.
+@pytest.mark.usefixtures("_db_engine")
 class TestRecoveryPropagation:
     """run_recovery must carry the restart decision and safety archive through to the
     result AND persist the one-shot notice, or the journey guarantees fall apart."""

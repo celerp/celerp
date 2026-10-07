@@ -15,7 +15,7 @@ Each conversion mechanism used in the file is covered at least once:
   - R1 module-level label dict resolved at render (fiscal month, doc type)
   - R3 enum display-label layer (location type)
   - a table header built from new keys (item-schema category header)
-  - plain labels plus the em-dash-fixed warning copy (factory-reset card)
+  - plain labels plus the warning copy (company reset card)
   - a translated value carried in an HTML attribute (click-to-edit title)
   - interpolated copy (per-page preference)
 """
@@ -29,7 +29,7 @@ from ui.routes.settings import (
     _location_display_cell,
     _tc_display_cell,
     _schema_tab,
-    _factory_reset_card,
+    _company_reset_card,
     _preference_display_cell,
 )
 
@@ -39,9 +39,9 @@ _XX = {
     "settings.loc_type_warehouse": "XX_WAREHOUSE",
     "settings.doc_type_invoice": "XX_INVOICE",
     "settings.th_order": "XX_ORDER",
-    "settings.reset_all_data": "XX_RESET_ALL",
+    "settings.reset_this_company": "XX_RESET_COMPANY",
     "settings.skip_continue": "XX_SKIP_CONTINUE",
-    "settings.factory_reset_warning": "XX_FACTORY_WARNING",
+    "settings.company_reset_warning": "XX_COMPANY_WARNING",
     "settings.click_to_edit": "XX_CLICK_EDIT",
     "settings.per_page": "XX_PERPAGE {n}",
 }
@@ -86,12 +86,12 @@ def test_schema_table_header_translates():
     assert "XX_ORDER" in html
 
 
-def test_factory_reset_card_labels_translate_and_no_em_dash():
-    # Plain labels plus the em-dash-fixed warning copy.
-    html = to_xml(_factory_reset_card("Alpha Trading"))
-    assert "XX_RESET_ALL" in html
+def test_company_reset_card_labels_translate_and_no_em_dash():
+    # Plain labels plus the warning copy.
+    html = to_xml(_company_reset_card("Harbor Goods Ltd"))
+    assert "XX_RESET_COMPANY" in html
     assert "XX_SKIP_CONTINUE" in html
-    assert "XX_FACTORY_WARNING" in html
+    assert "XX_COMPANY_WARNING" in html
     # No em dash (U+2014) survives in the user-facing render.
     assert "\u2014" not in html
 

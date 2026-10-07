@@ -112,6 +112,19 @@ def _replay_handler(event_type: str):
     return _merge if event_type in MERGE_EVENTS else None
 
 
+class UnhandledEventsError(Exception):
+    """The ledger holds events this build cannot replay as written (ProjectionEngine.unreplayable)."""
+
+    def __init__(self, event_types: set[str]):
+        from celerp.modules.loader import modules_owning_events
+
+        self.event_types = sorted(event_types)
+        super().__init__(
+            "Records cannot be rebuilt while these modules are not enabled: "
+            f"{', '.join(modules_owning_events(event_types))} ({', '.join(self.event_types)}). "
+            "Enable them in Modules, then try again.")
+
+
 class ProjectionEngine:
     @staticmethod
     def replayable(event_type: str) -> bool:
@@ -264,13 +277,10 @@ class ProjectionEngine:
     async def rebuild(session, company_id=None) -> None:
         """Replace the projections with a replay of the ledger. Refused, before anything is
         deleted, when the ledger holds events of a module that is not enabled: replaying
-        without its handler would rebuild those records wrong."""
+        without its handler would rebuild those records wrong (UnhandledEventsError)."""
         unknown = await ProjectionEngine.unreplayable(session, company_id)
         if unknown:
-            from celerp.modules.loader import modules_owning_events
-            raise HTTPException(status_code=409, detail=(
-                "Records cannot be rebuilt while these modules are not enabled: "
-                f"{', '.join(modules_owning_events(unknown))}. Enable them in Modules, then try again."))
+            raise UnhandledEventsError(unknown)
         await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
         query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
         if company_id:

@@ -1,33 +1,26 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""System administration endpoints: restart, factory reset and updates."""
+"""System administration endpoints: restart and updates."""
 
 from __future__ import annotations
 
 import asyncio
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, StrictBool
-from sqlalchemy import select, text
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_session, sqlstate
+from celerp.db import get_session
 from celerp.held_back import held_back
 from celerp.models.company import User
 from celerp.services.auth import (
-    get_current_company_id, get_current_user, is_install_owner, require_install_owner,
+    get_current_user, is_install_owner, require_install_owner,
 )
 from celerp.services.permissions import require_permission
 
-_ATTACHMENT_ROOT = Path("static/attachments")
-# Another transaction in the way: the reset rolls back and is refused as busy.
-_BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
-
-router = APIRouter(dependencies=[require_permission("manage_company_settings")])
+router = APIRouter()
 
 
 # ── Graceful restart ──────────────────────────────────────────────────────────
@@ -52,13 +45,13 @@ def _send_sigterm() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-@router.post("/restart")
+@router.post("/restart", dependencies=[Depends(require_install_owner)])
 async def restart_server(
     background_tasks: BackgroundTasks,
 ) -> dict:
     """Gracefully restart the server process (SIGTERM → process manager respawns).
 
-    Used by the setup wizard after applying a preset so new modules are loaded.
+    Restarting stops the whole installation, so only the installation owner may.
     Returns immediately; the restart happens ~200ms later in a background task.
     """
     background_tasks.add_task(_send_sigterm)
@@ -68,7 +61,7 @@ async def restart_server(
 # ── Last start ───────────────────────────────────────────────────────────────
 
 
-@router.get("/start-report")
+@router.get("/start-report", dependencies=[require_permission("manage_company_settings")])
 async def start_report(request: Request) -> dict:
     """What Doctor shows first: why the last start held the records back (each failed
     step with its error), or nothing when the records are current."""
@@ -76,224 +69,22 @@ async def start_report(request: Request) -> dict:
     return {"held_back": cause.report() if cause is not None else None}
 
 
-# ── Factory reset ─────────────────────────────────────────────────────────────
-
-class FactoryReset(BaseModel):
-    confirm_name: str = ""
-
-
-def _company_rows(schema: dict) -> dict[str, str]:
-    """Every table holding rows of the company bound as ``:c``, each after the tables it
-    references, with the condition that picks them: its company column, or else a
-    foreign key to rows already picked (a conversation's messages, a run's entity maps).
-    A key that clears on delete picks nothing: Postgres clears it. ``schema`` is the
-    database catalog, so a switched-off module's tables are included. Tables that refer
-    to each other in a loop have no such order, nor a condition built from one another,
-    so the reset is refused naming them."""
-    from celerp.accounting_roles import refusal
-    from celerp.db_catalog import company_tables, fk_order, ident
-
-    owned = company_tables(schema, held=True)
-    order, unordered = fk_order(sorted(owned), schema)
-    if looped := ", ".join(sorted(unordered - set(order))):
-        raise HTTPException(status_code=409, detail=refusal(
-            "system.factory_reset.reference_cycle",
-            f"The tables {looped} refer to each other in a loop, so this company cannot be "
-            "reset. Nothing was deleted.", tables=looped))
-    where: dict[str, str] = {"companies": "id = CAST(:c AS uuid)"}
-
-    def rows(name: str) -> str:
-        if name not in where:
-            table = schema[name]
-            if "company_id" in table.columns:  # a few connector tables keep it as text
-                where[name] = f"company_id = CAST(CAST(:c AS text) AS {ident(table.columns['company_id'].udt)})"
-            else:
-                where[name] = " OR ".join(
-                    f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} "
-                    f"FROM {ident(fk.target)} WHERE {rows(fk.target)})"
-                    for fk in table.fks if fk.target in owned and fk.target != name and not fk.clears)
-        return where[name]
-
-    return {name: rows(name) for name in order}
+# ── Updates ───────────────────────────────────────────────────────────────────
+# Installation-wide, so gated on the install owner; reading the status needs
+# only a login.
 
 
-def _lock_writers(schema: dict) -> str:
-    """A lock on every table, held until the reset commits. Nothing written between the
-    checks and the deletes can then be deleted with the company, and no table or key can
-    be added that the reset does not know about: such a write waits, and fails on the
-    row that is gone. Concurrent resets take it in the same order, one after the other."""
-    from celerp.db_catalog import ident
-
-    return f"LOCK TABLE {', '.join(map(ident, sorted(schema)))} IN SHARE ROW EXCLUSIVE MODE"
-
-
-def _busy() -> HTTPException:
-    from celerp.accounting_roles import refusal
-
-    return HTTPException(status_code=409, detail=refusal(
-        "system.factory_reset.busy",
-        "This company could not be reset because other changes were being saved at the "
-        "same time. Nothing was deleted. Try again."))
-
-
-def _changed_outside(kind: str, table: str) -> dict:
-    """The refusal for a table changed outside Celerp (``db_catalog.changed_outside``)."""
-    from celerp.accounting_roles import refusal
-
-    if kind == "outside_reference":
-        return refusal(
-            "system.factory_reset.outside_reference",
-            f"This company cannot be reset because the table {table}, which was added outside "
-            "Celerp (by an installed module or a direct database change), refers to Celerp's "
-            "records. Nothing was deleted. Ask whoever installed that module or changed the "
-            "database to remove that reference.", table=table)
-    return refusal(
-        "system.factory_reset.partition_key",
-        f"This company cannot be reset because the table {table} was changed outside Celerp "
-        "(by an installed module or a direct database change) in a way the reset cannot safely "
-        "handle. Nothing was deleted. Ask whoever installed that module or changed the database "
-        "to fix it.", table=table)
-
-
-def _held_elsewhere(schema: dict) -> str:
-    """A query naming a table whose rows the reset of the company bound as ``:c`` would
-    delete, change or trip over though they are not only that company's: a row outside
-    the company naming one of its rows, or a row of the company also naming another
-    company's, by a key of any kind. Nothing when there is none."""
-    from celerp.db_catalog import company_tables, ident
-
-    rows = _company_rows(schema)
-    company = company_tables(schema)
-
-    def naming(fk, mine: bool, seen: frozenset[str] = frozenset()) -> str:
-        """The rows whose ``fk`` names a row of the company (``mine``) or of another."""
-        if fk.target in rows:
-            where = f"({rows[fk.target]})" + ("" if mine else " IS NOT TRUE")
-        else:  # reached only through keys that clear: another company's when it names one
-            where = "FALSE" if fk.target in seen else others(fk.target, seen | {fk.target}) or "FALSE"
-        return f"({', '.join(map(ident, fk.cols))}) IN (SELECT {', '.join(map(ident, fk.tcols))} " \
-               f"FROM {ident(fk.target)} WHERE {where})"
-
-    def others(name: str, seen: frozenset[str]) -> str:
-        """The rows of ``name``, a table with no company column, that are another company's
-        too: those naming one of its rows."""
-        return " OR ".join(naming(fk, False, seen) for fk in schema[name].fks if fk.target in company)
-
-    checks = []
-    for name in sorted(company):
-        table = schema[name]
-        theirs = "" if "company_id" in table.columns else others(name, frozenset())
-        for fk in table.fks:
-            if fk.target not in rows:
-                continue
-            if name in rows:
-                # A named row tied to the company by a key of its own straight to companies,
-                # as a user is by a home company, is shared by the two companies, so its
-                # table, which holds that key, is the one named.
-                shared = fk.target != "companies" and "company_id" not in schema[fk.target].columns and any(
-                    k.target == "companies" for k in schema[fk.target].fks)
-                checks.append((name, f"({rows[name]}) IS NOT TRUE AND {naming(fk, mine=True)}",
-                               fk.target if shared else name))
-            elif theirs:
-                checks.append((name, f"{naming(fk, mine=True)} AND ({theirs})", name))
-        if name in rows and theirs:
-            checks.append((name, f"({rows[name]}) AND ({theirs})", name))
-    return " UNION ALL ".join(
-        f"(SELECT '{named.replace(chr(39), chr(39) * 2)}' WHERE EXISTS "
-        f"(SELECT 1 FROM {ident(name)} WHERE {where}))" for name, where, named in checks) + " LIMIT 1"
-
-
-def _company_deletes(schema: dict) -> list[str]:
-    """The deletes that remove the company bound as ``:c``, each table before any it
-    references."""
-    from celerp.db_catalog import ident
-
-    return [f"DELETE FROM {ident(name)} WHERE {where}" for name, where in reversed(_company_rows(schema).items())]
-
-
-@router.post("/factory-reset")
-async def factory_reset(
-    body: FactoryReset | None = None,
-    _: None = require_permission("manage_company_lifecycle"),
-    company_id: uuid.UUID = Depends(get_current_company_id),
+@router.get("/installation-owner")
+async def installation_owner(
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Delete the signed-in company and every record it holds, once its owner has typed
-    the company's exact name. Other companies, and every user one of them still has,
-    are untouched. One transaction: a failure part way leaves everything as it was."""
-    from celerp import db_catalog
-    from celerp.accounting_roles import refusal
-    from celerp.connectors.ownership import lock_connector_maintenance
-    from celerp.models.accounting import UserCompany
-    from celerp.models.company import Company
-
-    company = await session.get(Company, company_id)
-    if company is None or (body.confirm_name if body else "") != company.name:
-        raise HTTPException(status_code=422, detail=refusal(
-            "system.factory_reset.name_mismatch",
-            "Type the company name exactly as shown to reset this company."))
-    # Signing in has already read on this session, so the wipe runs in the request's own
-    # transaction and is committed in one step.
-    await lock_connector_maintenance(session)
-    try:
-        await db_catalog.pin(session)
-    except db_catalog.TableElsewhere as exc:
-        raise HTTPException(status_code=409, detail=_changed_outside("partition_key", exc.table)) from None
-    schema = await db_catalog.read(session)
-    # A table this connection cannot read and delete from can neither be locked below
-    # nor have the company's rows picked out of it.
-    if tables := await db_catalog.hidden(session, schema):
-        raise HTTPException(status_code=409, detail=_changed_outside(
-            "partition_key", await db_catalog.label(session, tables[0])))
-    # Another transaction writing these tables can hold them for longer than a request
-    # may wait, or lock in the opposite order so Postgres aborts one of the two. Either
-    # way the rollback leaves everything as it was and the owner is asked to try again.
-    try:
-        await session.execute(text(_lock_writers(schema)))
-        if await db_catalog.read(session) != schema:  # a table or key added before the lock
-            await session.rollback()
-            raise _busy()
-        if changed := await db_catalog.changed_outside(session, schema):
-            raise HTTPException(status_code=409, detail=_changed_outside(*changed))
-        members = list((await session.execute(
-            select(UserCompany.user_id).where(UserCompany.company_id == company_id))).scalars())
-        keys = db_catalog.own_keys(schema)
-        held = await session.scalar(text(_held_elsewhere(keys)), {"c": str(company_id)})
-        if held:
-            raise HTTPException(status_code=409, detail=refusal(
-                "system.factory_reset.held_elsewhere",
-                f"This company cannot be reset because records in {held} that belong to another "
-                "company refer to its data. Nothing was deleted.", table=held))
-        for delete in _company_deletes(keys):
-            await session.execute(text(delete), {"c": str(company_id)})
-        await session.execute(text(db_catalog.delete_users_left_without_a_company(keys)), {"members": members})
-        await session.commit()
-    except DBAPIError as exc:
-        if sqlstate(exc) not in _BUSY:
-            raise
-        await session.rollback()
-        raise _busy() from exc
-
-    # Bust the in-process nonce cache: a deleted user's stale token must not auto-create rows
-    from celerp.services.session_tracker import _nonce_cache_bust_all
-    _nonce_cache_bust_all()
-
-    att_dir = _ATTACHMENT_ROOT / str(company_id)
-    if att_dir.exists():
-        import shutil
-        shutil.rmtree(att_dir, ignore_errors=True)
-
-    return {"ok": True}
+    """Whether this login is the installation owner, so pages offer
+    installation-wide controls only to them."""
+    return {"installation_owner": await is_install_owner(session, user.id)}
 
 
-# ── Updates ───────────────────────────────────────────────────────────────────
-# Installation-wide, so gated on the install owner rather than the company
-# permission the router above carries; reading the status needs only a login.
-
-update_router = APIRouter()
-
-
-@update_router.get("/update")
+@router.get("/update")
 async def update_status(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -303,7 +94,7 @@ async def update_status(
     return update.status(owner=await is_install_owner(session, user.id))
 
 
-@update_router.post("/update", status_code=202, dependencies=[Depends(require_install_owner)])
+@router.post("/update", status_code=202, dependencies=[Depends(require_install_owner)])
 async def install_update(background_tasks: BackgroundTasks) -> dict:
     """Install the newest version pip offers. The version is chosen here, never
     by the caller; Celerp restarts and is back in about a minute."""
@@ -316,7 +107,7 @@ async def install_update(background_tasks: BackgroundTasks) -> dict:
     return {"ok": True, "installing": target}
 
 
-@update_router.post("/update/check", dependencies=[Depends(require_install_owner)])
+@router.post("/update/check", dependencies=[Depends(require_install_owner)])
 async def check_for_update() -> dict:
     from celerp.services import update
     await asyncio.to_thread(update.refresh_check)
@@ -327,7 +118,7 @@ class UpdateSettings(BaseModel):
     auto: StrictBool
 
 
-@update_router.patch("/update/settings", dependencies=[Depends(require_install_owner)])
+@router.patch("/update/settings", dependencies=[Depends(require_install_owner)])
 async def update_settings(body: UpdateSettings) -> dict:
     """Turn automatic overnight updates on or off."""
     from celerp.services import update

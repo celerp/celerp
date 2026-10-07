@@ -328,8 +328,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         run_id = run.id
         # The first owner has no other company, so they are signed in to the staged one;
         # its token reaches the migration routes only. Issuing the tokens commits.
-        tokens = await issue_token_pair(session, user=user, company=await session.get(Company, run.company_id),
-                                        role="owner")
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id)
     if required:
         try:
             await asyncio.to_thread(bootstrap.clear_setup_code)

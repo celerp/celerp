@@ -527,7 +527,7 @@ async def test_connector_state_and_catalog_state_agree(real_engine, real_client)
     """For every ownership state, the connector's own state, the Catalog channel column,
     the Catalog's connected-channel gate and merge protection agree."""
     from celerp.connectors import ownership
-    from ui.routes.inventory import _connected_connector_ids
+    from ui.module_slots import connected_connector_ids
     _, cid, tok = await _real_setup(real_engine)
     user2 = await owner(real_engine, email="second-owner@example.test")
     other = await company(real_engine, user2, "Other Trading", "other-marker")
@@ -550,7 +550,7 @@ async def test_connector_state_and_catalog_state_agree(real_engine, real_client)
         state = next(i for i in r.json()["items"] if i["id"] == a)["_channel_state"]["shopify"]
         assert state["linked"] is active, (expected, state)
         assert state.get("historical", False) is (not active), (expected, state)
-        assert ("shopify" in await _connected_connector_ids(str(cid))) is active, expected
+        assert ("shopify" in await connected_connector_ids(str(cid), {"shopify"})) is active, expected
         r = await merge_items(real_client, headers=auth(tok),
                               json={"source_entity_ids": [a, b], "target_sku_from": a})
         assert r.status_code == (409 if active else 200), (expected, r.text)

@@ -304,12 +304,20 @@ function initCombobox(wrap) {
   list.style.position = 'fixed';
   list.style.zIndex = '9999';
 
+  // The list is position:fixed, so keep it inside the viewport: open above the input
+  // when there is more room there, and never let it run past either side.
   function positionList() {
     var r = input.getBoundingClientRect();
-    list.style.top = (r.bottom + 2) + 'px';
-    list.style.left = r.left + 'px';
-    list.style.minWidth = r.width + 'px';
+    var gap = 8, vw = document.documentElement.clientWidth, vh = window.innerHeight;
+    list.style.maxWidth = Math.min(400, vw - 2 * gap) + 'px';
+    list.style.minWidth = Math.min(r.width, vw - 2 * gap) + 'px';
     list.style.width = 'auto';
+    var below = vh - r.bottom - gap, above = r.top - gap;
+    var up = below < Math.min(list.scrollHeight, 220) && above > below;
+    list.style.maxHeight = Math.min(220, Math.max(up ? above : below, 0) - 2) + 'px';
+    list.style.top = up ? 'auto' : (r.bottom + 2) + 'px';
+    list.style.bottom = up ? (vh - r.top + 2) + 'px' : 'auto';
+    list.style.left = Math.max(gap, Math.min(r.left, vw - gap - list.offsetWidth)) + 'px';
   }
 
   // Lazy — always queries the live DOM so HTMX-swapped options are included.
@@ -872,10 +880,10 @@ function _notifItemHtml(n) {
     + '</div>';
 }
 
-// A ready-to-install app update is worth one bell count so the user notices it
-// on the icon without opening the panel; the panel's update card carries the
-// version and the restart/upgrade action, so the count needs no list item.
-window._celerpUpdate = window._celerpUpdate || { ready: false, version: '' };
+// A found app update is worth one bell count so the user notices it on the
+// icon without opening the panel; the panel's update card carries the version
+// and the restart/upgrade action, so the count needs no list item.
+window._celerpUpdateLit = window._celerpUpdateLit || false;
 window._lastNotifData = window._lastNotifData || { items: [], unread_count: 0 };
 
 function _renderNotifs(data) {
@@ -883,7 +891,7 @@ function _renderNotifs(data) {
   data = window._lastNotifData;
   var badge = document.getElementById('notif-badge');
   var list = document.getElementById('notif-list');
-  var count = (data.unread_count || 0) + (window._celerpUpdate.ready ? 1 : 0);
+  var count = (data.unread_count || 0) + (window._celerpUpdateLit ? 1 : 0);
   if (badge) {
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : count;
@@ -901,11 +909,11 @@ function _renderNotifs(data) {
   }
 }
 
-// Light the bell when an update finishes downloading (Electron) or is available
-// on PyPI (pip). Re-renders off the last fetched inbox so no network call is
-// needed; the count clears when the user relaunches into the new version.
-window.celerpSetUpdateReady = function(version) {
-  window._celerpUpdate = { ready: true, version: version || '' };
+// Light or clear the bell's update count: lit while an update is found,
+// downloading or downloaded (Electron) or available on PyPI (pip). Re-renders
+// off the last fetched inbox so no network call is needed.
+window.celerpSetUpdateBell = function(lit) {
+  window._celerpUpdateLit = !!lit;
   _renderNotifs(null);
 };
 
@@ -1050,7 +1058,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   /* ── Update status card ───────────────────────────────────────────── */
-  (function initUpdateCard() {
+  function initUpdateCard() {
     var card = document.getElementById('update-status-card');
     if (!card) return;
 
@@ -1071,17 +1079,12 @@ document.addEventListener('DOMContentLoaded', function() {
       if (checkBtn) checkBtn.style.display = visible ? '' : 'none';
     }
 
-    function appendLog(msg) {
+    // The log is the updater's own lines, kept in the state (capped there),
+    // so a replay shows exactly what the live events showed.
+    function setLog(lines) {
       if (!logEl) return;
-      logEl.style.display = '';
-      // Append via text node (avoids re-reading/rewriting the full textContent string).
-      // Cap at 200 lines to prevent unbounded DOM growth during long downloads.
-      var lines = logEl.querySelectorAll('.log-line');
-      if (lines.length >= 200) lines[0].remove();
-      var line = document.createElement('span');
-      line.className = 'log-line';
-      line.textContent = (logEl.childNodes.length ? '\\n' : '') + msg;
-      logEl.appendChild(line);
+      logEl.textContent = lines.join('\\n');
+      logEl.style.display = lines.length ? '' : 'none';
       logEl.scrollTop = logEl.scrollHeight;
     }
 
@@ -1102,53 +1105,66 @@ document.addEventListener('DOMContentLoaded', function() {
         if (versionEl) versionEl.textContent = 'v' + v;
       }).catch(function() {});
 
-      setState(window.__shellI18n.upToDate, false);
+      // One render for the main process's updater state, used for live events
+      // and for the replay on every page load, so both always look the same.
+      // The bell counts any update the user has been told about: found and
+      // downloading, downloaded, or a download that then failed.
+      // A state older than the one already shown (the page's replay answered
+      // after a live event) is ignored; the revision outlives a Back restore.
+      function renderUpdateState(s) {
+        if (s.revision < (window._celerpUpdateRevision || 0)) return;
+        window._celerpUpdateRevision = s.revision;
+        var i18n = window.__shellI18n;
+        if (s.status === 'downloading') {
+          setState(s.percent > 0 ? i18n.downloadingPct.replace('{pct}', Math.round(s.percent))
+                   : s.version ? i18n.downloadingVersion.replace('{version}', s.version)
+                   : i18n.downloadingUpdate, false);
+          setCheckBtn(false);
+          setProgress(s.percent);
+        } else if (s.status === 'downloaded') {
+          setState(s.version ? i18n.versionReady.replace('{version}', s.version) : i18n.updateReady, true);
+          setCheckBtn(false);
+          setProgress(100);
+        } else if (s.checking) {
+          // A check has started and has no result yet.
+          setState(i18n.checking, false);
+          setCheckBtn(false);
+          setProgress(-1);
+        } else if (s.status === 'error') {
+          setState(s.downloadFailed ? i18n.updateDownloadFailed : i18n.updateCheckFailed, false);
+          resetToIdle();
+        } else {
+          setState(i18n.upToDate, false);
+          resetToIdle();
+        }
+        setLog(s.log);
+        window.celerpSetUpdateBell(s.status === 'downloading' || s.status === 'downloaded'
+                                   || (s.status === 'error' && s.downloadFailed));
+      }
 
-      // Log lines: always show — no isManualCheck gate.
-      window.celerp.onUpdateLog(function(msg) { appendLog(msg); });
+      // Updater events are subscribed once per page load and always reach the
+      // card on screen now, which a Back restore from the htmx history cache
+      // replaces with fresh elements.
+      window._celerpUpdateCard = { render: renderUpdateState };
+      if (!window._celerpUpdateSubscribed) {
+        window._celerpUpdateSubscribed = true;
+        var render = function(s) { window._celerpUpdateCard.render(s); };
+        window.celerp.onUpdateLog(render);
+        window.celerp.onUpdateAvailable(render);
+        window.celerp.onDownloadProgress(render);
+        window.celerp.onUpdateDownloaded(render);
+        window.celerp.onUpdateNotAvailable(render);
+        window.celerp.onUpdateError(render);
+      }
 
-      window.celerp.onUpdateAvailable(function(info) {
-        setState(window.__shellI18n.downloadingVersion.replace('{version}', info && info.version ? info.version : window.__shellI18n.updateWord), false);
-        setCheckBtn(false);
-        setProgress(0);
-      });
-
-      window.celerp.onDownloadProgress(function(progress) {
-        var pct = progress && typeof progress.percent === 'number' ? progress.percent : 0;
-        setProgress(pct);
-        // Also update state text so user sees live percentage
-        setState(window.__shellI18n.downloadingPct.replace('{pct}', Math.round(pct)), false);
-      });
-
-      window.celerp.onUpdateNotAvailable(function() {
-        setState(window.__shellI18n.upToDate, false);
-        appendLog(window.__shellI18n.alreadyLatest);
-        resetToIdle();
-      });
-
-      window.celerp.onUpdateDownloaded(function(info) {
-        var v = info && info.version ? info.version : window.__shellI18n.updateWord;
-        setState(window.__shellI18n.versionReady.replace('{version}', v), false);
-        setProgress(100);
-        setCheckBtn(false);
-        if (restartBtn) restartBtn.style.display = '';
-        appendLog(window.__shellI18n.updateDownloadedLog.replace('{version}', v));
-        window.celerpSetUpdateReady(v);
-      });
-
-      // Errors are always visible — never silently swallowed.
-      window.celerp.onUpdateError(function(info) {
-        var msg = info && info.message ? info.message : window.__shellI18n.unknownError;
-        setState(window.__shellI18n.updateCheckFailed, false);
-        appendLog(window.__shellI18n.errorPrefix + ' ' + msg);
-        resetToIdle();
-      });
+      // Replay whatever the updater did before this card appeared. Until it
+      // answers, the card stays as rendered (no status claimed).
+      window.celerp.getUpdateState().then(renderUpdateState).catch(function() {});
 
       if (checkBtn) {
         checkBtn.addEventListener('click', function() {
           setCheckBtn(false);
           setState(window.__shellI18n.checking, false);
-          if (logEl) { logEl.textContent = ''; logEl.style.display = 'none'; }
           window.celerp.checkForUpdates().catch(function() {
             setState(window.__shellI18n.updateCheckFailed, false);
             resetToIdle();
@@ -1208,7 +1224,7 @@ document.addEventListener('DOMContentLoaded', function() {
           setState(i18n.updateNotChecked, false);
         } else if (s.latest) {
           setState(i18n.updateAvailablePrefix + s.latest, s.can_install);
-          window.celerpSetUpdateReady(s.latest);
+          window.celerpSetUpdateBell(true);
           if (!s.can_install) {
             notes.push(reasonText(s.reason));
             show(upgradeEl, pipReasons.indexOf(s.reason) !== -1);
@@ -1310,7 +1326,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
       refresh(false);
     }
-  })();
+  }
+  initUpdateCard();
+  // Back and Forward can restore a page from the htmx history cache instead of
+  // loading it. The restored card is a saved copy with no listeners that shows
+  // the status from when it was saved, so set it up again.
+  document.addEventListener('htmx:historyRestore', initUpdateCard);
 });
 """
 
@@ -1667,14 +1688,12 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "noNotifications": t("shell.no_notifications", lang),
         "upToDate": t("shell.up_to_date", lang),
         "downloadingVersion": t("shell.js_downloading_version", lang),
-        "updateWord": t("shell.js_update_word", lang),
+        "downloadingUpdate": t("shell.js_downloading_update", lang),
         "downloadingPct": t("shell.js_downloading_pct", lang),
-        "alreadyLatest": t("shell.js_already_latest", lang),
         "versionReady": t("shell.js_version_ready", lang),
-        "updateDownloadedLog": t("shell.js_update_downloaded_log", lang),
-        "unknownError": t("shell.unknown_error", lang),
+        "updateReady": t("shell.js_update_ready", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
-        "errorPrefix": t("shell.error_prefix", lang),
+        "updateDownloadFailed": t("shell.update_download_failed", lang),
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),
@@ -1730,6 +1749,16 @@ def client_scripts(lang: str = "en") -> list:
     ]
 
 
+def _redirect_notice(request, lang: str) -> list:
+    """Why the caller was sent here, on whichever page answers the redirect: the
+    dashboard, or the page standing in for it where the company turned it off
+    (ui.security.not_permitted_redirect)."""
+    from ui.security import take_not_permitted
+    if not take_not_permitted(request):
+        return []
+    return [flash(t("perm.redirected_no_access", lang))]
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -1771,7 +1800,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
                     _backup_banner_html(lang),
                     _GLOBAL_UI_ERROR_HTML,
                     _TOAST_CONTAINER_HTML,
-                    Main(*content, id="main-content", cls="main-content"),
+                    Main(*_redirect_notice(request, lang), *content, id="main-content", cls="main-content"),
                     Div(id="account-gate-host"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
@@ -2232,42 +2261,35 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
     return str(best_match.get("key") or active) if best_match else active
 
 
-def module_nav(request=None) -> list[dict]:
-    """Nav entries of the modules running in this process and enabled for the caller's
-    company, in display order. Kernel entries (no _module key) always count, as do
-    core-folded components (wired at app construction, never subject to per-company
-    enablement - their pages do their own plan gating). With no modules claim on the
-    token (an older JWT), every running module counts, as a safe fallback. Anything that
-    shows or links to a module's pages asks this, so a module that is off leaves no trace."""
-    from ui.config import get_enabled_modules
-    from celerp.modules.loader import CORE_FOLDED
-
-    enabled = get_enabled_modules(request) if request else set()
+def module_nav(settings: dict | None) -> list[dict]:
+    """Nav entries of the modules running in this process that the company uses
+    (uses_module on its settings), in display order. Anything that shows or links
+    to a module's pages asks this, so a module that is off leaves no trace."""
+    from celerp.modules.registry import uses_module
     try:
         from celerp.modules.slots import get as get_slot
         slot_items: list[dict] = get_slot("nav")
     except Exception:
         slot_items = []
     return [item for item in sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
-            if item.get("_module") is None or item["_module"] in CORE_FOLDED
-            or not enabled or item["_module"] in enabled]
+            if uses_module(settings, item.get("_module"))]
 
 
-def module_active(request, name: str) -> bool:
-    """Whether module ``name`` is running here and enabled for the caller's company."""
-    return any(item.get("_module") == name for item in module_nav(request))
+def module_active(settings: dict | None, name: str) -> bool:
+    """Whether module ``name`` is running here and the company uses it."""
+    return any(item.get("_module") == name for item in module_nav(settings))
 
 
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
     from celerp.services.permissions import role_has_permission
+    from ui.module_slots import slot_permission_allows
 
     settings = settings or {}
 
     def _allowed(item: dict) -> bool:
-        perm = item.get("permission")
-        return role_has_permission(settings, role, perm) if perm else True
+        return slot_permission_allows(item, settings, role)
 
     # Drop what this company cannot see before deduplicating, not after. Two modules
     # may offer the same section: accounting and reports both declare "reports",
@@ -2275,7 +2297,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     # Deduplicating first lets a disabled module's entry win the key and then be
     # filtered out, taking the enabled module's entry with it and leaving the
     # section missing from the nav altogether.
-    visible = [item for item in module_nav(request) if _allowed(item)]
+    visible = [item for item in module_nav(settings) if _allowed(item)]
 
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()

@@ -13,7 +13,7 @@ from sqlalchemy import select, update as sa_update
 from celerp.models.company import Company
 from celerp.models.notification import Notification
 from celerp.services import update
-from test_helpers import register_admin
+from test_helpers import notice_in, register_admin
 
 # 20:30 UTC is 03:30 in Bangkok (inside the window) and outside it in UTC.
 BANGKOK_NIGHT = datetime(2026, 9, 26, 20, 30, tzinfo=timezone.utc)
@@ -93,7 +93,7 @@ def _last_result(ok):
 ])
 @pytest.mark.asyncio
 async def test_notifies_every_company_once(client, session, cfg_dir, ok, title):
-    await register_admin(client)
+    headers = {"Authorization": f"Bearer {await register_admin(client)}"}
     session.add(Company(name="Second Co", slug="second-co", settings={}))
     await session.commit()
     update.write_state(_last_result(ok))
@@ -103,12 +103,19 @@ async def test_notifies_every_company_once(client, session, cfg_dir, ok, title):
 
     rows = (await session.execute(
         select(Notification).where(Notification.category == "system"))).scalars().all()
-    assert len(rows) == 2 and {r.title for r in rows} == {title}
-    assert {r.priority for r in rows} == {"high"}
+    assert len(rows) == 2 and {r.priority for r in rows} == {"high"}
     assert update.read_state()["last_result"]["notified"] is True
+    # The API carries readable text and the message key the UI translates from.
+    shown = (await client.get("/notifications", headers=headers)).json()["items"]
+    assert [n["title"] for n in shown] == [title]
+    assert shown[0]["i18n"]["title"] == ("notif.update_ok" if ok else "notif.update_failed") + ".title"
     if not ok:
-        assert "still on 1.0.0" in rows[0].body and "not changed" in rows[0].body
-        assert update.reason_text("install_failed") in rows[0].body
+        assert "still on 1.0.0" in shown[0]["body"] and "not changed" in shown[0]["body"]
+        assert update.reason_text("install_failed") in shown[0]["body"]
+        german = notice_in("de", shown[0])
+        assert german["title"] == "Celerp konnte nicht auf 1.1.0 aktualisiert werden"
+        assert "die neue Version konnte nicht installiert werden" in german["body"]
+        assert "Ihre Daten wurden nicht geändert" in german["body"]
 
 
 @pytest.mark.asyncio
@@ -121,3 +128,12 @@ def test_status_with_unreadable_update_record_shows_an_update_running(cfg_dir):
     (cfg_dir / update.STATE_FILE).write_text("{torn")
     body = update.status(owner=True)
     assert body["last_result"] is None and body["installing"] is True
+
+
+def test_every_failure_reason_is_translated_in_every_locale():
+    from pathlib import Path
+    import json
+    for path in sorted((Path(__file__).parents[1] / "ui" / "locales").glob("*.json")):
+        catalog = json.loads(path.read_text(encoding="utf-8"))
+        missing = [c for c in (*update.REASON_CODES, "unknown") if f"update.reason.{c}" not in catalog]
+        assert not missing, f"{path.name}: {missing}"

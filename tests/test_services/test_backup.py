@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import secrets
 import subprocess
@@ -148,7 +149,22 @@ def test_relay_base_url_from_http_url():
 
 
 # ── restore_database_file ──────────────────────────────────────────────────────────
+# These cover how pg_restore is found and invoked. The URL names no real database,
+# so the mutating scope it runs in (covered in tests/test_db_fence.py) is a stand-in.
 
+class _NoScope:
+    def write_window(self):
+        return contextlib.nullcontext()
+
+
+@pytest.fixture
+def _no_scope(monkeypatch):
+    from celerp.migrations import compatibility
+    monkeypatch.setattr(compatibility, "mutating_scope",
+                        lambda url, accept=None: contextlib.nullcontext(_NoScope()))
+
+
+@pytest.mark.usefixtures("_no_scope")
 def test_restore_database_success(monkeypatch, tmp_path):
     calls = []
 
@@ -163,6 +179,7 @@ def test_restore_database_success(monkeypatch, tmp_path):
     assert calls[0][-1] == str(dump)
 
 
+@pytest.mark.usefixtures("_no_scope")
 def test_restore_database_not_found(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError("pg_restore")
@@ -172,6 +189,7 @@ def test_restore_database_not_found(monkeypatch):
         restore_database_file(Path("database.dump"), "postgresql+asyncpg://u:p@localhost/db")
 
 
+@pytest.mark.usefixtures("_no_scope")
 def test_restore_database_error(monkeypatch):
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"ERROR: relation does not exist")
@@ -359,6 +377,7 @@ class TestDumpDatabaseUsesResolvedPath:
         assert b"FAKE_LINUX_DUMP" in result
 
 
+@pytest.mark.usefixtures("_no_scope")
 class TestRestoreDatabaseUsesResolvedPath:
     """restore_database_file must resolve pg_restore via _find_pg_tool."""
 

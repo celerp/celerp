@@ -5,6 +5,7 @@
 # Target database: PostgreSQL (production).
 # SQLite is dev-only and uses create_all(); do NOT run Alembic against SQLite.
 
+import contextlib
 import os
 from logging.config import fileConfig
 
@@ -66,13 +67,17 @@ def run_migrations_online() -> None:
     cfg = config.get_section(config.config_ini_section, {})
     cfg["sqlalchemy.url"] = _sync_url
 
-    connectable = engine_from_config(
-        cfg,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
+    # Every production migration runs inside the mutating scope
+    # (celerp.migrations.compatibility.mutating_scope), so it migrates through a
+    # guarded engine of the fence it holds.
+    from celerp.migrations.compatibility import held_fence
+    held = held_fence(_sync_url)
+    if held is not None:
+        engines = held.engine(poolclass=pool.NullPool)
+    else:
+        engines = contextlib.nullcontext(
+            engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool))
+    with engines as connectable, connectable.connect() as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -80,7 +85,6 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
-
 
 if context.is_offline_mode():
     run_migrations_offline()

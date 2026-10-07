@@ -152,32 +152,11 @@ jobs:
         working-directory: electron
         run: pnpm install --frozen-lockfile
 
+      # A release tag must be vX.Y.Z: the Windows installer compares dotted numbers
+      # only, so a suffixed release would look identical to the plain one.
       - name: Set Electron version from git tag or development commit
         shell: bash
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            DESC="$(git describe --tags --match 'v[0-9]*' --long --abbrev=7 HEAD 2>/dev/null || true)"
-            if [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-([0-9]+)-g([0-9a-f]+)$ ]]; then
-              NEXT_PATCH=$((10#${BASH_REMATCH[3]} + 1))
-              VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${NEXT_PATCH}-dev.${BASH_REMATCH[4]}+g${BASH_REMATCH[5]}"
-            else
-              COUNT="$(git rev-list --count HEAD)"
-              SHORT_SHA="$(git rev-parse --short=7 HEAD)"
-              VERSION="0.0.1-dev.${COUNT}+g${SHORT_SHA}"
-            fi
-          fi
-          VERSION="$VERSION" python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          path = Path('electron/package.json')
-          data = json.loads(path.read_text())
-          data['version'] = os.environ['VERSION']
-          path.write_text(json.dumps(data, indent=2) + '\n')
-          PY
-          echo "Electron package version set to $VERSION"
+        run: python3 scripts/electron_version.py
 
       # Download + SHA256-verify (against the release's SHA256SUMS) before extract.
       - name: Download Python standalone (arm64)
@@ -801,6 +780,81 @@ jobs:
             exit 1
           }
           Write-Host "boot smoke OK on Windows (port $port)"
+
+      # The installer reads the installed version from the uninstall entry. Over an
+      # existing install: none -> installs; the same version run silently ->
+      # reinstalls; installed newer -> stops with exit 2 and changes nothing (the
+      # installed exe, a file in the install folder and the uninstall entry are
+      # compared byte for byte); installed older -> updates; the in-app updater
+      # (--updated) -> is never stopped or prompted.
+      - name: Installer version check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = (Resolve-Path "electron/dist/Celerp-Setup.exe").Path
+          function Install([string[]]$installerArgs) {
+            $p = Start-Process -FilePath $setup -ArgumentList $installerArgs -Wait -PassThru
+            return $p.ExitCode
+          }
+          function Entry {
+            Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+              Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
+              Select-Object -First 1
+          }
+          function Installed { (Get-ItemProperty (Entry).PSPath).DisplayVersion }
+          function InstallDir {
+            $u = (Get-ItemProperty (Entry).PSPath).UninstallString
+            if ($u -notmatch '^"([^"]+)"') { throw "unexpected UninstallString: $u" }
+            Split-Path $Matches[1]
+          }
+          function Fail([string]$why) { Write-Host "::error::$why"; exit 1 }
+          # Everything a refused run must leave alone.
+          function State {
+            $dir = InstallDir
+            [ordered]@{
+              exe      = (Get-FileHash (Join-Path $dir "Celerp.exe") -Algorithm SHA256).Hash
+              sentinel = (Get-FileHash (Join-Path $dir "celerp-ci-sentinel.txt") -Algorithm SHA256).Hash
+              entry    = (Get-ItemProperty (Entry).PSPath | Select-Object * -ExcludeProperty PS* | ConvertTo-Json -Compress)
+            } | ConvertTo-Json -Compress
+          }
+
+          # none: a fresh install.
+          $code = Install @("/S", "/currentuser")
+          if ($code -ne 0) { Fail "fresh install exited $code" }
+          if (-not (Entry)) { Fail "no Celerp uninstall entry after install" }
+          $built = Installed
+          Write-Host "none: installed $built"
+
+          # same: the same version run silently reinstalls.
+          $code = Install @("/S", "/currentuser")
+          if ($code -ne 0 -or (Installed) -ne $built) { Fail "same version: exit $code, entry $(Installed) (want exit 0, $built)" }
+          Write-Host "same: reinstalled $built"
+
+          # installed newer: this file is older than what is installed. Make the installed copy
+          # recognisable first, so any change to it shows.
+          Set-ItemProperty (Entry).PSPath -Name DisplayVersion -Value "999.0.0"
+          $dir = InstallDir
+          Set-Content -Encoding Ascii (Join-Path $dir "celerp-ci-sentinel.txt") "installed copy"
+          [IO.File]::WriteAllBytes((Join-Path $dir "Celerp.exe"), [Text.Encoding]::ASCII.GetBytes("installed exe"))
+          $before = State
+          $code = Install @("/S", "/currentuser")
+          $after = State
+          if ($code -ne 2) { Fail "older installer over 999.0.0 exited $code (want 2)" }
+          if ($after -ne $before) { Fail "older installer changed the install:`n before $before`n after  $after" }
+          Write-Host "installed newer: stopped with exit 2; exe, sentinel and uninstall entry unchanged"
+
+          # --updated: the in-app updater is never stopped or prompted, even over 999.0.0.
+          $code = Install @("--updated", "/S", "/currentuser")
+          if ($code -ne 0 -or (Installed) -ne $built) { Fail "in-app update run: exit $code, entry $(Installed) (want exit 0, $built)" }
+          Write-Host "--updated: proceeded without a prompt"
+
+          # installed older: this file updates it.
+          Set-ItemProperty (Entry).PSPath -Name DisplayVersion -Value "0.0.1"
+          $code = Install @("/S", "/currentuser")
+          if ($code -ne 0 -or (Installed) -ne $built) { Fail "newer installer over 0.0.1: exit $code, entry $(Installed) (want exit 0, $built)" }
+          Write-Host "installed older: updated 0.0.1 to $built"
+          Write-Host "installer version check OK on Windows"
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"

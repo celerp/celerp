@@ -16,7 +16,7 @@ import httpx
 from fastapi.routing import APIRoute
 
 from celerp.modules.loader import loaded_modules
-from celerp.modules.registry import is_enabled
+from celerp.modules.registry import uses_module
 from celerp.services.permissions import role_has_permission
 
 
@@ -121,7 +121,7 @@ def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str |
     name = str(manifest.get("name") or "")
     if not name:
         return None
-    if not is_enabled(company_settings, name):
+    if not uses_module(company_settings, name):
         return None
     return name
 

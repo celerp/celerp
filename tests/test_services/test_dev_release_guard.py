@@ -331,14 +331,12 @@ def test_a_schema_alone_never_makes_an_event_replayable(monkeypatch):
 async def test_a_manual_rebuild_refuses_events_it_cannot_replay(session, without_manufacturing):
     """Rebuilding from the ledger by hand (Doctor, the ledger rebuild) refuses before it
     deletes anything when a module the ledger needs is not enabled."""
-    from fastapi import HTTPException
-
-    from celerp.projections.engine import ProjectionEngine
+    from celerp.projections.engine import ProjectionEngine, UnhandledEventsError
 
     cid = await _seed_run(session)
     rows = await _rows(session, cid)
     without_manufacturing()
-    with pytest.raises(HTTPException) as err:
+    with pytest.raises(UnhandledEventsError) as err:
         await ProjectionEngine.rebuild(session, company_id=cid)
-    assert err.value.status_code == 409 and "Manufacturing" in err.value.detail
+    assert "Manufacturing" in str(err.value)
     assert await _rows(session, cid) == rows

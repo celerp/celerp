@@ -3240,7 +3240,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 }
 .share-btn-dot--live { background: var(--c-green); }
 
-/* --- Factory reset modal --- */
+/* --- Company reset modal --- */
 .reset-modal__body { padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 12px; }
 .reset-modal__body .modal-dialog__actions { margin-top: 4px; }
 .reset-modal__body .form-input { font-size: 14px; padding: 9px 11px; }
@@ -3421,12 +3421,10 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 #local-modules-panel .data-table td,
 #community-zone .data-table td,
 #marketplace-panel .data-table td { height: auto; padding-top: 8px; padding-bottom: 8px; vertical-align: top; white-space: normal; }
-/* Standard module column: bound the name/description column so long copy wraps at
-   a readable measure instead of stretching the table off-screen. Same on all
-   three module lists. */
-#local-modules-panel .data-table td:first-child,
-#community-zone .data-table td:first-child,
-#marketplace-panel .data-table td:first-child { max-width: 34rem; }
+/* Standard module column: bound the name/description cell so long copy wraps at
+   a readable measure instead of pushing the action column off-screen. Same on
+   all three module lists, wherever the cell sits in its row. */
+.data-table td.module-cell { max-width: 28rem; }
 /* Community disclosures sit below the description and read quieter than it. */
 .community-disclosure { margin: 2px 0; font-size: 11px; font-style: italic; color: var(--c-text2); }
 /* The self-declared caveat, stated once above the community table. */

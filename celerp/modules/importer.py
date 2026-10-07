@@ -13,7 +13,8 @@ Both funnel through the same checks, so the security posture cannot drift
 between surfaces:
   - manifest must parse (PLUGIN_MANIFEST with a valid "name")
   - the installed folder name IS the manifest name (id = folder = manifest)
-  - the "celerp-" prefix is reserved for first-party modules
+  - names starting "celerp-" or "celerp_", in any letter case, are reserved
+    for Marketplace modules
   - size caps, zip-slip guards, symlink rejection
   - min_celerp_version gate against the running app
   - collision refusal (existing module of the same name must be removed first)
@@ -24,7 +25,10 @@ are separate, deliberate steps (see the modules UI).
 from __future__ import annotations
 
 import ast
+import contextlib
 import errno
+import functools
+import logging
 import os
 import shutil
 import stat
@@ -35,11 +39,14 @@ from pathlib import Path
 
 from celerp.modules.meta import write_meta
 
+log = logging.getLogger(__name__)
+
 # Compressed and uncompressed caps. Generous for code, hostile to zip bombs.
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 MAX_UNPACKED_BYTES = 200 * 1024 * 1024
 
 _RESERVED_PREFIX = "celerp-"
+_RESERVED_IMPORT_PREFIX = "celerp_"
 _NAME_MAX = 64
 
 # Marker file the marketplace installer drops inside a PAID module's directory.
@@ -58,7 +65,7 @@ def _validate_name_chars(name: str) -> None:
 
     Delete resolves a folder from a caller-supplied name, so it needs the same
     charset guard as install (no separators, no traversal) without the celerp-
-    prefix trust rule, which only governs where a NEW package may install.
+    prefix rule, which only governs how a NEW package may install.
     """
     if not name or len(name) > _NAME_MAX:
         raise ModuleImportError("Module name missing or too long.")
@@ -69,28 +76,69 @@ def _validate_name_chars(name: str) -> None:
         )
 
 
+def is_reserved_name(name: str) -> bool:
+    """True for a name in the Marketplace namespace: ``celerp-`` or ``celerp_``,
+    in any letter case."""
+    return name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX))
+
+
 def _validate_name(name: str, *, official: bool = False) -> None:
     _validate_name_chars(name)
-    # The celerp- prefix is the trust boundary: sideloads may never claim it, and
-    # the marketplace-download path (official=True, relay-authenticated) may ONLY
-    # install under it - so neither path can impersonate the other.
-    if official != name.startswith(_RESERVED_PREFIX):
+    # The celerp- names, in any letter case and in the celerp_ spelling, are
+    # reserved for Marketplace modules: an upload or folder import may not use
+    # one, and an official Marketplace install uses only the celerp- form.
+    if official and not name.startswith(_RESERVED_PREFIX):
+        raise ModuleImportError("Official module packages must use the 'celerp-' name prefix.")
+    if not official and is_reserved_name(name):
         raise ModuleImportError(
-            "The 'celerp-' name prefix is reserved for official modules."
-            if not official else
-            "Official module packages must use the 'celerp-' name prefix."
+            "Names starting with 'celerp-' or 'celerp_', in any letter case, are reserved "
+            "for Marketplace modules. A module of your own needs a different name."
         )
 
 
-def _manifest_node(tree: ast.AST):
-    """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "PLUGIN_MANIFEST":
-                return node
-    return None
+def _bound_names(node) -> list[str]:
+    """The names one AST node binds (or deletes) in its scope: definitions,
+    imports, assignment targets, global and nonlocal declarations, match
+    captures and except-as names, which Python deletes again when the handler
+    ends."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return [node.id]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return list(node.names)
+    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
+        return [node.name] if node.name else []
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    return []
+
+
+def _manifest_node(tree: ast.Module):
+    """The `PLUGIN_MANIFEST = {...}` assignment node in a parsed module, or None.
+
+    Raises :class:`ModuleImportError` when the source binds, changes or reads
+    the name anywhere else: Python binds the last assignment and runs every
+    change, so the one literal must be the only mention for it to be what the
+    module declares."""
+    uses = [n for n in ast.walk(tree)
+            if isinstance(n, ast.Name) and n.id == "PLUGIN_MANIFEST"
+            or "PLUGIN_MANIFEST" in _bound_names(n)]
+    node = next((n for n in tree.body if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "PLUGIN_MANIFEST"
+                         for t in n.targets)), None)
+    if node is not None:  # a later star import may rebind it
+        uses += [n for n in tree.body if isinstance(n, ast.ImportFrom)
+                 and any(a.name == "*" for a in n.names) and n.lineno > node.lineno]
+    if node is None and not uses:
+        return None
+    if node is None or len(node.targets) != 1 or uses != [node.targets[0]]:
+        raise ModuleImportError(
+            "PLUGIN_MANIFEST must be bound once, as one top-level literal, "
+            "and never changed or used elsewhere in __init__.py.")
+    return node
 
 
 def _read_manifest(init_py_text: str) -> dict:
@@ -115,9 +163,11 @@ def _has_manifest(init_py: Path) -> bool:
     """True if an __init__.py declares a PLUGIN_MANIFEST, without executing it."""
     try:
         tree = ast.parse(init_py.read_text(encoding="utf-8", errors="replace"))
+        return _manifest_node(tree) is not None
+    except ModuleImportError:
+        return True  # it declares one; reading it refuses the module
     except Exception:
         return False
-    return _manifest_node(tree) is not None
 
 
 def _locate_module(tree: Path) -> tuple[Path, dict]:
@@ -194,46 +244,150 @@ def installed_table_prefixes(exclude: str) -> dict[str, str]:
     return out
 
 
-def _validate_table_prefix(name: str, manifest: dict) -> None:
-    """When a module declares migrations it must carry a well-formed,
-    collision-free ``table_prefix``: the runtime migration runner scopes and (on
-    purge) drops tables by this prefix, so a prefix that captures a core table or
-    overlaps another module's would put foreign data on the drop list. Refuse the
-    install with a clear reason rather than defaulting a prefix, since a wrong
-    default silently mis-scopes purge.
-    """
-    if not manifest.get("migrations"):
-        return
-    prefix = manifest.get("table_prefix")
-    if not prefix or not isinstance(prefix, str):
-        raise ModuleImportError(
-            "This module declares migrations, so its PLUGIN_MANIFEST must set a "
-            '"table_prefix" naming the tables it owns (for example "acme_").'
-        )
-    if len(prefix) < 3:
-        raise ModuleImportError(
-            f'table_prefix "{prefix}" is too short; it must be at least 3 characters.'
-        )
-    if not prefix.endswith("_"):
-        raise ModuleImportError(
-            f'table_prefix "{prefix}" must end with an underscore (for example "acme_").'
-        )
-    from celerp.models.base import Base
+# A prefix is at least this long and ends in an underscore, so "acme_" scopes
+# cleanly and can never be a bare word that swallows unrelated tables.
+MIN_TABLE_PREFIX_LEN = 3
 
-    for table_name in Base.metadata.tables:
+
+def reserved_tables(name: str) -> frozenset[str]:
+    """Every table module *name*'s prefix may not claim, whichever modules this process
+    has loaded: every table Celerp's migration history has created or changed (obsolete
+    ones included), every table a bundled module declares or migrates, the tables the
+    loaded models declare other than *name*'s own, and the two Celerp manages without a
+    model, alembic's schema stamp and the instance's upgrade markers. The one source
+    for install, migrations, purge and backup attribution, through table_prefix_problem."""
+    from celerp.migrations._data_reconcile import _META_TABLE
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401  (registers every core table)
+
+    loaded = frozenset(Base.metadata.tables) - _loaded_tables_of(name)
+    return _historical_tables() | loaded | {"alembic_version", _META_TABLE}
+
+
+@functools.lru_cache(maxsize=1)
+def _historical_tables() -> frozenset[str]:
+    """Tables named in Celerp's migration history and in the bundled modules (their
+    migrations and model declarations), read from the source files, never imported.
+    A turned-off module's models are never loaded, so its tables are known only here."""
+    from celerp.migrations import _auto_stamp
+    from celerp.modules.loader import BUNDLED_SOURCE_DIR, read_manifest
+
+    migration_files = list((Path(_auto_stamp.__file__).parent / "versions").glob("*.py"))
+    declared: set[str] = set()
+    for module in sorted(BUNDLED_SOURCE_DIR.iterdir()) if BUNDLED_SOURCE_DIR.is_dir() else ():
+        if not (module / "__init__.py").is_file():
+            continue
+        package = read_manifest(module).get("migrations")
+        if isinstance(package, str) and package:
+            migration_files += module.joinpath(*package.split(".")).glob("*.py")
+        for source in module.rglob("*.py"):
+            if "tests" not in source.relative_to(module).parts:
+                declared |= _declared_table_names(source)
+    history = {sig.table for path in migration_files for sig in _auto_stamp.extract_signatures(path)}
+    return frozenset(history | declared)
+
+
+def _declared_table_names(source: Path) -> set[str]:
+    """The literal ``__tablename__`` values a source file assigns."""
+    try:
+        tree = ast.parse(source.read_text())
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+    return {node.value.value for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "__tablename__" for t in node.targets)
+            and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)}
+
+
+def _loaded_tables_of(name: str) -> frozenset[str]:
+    """The loaded tables whose model class is defined in a file inside an installed
+    copy of module *name* (its inner package name need not match the folder, e.g.
+    acme-widgets/acme_widgets)."""
+    import inspect
+    import sys
+
+    from celerp.models.base import Base
+    from celerp.modules.loader import module_search_path
+
+    roots = [os.path.realpath(Path(entry) / name) + os.sep
+             for entry in module_search_path().split(",") if entry]
+
+    def _owned(cls) -> bool:
+        try:
+            source = inspect.getsourcefile(sys.modules[cls.__module__]) or ""
+        except (KeyError, TypeError):
+            return False
+        return os.path.realpath(source).startswith(tuple(roots))
+
+    return frozenset(mapper.local_table.name for mapper in Base.registry.mappers
+                     if _owned(mapper.class_))
+
+
+def table_prefix_problem(name: str, prefix: object,
+                         installed: dict[str, str] | None = None) -> str | None:
+    """Why *prefix* cannot scope module *name*'s tables, or None when it can.
+
+    The migration runner scopes DDL by the prefix and the purge drops every table
+    carrying it, so a prefix that captures a core table or overlaps another
+    module's would put foreign data in reach. Checked wherever the prefix is
+    used (install, migrations, purge, backup attribution). *installed* is the
+    other modules' prefixes, read from MODULE_DIR when not given.
+    """
+    if not isinstance(prefix, str) or not prefix:
+        return ('"table_prefix" must name the tables the module owns '
+                '(for example "acme_").')
+    if len(prefix) < MIN_TABLE_PREFIX_LEN:
+        return (f'table_prefix "{prefix}" is too short; it must be at least '
+                f'{MIN_TABLE_PREFIX_LEN} characters.')
+    if not prefix.endswith("_"):
+        return f'table_prefix "{prefix}" must end with an underscore (for example "acme_").'
+    for table_name in sorted(reserved_tables(name)):
         if table_name.startswith(prefix):
+            return (f'table_prefix "{prefix}" collides with the existing table '
+                    f'"{table_name}". Choose a prefix that no core or installed '
+                    "table begins with.")
+    if installed is None:
+        installed = _wellformed_prefixes(exclude=name)
+    for other_name, other_prefix in installed.items():
+        if other_name != name and (prefix.startswith(other_prefix) or other_prefix.startswith(prefix)):
+            return (f'table_prefix "{prefix}" overlaps the prefix "{other_prefix}" '
+                    f'already claimed by installed module "{other_name}". Prefixes '
+                    "must not be prefixes of one another.")
+    return None
+
+
+def _wellformed_prefixes(exclude: str) -> dict[str, str]:
+    """The installed prefixes that pass every check except overlap. Only these can
+    overlap another module's: a malformed or colliding prefix owns nothing, so it
+    never disqualifies a sound one."""
+    return {name: prefix for name, prefix in installed_table_prefixes(exclude=exclude).items()
+            if table_prefix_problem(name, prefix, {}) is None}
+
+
+def valid_table_prefixes() -> dict[str, str]:
+    """{module_name: table_prefix} for the installed modules whose prefix passes
+    table_prefix_problem. Modules whose sound prefixes overlap are both left out."""
+    wellformed = _wellformed_prefixes(exclude="")
+    return {name: prefix for name, prefix in wellformed.items()
+            if table_prefix_problem(name, prefix, wellformed) is None}
+
+
+def _validate_table_prefix(name: str, manifest: dict) -> None:
+    """A declared ``table_prefix`` must pass table_prefix_problem, and a module
+    that declares migrations must declare one. Refuse the install with a clear
+    reason rather than defaulting a prefix, since a wrong default silently
+    mis-scopes purge.
+    """
+    if "table_prefix" not in manifest:
+        if manifest.get("migrations"):
             raise ModuleImportError(
-                f'table_prefix "{prefix}" collides with the existing table '
-                f'"{table_name}". Choose a prefix that no core or installed '
-                "table begins with."
+                "This module declares migrations, so its PLUGIN_MANIFEST must set a "
+                '"table_prefix" naming the tables it owns (for example "acme_").'
             )
-    for other_name, other_prefix in installed_table_prefixes(exclude=name).items():
-        if prefix.startswith(other_prefix) or other_prefix.startswith(prefix):
-            raise ModuleImportError(
-                f'table_prefix "{prefix}" overlaps the prefix "{other_prefix}" '
-                f'already claimed by installed module "{other_name}". Prefixes '
-                "must not be prefixes of one another."
-            )
+        return
+    problem = table_prefix_problem(name, manifest["table_prefix"])
+    if problem:
+        raise ModuleImportError(problem)
 
 
 def _module_dir() -> Path:
@@ -242,8 +396,8 @@ def _module_dir() -> Path:
     if not first:
         raise ModuleImportError("This install has no module directory configured.")
     d = Path(first)
-    # A sideload must never land in a bundled/trusted dir: a package written there
-    # would inherit first-party trust by name. Refuse rather than write into it.
+    # A sideload must never land in a bundled dir, which holds the default
+    # modules. Refuse rather than write into it.
     from celerp.modules.loader import is_bundled_dir
     if is_bundled_dir(d):
         raise ModuleImportError(
@@ -277,31 +431,64 @@ def remove_module_dir(name: str) -> None:
     traversal reach the filesystem) and each target must sit directly under its
     search entry. Removal mirrors the install landing: rename to a hidden
     `.<name>.deleting-<uuid>` then rmtree, so a crash never leaves a half-deleted
-    tree under the live module name.
+    tree under the live module name. It waits for any install in progress
+    (_one_install_at_a_time), whose checks read what is on disk.
     """
     from celerp.modules.loader import is_first_party
 
     _validate_name_chars(name)
-    removed = False
-    for entry in os.environ.get("MODULE_DIR", "").split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        base = Path(entry)
-        target = base / name
-        if not target.is_dir() or target.resolve().parent != base.resolve():
-            continue
-        if is_first_party(target):
-            continue
-        grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
-        try:
-            os.replace(target, grave)
-        except OSError as exc:
-            raise ModuleImportError(f"Could not remove the module: {exc}")
-        shutil.rmtree(grave, ignore_errors=True)
-        removed = True
+    with _one_install_at_a_time():
+        removed = False
+        for entry in os.environ.get("MODULE_DIR", "").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            base = Path(entry)
+            target = base / name
+            if not target.is_dir() or target.resolve().parent != base.resolve():
+                continue
+            if is_first_party(target):
+                continue
+            grave = base / f".{name}.deleting-{uuid.uuid4().hex}"
+            try:
+                os.replace(target, grave)
+            except OSError as exc:
+                raise ModuleImportError(f"Could not remove the module: {exc}")
+            shutil.rmtree(grave, ignore_errors=True)
+            removed = True
     if not removed:
         raise ModuleImportError(f"Module '{name}' is not installed.")
+
+
+@contextlib.contextmanager
+def _one_install_at_a_time():
+    """Run the block while no other install, in any process, is in its own.
+
+    What an install is checked against (the names and table prefixes already on
+    disk) only stays true until the package lands if nothing else lands first."""
+    path = _module_dir() / ".install.lock"
+    with open(path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    continue
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _finish(staged: Path, manifest: dict, *, official: bool = False,
@@ -309,6 +496,11 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     name = str(manifest.get("name", ""))
     _validate_name(name, official=official)
     _check_min_version(manifest)
+    with _one_install_at_a_time():
+        return _land(staged, manifest, name, premium=premium, source=source)
+
+
+def _land(staged: Path, manifest: dict, name: str, *, premium: bool, source: str) -> dict:
     _validate_table_prefix(name, manifest)
     # Reconcile the marker in BOTH directions - belt and suspenders alongside
     # the explicit reserved-name refusals above: this is the one place every
@@ -331,12 +523,8 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
     # disk-full), then os.replace the finished tree into place. On any failure
     # the partial temp dir is removed and the error is a clean ModuleImportError,
     # not a 500.
-    # os.getpid() is identical across concurrent requests in the same process
-    # (installs run via asyncio.to_thread, i.e. real OS threads sharing one
-    # PID) - two simultaneous installs of the same slug would then race on
-    # this exact path, corrupting each other's copytree/replace. A per-call
-    # random suffix makes every attempt's landing dir unique regardless of
-    # concurrency.
+    # A per-call random suffix keeps a landing dir left by a crashed install
+    # from ever being reused.
     landing = target.parent / f".{name}.incoming-{uuid.uuid4().hex}"
     try:
         shutil.rmtree(landing, ignore_errors=True)
@@ -344,10 +532,10 @@ def _finish(staged: Path, manifest: dict, *, official: bool = False,
         os.replace(landing, target)
     except OSError as exc:
         shutil.rmtree(landing, ignore_errors=True)
-        # A concurrent install of the same slug can land the target between
-        # _target_for()'s check and this replace. os.replace onto a populated
-        # dir raises FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) -
-        # both mean "already there", so surface the same friendly message.
+        # A folder copied in by hand can appear between _target_for()'s check
+        # and this replace. os.replace onto a populated dir raises
+        # FileExistsError (EEXIST) or, on Linux, OSError(ENOTEMPTY) - both mean
+        # "already there", so surface the same friendly message.
         if isinstance(exc, FileExistsError) or exc.errno == errno.ENOTEMPTY:
             raise ModuleImportError(
                 f"A module named '{name}' already exists. Remove it first, then import."

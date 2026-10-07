@@ -22,6 +22,7 @@ from ui.components.cloud_gate import (
 from ui.components.shell import base_shell
 from ui.config import get_token as _token, get_role
 from ui.i18n import t, get_lang
+from ui.security import not_permitted_redirect
 
 # A proposal set larger than this renders as the review table instead of cards.
 TABLE_FROM = 5
@@ -146,7 +147,7 @@ def setup_ui_routes(app) -> None:
                 title="AI Assistant - Celerp", nav_active="ai", request=request,
             )
         if not role_has_permission(settings, get_role(request), "use_ai_assistant"):
-            return RedirectResponse("/dashboard", status_code=302)
+            return not_permitted_redirect(request)
 
         try:
             status = await api.ai_quota_status(token)

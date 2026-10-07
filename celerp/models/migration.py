@@ -138,8 +138,9 @@ class MigrationEntityMap(Base):
 class MigrationCleanupTask(Base):
     """Files still to delete, retried at startup until they are gone.
 
-    A discard task names a discarded staged company: its run sources and all its
-    attachment files, written in the discard transaction. An attachment task names one
+    A discard task names a discarded staged company, and a company reset task names a
+    reset company: its run sources and all its attachment files, written in the same
+    transaction that deletes the company. An attachment task names one
     file a migration batch is about to store: committed before the file is written and
     deleted in the batch transaction that links it, so a task that outlives its batch
     marks a file no committed record links. No foreign keys: the company and runs a task

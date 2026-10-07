@@ -743,7 +743,7 @@ async def test_every_company_table_classified_full_schema(real_engine):
     """Every company table in the shipped schema, bundled modules included, is portable,
     excluded with a reason, or owned by a module prefix, and exactly one of these."""
     from celerp.models.base import Base
-    from celerp.modules.importer import installed_table_prefixes
+    from celerp.modules.importer import valid_table_prefixes
     from celerp.services.migrations import company_tables
     cb = _bk_cb()
     _bk_import_bundled_models()
@@ -751,7 +751,7 @@ async def test_every_company_table_classified_full_schema(real_engine):
         database = set(await company_tables(s))
         portable = await cb.classify(s)
     declared = {name for name, table in Base.metadata.tables.items() if "company_id" in table.columns}
-    prefixes = tuple(installed_table_prefixes("").values())
+    prefixes = tuple(valid_table_prefixes().values())
     for table in sorted(database | declared):
         groups = [table in cb.PORTABLE_TABLES, table in cb.EXCLUDED_TABLES,
                   bool(prefixes) and table.startswith(prefixes)]
@@ -763,11 +763,11 @@ async def test_every_company_table_classified_full_schema(real_engine):
 
 async def test_no_table_in_both_groups():
     """No table is both portable and excluded, and neither list claims a module-prefix table."""
-    from celerp.modules.importer import installed_table_prefixes
+    from celerp.modules.importer import valid_table_prefixes
     cb = _bk_cb()
     assert isinstance(cb.PORTABLE_TABLES, frozenset) and isinstance(cb.EXCLUDED_TABLES, dict)
     assert not set(cb.PORTABLE_TABLES) & set(cb.EXCLUDED_TABLES)
-    prefixes = tuple(installed_table_prefixes("").values())
+    prefixes = tuple(valid_table_prefixes().values())
     if prefixes:
         assert not [t for t in (*cb.PORTABLE_TABLES, *cb.EXCLUDED_TABLES) if t.startswith(prefixes)]
     assert set(cb.PORTABLE_TABLES) == {"locations", "work_centers", "ledger", "projections", "accounts",
@@ -846,6 +846,99 @@ async def test_module_prefix_table_round_trip(real_engine, real_client, tmp_path
             rows = (await conn.execute(text("SELECT id, note FROM zz_widgets WHERE company_id = :c"),
                                        {"c": new})).all()
         assert [r.note for r in rows] == ["widget-marker"] and rows[0].id != old
+    finally:
+        await _bk_drop(real_engine, "zz_widgets")
+
+
+def _bk_shadow_module(tmp_path, name: str, prefix: str) -> None:
+    """A module copied by hand next to the fake one (it never passed the install
+    check), whose manifest claims the fake module's table and leaves it out of backups."""
+    pkg = tmp_path / "bk-modules" / name
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0.0", "table_prefix": "{prefix}", '
+        '"company_backup": {"zz_widgets": "exclude"}}\n')
+
+
+async def test_malformed_hand_copied_prefix_does_not_take_over_a_module_table(real_engine, real_client, tmp_path,
+                                                                              monkeypatch):
+    """A hand-copied module with a malformed prefix owns nothing: the sound module keeps its table
+    and the table still travels with the backup."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _bk_shadow_module(tmp_path, "zz-shadow", "zz_wid")
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    await _bk_sql(real_engine, "CREATE TABLE zz_widgets (id uuid primary key, "
+                               "company_id uuid not null references companies(id) on delete cascade, note text)")
+    try:
+        await _bk_sql(real_engine, "INSERT INTO zz_widgets (id, company_id, note) VALUES (:i, :c, 'kept')",
+                      i=uuid.uuid4(), c=cid)
+        data = await download(real_client, tok)
+        assert manifest(data)["tables"]["zz_widgets"]["rows"] == 1
+    finally:
+        await _bk_drop(real_engine, "zz_widgets")
+
+
+async def test_hand_copied_prefix_claiming_a_core_table_owns_nothing(real_engine, real_client, tmp_path,
+                                                                       monkeypatch):
+    """A hand-copied module whose prefix reaches Celerp's own schema stamp is not its owner:
+    the stamp is never attributed to the module, so its say-so neither stops nor shapes
+    the backup."""
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    pkg = tmp_path / "bk-modules" / "zz-stamper"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        'PLUGIN_MANIFEST = {"name": "zz-stamper", "version": "1.0.0", "table_prefix": "alembic_", '
+        '"company_backup": {"alembic_version": "include"}}\n')
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    async with real_engine.connect() as conn:
+        stamped = (await conn.execute(text("SELECT to_regclass('alembic_version')"))).scalar() is not None
+    if not stamped:
+        await _bk_sql(real_engine, "CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
+    try:
+        async with maker(real_engine)() as s:
+            plan = await cb._classify(s, strict=False)
+        assert "alembic_version" not in plan.owners and "alembic_version" not in plan.order
+        data = await download(real_client, tok)
+        assert "alembic_version" not in manifest(data)["tables"]
+    finally:
+        if not stamped:
+            await _bk_drop(real_engine, "alembic_version")
+
+
+@pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+async def test_hand_copied_prefix_claiming_a_turned_off_bundled_module_table_owns_nothing(
+        real_engine, tmp_path, monkeypatch, bundled_modules_unloaded, prefix):
+    """A bundled module's tables are never attributed to a hand-copied module claiming
+    them, even while the bundled module is turned off."""
+    from celerp.modules.importer import valid_table_prefixes
+    cb = _bk_cb()
+    _bk_fake_module(tmp_path, monkeypatch)
+    _bk_shadow_module(tmp_path, "zz-claimer", prefix)
+    assert "zz-claimer" not in valid_table_prefixes()
+    async with maker(real_engine)() as s:
+        plan = await cb._classify(s, strict=False)
+    assert plan.owners.get(bundled_modules_unloaded[prefix]) != "zz-claimer"
+    assert "zz-claimer" not in plan.owners.values()
+
+
+async def test_overlapping_hand_copied_prefix_stops_the_export_instead_of_dropping_a_table(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """Two modules whose sound prefixes overlap own nothing, so the table is refused by name
+    rather than silently left out of the backup on the copied module's say-so."""
+    _bk_local(monkeypatch, tmp_path)
+    _bk_fake_module(tmp_path, monkeypatch)
+    _bk_shadow_module(tmp_path, "zz-zshadow", _BK_PREFIX)
+    _, cid, tok = await _bk_setup(real_engine, settings={"enabled_modules": [_BK_MODULE]})
+    await _bk_sql(real_engine, "CREATE TABLE zz_widgets (id uuid primary key, "
+                               "company_id uuid not null references companies(id) on delete cascade, note text)")
+    try:
+        r = await real_client.get("/company-backups/download", headers=auth(tok))
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert "zz_widgets" in detail and detail.endswith("Nothing was backed up."), detail
     finally:
         await _bk_drop(real_engine, "zz_widgets")
 
@@ -2116,7 +2209,7 @@ async def test_a_companies_table_ahead_of_celerps_stops_the_backup(real_engine, 
 async def test_a_system_schema_named_on_the_search_path_still_backs_up_and_resets(
         real_engine, real_client, tmp_path, monkeypatch, system):
     """The database is set to look in a system schema after Celerp's own. Those hold
-    Postgres's own tables, never a company's, so the backup, its restore and a factory
+    Postgres's own tables, never a company's, so the backup, its restore and a company
     reset all go ahead."""
     from sqlalchemy import event
 
@@ -2134,7 +2227,7 @@ async def test_a_system_schema_named_on_the_search_path_still_backs_up_and_reset
         assert made.status_code == 200, made.text[:200]
         r = await restore(real_client, tok, made.content, mode="new_company")
         assert r.status_code == 201, r.text[:200]
-        r = await real_client.post("/system/factory-reset", headers=auth(tok), json={"confirm_name": "Alpha Trading"})
+        r = await real_client.post("/companies/me/reset", headers=auth(tok), json={"company_name": "Alpha Trading"})
         assert r.status_code == 200, r.text[:200]
         assert await _bk_scalar(real_engine, "SELECT count(*) FROM public.companies WHERE id = :c", c=cid) == 0
     finally:
@@ -4195,6 +4288,22 @@ async def test_enabled_but_uninstalled_module_not_a_backup_requirement(real_engi
     data = await download(real_client, tok)
     assert manifest(data)["modules"]["enabled"] == ["celerp-labels"]
     await _bk_restore_new(real_client, tok, data)
+
+
+@pytest.mark.parametrize("copied", [["zz-absent"], ["."], ["celerp-labels", "../outside"]])
+async def test_restored_company_uses_only_the_checked_module_list(real_engine, real_client, tmp_path, monkeypatch, copied):
+    """The restored company turns on exactly the modules the restore checked, never names carried in
+    the backup's copy of its settings."""
+    from celerp.modules.registry import get_enabled
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": ["celerp-labels"]})
+
+    def change(m):
+        m["company"]["settings"]["enabled_modules"] = copied
+    data = _bk_edit_manifest(await download(real_client, tok), change)
+    checked = set(manifest(data)["modules"]["enabled"])
+    new = await _bk_restore_new(real_client, tok, data)
+    assert get_enabled(await _bk_settings(real_engine, new)) == checked
 
 
 # ── Restore lineage: team carry, deactivated destinations and reactivation ───

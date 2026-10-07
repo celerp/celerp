@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 
 def setup_ui_routes(app) -> None:
     """Register all Contacts UI routes into the FastHTML app."""
-    from ui.routes.contacts import setup_routes
-    setup_routes(app)
+    from ui.routes import contacts, settings_contacts
+    contacts.setup_routes(app)
+    settings_contacts.setup_routes(app)
     log.info("celerp-contacts: UI routes registered")

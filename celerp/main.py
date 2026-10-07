@@ -20,6 +20,7 @@ from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
+from celerp.projections.engine import UnhandledEventsError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 from celerp.gateway.state import load_commercial_context
@@ -42,7 +43,7 @@ from celerp.held_back import (
     module_start_step,
     unowned_error,
 )
-from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
@@ -92,13 +93,14 @@ def _filtered_logger_handle(self, record):
 
 logging.Logger.handle = _filtered_logger_handle
 
-# Module system (opt-in: no-op if MODULE_DIR not set). Correct a MODULE_DIR whose
-# first entry is the bundled default_modules/ tree so imports land in a writable
-# drop-in, never among first-party modules (the dev/bare-run footgun).
+# Module system. An unset MODULE_DIR means the bundled trees and an empty one means
+# none; a MODULE_DIR whose first entry is the bundled default_modules/ tree is
+# corrected so imports land in a writable drop-in, never among first-party modules
+# (the dev/bare-run footgun).
 import os as _os
 from pathlib import Path as _Path
 from celerp.modules.loader import with_writable_module_dir as _with_writable_module_dir
-_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR", ""))
+_os.environ["MODULE_DIR"] = _with_writable_module_dir(_os.environ.get("MODULE_DIR"))
 _MODULE_DIR = _os.environ["MODULE_DIR"]
 
 
@@ -314,8 +316,66 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
         logging.getLogger(__name__).exception("Could not clear the held-back notice")
     return True
 
+_SHUTDOWN_GRACE_S = 10
+
+
+async def _stop_background_tasks(tasks: list[asyncio.Task | None]) -> None:
+    """Cancel the background tasks boot started and wait for each to finish, so none
+    is left with a connection open in a transaction (holding its table locks) after
+    shutdown. A task still running after _SHUTDOWN_GRACE_S ends the process there and
+    then: shutdown never returns with work of this process still able to write."""
+    tasks = [t for t in tasks if t is not None]
+    for task in tasks:
+        task.cancel()
+    if not tasks:
+        return
+    _done, pending = await asyncio.wait(tasks, timeout=_SHUTDOWN_GRACE_S)
+    if pending:
+        log.critical("%d background task(s) did not stop within %ss of shutdown: %s; stopping now",
+                     len(pending), _SHUTDOWN_GRACE_S, ", ".join(t.get_name() for t in pending))
+        _os._exit(1)
+
+
+def _refuse_start(exc: BaseException) -> None:
+    """Exit with the reason this copy cannot open the database."""
+    from celerp.migrations.compatibility import IncompatibleDatabase
+    if isinstance(exc, IncompatibleDatabase):
+        print(f"\n{exc}\n", file=sys.stderr)
+        sys.exit(1)
+    masked_url = mask_db_credentials(settings.database_url)
+    print(
+        f"\nFATAL: Cannot connect to database at {masked_url}\n"
+        f"  → {type(exc).__name__}: {exc}\n\n"
+        "Fix: check DATABASE_URL in .env and make sure Postgres is running.\n"
+        "  Ubuntu: sudo systemctl start postgresql\n"
+        "  macOS:  brew services start postgresql@15\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # The version fence is held from before the first change (recovery included)
+    # until the process stops, so no other Celerp version writes alongside this one.
+    from celerp.db_url import sync_url
+    from celerp.migrations.compatibility import Fence
+    try:
+        held = await asyncio.to_thread(
+            Fence.join, sync_url(lifecycle_engine.url.render_as_string(hide_password=False)))
+    except Exception as exc:
+        _refuse_start(exc)
+    # Every request and background transaction goes through these two engines.
+    held.guard(engine, lifecycle_engine)
+    try:
+        async with _serve(_app, held):
+            yield
+    finally:
+        await asyncio.to_thread(held.release)
+
+
+@asynccontextmanager
+async def _serve(_app: FastAPI, held):
     update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
 
@@ -329,22 +389,17 @@ async def lifespan(_app: FastAPI):
         yield
         return
 
+    # This copy is admitted, and recorded as having opened the database, in a
+    # transaction of its own before its first change, so even a start that fails or
+    # stops early below leaves an older copy refusing the database.
     try:
+        await asyncio.to_thread(held.admit)
         async with lifecycle_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except Exception as exc:
-        masked_url = mask_db_credentials(settings.database_url)
-        print(
-            f"\nFATAL: Cannot connect to database at {masked_url}\n"
-            f"  → {type(exc).__name__}: {exc}\n\n"
-            "Fix: check DATABASE_URL in .env and make sure Postgres is running.\n"
-            "  Ubuntu: sudo systemctl start postgresql\n"
-            "  macOS:  brew services start postgresql@15\n",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        _refuse_start(exc)
 
-    # Load external modules (opt-in: no-op if MODULE_DIR not set)
+    # Load modules (none when no module tree exists)
     _loaded_modules = []
     _enabled: set[str] = set()
     if _MODULE_DIR:
@@ -362,6 +417,13 @@ async def lifespan(_app: FastAPI):
                     await _starter_sess.commit()
             except Exception:
                 logging.getLogger(__name__).exception("Enabling the starter modules failed (non-fatal)")
+            # Fetch the free verdict of every installed celerp- module that has
+            # none, in the background while online, so it loads later without
+            # the relay.
+            import threading
+            from celerp.modules.loader import fetch_missing_free_verdicts
+            threading.Thread(target=fetch_missing_free_verdicts, args=(_MODULE_DIR,),
+                             name="free-verdicts", daemon=True).start()
         _enabled_env = _os.environ.get("ENABLED_MODULES", "")
         if _enabled_env:
             _enabled = set(_enabled_env.split(","))
@@ -370,22 +432,32 @@ async def lifespan(_app: FastAPI):
             _cfg = _read_config()
             _enabled = set(_cfg.get("modules", {}).get("enabled") or [])
         if _enabled:
-            # Apply each enabled module's runtime migrations before importing it,
-            # under the shared migration advisory lock. A third-party module whose
-            # migration fails is dropped from this boot and its error held to
-            # surface after load_all (which clears the load-error map on entry);
-            # a first-party failure re-raises. No-op on non-Postgres.
+            # Admit every enabled module before any of its code runs, apply the
+            # admitted modules' runtime migrations under the shared migration
+            # advisory lock, then load the survivors. A refused module, or a
+            # third-party module whose migration fails, runs nothing further and
+            # shows its reason as a load error; a first-party failure re-raises.
+            # The migration phase is a no-op on non-Postgres.
+            from celerp.modules.loader import admit_modules
             from celerp.modules.migrations_runner import run_migration_phase
-            from celerp.modules.loader import record_load_error
-            _enabled, _migration_errors = await run_migration_phase(engine, _enabled)
-            _loaded_modules = load_all(_MODULE_DIR, _enabled)
-            for _mname, _merr in _migration_errors.items():
-                record_load_error(_mname, _merr)
+            _admission = await run_migration_phase(
+                engine, admit_modules(_MODULE_DIR, _enabled))
+            _loaded_modules = load_all(_MODULE_DIR, _enabled, admission=_admission)
             register_api_routes(_app, _loaded_modules)
-            # Module models register on Base.metadata at import time.
-            # Run create_all again so module tables are created (idempotent).
+            # Module models register on Base.metadata at import time (a module
+            # that is not running has its tables taken off again). Run
+            # create_all again so module tables are created (idempotent).
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            # The UI process offers only the modules recorded here as running.
+            from celerp.modules.outcome import publish as _publish_outcome
+            async with lifecycle_engine.begin() as conn:
+                await conn.run_sync(_publish_outcome)
+            if _loaded_modules:
+                # A module that fails in the UI process stops here before any
+                # module route answers.
+                from celerp.modules.outcome import await_ui_report
+                await_ui_report()
             if update_verify:
                 # Verification proves DB/module/runtime startup without external work.
                 await _verify_runtime_dependencies()
@@ -425,6 +497,13 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logging.getLogger(__name__).exception("Reconciling unfinished company restores failed (non-fatal)")
 
+    # In the background, and again every few minutes: a System Recovery restore Celerp
+    # Cloud has not confirmed is reported, and a company reset that stopped after Cloud
+    # began closing the company's online payments is settled (a deleted company's
+    # payments close for good, a kept one's reopen). Until then they stay closed.
+    from celerp.services.payments import reconcile_payments_loop
+    background = [asyncio.create_task(reconcile_payments_loop())]
+
     # A partner-packaged install with an unconsumed deployment credential
     # associates with its partner through the explicit relay seam before the
     # gateway starts. No-op for a direct install or one already associated.
@@ -442,10 +521,10 @@ async def lifespan(_app: FastAPI):
         # Authenticated activation is the canonical durable reconciliation path.
         # It is bounded, idempotent for established credentials, and runs in the
         # background so tunnel startup is never delayed.
-        asyncio.create_task(_try_sync_existing_entitlement())
+        background.append(asyncio.create_task(_try_sync_existing_entitlement()))
     else:
         # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
-        asyncio.create_task(_try_auto_activate())
+        background.append(asyncio.create_task(_try_auto_activate()))
 
     # Start backup scheduler - paid tiers only (public_url is the paid signal;
     # a free instance is not entitled to backups at all).
@@ -481,11 +560,11 @@ async def lifespan(_app: FastAPI):
 
     # Start AI file cleanup background task
     from celerp.ai.cleanup import run_cleanup_loop
-    cleanup_task = asyncio.create_task(run_cleanup_loop())
+    background.append(asyncio.create_task(run_cleanup_loop()))
 
     # Start JTI cleanup background task (runs hourly, advisory lock prevents duplicates)
     from celerp.services.session_tracker import run_jti_cleanup_loop
-    jti_cleanup_task = asyncio.create_task(run_jti_cleanup_loop())
+    background.append(asyncio.create_task(run_jti_cleanup_loop()))
 
     # Adopt legacy connector rows only when ownership is
     # unambiguous, then start near-real-time outbound stock delivery.
@@ -501,9 +580,8 @@ async def lifespan(_app: FastAPI):
     # alerts all read the projections to change data or tell other systems, so
     # none starts while they are not current; the next start that brings them
     # current starts them.
-    data_tasks: list[asyncio.Task] = []
     if data_current:
-        data_tasks = [
+        background += [
             # Near-real-time outbound stock delivery.
             asyncio.create_task(outbound_queue_loop()),
             # Connector reconciliation: a daily incremental sync per connector,
@@ -519,7 +597,7 @@ async def lifespan(_app: FastAPI):
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.
     from celerp.services.update import update_loop
-    update_task = asyncio.create_task(update_loop(restart=system._send_sigterm))
+    background.append(asyncio.create_task(update_loop(restart=system._send_sigterm)))
 
     yield
 
@@ -527,28 +605,21 @@ async def lifespan(_app: FastAPI):
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop background tasks
-    cleanup_task.cancel()
-    jti_cleanup_task.cancel()
-    for task in data_tasks:
-        task.cancel()
-    update_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
-
-    # Stop backup scheduler
-    try:
-        from celerp.services import backup_scheduler
-        backup_scheduler.stop()
-    except Exception:
-        pass
+    # Stop background tasks, the backup scheduler and migration runs included, and wait for them
+    from celerp.services import backup_scheduler
+    from celerp.services import migrations as _migration_runs
+    background.append(backup_scheduler.stop())
+    await _stop_background_tasks(background + _migration_runs.running_tasks())
 
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.
     from celerp.gateway import shutdown as _gateway_shutdown
     await _gateway_shutdown()
+
+    # Close every pooled connection last, once nothing is left to use one.
+    import celerp.db
+    await celerp.db.engine.dispose()
+    await celerp.db.lifecycle_engine.dispose()
 
 
 logging.basicConfig(level=settings.log_level.upper())
@@ -620,6 +691,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(DrainMiddleware)
 app.add_middleware(RecoveryMaintenanceMiddleware)
+app.add_middleware(ModuleStartupMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)
@@ -670,6 +742,12 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
+@app.exception_handler(UnhandledEventsError)
+async def unhandled_events_handler(_request: Request, exc: UnhandledEventsError):
+    # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
 @app.exception_handler(UnbalancedJournalEntry)
 async def unbalanced_je_handler(_request: Request, exc: UnbalancedJournalEntry):
     # An automatic journal entry that would not balance is refused, and the write that
@@ -684,7 +762,6 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
-app.include_router(system.update_router, prefix="/system", tags=["system"])
 app.include_router(stars_router_mod.router, prefix="/stars", tags=["stars"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)

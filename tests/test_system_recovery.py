@@ -20,6 +20,7 @@ import httpx
 import pytest
 from fasthtml.common import to_xml
 
+from celerp.migrations.compatibility import running_version
 from company_backup_support import company, owner, token
 from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
 from test_company_backup_ui import RECOVER, _anchors, _link, _page, ui  # noqa: F401
@@ -182,12 +183,6 @@ async def test_cloud_summary_links_to_system_recovery():
     html = to_xml(card)
     assert f'href="{PAGE}"' in html
     assert 'href="/settings/general?tab=backup"' not in html
-
-
-async def test_factory_reset_backup_link_unchanged():
-    """The factory reset card still offers the whole-installation export first."""
-    from ui.routes.settings import _factory_reset_card
-    assert 'href="/backup/export"' in to_xml(_factory_reset_card("Alpha Trading"))
 
 
 async def test_legacy_import_on_fresh_install_is_system_recovery(ui, real_engine):
@@ -379,13 +374,13 @@ async def test_cloud_snapshot_relay_payload_unchanged(tmp_path, monkeypatch):
     dump = b"PGDUMP-CUSTOM-FORMAT"
 
     async def _meta():
-        return {"celerp_version": "1.0.0", "pg_version": "16", "created_at": "2026-09-29T02:00:00Z",
+        return {"celerp_version": running_version(), "pg_version": "16", "created_at": "2026-09-29T02:00:00Z",
                 "company_name": "Harbor Goods Ltd", "enabled_modules": []}
 
     monkeypatch.setattr(httpx, "AsyncClient", _client)
     monkeypatch.setattr(backup_repo, "_relay", _relay)
     monkeypatch.setattr(backup_repo, "dump_database", lambda url: dump)
-    monkeypatch.setattr(backup_repo, "_build_meta", _meta)
+    monkeypatch.setattr("celerp.services.backup_export.archive_meta", _meta)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "backup_encryption_key", _key())
     monkeypatch.setattr(settings, "cloud_disconnected", False)
@@ -576,7 +571,7 @@ async def test_restore_refused_while_changes_are_paused_reads_as_a_sentence(ui, 
 
 
 @pytest.mark.parametrize("method, path, data", [
-    ("post", "/settings/factory-reset", None),
+    ("post", "/settings/company/reset", {"company_name": "Acme"}),
     ("delete", "/settings/company/deactivate", None),
     ("post", "/settings/labels", {"name": "Shelf tag"}),
     ("put", "/settings/labels/tmpl-1", {"name": "Shelf tag"}),
@@ -584,7 +579,7 @@ async def test_restore_refused_while_changes_are_paused_reads_as_a_sentence(ui, 
 ])
 async def test_a_settings_action_refused_while_changes_are_paused_reads_in_the_users_language(
         ui, real_engine, monkeypatch, method, path, data):
-    """Factory reset, deactivating the company and creating, saving or deleting a label
+    """Resetting or deactivating the company, creating, saving or deleting a label
     template, refused because the last start held the records back, show the refusal's
     sentence in the reader's language, never the keyed refusal's raw fields, an empty
     flash, or a success."""

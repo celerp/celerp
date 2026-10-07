@@ -65,8 +65,8 @@ async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0], sour
     items = await _projections(real_engine, run, "item")
     async with maker(real_engine)() as s:
         user = await s.scalar(select(User).where(User.email == OWNER_EMAIL))
-        token = (await issue_token_pair(s, user=user, company=await s.get(Company, run.company_id),
-                                        role="owner"))["access_token"]
+        token = (await issue_token_pair(s, user=user,
+                                        company_id=run.company_id))["access_token"]
     return Books(real_engine, run, maps, token, items[maps[("InventoryItem", ref("WID"))]]["location_id"])
 
 

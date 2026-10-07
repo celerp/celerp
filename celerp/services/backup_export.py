@@ -19,15 +19,6 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def _version() -> str:
-    """Return current celerp version string."""
-    try:
-        from importlib.metadata import version
-        return version("celerp")
-    except Exception:
-        return "unknown"
-
-
 def _pg_version() -> str:
     """Return pg_dump --version output."""
     import subprocess
@@ -94,19 +85,6 @@ def restore_roots() -> dict[str, Path]:
     }
 
 
-async def required_installation_modules(session) -> set[str]:
-    """Every module enabled by any company of this installation."""
-    from sqlalchemy import select
-    from celerp.models.company import Company
-
-    required: set[str] = set()
-    for company_settings in (await session.scalars(select(Company.settings))).all():
-        names = (company_settings or {}).get("enabled_modules") or []
-        if isinstance(names, list):
-            required.update(str(n) for n in names)
-    return required
-
-
 async def export_full() -> Path:
     """Export pg_dump + all restore-owned files + meta.json as .celerp-backup.
 
@@ -114,21 +92,30 @@ async def export_full() -> Path:
     Returns path to temp file.
     """
     import asyncio
-    import datetime
 
-    from celerp.config import settings, read_config
-    from celerp.db import get_session_ctx
+    from celerp.config import settings
     from celerp.services import backup
 
     dump = await asyncio.to_thread(backup.dump_database, settings.database_url)
-    async with get_session_ctx() as session:
-        enabled_modules = sorted(await required_installation_modules(session))
+    meta = await archive_meta()
+    return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)
 
-    meta = {
-        "celerp_version": _version(),
+
+async def archive_meta() -> dict:
+    """meta.json of a full backup."""
+    import datetime
+
+    from celerp.config import read_config
+    from celerp.db import get_session_ctx
+    from celerp.migrations.compatibility import running_version
+    from celerp.modules.registry import load_set
+
+    async with get_session_ctx() as session:
+        enabled_modules = await load_set(session)
+    return {
+        "celerp_version": running_version(),
         "pg_version": _pg_version(),
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "company_name": read_config().get("company", {}).get("name", "unknown"),
         "enabled_modules": enabled_modules,
     }
-    return await asyncio.to_thread(_build_archive, dump, list(restore_roots().values()), meta)

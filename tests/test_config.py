@@ -4,7 +4,7 @@
 
 Critical coverage: first-boot scenarios where config.toml does not yet exist.
 These guard against the infinite-restart bug (write_config writing api_port=0)
-and the silent-drop bug (set_enabled_modules no-oping when file is missing).
+and the silent-drop bug (replace_enabled_modules no-oping when file is missing).
 """
 from __future__ import annotations
 
@@ -165,41 +165,41 @@ class TestWriteReadRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# set_enabled_modules — first-boot (no config.toml)
+# replace_enabled_modules — first-boot (no config.toml)
 # ---------------------------------------------------------------------------
 
-class TestSetEnabledModulesFirstBoot:
-    """On first boot, config.toml does not exist. set_enabled_modules must write it."""
+class TestReplaceEnabledModulesFirstBoot:
+    """On first boot, config.toml does not exist. replace_enabled_modules must write it."""
 
     def test_writes_config_file_when_missing(self, tmp_path, monkeypatch):
         mod, cfg_file = _reload_config(tmp_path, monkeypatch)
         assert not cfg_file.exists()
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         assert cfg_file.exists()
 
     def test_written_file_contains_module(self, tmp_path, monkeypatch):
         mod, cfg_file = _reload_config(tmp_path, monkeypatch)
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         cfg = mod.read_config()
         assert "inventory" in cfg["modules"]["enabled"]
 
     def test_written_file_does_not_contain_zero_port(self, tmp_path, monkeypatch):
         """First-boot write must NOT produce api_port = 0 (the infinite-restart bug)."""
         mod, cfg_file = _reload_config(tmp_path, monkeypatch)
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         content = cfg_file.read_text()
         assert "api_port = 0" not in content
         assert "ui_port = 0" not in content
 
     def test_written_file_does_not_contain_empty_jwt_secret(self, tmp_path, monkeypatch):
         mod, cfg_file = _reload_config(tmp_path, monkeypatch)
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         content = cfg_file.read_text()
         assert 'jwt_secret = ""' not in content
 
     def test_multiple_modules_on_first_boot(self, tmp_path, monkeypatch):
         mod, _ = _reload_config(tmp_path, monkeypatch)
-        mod.set_enabled_modules(["inventory", "crm"])
+        mod.replace_enabled_modules(["inventory", "crm"])
         cfg = mod.read_config()
         enabled = cfg["modules"]["enabled"]
         assert "inventory" in enabled
@@ -207,35 +207,35 @@ class TestSetEnabledModulesFirstBoot:
 
 
 # ---------------------------------------------------------------------------
-# set_enabled_modules — idempotency
+# replace_enabled_modules — idempotency
 # ---------------------------------------------------------------------------
 
-class TestSetEnabledModulesIdempotency:
-    """Calling set_enabled_modules twice with the same modules must not duplicate them."""
+class TestReplaceEnabledModulesIdempotency:
+    """Calling replace_enabled_modules twice with the same modules must not duplicate them."""
 
     def test_no_duplicate_on_repeat_call(self, tmp_path, monkeypatch):
         mod, _ = _reload_config(tmp_path, monkeypatch)
-        mod.set_enabled_modules(["inventory"])
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         cfg = mod.read_config()
         assert cfg["modules"]["enabled"].count("inventory") == 1
 
     def test_noop_when_all_already_enabled(self, tmp_path, monkeypatch):
         """If all requested modules are already enabled, file mtime must not change."""
         mod, cfg_file = _reload_config(tmp_path, monkeypatch)
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         mtime_before = cfg_file.stat().st_mtime
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         mtime_after = cfg_file.stat().st_mtime
         assert mtime_before == mtime_after, "File should not be rewritten when nothing changes"
 
 
 # ---------------------------------------------------------------------------
-# set_enabled_modules — additive, preserves existing config
+# replace_enabled_modules — preserves unrelated config
 # ---------------------------------------------------------------------------
 
-class TestSetEnabledModulesPreservesConfig:
-    """set_enabled_modules must not wipe or overwrite unrelated config sections."""
+class TestReplaceEnabledModulesPreservesConfig:
+    """replace_enabled_modules must not wipe or overwrite unrelated config sections."""
 
     def test_preserves_server_ports(self, tmp_path, monkeypatch):
         mod, _ = _reload_config(tmp_path, monkeypatch)
@@ -245,8 +245,7 @@ class TestSetEnabledModulesPreservesConfig:
             "auth": {"jwt_secret": "mysecret"},
             "modules": {"enabled": []},
         })
-        # Then set_enabled_modules adds a module
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         cfg = mod.read_config()
         assert cfg["server"]["api_port"] == 12345
         assert cfg["server"]["ui_port"] == 12346
@@ -257,18 +256,15 @@ class TestSetEnabledModulesPreservesConfig:
             "auth": {"jwt_secret": "dontloseme"},
             "modules": {"enabled": []},
         })
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         cfg = mod.read_config()
         assert cfg["auth"]["jwt_secret"] == "dontloseme"
 
-    def test_additive_to_existing_modules(self, tmp_path, monkeypatch):
+    def test_replaces_existing_modules(self, tmp_path, monkeypatch):
         mod, _ = _reload_config(tmp_path, monkeypatch)
         mod.write_config({"modules": {"enabled": ["inventory"]}})
-        mod.set_enabled_modules(["crm"])
-        cfg = mod.read_config()
-        enabled = cfg["modules"]["enabled"]
-        assert "inventory" in enabled
-        assert "crm" in enabled
+        mod.replace_enabled_modules(["crm"])
+        assert mod.read_config()["modules"]["enabled"] == ["crm"]
 
 
 # ---------------------------------------------------------------------------
@@ -276,9 +272,9 @@ class TestSetEnabledModulesPreservesConfig:
 # ---------------------------------------------------------------------------
 
 class TestFirstBootSequence:
-    """End-to-end: simulate the exact sequence the Electron app runs on first boot.
+    """End-to-end: the first-boot sequence.
 
-    Step 1: seedDefaultModules() calls set_enabled_modules (no config.toml exists)
+    Step 1: the module list is written before config.toml exists
     Step 2: Setup wizard completes, writes full config via write_config
     Step 3: App restarts, read_config must have both modules AND server config
     """
@@ -286,8 +282,8 @@ class TestFirstBootSequence:
     def test_modules_survive_full_config_write(self, tmp_path, monkeypatch):
         mod, _ = _reload_config(tmp_path, monkeypatch)
 
-        # Step 1: Electron seeds modules before config.toml exists
-        mod.set_enabled_modules(["inventory", "crm"])
+        # Step 1: modules are written before config.toml exists
+        mod.replace_enabled_modules(["inventory", "crm"])
 
         # Step 2: Setup wizard writes full config (must read existing modules first)
         existing = mod.read_config()
@@ -309,7 +305,7 @@ class TestFirstBootSequence:
         mod, _ = _reload_config(tmp_path, monkeypatch)
 
         # First boot full sequence
-        mod.set_enabled_modules(["inventory"])
+        mod.replace_enabled_modules(["inventory"])
         cfg = mod.read_config()
         cfg.setdefault("server", {})["api_port"] = 9000
         cfg.setdefault("auth", {})["jwt_secret"] = "secret99"
@@ -322,15 +318,15 @@ class TestFirstBootSequence:
         assert cfg2["server"]["api_port"] == 9000
 
     def test_no_modules_on_subsequent_boot_means_setup_not_run(self, tmp_path, monkeypatch):
-        """If config.toml exists but [modules] is missing, set_enabled_modules must still write it."""
+        """If config.toml exists but [modules] is missing, replace_enabled_modules must still write it."""
         mod, _ = _reload_config(tmp_path, monkeypatch)
         # Simulate a partial config written by something else (no [modules])
         mod.write_config({
             "server": {"api_port": 8000, "ui_port": 8080},
             "auth": {"jwt_secret": "s3cr3t"},
         })
-        # set_enabled_modules must add [modules] without destroying [server]
-        mod.set_enabled_modules(["inventory"])
+        # replace_enabled_modules must add [modules] without destroying [server]
+        mod.replace_enabled_modules(["inventory"])
         cfg = mod.read_config()
         assert "inventory" in cfg["modules"]["enabled"]
         assert cfg["server"]["api_port"] == 8000
@@ -504,23 +500,8 @@ def test_tomli_declared_for_pre_311():
 
 
 # ---------------------------------------------------------------------------
-# remove_enabled_module
+# ensure_connect_identity
 # ---------------------------------------------------------------------------
-
-class TestRemoveEnabledModule:
-    def test_drops_only_the_named_module(self, tmp_path, monkeypatch):
-        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
-        mod.write_config({"modules": {"enabled": ["inventory", "sales", "crm"]}})
-        mod.remove_enabled_module("sales")
-        assert mod.read_config()["modules"]["enabled"] == ["inventory", "crm"]
-
-    def test_unknown_name_leaves_the_file_untouched(self, tmp_path, monkeypatch):
-        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
-        mod.write_config({"modules": {"enabled": ["inventory"]}})
-        before = cfg_file.read_bytes()
-        mod.remove_enabled_module("missing")
-        assert cfg_file.read_bytes() == before
-
 
 def test_ensure_connect_identity_persists_pair_in_one_rmw(tmp_path, monkeypatch):
     mod, _ = _reload_config(tmp_path, monkeypatch)

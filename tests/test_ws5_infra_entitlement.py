@@ -45,12 +45,13 @@ async def client(monkeypatch):
     present, so the request reaches the entitlement guard rather than stopping
     at the RBAC gate."""
     monkeypatch.setattr(sc, "_check_permission", AsyncMock(return_value=None), raising=False)
+    monkeypatch.setattr("ui.api_client.installation_owner", AsyncMock(return_value=True))
     monkeypatch.setattr(sc, "_token", lambda req: "tok", raising=False)
     app = FastHTML()
     sc.setup_routes(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://t",
-                           follow_redirects=False) as c:
+                           cookies={"celerp_token": "tok"}, follow_redirects=False) as c:
         yield c
 
 

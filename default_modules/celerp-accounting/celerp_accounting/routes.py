@@ -38,6 +38,7 @@ from celerp_accounting.chart_rules import (
     trimmed_text,
 )
 from celerp_accounting.import_service import AccImportRecord
+from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
@@ -318,7 +319,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     """
     from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, UNGUESSED_ROLES
     from celerp.models.company import Company
-    from celerp.modules.registry import is_enabled
+    from celerp.modules.registry import uses_module
     from celerp.services import migrations
     from celerp.services.account_roles import current_settings, reconcile_company
     from celerp.services.lot_origin import (
@@ -343,7 +344,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
         if await reconcile_company(session, company_id, UNGUESSED_ROLES if seeded else frozenset()):
             await notify_unmapped(session, company_id)
         settings = await current_settings(session, company_id)
-        if INVENTORY_ORIGIN_KEY in settings or not is_enabled(settings, "celerp-accounting"):
+        if INVENTORY_ORIGIN_KEY in settings or not uses_module(settings, "celerp-accounting"):
             continue
         place = open_inventory_origins if company_id in unseeded else normalize_legacy_inventory_origins
         try:
@@ -1088,7 +1089,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         currency = state.get("currency")
         rate = state.get("conversion_rate")
         payment_index = meta.get("payment_index")
-        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided", "doc.payment.refunded"):
+        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided", "doc.payment.refunded", "doc.payment.refund_reversed"):
             payments = state.get("payments", [])
             # Payments are identified by their index FIELD (stable since
             # deletions tombstone in place). Projections compacted before that
@@ -2597,6 +2598,8 @@ async def patch_bank_account(
         if normed not in ISO_4217_CURRENCIES:
             raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
         b.currency = normed
+    if payload.is_active and not b.is_active:
+        await require_money_account(session, company_id, b.chart_account_code)
     if payload.is_active is not None:
         b.is_active = payload.is_active
 

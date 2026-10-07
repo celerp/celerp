@@ -15,10 +15,10 @@ from celerp.services.auth import ROLE_LEVELS
 
 # Item-dict keys stripped when the caller lacks view_inventory_costs.
 COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
-# Read-side cost companions: derived cost data that a cost-hidden caller must not see
-# either, or the goods cost leaks through a value computed off it. Kept separate from
-# COST_ITEM_KEYS because that set also drives write-path price classification; these are
-# stripped only, never written or validated against.
+# Cost companions: derived cost data that a cost-hidden caller must not see either, or the
+# goods cost leaks through a value computed off it. Kept separate from COST_ITEM_KEYS,
+# which also drives the draft cost carve-out; writing one of these restates the goods
+# cost, so pricing.is_price_item_key gates them like cost_total.
 COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", "landed_contributions"})
 
 

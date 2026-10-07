@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""The import operation key revision is the one head, directly after the migration
-runs revisions, and adds and removes its column and unique index cleanly."""
+"""The import operation key revision follows the migration runs revisions directly,
+and adds and removes its column and unique index cleanly."""
 
 from __future__ import annotations
 

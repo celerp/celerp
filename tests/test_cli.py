@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import subprocess
@@ -40,7 +41,7 @@ def valid_cfg():
 # Patch targets shared across init tests
 _INIT_PATCHES = dict(
     test_db="celerp.cli._test_db",
-    migrate="celerp.cli._migrate_to_head",
+    migrate="celerp.cli._init_database",
     start="celerp.cli._start",
 )
 
@@ -110,8 +111,7 @@ def test_init_force_no_start_skips_launch(tmp_config, valid_cfg):
     with patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]) as mock_start, \
          patch("celerp.cli._stop_servers") as mock_stop, \
-         patch("celerp.cli._provision_db") as mock_prov, \
-         patch("celerp.cli._needs_ownership_fix", return_value=False):
+         patch("celerp.cli._provision_db") as mock_prov:
         result = runner.invoke(main, ["init", "--force", "--yes", "--no-start"])
     assert result.exit_code == 0, result.output
     mock_stop.assert_called_once()        # force still stopped servers
@@ -177,8 +177,7 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
     with patch(_INIT_PATCHES["migrate"]), \
          patch(_INIT_PATCHES["start"]), \
          patch("celerp.cli._stop_servers") as mock_stop, \
-         patch("celerp.cli._provision_db"), \
-         patch("celerp.cli._needs_ownership_fix", return_value=False):
+         patch("celerp.cli._provision_db"):
         result = runner.invoke(main, ["init", "--force", "--yes"])
     assert result.exit_code == 0, result.output
     assert "✓ Celerp initialized" in result.output
@@ -190,21 +189,32 @@ def test_init_force_stops_servers_and_regenerates_secret(tmp_config, valid_cfg):
 
 
 def test_init_migrates_through_the_shared_path(tmp_config):
-    """init takes the same migrate path as start, so grants land after migrations.
+    """init takes the same migrate path as start, so grants land after migrations,
+    and is admitted, in its mutating scope, before the ownership fix and until it is done.
 
     Sequences and tables created by a migration are not covered by the ALTER
-    DEFAULT PRIVILEGES set during provisioning, so the order is what makes them
+    DEFAULT PRIVILEGES set by the ownership fix, so the order is what makes them
     accessible. Ordering within that path is asserted where it lives, in
     test_migrate_to_head_runs_every_step_inside_the_lock.
     """
+    order: list[str] = []
+
+    @contextlib.contextmanager
+    def _scope(url, accept=None):
+        order.append("admit")
+        yield None
+        order.append("release")
+
     runner = CliRunner()
     with patch(_INIT_PATCHES["test_db"], return_value=None), \
-         patch(_INIT_PATCHES["migrate"]) as mock_migrate, \
+         patch("celerp.migrations.compatibility.mutating_scope", side_effect=_scope), \
+         patch("celerp.cli._needs_ownership_fix", side_effect=lambda url: order.append("ownership") or False), \
+         patch("celerp.cli._migrate_to_head", side_effect=lambda url: order.append(url)), \
          patch(_INIT_PATCHES["start"]):
         result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
-    mock_migrate.assert_called_once()
-    assert mock_migrate.call_args.args[0].startswith("postgresql")
+    assert order[:2] == ["admit", "ownership"] and order[-1] == "release", order
+    assert len(order) == 4 and order[2].startswith("postgresql"), order
 
 
 # The external-server tests pass --db-url, which is how the real external
@@ -505,7 +515,7 @@ def test_start_respawns_api_on_sentinel(tmp_path):
             self.returncode = code
         def poll(self): return self.returncode if self._dead else None
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
@@ -565,7 +575,7 @@ def test_start_exits_without_sentinel(tmp_path):
             self.returncode = code
         def poll(self): return self.returncode if self._dead else None
         def terminate(self): pass
-        def wait(self): pass
+        def wait(self, timeout=None): pass
 
     def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
@@ -585,6 +595,43 @@ def test_start_exits_without_sentinel(tmp_path):
 
     assert exc.value.code == 1
     assert len([c for c in spawn_calls if _is_api_cmd(c)]) == 1, "No respawn without sentinel"
+
+
+@pytest.mark.parametrize("api_port", [8621, 8000])
+def test_start_points_the_ui_at_the_configured_api_port(valid_cfg, tmp_path, monkeypatch, api_port):
+    """`celerp start` tells the UI where the API listens, so a configured api_port
+    other than the default still serves pages. An API_URL left in the shell never
+    points the UI elsewhere."""
+    import celerp.config as config
+    from celerp.cli import _start
+
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path, raising=False)
+    monkeypatch.setenv("API_URL", "http://127.0.0.1:9")
+    cfg = {**valid_cfg, "server": {"api_port": api_port, "ui_port": 8080}, "modules": {"enabled": []}}
+    envs = {}
+
+    class _Proc:
+        returncode = 1
+        def poll(self): return 1
+        def terminate(self): pass
+        def wait(self, timeout=None): pass
+
+    def fake_popen(cmd, env, **kwargs):
+        envs["api" if _is_api_cmd(cmd) else "ui"] = env
+        return _Proc()
+
+    with (
+        patch("subprocess.Popen", side_effect=fake_popen),
+        patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
+        patch("celerp.cli.time.sleep"),
+        patch("celerp.cli._migrate_to_head"),  # not under test; would open a real connection
+        patch("celerp.cli._wait_ready"),  # not under test; would spin on closed ports
+        patch("signal.signal"),
+    ):
+        with pytest.raises(SystemExit):
+            _start(cfg)
+
+    assert envs["ui"]["API_URL"] == f"http://127.0.0.1:{api_port}"
 
 
 def test_spawn_server_gives_children_a_supervisor_lifetime_pipe():
@@ -846,3 +893,20 @@ def test_output_sent_to_a_legacy_code_page_file_still_prints(monkeypatch):
     legacy.flush()
     assert raw.getvalue().decode("utf-8") == "✓ ready\n"
 
+
+
+def test_command_line_messages_have_no_em_dash():
+    """What the command line prints is user-facing copy, which never uses an em dash."""
+    import ast
+    import inspect
+
+    import celerp.cli as cli
+
+    found = []
+    for node in ast.walk(ast.parse(inspect.getsource(cli))):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", "")) in (
+                "echo", "secho", "ClickException", "UsageError", "Abort", "print"):
+            for part in ast.walk(node):
+                if isinstance(part, ast.Constant) and isinstance(part.value, str) and "—" in part.value:
+                    found.append(f"line {part.lineno}: {part.value!r}")
+    assert found == []

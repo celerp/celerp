@@ -49,6 +49,9 @@
       "db-mode.js",
       "config-writer.js",
       "migrate_cmd.js",
+      "update-state.js",
+      "compatibility.js",
+      "boot.js",
       "preload.js",
       "assets/**"
     ],
@@ -200,7 +203,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "include": "build/installer.nsh"
     },
     "appImage": {
       "artifactName": "Celerp.AppImage"
@@ -228,7 +232,8 @@
   },
   "pnpm": {
     "patchedDependencies": {
-      "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch"
+      "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch",
+      "app-builder-lib@25.1.8": "patches/app-builder-lib@25.1.8.patch"
     }
   }
 }

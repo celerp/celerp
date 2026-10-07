@@ -1,4 +1,4 @@
-"""On a phone, in German, the factory reset modal keeps both of its first-step buttons
+"""On a phone, in German, the company reset modal keeps both of its first-step buttons
 inside the modal instead of pushing one past its edge."""
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ def test_the_reset_modal_buttons_stay_inside_it_on_a_phone(page, ui_server, fres
     page.set_viewport_size({"width": 390, "height": 900})
     page.goto(f"{ui_server}/settings/general?tab=company")
     page.locator(".btn--danger.btn--outline").first.click()
-    actions = page.locator("#factory-reset-step1 .modal-dialog__actions")
+    actions = page.locator("#company-reset-step1 .modal-dialog__actions")
     actions.wait_for()
 
     box = actions.bounding_box()

@@ -42,7 +42,7 @@ class FakeSteps(update.Steps):
         runtime.release_dir(target).mkdir(parents=True)
 
     def migrate(self, target): self._do("migrate")
-    def restore(self, path): self._do("restore")
+    def restore(self, path, target): self._do("restore")
     def stop_children(self, children): self._do("stop_children")
 
     def verify(self, target):
@@ -202,7 +202,7 @@ def test_rollback_step_is_recorded_before_undo(cfg_dir):
     seen = {}
 
     class Spy(FakeSteps):
-        def restore(self, path):
+        def restore(self, path, target):
             seen["restore"] = update.read_state()["in_progress"]["step"]
 
     update.run_update("1.1.0", Spy(fail="verify"))
@@ -222,6 +222,20 @@ def test_unreadable_state_fails_closed(cfg_dir, body):
         update.run_update("1.1.0", steps)
     with pytest.raises(update.UpdateStateError):
         update.reconcile(steps)
+    assert steps.calls == []
+    assert update.update_in_progress() is True
+
+
+@pytest.mark.parametrize("pending", [{"step": "migrate"}, {"from": "1.0.0", "step": "migrate"},
+                                     {"from": "1.0.0", "to": "1.1.0"}, {"from": 1, "to": "1.1.0", "step": "x"},
+                                     "migrate", ["1.0.0", "1.1.0"]], ids=repr)
+def test_an_unfinished_update_record_missing_its_versions_or_step_fails_closed(cfg_dir, pending):
+    update.write_state({"in_progress": pending})
+    steps = FakeSteps()
+    with pytest.raises(update.UpdateStateError, match="unfinished update"):
+        update.reconcile(steps)
+    with pytest.raises(update.UpdateStateError):
+        update.run_update("1.1.0", steps)
     assert steps.calls == []
     assert update.update_in_progress() is True
 

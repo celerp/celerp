@@ -33,9 +33,10 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ui.routes.csv_import import _read_stage, _write_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
+from celerp.services.import_stage import read_stage, write_stage
+from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
-from test_helpers import make_test_token, authed_cookies
+from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
 
@@ -90,7 +91,7 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, "csv_ref hidden field not found"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     # Build mapping: map known core columns to themselves, others as attributes
@@ -132,7 +133,7 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, f"csv_ref hidden field not found in {preview_url} response"
     csv_ref = m.group(1)
-    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
+    csv_text = read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     import csv as _csv, io as _io
@@ -157,7 +158,7 @@ _TEST_COMPANY_ID = "00000000-0000-0000-0000-00000000c0de"
 
 def _stage_csv(csv_text: str) -> str:
     """Stage CSV text under this file's test company and return its csv_ref."""
-    return _write_stage(_TEST_COMPANY_ID, csv_text)
+    return write_stage(_TEST_COMPANY_ID, csv_text)
 
 
 def _role_from_token(token: str | None) -> str:
@@ -1217,6 +1218,17 @@ class TestActivityFeed:
         assert event_label("item.split") == "Item split"
         assert event_label("item.pricing.set") == "Price updated"
         assert event_label("item.quantity.adjusted") == "Quantity adjusted"
+
+    def test_a_refund_stripe_reversed_reads_in_the_activity(self):
+        from ui.components.activity import EVENT_TYPE_LABELS, detail_from_entry, event_label
+        assert "doc.payment.refund_reversed" in EVENT_TYPE_LABELS
+        assert event_label("doc.payment.refund_reversed") == "Payment refund reversed"
+        assert "200.00" in detail_from_entry({"amount": 200.0}, "doc.payment.refund_reversed", "USD")
+
+    def test_a_payment_released_from_stripe_reads_in_the_activity(self):
+        from ui.components.activity import EVENT_TYPE_LABELS, event_label
+        assert "doc.payment.stripe_released" in EVENT_TYPE_LABELS
+        assert event_label("doc.payment.stripe_released") == "Payment no longer linked to Stripe"
 
     def test_detail_from_entry_source_deactivated(self):
         from ui.components.activity import detail_from_entry
@@ -3491,10 +3503,10 @@ class TestPhase2DeepPolish:
 # ── T0: Module-aware sidebar filtering ───────────────────────────────────────
 
 class TestModuleAwareSidebar:
-    """Sidebar shows only modules listed in the JWT 'modules' claim."""
+    """The sidebar shows a module's entries only when the company uses the
+    module, read from current company settings."""
 
-    def _make_request(self, modules: list[str] | None):
-        """Build a minimal mock request with a JWT cookie embedding given modules."""
+    def _request(self, modules: list[str] | None = None):
         token = make_test_token(role="owner", modules=modules)
 
         class _FakeUrl:
@@ -3507,115 +3519,53 @@ class TestModuleAwareSidebar:
 
         return _FakeRequest()
 
-    def test_get_enabled_modules_returns_set(self):
-        """get_enabled_modules decodes the modules claim into a set."""
-        from ui.config import get_enabled_modules
-        req = self._make_request(["celerp-docs", "celerp-inventory"])
-        result = get_enabled_modules(req)
-        assert result == {"celerp-docs", "celerp-inventory"}
-
-    def test_get_enabled_modules_empty_list(self):
-        """Empty modules list returns empty set (triggers show-all fallback)."""
-        from ui.config import get_enabled_modules
-        req = self._make_request([])
-        assert get_enabled_modules(req) == set()
-
-    def test_get_enabled_modules_missing_claim(self):
-        """JWT without modules claim returns empty set (show-all fallback for old tokens)."""
-        from ui.config import get_enabled_modules
-        req = self._make_request(None)
-        assert get_enabled_modules(req) == set()
-
-    def test_jwt_modules_claim_embedded_by_create_access_token(self):
-        """create_access_token embeds modules list in the JWT payload."""
-        import base64, json
-        from celerp.services.auth import create_access_token
-        token, _ = create_access_token(
-            "user-1", "company-1", "owner", snonce="n", modules=["celerp-docs", "celerp-inventory"]
-        )
-        payload_b64 = token.split(".")[1]
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
-        assert set(payload["modules"]) == {"celerp-docs", "celerp-inventory"}
-
-    def test_jwt_no_modules_defaults_to_empty_list(self):
-        """create_access_token with no modules arg embeds empty list."""
-        import base64, json
-        from celerp.services.auth import create_access_token
-        token, _ = create_access_token("user-1", "company-1", "owner", snonce="n")
-        payload_b64 = token.split(".")[1]
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
-        assert payload["modules"] == []
-
-    def test_sidebar_hides_module_items_not_in_jwt(self):
-        """Nav items from modules not in the JWT modules claim are excluded from sidebar."""
-        from ui.components.shell import _sidebar
+    @pytest.fixture
+    def nav(self):
         from celerp.modules import slots
-
         slots.clear()
         slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
                                 "order": 10, "_module": "celerp-docs"})
         slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
                                 "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(["celerp-docs"])  # only docs enabled
-            html = str(_sidebar("", request=req))
-            assert "Documents" in html
-            assert "Inventory" not in html
-        finally:
-            slots.clear()
-
-    def test_sidebar_shows_all_when_modules_empty(self):
-        """Empty modules set (no claim) shows all module nav items as safe fallback."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
-        slots.clear()
-        slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
-                                "order": 10, "_module": "celerp-docs"})
-        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
-                                "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(None)  # no modules claim → show all
-            html = str(_sidebar("", request=req))
-            assert "Documents" in html
-            assert "Inventory" in html
-        finally:
-            slots.clear()
-
-    def test_sidebar_core_folded_nav_ignores_modules_claim(self):
-        """Core-folded components (AI) stay in the sidebar even when the JWT
-        modules claim lists other modules only: they are wired at app
-        construction, never per-company enabled, and their pages do their own
-        plan gating (the AI page shows the showcase ad until a paid plan)."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
-        slots.clear()
         slots.register("nav", {"key": "ai", "label": "AI Assistant", "href": "/ai",
                                 "order": 90, "_module": "celerp-ai"})
-        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
-                                "order": 20, "_module": "celerp-inventory"})
-        try:
-            req = self._make_request(["celerp-docs"])  # claim excludes both
-            html = str(_sidebar("", request=req))
-            assert "AI Assistant" in html   # core-folded: always present
-            assert "Inventory" not in html  # regular module: still filtered
-        finally:
-            slots.clear()
-
-    def test_kernel_nav_always_visible(self):
-        """Kernel nav entries (no _module) always show regardless of modules claim."""
-        from ui.components.shell import _sidebar
-        from celerp.modules import slots
-
+        yield
         slots.clear()
-        try:
-            req = self._make_request(["celerp-docs"])  # only docs enabled
-            html = str(_sidebar("", request=req))
-            # Dashboard is a kernel entry - must always be present
-            assert "Dashboard" in html or "dashboard" in html.lower()
-        finally:
-            slots.clear()
+
+    def _html(self, settings, modules=None) -> str:
+        from ui.components.shell import _sidebar
+        return str(_sidebar("", request=self._request(modules), settings=settings))
+
+    def test_sidebar_hides_modules_the_company_does_not_use(self, nav):
+        html = self._html({"enabled_modules": ["celerp-docs"]})
+        assert "Documents" in html
+        assert "Inventory" not in html
+
+    def test_sidebar_ignores_a_stale_token_modules_claim(self, nav):
+        """A token minted before the company turned a module off still lists it;
+        the sidebar follows the company's current settings instead."""
+        html = self._html({"enabled_modules": ["celerp-docs"]},
+                          modules=["celerp-docs", "celerp-inventory"])
+        assert "Inventory" not in html
+        html = self._html({"enabled_modules": ["celerp-docs", "celerp-inventory"]},
+                          modules=["celerp-docs"])
+        assert "Inventory" in html
+
+    def test_sidebar_shows_every_loaded_module_before_a_first_choice(self, nav):
+        html = self._html({})
+        assert "Documents" in html
+        assert "Inventory" in html
+
+    def test_sidebar_core_folded_nav_always_shows(self, nav):
+        """Core-folded components (AI) are wired at app construction, never per
+        company, and their pages do their own plan gating."""
+        html = self._html({"enabled_modules": ["celerp-docs"]})
+        assert "AI Assistant" in html
+        assert "Inventory" not in html
+
+    def test_kernel_nav_always_visible(self, nav):
+        html = self._html({"enabled_modules": []})
+        assert "dashboard" in html.lower()
 
 
 # ── T1: Collapsible sidebar ──────────────────────────────────────────────────
@@ -9108,6 +9058,14 @@ _MODULES_LIST = [
     },
 ]
 
+@pytest.fixture
+def as_installation_owner():
+    """Installation-wide controls (modules, backups, the Celerp account) are the
+    installation owner's; these flows run as that owner."""
+    with patch("ui.api_client.installation_owner", new=AsyncMock(return_value=True)):
+        yield
+
+
 _SETTINGS_MOCKS_MODULES = {
     "ui.api_client.get_company": AsyncMock(return_value={"name": "T", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner"}),
     "ui.api_client.get_taxes": AsyncMock(return_value={"taxes": []}),
@@ -9121,6 +9079,7 @@ _SETTINGS_MOCKS_MODULES = {
 }
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestModulesUI:
     """Modules page (top-level, owner/admin only) - list, enable, disable,
     import, restart, load-error surfacing."""
@@ -9199,6 +9158,20 @@ class TestModulesUI:
         assert body.index("Newer Import") < body.index("Older Import")
 
     @pytest.mark.asyncio
+    async def test_installed_table_orders_an_install_time_that_is_not_text_as_unknown(
+            self, ui_client):
+        rows = [
+            {"name": "odd-imp", "label": "Odd Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": 5},
+            {"name": "new-imp", "label": "Newer Import", "version": "1.0", "author": "X",
+             "enabled": False, "running": False, "is_default": False,
+             "source": "sideloaded", "installed_at": "2026-07-20T00:00:00+00:00"},
+        ]
+        body = await self._render_modules(ui_client, rows)
+        assert body.index("Newer Import") < body.index("Odd Import")
+
+    @pytest.mark.asyncio
     async def test_installed_table_groups_defaults_after_imports(self, ui_client):
         """Every non-default row renders above every default row, even when the
         default is enabled and the imports are disabled."""
@@ -9214,7 +9187,9 @@ class TestModulesUI:
         assert body.index("Import A") < body.index("Default Mod")
 
     @pytest.mark.asyncio
-    async def test_source_shield_renders_for_marketplace_and_default(self, ui_client):
+    async def test_source_shield_renders_for_defaults_only(self, ui_client):
+        """A Marketplace install carries no shield: its recorded origin is
+        advisory, so only the defaults Celerp ships are marked."""
         rows = [
             {"name": "market-mod", "label": "Market Mod", "version": "1.0", "author": "X",
              "enabled": False, "running": False, "is_default": False,
@@ -9225,7 +9200,7 @@ class TestModulesUI:
         ]
         body = await self._render_modules(ui_client, rows)
         assert "trust-icon--default" in body            # gold default shield
-        assert body.count("module-source-icon") == 2    # one per row, none elsewhere
+        assert body.count("module-source-icon") == 1    # the default row only
 
     @pytest.mark.asyncio
     async def test_source_shield_absent_for_sideloaded(self, ui_client):
@@ -9255,10 +9230,9 @@ class TestModulesUI:
     @pytest.mark.asyncio
     async def test_source_column_shows_label_and_shields_defaults_only(self, ui_client):
         """The Local Modules table carries a leftmost Source column with an
-        explicit text label per row (never blank). Shields mark verified
-        provenance only (bundled defaults, marketplace); community and
-        sideloaded rows carry no shield - the Source column already states
-        their origin in words."""
+        explicit text label per row (never blank). Only bundled defaults carry
+        a shield; community and sideloaded rows carry none - the Source column
+        already states their origin in words."""
         rows = [
             {"name": "comm-mod", "label": "Community Mod", "version": "1.0", "author": "X",
              "enabled": False, "running": False, "is_default": False,
@@ -9275,7 +9249,7 @@ class TestModulesUI:
         assert 'data-filter-value="Community"' in body
         assert 'data-filter-value="Sideloaded"' in body
         assert 'data-filter-value="Default"' in body
-        # Only the verified-provenance shield renders; community rows carry none.
+        # Only the default shield renders; community rows carry none.
         assert "trust-icon--community" not in body
         assert "trust-icon--default" in body
 
@@ -9490,51 +9464,6 @@ class TestModulesUI:
         assert b"/modules/restart" in r.content
 
     @pytest.mark.asyncio
-    async def test_restart_banner_shows_after_disable(self, ui_client):
-        """A just-disabled module still runs until restart (enabled=False,
-        running=True): the row must visibly register the press - restart
-        control in the status, Disable greyed out and inert - not look
-        identical to a plain running row."""
-        pending = [{**_MODULES_LIST[1], "enabled": False, "running": True,
-                    "is_default": False}]
-        from contextlib import ExitStack
-        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=pending)}
-        with ExitStack() as stack:
-            for k, v in mocks.items():
-                stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
-        assert r.status_code == 200
-        body = r.content.decode()
-        assert "/modules/restart" in body
-        # The Disable button is greyed and inert, with the pending state named.
-        assert "btn--disabled" in body
-        assert "Disabled. Takes effect when Celerp restarts." in body
-        # No live disable action and no delete X while the unload is pending.
-        assert "/modules/celerp-verticals/disable" not in body
-        assert "/modules/celerp-verticals/delete" not in body
-
-    @pytest.mark.asyncio
-    async def test_no_restart_banner_for_core_folded_disable(self, ui_client):
-        """A core-folded default module reports running=True regardless of the
-        enabled flag; it must NOT pin a false restart banner, a pending badge,
-        or a greyed Disable button."""
-        core = [{**_MODULES_LIST[1], "enabled": False, "running": True,
-                 "is_default": True}]
-        from contextlib import ExitStack
-        mocks = {**_SETTINGS_MOCKS_MODULES, "ui.api_client.get_modules": AsyncMock(return_value=core)}
-        with ExitStack() as stack:
-            for k, v in mocks.items():
-                stack.enter_context(patch(k, new=v))
-            r = await ui_client.get("/modules", cookies=_authed())
-        assert r.status_code == 200
-        body = r.content.decode()
-        assert "/modules/restart" not in body
-        # The row keeps the plain running badge and a live Disable button.
-        assert "badge--active" in body
-        assert "btn--disabled" not in body
-        assert "/modules/celerp-verticals/disable" in body
-
-    @pytest.mark.asyncio
     async def test_module_enable_htmx_returns_panel(self, ui_client):
         refreshed = [
             {**_MODULES_LIST[0], "enabled": True, "running": False},
@@ -9609,6 +9538,7 @@ _CATALOG_FIXTURE = [
 ]
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestMarketplaceUI:
     """Marketplace tab (paid/official listings only) and the separate Community
     tab: tiers, trust icons, the one-step acknowledgment, cache and failure
@@ -10786,7 +10716,7 @@ class TestCompanyDetailsPage:
             ok = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"), follow_redirects=False)
             low = await ui_client.get("/finance/company-details", cookies=_authed(role="operator"), follow_redirects=False)
         assert ok.status_code == 200
-        assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard")
+        assert_not_permitted_redirect(low)
 
 
 class TestFilesExcelFunnels:
@@ -10983,14 +10913,15 @@ class TestPaymentsSettingsPage:
     no relay = Web Access upsell; relay without Stripe = a single-CTA sales
     pitch with no admin controls; connected = deposit selector + disconnect."""
 
-    def _mocks(self, relay=True, enabled=False, banks=None, deposit=""):
+    def _mocks(self, relay=True, enabled=False, banks=None, deposit="", state=None, unmatched=None, refunds=None):
         from contextlib import ExitStack
         stack = ExitStack()
         for name, val in (
             ("get_relay_status", {"connected": relay}),
-            ("get_payments_status", {"enabled": enabled}),
+            ("get_payments_status", {"enabled": enabled, "state": state}),
             ("get_company", {"stripe_deposit_account": deposit, "current_role": "admin"}),
             ("get_bank_accounts", {"items": banks or []}),
+            ("get_unmatched_payments", {"items": unmatched or [], "refunds": refunds or []}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
@@ -11030,9 +10961,134 @@ class TestPaymentsSettingsPage:
         assert 'type="text" name="stripe_deposit_account"' not in r.text
 
     @pytest.mark.asyncio
+    async def test_disconnecting_asks_first_and_says_where_later_refunds_are_recorded(self, ui_client):
+        import html as _html
+        from ui.i18n import t
+        with self._mocks(relay=True, enabled=True):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        confirm = t("pay.disconnect_confirm")
+        assert "no longer linked to Stripe" in confirm and "record any refund of them here" in confirm
+        assert "reconnect" not in confirm
+        assert f'data-confirm="{_html.escape(confirm)}"' in r.text
+        assert 'onsubmit="return confirm(this.dataset.confirm)"' in r.text
+
+    @pytest.mark.asyncio
     async def test_non_admin_cannot_open(self, ui_client):
         r = await ui_client.get("/settings/payments", cookies=_authed(role="staff"))
         assert r.status_code in (302, 303)
+
+    @pytest.mark.asyncio
+    async def test_disconnecting_state_says_existing_payments_finish(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="disconnecting"):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Stripe is disconnecting while existing payments finish." in r.text
+        # Neither connect (Cloud refuses it until the disconnect finishes) nor disconnect again.
+        assert "/settings/payments/connect" not in r.text
+        assert "/settings/payments/disconnect" not in r.text
+        assert "stripe_deposit_account" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_revoked_access_asks_to_reconnect_the_same_account(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="revoked"):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Reconnect this Stripe account to finish checking payments already in progress." in r.text
+        # One action: reconnect. No sales pitch, no disconnect, no deposit settings.
+        assert r.text.count('action="/settings/payments/connect"') == 1
+        assert "Reconnect Stripe" in r.text
+        assert "Connect with Stripe" not in r.text
+        assert "/settings/payments/disconnect" not in r.text
+        assert "stripe_deposit_account" not in r.text
+        assert "Stripe is disconnecting" not in r.text
+
+    _UNMATCHED = [
+        {"reference": "pi_new", "amount": 5000, "currency": "JPY", "company_id": "c-new",
+         "company_name": None, "document_id": "doc:2", "document_ref": None,
+         "received_on": "2026-09-29", "paid_on": None},
+        {"reference": "pi_old", "amount": 1070.0, "currency": "USD", "company_id": "c-old",
+         "company_name": "Old Co", "document_id": "doc:1", "document_ref": "INV-0001",
+         "received_on": "2026-09-28", "paid_on": "2026-09-25"},
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled, state", [
+        (True, None), (False, "disconnecting"), (False, "revoked"), (False, None)])
+    async def test_unmatched_payments_are_listed_in_every_state(self, ui_client, enabled, state):
+        with self._mocks(relay=True, enabled=enabled, state=state, unmatched=self._UNMATCHED):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments not matched to an invoice" in r.text
+        assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
+        assert "Old Co" in r.text and "INV-0001" in r.text and "2026-09-28" in r.text
+        assert "c-old" not in r.text and "doc:1" not in r.text  # names, never raw ids
+        assert "(deleted)" in r.text  # pi_new's company and invoice are gone
+        assert "Paid on" in r.text and "2026-09-25" in r.text  # when the customer paid
+        assert "Recorded on" in r.text  # when this installation recorded it
+        assert '<td>--</td>' in r.text  # not known for pi_new
+        assert 'class="cell--number"' in r.text and 'class="cell--money"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_no_unmatched_payments_shows_nothing(self, ui_client):
+        with self._mocks(relay=True, enabled=True):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert "Payments not matched to an invoice" not in r.text
+        assert "Refunds not applied yet" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_refunds_not_applied_yet_are_listed(self, ui_client):
+        refunds = [
+            {"refund_id": "re_2", "transition": "reversed", "reference": "pi_new", "amount": 50.0,
+             "currency": "USD", "company_id": "c-new", "company_name": None, "document_id": "doc:2",
+             "document_ref": None, "received_on": "2026-09-29", "refunded_on": None},
+            {"refund_id": "re_1", "transition": "applied", "reference": "pi_old", "amount": 200.0,
+             "currency": "USD", "company_id": "c-old", "company_name": "Old Co", "document_id": "doc:1",
+             "document_ref": "INV-0001", "received_on": "2026-09-28",
+             "refunded_on": "2026-09-27"}]
+        with self._mocks(relay=True, enabled=True, refunds=refunds):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments not matched to an invoice" not in r.text
+        assert "Refunds not applied yet" in r.text and "Refunded on" in r.text
+        assert r.text.index("pi_new") < r.text.index("pi_old")  # newest first
+        assert "<td>Refund reversed</td>" in r.text and "<td>Refund</td>" in r.text
+        assert "2026-09-27" in r.text and "Old Co" in r.text and "INV-0001" in r.text
+        assert "c-old" not in r.text and "doc:1" not in r.text and "(deleted)" in r.text
+        assert '<td>--</td>' in r.text  # not known for re_2
+
+    @pytest.mark.asyncio
+    async def test_unmatched_payments_hidden_from_a_login_that_may_not_see_them(self, ui_client):
+        from ui.api_client import APIError
+        with self._mocks(relay=True, enabled=True), \
+                patch("ui.api_client.get_unmatched_payments",
+                      new=AsyncMock(side_effect=APIError(403, "Installation owner only"))):
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments not matched to an invoice" not in r.text
+        assert "/settings/payments/disconnect" in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_that_waits_for_payments_shows_it(self, ui_client):
+        with self._mocks(relay=True, enabled=False, state="disconnecting"), \
+                patch("ui.api_client.disconnect_payments",
+                      new=AsyncMock(return_value={"disconnected": False, "state": "disconnecting"})):
+            r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
+            assert r.status_code == 302 and r.headers["location"] == "/settings/payments"
+            r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
+        assert "Stripe is disconnecting while existing payments finish." in r.text
+        assert "/settings/payments/connect" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_a_failed_disconnect_is_shown(self, ui_client):
+        from ui.api_client import APIError
+        with self._mocks(relay=True, enabled=True), \
+                patch("ui.api_client.disconnect_payments",
+                      new=AsyncMock(side_effect=APIError(503, "Payments are not configured"))):
+            r = await ui_client.post("/settings/payments/disconnect", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Payments are not configured" in r.text
+        assert "/settings/payments/disconnect" in r.text
 
 
 class TestCompanyAllFilesView:
@@ -14021,6 +14077,7 @@ class TestDocumentsOverhaul:
         assert "celerpToast" in trigger
         assert "administrator" in trigger
 
+    @pytest.mark.usefixtures("as_installation_owner")
     @pytest.mark.asyncio
     async def test_send_offer_resume_opens_dialog_prefilled_after_verify(self, ui_client):
         """After signup completes the poll reloads the page with a one-shot
@@ -14666,13 +14723,6 @@ class TestBugFixesBatch25Mar6Bugs:
 
 
 class TestBuildWorkflowVersioning:
-    def test_build_workflow_sets_electron_version_from_tag(self):
-        from test_helpers import REPO_ROOT
-        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
-        assert 'Set Electron version from git tag' in workflow
-        assert "data['version'] = os.environ['VERSION']" in workflow
-        assert 'Install Node deps' in workflow
-
     def test_build_workflow_keeps_static_artifact_names(self):
         from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
@@ -14737,16 +14787,6 @@ class TestBuildWorkflowVersioning:
         shell = (REPO_ROOT / 'ui/components/shell.py').read_text()
         assert 'https://github.com/celerp/celerp/releases' in shell
         assert 'Data-Universal-Limited' not in shell
-
-    def test_electron_main_wires_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        main_js = (REPO_ROOT / 'electron/app-main.js').read_text()
-        assert 'update-not-available' in main_js
-
-    def test_preload_exposes_on_update_not_available(self):
-        from test_helpers import REPO_ROOT
-        preload = (REPO_ROOT / 'electron/preload.js').read_text()
-        assert 'onUpdateNotAvailable' in preload
 
 
 class TestInventoryUXFixes:
@@ -16394,6 +16434,7 @@ def test_split_weight_has_onblur_clamp():
 
 # ── Backup proxy routes ────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestBackupRoutes:
     """Regression tests for /backup/* UI route handlers.
 
@@ -16778,13 +16819,13 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_with_valid_unit_clears_error(self, ui_client):
         """After user picks a valid unit in the fix table, revalidate must succeed."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         units = self._UNITS
         csv_rows = [{"sku": "X1", "name": "Ring", "sell_by": "grams", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # User fixes "grams" → "gram" (valid unit)
         fixes = {"0__sell_by": "gram"}
@@ -16812,12 +16853,12 @@ class TestUnknownUnitRendererInFixTable:
         catalog and clicking Fix & Import (without changing the cell) must clear the error.
         """
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X2", "name": "Stone", "sell_by": "carat", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # "carat" is now in the catalog (user added it while fix table was open)
         units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
@@ -16840,12 +16881,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):
         """If unit is still not in catalog after revalidate, error persists and value is preserved."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X3", "name": "Rock", "sell_by": "fathom", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
              patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
@@ -16868,12 +16909,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_add_new_option_not_saved_as_unit_value(self, ui_client):
         """If __add_new__ somehow reaches revalidate, it must not be stored as a sell_by value."""
         import json as _json
-        from ui.routes.csv_import import _write_stage, _rows_to_csv
+        from ui.routes.csv_import import _rows_to_csv
 
         csv_rows = [{"sku": "X4", "name": "Bead", "sell_by": "piece", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
+        csv_ref = write_stage(_TEST_COMPANY_ID, csv_text)
 
         # Simulate user somehow submitting __add_new__ as the fix value
         fixes = {"0__sell_by": "__add_new__"}
@@ -17342,7 +17383,7 @@ class TestDraftStatusColumn:
         assert "badge--reserved" in r.text, "finalized list must show the item's real status"
 
 
-# ── Factory Reset danger zone UI tests ───────────────────────────────────────
+# ── Danger zone UI tests ───────────────────────────────────────
 
 class TestDangerZoneUI:
     @pytest.mark.asyncio
@@ -17354,7 +17395,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="owner"))
         assert r.status_code == 200
-        assert "Reset All Data" in r.text
+        assert "Reset this company" in r.text
 
     @pytest.mark.asyncio
     async def test_danger_zone_hidden_for_admin(self, ui_client):
@@ -17365,7 +17406,7 @@ class TestDangerZoneUI:
              patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "Reset All Data" not in r.text
+        assert "Reset this company" not in r.text
 
 
 @pytest.mark.asyncio
@@ -17423,6 +17464,7 @@ async def test_bulk_attach_result_has_status_filters(ui_client):
     assert 'data-filter="error"' not in html  # no errors in this batch → no Errors pill
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_backup_export_streams_with_progress_headers(ui_client):
     """#158: the backup download streams through (not buffered) and forwards Content-Length
@@ -17693,6 +17735,7 @@ def test_split_table_form_pieces_variant():
     assert "Karat" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 class TestCelerpAccountSurface:
     """The one account surface (ui/routes/account.py): email-first signup,
     Google only when the relay reports it, claim-led variant for the Settings
@@ -19446,6 +19489,7 @@ async def test_free_send_offer_shows_on_unknown_hides_on_known_zero(monkeypatch)
 
 # ── Account panel tier naming (ui/routes/account.py) ──────────────────────────
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_account_panel_names_connect_tier(ui_client):
     """The signed-in account panel shows the tier's display name (Connect),
@@ -19462,6 +19506,7 @@ async def test_account_panel_names_connect_tier(ui_client):
 
 # ── Module restart refreshes the session cookie (ui/routes/modules_page.py) ────
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_restart_refreshes_session_cookie(ui_client):
     """POST /modules/restart re-mints the UI session cookie from live settings
@@ -19486,6 +19531,7 @@ async def test_module_restart_refreshes_session_cookie(ui_client):
     assert new_refresh in set_cookie
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_restart_refresh_failure_still_restarts(ui_client):
     """If the cookie refresh exchange fails, the restart still proceeds fail-open:
@@ -19525,6 +19571,7 @@ def _module_row(name: str, *, enabled: bool = False, running: bool = False,
     }
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
     """The X's GET returns the delete dialog. A module that owns tables (declares
@@ -19545,6 +19592,7 @@ async def test_module_delete_options_returns_dialog_with_both_paths(ui_client):
     assert "account-gate-modal" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
     """A module that owns no tables (no table_prefix) offers only the keep-data
@@ -19561,6 +19609,7 @@ async def test_module_delete_options_without_prefix_omits_purge_path(ui_client):
     assert "account-gate-modal" in html
 
 
+@pytest.mark.usefixtures("as_installation_owner")
 @pytest.mark.asyncio
 async def test_module_delete_with_purge_drops_data_before_removing_module(ui_client):
     """delete?purge=1 purges the module's data and then removes the module, in

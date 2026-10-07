@@ -110,7 +110,7 @@ class TestInstanceIdentityFirstBoot:
 
         def module_writer():
             try:
-                mod.set_enabled_modules(["inventory"])
+                mod.replace_enabled_modules(["inventory"])
             except Exception as exc:
                 errors.append(exc)
 

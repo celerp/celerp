@@ -4,7 +4,9 @@
 """Notification service - CRUD + SSE publishing.
 
 All notification operations go through this module. The SSE pub/sub
-is in-process (asyncio.Queue per subscriber). No Redis required.
+is in-process (asyncio.Queue per subscriber). No Redis required. A new
+notification is published when the transaction that wrote it commits, so a
+client that fetches it on seeing the event finds the row.
 """
 
 from __future__ import annotations
@@ -14,11 +16,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select, delete, update
+from sqlalchemy import event, func, select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session, SessionTransaction
 
 from celerp.models.notification import Notification
-from celerp.notifications.sse import publish
+from celerp.notifications.sse import deliver
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +42,76 @@ def message_keys(notif: Notification) -> dict | None:
     a notice an earlier release stored without them; none for a notice shown as stored."""
     return notif.i18n or STORED_NOTICE_KEYS.get((notif.category, notif.title))
 
+# session.info key: events waiting for their transaction to commit, each with
+# the (possibly nested) transaction that wrote its row.
+_PENDING = "celerp_notifications_pending"
+
+
+def _publish_after_commit(session: AsyncSession, company_id: uuid.UUID,
+                          user_id: uuid.UUID | None, event_data: dict[str, Any]) -> None:
+    sync = session.sync_session
+    if not event.contains(sync, "after_commit", _deliver_pending):
+        event.listen(sync, "after_commit", _deliver_pending)
+        event.listen(sync, "after_soft_rollback", _drop_rolled_back)
+        event.listen(sync, "after_transaction_end", _drop_on_end)
+    writer = sync.get_nested_transaction() or sync.get_transaction()
+    sync.info.setdefault(_PENDING, []).append((writer, company_id, user_id, event_data))
+
+
+def _deliver_pending(sync: Session) -> None:
+    """after_commit, which also fires when a savepoint is released: only the
+    outermost commit makes the rows visible to other connections."""
+    if sync.in_nested_transaction():
+        return
+    for _, company_id, user_id, event_data in sync.info.pop(_PENDING, []):
+        try:
+            deliver(company_id, user_id, event_data)
+        except Exception:
+            log.warning("Failed to publish SSE notification", exc_info=True)
+
+
+def _within(txn: SessionTransaction | None, ended: SessionTransaction) -> bool:
+    while txn is not None:
+        if txn is ended:
+            return True
+        txn = txn.parent
+    return False
+
+
+def _drop_rolled_back(sync: Session, previous_transaction: SessionTransaction) -> None:
+    """A rolled-back savepoint (or the whole transaction) takes its rows with it."""
+    pending = sync.info.get(_PENDING)
+    if pending:
+        pending[:] = [p for p in pending if not _within(p[0], previous_transaction)]
+
+
+def _drop_on_end(sync: Session, transaction: SessionTransaction) -> None:
+    """The outermost transaction ended without a commit (closed or rolled back):
+    nothing it wrote exists, so nothing waits for a later one."""
+    if transaction.parent is None:
+        sync.info.pop(_PENDING, None)
+
+
+async def create_keyed(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    category: str,
+    key: str,
+    params: dict[str, Any],
+    **kwargs: Any,
+) -> Notification:
+    """Create a notification from catalog message *key* (``<key>.title`` / ``<key>.body``)
+    with *params*: stored in English, with the keys each reader's language is shown from
+    (``i18n``). A param given as ``{"key": k}`` is itself the message *k*."""
+    from ui.i18n import t
+
+    english = {name: t(v["key"], "en") if isinstance(v, dict) else v for name, v in params.items()}
+    keyed = {name: {"message": english[name], "message_key": v["key"]} if isinstance(v, dict) else v
+             for name, v in params.items()}
+    return await create(session, company_id, category, t(f"{key}.title", "en", **english),
+                        t(f"{key}.body", "en", **english),
+                        i18n={"title": f"{key}.title", "body": f"{key}.body", "params": keyed}, **kwargs)
+
 
 async def create(
     session: AsyncSession,
@@ -52,7 +125,8 @@ async def create(
     priority: str = "medium",
     i18n: dict | None = None,
 ) -> Notification:
-    """Create a notification, prune old ones, and publish to SSE subscribers.
+    """Create a notification, prune old ones, and publish it to SSE subscribers
+    once the session commits.
 
     ``i18n`` ({"title": key, "body": key, "params": {...}}) names the message keys the
     English ``title`` and ``body`` were written from."""
@@ -88,23 +162,15 @@ async def create(
                 delete(Notification).where(Notification.id.in_(old_ids))
             )
 
-    # Publish to SSE (fire-and-forget, don't fail the DB transaction)
-    try:
-        await publish(
-            company_id,
-            user_id,
-            {
-                "type": "notification",
-                "id": str(notif.id),
-                "category": category,
-                "title": title,
-                "body": body,
-                "action_url": action_url,
-                "priority": priority,
-            },
-        )
-    except Exception:
-        log.warning("Failed to publish SSE notification", exc_info=True)
+    _publish_after_commit(session, company_id, user_id, {
+        "type": "notification",
+        "id": str(notif.id),
+        "category": category,
+        "title": title,
+        "body": body,
+        "action_url": action_url,
+        "priority": priority,
+    })
 
     return notif
 

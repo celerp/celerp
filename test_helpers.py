@@ -52,6 +52,14 @@ def make_test_token(
     return f"header.{payload_b64}.sig"
 
 
+def assert_not_permitted_redirect(response) -> None:
+    """A page the caller's role may not open redirects to the dashboard and hands
+    it the one-shot "no access" notice (ui.security.not_permitted_redirect)."""
+    assert response.status_code == 302, response.status_code
+    assert response.headers["location"] == "/dashboard"
+    assert "celerp_notice=not_permitted" in response.headers.get("set-cookie", "")
+
+
 def authed_cookies(role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token for the given role."""
     return {"celerp_token": make_test_token(role=role)}
@@ -115,6 +123,17 @@ async def ensure_user(session, user_id) -> None:
     if await session.get(User, uid) is None:
         session.add(User(id=uid, email=f"u-{uid}@test.example", name="Test User"))
         await session.flush()
+
+
+async def ensure_company(session, company_id=None):
+    """Insert a minimal companies row (a sign-in session belongs to a company) and return its id."""
+    import uuid as _uuid
+    from celerp.models.company import Company
+    cid = _uuid.UUID(str(company_id)) if company_id else _uuid.uuid4()
+    if await session.get(Company, cid) is None:
+        session.add(Company(id=cid, name="Test Co", slug=f"test-{cid.hex}"))
+        await session.flush()
+    return cid
 
 
 async def default_location_id(client, headers: dict) -> str:
@@ -308,6 +327,19 @@ def in_language(lang: str, detail) -> str:
     i18n.set_lang(lang)
     try:
         return i18n.refusal_text(detail)
+    finally:
+        i18n.set_lang("en")
+
+
+def notice_in(lang: str, item: dict) -> dict:
+    """A notice from ``GET /notifications`` as the bell lists it to a reader in ``lang``."""
+    from ui.routes.notifications import _in_reader_language
+
+    from ui import i18n
+
+    i18n.set_lang(lang)
+    try:
+        return json.loads(_in_reader_language(json.dumps({"items": [dict(item)]}).encode()))["items"][0]
     finally:
         i18n.set_lang("en")
 

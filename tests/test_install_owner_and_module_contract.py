@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -13,7 +12,7 @@ from sqlalchemy import select
 from celerp.gateway.client import GatewayClient
 from celerp.models.company import User
 from celerp.modules.api import ai_query
-from test_helpers import invite_user, register_admin
+from test_helpers import invite_user, notice_in, register_admin
 
 
 @pytest.mark.asyncio
@@ -76,74 +75,36 @@ async def test_module_ai_api_keeps_explicit_session_contract(monkeypatch):
     assert exc.value.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_invoice_delivery_ack_only_after_local_record(monkeypatch):
-    client = GatewayClient("key", "instance", "ws://example.test")
+class _WS:
+    def __init__(self):
+        self.sent = []
 
-    class _WS:
-        def __init__(self):
-            self.sent = []
-        async def send(self, raw):
-            import json
-            self.sent.append(json.loads(raw))
+    async def send(self, raw):
+        import json
+        self.sent.append(json.loads(raw))
 
-    class _Session:
-        async def get(self, _model, _key):
-            return SimpleNamespace(state={"total": 10})
 
-    @asynccontextmanager
-    async def _session_ctx():
-        yield _Session()
-
-    record = AsyncMock(return_value=None)
-    monkeypatch.setattr("celerp.db.get_session_ctx", _session_ctx)
-    monkeypatch.setattr("celerp_docs.routes_payments.record_stripe_payment", record)
-    client._ws = _WS()
-
-    await client._handle_invoice_payment({
-        "company_id": "company-1", "entity_id": "invoice-1",
-        "reference": "pi_1", "amount_minor": 1000, "currency": "USD",
-        "delivery_id": "delivery-1",
-    })
-
-    record.assert_awaited_once()
-    assert client._ws.sent[-1]["type"] == "event.ack"
-    assert client._ws.sent[-1]["payload"] == {"delivery_id": "delivery-1"}
-
+_DELIVERY = {"company_id": "company-1", "entity_id": "invoice-1", "reference": "pi_1",
+             "amount_minor": 1000, "currency": "USD", "delivery_id": "delivery-1"}
 
 
 @pytest.mark.asyncio
-async def test_invoice_delivery_is_not_acked_when_recording_fails(monkeypatch):
+@pytest.mark.parametrize("recorded,acked", [
+    (AsyncMock(return_value=True), True),
+    (AsyncMock(return_value=False), False),
+    (AsyncMock(side_effect=RuntimeError("write failed")), False),
+], ids=["recorded", "names-no-payment", "recording-fails"])
+async def test_invoice_delivery_is_acked_only_once_recorded(monkeypatch, recorded, acked):
     client = GatewayClient("key", "instance", "ws://example.test")
-
-    class _WS:
-        def __init__(self):
-            self.sent = []
-        async def send(self, raw):
-            import json
-            self.sent.append(json.loads(raw))
-
-    class _Session:
-        async def get(self, _model, _key):
-            return SimpleNamespace(state={"total": 10})
-
-    @asynccontextmanager
-    async def _session_ctx():
-        yield _Session()
-
-    record = AsyncMock(side_effect=RuntimeError("write failed"))
-    monkeypatch.setattr("celerp.db.get_session_ctx", _session_ctx)
-    monkeypatch.setattr("celerp_docs.routes_payments.record_stripe_payment", record)
+    monkeypatch.setattr("celerp.services.payments.receive_payment", recorded)
     client._ws = _WS()
 
-    await client._handle_invoice_payment({
-        "company_id": "company-1", "entity_id": "invoice-1",
-        "reference": "pi_1", "amount_minor": 1000, "currency": "USD",
-        "delivery_id": "delivery-1",
-    })
+    await client._handle_invoice_payment(dict(_DELIVERY))
 
-    record.assert_awaited_once()
-    assert client._ws.sent == []
+    recorded.assert_awaited_once_with(_DELIVERY)
+    assert client._ws.sent == ([{"type": "event.ack", "id": client._ws.sent[0]["id"],
+                                 "payload": {"delivery_id": "delivery-1"}}] if acked else [])
+
 
 def test_install_owner_backfill_uses_existing_data_reconcile_path():
     from celerp.migrations._data_reconcile import data_backfill_scripts
@@ -199,3 +160,54 @@ def test_install_owner_migration_prefers_usable_owner_over_oldest_user(monkeypat
             "SELECT id FROM users WHERE is_install_owner IS TRUE"
         )).scalars().all()
     assert selected == ["owner"]
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_a_user_not_active_in_this_company_says_so(client, session):
+    """A user whose account is active but who is off in this company is refused with
+    the reason that applies: they are not an active user of this company."""
+    admin_token = await register_admin(client)
+    admin_h = {"Authorization": f"Bearer {admin_token}"}
+    await invite_user(client, session, admin_h, "elsewhere@example.test", "owner")
+    users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
+    target = next(u for u in users if u["email"] == "elsewhere@example.test")
+    off = await client.patch(
+        f"/companies/me/users/{target['id']}", headers=admin_h, json={"is_active": False})
+    assert off.status_code == 200, off.text
+
+    r = await client.post(
+        f"/companies/me/users/{target['id']}/installation-owner", headers=admin_h)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Installation owner must be an active user in this company"
+
+
+@pytest.mark.asyncio
+async def test_handover_tells_the_new_owner_and_the_users_list_names_the_owner(client, session):
+    admin_token = await register_admin(client)
+    admin_h = {"Authorization": f"Bearer {admin_token}"}
+    next_token = await invite_user(client, session, admin_h, "heir@example.test", "viewer")
+    next_h = {"Authorization": f"Bearer {next_token}"}
+
+    async def owners() -> list[str]:
+        users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
+        return [u["email"] for u in users if u["is_install_owner"] is True]
+
+    assert await owners() == ["admin@perm.example"]
+    target = next(u for u in (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
+                  if u["email"] == "heir@example.test")
+    r = await client.post(f"/companies/me/users/{target['id']}/installation-owner", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert await owners() == ["heir@example.test"]
+
+    told = (await client.get("/notifications", headers=next_h)).json()["items"]
+    # The API carries readable text and the message key the UI translates from.
+    assert [n["title"] for n in told] == ["You are now the installation owner"]
+    assert "hand ownership on" in told[0]["body"]
+    assert told[0]["i18n"]["title"] == "notif.install_owner.title"
+    assert set(told[0]["i18n"]["params"]) == {"name"}
+    german = notice_in("de", told[0])
+    assert german["title"] == "Sie sind jetzt der Installationsinhaber"
+    assert "Einstellungen > Benutzer" in german["body"]
+    assert told[0]["action_url"] == "/settings/general?tab=users"
+    others = (await client.get("/notifications", headers=admin_h)).json()["items"]
+    assert "notif.install_owner.title" not in [(n["i18n"] or {}).get("title") for n in others]

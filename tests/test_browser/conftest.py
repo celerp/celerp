@@ -23,7 +23,6 @@ import pytest
 # DATABASE_URL is provided by the root conftest (Postgres via testcontainers or a
 # preset URL); the browser servers run against that same database.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("MODULE_DIR", "default_modules,premium_modules")
 _ALL_MODULES = (
     "celerp-accounting,celerp-ai,celerp-connectors,celerp-contacts,celerp-sales-funnel,celerp-dashboard,celerp-docs,celerp-inventory,"
     "celerp-labels,celerp-manufacturing,celerp-reports,celerp-subscriptions,celerp-verticals"
@@ -126,12 +125,9 @@ def ui_server(api_server):
 
     from ui.app import app as ui_app
 
-    # ui.app / celerp.main, imported (by the root conftest) before this file's
-    # module-level setdefault runs, rewrite MODULE_DIR to "" when it is unset at that
-    # point (with_writable_module_dir("") returns ""). The key then exists as "", so
-    # our setdefault above cannot restore it. Re-register the module UI routes here.
-    # Treat an empty MODULE_DIR as unset so the default dirs are used - otherwise
-    # load_all runs against no directories and module-gated UI (e.g. the credit-note
+    # The root conftest imports ui.app / celerp.main with MODULE_DIR set to "" (no
+    # module trees), so neither app loaded any modules. Register the module UI routes
+    # here from the default dirs - otherwise module-gated UI (e.g. the credit-note
     # Receive Returns button, which reads loaded_modules()) never renders.
     # Use absolute paths so load_all resolves correctly regardless of cwd.
     from celerp.modules.loader import load_all, register_ui_routes
@@ -145,7 +141,11 @@ def ui_server(api_server):
     _enabled = {m.strip() for m in os.environ.get("ENABLED_MODULES", "").split(",") if m.strip()}
     if _abs_module_dirs and _enabled:
         _loaded = load_all(_abs_module_dirs, _enabled)
-        register_ui_routes(ui_app, _loaded)
+        # The root conftest already wired some modules' UI routes straight onto
+        # this app (importing their ui_routes module to do it); the loader refuses
+        # a route that is already registered, so it registers only the rest.
+        import sys as _sys
+        register_ui_routes(ui_app, [m for m in _loaded if m.get("ui_routes") not in _sys.modules])
 
     config = uvicorn.Config(ui_app, host="127.0.0.1", port=_UI_PORT, log_level="error")
     server = uvicorn.Server(config)
@@ -311,6 +311,20 @@ def api(api_server, seeded_user):
     with httpx.Client(base_url=api_server, headers=headers, timeout=10,
                       limits=_API_LIMITS) as client:
         yield client
+
+
+def clear_session_registry() -> None:
+    """Wipe session_registry rows so a second user can log in (the direct
+    connection limit allows one active session; nonces stay valid)."""
+    import psycopg2
+    from urllib.parse import urlsplit
+    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=parts.path.lstrip("/"))
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM session_registry;")
+    conn.close()
 
 
 def _set_auth_cookie(browser_context, token: str) -> None:

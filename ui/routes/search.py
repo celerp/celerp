@@ -15,7 +15,7 @@ from ui.api_client import APIError
 from ui.components.table import display_enum
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
-from ui.security import is_app_local_path
+from celerp.services.app_paths import is_app_local_path
 
 logger = logging.getLogger(__name__)
 

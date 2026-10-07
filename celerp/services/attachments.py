@@ -38,12 +38,14 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import AsyncIterator, Literal, Protocol
 
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
+from celerp.services.company_lock import hold_company
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -526,6 +528,90 @@ async def store_file(
     return meta
 
 
+class CompanyGone(HTTPException):
+    """The company was deleted before its file could be stored."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=404, detail="Company not found")
+
+
+class CompanyFiles:
+    """The files stored for one company inside ``storing()``."""
+
+    def __init__(self, company_id: str) -> None:
+        self.company_id = str(company_id)
+        self._stored: dict[str, str] = {}
+
+    async def file(self, content: bytes, filename: str | None, mime: str,
+                   attachment_type: AttachmentType | None = None) -> dict:
+        """Store file content as ``store_file`` does; returns its attachment metadata."""
+        meta = await store_file(self.company_id, content, filename, mime, attachment_type)
+        self._stored[meta["id"]] = meta["mime"]
+        return meta
+
+    async def upload(self, file: UploadFile, attachment_type: AttachmentType | None = None) -> dict:
+        """Store an uploaded file as ``store_upload`` does; returns its attachment metadata."""
+        meta = await store_upload(self.company_id, file, attachment_type)
+        self._stored[meta["id"]] = meta["mime"]
+        return meta
+
+    async def discard(self, meta: dict) -> None:
+        """Delete a file stored in this block that will not be attached, with its thumbnail."""
+        mime = self._stored.pop(meta["id"], None)
+        if mime is None:
+            return
+        try:
+            await delete_stored_file(self.company_id, meta["id"], mime)
+        except Exception:
+            logger.warning("could not delete unattached file %s", meta["id"])
+
+    async def discard_all(self) -> None:
+        for file_id, mime in list(self._stored.items()):
+            await self.discard({"id": file_id, "mime": mime})
+
+
+@asynccontextmanager
+async def storing(session: AsyncSession, company_id) -> AsyncIterator[CompanyFiles]:
+    """Store files for a company and record them in one unit, committed on leaving the block.
+
+    The company is held from before the first file is stored until the commit, so a company
+    reset either waits and then deletes the files with the company, or has already deleted
+    the company and nothing is stored (``CompanyGone``). When the block fails, every file
+    stored in it is deleted again, thumbnail included. When the commit reports a failure,
+    the files are deleted only once the database confirms the transaction did not land: a
+    commit can land before its error arrives, leaving records that point at the files."""
+    if not await hold_company(session, company_id):
+        raise CompanyGone()
+    files = CompanyFiles(company_id)
+    try:
+        yield files
+    except BaseException:
+        await session.rollback()
+        await files.discard_all()
+        raise
+    xact = await session.scalar(text("SELECT pg_current_xact_id()::text"))
+    try:
+        await session.commit()
+    except BaseException:
+        try:
+            landed = await _commit_landed(session.bind, xact)
+        except Exception:
+            logger.warning("could not tell whether the commit storing files for company %s landed",
+                           company_id)
+            landed = True
+        if not landed:
+            await files.discard_all()
+        raise
+
+
+async def _commit_landed(engine, xact: str) -> bool:
+    """Whether transaction ``xact`` committed, read on a fresh connection. A transaction
+    still in progress counts as landed, since it may yet commit."""
+    async with engine.connect() as conn:
+        status = await conn.scalar(text("SELECT pg_xact_status(CAST(CAST(:x AS text) AS xid8))"), {"x": xact})
+    return status != "aborted"
+
+
 # Entity type -> the event that attaches a stored file to one entity of that type.
 FILE_ATTACHED_EVENTS = {
     "contact": "crm.contact.file_attached",
@@ -699,7 +785,7 @@ async def store_company_file(company_id, name: str, content: bytes) -> str:
     return await get_backend().store(str(company_id), name.rpartition(".")[0], content, mime)
 
 
-async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | None:
+async def get_or_create_thumbnail(session: AsyncSession, company_id: str, attachment: dict) -> bytes | None:
     """Return the list thumbnail bytes of a stored image attachment, or None.
 
     The thumbnail is read from the backend that holds the original, under the id derived
@@ -737,6 +823,9 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
             return None
         thumb = await asyncio.to_thread(make_thumbnail, content, mime)
         if thumb is None:
+            return None
+        # Held from the store to the end of the caller's transaction, like every company file.
+        if not await hold_company(session, company_id):
             return None
         await backend.store(company_id, thumbnail_id(att_id), thumb, _THUMB_MIME)
         return thumb

@@ -107,3 +107,9 @@ def test_posting_events_read_as_words_in_every_language(event_type):
     i18n.set_lang("en")
     i18n._cached_load.cache_clear()
     assert event_label(event_type) != _title_case(event_type)
+
+
+def test_an_untyped_document_is_named_with_a_noun_in_french():
+    """The fallback label names the thing ("Document"), never the verb "Documenter"."""
+    i18n.set_lang("fr")
+    assert detail_from_entry({"doc_number": "F-1"}, "doc.created") == "Document F-1"

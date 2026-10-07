@@ -5,7 +5,7 @@
 This is the reference module for the Celerp module system. It demonstrates:
 - PLUGIN_MANIFEST structure
 - API + UI route registration
-- Slot contributions (nav, bulk_action, item_action, settings_tab)
+- Slot contributions (nav, bulk_action)
 - pip dependency declaration via requirements.txt
 
 Module authors: see https://celerp.com/docs/modules for the full guide.
@@ -45,12 +45,6 @@ PLUGIN_MANIFEST = {
             "form_action": "/labels/print-bulk",
             "icon": "🖨",
             "action_type": "navigate",  # opens in new tab, not HTMX swap
-        },
-        "item_action": None,
-        "settings_tab": {
-            "label": "Labels",
-            "href": "/settings/labels",
-            "order": 60,
         },
     },
 

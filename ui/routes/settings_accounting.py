@@ -827,16 +827,20 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Div(P(t("error.unauthorized")), id="bank-accounts-list")
+        refused = []
         try:
             b = await api.get_bank_account(token, bank_id)
             await api.patch_bank_account(token, bank_id, {"is_active": not b.get("is_active", True)})
-            banks_data = await api.get_bank_accounts(token, include_inactive=True)
-            banks = banks_data.get("items", [])
+        except APIError as e:
+            refused = [P(str(e.detail), cls="error-banner")]
+        try:
+            banks = (await api.get_bank_accounts(token, include_inactive=True)).get("items", [])
         except APIError:
             banks = []
         active = [b for b in banks if b.get("is_active")]
         rows = [_bank_account_row(b) for b in active]
-        return Div(*rows, id="bank-accounts-list") if rows else Div(
+        return Div(*refused, *rows, id="bank-accounts-list") if rows else Div(
+            *refused,
             P(t("acct.no_bank_accounts_yet_add_one_to_start_tracking_cas"), cls="empty-state"),
             id="bank-accounts-list",
         )

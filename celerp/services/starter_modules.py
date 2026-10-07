@@ -28,27 +28,44 @@ _STARTER_RECORD_KEYS = ("demo:item:%", "reg:contact:%")
 
 
 async def enable_starter_modules(session: AsyncSession) -> None:
-    """Once per install, before the modules load: enable the starter modules when no company
+    """Once per install, before the modules load: turn the starter modules on when no company
     is registered yet or a company holds starter records, and tell each such company when
-    that turned them on. Company settings are left as they are: a company that lists no
-    modules of its own already uses every enabled one. The caller commits."""
-    from celerp.config import set_enabled_modules
+    that turned them on. A company that lists no modules of its own uses the installation's
+    list, so the modules are added there; a company with its own list has them added to it.
+    The caller commits."""
+    from celerp.config import read_config, replace_enabled_modules
     from celerp.migrations._data_reconcile import get_meta, set_meta
     from celerp.models.company import Company
     from celerp.models.ledger import LedgerEntry
+    from celerp.modules.registry import (
+        commit_with_load_set, company_modules, enable_for_company, hold_module_state, uses_own_list,
+    )
     from celerp.notifications.service import create as notify
 
     conn = await session.connection()
     if await conn.run_sync(lambda c: get_meta(c, STARTER_MODULES_KEY)) == "done":
         return
-    holders = list((await session.execute(select(LedgerEntry.company_id).where(
+    await hold_module_state(session)
+    holder_ids = list((await session.execute(select(LedgerEntry.company_id).where(
         or_(*(LedgerEntry.idempotency_key.like(k) for k in _STARTER_RECORD_KEYS))).distinct())).scalars())
+    holders = list((await session.execute(select(Company).where(Company.id.in_(holder_ids)))).scalars())
     registered = (await session.execute(select(Company.id).limit(1))).first() is not None
-    if holders or not registered:
-        turned_on = await asyncio.to_thread(set_enabled_modules, list(STARTER_MODULES))
-        if turned_on:
-            for company_id in holders:
-                await notify(session, company_id, "system", NOTICE_TITLE, _NOTICE_BODY,
-                             action_url="/modules", priority="high",
-                             i18n={"title": "notice.starter_modules_on.title", "body": "notice.starter_modules_on.body"})
+    turned_on: list = []
+    if not registered or any(not uses_own_list(c.settings) for c in holders):
+        installed = list(read_config().get("modules", {}).get("enabled") or [])
+        if await asyncio.to_thread(replace_enabled_modules, installed + list(STARTER_MODULES)):
+            turned_on = [c for c in holders if not uses_own_list(c.settings)]
+    own_lists = [c for c in holders if uses_own_list(c.settings)
+                 and not set(STARTER_MODULES) <= company_modules(c.settings)]
+    for company in own_lists:
+        settings = company.settings
+        for name in STARTER_MODULES:
+            settings, _added = enable_for_company(settings, name)
+        company.settings = settings
+    for company in turned_on + own_lists:
+        await notify(session, company.id, "system", NOTICE_TITLE, _NOTICE_BODY,
+                     action_url="/modules", priority="high",
+                     i18n={"title": "notice.starter_modules_on.title", "body": "notice.starter_modules_on.body"})
     await conn.run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, "done"))
+    if own_lists:
+        await commit_with_load_set(session)

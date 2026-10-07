@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Factory reset on real Postgres. It resets the signed-in company and nothing else: the
-owner types the company's exact name, every record of that company goes in one
-transaction, and a user goes with it only when no other company still has them."""
+"""Company reset on real Postgres, over every table in the database. It resets the
+signed-in company and nothing else: the owner types the company's exact name, every
+record of that company goes in one transaction, and logins stay."""
 
 from __future__ import annotations
 
@@ -24,9 +24,8 @@ async def _register(client, company: str) -> str:
     return r.json()["access_token"]
 
 
-async def _reset(client, token: str, name: str | None):
-    return await client.post("/system/factory-reset", headers=auth(token),
-                             json=None if name is None else {"confirm_name": name})
+async def _reset(client, token: str, name: str):
+    return await client.post("/companies/me/reset", headers=auth(token), json={"company_name": name})
 
 
 async def _id(client, token: str) -> str:
@@ -55,16 +54,16 @@ async def _two_companies(client) -> tuple[str, str]:
     return ta, tb
 
 
-async def test_factory_reset_wipes_the_company_on_a_real_session(real_client, real_engine):  # noqa: F811
+async def test_a_reset_wipes_the_company_on_a_real_session(real_client, real_engine):  # noqa: F811
     token = await _register(real_client, "Reset Co")
     cid = await _id(real_client, token)
 
     r = await _reset(real_client, token, "Reset Co")
 
-    assert r.status_code == 200 and r.json() == {"ok": True}, r.text
+    assert r.status_code == 200 and r.json() == {"next": "start_company"}, r.text
     assert await count(real_engine, "companies") == 0
     assert set((await _held(real_engine, cid)).values()) == {0}
-    assert await count(real_engine, "users") == 0
+    assert await count(real_engine, "users") == 1
 
 
 async def test_resetting_one_company_leaves_the_other_and_its_people(real_client, real_engine):  # noqa: F811
@@ -82,26 +81,28 @@ async def test_resetting_one_company_leaves_the_other_and_its_people(real_client
     assert set((await _held(real_engine, alpha)).values()) == {0}
     assert await count(real_engine, "companies", "id = :i", i=beta) == 1
     assert await _held(real_engine, beta) == beta_before
-    # The owner still has Beta; the clerk had only Alpha.
+    # Logins stay: the owner still has Beta, and the clerk, who had only Alpha, keeps theirs.
     assert await count(real_engine, "users", "email = :e", e=OWNER_EMAIL) == 1
-    assert await count(real_engine, "users", "email = :e", e="clerk@example.com") == 0
+    assert await count(real_engine, "users", "email = :e", e="clerk@example.com") == 1
     r = await real_client.get("/crm/contacts", headers=auth(tb))
     assert r.json()["items"] == beta_contacts
 
 
 async def test_a_failure_part_way_leaves_both_companies_as_they_were(real_client, real_engine, monkeypatch):  # noqa: F811
-    import celerp.routers.system as system
+    from celerp.services import company_reset
 
     ta, tb = await _two_companies(real_client)
     alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
     before = {alpha: await _held(real_engine, alpha), beta: await _held(real_engine, beta)}
     users = await count(real_engine, "users")
-    wipe = system._company_deletes
+    wipe = company_reset._company_deletes
     # The company row goes last, so the failure comes after every other table's delete.
-    monkeypatch.setattr(system, "_company_deletes", lambda schema: [
+    monkeypatch.setattr(company_reset, "_company_deletes", lambda schema: [
         *wipe(schema)[:-1], "DELETE FROM no_such_table WHERE company_id = CAST(:c AS uuid)"])
-    with pytest.raises(Exception):  # the in-process transport re-raises the server error
-        await _reset(real_client, ta, "Alpha Co")
+
+    r = await _reset(real_client, ta, "Alpha Co")
+
+    assert r.status_code == 500, r.text
 
     assert await count(real_engine, "companies") == 2
     assert {alpha: await _held(real_engine, alpha), beta: await _held(real_engine, beta)} == before
@@ -119,7 +120,7 @@ _MODULE_TABLES = (
 async def test_a_reset_clears_the_tables_of_a_module_that_is_not_loaded(real_client, real_engine):  # noqa: F811
     """A module switched off keeps its tables. Its company rows, and the rows that hang
     off them, go with the company; another company's rows in the same tables stay, and
-    so does a user one of those rows still names."""
+    so does the clerk those rows name."""
     import uuid
 
     from sqlalchemy import text
@@ -147,7 +148,6 @@ async def test_a_reset_clears_the_tables_of_a_module_that_is_not_loaded(real_cli
         assert await count(real_engine, "ext_parcels", "company_id = :i", i=beta) == 1
         assert await count(real_engine, "ext_parcel_scans") == 1
         assert await count(real_engine, "ext_parcel_scans", "parcel_id IN (SELECT id FROM ext_parcels)") == 1
-        # Beta's parcel still names the clerk, so the clerk stays though Alpha was their only company.
         assert await count(real_engine, "users", "id = :i", i=clerk) == 1
     finally:
         async with real_engine.begin() as conn:
@@ -209,9 +209,9 @@ async def test_a_user_another_company_still_names_stays_whatever_the_key_does(
             await conn.execute(text("DROP TABLE IF EXISTS ext_note_reads, ext_notes"))
 
 
-async def test_a_user_only_the_reset_company_names_goes_with_their_sessions(real_client, real_engine):  # noqa: F811
-    """Named only by Alpha's own rows, the clerk goes with Alpha, and their sign-in
-    records, which hold no company's data, cascade away with them."""
+async def test_a_login_only_the_reset_company_had_stays_signed_out(real_client, real_engine):  # noqa: F811
+    """The clerk, Alpha's only, is named by Alpha's own rows. Those rows go with Alpha; the
+    clerk's login stays, signed out everywhere, and its own sign-in state stays with it."""
     import uuid
 
     from sqlalchemy import text
@@ -225,18 +225,18 @@ async def test_a_user_only_the_reset_company_names_goes_with_their_sessions(real
             "author uuid REFERENCES users(id) ON DELETE CASCADE, body text NOT NULL)"))
         await conn.execute(text("INSERT INTO ext_notes VALUES (:i, :c, :u, 'alpha note')"),
                            {"i": uuid.uuid4(), "c": alpha, "u": clerk})
-        await conn.execute(text("INSERT INTO session_registry (jti, user_id, expiry) VALUES ('clerk-jti', :u, now())"),
-                           {"u": clerk})
+        await conn.execute(text("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
+                                "VALUES ('clerk-jti', :u, :c, now())"), {"u": clerk, "c": alpha})
         await conn.execute(text("INSERT INTO user_auth_state (user_id, nonce) VALUES (:u, 'n') "
                                 "ON CONFLICT (user_id) DO NOTHING"), {"u": clerk})
     try:
         r = await _reset(real_client, ta, "Alpha Co")
 
         assert r.status_code == 200, r.text
-        assert await count(real_engine, "users", "id = :i", i=clerk) == 0
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
         assert await count(real_engine, "ext_notes") == 0
         assert await count(real_engine, "session_registry", "user_id = :i", i=clerk) == 0
-        assert await count(real_engine, "user_auth_state", "user_id = :i", i=clerk) == 0
+        assert await count(real_engine, "user_auth_state", "user_id = :i", i=clerk) == 1
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_notes"))
@@ -335,11 +335,11 @@ async def test_a_user_whose_sessions_another_row_names_stays(real_client, real_e
             await conn.execute(text("DROP TABLE IF EXISTS ext_audit, ext_sessions"))
 
 
-async def test_a_tree_of_rows_no_user_reaches_keeps_no_user(real_client, real_engine):  # noqa: F811
-    """A shared category tree (each category cascading from its parent, no company, no
-    user) with a label naming one category. Nothing deleting a user reaches the tree, so
-    the clerk, Alpha's only, goes with Alpha. A second Alpha-only user has an assignment,
-    cascading from users, that a row of Beta's logs: that user stays, and so does the log."""
+async def test_rows_hanging_off_logins_and_shared_trees_stay(real_client, real_engine):  # noqa: F811
+    """A shared category tree (each category cascading from its parent, kept by a login, no
+    company) with a label naming one category, and a second Alpha-only user with an
+    assignment, cascading from users, that a row of Beta's logs. Resetting Alpha keeps
+    both logins, the tree, the assignment and Beta's log."""
     import uuid
 
     from sqlalchemy import text
@@ -354,7 +354,8 @@ async def test_a_tree_of_rows_no_user_reaches_keeps_no_user(real_client, real_en
         clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
         keeper = (await conn.execute(text("SELECT id FROM users WHERE email = 'keeper@example.com'"))).scalar_one()
         await conn.execute(text("CREATE TABLE ext_cats (id uuid PRIMARY KEY, "
-                                "parent_id uuid REFERENCES ext_cats(id) ON DELETE CASCADE)"))
+                                "parent_id uuid REFERENCES ext_cats(id) ON DELETE CASCADE, "
+                                "kept_by uuid REFERENCES users(id) ON DELETE SET NULL)"))
         await conn.execute(text("CREATE TABLE ext_cat_labels (id uuid PRIMARY KEY, "
                                 "cat_id uuid NOT NULL REFERENCES ext_cats(id))"))
         await conn.execute(text("CREATE TABLE ext_assign (id uuid PRIMARY KEY, "
@@ -362,7 +363,7 @@ async def test_a_tree_of_rows_no_user_reaches_keeps_no_user(real_client, real_en
         await conn.execute(text("CREATE TABLE ext_assign_log (id uuid PRIMARY KEY, company_id uuid NOT NULL "
                                 "REFERENCES companies(id), assign_id uuid NOT NULL REFERENCES ext_assign(id) "
                                 "ON DELETE CASCADE)"))
-        await conn.execute(text("INSERT INTO ext_cats VALUES (:c, NULL)"), {"c": category})
+        await conn.execute(text("INSERT INTO ext_cats VALUES (:c, NULL, :u)"), {"c": category, "u": clerk})
         await conn.execute(text("INSERT INTO ext_cat_labels VALUES (:i, :c)"), {"i": uuid.uuid4(), "c": category})
         await conn.execute(text("INSERT INTO ext_assign VALUES (:a, :u)"), {"a": assignment, "u": keeper})
         await conn.execute(text("INSERT INTO ext_assign_log VALUES (:i, :b, :a)"),
@@ -371,7 +372,7 @@ async def test_a_tree_of_rows_no_user_reaches_keeps_no_user(real_client, real_en
         r = await _reset(real_client, ta, "Alpha Co")
 
         assert r.status_code == 200, r.text
-        assert await count(real_engine, "users", "id = :i", i=clerk) == 0
+        assert await count(real_engine, "users", "id = :i", i=clerk) == 1
         assert await count(real_engine, "users", "id = :i", i=keeper) == 1
         assert await count(real_engine, "ext_assign_log", "company_id = :b", b=beta) == 1
         assert await count(real_engine, "ext_cat_labels") == 1
@@ -475,16 +476,21 @@ _ITEMS = ("CREATE TABLE ext_items (id uuid PRIMARY KEY, company_id uuid NOT NULL
           "label text NOT NULL)")
 
 
-async def _refused_untouched(client, engine, token: str, company: str, tables: tuple[str, ...], table: str):
-    """Reset is refused naming ``table``, and nothing anywhere has changed."""
+async def _refused_untouched(client, engine, token: str, company: str, tables: tuple[str, ...], table: str,
+                             detail: str | None = None):
+    """Reset is refused naming ``table`` (with ``detail`` when given), and nothing anywhere
+    has changed."""
     before = {t: await _rows(engine, t) for t in tables}
     held = await _held(engine, company)
 
     r = await _reset(client, token, "Alpha Co")
 
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
-    assert (detail["message_key"], detail["params"]) == ("system.factory_reset.held_elsewhere", {"table": table})
+    if detail is None:
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("company_reset.held_elsewhere", {"table": table})
+    else:
+        assert r.json()["detail"] == detail
     assert await count(engine, "companies", "id = :i", i=company) == 1
     assert await _held(engine, company) == held
     assert {t: await _rows(engine, t) for t in tables} == before
@@ -576,8 +582,8 @@ async def test_a_reset_is_refused_while_a_row_hangs_off_both_companies(
 async def test_a_reset_is_refused_naming_users_while_a_user_of_another_company_hangs_off_it(
         real_client, real_engine, action):  # noqa: F811
     """A module column on users names each user's home company, and the owner, still
-    Beta's, has Alpha as home. Beta's own records name the owner as they always do; the
-    row tying the owner to Alpha is in users, so the refusal names users."""
+    Beta's, has Alpha as home. Logins belong to the installation, so users now also holds
+    company data, as do the login tables hanging off it, and the refusal names them."""
     from sqlalchemy import text
 
     ta, tb = await _two_companies(real_client)
@@ -586,7 +592,9 @@ async def test_a_reset_is_refused_naming_users_while_a_user_of_another_company_h
         await conn.execute(text(f"ALTER TABLE users ADD COLUMN ext_home uuid REFERENCES companies(id) ON DELETE {action}"))
         await conn.execute(text("UPDATE users SET ext_home = :a WHERE email = :e"), {"a": alpha, "e": OWNER_EMAIL})
     try:
-        await _refused_untouched(real_client, real_engine, ta, alpha, ("users", "user_companies"), "users")
+        await _refused_untouched(real_client, real_engine, ta, alpha, ("users", "user_companies"), "users",
+                                 "This company cannot be reset safely: supporter_badges, user_auth_state, "
+                                 "users hold both installation and company data. Nothing was deleted.")
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("ALTER TABLE users DROP COLUMN IF EXISTS ext_home"))
@@ -702,7 +710,7 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
 
     from sqlalchemy import text
 
-    from celerp.routers import system
+    from celerp.services import company_reset
 
     ta, tb = await _two_companies(real_client)
     alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
@@ -713,7 +721,7 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
             "CREATE TABLE ext_links (id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES companies(id), "
             "item_id uuid REFERENCES ext_items(id) ON DELETE CASCADE, label text NOT NULL)"))
         await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item')"), {"i": item, "c": alpha})
-    deletes = system._company_deletes
+    deletes = company_reset._company_deletes
     started: dict = {}
 
     def after_the_check(schema):
@@ -722,7 +730,7 @@ async def test_a_row_another_company_adds_during_the_reset_is_never_lost(
         started["writer"].join(timeout=3)
         return deletes(schema)
 
-    monkeypatch.setattr(system, "_company_deletes", after_the_check)
+    monkeypatch.setattr(company_reset, "_company_deletes", after_the_check)
     try:
         r = await _reset(real_client, ta, "Alpha Co")
         started["writer"].join()
@@ -745,7 +753,7 @@ async def test_a_table_added_before_the_reset_locks_is_refused_as_busy(
 
     from sqlalchemy import text
 
-    from celerp.routers import system
+    from celerp.services import company_reset
 
     ta, tb = await _two_companies(real_client)
     alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
@@ -753,7 +761,7 @@ async def test_a_table_added_before_the_reset_locks_is_refused_as_busy(
     async with real_engine.begin() as conn:
         await conn.execute(text(_ITEMS))
         await conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'alpha item')"), {"i": item, "c": alpha})
-    lock = system._lock_writers
+    lock = company_reset._lock_writers
 
     def before_the_locks(schema):
         writer, _ = _commit_elsewhere(
@@ -763,7 +771,7 @@ async def test_a_table_added_before_the_reset_locks_is_refused_as_busy(
         writer.join()
         return lock(schema)
 
-    monkeypatch.setattr(system, "_lock_writers", before_the_locks)
+    monkeypatch.setattr(company_reset, "_lock_writers", before_the_locks)
     try:
         held = await _held(real_engine, alpha)
 
@@ -784,17 +792,17 @@ async def test_a_table_added_while_the_reset_holds_its_locks_waits_for_it(
         real_client, real_engine, monkeypatch, table, key, names):  # noqa: F811
     """While the reset holds its locks, a module adds a table whose key names Alpha or
     the clerk, Alpha's only user, and Beta writes a row naming them. The new table waits
-    for the reset; Beta's row then fails on the row that is gone and is never deleted
-    with Alpha."""
+    for the reset. A row naming Alpha then fails on the row that is gone and is never
+    deleted with Alpha; the clerk's login stays, so a row naming the clerk is Beta's."""
     from sqlalchemy import text
 
-    from celerp.routers import system
+    from celerp.services import company_reset
 
     ta, tb = await _two_companies(real_client)
     alpha, beta = await _id(real_client, ta), await _id(real_client, tb)
     async with real_engine.begin() as conn:
         clerk = (await conn.execute(text("SELECT id FROM users WHERE email = 'clerk@example.com'"))).scalar_one()
-    check = system._held_elsewhere
+    check = company_reset._held_elsewhere
     started: dict = {}
 
     def after_the_locks(schema):
@@ -805,14 +813,18 @@ async def test_a_table_added_while_the_reset_holds_its_locks_waits_for_it(
         started["writer"].join(timeout=3)
         return check(schema)
 
-    monkeypatch.setattr(system, "_held_elsewhere", after_the_locks)
+    monkeypatch.setattr(company_reset, "_held_elsewhere", after_the_locks)
     try:
         r = await _reset(real_client, ta, "Alpha Co")
         started["writer"].join()
 
         assert r.status_code == 200, r.text
-        assert "committed" not in started["outcome"], started["outcome"]
-        assert "violates foreign key constraint" in str(started["outcome"]["error"])
+        if names == "alpha":
+            assert "committed" not in started["outcome"], started["outcome"]
+            assert "violates foreign key constraint" in str(started["outcome"]["error"])
+        else:
+            assert started["outcome"] == {"committed": True}
+            assert await count(real_engine, table, "company_id = :b", b=beta) == 1
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
@@ -822,7 +834,7 @@ def _refused_busy(r) -> None:
     """The reset was refused because other work was saving at the same time."""
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
-    assert detail["message_key"] == "system.factory_reset.busy", detail
+    assert detail["message_key"] == "company_reset.busy", detail
     assert detail["message"] == ("This company could not be reset because other changes were being saved "
                                  "at the same time. Nothing was deleted. Try again.")
     assert in_language("de", detail) != detail["message"]
@@ -942,7 +954,7 @@ async def test_a_reset_is_refused_when_tables_refer_to_each_other_in_a_loop(real
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
         assert (detail["message_key"], detail["params"]) == (
-            "system.factory_reset.reference_cycle", {"tables": "ext_a, ext_b"})
+            "company_reset.reference_cycle", {"tables": "ext_a, ext_b"})
         assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
         assert await _held(real_engine, alpha) == held
         assert {t: await _rows(real_engine, t) for t in before} == before
@@ -983,7 +995,7 @@ async def test_a_reset_is_refused_when_tables_reached_through_another_refer_to_e
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
         assert (detail["message_key"], detail["params"]) == (
-            "system.factory_reset.reference_cycle", {"tables": "ext_a, ext_b"})
+            "company_reset.reference_cycle", {"tables": "ext_a, ext_b"})
         assert await count(real_engine, "companies", "id = :i", i=alpha) == 1
         assert await _held(real_engine, alpha) == held
         assert {t: await _rows(real_engine, t) for t in before} == before
@@ -1030,7 +1042,8 @@ async def test_a_row_naming_a_table_in_another_schema_goes_with_the_company(real
 
 
 _PARTITIONED = (
-    "CREATE TABLE ext_events (id uuid NOT NULL, PRIMARY KEY (id)) PARTITION BY HASH (id)",
+    "CREATE TABLE ext_events (id uuid NOT NULL, company_id uuid NOT NULL REFERENCES companies(id), "
+    "PRIMARY KEY (id)) PARTITION BY HASH (id)",
     "CREATE TABLE ext_events_p0 PARTITION OF ext_events FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
     "CREATE TABLE ext_events_p1 PARTITION OF ext_events FOR VALUES WITH (MODULUS 2, REMAINDER 1)",
     "CREATE TABLE ext_event_refs (id uuid PRIMARY KEY, event_id uuid REFERENCES ext_events(id) ON DELETE CASCADE)")
@@ -1137,7 +1150,7 @@ async def test_a_reset_is_refused_while_a_key_is_kept_on_one_partition(real_clie
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key", {"table": partition})
+        assert (detail["message_key"], detail["params"]) == ("company_reset.partition_key", {"table": partition})
         assert await count(real_engine, "companies", "id = :a", a=alpha) == 1
         assert await count(real_engine, "users", "email = 'clerk@example.com'") == 1
         assert await count(real_engine, beta_table, "company_id = :b", b=beta) == 1
@@ -1199,7 +1212,7 @@ async def test_a_reset_is_refused_while_a_table_in_another_schema_names_its_tabl
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert detail["message_key"] == "system.factory_reset.outside_reference", detail
+        assert detail["message_key"] == "company_reset.outside_reference", detail
         assert detail["message"] == (
             "This company cannot be reset because the table ext.notes, which was added outside Celerp "
             "(by an installed module or a direct database change), refers to Celerp's records. Nothing "
@@ -1234,7 +1247,7 @@ async def test_a_reset_is_refused_while_row_security_hides_rows_of_a_table(
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
+        assert (detail["message_key"], detail["params"]) == ("company_reset.partition_key",
                                                              {"table": "ext_hidden"})
         assert await _held(real_engine, alpha) == held
         async with real_engine.begin() as conn:
@@ -1303,7 +1316,7 @@ async def test_a_reset_is_refused_while_a_table_cannot_be_read_or_deleted_from(
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
+        assert (detail["message_key"], detail["params"]) == ("company_reset.partition_key",
                                                              {"table": "ext_unread"})
         assert await _held(real_engine, alpha) == held
         if keyed:
@@ -1334,7 +1347,7 @@ async def test_a_reset_is_refused_while_a_table_sits_in_a_schema_ahead_of_celerp
 
         assert r.status_code == 409, r.text
         detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("system.factory_reset.partition_key",
+        assert (detail["message_key"], detail["params"]) == ("company_reset.partition_key",
                                                              {"table": f"{role}.ext_par"})
         assert await count(real_engine, "public.companies", "id = :a", a=alpha) == 1
         assert await count(real_engine, f"{role}.ext_par", "company_id = :a", a=alpha) == 1
@@ -1343,7 +1356,7 @@ async def test_a_reset_is_refused_while_a_table_sits_in_a_schema_ahead_of_celerp
             await conn.execute(text(f"DROP SCHEMA IF EXISTS {role} CASCADE"))
 
 
-@pytest.mark.parametrize("typed", [None, "", "RESET", "alpha co", "Alpha Co "])
+@pytest.mark.parametrize("typed", ["", "RESET", "alpha co", "Alpha Co "])
 async def test_reset_needs_the_exact_company_name(real_client, real_engine, typed):  # noqa: F811
     token = await _register(real_client, "Alpha Co")
     cid = await _id(real_client, token)
@@ -1353,8 +1366,8 @@ async def test_reset_needs_the_exact_company_name(real_client, real_engine, type
 
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
-    assert detail["message_key"] == "system.factory_reset.name_mismatch", detail
-    assert detail["message"] == "Type the company name exactly as shown to reset this company."
+    assert detail["message_key"] == "company_reset.name_mismatch", detail
+    assert detail["message"] == "The name you typed does not match this company's name. Nothing was deleted."
     assert in_language("de", detail) != detail["message"]
     assert await count(real_engine, "companies", "id = :i", i=cid) == 1
     assert await _held(real_engine, cid) == before
@@ -1373,8 +1386,7 @@ async def test_the_reset_modal_names_the_company_to_type(ui, real_client, lang):
     page = _page(r)
 
     assert "<strong>Alpha & Sons</strong>" in page
-    assert 'name="confirm_name" data-expected="Alpha &amp; Sons"' in r.text
-    assert 'hx-include="#factory-reset-confirm-input"' in page
+    assert 'name="company_name"' in r.text and 'data-name="Alpha &amp; Sons"' in r.text
     assert "RESET" not in page
 
 
@@ -1386,20 +1398,22 @@ async def test_a_wrong_name_typed_in_the_modal_resets_nothing(ui, real_client, r
     ui.cookies.set("celerp_token", token)
     ui.cookies.set("celerp_lang", lang)
 
-    r = await ui.post("/settings/factory-reset", data={"confirm_name": "RESET"}, headers={"HX-Request": "true"})
+    r = await ui.post("/settings/company/reset", data={"company_name": "RESET"}, headers={"HX-Request": "true"})
 
-    refusal = {"message": "Type the company name exactly as shown to reset this company.",
-               "message_key": "system.factory_reset.name_mismatch", "params": {}}
+    refusal = {"message": "The name you typed does not match this company's name. Nothing was deleted.",
+               "message_key": "company_reset.name_mismatch", "params": {}}
     assert in_language(lang, refusal) in _page(r)
     assert "HX-Redirect" not in r.headers
     assert await _held(real_engine, cid) == before
 
 
 async def test_the_name_typed_in_the_modal_resets_the_company(ui, real_client, real_engine):  # noqa: F811
+    from ui.routes.auth import START_COMPANY
+
     token = await _register(real_client, "Alpha Co")
     ui.cookies.set("celerp_token", token)
 
-    r = await ui.post("/settings/factory-reset", data={"confirm_name": "Alpha Co"}, headers={"HX-Request": "true"})
+    r = await ui.post("/settings/company/reset", data={"company_name": "Alpha Co"}, headers={"HX-Request": "true"})
 
-    assert r.status_code == 200 and r.headers["HX-Redirect"] == "/setup", r.text
+    assert r.status_code == 200 and r.headers["HX-Redirect"] == START_COMPANY, r.text
     assert await count(real_engine, "companies") == 0

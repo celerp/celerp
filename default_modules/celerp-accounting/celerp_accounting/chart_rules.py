@@ -27,6 +27,7 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, role_map, scope_codes
 from celerp.services.company_lock import lock_chart
 from celerp.services.lot_origin import account_balances
+from celerp_accounting.ledger_accounts import check_account_change
 from celerp_accounting.models import Account
 
 # The account types the reports know how to sign and classify. This module is
@@ -240,6 +241,7 @@ async def change_account(
     acc = await _account(session, company_id, code, lock=True)
     if acc is None:
         raise HTTPException(status_code=404, detail="Account not found")
+    await check_account_change(session, company_id, acc, account_type=account_type, is_active=is_active)
     # Read after the row lock, so a role remap that committed meanwhile is seen.
     settings = await current_settings(session, company_id)
     targeted = _roles_targeting(settings, code)

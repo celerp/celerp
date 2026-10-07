@@ -5,7 +5,7 @@
 
 What the database holds can be more than the code loaded today knows about: a module
 switched off keeps its tables. Anything that must account for every table a company
-has rows in (a backup, a factory reset) reads it here rather than from the ORM."""
+has rows in (a backup, a company reset) reads it here rather than from the ORM."""
 
 from __future__ import annotations
 
@@ -369,7 +369,7 @@ def fk_order(tables: list[str], schema: dict[str, Table]) -> tuple[list[str], se
     return order, unordered | set(parents)
 
 
-def _reach(schema: dict[str, Table], tables: set[str], follows) -> set[str]:
+def reach(schema: dict[str, Table], tables: set[str], follows) -> set[str]:
     """``tables`` and every table with a foreign key ``follows`` (given the table holding
     it and the key) naming one of them, and on into theirs: the tables a delete of rows
     of ``tables`` can go on into."""
@@ -386,14 +386,14 @@ def company_tables(schema: dict[str, Table], *, held: bool = False) -> set[str]:
     messages, a run's entity maps). ``held`` follows only keys that do not clear on
     delete: a row reached only through a clearing key outlives the company, so it is
     not the company's to delete."""
-    return _reach(schema, {"companies"} | {name for name, table in schema.items() if "company_id" in table.columns},
+    return reach(schema, {"companies"} | {name for name, table in schema.items() if "company_id" in table.columns},
                   lambda name, fk: not (held and fk.clears))
 
 
 def _user_cascade(schema: dict[str, Table]) -> set[str]:
     """``users`` and the tables outside any company that deleting a user cascades into."""
     company = company_tables(schema)
-    return _reach(schema, {"users"}, lambda name, fk: fk.cascades and name not in company and fk.target not in company)
+    return reach(schema, {"users"}, lambda name, fk: fk.cascades and name not in company and fk.target not in company)
 
 
 def keyed(schema: dict[str, Table]) -> set[str]:

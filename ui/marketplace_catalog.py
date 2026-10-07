@@ -20,6 +20,8 @@ from pathlib import Path
 
 import httpx
 
+from celerp.config import settings
+
 from ui.config import RELAY_URL
 
 CATALOG_SOURCES = (
@@ -38,7 +40,7 @@ _URL_FIELDS = ("repo", "homepage", "feedback")
 
 
 def _data_dir() -> Path:
-    return Path(os.getenv("CELERP_DATA_DIR") or os.getenv("DATA_DIR") or "./data")
+    return Path(settings.data_dir)
 
 
 def _cache_path() -> Path:

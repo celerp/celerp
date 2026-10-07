@@ -995,10 +995,11 @@ async def test_an_older_draft_is_booked_once_made_available_where_the_books_cann
 
 
 async def _accounting_enabled(session, auth, enabled: bool) -> None:
-    from celerp.modules.registry import disable, enable
+    from celerp.modules.registry import disable_for_company, enable_for_company
 
     company = await locked_company(session, auth["company_id"])
-    company.settings = (enable if enabled else disable)(company.settings, "celerp-accounting")
+    company.settings = (enable_for_company(company.settings, "celerp-accounting")[0] if enabled
+                        else disable_for_company(company.settings, "celerp-accounting"))
     await session.commit()
 
 

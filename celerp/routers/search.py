@@ -30,8 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.modules import slots
-from celerp.modules.registry import is_enabled
+from celerp.modules.registry import uses_module
 from celerp.modules.slots import resolve_handler
+from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, role_has_permission
 
@@ -78,27 +79,10 @@ _HREF_MAX = 2048
 
 
 def _local_href(href) -> bool:
-    """True only for a non-empty, bounded, app-local path.
-
-    Rejects any scheme, protocol-relative "//host", a backslash (browsers
-    normalise "\\" to "/", so "/\\evil.example" resolves off-site), any ASCII
-    control char, and anything that does not start with a single leading slash,
-    so a third-party provider can only link within this app, never off-site.
-
-    The app-local rule mirrors ui.security.is_app_local_path, which is the
-    single source of truth for app-local path safety. The API layer cannot
-    import the UI layer, so the rule is duplicated here and the two must change
-    together; this function additionally bounds the length for the third-party
-    row contract.
-    """
-    return (
-        isinstance(href, str)
-        and 0 < len(href) <= _HREF_MAX
-        and href.startswith("/")
-        and not href.startswith("//")
-        and "\\" not in href
-        and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in href)
-    )
+    """True only for a bounded app-local path (celerp.services.app_paths), so a
+    third-party provider can only link within this app, never off-site. The
+    length bound is the third-party row contract's own addition."""
+    return isinstance(href, str) and 0 < len(href) <= _HREF_MAX and is_app_local_path(href)
 
 
 def _canonical_third_party_row(row: dict) -> dict:
@@ -179,13 +163,9 @@ async def global_search(
         # Too short to run: answer empty without waking any provider.
         return {"results": {}, "degraded_modules": []}
 
-    # Per-company module enablement, read from the fresh company settings (never
-    # the stale JWT claim). A registered provider slot means the module is loaded
-    # in THIS process, not that this company enabled it. When the key is present
-    # every provider is gated on it; a present-but-malformed value yields an empty
-    # set, which fails closed (show nothing). When the key is
-    # absent entirely, a company predating per-module enablement falls back to
-    # running every permitted provider.
+    # A registered provider slot means the module is loaded in THIS process, not
+    # that this company uses it; uses_module decides that from fresh settings.
+
     results: dict[str, dict] = {}
     degraded_modules: list[str] = []
     rollback_failed = False
@@ -199,7 +179,7 @@ async def global_search(
 
         # Disabled for this company: not shown and not degraded (it is off, not
         # broken), and never invoked.
-        if not is_enabled(settings, module):
+        if not uses_module(settings, module):
             continue
 
         # Authorization, failing closed. An unknown permission key raises KeyError

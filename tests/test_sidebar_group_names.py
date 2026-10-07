@@ -20,7 +20,7 @@ _HEADER = re.compile(r'class="sidebar-group-header">\s*(?:<a [^>]*>(?:⚙️ )?(
 
 
 def _groups() -> set[str]:
-    return {item["group"] for item in module_nav() if item.get("group")}
+    return {item["group"] for item in module_nav(None) if item.get("group")}
 
 
 def test_every_group_the_sidebar_shows_has_a_name_in_every_language():

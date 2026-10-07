@@ -22,6 +22,7 @@ from celerp.events.engine import emit_event
 from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
 from celerp_accounting.chart_rules import (
     check_new_account,
@@ -216,11 +217,14 @@ async def add_bank_account(
     currency: str,
     opening_balance: float,
 ) -> BankAccount:
-    """A bank account and, when its chart code is new, its chart row under ``parent_code``."""
+    """A bank account and, when its chart code is new, its chart row under ``parent_code``.
+    An existing chart code must be an active asset account."""
     existing_acc = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
-    if not existing_acc:
+    if existing_acc:
+        await require_money_account(session, company_id, code)
+    else:
         await create_chart_account(
             session, company_id, code=code, name=account_name, account_type="asset", parent_code=parent_code,
         )

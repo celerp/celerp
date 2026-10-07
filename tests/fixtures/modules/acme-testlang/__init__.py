@@ -8,7 +8,7 @@ end. Strings are ASCII test placeholders only, never shipped copy.
 """
 
 PLUGIN_MANIFEST = {
-    "name": "celerp-testlang",
+    "name": "acme-testlang",
     "version": "1.0.0",
     "display_name": "Test Language Module",
     "locales": {

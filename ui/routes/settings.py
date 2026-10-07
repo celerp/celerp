@@ -22,6 +22,7 @@ from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
 from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
+from ui.security import not_permitted_redirect, owner_refusal
 from ui.config import get_role as _get_role
 from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
@@ -32,7 +33,7 @@ from ui.routes.setup import business_type_label, business_type_options
 
 async def _check_permission(
     request: Request, key: str, *, page_view: bool = False
-) -> RedirectResponse | None:
+) -> Response | None:
     """Return None if the caller holds the named permission, else a redirect.
 
     The role and its permission overrides are read from authenticated API state
@@ -64,7 +65,7 @@ async def _check_permission(
     role = api.role_from_company(company)
     settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):
-        return RedirectResponse("/dashboard", status_code=302)
+        return not_permitted_redirect(request)
     return None
 
 
@@ -559,14 +560,14 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url, "get_default_price_list"))
 
 
-def _factory_reset_card(company_name: str) -> FT:
-    """Reset this company's data. Lives in the Danger Zone; the owner confirms by typing
-    the company's exact name, which the server checks again."""
-    modal_id = "factory-reset-modal"
-    step1_id = "factory-reset-step1"
-    step2_id = "factory-reset-step2"
-    input_id = "factory-reset-confirm-input"
-    btn_id   = "factory-reset-confirm-btn"
+def _company_reset_card(company_name: str) -> FT:
+    """Reset this company card, inside the Danger Zone. Errors show inside the dialog."""
+    from ui.routes.company_backup import DOWNLOAD
+    modal_id = "company-reset-modal"
+    step1_id = "company-reset-step1"
+    step2_id = "company-reset-step2"
+    input_id = "company-reset-confirm-input"
+    btn_id   = "company-reset-confirm-btn"
     close_js = f"document.getElementById('{modal_id}').close()"
 
     to_step2_js = (
@@ -574,22 +575,21 @@ def _factory_reset_card(company_name: str) -> FT:
         f"document.getElementById('{step2_id}').style.display='block';"
         f"document.getElementById('{input_id}').focus();"
     )
-    validate_js = f"document.getElementById('{btn_id}').disabled=this.value!==this.dataset.expected;"
+    validate_js = f"document.getElementById('{btn_id}').disabled=this.value!==this.dataset.name;"
 
     return Div(
-        P(t("settings.factory_reset_desc"),
-          cls="settings-help-text"),
-        Button(t("settings.reset_all_data"),
+        P(t("settings.company_reset_desc"), cls="settings-help-text"),
+        Button(t("settings.reset_this_company"),
                type="button",
                cls="btn btn--outline btn--danger",
                onclick=f"document.getElementById('{modal_id}').showModal()"),
         Dialog(
-            # Step 1: warning
+            # Step 1: warning and the optional company backup
             Div(
                 Div(
                     Div(
                         Span("⚠", cls="reset-modal__icon"),
-                        H3(t("settings.reset_all_data_q"), cls="modal-dialog__title reset-modal__title--danger"),
+                        H3(t("settings.reset_this_company_q"), cls="modal-dialog__title reset-modal__title--danger"),
                         cls="reset-modal__title-row",
                     ),
                     Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
@@ -597,11 +597,12 @@ def _factory_reset_card(company_name: str) -> FT:
                     cls="modal-dialog__header",
                 ),
                 Div(
-                    P(t("settings.factory_reset_warning")),
-                    P(Strong(t("settings.factory_reset_preserved"))),
+                    P(Strong(company_name)),
+                    P(t("settings.company_reset_warning")),
+                    P(Strong(t("settings.company_reset_kept"))),
                     Div(
                         A(t("settings.download_backup_first"),
-                          href="/backup/export",
+                          href=DOWNLOAD,
                           cls="btn btn--sm btn--ghost",
                           onclick=to_step2_js,
                           download=True),
@@ -615,8 +616,8 @@ def _factory_reset_card(company_name: str) -> FT:
                 ),
                 id=step1_id,
             ),
-            # Step 2: type-to-confirm
-            Div(
+            # Step 2: type the company name to confirm
+            Form(
                 Div(
                     H3(t("settings.confirm_deletion"), cls="modal-dialog__title reset-modal__title--danger"),
                     Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
@@ -624,21 +625,17 @@ def _factory_reset_card(company_name: str) -> FT:
                     cls="modal-dialog__header",
                 ),
                 Div(
+                    Div(id="company-reset-flash"),
                     P(t("settings.type_reset_prefix"), Strong(company_name), t("settings.type_reset_suffix")),
-                    Input(type="text", id=input_id, name="confirm_name", data_expected=company_name,
+                    Input(type="text", id=input_id, name="company_name",
                           autocomplete="off", cls="form-input",
-                          oninput=validate_js),
-                    Div(id="reset-flash"),
+                          data_name=company_name, oninput=validate_js),
                     Div(
-                        Button(t("settings.delete_everything"),
+                        Button(t("settings.reset_this_company"),
                                type="submit",
                                id=btn_id,
                                cls="btn btn--danger",
-                               disabled=True,
-                               hx_post="/settings/factory-reset",
-                               hx_include=f"#{input_id}",
-                               hx_target="#reset-flash",
-                               hx_swap="innerHTML"),
+                               disabled=True),
                         Button(t("btn.cancel"),
                                type="button",
                                cls="btn btn--ghost",
@@ -649,6 +646,9 @@ def _factory_reset_card(company_name: str) -> FT:
                 ),
                 id=step2_id,
                 style="display:none",
+                hx_post="/settings/company/reset",
+                hx_target="#company-reset-flash",
+                hx_swap="innerHTML",
             ),
             id=modal_id,
             cls="modal-dialog",
@@ -1097,6 +1097,31 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         user = next((u for u in users if u.get("id") == user_id), {})
         return _user_display_cell(user_id, field, user.get(field))
+
+    @app.post("/settings/users/{user_id}/installation-owner")
+    async def user_install_owner_post(request: Request, user_id: str):
+        """Hand installation ownership to another active user of this company and
+        redraw the users card in place. Undo: the new owner can hand it back the
+        same way; the previous owner cannot take it back alone, because the
+        installation has exactly one owner and the handover would mean nothing if
+        they could. The confirm step says so before anything changes."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        lang = get_lang(request)
+        try:
+            users = (await api.get_users(token)).get("items", [])
+            settings = (await api.get_company(token)).get("settings")
+        except APIError as e:
+            return flash(str(e.detail))
+        target = next((u for u in users if u.get("id") == user_id), {})
+        try:
+            await api.transfer_install_owner(token, user_id)
+            notice = flash(t("settings.install_owner_moved", lang,
+                             name=target.get("name") or target.get("email") or ""), "success")
+        except APIError as e:
+            notice = flash(str(e.detail))
+        return await users_tab_for(request, token, users, settings, lang, notice)
 
     # ── Role permission matrix ───────────────────────────────────────
     @app.patch("/settings/roles/{perm_key}/{role_key}")
@@ -1711,9 +1736,9 @@ def setup_routes(app):
     async def billing_portal_redirect(request: Request):
         """Open the Stripe Billing Portal for the Celerp subscription (cancel,
         change card, invoices). Linked from the Web Access connected-status card."""
+        if refused := await owner_refusal(request):
+            return refused
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         redir = await _check_permission(request, "manage_integrations")
         if redir:
             return redir
@@ -1750,6 +1775,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
         """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2016,6 +2043,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-send-otp")
     async def cloud_send_otp(request: Request):
         """HTMX: send OTP via API process (uses canonical instance_id)."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2050,6 +2079,8 @@ def setup_routes(app):
         Using the API process ensures the same instance_id is used for both
         the /billing/claim relay call and the subsequent /auth/activate call.
         """
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2125,6 +2156,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
         """HTMX: disconnect only after the API durably records the user's intent."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
         token = _token(request)
@@ -2148,6 +2181,8 @@ def setup_routes(app):
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
         """HTMX: record TOS acceptance via API, reconnect gateway, re-render tab."""
+        if refused := await owner_refusal(request):
+            return refused
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
         import ui.api_client as _api
@@ -2333,9 +2368,9 @@ def setup_routes(app):
             pass
         return _category_row(new_key, new_name, len(schemas.get(new_key, [])))
 
-    @app.post("/settings/factory-reset")
-    async def factory_reset_ui(request: Request):
-        """Proxy factory-reset to the API. Owner only."""
+    @app.post("/settings/company/reset")
+    async def company_reset_ui(request: Request):
+        """Reset this company through the API. Owner only. Errors return into the dialog."""
         role = _get_role(request)
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
@@ -2343,17 +2378,22 @@ def setup_routes(app):
         token = _token(request)
         form = await request.form()
         try:
-            async with api._local_client(token, timeout=30.0, follow_redirects=False) as c:
-                r = await c.post("/system/factory-reset", json={"confirm_name": str(form.get("confirm_name") or "")})
-            if r.status_code != 200:
-                return Div(api.error_text(r, t("settings.reset_failed")), cls="flash flash--error")
+            async with api._local_client(token, timeout=60.0, follow_redirects=False) as c:
+                r = await c.post("/companies/me/reset", json={"company_name": str(form.get("company_name", ""))})
         except Exception as exc:
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
-        from starlette.responses import Response as _Resp
-        from ui.config import clear_session_cookies
-        resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
-        clear_session_cookies(resp, request)
-        resp.headers["HX-Redirect"] = "/setup"
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code != 200:
+            return Div(api.error_text(r, t("settings.reset_failed")), cls="flash flash--error")
+        from ui.config import clear_session_cookies, set_session_cookies
+        from ui.routes.auth import START_COMPANY
+        resp = Response(status_code=200)
+        if body.get("next") == "start_company":
+            clear_session_cookies(resp, request)
+            resp.headers["HX-Redirect"] = START_COMPANY
+        else:
+            set_session_cookies(resp, body["access_token"], body["refresh_token"], request)
+            resp.headers["HX-Redirect"] = "/"
         return resp
 
     @app.delete("/settings/company/deactivate")
@@ -2432,11 +2472,11 @@ def setup_routes(app):
     @app.get("/backup/list")
     async def backup_list(request: Request):
         """HTMX fragment: list cloud snapshots (database + files)."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         try:
             data = await _api.list_backups(token)
@@ -2489,11 +2529,11 @@ def setup_routes(app):
     @app.post("/backup/trigger")
     async def backup_trigger(request: Request):
         """Trigger an immediate cloud snapshot (database + files)."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from fasthtml.common import Div, to_xml
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         try:
             await _api.trigger_backup(token)
@@ -2519,11 +2559,11 @@ def setup_routes(app):
         Streamed (not buffered) so a multi-GB backup never sits in UI memory and isn't
         bound by the short default timeout; forwarding Content-Length gives the browser a
         native download progress bar."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from starlette.responses import StreamingResponse
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             stream, headers = await _api.export_backup(token)
         except _api.APIError as exc:
@@ -2544,11 +2584,11 @@ def setup_routes(app):
 
         Streamed (not buffered) so a multi-GB snapshot never sits in UI memory; the
         browser's native download manager shows progress via the forwarded Content-Length."""
+        if refused := await owner_refusal(request):
+            return refused
         import ui.api_client as _api
         from starlette.responses import StreamingResponse
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             stream, headers = await _api.export_backup(token, backup_id)
         except _api.APIError as exc:
@@ -2596,10 +2636,10 @@ def setup_routes(app):
     @app.post("/backup/restore/{backup_id}")
     async def backup_restore(request: Request, backup_id: str):
         """Restore a cloud recovery point: replaces the whole installation."""
+        if refused := await owner_refusal(request):
+            return refused
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         try:
             async with api._local_client(token, timeout=900.0, follow_redirects=False, bulk=True) as c:
                 r = await c.post(f"/backup/restore/{backup_id}")
@@ -2610,11 +2650,11 @@ def setup_routes(app):
     @app.post("/backup/import")
     async def backup_import(request: Request):
         """Import a .celerp-backup archive. Multipart upload forwarded to API."""
+        if refused := await owner_refusal(request):
+            return refused
 
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         form = await request.form()
         file_field = form.get("file")
@@ -2643,10 +2683,10 @@ def setup_routes(app):
     @app.post("/backup/import/continue")
     async def backup_import_continue(request: Request):
         """Continue a staged System Recovery without a safety copy: replaces the whole installation."""
+        if refused := await owner_refusal(request):
+            return refused
         import httpx
         token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
         form = await request.form()
         data = {k: str(form.get(k) or "") for k in ("confirmation_id", "digest")}
         try:
@@ -3061,7 +3101,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                     ),
                     cls="settings-card settings-card--danger",
                 ),
-                _factory_reset_card(company.get("name") or ""),
+                _company_reset_card(company.get("name", "")),
                 *(
                     [
                         Div(
@@ -3099,29 +3139,64 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     )
 
 
-def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False) -> FT:
+def _users_tab(users: list[dict], settings: dict | None = None, lang: str = "en", is_owner: bool = False,
+               install_owner_id: str = "", notice: FT | str = "") -> FT:
+    """The users table and role matrix. The user who owns the installation carries
+    a badge for every viewer. ``install_owner_id`` is the viewer's own user id when
+    the viewer owns the installation: only then does each other active user carry
+    the control that hands installation ownership to them."""
+    def _handover_cell(u: dict) -> FT:
+        uid = u.get("id", "")
+        if uid == install_owner_id or not u.get("is_active", True):
+            return Td(cls="cell")
+        name = u.get("name") or u.get("email") or ""
+        return Td(
+            Button(t("settings.make_install_owner", lang), cls="btn btn--secondary btn--xs",
+                   hx_post=f"/settings/users/{uid}/installation-owner",
+                   hx_confirm=t("settings.confirm_make_install_owner", lang, name=name),
+                   hx_target="#users-card", hx_swap="outerHTML"),
+            cls="cell",
+        )
+
     def _row(u: dict) -> FT:
         uid = u.get("id", "")
+        name = _user_display_cell(uid, "name", u.get("name"))
+        if u.get("is_install_owner"):
+            name = name(Span(t("settings.install_owner_badge", lang), cls="badge badge--neutral ml-sm"))
         return Tr(
-            _user_display_cell(uid, "name", u.get("name")),
+            name,
             _user_display_cell(uid, "email", u.get("email")),
             _user_display_cell(uid, "role", u.get("role")),
             _user_display_cell(uid, "is_active", u.get("is_active", True)),
+            _handover_cell(u) if install_owner_id else "",
             cls="data-row",
         )
 
     role_matrix = _role_permissions_matrix(settings, is_owner, lang)
 
     return Div(
+        notice,
         Table(
-            Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)))),
+            Thead(Tr(Th(t("th.name", lang)), Th(t("th.email", lang)), Th(t("th.role", lang)), Th(t("th.active", lang)),
+                     Th(t("th.actions", lang)) if install_owner_id else "")),
             Tbody(*[_row(u) for u in users]),
             cls="data-table",
         ),
         A(t("btn.create_user", lang), href="/settings/users/new", cls="btn btn--primary mt-md"),
         role_matrix,
         cls="settings-card",
+        id="users-card",
     )
+
+
+async def users_tab_for(request: Request, token: str, users: list[dict], settings: dict | None,
+                        lang: str, notice: FT | str = "") -> FT:
+    """_users_tab for the user who asked: the role matrix is editable for an
+    owner, and the handover control shows only to the installation owner."""
+    from ui.config import get_claims
+    install_owner_id = str(get_claims(request).get("sub", "")) if await api.installation_owner(token) else ""
+    return _users_tab(users, settings, lang=lang, is_owner=_get_role(request) == "owner",
+                      install_owner_id=install_owner_id, notice=notice)
 
 
 # The fixed permissions carry no checkboxes; each states in one line why it cannot move.

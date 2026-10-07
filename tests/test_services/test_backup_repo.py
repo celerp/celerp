@@ -24,6 +24,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 
 from celerp.config import settings
+from celerp.migrations.compatibility import running_version
 from celerp.services import backup_repo
 
 
@@ -99,9 +100,9 @@ def fake_repo(monkeypatch, tmp_path):
     monkeypatch.setattr(backup_repo, "dump_database", lambda url: b"PGDUMP-CUSTOM-FORMAT")
 
     async def fake_meta():
-        return {"celerp_version": "1.0.0", "pg_version": "16", "created_at": "2026-06-25T00:00:00Z",
+        return {"celerp_version": running_version(), "pg_version": "16", "created_at": "2026-06-25T00:00:00Z",
                 "company_name": "TestCo", "enabled_modules": []}
-    monkeypatch.setattr(backup_repo, "_build_meta", fake_meta)
+    monkeypatch.setattr("celerp.services.backup_export.archive_meta", fake_meta)
 
     settings.backup_encryption_key = base64.b64encode(secrets.token_bytes(32)).decode()
 

@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from celerp.services import import_stage
+
 from test_import_stage_invariants import _IMPORTERS, _REPO, _calls, _confirm, _route_path
 from ui.routes import csv_import as ci
 
@@ -74,21 +76,21 @@ def test_helper_accepts_errors_list_and_failed_count():
 @pytest.mark.parametrize("name", _RESULT_IMPORTERS)
 async def test_every_importer_keeps_stage_on_errors(name, stage_dir):
     ref, _ = await _result(name, _ERRORS_ONLY)
-    assert ci._read_stage("company-a", ref) == _IMPORTERS[name]["csv"]
+    assert import_stage.read_stage("company-a", ref) == _IMPORTERS[name]["csv"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", _RESULT_IMPORTERS)
 async def test_every_importer_keeps_stage_on_failed_count(name, stage_dir):
     ref, _ = await _result(name, _FAILED_ONLY)
-    assert ci._read_stage("company-a", ref) == _IMPORTERS[name]["csv"]
+    assert import_stage.read_stage("company-a", ref) == _IMPORTERS[name]["csv"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", _RESULT_IMPORTERS)
 async def test_every_importer_discards_stage_on_clean_result(name, stage_dir):
     ref, _ = await _result(name, _CLEAN)
-    assert ci._read_stage("company-a", ref) is None
+    assert import_stage.read_stage("company-a", ref) is None
 
 
 def test_four_confirm_routes_use_the_one_helper():

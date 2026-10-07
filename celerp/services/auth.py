@@ -12,13 +12,14 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
+from celerp.services.company_lock import hold_company
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
@@ -88,7 +89,6 @@ def create_access_token(
     jti: str | None = None,
     *,
     snonce: str,
-    modules: list[str] | None = None,
 ) -> tuple[str, str]:
     """Return (encoded_token, jti).
 
@@ -100,11 +100,8 @@ def create_access_token(
     ``session_tracker.get_nonce(session, user_id)`` before calling this function.
     There is no default - a session-bound token can never be minted without one.
 
-    *role*, *email* and *modules* are UI/client hints only - they are NEVER used
-    for server authorization, which derives the role from current DB membership.
-
-    *modules* is the list of enabled module names for the company, embedded so
-    the UI can filter the sidebar without any additional DB or API calls.
+    *role* and *email* are UI/client hints only - they are NEVER used for
+    server authorization, which derives the role from current DB membership.
     """
     import uuid as _uuid
     expire_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
@@ -118,7 +115,6 @@ def create_access_token(
         "role": role,
         "jti": token_jti,
         "snonce": snonce,
-        "modules": modules or [],
         "exp": datetime.now(timezone.utc) + timedelta(minutes=expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm), token_jti
@@ -237,21 +233,16 @@ async def validate_access_token(session: AsyncSession, token: str) -> AuthContex
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    link = await session.scalar(
-        select(UserCompany).where(
-            UserCompany.user_id == user.id,
-            UserCompany.company_id == company_uuid,
-            UserCompany.is_active == True,  # noqa: E712
-        )
-    )
+    link = await usable_company_link(session, user.id, company_uuid)
     if link is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-    # Block access to deactivated companies - but owners can still authenticate
-    # so they can create a new company or reactivate the existing one.
+        # Name the deactivated company case; owners still authenticate into it so
+        # they can reactivate it or create a new company.
+        held = await session.scalar(select(UserCompany.id).where(
+            UserCompany.user_id == user.id, UserCompany.company_id == company_uuid,
+            UserCompany.is_active.is_(True)))
+        detail = "Company is deactivated" if held is not None else "Invalid token"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
     company = await session.get(Company, company_uuid)
-    if company is None or (not company.is_active and link.role != "owner"):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
     # Nonce equality is mandatory: a token whose snonce no longer matches the
     # current per-user nonce (logout, force-login, or any security-sensitive
@@ -279,6 +270,7 @@ STAGED_COMPANY = "This company is still being moved into Celerp. Finish or disca
 # The only routes a staged company's own token reaches. Token refresh, logout and health
 # do not authenticate through this dependency, so they stay available as well.
 STAGED_ALLOWED_PREFIX = "/migrations/"
+MODULE_OFF = "This module is turned off for your company."
 
 
 async def get_auth_context(
@@ -294,10 +286,18 @@ async def get_auth_context(
     A token scoped to a migration-staged company is isolated here, centrally: it
     reaches the migration routes only. The same user's tokens for other companies
     are unaffected.
+
+    A module's routes answer only for a company that uses the module.
     """
     ctx = await validate_access_token(session, token)
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=STAGED_COMPANY)
+    from celerp.modules.loader import route_module
+    from celerp.modules.registry import uses_module
+
+    module = route_module(request.scope)
+    if module and not uses_module(ctx.company.settings, module):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MODULE_OFF)
     # The authority the request starts with is judged again under the company lock
     # (company_lock), so a write that waits there never runs on revoked access.
     from celerp.services.permissions import authorize_request, end_request
@@ -346,18 +346,98 @@ async def get_current_role(ctx: AuthContext = Depends(get_auth_context)) -> str:
     return ctx.role
 
 
+# Sign-in refusal for a login with no active company left.
+NO_COMPANY = "No active company membership"
+HAS_COMPANY = "This login already has a company. Sign in instead."
+
+
+# The one rule for whether a login can work in a company: an active membership in an
+# active company, or an owner's active membership in a deactivated or still-being-moved-in
+# company, so the owner can reactivate it or finish the move.
+USABLE_LINK = and_(UserCompany.is_active.is_(True),
+                   or_(Company.is_active.is_(True), UserCompany.role == "owner"))
+# Which usable link a sign-in lands on first: active, then still being moved in, then
+# deactivated (an owner's, to reactivate).
+_LANDING = case((and_(Company.is_active.is_(True), Company.is_migration_staged.is_(False)), 0),
+                (Company.is_migration_staged.is_(True), 1), else_=2)
+
+
+def _usable_links(user_id):
+    return (select(UserCompany).join(Company, Company.id == UserCompany.company_id)
+            .where(UserCompany.user_id == user_id, USABLE_LINK))
+
+
+async def first_usable_company_link(session: AsyncSession, user_id) -> UserCompany | None:
+    """The company a sign-in lands on: the user's first usable company link, or None when
+    the login has no company it can work in.
+
+    A user in several companies uses /switch-company afterwards. An active company
+    comes first, then one still being moved in, and only then a deactivated company
+    its owner can reactivate, so a sign-in lands on a working company whenever one
+    exists."""
+    return (await session.execute(
+        _usable_links(user_id).order_by(_LANDING, UserCompany.id).limit(1)
+    )).scalar_one_or_none()
+
+
+async def hold_companyless_login(session: AsyncSession, user_id) -> bool:
+    """Lock the login FOR UPDATE until the transaction ends, then say whether it has no
+    company. The answer stays true until the transaction ends: another request holding
+    the login (a second start, a backup restore) waits and then reads the membership this
+    one committed, and adding a membership for the login from another transaction waits
+    too, since its foreign key needs a share lock on the row. The same transaction still
+    adds the login's own membership.
+
+    Taken after the direct sign-in lock and before any company or ``UserAuthState`` row,
+    and only by transactions that have not yet written a row referencing the login."""
+    await session.execute(select(User.id).where(User.id == user_id).with_for_update())
+    return await first_usable_company_link(session, user_id) is None
+
+
+async def usable_company_link(session: AsyncSession, user_id, company_id) -> UserCompany | None:
+    """The user's link to *company_id* when the login can work in that company, else None."""
+    return (await session.execute(
+        _usable_links(user_id).where(UserCompany.company_id == company_id)
+    )).scalar_one_or_none()
+
+
+class CompanyUnavailable(HTTPException):
+    """The company a session was about to be issued for was removed, or the login can no
+    longer work in it. Nothing was issued."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+
+
+async def lock_issuance_company(session: AsyncSession, user_id, company_id) -> UserCompany:
+    """Hold *company_id* against removal until the transaction ends and return the user's
+    usable link to it, or raise ``CompanyUnavailable``.
+
+    The row is taken FOR KEY SHARE: a company reset takes it FOR UPDATE before deleting
+    anything, so a session issued under this lock either commits before the reset starts
+    (and the reset then ends it) or waits and finds the company gone. Lock order, kept by
+    every issuance path: the direct sign-in lock, then the login FOR UPDATE when the path
+    gives it a company (``hold_companyless_login``), then the company, then
+    ``UserAuthState``."""
+    link = await usable_company_link(session, user_id, company_id) if await hold_company(session, company_id) else None
+    if link is None:
+        raise CompanyUnavailable()
+    return link
+
+
 async def issue_token_pair(
     session: AsyncSession,
     *,
     user: User,
-    company: Company,
-    role: str,
+    company_id: uuid.UUID,
     jti: str | None = None,
     expected_snonce: str | None = None,
 ) -> dict:
     """The single access+refresh issuance point.
 
-    Locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
+    First holds *company_id* against removal and re-checks, under that lock, that the
+    user can still work in it (``lock_issuance_company``); the role comes from that
+    link. Then locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
     under that lock, builds the enabled-module UI hint list, mints a v2 access
     token and a v2 refresh token bound to exactly the locked nonce, registers the
     access JTI + expiry in the same transaction, commits once, and returns
@@ -381,25 +461,22 @@ async def issue_token_pair(
     from celerp.services.session_tracker import (
         lock_auth_state as _lock,
         register_token as _register,
-        _nonce_cache_set,
     )
-    from celerp.modules.registry import get_enabled as _get_enabled
 
+    role = (await lock_issuance_company(session, user.id, company_id)).role
     user_id = str(user.id)
-    company_id = str(company.id)
+    company_id = str(company_id)
     auth_state = await _lock(session, user_id)
     if expected_snonce is not None and expected_snonce != auth_state.nonce:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
     snonce = auth_state.nonce
-    enabled_modules = sorted(_get_enabled(company.settings or {}))
     access_token, token_jti = create_access_token(
-        user_id, company_id, role, user.email, jti=jti, snonce=snonce, modules=enabled_modules
+        user_id, company_id, role, user.email, jti=jti, snonce=snonce
     )
     # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp.
     capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     expiry_dt = datetime.now(timezone.utc) + timedelta(minutes=capped_minutes)
-    await _register(session, token_jti, user_id, expiry_dt, commit=False)
+    await _register(session, token_jti, user_id, company_id, expiry_dt, commit=False)
     await session.commit()
-    _nonce_cache_set(user_id, snonce)
     refresh_token = create_refresh_token(user_id, company_id, snonce=snonce)
     return {"access_token": access_token, "refresh_token": refresh_token}

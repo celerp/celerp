@@ -202,15 +202,17 @@ def cost_columns(price_lists: list[dict]) -> list[dict]:
 def all_category_schemas(company_settings: dict) -> dict:
     """Every category's attribute schema, keyed by category name.
 
-    Module-contributed defaults (the ``category_schema`` slot) merged with the
-    company's own ``category_schemas``, which win.
+    Defaults contributed by the modules the company uses (the
+    ``category_schema`` slot) merged with the company's own
+    ``category_schemas``, which win.
     """
+    from celerp.modules.registry import uses_module
     from celerp.modules.slots import get as get_slot
 
     merged: dict = {}
     for contrib in get_slot("category_schema"):
         cat = contrib.get("category")
-        if cat and cat not in merged:
+        if cat and cat not in merged and uses_module(company_settings, contrib.get("_module")):
             merged[cat] = contrib.get("fields") or []
     merged.update(company_settings.get("category_schemas") or {})
     return merged

@@ -41,6 +41,8 @@ async def client(monkeypatch):
     permission gate opened and a token present so handlers run their bodies."""
     monkeypatch.setattr(sc, "_check_permission", AsyncMock(return_value=None), raising=False)
     monkeypatch.setattr(sc, "_token", lambda req: "tok", raising=False)
+    # Database and storage settings are the installation owner's.
+    monkeypatch.setattr("ui.api_client.installation_owner", AsyncMock(return_value=True))
     # These infra flows exercise the authenticated, ACTIVE-entitled admin path;
     # grant a live Team entitlement so the server-side entitlement guard passes
     # and the test reaches the behavior it is asserting.
@@ -53,7 +55,7 @@ async def client(monkeypatch):
     sc.setup_routes(app)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://t",
-                           follow_redirects=False) as c:
+                           cookies={"celerp_token": "tok"}, follow_redirects=False) as c:
         yield c
 
 

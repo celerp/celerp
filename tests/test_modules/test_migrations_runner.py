@@ -49,6 +49,14 @@ def _make_module(base: Path, name: str, migrations: dict[str, str], *,
     return pkg
 
 
+async def _phase(engine, enabled: set[str]) -> tuple[set[str], dict[str, str]]:
+    """Admit the enabled modules from MODULE_DIR and run the migration phase,
+    returning (names that survive it, refusal reasons)."""
+    admission = await run_migration_phase(
+        engine, loader.admit_modules(os.environ["MODULE_DIR"], enabled))
+    return {m.name for m in admission.admitted}, admission.refused
+
+
 def _sync_url() -> str:
     return sync_db_url(os.environ["DATABASE_URL"])
 
@@ -124,7 +132,8 @@ def upgrade():
         "acme_rollback_probe",
         sa.Column("id", sa.Integer(), primary_key=True),
     )
-    raise RuntimeError("intentional boom")
+    raise RuntimeError(
+        "intentional boom at postgresql+asyncpg://celerp:s3cret@db.example.com:5432/celerp")
 """
 
 # Reads the effective timeouts and writes them to a file.
@@ -235,7 +244,7 @@ async def test_migration_phase_holds_advisory_lock_for_its_duration(
     pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}", {"m_001.py": body})
     monkeypatch.setenv("MODULE_DIR", str(base))
 
-    surviving, errors = await run_migration_phase(_db_engine, {pkg.name})
+    surviving, errors = await _phase(_db_engine, {pkg.name})
 
     assert pkg.name in surviving
     assert errors == {}
@@ -260,11 +269,14 @@ async def test_third_party_migration_failure_records_load_error_and_rolls_back_w
     monkeypatch.setenv("MODULE_DIR", str(base))
 
     # Not first-party (no lock entry): the phase records and continues, no crash.
-    surviving, errors = await run_migration_phase(_db_engine, {pkg.name})
+    surviving, errors = await _phase(_db_engine, {pkg.name})
 
     assert pkg.name not in surviving
     assert pkg.name in errors
     assert "boom" in errors[pkg.name]
+    # The reason is shown on the Modules page: a connection string is masked.
+    assert "s3cret" not in errors[pkg.name]
+    assert "celerp:***@db.example.com" in errors[pkg.name]
     # The failed migration's DDL rolled back: the probe table does not exist.
     eng = create_engine(_sync_url())
     try:
@@ -293,11 +305,14 @@ async def test_migration_phase_uses_verified_first_party_behind_stale_shadow(
     try:
         assert not loader.is_first_party(stale)
         assert loader.is_first_party(current)
-        surviving, errors = await run_migration_phase(_db_engine, {name})
+        surviving, errors = await _phase(_db_engine, {name})
         assert name in surviving
         assert errors == {}
     finally:
         loader._first_party_lock.cache_clear()
+        # The phase commits: leave no module table behind for later tests on this database.
+        async with _db_engine.begin() as conn:
+            await conn.execute(sa.text("DROP TABLE IF EXISTS acme_service_log, acme_equipment"))
 
 
 async def test_first_party_migration_failure_raises(_db_engine, tmp_path, monkeypatch):
@@ -313,7 +328,7 @@ async def test_first_party_migration_failure_raises(_db_engine, tmp_path, monkey
     try:
         assert loader.is_first_party(pkg)
         with pytest.raises(Exception):
-            await run_migration_phase(_db_engine, {pkg.name})
+            await _phase(_db_engine, {pkg.name})
     finally:
         loader._first_party_lock.cache_clear()
 
@@ -351,6 +366,50 @@ async def test_runner_fails_closed_on_malformed_table_prefix(_db_engine, tmp_pat
     finally:
         await trans.rollback()
         await conn.close()
+
+
+_MIG_DROP_META = """
+from alembic import op
+
+
+def upgrade():
+    op.drop_table("instance_meta")
+"""
+
+
+async def test_runner_refuses_a_hand_copied_prefix_claiming_a_core_table(_db_engine, tmp_path):
+    """instance_meta has no model, yet it is Celerp's: a module copied in by hand
+    whose prefix reaches it never gets to run its migrations."""
+    pkg = _make_module(tmp_path / "modules", f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": _MIG_DROP_META}, table_prefix="instance_")
+    conn = await _db_engine.connect()
+    trans = await conn.begin()
+    try:
+        def _do(sc):
+            sc.execute(sa.text("CREATE TABLE IF NOT EXISTS instance_meta "
+                               "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+            sc.execute(sa.text("INSERT INTO instance_meta VALUES ('zz_marker', 'kept') "
+                               "ON CONFLICT (key) DO NOTHING"))
+            with pytest.raises(ValueError, match="instance_meta"):
+                run_module_migrations(sc, pkg.name, pkg, "inner.migrations", "instance_")
+            return sc.execute(sa.text(
+                "SELECT value FROM instance_meta WHERE key = 'zz_marker'")).scalar()
+        assert await conn.run_sync(_do) == "kept"
+    finally:
+        await trans.rollback()
+        await conn.close()
+
+
+@pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+async def test_runner_refuses_a_hand_copied_prefix_claiming_a_turned_off_bundled_module_table(
+        _db_engine, tmp_path, bundled_modules_unloaded, prefix):
+    pkg = _make_module(tmp_path / "modules", f"acme-{uuid.uuid4().hex[:8]}",
+                       {"m_001.py": "def upgrade():\n    pass\n"}, table_prefix=prefix)
+    async with _db_engine.connect() as conn:
+        def _do(sc):
+            with pytest.raises(ValueError, match=bundled_modules_unloaded[prefix]):
+                run_module_migrations(sc, pkg.name, pkg, "inner.migrations", prefix)
+        await conn.run_sync(_do)
 
 
 async def test_runner_sets_statement_and_lock_timeouts(_db_engine, tmp_path):

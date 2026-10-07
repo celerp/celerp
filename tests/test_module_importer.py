@@ -221,6 +221,23 @@ def test_official_install_requires_celerp_prefix(module_dir):
         install_from_zip(_zip_bytes({"__init__.py": MANIFEST}), official=True)
 
 
+@pytest.mark.parametrize("name", ["Celerp-mine", "CELERP-mine", "cElErP-mine",
+                                  "celerp_mine", "CELERP_mine"])
+@pytest.mark.parametrize("source", ["sideloaded", "community"])
+def test_upload_refuses_the_reserved_prefix_in_any_case(module_dir, name, source):
+    with pytest.raises(ModuleImportError, match="'celerp-' or 'celerp_', in any letter case, are reserved for Marketplace modules"):
+        install_from_zip(_zip_bytes({"__init__.py": MANIFEST.replace("my-module", name)}),
+                         source=source)
+    assert not (module_dir / name).exists()
+
+
+@pytest.mark.parametrize("name", ["Celerp-warehousing", "celerp_warehousing"])
+def test_official_install_requires_the_exact_celerp_prefix(module_dir, name):
+    with pytest.raises(ModuleImportError, match="celerp-"):
+        install_from_zip(_zip_bytes({"__init__.py": MANIFEST.replace("my-module", name)}),
+                         official=True)
+
+
 def test_premium_install_writes_license_marker(module_dir):
     from celerp.modules.importer import PREMIUM_MARKER
     install_from_zip(
@@ -361,6 +378,19 @@ def test_folder_install_defaults_to_sideloaded_source(module_dir, tmp_path):
     assert json.loads(sidecar.read_text())["source"] == "sideloaded"
 
 
+@pytest.mark.parametrize("premium", [True, False])
+def test_install_metadata_holds_only_provenance(premium, module_dir):
+    """The install metadata records where a module came from and when, nothing
+    else."""
+    import json
+    from celerp.modules.meta import META_FILENAME
+    name = "celerp-provenance-paid"
+    install_from_zip(_zip_bytes({"__init__.py": f"PLUGIN_MANIFEST = {{'name': {name!r}, "
+                                                 "'version': '1.0.0'}\n"}, root=f"{name}/"),
+                     official=True, premium=premium, source="marketplace")
+    assert set(json.loads((module_dir / name / META_FILENAME).read_text())) == {"source", "installed_at"}
+
+
 def test_read_meta_returns_empty_on_missing_file(tmp_path):
     from celerp.modules.meta import read_meta
     assert read_meta(tmp_path) == {}
@@ -377,6 +407,35 @@ def test_remove_module_dir_removes_folder(module_dir):
     install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
     assert (module_dir / "my-module").exists()
     remove_module_dir("my-module")
+    assert not (module_dir / "my-module").exists()
+
+
+def test_remove_module_dir_waits_for_an_install_in_progress(module_dir):
+    """An install checks names and prefixes against what is on disk; a removal
+    landing in the middle of it would change that under it."""
+    import threading
+
+    from celerp.modules.importer import _one_install_at_a_time, remove_module_dir
+    install_from_zip(_zip_bytes({"__init__.py": MANIFEST}))
+    held, release = threading.Event(), threading.Event()
+
+    def install_in_progress():
+        with _one_install_at_a_time():
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=install_in_progress)
+    holder.start()
+    assert held.wait(10)
+    remover = threading.Thread(target=remove_module_dir, args=("my-module",))
+    remover.start()
+    remover.join(0.5)
+    still_there = (module_dir / "my-module").exists()
+    release.set()
+    holder.join(10)
+    remover.join(10)
+
+    assert still_there
     assert not (module_dir / "my-module").exists()
 
 
@@ -494,8 +553,19 @@ def test_with_writable_module_dir_leaves_safe_first_entry(tmp_path):
     assert loader.with_writable_module_dir(safe) == safe
 
 
+def test_with_writable_module_dir_defaults_an_unset_dir_to_the_bundled_trees(monkeypatch, tmp_path):
+    """No module dir given (a bare `uvicorn` dev run) searches what `celerp start`
+    gives a launch: the writable drop-in first, then the bundled trees that exist."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "writable_module_dir", lambda: tmp_path / "modules")
+    root = loader.BUNDLED_SOURCE_DIR.parent
+    bundled = [str(d) for d in loader.bundled_module_dirs(root) if d.exists()]
+    assert loader.with_writable_module_dir(None).split(",") == [str(tmp_path / "modules"), *bundled]
+    assert str(root / "default_modules") in bundled
+
+
 def test_with_writable_module_dir_empty_unchanged():
-    """No module dir configured stays off - the helper never invents one."""
+    """A module dir set to empty means no module trees - the helper never invents one."""
     from celerp.modules import loader
     assert loader.with_writable_module_dir("") == ""
 
@@ -576,9 +646,114 @@ def test_table_prefix_colliding_with_core_table_refused(module_dir):
         install_from_zip(data)
 
 
+@pytest.mark.parametrize("prefix, table", [("alembic_", "alembic_version"),
+                                           ("instance_", "instance_meta")])
+def test_table_prefix_claiming_a_core_table_without_a_model_refused(module_dir, tmp_path, prefix, table):
+    """Celerp owns its schema stamp and upgrade markers though no model declares them."""
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix=prefix)})
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_zip(data)
+    src = tmp_path / "src" / "mig-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("mig-mod", prefix=prefix))
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_folder(src)
+
+
+@pytest.mark.parametrize("prefix", ["label_", "marketplace_", "bank_"])
+def test_table_prefix_claiming_a_turned_off_bundled_module_table_refused(
+        module_dir, tmp_path, bundled_modules_unloaded, prefix):
+    """A bundled module's tables stay Celerp's while the module is turned off and its
+    models are not loaded."""
+    table = bundled_modules_unloaded[prefix]
+    data = _zip_bytes({"__init__.py": _migrations_manifest("mig-mod", prefix=prefix)})
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_zip(data)
+    src = tmp_path / "src" / "mig-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("mig-mod", prefix=prefix))
+    with pytest.raises(ModuleImportError, match=table):
+        install_from_folder(src)
+
+
 def test_table_prefix_overlapping_installed_module_refused(module_dir):
     install_from_zip(_zip_bytes(
         {"__init__.py": _migrations_manifest("first-mod", prefix="acme_")}))
     data = _zip_bytes({"__init__.py": _migrations_manifest("second-mod", prefix="acme_sub_")})
     with pytest.raises(ModuleImportError, match="acme_"):
         install_from_zip(data)
+
+
+# A module with models but no migrations still owns its tables by prefix: the
+# purge drops and the backup attributes by it, so the same checks apply.
+
+@pytest.mark.parametrize("prefix, reason", [
+    ("ab", "3 characters"),
+    ("acme", "underscore"),
+    ("connector_", "connector_configs"),
+])
+def test_model_only_table_prefix_is_validated(module_dir, prefix, reason):
+    import celerp.models  # noqa: F401  ensure core tables are registered
+    data = _zip_bytes({"__init__.py": _migrations_manifest("model-mod", prefix=prefix, migrations=False)})
+    with pytest.raises(ModuleImportError, match=reason):
+        install_from_zip(data)
+    assert not (module_dir / "model-mod").exists()
+
+
+def test_model_only_table_prefix_overlapping_installed_module_refused(module_dir):
+    install_from_zip(_zip_bytes(
+        {"__init__.py": _migrations_manifest("first-mod", prefix="acme_", migrations=False)}))
+    data = _zip_bytes({"__init__.py": _migrations_manifest("second-mod", prefix="acme_sub_", migrations=False)})
+    with pytest.raises(ModuleImportError, match="acme_"):
+        install_from_zip(data)
+    assert not (module_dir / "second-mod").exists()
+
+
+@pytest.mark.parametrize("second", ["zip", "folder"])
+def test_overlapping_modules_installed_at_once_only_one_lands(module_dir, tmp_path, monkeypatch, second):
+    """Two installs whose prefixes overlap, started together: exactly one lands."""
+    import threading
+    import time
+
+    from celerp.modules import importer
+
+    real_write_meta = importer.write_meta
+
+    def slow_write_meta(*args, **kwargs):
+        time.sleep(0.3)
+        return real_write_meta(*args, **kwargs)
+
+    monkeypatch.setattr(importer, "write_meta", slow_write_meta)
+    src = tmp_path / "src" / "second-mod"
+    src.mkdir(parents=True)
+    (src / "__init__.py").write_text(_migrations_manifest("second-mod", prefix="acme_sub_"))
+    installs = [
+        lambda: install_from_zip(_zip_bytes(
+            {"__init__.py": _migrations_manifest("first-mod", prefix="acme_")})),
+        (lambda: install_from_zip(_zip_bytes({"__init__.py": src.joinpath("__init__.py").read_text()})))
+        if second == "zip" else (lambda: install_from_folder(src)),
+    ]
+    outcomes: list = []
+
+    def run(install):
+        try:
+            outcomes.append(install()["name"])
+        except ModuleImportError as exc:
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=run, args=(install,)) for install in installs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    landed = sorted(p.name for p in module_dir.iterdir() if not p.name.startswith("."))
+    assert len(landed) == 1, (landed, outcomes)
+    refused = [o for o in outcomes if isinstance(o, ModuleImportError)]
+    assert len(refused) == 1 and "overlaps" in str(refused[0]), outcomes
+
+
+def test_model_only_module_without_table_prefix_installs(module_dir):
+    install_from_zip(_zip_bytes(
+        {"__init__.py": _migrations_manifest("plain-mod", prefix=None, migrations=False)}))
+    assert (module_dir / "plain-mod" / "__init__.py").exists()
