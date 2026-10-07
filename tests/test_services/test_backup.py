@@ -150,7 +150,8 @@ def test_relay_base_url_from_http_url():
 
 # ── restore_database_file ──────────────────────────────────────────────────────────
 # These cover how pg_restore is found and invoked. The URL names no real database,
-# so the mutating scope it runs in (covered in tests/test_db_fence.py) is a stand-in.
+# so the mutating scope it runs in (covered in tests/test_db_fence.py) and the schema
+# key it holds (covered in tests/test_schema_lock_race_pg.py) are stand-ins.
 
 class _NoScope:
     def write_window(self):
@@ -159,9 +160,11 @@ class _NoScope:
 
 @pytest.fixture
 def _no_scope(monkeypatch):
+    import celerp.cli
     from celerp.migrations import compatibility
     monkeypatch.setattr(compatibility, "mutating_scope",
                         lambda url, accept=None: contextlib.nullcontext(_NoScope()))
+    monkeypatch.setattr(celerp.cli, "_migration_lock", lambda url: contextlib.nullcontext())
 
 
 @pytest.mark.usefixtures("_no_scope")

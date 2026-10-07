@@ -675,7 +675,8 @@ def _migration_lock(db_url: str):
 
     Single source of the lock protocol (acquire, guaranteed release, engine
     disposal), so every path that migrates a database serializes the same way
-    and cannot drift. Reused by `_migrate_to_head` and the restore reconcile.
+    and cannot drift. Reused by `_migrate_to_head`, the restore reconcile and the
+    database restore itself (`services.backup.restore_database_file`).
 
     The lock exists because a service restart overlapping a manual start would
     otherwise have both processes migrating the same database: the loser
