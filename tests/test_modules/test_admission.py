@@ -2391,8 +2391,8 @@ def test_free_official_module_loads_from_its_cached_verdict(_modules, tmp_path, 
     assert calls == {"licence": [], "detail": []}
 
 
-def test_premium_tree_module_is_not_freed_by_a_free_listing(_modules, tmp_path, monkeypatch):
-    """Control: a premium-tree module always takes the licence check."""
+def test_premium_module_requires_the_normal_license_path(_modules, tmp_path, monkeypatch):
+    """A premium module requires the normal license path, whatever its listing."""
     calls = _relay_identity(monkeypatch, tmp_path / "data", _FREE)
     name = f"celerp-{_uid()}"
     premium = tmp_path / "premium_modules"
