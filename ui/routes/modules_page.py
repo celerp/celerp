@@ -12,7 +12,7 @@ Three tabs:
     listings from the catalog. They sit behind a one-step trust acknowledgment
     and carry no badge; the table uses the same schema as Installed Modules.
   - Marketplace: the official and verified catalog (community-modules
-    index.json, public data), served via the relay with repo-direct and
+    index-v2.json, public data), served via the relay with repo-direct and
     local-cache fallbacks; see ui.marketplace_catalog for why the relay
     endpoint is the one baked-in URL. Carries the List Your Modules entry point.
 
@@ -54,7 +54,7 @@ _TEMPLATE_REPO = "https://github.com/celerp/celerp-module-template"
 _DOCS_URL = "https://celerp.com/docs/modules.html"
 # Where a seller lists a PAID module: the author dashboard (GitHub sign-in,
 # Stripe Connect, publish with a price). Distinct from the free community
-# registry, which only takes an index.json PR and carries no price.
+# registry, which only takes an index-v2.json PR and carries no price.
 _AUTHORS_URL = "https://www.celerp.com/authors"
 
 

@@ -10,16 +10,17 @@ import pytest
 from celerp.services import staged_downloads
 from ui import marketplace_catalog as mc
 
+PIN = "0123456789abcdef0123456789abcdef01234567"
 GOOD = {
     "id": "my-module", "name": "My Module", "description": "Does things.",
     "tier": "community", "repo": "https://github.com/a/b",
     "author": "A", "license": "MIT",
-    "data_access": "Its own tables.", "network_calls": "None.",
+    "data_access": "Its own tables.", "network_calls": "None.", "commit": PIN,
 }
 
 
 def _doc(*entries):
-    return json.dumps({"schema_version": 1, "modules": list(entries)}).encode()
+    return json.dumps({"schema_version": 2, "modules": list(entries)}).encode()
 
 
 class TestParse:
@@ -45,16 +46,16 @@ class TestParse:
         assert len(mods) == 1 and "homepage" not in mods[0]
 
     def test_pinned_commit_kept(self):
-        pin = "0123456789abcdef0123456789abcdef01234567"
-        assert mc._parse(_doc({**GOOD, "commit": pin}))[0]["commit"] == pin
+        assert mc._parse(_doc(GOOD))[0]["commit"] == PIN
 
     def test_strings_length_capped(self):
         mods = mc._parse(_doc({**GOOD, "description": "x" * 5000}))
         assert len(mods[0]["description"]) == 300
 
-    def test_unsupported_schema_version_rejected(self):
+    @pytest.mark.parametrize("version", [1, 3, "2", None])
+    def test_unsupported_schema_version_rejected(self, version):
         with pytest.raises(ValueError):
-            mc._parse(json.dumps({"schema_version": 2, "modules": []}).encode())
+            mc._parse(json.dumps({"schema_version": version, "modules": []}).encode())
 
     def test_oversized_module_list_rejected(self):
         with pytest.raises(ValueError):
@@ -95,18 +96,18 @@ class TestLocalState:
     def test_local_state_lives_in_the_app_data_dir(self, _data_dir, tmp_path, monkeypatch):
         monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path / "elsewhere"))
         monkeypatch.setenv("DATA_DIR", str(tmp_path / "elsewhere"))
-        assert mc._cache_path() == _data_dir / "marketplace-catalog.json"
+        assert mc._cache_path() == _data_dir / "marketplace-catalog-v2.json"
         assert mc._ack_path().parent == _data_dir
 
     def test_read_cached_none_when_absent(self):
         assert mc.read_cached() is None
 
     def test_read_cached_garbage_is_none(self, _data_dir):
-        (_data_dir / "marketplace-catalog.json").write_text("{broken")
+        (_data_dir / "marketplace-catalog-v2.json").write_text("{broken")
         assert mc.read_cached() is None
 
     def test_cache_entries_revalidated_on_read(self, _data_dir):
-        (_data_dir / "marketplace-catalog.json").write_text(json.dumps(
+        (_data_dir / "marketplace-catalog-v2.json").write_text(json.dumps(
             {"fetched_at": 1, "modules": [GOOD, {**GOOD, "id": "x", "tier": "nope"}]}
         ))
         cached = mc.read_cached()
@@ -118,7 +119,6 @@ class TestLocalState:
         assert mc.community_acked() is True
 
 
-PIN = "0123456789abcdef0123456789abcdef01234567"
 ZIP = b"PK\x05\x06" + b"\x00" * 18
 
 
