@@ -269,18 +269,20 @@ async def test_an_imported_draft_is_removed_by_undoing_its_import_not_by_delete(
     assert not await _exists(session, auth, lot)
 
 
-async def test_a_raw_imported_draft_is_neither_deleted_nor_undone(session, client, auth):
-    """A raw event batch cannot show it only added items, so its draft is kept by both."""
+async def test_a_raw_imported_draft_that_cannot_be_undone_is_deleted(session, client, auth):
+    """A raw event batch cannot show it only added items, so it cannot be undone; its
+    draft, used nowhere and holding no files, is then deleted like any draft mistake."""
     record = _raw_record("item.created", 40.0, status="draft")
     r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [record]})
-    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    assert r.status_code == 200 and r.json()["created"] == 1 and not r.json()["reversible"], r.text
     batch, lot = r.json()["batch_id"], record["entity_id"]
-    r = await _delete(client, auth, lot)
-    assert r.status_code == 409 and "Undo Import" in r.text, r.text
     r = await _undo(client, auth, batch)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "import_not_reversible", r.text
-    await session.rollback()  # the refused requests' work ends with them, as their own sessions would
-    assert await _exists(session, auth, lot)
+    await session.rollback()  # the refused request's work ends with it, as its own session would
+    r = await _delete(client, auth, lot)
+    assert r.status_code == 200 and r.json() == {"deleted": 1, "kept": 0}, r.text
+    assert not await _exists(session, auth, lot)
+    assert await _events(session, auth, lot) == 0
 
 
 # --- From import to delete --------------------------------------------------------------

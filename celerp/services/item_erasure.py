@@ -38,7 +38,7 @@ async def depended_on(session: AsyncSession, company_id, needles: dict[str, list
     ids = set(needles)
     found = await _mentioned_elsewhere(session, company_id, needles, besides=besides)
     batches = await session.execute(sa.select(ImportBatch.entity_ids).where(
-        ImportBatch.company_id == company_id, ImportBatch.status == "active",
+        ImportBatch.company_id == company_id, ImportBatch.status == "active", ImportBatch.reversible.is_(True),
         *([ImportBatch.id != undoing_batch] if undoing_batch is not None else [])))
     for (batch_ids,) in batches:
         found |= ids & set(batch_ids or [])

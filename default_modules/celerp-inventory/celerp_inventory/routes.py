@@ -2950,7 +2950,7 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
         skus = ", ".join(sorted(str((rows[e].state or {}).get("sku") or e) for e in blocked))
         raise HTTPException(status_code=409, detail=(
             f"Nothing was deleted. Only a draft that never became stock and is used nowhere can be deleted, "
-            f"and these cannot: {skus}. Use Undo Import in Import History for items an import brought in, "
+            f"and these cannot: {skus}. Use Undo Import in Import History for items an import that can be undone brought in, "
             f"remove a draft's files before deleting it, Revert to Draft for stock made available by mistake, "
             f"Archive to retire a product, or Write Off Stock for goods that left the company."))
     await erase_items(session, company_id, rows)

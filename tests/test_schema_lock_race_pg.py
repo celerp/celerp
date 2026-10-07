@@ -571,7 +571,7 @@ async def test_system_recovery_holds_the_schema_key_alone_while_it_replaces_the_
 async def test_company_backup_during_system_recovery_is_refused_and_writes_nothing(
         real_engine, real_client, widgets_company, tmp_path):  # noqa: F811
     _, cid, tok = widgets_company
-    files_before = sorted(tmp_path.rglob("*"))
+    files_before = sorted(p for p in tmp_path.rglob("*") if p.is_file())  # the download's private folder may exist
     out = tmp_path / "during.celerp-company"
     recovery = _Recovery(_url(real_engine))
     try:
@@ -589,7 +589,7 @@ async def test_company_backup_during_system_recovery_is_refused_and_writes_nothi
     assert r.json()["detail"].startswith("Celerp is updating its database. Nothing was backed up.")
     assert direct is not None and direct.status_code == 409
     assert direct.detail.startswith("Celerp is updating its database. Nothing was backed up.")
-    assert sorted(tmp_path.rglob("*")) == files_before
+    assert sorted(p for p in tmp_path.rglob("*") if p.is_file()) == files_before
 
 
 async def test_system_recovery_waits_for_a_running_company_backup(
