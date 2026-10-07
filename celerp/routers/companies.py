@@ -1706,12 +1706,11 @@ async def list_modules(
                 loaded = loaded_by_name.get(pkg_name)
                 manifest_source = loaded or read_manifest_metadata(pkg_path)
                 # Provenance and install time drive the source shield and the
-                # newest-imported-first ordering. A default is identified by
-                # content (its digest matches the committed first-party lock), not
-                # by name or sidecar, and never carries an install time (the desktop
-                # app re-seeds them on every version bump). A non-default folder
-                # whose sidecar holds no install time (a pre-existing import) falls
-                # back to its folder ctime so ordering still has something to sort on.
+                # newest-imported-first ordering. A default never carries an
+                # install time (the desktop app re-seeds them on every version
+                # bump). A non-default folder with no recorded install time (a
+                # pre-existing import) falls back to its folder ctime so ordering
+                # still has something to sort on.
                 is_default = is_first_party(pkg_path)
                 if is_default:
                     source = "default"

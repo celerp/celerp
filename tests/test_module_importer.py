@@ -379,12 +379,12 @@ def test_folder_install_defaults_to_sideloaded_source(module_dir, tmp_path):
 
 
 @pytest.mark.parametrize("premium", [True, False])
-def test_install_sidecar_holds_only_provenance(premium, module_dir):
-    """The sidecar says where a module came from and when; it never says whether
-    the module is paid."""
+def test_install_metadata_holds_only_provenance(premium, module_dir):
+    """The install metadata records where a module came from and when, nothing
+    else."""
     import json
     from celerp.modules.meta import META_FILENAME
-    name = "celerp-sidecar-paid"
+    name = "celerp-provenance-paid"
     install_from_zip(_zip_bytes({"__init__.py": f"PLUGIN_MANIFEST = {{'name': {name!r}, "
                                                  "'version': '1.0.0'}\n"}, root=f"{name}/"),
                      official=True, premium=premium, source="marketplace")

@@ -166,7 +166,7 @@ def with_writable_module_dir(module_dir_env: str | None) -> str:
     An unset MODULE_DIR (None: a bare `uvicorn` dev run) means the bundled trees
     that exist, as `celerp start` gives them; one set to "" means no module trees
     and is returned as is. The importer installs into
-    MODULE_DIR.split(",")[0]. If that first entry is a bundled/trusted dir (the
+    MODULE_DIR.split(",")[0]. If that first entry is a bundled dir (the
     dev/CLI footgun: MODULE_DIR=default_modules), a writable data-dir drop-in is
     prepended so imports land there, with the bundled dir kept on the path for
     default discovery. An already-safe first entry is returned unchanged."""
@@ -815,16 +815,14 @@ def _license_refusal(module: AdmittedModule, creds) -> str | None:
     """Why a premium module may not load on this instance, or None.
 
     Checked for a module in a premium tree or carrying the paid marker, and for
-    every celerp- name that is not one of the defaults Celerp ships, wherever its
-    folder came from: a celerp- module the Marketplace lists as free and official
-    loads (that verdict is cached on this instance), any other needs a licence.
-    Nothing in the module folder counts: until the Marketplace has answered once,
-    only a licence loads it. The name only ever adds this check; it grants nothing.
+    every celerp- name that is not one of the defaults Celerp ships. Paid modules
+    require the normal license path. A celerp- module the Marketplace lists as
+    free and official loads, and stays available offline once that answer has
+    been received; any other needs a licence. Module metadata does not affect
+    admission.
 
-    Checked on every instance, activated or not. The Marketplace listing is
-    public, so a free verdict needs no relay identity. With no live JWT (never
-    activated, or the token exchange failed) check_license decides from the
-    offline lifetime JWT and the grace cache alone.
+    Checked on every instance, activated or not. With no live JWT (never
+    activated, or the token exchange failed) the licence is checked offline.
     """
     by_name = _needs_licence_by_name(module.name, module.path)
     if not by_name and not is_premium_path(module.path):
@@ -1201,7 +1199,7 @@ def load_all(
             _load_errors[pkg_name] = str(exc)
             _drop_tables({pkg_name})
             continue
-        # Carry the trust decision on the manifest so route registration reads
+        # Carry the first-party flag on the manifest so route registration reads
         # it rather than recomputing (and re-hashing) per module.
         manifest["first_party"] = module.first_party
         _loaded.append(manifest)
@@ -1605,8 +1603,8 @@ def _route_failure(manifest: dict, kind: str, exc: Exception) -> None:
     (a boot without it is not a working product); a third-party module is taken
     out of this process whole, with every module that depends on it, and the
     failure recorded for the Modules UI badge. The manifest carries its own
-    first-party verdict (set by load_all), so the policy reads it directly rather
-    than re-deriving trust here."""
+    first-party flag (set by load_all), so the policy reads it directly rather
+    than re-deriving it here."""
     name = manifest["name"]
     if manifest.get("first_party"):
         raise ModuleLoadError(
@@ -1925,9 +1923,7 @@ def _scan_protected_imports(pkg_path: Path, entry: Path | None) -> set[str]:
     Follows the module's own imports transitively (_reachable_sources) and flags
     static imports of a protected internal (including ``from celerp.ai import
     quota``) and dynamic importlib.import_module / __import__ calls whose literal
-    argument names one. Static analysis is best-effort; the authoritative
-    enforcement of paid capabilities is server-side. Fails closed like
-    _reachable_sources.
+    argument names one. Fails closed like _reachable_sources.
     """
     violations: set[str] = set()
     for tree in _reachable_sources(pkg_path, [entry]).values():
@@ -2580,9 +2576,8 @@ def _resolve_slot_callables(
                     ) from None
                 _check_keywords(slot_name, item[key], params)
         if slot_name == _SEARCH_PROVIDER_SLOT:
-            # Runtime-owned trust metadata goes AFTER the manifest contribution,
-            # and the descriptor's closed key set already refuses a manifest that
-            # supplies _module / _first_party itself, so neither can be spoofed.
+            # The runtime keys _module / _first_party come from the loader; the
+            # descriptor's closed key set refuses a manifest that supplies either.
             prepared = {**contribution, **_runtime_keys(pkg_name, trusted)}
     return prepared
 

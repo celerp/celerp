@@ -786,7 +786,7 @@ async def connect_start() -> dict | None:
 
 
 async def connect_status() -> dict:
-    """Authoritative status for the settings page: {"enabled": bool, "state":
+    """The connection status for the settings page: {"enabled": bool, "state":
     "connected" | "disconnecting" | "revoked" | "disconnected"}. Falls back to the cached feature
     flag, with no state, if Cloud is unreachable."""
     return (await _cloud_get("/billing/connect/status")) or {"enabled": payments_enabled()}

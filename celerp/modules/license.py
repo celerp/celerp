@@ -169,8 +169,8 @@ def check_license(
 def marketplace_flags(meta: dict) -> tuple[bool, bool]:
     """``(is_official, is_paid)`` from a Marketplace module-detail response.
 
-    Read as the relay sells the module: any price listed, in any form, makes it
-    paid, and only a literal ``True`` makes it official."""
+    Any price listed, in any form, reads as paid; only a literal ``True`` reads
+    as official."""
     is_paid = any(meta.get(k) is not None for k in ("price_monthly", "price_once"))
     return meta.get("is_official") is True, is_paid
 

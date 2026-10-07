@@ -3,7 +3,7 @@
 """The two-step marketplace install: Download stages, Install lands the package.
 
 POST /companies/me/modules/marketplace-download fetches a licensed archive from
-the relay and stages it on disk with a server-owned trust sidecar. POST
+the relay and stages it on disk with its install details. POST
 /companies/me/modules/marketplace-install imports the staged archive through the
 shared importer; the module lands DISABLED, exactly like a community import, so
 enabling and restarting stay the deliberate steps in the Installed tab.
@@ -11,8 +11,8 @@ enabling and restarting stay the deliberate steps in the Installed tab.
 The relay is faked at the httpx boundary for the download half; the importer, the
 premium marker, the official-prefix gate, and every error path run for real. The
 never-stuck property under test: a download failure stages nothing and can be
-retried; the official/paid verdict is captured server-side at download time and
-cannot be forged by the Install caller, which only hands back the download's token.
+retried, and Install uses the official/paid flags recorded at download; invalid
+staged metadata is rejected.
 
 Credentials: _relay_creds() exchanges settings.gateway_token (the permanent
 API key set by a successful /auth/activate) for a short-lived JWT via
@@ -67,8 +67,7 @@ def _install_answer(*, is_official=True, is_paid=True, **extra) -> "_FakeResp":
                            "is_official": is_official, "is_paid": is_paid, **extra})
 
 
-# What the module-detail request would say: free and official, the opposite of a
-# paid install, so a download that still read it would stage the wrong flags.
+# A module-detail answer that differs from the install answer (free and official).
 _DETAIL_SAYS_FREE = _FakeResp(200, {"is_official": True, "price_monthly": None, "price_once": None})
 
 
@@ -168,9 +167,9 @@ async def test_download_stages_then_install_marks_premium_and_lands_disabled(cli
 
 
 @pytest.mark.asyncio
-async def test_download_takes_its_flags_from_the_install_answer_alone(client, relay_env, tmp_path):
-    """The install answer says paid; nothing else is asked, so the module lands
-    with the licence-gate marker and no free verdict."""
+async def test_paid_install_requires_the_normal_license_path(client, relay_env, tmp_path):
+    """A paid install lands with the licence-gate marker and no free verdict, and
+    nothing else is asked."""
     headers = await _register(client)
     urls: list = []
     with patch("httpx.AsyncClient", _fake_relay(urls=urls)):
@@ -212,7 +211,7 @@ async def test_install_answer_without_plain_flags_stages_nothing(client, relay_e
 @pytest.mark.parametrize("details", [{"is_official": True}, {"is_official": True, "is_paid": 0}],
                          ids=["no_is_paid", "paid_zero"])
 @pytest.mark.asyncio
-async def test_install_refuses_a_staged_download_without_plain_flags(client, relay_env, details):
+async def test_install_rejects_invalid_staged_metadata(client, relay_env, details):
     headers = await _register(client)
     with patch("httpx.AsyncClient", _fake_relay()):
         dl = await _download(client, headers)
@@ -309,7 +308,7 @@ async def test_mismatched_package_name_removed_and_refused(client, relay_env):
 @pytest.mark.asyncio
 async def test_third_party_package_may_not_claim_celerp_prefix(client, relay_env):
     """The install answer says NOT official -> a celerp-* package must be refused
-    at install, using the official verdict captured in the sidecar at download."""
+    at install, using the official flag recorded at download."""
     headers = await _register(client)
     fake = _fake_relay(install=_install_answer(is_official=False))
     with patch("httpx.AsyncClient", fake):

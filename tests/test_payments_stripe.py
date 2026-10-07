@@ -858,7 +858,7 @@ async def test_connect_endpoint_returns_oauth_url(client, monkeypatch):
     assert r.json()["url"] == "https://connect.stripe.test/oauth"
 
 
-_NOT_HTTPS = ["javascript:alert(1)", "http://stripe.test/cs_1", "//evil.test/x", 7, ["https://stripe.test/cs_1"]]
+_NOT_HTTPS = ["javascript:alert(1)", "http://stripe.test/cs_1", "//other.test/x", 7, ["https://stripe.test/cs_1"]]
 
 
 @pytest.mark.asyncio
