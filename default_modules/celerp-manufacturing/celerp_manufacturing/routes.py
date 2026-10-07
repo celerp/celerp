@@ -33,6 +33,7 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import migrations
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.fulfill import outstanding_physical_lines
 from celerp.services.lot_origin import refuse_deleted, refuse_draft
@@ -1134,8 +1135,9 @@ async def _bulk_run_action(session: AsyncSession, company_id, user_id, run_ids: 
             detail = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
             skipped.append({"id": run_id, "reason": detail.get("message"),
                             **{k: v for k, v in detail.items() if k in ("message_key", "params")}})
-        except ValueError as e:
+        except UnbalancedJournalEntry as e:
             # A refused journal entry rolls back everything the run wrote, as a refusal does.
+            # Any other failure is not a refusal: it fails the whole action, keeping nothing.
             skipped.append({"id": run_id, "reason": failure_reason(e)})
     return {"done": done, "skipped": skipped}
 
