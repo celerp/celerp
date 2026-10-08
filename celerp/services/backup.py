@@ -299,7 +299,7 @@ def check_backup_dump(dump_path: Path, database_url: str,
     does not have (``_check_server_objects``), or when the disk beside it has no
     room to restore it. `source` names, for the owner, the database the dump was taken from."""
     check_free_space(dump_path)
-    listing = _run_tool([_find_pg_tool("pg_restore"), "-l", str(dump_path)], None, timeout=60)
+    listing = _run_tool([_find_pg_tool("pg_restore"), "-l", dump_path.name], None, timeout=60, cwd=dump_path.parent)
     lines = [line for line in listing.decode(errors="replace").splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
     if other:
@@ -337,8 +337,8 @@ def _check_server_objects(dump_path: Path, database_url: str, source: str) -> No
     """ValueError naming the roles of the dump's row security policies, and the collations
     and tablespaces of its tables and indexes, that this server does not have or, for a
     tablespace, this role may not use."""
-    script = _run_tool([_find_pg_tool("pg_restore"), "--schema-only", "-f", "-", str(dump_path)], None,
-                       timeout=60).decode(errors="replace")
+    script = _run_tool([_find_pg_tool("pg_restore"), "--schema-only", "-f", "-", dump_path.name], None,
+                       timeout=60, cwd=dump_path.parent).decode(errors="replace")
     script = _TEXT.sub(lambda match: match[1] or "''", script)
     policies = [(_unquote(name), _unquote(table), [_unquote(role) for role in re.findall(_IDENTIFIER, roles)])
                 for name, table, roles in _POLICY_ROLES.findall(script)]
@@ -402,22 +402,25 @@ def restore_database_file(dump_path: Path, database_url: str, *, runner=None) ->
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url), \
             tempfile.TemporaryDirectory(dir=dump_path.parent) as work:
-        listing, script = Path(work) / "restore.list", Path(work) / "restore.sql"
-        script.touch(mode=0o600)
-        entries = _run_tool([pg_restore, "-l", str(dump_path)], runner).decode(errors="replace")
-        listing.write_text("".join(line for line in entries.splitlines(keepends=True)
-                                   if not re.match(_SCHEMA_ENTRY, line)))
+        listing, script = Path(work).name + "/restore.list", Path(work).name + "/restore.sql"
+        (dump_path.parent / script).touch(mode=0o600)
+        entries = _run_tool([pg_restore, "-l", dump_path.name], runner, cwd=dump_path.parent).decode(errors="replace")
+        (dump_path.parent / listing).write_text("".join(line for line in entries.splitlines(keepends=True)
+                                                        if not re.match(_SCHEMA_ENTRY, line)))
         _run_tool([pg_restore, "--clean", "--if-exists", "--no-privileges", "--no-owner",
-                   "-L", str(listing), "-f", str(script), str(dump_path)], runner)
+                   "-L", listing, "-f", script, dump_path.name], runner, cwd=dump_path.parent)
         with held.write_window():
             _run_tool([psql, "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "--single-transaction",
-                       "-c", _EMPTY_PUBLIC, "-f", str(script), "-d", pg_url], runner)
+                       "-c", _EMPTY_PUBLIC, "-f", script, "-d", pg_url], runner, cwd=dump_path.parent)
 
 
-def _run_tool(command: list[str], runner, timeout: int = 600) -> bytes:
+def _run_tool(command: list[str], runner, timeout: int = 600, cwd: Path | None = None) -> bytes:
+    """Runs a PostgreSQL tool. Files are given to it relative to `cwd`: on Windows the tools
+    read their arguments in the system code page, which cannot hold every folder name,
+    while the working directory reaches them whole."""
     name = Path(command[0]).stem
     try:
-        result = (runner or subprocess.run)(command, capture_output=True, timeout=timeout)
+        result = (runner or subprocess.run)(command, capture_output=True, timeout=timeout, cwd=cwd)
     except FileNotFoundError as exc:
         raise RuntimeError(f"{name} not found") from exc
     except OSError as exc:

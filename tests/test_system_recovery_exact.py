@@ -2285,7 +2285,7 @@ def _fails_after_restoring_data(dump: Path):
     """A statement failing after the emptying and after every row was restored."""
     def runner(command, **kwargs):
         if _tool(command) == "psql":
-            with Path(command[command.index("-f") + 1]).open("a") as script:
+            with (kwargs["cwd"] / command[command.index("-f") + 1]).open("a") as script:
                 script.write("SELECT 1/0;\n")
         return subprocess.run(command, **kwargs)
     return runner

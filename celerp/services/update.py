@@ -679,13 +679,14 @@ raise SystemExit(child.wait())
 
 
 def _bound_run(command, *, env: dict | None = None, capture_output: bool = False,
-               timeout: float) -> subprocess.CompletedProcess:
+               timeout: float, cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Run a command whose process tree cannot outlive this supervisor."""
     env = dict(os.environ if env is None else env)
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(
             [sys.executable, "-E", "-S", "-c", _PARENT_BOUND_RUNNER, *map(str, command)],
             env=env,
+            cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=out if capture_output else None,
             stderr=err if capture_output else None,
