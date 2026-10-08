@@ -44,6 +44,7 @@ from celerp.services.permissions import (
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services import company_lifecycle
+from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
@@ -351,6 +352,7 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        require_phone(payload.settings.get("phone"))
         from importlib.util import find_spec
         from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
         # Empty is the default deposit account.

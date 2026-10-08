@@ -21,3 +21,9 @@ def require_currency_code(code: str | None) -> None:
     """Refuse a currency outside the supported list at a write boundary. Empty means no currency."""
     if code and code not in CURRENCY_CODES:
         raise HTTPException(status_code=422, detail=f"Invalid currency code: {code}")
+
+
+def require_phone(phone: str | None) -> None:
+    """Refuse a phone with fewer than 4 digits at a write boundary. Empty means no phone."""
+    if phone and sum(c.isdigit() for c in str(phone)) < 4:
+        raise HTTPException(status_code=422, detail="Enter a phone number with at least 4 digits.")

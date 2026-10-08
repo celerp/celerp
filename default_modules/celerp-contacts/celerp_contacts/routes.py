@@ -24,7 +24,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, storing
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.currencies import require_currency_code
+from celerp.services.currencies import require_currency_code, require_phone
 from celerp.services.permissions import locked_authority, require_permission
 
 from celerp.importers.sinks import register_sink
@@ -146,6 +146,7 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
     if not payload.name or not payload.name.strip():
         raise HTTPException(status_code=422, detail="Contact name is required and must be non-empty")
     require_currency_code(payload.currency)
+    require_phone(payload.phone)
     entity_id = f"contact:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -198,6 +199,7 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return {"event_id": replay.id}
     require_currency_code((payload.fields_changed.get("currency") or {}).get("new"))
+    require_phone((payload.fields_changed.get("phone") or {}).get("new"))
     entry = await emit_event(
         session,
         company_id=company_id,
