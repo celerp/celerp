@@ -1739,7 +1739,7 @@ async def list_modules(
                     "version": manifest_source.get("version", "unknown"),
                     "description": manifest_source.get("description", ""),
                     "author": manifest_source.get("author", ""),
-                    "depends_on": list(manifest_source.get("depends_on") or []),
+                    "depends_on": list(v) if isinstance(v := manifest_source.get("depends_on"), list) else [],
                     # The module's owned table prefix, surfaced so the UI can
                     # gate the irreversible Purge action on a module that owns
                     # tables. None when the manifest declares none.

@@ -302,6 +302,16 @@ async def test_a_module_built_into_celerp_is_always_on_and_cannot_be_turned_off(
 
 
 @pytest.mark.asyncio
+async def test_a_module_naming_its_dependency_as_text_is_not_split_into_letters(client, module_dir):
+    name = f"acme-loose-{_uid()}"
+    _write_module(module_dir, {"name": name, "version": "1.0.0", "depends_on": "celerp-docs"}, {})
+    a, _b = await _two_companies(client)
+    r = await client.get("/companies/me/modules", headers=a)
+    assert r.status_code == 200, r.text
+    assert {m["name"]: m for m in r.json()}[name]["depends_on"] == []
+
+
+@pytest.mark.asyncio
 async def test_a_turn_off_that_fails_to_save_leaves_the_load_set_as_it_was(client, session, module_dir, monkeypatch):
     from sqlalchemy.ext.asyncio import AsyncSession
     name = f"acme-{_uid()}"
