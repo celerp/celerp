@@ -179,13 +179,14 @@ def test_the_line_quantity_field_is_shared():
     assert "kg" in html
 
 
-def _draft_toolbar(doc_type: str, entity_id: str):
+def _draft_toolbar(doc_type: str, entity_id: str, holder: str | None = None, line_holds: dict | None = None):
     from ui.routes.documents import _doc_detail
     d = {"entity_id": entity_id, "doc_type": doc_type, "status": "draft", "ref_id": "D-1",
+         "line_holds": line_holds or {},
          "line_items": [{"line_id": _L0, "sku": "S-1", "item_id": "item:1", "entity_id": "item:1",
                          "quantity": 3, "unit_price": 1}]}
     return to_xml(_doc_detail(d, item_status_map={"item:1": "reserved"},
-                              item_status_doc_map={"item:1": (entity_id, "D-1")}))
+                              item_status_doc_map={"item:1": (holder or entity_id, "D-1")}))
 
 
 def test_a_draft_document_releases_its_holds_but_never_reserves():
@@ -197,3 +198,13 @@ def test_a_draft_document_releases_its_holds_but_never_reserves():
 def test_a_draft_list_reserves_and_releases():
     html = _draft_toolbar("list", "list:q-1")
     assert 'value="li-revert"' in html and 'value="li-reserve"' in html
+
+
+def test_a_draft_document_holding_nothing_offers_no_set_as_available():
+    html = _draft_toolbar("invoice", "doc:inv-1", holder="doc:other")
+    assert 'value="li-revert"' not in html
+
+
+def test_a_draft_document_holding_another_lot_for_a_line_offers_set_as_available():
+    html = _draft_toolbar("invoice", "doc:inv-1", holder="doc:other", line_holds={_L0: 1})
+    assert 'value="li-revert"' in html

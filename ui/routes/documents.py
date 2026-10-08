@@ -7076,6 +7076,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # reservation state reads back. Inbound drafts (bill, consignment in) have no
         # received items yet and stay without it.
         _draft_show_item_status = doc_type in _FULFILLABLE_DOC_TYPES or is_list
+        # Whether this draft holds any stock: a hold stamped with one of its lines, or a
+        # line's own item reserved by it.
+        _draft_holds = bool(_holds) or any(
+            (item_status_map or {}).get(_eid) == "reserved"
+            and (item_status_doc_map or {}).get(_eid, ("",))[0] == entity_id
+            for _eid in (li.get("entity_id") or li.get("item_id") or "" for li in line_items))
 
         def _li_editable_row(li: dict, idx: int) -> FT:
             qty = li.get("quantity", 0)
@@ -7499,9 +7505,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             # Lists reserve while still drafts; a draft document cannot (acquiring stock is
-            # gated by its status) but gives back any hold it kept from before.
+            # gated by its status) but gives back any hold it kept from before, so it offers
+            # Set as available only while it holds something.
             _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF),
-                             show_reserve=is_list, show_release=_draft_show_item_status, can_delete=can_edit_lines),
+                             show_reserve=is_list, show_release=_draft_show_item_status and _draft_holds,
+                             can_delete=can_edit_lines),
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
