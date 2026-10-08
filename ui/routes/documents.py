@@ -3143,6 +3143,10 @@ celerpUpdateBulkAlloc();
             # so the page can open the resolution modal instead of the inline error.
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
+            # A protected line (holding, shipped or received) stays as stored, so the page puts
+            # the stored lines back rather than leave the refused edit on screen.
+            if isinstance(e.data, dict) and str(e.data.get("message_key") or "").startswith("line.protected_"):
+                payload["restore"] = True
             return JSONResponse(payload, status_code=400)
         return JSONResponse({"ok": True, "version": result.get("version")})
 
@@ -5975,6 +5979,12 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
 
 
 
+def _count_forms(key: str) -> dict[str, str]:
+    """A count message's singular and plural forms (``<key>_one`` / ``<key>_many``), for the
+    page script to pick by count with celerpCount."""
+    return {"one": t(f"{key}_one"), "many": t(f"{key}_many")}
+
+
 def _receive_summary(line_counts: dict | None) -> str:
     """What a receipt did with its lines: how many added stock, and how many expense and asset
     lines added none. Groups with no lines are left out; no counts, no summary."""
@@ -7664,8 +7674,9 @@ window._L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_inventory_status": t("documents.no_inventory_items_status"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    "confirm_set_reserved": t("documents.confirm_set_reserved"),
-    "confirm_set_available": t("documents.confirm_set_available"),
+    "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
+    "confirm_set_available": _count_forms("documents.confirm_set_available"),
+    "confirm_delete_lines": _count_forms("documents.confirm_delete_lines"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
     "unexpected_error": t("error.unexpected_error_body"),
@@ -7721,32 +7732,6 @@ function _celerpPickerStatus(text) {{
     // never wipes a newer message before its own time is up.
     let _statusTimer = null;
     function _clearStatusSoon() {{ clearTimeout(_statusTimer); _statusTimer = setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
-    // Install a fresh #line-body tbody in place and, ONLY on a successful install, advance the tracked
-    // optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
-    // true iff the rows were installed - callers keep Add locked when it returns false rather than let
-    // a submission run against stale rows.
-    async function _installListBody(html, version) {{
-        if (!html) {{
-            // The page being viewed, not location.href: in-place paging never changes the URL.
-            const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
-                + '&limit=' + _CELERP_LINE_LIMIT);
-            const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
-            const fresh = doc.getElementById('{line_body_id}');
-            html = fresh ? fresh.outerHTML : '';
-        }}
-        const tbody = document.getElementById('{line_body_id}');
-        if (!tbody || !html) return false;
-        tbody.outerHTML = html;
-        const swapped = document.getElementById('{line_body_id}');
-        htmx.process(swapped);
-        swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-        // The installed rows are the stored window now, so the next save replaces exactly them.
-        if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
-        celerpUpdateTotals();
-        _celerpHadLines = true;
-        if (version != null) _celerpEntityVersion = version;
-        return true;
-    }}
     async function submitList() {{
         const raw = scanInput.value.trim();
         if (!raw) return;
@@ -7797,7 +7782,7 @@ function _celerpPickerStatus(text) {{
                         // could duplicate lines - and tell the operator to reload the page.
                         pendingRunKey = null;
                         let refreshed = false;
-                        try {{ refreshed = await _installListBody('', version); }} catch (_e) {{}}
+                        try {{ refreshed = await _celerpInstallLineBody('', version); }} catch (_e) {{}}
                         scanStatus.className = 'scan-bar-status scan-bar-status--err';
                         if (refreshed) {{
                             // Rows are current again and Add re-enables in finally: the operator can
@@ -7845,9 +7830,9 @@ function _celerpPickerStatus(text) {{
             }}
             // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
             // the lines are already committed and will appear on the next natural render. The version is
-            // advanced only inside a successful install (see _installListBody).
+            // advanced only inside a successful install (see _celerpInstallLineBody).
             try {{
-                await _installListBody(data.html || '', data.version);
+                await _celerpInstallLineBody(data.html || '', data.version);
             }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
             _clearStatusSoon();
             return true;
@@ -8726,6 +8711,32 @@ function _celerpCollectLines() {{
     }}
     return lines;
 }}
+/* Install a fresh #line-body tbody in place and, ONLY on a successful install, advance the tracked
+   optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
+   true iff the rows were installed - callers hold position when it returns false rather than let
+   a submission run against stale rows. */
+async function _celerpInstallLineBody(html, version) {{
+    if (!html) {{
+        // The page being viewed, not location.href: in-place paging never changes the URL.
+        const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
+            + '&limit=' + _CELERP_LINE_LIMIT);
+        const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+        const fresh = doc.getElementById('{line_body_id}');
+        html = fresh ? fresh.outerHTML : '';
+    }}
+    const tbody = document.getElementById('{line_body_id}');
+    if (!tbody || !html) return false;
+    tbody.outerHTML = html;
+    const swapped = document.getElementById('{line_body_id}');
+    htmx.process(swapped);
+    swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+    // The installed rows are the stored window now, so the next save replaces exactly them.
+    if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
+    celerpUpdateTotals();
+    _celerpHadLines = true;
+    if (version != null) _celerpEntityVersion = version;
+    return true;
+}}
 async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
     const revision = window._celerpLineRevision;
@@ -8787,15 +8798,24 @@ async function _celerpPersistOnce() {{
         let msg = _L.save_failed;
         let conflicts = null;
         let stale = false;
+        let restore = false;
         try {{
             const e = await resp.json();
             if (e && e.error) msg = e.error;
+            if (e && e.restore) restore = true;
             if (e && e.reserved_conflicts) conflicts = e.reserved_conflicts;
             if (e && e.code === 'stale_version') stale = true;
         }} catch (_e) {{}}
         if (conflicts && conflicts.length) {{
             statusEl.textContent = '';
             _celerpShowReservedConflicts(conflicts);
+        }} else if (restore) {{
+            // Nothing was written and the refused line stays as stored: put the stored lines
+            // back in place so the table matches what is saved, and say why.
+            statusEl.textContent = '';
+            if (window.celerpToast) celerpToast(msg, 'error');
+            window._celerpSavedLineRevision = window._celerpLineRevision;
+            await _celerpInstallLineBody('', null);
         }} else if (stale) {{
             // Another save landed first, so this tab's rows are stale. Offer the only safe
             // way back to a consistent state - reload the latest before editing again - rather
@@ -9116,7 +9136,7 @@ async function celerpCsvImport(input, entityId) {{
       return;
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
-    if(!window.confirm(_confirm.replace('{{n}}', rows.length))) return;
+    if(!window.confirm(celerpCount(_confirm, rows.length))) return;
     // Persist pending edits first so the server sees every selected line, then act. A failed
     // save has already shown its reason; acting on top of it would use stale lines.
     if(!(await _celerpPersist())) return;
@@ -9151,7 +9171,10 @@ async function celerpCsvImport(input, entityId) {{
     _hideBtns(); _update();
   }};
   window.liBulkDeleteConfirmed=function(){{
-    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
+    var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
+    if(!rows.length) return;
+    if(!window.confirm(celerpCount(_L.confirm_delete_lines, rows.length))) return;
+    rows.forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';
     _hideBtns(); _update();
@@ -9395,8 +9418,8 @@ async function celerpCsvImport(input, entityId) {{
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
     "no_lines_selected": t("documents.no_lines_selected"),
     "none_can_available": t("documents.none_can_available"),
-    "confirm_set_reserved": t("documents.confirm_set_reserved"),
-    "confirm_set_available": t("documents.confirm_set_available"),
+    "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
+    "confirm_set_available": _count_forms("documents.confirm_set_available"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
     "sold_reserve_warn": t("documents.sold_reserve_warn"),
@@ -9497,7 +9520,7 @@ async function celerpCsvImport(input, entityId) {{
     var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
-    var msg=_L.confirm_set_reserved.replace('{{n}}', rows.length);
+    var msg=celerpCount(_L.confirm_set_reserved, rows.length);
     if(sold){{
       msg=_L.sold_reserve_warn.replace('{{n}}', sold);
     }}
@@ -9533,7 +9556,7 @@ async function celerpCsvImport(input, entityId) {{
       // The whole line coming back needs no quantity: everything still out returns.
       if(qty!==max) fields.push([inp.name,String(qty)]);
     }}
-    if(!window.confirm(_L.confirm_set_available.replace('{{n}}', acting.length))) return;
+    if(!window.confirm(celerpCount(_L.confirm_set_available, acting.length))) return;
     if(await celerpLineAction(_liBase+_liEid+'/set-available', acting, fields, _liKey(), _L.could_not_set_available))
       window.location.reload();
   }};

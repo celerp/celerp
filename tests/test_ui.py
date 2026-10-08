@@ -4349,6 +4349,27 @@ class TestListsCreateBlank:
         assert r.json()["ok"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key, restore", [
+        ("line.protected_held", True), ("line.protected_shipped", True),
+        ("line.protected_received", True), ("docs.some_other_refusal", False),
+    ])
+    async def test_save_lines_refusal_of_a_protected_line_asks_for_the_stored_lines(self, ui_client, key, restore):
+        """A save refused because a line is protected keeps the stored lines on the server, so the
+        page is told to put them back; any other refusal leaves the user's edits in place."""
+        from ui.api_client import _api_error
+        detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
+        refused = _api_error(409, {"detail": detail}, "")
+        with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=refused)):
+            r = await ui_client.post(
+                "/docs/doc:INV-2026-0001/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+                cookies=_authed(),
+            )
+        assert r.status_code == 400
+        assert r.json()["error"]
+        assert r.json().get("restore", False) is restore
+
+    @pytest.mark.asyncio
     async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
         """POST /lists/{id}/lines saves only the submitted page slice via
         api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
@@ -4383,6 +4404,18 @@ class TestListsCreateBlank:
             )
         assert r.status_code == 409
         assert r.json()["code"] == "stale_version"
+
+    @pytest.mark.asyncio
+    async def test_line_confirms_read_right_for_one_line(self, ui_client):
+        """The line-action confirms carry a one-line form, so selecting one line never reads
+        "Set 1 lines", and Delete selected has a confirm of its own."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert r.status_code == 200
+        for text in ("Set 1 line as reserved?", "Set {n} lines as reserved?",
+                     "Set 1 line as available?", "Delete 1 line?", "Delete {n} lines?"):
+            assert text in r.text, text
+        assert "celerpCount(_L.confirm_delete_lines" in r.text
 
     @pytest.mark.asyncio
     async def test_save_lines_unauthorized_redirects(self, ui_client):
