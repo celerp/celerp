@@ -104,6 +104,32 @@ async def test_return_line_quantity_is_in_stock_units(client, session, auth):
     assert (await _state(session, auth, bill))["status"] == "returned"
 
 
+async def test_doc_says_what_each_line_sent_back(client, session, auth):
+    """Each line states whether this document sent its goods back, in part or in full, so the
+    line badge can say what the document did rather than what the catalog item is now."""
+    bill, ids = await _issued(client, session, auth, "bill", _stock_lines(2, qty=4))
+    for line_id in ids:
+        r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 4})
+        assert r.status_code == 200, r.text
+
+    async def _states():
+        doc = (await client.get(f"/docs/{bill}", headers=auth["headers"])).json()
+        return [li.get("return_status") for li in doc["line_items"]]
+
+    assert await _states() == [None, None]
+    r = await _return_lines(client, auth, bill, {"line_id": ids[0], "quantity_returned": 1})
+    assert r.status_code == 200, r.text
+    assert await _states() == ["partial_returned", None]
+    r = await _return_lines(client, auth, bill, {"line_id": ids[0], "quantity_returned": 3})
+    assert r.status_code == 200, r.text
+    assert await _states() == ["returned", None]
+    r = await _return_lines(client, auth, bill, {"line_id": ids[1], "quantity_returned": 4})
+    assert r.status_code == 200, r.text
+    # The whole bill went back: still said per line once the bill reads Returned.
+    assert (await _state(session, auth, bill))["status"] == "returned"
+    assert await _states() == ["returned", "returned"]
+
+
 async def test_return_refuses_reserved_lot(client, session, auth):
     bill, [line_id] = await _issued(client, session, auth, "bill", _stock_lines(1, qty=4))
     r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 4})

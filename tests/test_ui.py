@@ -17196,20 +17196,30 @@ class TestInboundPerLineStatus:
         assert "badge--not_received" in html
         assert "Not Received" in html
 
-    def test_bill_received_shows_in_stock_badge(self):
-        """Stock line with entity_id on a received bill must show real item status ('In Stock')."""
+    def test_bill_line_badge_says_what_this_bill_received(self):
+        """A received line says what this bill did for it, never the catalog item's status:
+        a line in part received says how much, and a return on another line changes nothing."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+
+        def _line(sku, qty, received, **extra):
+            return {"sku": sku, "name": sku, "quantity": qty, "unit_price": 10, "line_total": qty * 10,
+                    "receive_as": "stock", "entity_id": f"item:{sku}", "quantity_received": received, **extra}
+
         doc = self._make_bill_finalized(line_items=[
-            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
-             "receive_as": "stock", "entity_id": "item:received-1"},
+            _line("FULL", 5, 5), _line("PART", 5, 3), _line("NONE", 5, 0),
+            _line("BACK", 2, 2, return_status="returned"),
+            _line("SOME", 4, 4, return_status="partial_returned"),
         ])
-        # Use "received" status - items are in inventory at this point
-        doc["status"] = "received"
-        html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
-        assert "badge--available" in html
-        assert "In Stock" in html
-        assert "Not Received" not in html
+        doc["status"] = "partial_returned"
+        # The catalog says otherwise for every line; the badge must not follow it.
+        html = to_xml(_doc_detail(doc, item_status_map={f"item:{s}": "available" for s in
+                                                        ("FULL", "PART", "NONE", "BACK", "SOME")}))
+        badges = [td.get_text(" ", strip=True)
+                  for td in BeautifulSoup(html, "html.parser").select("td.col-item-status")]
+        assert badges == ["Received", "Received 3 of 5", "Not Received", "Returned", "Part returned"]
+        assert "In Stock" not in html
 
     def test_bill_expense_line_shows_no_status_badge(self):
         """Expense line must not show any status badge."""

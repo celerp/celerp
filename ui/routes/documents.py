@@ -818,6 +818,28 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
+def _vendor_line_badge(li: dict, doc_status: str) -> FT:
+    """What a purchase document did for one of its stock lines, from the document's own receipts
+    and returns, never the catalog item's status (other documents move the same item): Returned
+    or Part returned once the line sent goods back, else Received, Received n of m, or Not
+    Received. A document shared in as received carries no receipts of its own and reads
+    Received."""
+    returned = li.get("return_status")
+    if returned == "returned":
+        return Span(t("documents.line_label_returned"), cls="badge badge--inactive")
+    if returned == "partial_returned":
+        return Span(t("documents.status_part_returned"), cls="badge badge--warning")
+    qty = float(li.get("quantity") or 0)
+    received = float(li.get("quantity_received") or 0)
+    if (received > 1e-9 and received + 1e-9 >= qty) or (
+            doc_status == "received" and "quantity_received" not in li):
+        return Span(t("documents.status_received"), cls="badge badge--received")
+    if received > 1e-9:
+        return Span(t("documents.status_received_part", received=f"{received:g}", qty=f"{qty:g}"),
+                    cls="badge badge--pending")
+    return Span(t("documents.status_not_received"), cls="badge badge--not_received")
+
+
 def _item_link_eye(entity_id: str, title: str | None = None) -> FT:
     """Eye glyph on a document line linking to its catalog item, in EVERY document state.
     Active (accent, opens the catalog) when the line came from the catalog; a greyed,
@@ -9196,15 +9218,10 @@ async function celerpCsvImport(input, entityId) {{
                     cls="col-checkbox li-checkbox-cell",
                 ))
             if _show_item_status:
-                # Inbound docs (bill, consignment_in): show real status once received.
-                # "received"/"partially_received" = items exist in inventory → show real status.
-                # "fulfilled" = doc fully processed → show real status.
-                # All other statuses (final, awaiting_payment, etc.) = not yet received → "Not Received".
-                _doc_has_received = status in ("received", "partially_received") or doc.get("fulfillment_status") == "fulfilled"
                 if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
-                elif _is_vendor_doc and not _doc_has_received:
-                    cells.append(Td(Span(t("documents.status_not_received"), cls="badge badge--not_received"), cls="col-item-status"))
+                elif _is_vendor_doc:
+                    cells.append(Td(_vendor_line_badge(li, status), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(

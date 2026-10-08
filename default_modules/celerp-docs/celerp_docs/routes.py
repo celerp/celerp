@@ -1494,17 +1494,30 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             for li in doc.get("line_items") or []:
                 li.pop("shipped_label", None)
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
-    if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and doc.get("status") in SUPPLIER_RETURN_STATUSES:
-        # How much of each line can still go back to the supplier, in stock units. Lines whose
-        # goods cannot be traced to them alone carry no figure and are not offered for return.
+    returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES
+    if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
+            returnable or doc.get("returned_items")):
+        # How much of each line can still go back to the supplier, in stock units, and whether
+        # the line has sent goods back, all or part of what it brought in. Lines whose goods
+        # cannot be traced to them alone carry neither and are not offered for return.
         traced = await _line_return_lots(session, company_id, row.state, lock=False)
         if traced is not None:
-            by_line, shared = traced
-            doc["line_items"] = [
-                {**li, "returnable_quantity": sum(q for _, q in by_line[i])}
-                if i in by_line and not any(lot in shared for lot, _ in by_line[i]) else li
-                for i, li in enumerate(doc.get("line_items") or [])
-            ]
+            by_line, shared, kept = traced
+            sent_back: dict[str, float] = {}
+            for x in doc.get("returned_items") or []:
+                sent_back[x["item_id"]] = sent_back.get(x["item_id"], 0.0) + float(x.get("quantity_returned") or 0)
+            lines = list(doc.get("line_items") or [])
+            for i, lots in by_line.items():
+                if i >= len(lines) or any(lot in shared for lot, _ in lots):
+                    continue
+                line = {**lines[i]}
+                if returnable:
+                    line["returnable_quantity"] = sum(q for _, q in lots)
+                if sum(sent_back.get(lot, 0.0) for lot, _ in lots) > 1e-9:
+                    line["return_status"] = (
+                        "returned" if sum(kept.get(lot, 0.0) for lot, _ in lots) <= 1e-9 else "partial_returned")
+                lines[i] = line
+            doc["line_items"] = lines
     return doc
 
 
@@ -4399,10 +4412,11 @@ def _free_on_hand(state: dict | None) -> float:
 
 
 async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, lock: bool
-                            ) -> tuple[dict[int, list[tuple[str, float]]], set[str]] | None:
-    """Line index -> [(lot, stock units of it the line can send back now)] in receipt order, and
-    the lots more than one line fed; None when the receipts cannot be traced to their lines. A
-    line sends back what it brought in and has not sent back, while it is on hand and free."""
+                            ) -> tuple[dict[int, list[tuple[str, float]]], set[str], dict[str, float]] | None:
+    """Line index -> [(lot, stock units of it the line can send back now)] in receipt order, the
+    lots more than one line fed, and lot -> stock units the document brought in and has not sent
+    back; None when the receipts cannot be traced to their lines. A line sends back what it
+    brought in and has not sent back, while it is on hand and free."""
     traced = _receipt_lots_by_line(doc)
     if traced is None:
         return None
@@ -4415,7 +4429,7 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
             Projection.company_id == company_id, Projection.entity_id.in_(ids)))).scalars()} if ids else {}
     returnable = await _returnable_quantities(session, company_id, doc)
     return {index: [(lot, max(0.0, min(returnable.get(lot, 0.0), _free_on_hand(states.get(lot))))) for lot in lots]
-            for index, lots in by_line.items()}, shared
+            for index, lots in by_line.items()}, shared, returnable
 
 
 class ReturnItem(BaseModel):
@@ -4487,7 +4501,7 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc: dict,
         raise HTTPException(status_code=409, detail=refusal(
             "docs.return_line_untraced",
             "Some goods received on this document cannot be traced to their line, so they cannot be returned by line."))
-    by_line, shared = traced
+    by_line, shared, _ = traced
     out: list[tuple[ReturnItem, str | None]] = []
     for ln, index in zip(lines, picked):
         line = doc_lines[index]
