@@ -636,6 +636,9 @@ async def test_recovery_invalid_archive_makes_no_safety_and_no_change(rec, tmp_p
         _archive(tmp_path / "hardlink.celerp-backup", {"attachments/a.pdf": b"A"},
                  extra=(_special("modules/celerp-example-new/b.py", tarfile.LNKTYPE, "attachments/a.pdf"),)),
         _archive(tmp_path / "device.celerp-backup", extra=(_special("ai_uploads/dev", tarfile.CHRTYPE),)),
+        _archive(tmp_path / "modules-string.celerp-backup", modules="celerp-inventory"),
+        _archive(tmp_path / "modules-number.celerp-backup", modules=[7]),
+        _archive(tmp_path / "modules-path.celerp-backup", modules=["../celerp-inventory"]),
     ]
     for path in bad:
         result = await backup_import.run_recovery(path)

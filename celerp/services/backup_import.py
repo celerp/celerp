@@ -24,6 +24,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from celerp.modules.importer import ModuleImportError, _validate_name_chars
+
 log = logging.getLogger(__name__)
 
 
@@ -112,12 +114,23 @@ def validate_archive(path: Path) -> ImportMeta:
             raise ValueError("Cannot read meta.json from archive")
         meta_data = json.loads(meta_file.read())
 
+    modules = meta_data.get("enabled_modules")
+    if modules is None:
+        modules = []
+    if not isinstance(modules, list) or not all(isinstance(name, str) for name in modules):
+        raise ValueError("Archive meta.json has an invalid enabled_modules list")
+    try:
+        for name in modules:
+            _validate_name_chars(name)
+    except ModuleImportError as exc:
+        raise ValueError(f"Archive meta.json lists an invalid module name: {exc}") from exc
+
     meta = ImportMeta(
         celerp_version=meta_data.get("celerp_version") or "unknown",
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
         company_name=meta_data.get("company_name", "unknown"),
-        enabled_modules=list(meta_data.get("enabled_modules") or []),
+        enabled_modules=modules,
     )
 
     # PostgreSQL forward-compatibility: pg_restore cannot read a backup made by a NEWER
