@@ -52,7 +52,7 @@ from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
-from celerp_docs.sequences import next_doc_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
+from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
 from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
@@ -1656,9 +1656,7 @@ async def create_doc(
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         return _replay_result(replay, event_type="doc.created", digest=digest)
-    # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
-    seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
-    ref_id = payload.ref_id or next_doc_ref(company, seq_type)
+    ref_id = payload.ref_id or next_draft_ref(company, payload.doc_type)
     entity_id = f"doc:{ref_id}"
 
     # Uniqueness check: reject if a doc with this ref_id already exists
@@ -2318,10 +2316,10 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
         if item_status == "memo_out" or item_status == "reserved":
             pending += 1
     if pending:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot close: {pending} product(s) still awaiting resolution. Sell or return them first.",
-        )
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.close_goods_out",
+            f"This memo cannot be closed while {pending} product(s) are still out or held on it. "
+            "Sell or return them first.", count=pending))
     # A fully paid memo has already settled: bulk payment brought it to "paid" and there is
     # nothing left to resolve by closing. Read status from the locked fresh row above, so a
     # payment that committed after any earlier unlocked read is seen here; refuse rather than
@@ -3928,12 +3926,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         held[it.po_line_index] = before + float(it.quantity_received)
         ordered = float(lines[it.po_line_index].get("quantity") or 0)
         if held[it.po_line_index] > ordered + 1e-9:
-            raise HTTPException(
-                status_code=422,
-                detail=(f"{it.name or it.sku or it.item_id}: this {doc_label} line is for {ordered:g} "
-                        f"and {before:g} has been received, so at most {max(0.0, ordered - before):g} "
-                        f"more can be received. Change the line first to receive more."),
-            )
+            name, remaining = it.name or it.sku or it.item_id, max(0.0, ordered - before)
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.receive_more_than_line",
+                f"{name}: this line is for {ordered:g} and {before:g} has been received, so at most "
+                f"{remaining:g} more can be received. Change the line first to receive more.",
+                name=name, ordered=f"{ordered:g}", received=f"{before:g}", remaining=f"{remaining:g}"))
 
     # Received parcels each get a fresh sequential barcode so every physical lot is
     # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
@@ -3992,9 +3990,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     detail=(f"{it.sku or it.name or it.item_id}: no line on this {doc_label} prices it, "
                             f"so the received goods cannot be costed. Add it to the {doc_label} first."),
                 )
-        refusal = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
-        if refusal:
-            raise HTTPException(status_code=422, detail=refusal)
+        negative = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
+        if negative:
+            raise HTTPException(status_code=422, detail=negative)
         priced.append((conversion, stock_qty, cost))
 
     _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))
@@ -4183,7 +4181,6 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
             receipt_key=key, debits=debits,
-            receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     elif doc_type == "bill" and landed_drawdown:
         # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
@@ -4192,7 +4189,6 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
             landed_by_kind=landed_drawdown, landed_by_account=landed_by_account, receive_suffix=key,
-            receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     # consignment_in: no JE (goods not owned).
     await session.commit()
@@ -4596,7 +4592,12 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if doc_type not in ("consignment_in", "bill", "purchase_order"):
         raise HTTPException(status_code=409, detail="return-items is only valid for bills, POs, and consignment_in documents")
     if row.state.get("status") not in SUPPLIER_RETURN_STATUSES:
-        raise HTTPException(status_code=409, detail="Document must be in received/partial/awaiting_payment status to return items")
+        status = row.state.get("status") or ""
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.return_not_open",
+            f"Nothing can be returned on this document while it is {status.replace('_', ' ')}. Goods go back "
+            "to the supplier only after they are received, from a document that is still open.",
+            doc_status=status))
 
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import goods_basis
@@ -4695,7 +4696,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if owned:
         await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account, return_date=datetime.now(timezone.utc).date().isoformat(),
+            goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account,
         )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -4834,7 +4835,7 @@ async def create_shipment_from_docs(
 @router.post("/{entity_id}/convert")
 async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
-    # Company before the doc row: a conversion draws the next invoice or bill number.
+    # Company before the doc row: a conversion draws the next document number.
     company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     _assert_contacts_unchanged(named, [row])
@@ -4845,7 +4846,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         valid_until = state.get("valid_until")
         if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
             raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
-        ref = next_doc_ref(company, "invoice")
+        ref = next_draft_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
         # The invoice is a new draft: none of the quotation's own lifecycle carries over.
         new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
@@ -4869,7 +4870,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
         if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
             raise HTTPException(status_code=409, detail="Memo must be issued before converting to invoice")
-        ref = next_doc_ref(company, "invoice")
+        ref = next_draft_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
 
         # The memo's settlement unit is its allocation set (every lot stamped
@@ -6670,7 +6671,7 @@ async def convert_list(
     # document keeps the line ids): it is re-stamped to the new document first, so it is
     # its own when it is created; the create then refuses a line reserved elsewhere or a draft.
     to_transfer = await _held_lots(session, company_id, entity_id)
-    ref = next_doc_ref(company, payload.target_type)
+    ref = next_draft_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
     for li_eid, held in to_transfer.items():
         data = {"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref}
@@ -7779,10 +7780,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     def _sku(eid: str) -> str:
         return str(locked[eid].state.get("sku") or "") if eid in locked else ""
 
-    def _unattributed(eid: str) -> str:
-        return f"{_sku(eid)} was shipped on this record but nothing records for which line"
+    def _unattributed(eid: str) -> dict:
+        return refusal("lines.revert_unattributed",
+                       f"{_sku(eid)} was shipped on this record but nothing records for which line",
+                       sku=_sku(eid))
 
-    errors: list[str] = []
+    errors: list[dict] = []
     # (key the request names it by, lots it covers) per chosen line or legacy lot.
     groups: list[tuple[str, list[Projection], str | None]] = []
     if indices:
@@ -7796,21 +7799,27 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             name = line_items[i].get('sku') or line_items[i].get('description') or i + 1
             if not lots:
                 if i not in holding:
-                    errors.append(f"{name}: nothing is out on this line")
+                    errors.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line",
+                                          name=name))
                 elif str(line_items[i].get("line_id")) in quantities:
-                    errors.append(f"{name}: a hold is given back whole")
+                    errors.append(refusal("lines.revert_hold_whole", f"{name}: a hold is given back whole",
+                                          name=name))
                 continue
             groups.append((str(line_items[i].get("line_id")), lots, line_item_id(line_items[i])))
     else:
         for eid in body.line_entity_ids:
             proj = locked.get(eid)
             if proj is None:
-                errors.append(f"{eid}: item not found")
+                errors.append(refusal("lines.revert_item_missing", f"{eid}: item not found", name=eid))
             elif proj.state.get("status") not in ("memo_out", "sold"):
-                errors.append(f"{eid} ({_sku(eid)}): must be 'memo_out' or 'sold' to revert, "
-                              f"is '{proj.state.get('status', '')}'")
+                status = proj.state.get("status") or ""
+                errors.append(refusal(
+                    "lines.revert_not_out",
+                    f"{_sku(eid) or eid}: only goods out on memo or sold can be taken back, "
+                    f"this one is {status.replace('_', ' ')}", name=_sku(eid) or eid, status=status))
             elif eid not in out:
-                errors.append(f"{eid} ({_sku(eid)}): was not shipped by this record")
+                errors.append(refusal("lines.revert_not_shipped_here",
+                                      f"{_sku(eid) or eid}: was not shipped by this record", name=_sku(eid) or eid))
             elif line_of[eid] is None:
                 errors.append(_unattributed(eid))
             else:
@@ -7828,10 +7837,13 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             to_revert.extend(p.entity_id for p in lots)
             continue
         if back <= 0:
-            errors.append(f"{label}: returned quantity must be greater than zero")
+            errors.append(refusal("lines.revert_quantity_positive",
+                                  f"{label}: returned quantity must be greater than zero", name=label))
             continue
         if back > total + 1e-9:
-            errors.append(f"{label}: cannot return {back:g} of {total:g} that went out")
+            errors.append(refusal("lines.revert_more_than_out",
+                                  f"{label}: cannot return {back:g} of {total:g} that went out",
+                                  name=label, qty=f"{back:g}", total=f"{total:g}"))
             continue
         validate_line_quantity(back, lots[0].state.get("sell_by"), unit_map, label=label, require_positive=False)
         remaining = float(back)
@@ -7843,17 +7855,20 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                 to_revert.append(proj.entity_id)
                 remaining -= qty
             elif proj.state.get("status") != "memo_out":
-                errors.append(f"{label}: only goods out on memo can be part-returned, "
-                              f"this one is '{proj.state.get('status')}'")
+                status = proj.state.get("status") or ""
+                errors.append(refusal(
+                    "lines.revert_part_not_memo",
+                    f"{label}: only goods out on memo can be part-returned, this one is {status.replace('_', ' ')}",
+                    name=label, status=status))
                 break
             else:
                 partial_plan[proj.entity_id] = (remaining, key)
                 remaining = 0.0
 
     if errors:
-        reasons = "; ".join(errors)
         raise HTTPException(status_code=422, detail=refusal(
-            "lines.cannot_revert", f"Cannot take back: {reasons}", reasons=reasons))
+            "lines.cannot_revert", f"Cannot take back: {'; '.join(e['message'] for e in errors)}",
+            reasons=errors))
     if holding:
         if not groups:
             return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": []}

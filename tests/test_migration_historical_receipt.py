@@ -70,7 +70,7 @@ async def test_migrated_bill_cannot_be_received_twice(real_engine, real_client, 
             "received_items": [{"po_line_index": 0, "quantity_received": qty}],
         })
         assert r.status_code == 422, r.text
-        assert "at most 0 more can be received" in r.json()["detail"]
+        assert "at most 0 more can be received" in r.json()["detail"]["message"]
     assert await _stock_and_books(real_engine, run.company_id) == before
 
     # Because the bill shows the goods the migration stocked as received, on every line.

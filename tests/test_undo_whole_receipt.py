@@ -52,7 +52,8 @@ async def test_expense_only_receipt_undo(client, session, auth):
     doc = await _state(session, auth, bill)
     assert doc["received_items"] == []
     assert [li.get("quantity_received") for li in doc["line_items"]] == [0, 0]
-    assert doc["status"] == "final"
+    # Back to the status the receipt found it in.
+    assert doc["status"] == "awaiting_payment"
     # The bill's own entry is untouched: undoing a receipt never unbooks the bill.
     assert await _books(session, auth, "2110") == booked
 

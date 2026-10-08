@@ -70,10 +70,13 @@ def _payment_status(paid: Decimal, outstanding: Decimal) -> str:
 
 def _status_without_receipts(state: dict) -> str:
     """The status a document holds once nothing is received on it: still a draft when its
-    goods came in before it was issued, otherwise what its payments make it."""
-    if state.get("pre_receipt_status") == "draft" and not state.get("finalized"):
+    goods came in before it was issued, otherwise what its payments make it. An unpaid bill
+    the receipt found awaiting payment is awaiting payment again."""
+    before = state.get("pre_receipt_status")
+    if before == "draft" and not state.get("finalized"):
         return "draft"
-    return _payment_status(*_payment_balances(state, to_decimal(state.get("amount_paid", 0))))
+    status = _payment_status(*_payment_balances(state, to_decimal(state.get("amount_paid", 0))))
+    return "awaiting_payment" if status == "final" and before == "awaiting_payment" else status
 
 
 def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:
