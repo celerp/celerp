@@ -45,7 +45,7 @@ def test_a_restore_check_finds_the_dumps_tablespace_collation_and_policy_role(du
         if Path(command[0]).stem == "psql":
             queries.append(command[command.index("-c") + 1])
             return b"role|v1_reader\ntablespace|ts_v1\n".replace(b"\n", line_end)
-        return run_tool(command, *args, **kwargs).replace(b"\n", line_end)
+        return run_tool(command, *args, **kwargs).replace(b"\r\n", b"\n").replace(b"\n", line_end)
 
     monkeypatch.setattr(backup, "_run_tool", tools)
     with pytest.raises(ValueError) as refused:

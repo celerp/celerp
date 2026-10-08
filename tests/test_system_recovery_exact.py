@@ -2413,7 +2413,7 @@ async def admin(real_engine):  # noqa: F811
 def _windows_line_ends(command, **kwargs):
     """The tools as on Windows, where pg_restore ends the lines it prints with CRLF."""
     result = subprocess.run(command, **kwargs)
-    result.stdout = result.stdout.replace(b"\n", b"\r\n")
+    result.stdout = result.stdout.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
     return result
 
 
