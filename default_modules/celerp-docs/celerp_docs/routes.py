@@ -52,7 +52,7 @@ from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
-from celerp_docs.sequences import next_doc_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
+from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
 from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
@@ -1627,9 +1627,7 @@ async def create_doc(
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         return _replay_result(replay, event_type="doc.created", digest=digest)
-    # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
-    seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
-    ref_id = payload.ref_id or next_doc_ref(company, seq_type)
+    ref_id = payload.ref_id or next_draft_ref(company, payload.doc_type)
     entity_id = f"doc:{ref_id}"
 
     # Uniqueness check: reject if a doc with this ref_id already exists
@@ -4762,7 +4760,7 @@ async def create_shipment_from_docs(
 @router.post("/{entity_id}/convert")
 async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
-    # Company before the doc row: a conversion draws the next invoice or bill number.
+    # Company before the doc row: a conversion draws the next document number.
     company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     _assert_contacts_unchanged(named, [row])
@@ -4773,7 +4771,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         valid_until = state.get("valid_until")
         if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
             raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
-        ref = next_doc_ref(company, "invoice")
+        ref = next_draft_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
         # The invoice is a new draft: none of the quotation's own lifecycle carries over.
         new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
@@ -4797,7 +4795,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
         if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
             raise HTTPException(status_code=409, detail="Memo must be issued before converting to invoice")
-        ref = next_doc_ref(company, "invoice")
+        ref = next_draft_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
 
         # The memo's settlement unit is its allocation set (every lot stamped
@@ -6598,7 +6596,7 @@ async def convert_list(
     # document keeps the line ids): it is re-stamped to the new document first, so it is
     # its own when it is created; the create then refuses a line reserved elsewhere or a draft.
     to_transfer = await _held_lots(session, company_id, entity_id)
-    ref = next_doc_ref(company, payload.target_type)
+    ref = next_draft_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
     for li_eid, held in to_transfer.items():
         data = {"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref}

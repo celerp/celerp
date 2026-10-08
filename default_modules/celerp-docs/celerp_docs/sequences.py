@@ -131,6 +131,12 @@ def next_doc_ref(company: Company, doc_type: str) -> str:
     return ref
 
 
+def next_draft_ref(company: Company, doc_type: str) -> str:
+    """The reference a new draft of ``doc_type`` takes. A draft invoice is numbered from the
+    proforma counter; finalize gives it its invoice number, so no invoice number goes unused."""
+    return next_doc_ref(company, "proforma" if doc_type == "invoice" else doc_type)
+
+
 def get_all_sequences(company: Company) -> list[dict]:
     """Return the numbering config for all doc types."""
     settings = dict(company.settings or {})
