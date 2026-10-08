@@ -20,7 +20,9 @@ import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError, error_message
 from celerp.accounting_roles import account_label
-from celerp.services.units import RECEIVE_KINDS, default_receive_as, line_receive_kind
+from celerp.services.units import (
+    DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, line_receive_kind, quantity_step,
+)
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
@@ -208,7 +210,6 @@ def _enrich_line_meta(line_items: list[dict], item_meta: dict | None,
     server-side in the page call. When it is absent (an older server that omits the field) every
     map stays empty and the lines render from their own stored values ("--" / 0). The unit map is
     built from the company settings already in hand, so no extra round-trip is made."""
-    from celerp.services.units import DEFAULT_UNITS, build_unit_map
     item_meta_map: dict[str, dict] = {}
     item_status_map: dict[str, str] = {}
     item_status_doc_map: dict[str, tuple[str, str]] = {}
@@ -992,12 +993,15 @@ def _render_fulfillment_badge(doc: dict):
     return None
 
 
-def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float | None = None) -> FT:
+def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float | None = None,
+                    step: float | None = None) -> FT:
     """A quantity field for part of one line, with the unit it is counted in. ``max_qty`` is
-    the most the line allows; the page checks the entry against it before anything is sent,
-    and the server proves it again. ESC leaves the field."""
+    the most the line allows and ``step`` the smallest quantity its unit allows (None when the
+    unit sets none, any amount above 0); the page checks the entry against both before anything
+    is sent, and the server proves it again. ESC leaves the field."""
     return Span(
-        Input(type="number", name=name, min="0", step="any", max=f"{max_qty:g}",
+        Input(type="number", name=name, min=f"{step:g}" if step else "0", step=f"{step:g}" if step else "any",
+              max=f"{max_qty:g}",
               value=f"{(max_qty if default is None else default):g}", data_max=f"{max_qty:g}",
               cls="li-qty-input", style="width:6em;",
               onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"),
@@ -1269,7 +1273,6 @@ async def _reorder_lines_from_inventory(token: str, entity_ids: list[str]) -> li
     Loads the company unit map once so each line's qty is ceil'd to its purchase
     unit's precision.
     """
-    from celerp.services.units import build_unit_map
     try:
         unit_map = build_unit_map(await api.get_units(token))
     except Exception:
@@ -1292,7 +1295,6 @@ async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
     carry an item_id and whose qty is blank/zero. Best-effort; empty on any failure.
     Display-only guidance - never stored.
     """
-    from celerp.services.units import build_unit_map
     out: dict[str, str] = {}
     lines = doc.get("line_items") or []
     targets = []
@@ -1743,7 +1745,6 @@ def setup_routes(app):
     async def _picker_context(request: Request) -> dict:
         """What both picker endpoints read from the request and the company. A failed
         read raises: the picker never guesses units or the draw order."""
-        from celerp.services.units import build_unit_map
 
         token = _token(request)
         q = request.query_params
@@ -2069,7 +2070,6 @@ def setup_routes(app):
         import asyncio as _aio
         from celerp.services.line_measures import resolve_line_measures
         from celerp.services.shipping import SHIPPING_LIST_TYPE, customs_backfill, line_gross_weight
-        from celerp.services.units import build_unit_map
         _is_shipping = doc.get("list_type") == SHIPPING_LIST_TYPE
         try:
             _umap = build_unit_map(await api.get_units(token))
@@ -2517,7 +2517,6 @@ celerpUpdateBulkAlloc();
             if _line_eids:
                 # Classify each item's sell_by unit (weight/pieces) so the row can tell
                 # whether quantity already IS the pieces/weight measure (then it's locked).
-                from celerp.services.units import build_unit_map
                 _unit_map = {}
                 if _need_meta:
                     try:
@@ -6025,10 +6024,11 @@ def _selected_line_quantities(form) -> list[tuple[int, float | None]]:
     return out
 
 
-def _line_action_rows(line_items: list, available, unit, none_left: str, note=None) -> list:
+def _line_action_rows(line_items: list, available, unit, none_left: str, unit_map: dict, note=None) -> list:
     """One row per document line for a form acting on the selected lines, a fieldset the page
     script shows and enables only while its line is selected. A line with something to act on
-    offers all of it, ``available(line)`` in ``unit(line)``; any other line says ``none_left``
+    offers all of it, ``available(line)`` in ``unit(line)``, stepping by what that unit allows in
+    ``unit_map``; any other line says ``none_left``
     and submits nothing. ``note(line, has_some)``, when given, may return a plain reason shown
     in place of ``none_left`` or beside the field."""
     rows = []
@@ -6039,7 +6039,7 @@ def _line_action_rows(line_items: list, available, unit, none_left: str, note=No
         if qty <= 1e-9:
             body = [label, Span(why or none_left, cls="text-muted")]
         else:
-            body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty)]
+            body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty, step=quantity_step(unit(li), unit_map))]
             if li.get("line_id"):
                 body.append(Input(type="hidden", name=f"line_id_{i}", value=li["line_id"]))
             if why:
@@ -6049,13 +6049,14 @@ def _line_action_rows(line_items: list, available, unit, none_left: str, note=No
     return rows
 
 
-def _receive_rows(line_items: list) -> list:
+def _receive_rows(line_items: list, unit_map: dict) -> list:
     """Receive Goods rows: a line still awaiting goods offers what it awaits, in its purchase unit."""
     return _line_action_rows(
         line_items,
         lambda li: max(0.0, float(li.get("quantity") or 0) - float(li.get("quantity_received") or 0)),
         lambda li: li.get("purchase_unit") or li.get("unit") or "",
         t("documents.already_received"),
+        unit_map,
     )
 
 
@@ -6070,7 +6071,7 @@ def _return_held_note(li: dict, has_some: bool) -> str:
     return t("documents.return_held_some" if has_some else "documents.return_held_none", held=", ".join(parts))
 
 
-def _return_rows(line_items: list) -> list:
+def _return_rows(line_items: list, unit_map: dict) -> list:
     """Return Goods rows: a line offers what of its goods is on hand and free, in stock units,
     and says what holds the rest."""
     return _line_action_rows(
@@ -6078,11 +6079,12 @@ def _return_rows(line_items: list) -> list:
         lambda li: float(li.get("returnable_quantity") or 0),
         lambda li: li.get("unit") or "",
         t("documents.nothing_to_return"),
+        unit_map,
         _return_held_note,
     )
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True, unit_map: dict | None = None) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     can_delete=False: the line structure is locked (a counting audit), so no Delete selected.
@@ -6091,6 +6093,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     show_release=True: add Set as available alone, for a draft that may still hold stock
     (a draft cannot reserve, but gives back what it holds).
     is_inbound=True: show Receive Goods / Return Goods for the selected lines' quantities.
+    unit_map: the company units, so each quantity field steps by what its unit allows.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -6163,7 +6166,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                       if loc_opts else "")
             children += [
                 Form(
-                    *_receive_rows(inbound_line_items or []),
+                    *_receive_rows(inbound_line_items or [], unit_map or {}),
                     operation_key_input(),
                     Div(
                         loc_el,
@@ -6177,7 +6180,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     hx_confirm=t("documents.confirm_receive_selected"),
                 ),
                 Form(
-                    *_return_rows(inbound_line_items or []),
+                    *_return_rows(inbound_line_items or [], unit_map or {}),
                     operation_key_input(),
                     Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
                     id="li-bulk-revert-btn",
@@ -6280,6 +6283,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         return out
 
     _s = settings or {}
+    _unit_map = build_unit_map(_s.get("units") or DEFAULT_UNITS)
     _can_edit = role_has_permission(_s, role, "edit_documents")
     _can_finalize = role_has_permission(_s, role, "finalize_documents")
     _can_delete = role_has_permission(_s, role, "delete_documents")
@@ -9345,8 +9349,9 @@ async function celerpCsvImport(input, entityId) {{
             _out_qty = float(li.get("out_quantity") or 0)
             if (_fin_show_bulk and li.get("line_id") and _out_qty > 0
                     and (item_status_map or {}).get(li_eid) == "memo_out"):
+                _out_unit = li.get("unit") or li.get("sell_by") or ""
                 _return_qty = Div(
-                    _line_qty_input(f"qty[{li['line_id']}]", _out_qty, li.get("unit") or li.get("sell_by") or ""),
+                    _line_qty_input(f"qty[{li['line_id']}]", _out_qty, _out_unit, step=quantity_step(_out_unit, _unit_map)),
                     cls="li-return-qty", style="display:none;",
                     title=t("documents.memo_return_prompt", qty=f"{_out_qty:g}"))
             cells.extend([
@@ -9410,7 +9415,7 @@ async function celerpCsvImport(input, entityId) {{
         _fin_total = line_total if line_total is not None else len(line_items)
         _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
-            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations) if _fin_show_bulk else None,
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations, unit_map=_unit_map) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li, line_offset + i) for i, li in enumerate(line_items)] if line_items else [
@@ -9435,6 +9440,7 @@ async function celerpCsvImport(input, entityId) {{
     "could_not_set_available": t("documents.could_not_set_available"),
     "sold_reserve_warn": t("documents.sold_reserve_warn"),
     "qty_between": t("documents.qty_between"),
+    "qty_up_to": t("documents.qty_up_to"),
   })};
   var table=document.getElementById('{_fin_bulk_id}');
   var toolbar=document.getElementById('li-bulk-toolbar');
@@ -9557,10 +9563,12 @@ async function celerpCsvImport(input, entityId) {{
       var inp=tr?tr.querySelector('.li-return-qty input'):null;
       if(!inp) continue;
       var max=parseFloat(inp.getAttribute('data-max'));
+      var min=parseFloat(inp.min)||0;
       var raw=String(inp.value||'').trim();
       var qty=parseFloat(raw);
-      if(!raw||!(qty>0)||qty>max){{
-        if(window.celerpToast) celerpToast(_L.qty_between.replace('{{qty}}', max),'error');
+      if(!raw||!(qty>0)||qty<min||qty>max){{
+        var msg=min>0?_L.qty_between.replace('{{min}}', inp.min):_L.qty_up_to;
+        if(window.celerpToast) celerpToast(msg.replace('{{qty}}', max),'error');
         inp.focus();
         return;
       }}

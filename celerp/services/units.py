@@ -108,6 +108,14 @@ def exceeds_precision(qty: float, decimals: int) -> bool:
     return d != d.quantize(Decimal(10) ** -decimals, rounding=ROUND_HALF_UP)
 
 
+def quantity_step(unit_name: str | None, unit_map: dict[str, dict]) -> float | None:
+    """The smallest quantity the named unit allows (1 for piece, 0.01 for gram), or None when
+    the unit is unknown or a service, whose quantities are not constrained."""
+    if not unit_name or unit_name in SERVICE_SELL_BY or unit_name not in unit_map:
+        return None
+    return 10.0 ** -int(unit_map[unit_name].get("decimals") or 0)
+
+
 def validate_quantity(qty: float, decimals: int, *, label: str | None = None) -> None:
     """Raise HTTP 422 if *qty* has more decimal places than *decimals* allows.
 

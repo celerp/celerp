@@ -63,3 +63,23 @@ def test_receipt_summary_shows_after_the_reload_and_one_line_goes_back(page, ui_
     doc = api.get(f"/docs/{bill}").json()
     assert doc["status"] == "partial_returned", doc["status"]
     assert doc["line_items"][0]["returnable_quantity"] == 1
+
+
+def test_a_receive_field_refuses_less_than_its_unit_allows(page, ui_server, api):
+    """A line counted in pieces cannot receive 0 or half a piece: the field starts at 1 and
+    steps by 1, so the browser stops either entry before anything is sent."""
+    tag = uuid.uuid4().hex[:6].upper()
+    r = api.post("/docs", json={"doc_type": "bill", "line_items": [
+        {"sku": f"RRP-{tag}", "name": "Goods", "quantity": 3, "unit": "piece", "unit_price": 5.0}]})
+    assert r.status_code in {200, 201}, r.text
+    bill = r.json()["id"]
+    assert api.post(f"/docs/{bill}/finalize").status_code == 200
+    page.goto(f"{ui_server}/docs/{bill}", wait_until="domcontentloaded")
+    _select_all_and_act(page, "li-fulfill", "li-bulk-fulfill-btn")
+    field = page.locator("#li-bulk-fulfill-btn fieldset.receive-row:visible input.li-qty-input")
+    assert (field.get_attribute("min"), field.get_attribute("step")) == ("1", "1")
+    for bad in ("0", "0.5"):
+        field.fill(bad)
+        assert field.evaluate("e => e.checkValidity()") is False, bad
+    field.fill("3")
+    assert field.evaluate("e => e.checkValidity()") is True
