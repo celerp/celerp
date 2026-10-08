@@ -509,6 +509,8 @@ async def assert_status_change_allowed(
             return
         if current not in ("", "draft", ns) and not in_stock(state):
             raise HTTPException(status_code=422, detail=_LEFT_THE_BOOKS.get(current, _GAVE_UP_ITS_STOCK))
+        if ns == "available" and await _orphaned_hold(session, company_id, state):
+            return
         _reject_document_held(state, "archived" if ns == "archived" else f"set to {ns}")
         return
     if current in ("", "draft"):
@@ -555,6 +557,25 @@ async def assert_status_change_allowed(
 
 # Statuses only a document sets and only that document releases.
 _DOCUMENT_HELD_STATUSES = frozenset({"reserved", "memo_out"})
+
+
+async def _orphaned_hold(session: AsyncSession, company_id, state: dict) -> bool:
+    """True for a reservation nothing can release any more: the record holding it is gone
+    or void, or the line it was held for is no longer on that record. Only such a hold
+    may be made available by a status edit. Goods out on memo or sold are never orphans:
+    they are settled by returning or crediting them on their document."""
+    if str(state.get("status") or "").lower() != "reserved" or not state.get("status_doc_id"):
+        return False
+    owner = await session.get(Projection, {"company_id": company_id, "entity_id": state["status_doc_id"]},
+                              populate_existing=True)
+    if owner is None or owner.entity_type not in ("doc", "list"):
+        return True
+    owner_state = owner.state or {}
+    if owner_state.get("status") == "void":
+        return True
+    line_id = state.get("status_line_entity_id")
+    return bool(line_id) and line_id not in {
+        li.get("line_id") for li in owner_state.get("line_items") or [] if isinstance(li, dict)}
 
 
 def _reject_document_held(state: dict, action: str) -> None:

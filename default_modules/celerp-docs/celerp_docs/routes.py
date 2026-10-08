@@ -1522,17 +1522,6 @@ async def get_doc_pdf(
     )
 
 
-async def _reserved_by(session: AsyncSession, company_id, entity_id: str, eids) -> list[str]:
-    """The items among ``eids`` that the record ``entity_id`` holds reserved."""
-    own: list[str] = []
-    for eid in sorted({e for e in eids if e}):
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid}, populate_existing=True)
-        st = (proj.state or {}) if proj else {}
-        if st.get("status") == "reserved" and st.get("status_doc_id") == entity_id:
-            own.append(eid)
-    return own
-
-
 @router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def create_doc(
     payload: DocCreatePayload,
@@ -2229,6 +2218,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     # Voiding first also surfaces a locked-period refusal before anything else
     # mutates, mirroring the revert-to-draft ordering.
     await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
@@ -2551,6 +2541,7 @@ async def bulk_delete_drafts(
     doc_ids: str,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("delete_documents"),
+    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Delete multiple draft documents in one request. Non-draft docs are skipped (not an error).
@@ -2586,6 +2577,7 @@ async def bulk_delete_drafts(
     deleted = []
     for row in drafts:
         eid = row.entity_id
+        await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
         await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == eid))
         await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == eid))
         deleted.append(eid)
@@ -2607,6 +2599,7 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
         )
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
+    await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id))
     await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id))
     await session.commit()
@@ -6329,6 +6322,7 @@ async def void_list(
         raise HTTPException(status_code=409, detail="Already voided")
     if status == CLOSED:
         raise HTTPException(status_code=409, detail="Cannot void a closed list; undo its terminal action first")
+    await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     entry = await _emit_list(session, company_id, entity_id, "list.voided",
                              payload.model_dump(exclude_none=True), user, payload.idempotency_key)
     await session.commit()
@@ -6348,6 +6342,7 @@ async def delete_list(
         raise HTTPException(status_code=409, detail="Only draft lists can be deleted")
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
+    await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id))
     await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id))
     await session.commit()
@@ -6377,20 +6372,19 @@ async def convert_list(
     if state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
 
-    # Reservation ownership moves with the conversion: lines this list reserved are
-    # re-stamped to the new document first, so they are its own when it is created;
-    # the create then refuses a line reserved elsewhere or a draft.
-    to_transfer = await _reserved_by(
-        session, company_id, entity_id,
-        [li.get("item_id") or li.get("entity_id") or "" for li in state.get("line_items") or []],
-    )
+    # Every hold of this list moves with the conversion, still for the same line (the new
+    # document keeps the line ids): it is re-stamped to the new document first, so it is
+    # its own when it is created; the create then refuses a line reserved elsewhere or a draft.
+    to_transfer = await _held_lots(session, company_id, entity_id)
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
-    for li_eid in to_transfer:
+    for li_eid, held in to_transfer.items():
+        data = {"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref}
+        if held.state.get("status_line_entity_id"):
+            data["source_line_entity_id"] = held.state["status_line_entity_id"]
         await emit_event(
             session, company_id=company_id, entity_id=li_eid, entity_type="item",
-            event_type="item.status.set",
-            data={"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref},
+            event_type="item.status.set", data=data,
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
@@ -6764,15 +6758,6 @@ async def _line_stock(
     return locked, by_line
 
 
-async def _lines_holding(session, company_id, owner_id: str, line_items: list[dict]) -> list[int]:
-    """The lines of a document or List that hold stock for it, in document order."""
-    from celerp.services.pick import attribute_holds
-    held = {p.entity_id: p.state for p in await _memo_allocation_items(session, company_id, owner_id)
-            if p.state.get("status") == "reserved"}
-    by_line, _orphans, ambiguous = attribute_holds(line_items, held)
-    return sorted(set(by_line) | {i for binders in ambiguous.values() for i in binders})
-
-
 def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection]) -> Projection | None:
     """The lot line ``index`` binds, or None for a non-stock line (a service or charge).
     A line that binds no item has nothing to reserve or ship and is refused."""
@@ -6898,6 +6883,25 @@ async def _set_lot_status(session, *, company_id, uid, owner: Projection, lot_id
         source="reservation", idempotency_key=str(uuid.uuid4()),
         metadata_={"doc_id": owner.entity_id},
     )
+
+
+async def _held_lots(session, company_id, owner_id: str) -> dict[str, Projection]:
+    """Every lot ``owner_id`` holds reserved, locked, whichever line (if any) it is held for.
+    Goods it shipped or has out on memo are not holds and are left alone."""
+    ids = [p.entity_id for p in await _memo_allocation_items(session, company_id, owner_id)]
+    locked = await lock_projections(session, company_id, ids)
+    return {eid: p for eid, p in sorted(locked.items())
+            if p.state.get("status") == "reserved" and p.state.get("status_doc_id") == owner_id}
+
+
+async def _release_holds(session, *, company_id, uid, owner: Projection) -> list[str]:
+    """Give back every lot the owner holds, for the terminal actions that end a record
+    (void, delete, write-off, audit adjustment). Does not commit: it is part of the
+    terminal's own transaction, so a refused terminal gives nothing back."""
+    released = list(await _held_lots(session, company_id, owner.entity_id))
+    for eid in released:
+        await _set_lot_status(session, company_id=company_id, uid=uid, owner=owner, lot_id=eid, line_id=None)
+    return released
 
 
 async def _validate_revert_entity_ids_subset(
@@ -8824,6 +8828,8 @@ async def adjust_audit(
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
+    # The adjustment closes the audit, so it gives back what the audit holds first.
+    await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     cycle = int(row.state.get("adjust_count") or 0)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     audit_location = str(row.state.get("location_id") or "")
@@ -9142,6 +9148,9 @@ async def write_off_stock(
     status = row.state.get("status")
     if status not in (DRAFT, FINALIZED):
         raise HTTPException(status_code=409, detail="This write-off has already been processed")
+    # The write-off closes the list, so it gives back what the list holds first; the stock
+    # it removes is then judged as the available stock it has become.
+    await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     cycle = int(row.state.get("adjust_count") or 0)
     unit_map = await _get_unit_map(session, company_id)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
