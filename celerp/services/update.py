@@ -793,12 +793,15 @@ class SupervisorSteps(Steps):
         return self.cfg["database"]["url"]
 
     def dump(self, path: Path) -> None:
-        self._backup.restore_tools()  # a rollback restores this dump
+        # A rollback restores this dump into this database.
+        self._backup.restore_tools()
+        self._backup.check_restore_target(self.db_url)
         data = self._backup.dump_database(self.db_url, runner=_bound_run)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.chmod(path, 0o600)
+        self._backup.check_backup_dump(path)
 
     def stage(self, target: str) -> None:
         """Install `target` and its dependencies into a directory of its own,

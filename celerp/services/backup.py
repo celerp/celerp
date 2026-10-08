@@ -15,6 +15,7 @@ cloud snapshot client (``backup_repo``).
 from __future__ import annotations
 
 import base64
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -181,42 +182,93 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-# Empties the public schema of what this role owns, so the restore leaves exactly the
-# dump there; the restore script drops every object the dump recreates. No CASCADE: an
-# object outside that set depending on one in it (another schema's foreign key or view)
-# makes PostgreSQL refuse the drop, and the restore with it. Tables go in one statement so
-# foreign keys among them need no CASCADE. Extension members and objects that depend
-# internally or automatically on another go with their owner. Dropping the schema itself
-# would need its ownership, which PostgreSQL 14 and older give the superuser.
-_EMPTY_PUBLIC = """SET client_min_messages = warning;
-DO $$ DECLARE r record; BEGIN
-  FOR r IN
-    WITH ours AS (
-      SELECT CASE c.relkind WHEN 'v' THEN 1 WHEN 'm' THEN 2 WHEN 'S' THEN 4 ELSE 3 END AS step,
-             CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
-                            WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END AS kind,
-             c.oid::regclass::text AS name, 'pg_class'::regclass AS catalog, c.oid
-        FROM pg_class c
-       WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('v', 'm', 'r', 'p', 'S')
-         AND pg_has_role(c.relowner, 'USAGE')
-      UNION ALL
-      SELECT CASE p.prokind WHEN 'a' THEN 5 ELSE 6 END, CASE p.prokind WHEN 'a' THEN 'AGGREGATE' ELSE 'ROUTINE' END,
-             p.oid::regprocedure::text, 'pg_proc'::regclass, p.oid
-        FROM pg_proc p
-       WHERE p.pronamespace = 'public'::regnamespace AND pg_has_role(p.proowner, 'USAGE')
-      UNION ALL
-      SELECT 7, 'TYPE', t.oid::regtype::text, 'pg_type'::regclass, t.oid
-        FROM pg_type t
-       WHERE t.typnamespace = 'public'::regnamespace AND t.typtype IN ('c', 'd', 'e', 'r')
-         AND pg_has_role(t.typowner, 'USAGE'))
-    SELECT kind, string_agg(name, ', ') AS names FROM ours
-     WHERE NOT EXISTS (SELECT FROM pg_depend d WHERE d.classid = ours.catalog AND d.objid = ours.oid
-                                                AND d.objsubid = 0 AND d.deptype IN ('a', 'e', 'i'))
-     GROUP BY step, kind ORDER BY step
-  LOOP
-    EXECUTE format('DROP %s %s', r.kind, r.names);
-  END LOOP;
+# Celerp's own relations: the tables and sequences in public, except extension members.
+_CELERP_RELATIONS = """pg_class c
+ WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p', 'S')
+   AND NOT EXISTS (SELECT FROM pg_depend e WHERE e.classid = 'pg_class'::regclass
+                                             AND e.objid = c.oid AND e.deptype = 'e')"""
+
+# Empties public of Celerp's tables, then of the sequences left, so the restore script
+# recreates exactly the backup. No CASCADE: anything else that depends on them makes the
+# drop, and the restore with it, fail and change nothing.
+_EMPTY_PUBLIC = f"""SET client_min_messages = warning;
+DO $$ DECLARE names text; BEGIN
+  SELECT string_agg(c.oid::regclass::text, ', ') INTO names FROM {_CELERP_RELATIONS} AND c.relkind <> 'S';
+  IF names IS NOT NULL THEN EXECUTE 'DROP TABLE ' || names; END IF;
+  SELECT string_agg(c.oid::regclass::text, ', ') INTO names FROM {_CELERP_RELATIONS} AND c.relkind = 'S';
+  IF names IS NOT NULL THEN EXECUTE 'DROP SEQUENCE ' || names; END IF;
 END $$"""
+
+# What a restore would not replace exactly: any other object in public, a trigger, rule or
+# policy on Celerp's tables, one of them this role cannot drop, an object elsewhere
+# depending on them, and any schema besides public. Extension members are left alone.
+_UNSUPPORTED_OBJECTS = f"""WITH ours AS (SELECT c.oid, c.relowner, c.reltype FROM {_CELERP_RELATIONS})
+SELECT DISTINCT found FROM (
+  SELECT pg_describe_object(d.classid, d.objid, 0) FROM pg_depend d
+   WHERE d.refclassid = 'pg_namespace'::regclass AND d.refobjid = 'public'::regnamespace
+     AND d.classid <> 'pg_extension'::regclass
+     AND NOT (d.classid = 'pg_class'::regclass AND d.objid IN (SELECT oid FROM ours))
+     AND NOT EXISTS (SELECT FROM pg_depend e WHERE e.classid = d.classid AND e.objid = d.objid
+                                               AND e.deptype = 'e')
+  UNION ALL
+  SELECT pg_describe_object('pg_trigger'::regclass, oid, 0) FROM pg_trigger
+   WHERE tgrelid IN (SELECT oid FROM ours) AND NOT tgisinternal
+  UNION ALL
+  SELECT pg_describe_object('pg_rewrite'::regclass, oid, 0) FROM pg_rewrite
+   WHERE ev_class IN (SELECT oid FROM ours)
+  UNION ALL
+  SELECT pg_describe_object('pg_policy'::regclass, oid, 0) FROM pg_policy
+   WHERE polrelid IN (SELECT oid FROM ours)
+  UNION ALL
+  SELECT format('%s, owned by %s', oid::regclass, relowner::regrole) FROM ours
+   WHERE NOT pg_has_role(relowner, 'USAGE')
+  UNION ALL
+  SELECT pg_describe_object(d.classid, d.objid, d.objsubid) FROM pg_depend d
+   CROSS JOIN LATERAL pg_identify_object(d.classid, d.objid, d.objsubid) o
+   WHERE (d.refclassid = 'pg_class'::regclass AND d.refobjid IN (SELECT oid FROM ours)
+          OR d.refclassid = 'pg_type'::regclass AND d.refobjid IN (SELECT reltype FROM ours))
+     AND COALESCE(o.schema, (SELECT v.relnamespace::regnamespace::text FROM pg_rewrite r
+                              JOIN pg_class v ON v.oid = r.ev_class
+                             WHERE d.classid = 'pg_rewrite'::regclass AND r.oid = d.objid))
+         NOT IN ('public', 'pg_toast')
+  UNION ALL
+  SELECT 'schema ' || quote_ident(n.nspname) FROM pg_namespace n
+   WHERE n.nspname NOT IN ('public', 'information_schema') AND n.nspname !~ '^pg_'
+     AND NOT EXISTS (SELECT FROM pg_depend e WHERE e.classid = 'pg_namespace'::regclass
+                                               AND e.objid = n.oid AND e.deptype = 'e')
+) AS screen (found)"""
+
+# The pg_restore -l entries of a Celerp backup: its tables and sequences in public with
+# their data, defaults, constraints, indexes, partitions, comments and grants, and the public
+# schema itself.
+_SCHEMA_ENTRY = r"\d+; \d+ \d+ (?:SCHEMA -|COMMENT - SCHEMA|ACL - SCHEMA) public \S+$"
+_BACKUP_ENTRY = re.compile(
+    r"\d+; \d+ \d+ (?:(?:TABLE|TABLE DATA|TABLE ATTACH|SEQUENCE|SEQUENCE OWNED BY|SEQUENCE SET|DEFAULT|CONSTRAINT"
+    r"|FK CONSTRAINT|INDEX|INDEX ATTACH) public |(?:COMMENT|ACL) public (?:TABLE|COLUMN|SEQUENCE) )|" + _SCHEMA_ENTRY)
+
+
+def check_restore_target(database_url: str) -> None:
+    """ValueError naming what a restore into this database would not replace exactly
+    (``_UNSUPPORTED_OBJECTS``); read-only."""
+    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    found = _run_tool([_find_pg_tool("psql"), "-X", "-q", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+                       "-c", _UNSUPPORTED_OBJECTS, "-d", pg_url], None, timeout=60)
+    names = found.decode(errors="replace").split("\n")
+    if any(names):
+        raise ValueError("Celerp restores only its own tables and sequences in the public schema. "
+                         "Remove or move these database objects, then try again: "
+                         + "; ".join(name for name in names if name))
+
+
+def check_backup_dump(dump_path: Path) -> None:
+    """ValueError naming the entries of a pg_dump archive that are not a Celerp backup's
+    (``_BACKUP_ENTRY``)."""
+    listing = _run_tool([_find_pg_tool("pg_restore"), "-l", str(dump_path)], None, timeout=60)
+    other = [line.split(" ", 3)[3] for line in listing.decode(errors="replace").splitlines()
+             if line and not line.startswith(";") and not _BACKUP_ENTRY.match(line)]
+    if other:
+        raise ValueError("This backup holds database objects Celerp does not restore: "
+                         + "; ".join(other))
 
 
 def restore_tools() -> tuple[str, str]:
@@ -258,7 +310,7 @@ def restore_database_file(dump_path: Path, database_url: str, *, runner=None) ->
                        "-c", _EMPTY_PUBLIC, "-f", str(script), "-d", pg_url], runner)
 
 
-def _run_tool(command: list[str], runner, timeout: int = 600) -> None:
+def _run_tool(command: list[str], runner, timeout: int = 600) -> bytes:
     name = Path(command[0]).stem
     try:
         result = (runner or subprocess.run)(command, capture_output=True, timeout=timeout)
@@ -271,3 +323,4 @@ def _run_tool(command: list[str], runner, timeout: int = 600) -> None:
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
         raise RuntimeError(f"{name} failed (exit {result.returncode}): {stderr}")
+    return result.stdout

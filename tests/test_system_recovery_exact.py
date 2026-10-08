@@ -107,7 +107,7 @@ def _closure(names: list[str]) -> list[str]:
 
 
 class _Recovery:
-    """Stubs the database side of a recovery (dump, pg_restore, schema reconcile, connector
+    """Stubs the database side of a recovery (dump, dump check, pg_restore, schema reconcile, connector
     and session steps) and records each step with whether writes were paused and the
     connector maintenance guard held at that moment."""
 
@@ -178,6 +178,7 @@ class _Recovery:
             return None
 
         monkeypatch.setattr(backup, "dump_database", _dump)
+        monkeypatch.setattr(backup, "check_backup_dump", lambda path: None)
         monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", _none)
 
@@ -1526,71 +1527,235 @@ async def test_backup_with_no_modules_enables_no_modules(tmp_path, monkeypatch, 
     assert _enabled() == []
 
 
-# A database also holds types, functions, views and schemas a module or the operator made.
-OBJECTS = {
-    "enum": (["CREATE TYPE zz_status AS ENUM ('open', 'done')", "CREATE TABLE zz_jobs (status zz_status)"],
-             ["DROP TABLE IF EXISTS zz_jobs", "DROP TYPE IF EXISTS zz_status"]),
-    "function": (["CREATE FUNCTION zz_one() RETURNS int LANGUAGE sql AS 'SELECT 1'"],
-                 ["DROP FUNCTION IF EXISTS zz_one()"]),
-    "domain": (["CREATE DOMAIN zz_qty AS int CHECK (VALUE >= 0)"], ["DROP DOMAIN IF EXISTS zz_qty"]),
-    "view": (["CREATE VIEW zz_const AS SELECT 1 AS one"], ["DROP VIEW IF EXISTS zz_const"]),
-    "schema": (["CREATE SCHEMA zz", "CREATE TABLE zz.jobs (id int)"], ["DROP SCHEMA IF EXISTS zz CASCADE"]),
+# Objects a restore would not replace exactly: (create, the name the refusal gives, a lookup
+# that holds while they exist, drop).
+UNSUPPORTED = {
+    "enum": (["CREATE TYPE zz_status AS ENUM ('open', 'done')"], "type zz_status",
+             "to_regtype('zz_status') IS NOT NULL", ["DROP TYPE IF EXISTS zz_status"]),
+    "domain": (["CREATE DOMAIN zz_qty AS int CHECK (VALUE >= 0)"], "type zz_qty",
+               "to_regtype('zz_qty') IS NOT NULL", ["DROP DOMAIN IF EXISTS zz_qty"]),
+    "composite type": (["CREATE TYPE zz_pair AS (a int, b int)"], "type zz_pair",
+                       "to_regtype('zz_pair') IS NOT NULL", ["DROP TYPE IF EXISTS zz_pair"]),
+    "function": (["CREATE FUNCTION zz_one() RETURNS int LANGUAGE sql AS 'SELECT 1'"], "function zz_one()",
+                 "to_regprocedure('zz_one()') IS NOT NULL", ["DROP FUNCTION IF EXISTS zz_one()"]),
+    "procedure": (["CREATE PROCEDURE zz_noop() LANGUAGE sql AS 'SELECT 1'"], "zz_noop()",
+                  "to_regprocedure('zz_noop()') IS NOT NULL", ["DROP PROCEDURE IF EXISTS zz_noop()"]),
+    "view": (["CREATE VIEW zz_names AS SELECT name FROM companies"], "view zz_names",
+             "to_regclass('zz_names') IS NOT NULL", ["DROP VIEW IF EXISTS zz_names"]),
+    "materialized view": (["CREATE MATERIALIZED VIEW zz_one_row AS SELECT 1 AS one"], "materialized view zz_one_row",
+                          "to_regclass('zz_one_row') IS NOT NULL", ["DROP MATERIALIZED VIEW IF EXISTS zz_one_row"]),
+    "trigger": (["CREATE FUNCTION zz_touch() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+                 "CREATE TRIGGER zz_touch BEFORE UPDATE ON companies FOR EACH ROW EXECUTE FUNCTION zz_touch()"],
+                "trigger zz_touch on table companies",
+                "EXISTS (SELECT FROM pg_trigger WHERE tgname = 'zz_touch')",
+                ["DROP TRIGGER IF EXISTS zz_touch ON companies", "DROP FUNCTION IF EXISTS zz_touch()"]),
+    "schema": (["CREATE SCHEMA zz", "CREATE TABLE zz.jobs (id int)"], "schema zz",
+               "to_regclass('zz.jobs') IS NOT NULL", ["DROP SCHEMA IF EXISTS zz CASCADE"]),
+    "foreign key from another schema": (
+        ["CREATE SCHEMA zz", "CREATE TABLE zz.links (company_id uuid REFERENCES public.companies(id))"],
+        "on table zz.links", "to_regclass('zz.links') IS NOT NULL", ["DROP SCHEMA IF EXISTS zz CASCADE"]),
+    "view in another schema": (
+        ["CREATE SCHEMA zz", "CREATE VIEW zz.names AS SELECT name FROM public.companies"],
+        "on view zz.names", "to_regclass('zz.names') IS NOT NULL", ["DROP SCHEMA IF EXISTS zz CASCADE"]),
 }
 
 
-@pytest.fixture(params=list(OBJECTS))
-async def other_object(request, real_engine):
-    create, drop = OBJECTS[request.param]
-    for sql in create:
-        await _execute(real_engine, sql)
-    yield
-    for sql in drop:
-        await _execute(real_engine, sql)
+async def _create(engine, kind: str) -> None:
+    for sql in UNSUPPORTED[kind][0]:
+        await _execute(engine, sql)
 
 
-async def test_recovery_replaces_a_database_holding_other_objects(tmp_path, monkeypatch, code_config,
-                                                                  real_engine, other_object):
+async def _drop(engine, kind: str) -> None:
+    for sql in UNSUPPORTED[kind][3]:
+        await _execute(engine, sql)
+
+
+async def _exists(engine, kind: str) -> bool:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return (await conn.execute(text(f"SELECT {UNSUPPORTED[kind][2]}"))).scalar()
+
+
+def _assert_nothing_started(rec: "_Recovery", connector_calls: list[str], staged: list[Path]) -> None:
+    from celerp.services import backup_import
+    assert backup_import.recovery_incomplete() is False
+    assert connector_calls == []
+    assert rec.safety_archives() == []
+    rec.cloud_snapshot.assert_not_awaited()
+    assert rec.staging() == staged
+
+
+@pytest.mark.parametrize("kind", list(UNSUPPORTED))
+async def test_a_recovery_into_a_database_holding_other_objects_changes_nothing(
+        tmp_path, monkeypatch, code_config, real_engine, kind):
+    """Refused, naming the object, before the safety archive, the marker and any connector
+    revoke; once the owner removes it, the same recovery runs."""
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
-    _Recovery(tmp_path, monkeypatch, real_database=True)
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha")
     source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    await _create(real_engine, kind)
+    try:
+        result = await backup_import.run_recovery(source)
+        assert result.ok is False and result.error.startswith("System Recovery did not start: "), result.error
+        assert UNSUPPORTED[kind][1] in result.error, result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        assert await _exists(real_engine, kind)
+    finally:
+        await _drop(real_engine, kind)
     result = await backup_import.run_recovery(source)
     assert result.ok is True, result.error
     assert await _company_names(real_engine) == {"Alpha Trading"}
 
 
-async def test_failed_recovery_of_a_database_holding_other_objects_is_put_back(
-        tmp_path, monkeypatch, code_config, real_engine, other_object):
+@pytest.mark.parametrize("entry", ["bootstrap recovery", "confirmed recovery"])
+async def test_every_recovery_checks_the_database_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, entry):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    if entry == "confirmed recovery":
+        rec.fail_safety()
+        pending = await backup_import.run_recovery(source)
+        assert pending.needs_confirmation is True, pending.error
+    await _create(real_engine, "view")
+    try:
+        if entry == "bootstrap recovery":
+            result = await backup_import.bootstrap_recovery(source)
+        else:
+            result = await backup_import.continue_recovery(pending.confirmation_id, pending.archive_digest)
+        assert result.ok is False and "view zz_names" in result.error, result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+    finally:
+        await _drop(real_engine, "view")
+
+
+@pytest.mark.parametrize("kind", list(UNSUPPORTED))
+async def test_a_backup_holding_other_objects_is_refused_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, kind):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _create(real_engine, kind)
+    try:
+        source = await backup_export.export_full()
+    finally:
+        await _drop(real_engine, kind)
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    result = await backup_import.run_recovery(source)
+    assert result.ok is False, result.error
+    assert result.error.startswith("This backup holds database objects Celerp does not restore: "), result.error
+    _assert_nothing_started(rec, connector_calls, [])
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+async def test_a_safety_archive_that_could_not_be_restored_stops_the_recovery(
+        tmp_path, monkeypatch, code_config, real_engine):
+    """An extension's own objects are no Celerp table to refuse in the database, but a safety
+    archive holding the extension is not one Celerp could put back."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    await _execute(real_engine, "CREATE EXTENSION pg_trgm")
+    try:
+        result = await backup_import.run_recovery(source)
+    finally:
+        await _execute(real_engine, "DROP EXTENSION IF EXISTS pg_trgm")
+    assert result.ok is False, result.error
+    assert "The safety backup of this installation could not be restored: " in result.error, result.error
+    assert "EXTENSION - pg_trgm" in result.error, result.error
+    assert backup_import.recovery_incomplete() is False
+    assert connector_calls == []
+    rec.cloud_snapshot.assert_not_awaited()
+    assert rec.staging() == []
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+async def test_a_recovery_puts_back_every_table_part_exactly(tmp_path, monkeypatch, code_config, real_engine):
+    """Keys, unique and check constraints, foreign keys, defaults, identity and owned sequences,
+    a standalone sequence, indexes and a partitioned table are a Celerp database's own parts."""
+    from sqlalchemy import text
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
     _Recovery(tmp_path, monkeypatch, real_database=True)
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha")
-    source = await backup_export.export_full()
-    await company(real_engine, user, "Beta Trading", "beta")
-    _inject(monkeypatch, "schema")
-    result = await backup_import.run_recovery(source)
-    assert result.ok is False and "put back" in result.error, result.error
-    assert backup_import.recovery_incomplete() is False
-    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+    parts = """SELECT conrelid::regclass::text || ' ' || pg_get_constraintdef(oid) FROM pg_constraint
+                WHERE connamespace = 'public'::regnamespace
+               UNION ALL SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'
+               UNION ALL SELECT format('%s.%s %s %s', table_name, column_name, column_default, is_identity)
+                 FROM information_schema.columns WHERE table_schema = 'public'
+               UNION ALL SELECT format('%s %s', sequencename, last_value) FROM pg_sequences WHERE schemaname = 'public'"""
+    for sql in ["CREATE SEQUENCE zz_numbers START 40",
+                "CREATE TABLE zz_parts (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, n serial,"
+                " code text UNIQUE, qty int CHECK (qty >= 0) DEFAULT nextval('zz_numbers'),"
+                " company_id uuid REFERENCES companies(id) ON DELETE CASCADE)",
+                "CREATE INDEX zz_parts_qty ON zz_parts (qty)",
+                "CREATE TABLE zz_log (at int, note text) PARTITION BY RANGE (at)",
+                "CREATE TABLE zz_log_1 PARTITION OF zz_log FOR VALUES FROM (0) TO (100)",
+                "INSERT INTO zz_parts (code, company_id) SELECT 'a', id FROM companies",
+                "INSERT INTO zz_log VALUES (1, 'x')"]:
+        await _execute(real_engine, sql)
+    try:
+        async with real_engine.connect() as conn:
+            before = sorted((await conn.execute(text(parts))).scalars())
+        source = await backup_export.export_full()
+        await _execute(real_engine, "DROP TABLE zz_parts, zz_log")
+        await _execute(real_engine, "DROP SEQUENCE zz_numbers")
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        async with real_engine.connect() as conn:
+            assert sorted((await conn.execute(text(parts))).scalars()) == before
+            assert (await conn.execute(text("SELECT count(*) FROM zz_log"))).scalar() == 1
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_parts, zz_log")
+        await _execute(real_engine, "DROP SEQUENCE IF EXISTS zz_numbers")
 
 
-async def test_update_rollback_restores_a_database_holding_other_objects(tmp_path, real_engine, other_object):
-    """The restore an update rollback runs (celerp.services.update)."""
-    import asyncio
-
-    from celerp.services import backup
+@pytest.mark.parametrize("kind", ["view", "enum", "foreign key from another schema"])
+async def test_an_update_of_a_database_holding_other_objects_stops_before_anything_changes(
+        tmp_path, monkeypatch, real_engine, kind):
+    from celerp import runtime
+    from celerp.services import update
     from test_helpers import DATABASE_URL
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha")
-    dump = tmp_path / "database.dump"
-    dump.write_bytes(await asyncio.to_thread(backup.dump_database, DATABASE_URL))
-    await company(real_engine, user, "Beta Trading", "beta")
-    await asyncio.to_thread(backup.restore_database_file, dump, DATABASE_URL)
-    assert await _company_names(real_engine) == {"Alpha Trading"}
-
+    await _create(real_engine, kind)
+    try:
+        result, children = update.run_update("1.1.0", steps)
+        assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+        assert not update.dump_path().exists()
+        assert not runtime.release_dir("1.1.0").exists()
+        assert "in_progress" not in update.read_state()
+        assert await _exists(real_engine, kind)
+    finally:
+        await _drop(real_engine, kind)
 
 
 # ── A database restore is all or nothing ─────────────────────────────────────
@@ -1708,42 +1873,13 @@ async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp
         await _execute(real_engine, "CREATE SCHEMA zz")
         await _execute(real_engine, "CREATE TABLE zz.jobs (status public.zz_status)")
         tables = await _tables(real_engine)
-        with pytest.raises(RuntimeError, match=r"psql failed \(exit 1\): ERROR:  cannot drop type"):
+        with pytest.raises(RuntimeError, match=r"psql failed \(exit 3\): .*ERROR:  cannot drop type public.zz_status"):
             await _restore(dump)
         await _assert_unchanged(real_engine, tables)
     finally:
         await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
         await _execute(real_engine, "DROP TYPE IF EXISTS zz_status")
-
-
-# Made after the backup, so the dump lacks them: (create, lookup that is NULL once gone, drop).
-LATER = {
-    "enum": ("CREATE TYPE zz_status AS ENUM ('open', 'done')", "to_regtype('zz_status')",
-             "DROP TYPE IF EXISTS zz_status"),
-    "function": ("CREATE FUNCTION zz_one() RETURNS int LANGUAGE sql AS 'SELECT 1'", "to_regprocedure('zz_one()')",
-                 "DROP FUNCTION IF EXISTS zz_one()"),
-    "domain": ("CREATE DOMAIN zz_qty AS int CHECK (VALUE >= 0)", "to_regtype('zz_qty')", "DROP DOMAIN IF EXISTS zz_qty"),
-    "view": ("CREATE VIEW zz_const AS SELECT 1 AS one", "to_regclass('zz_const')", "DROP VIEW IF EXISTS zz_const"),
-    "materialized view": ("CREATE MATERIALIZED VIEW zz_one_row AS SELECT 1 AS one", "to_regclass('zz_one_row')",
-                          "DROP MATERIALIZED VIEW IF EXISTS zz_one_row"),
-}
-
-
-@pytest.mark.parametrize("kind", list(LATER))
-async def test_a_restore_removes_public_objects_the_backup_lacks(tmp_path, real_engine, kind):
-    from sqlalchemy import text
-    create, lookup, drop = LATER[kind]
-    dump = await _restore_target(real_engine, tmp_path)
-    try:
-        await _execute(real_engine, create)
-        await _restore(dump)
-        async with real_engine.connect() as conn:
-            assert (await conn.execute(text(f"SELECT {lookup}"))).scalar() is None
-        assert await _company_names(real_engine) == {"Alpha Trading"}
-    finally:
-        await _execute(real_engine, drop)
-        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
 
 
 async def test_a_restore_leaves_other_schemas_alone(tmp_path, real_engine):
@@ -1772,6 +1908,8 @@ OUTSIDE = {
 
 @pytest.mark.parametrize("kind", list(OUTSIDE))
 async def test_a_restore_that_would_change_another_schema_changes_nothing(tmp_path, real_engine, kind):
+    """Called directly, without the check a recovery or an update makes first, the restore's
+    own transaction still refuses."""
     from sqlalchemy import text
     create, lookup = OUTSIDE[kind]
     dump = await _restore_target(real_engine, tmp_path)
@@ -1816,6 +1954,9 @@ async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine)
                     break
                 await asyncio.sleep(0.1)
         await _assert_unchanged(real_engine, tables)
+        await _restore(dump)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert "zz_extra" not in await _tables(real_engine)
     finally:
         await blocker.dispose()
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")

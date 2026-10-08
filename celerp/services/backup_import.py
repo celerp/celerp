@@ -401,6 +401,7 @@ def _stage_members(archive: Path, root: Path) -> None:
 
 
 def _prepare_sync(path: Path) -> PreparedRecovery:
+    from celerp.services.backup import check_backup_dump
     _purge_expired_staging()
     meta = validate_archive(path)
     staging_id = uuid.uuid4().hex
@@ -410,6 +411,7 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         shutil.copyfile(path, root / _STAGED_ARCHIVE)
         digest = _sha256(root / _STAGED_ARCHIVE)
         _stage_members(root / _STAGED_ARCHIVE, root)
+        check_backup_dump(root / _STAGED_DUMP)
         prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
                                     files=_staged_files(root))
         (root / _STAGED_RECORD).write_text(json.dumps({
@@ -428,7 +430,8 @@ async def prepare_recovery(path: Path) -> PreparedRecovery:
     extracts the database dump and every restore-owned file into a staging
     directory on the installation's filesystem, refusing links, devices and paths
     outside the restore roots. Raises ValueError for an archive that cannot be
-    restored; nothing is left staged on failure.
+    restored, including a dump holding objects a Celerp backup does not
+    (``check_backup_dump``); nothing is left staged on failure.
     """
     import asyncio
     return await asyncio.to_thread(_prepare_sync, path)
@@ -879,6 +882,18 @@ async def _recovery_locks():
             yield
 
 
+@asynccontextmanager
+async def _recovery_locks_on_a_replaceable_database():
+    """The recovery locks, then ValueError, before anything is changed, for a database the
+    restore would not replace exactly (``backup.check_restore_target``)."""
+    import asyncio
+    from celerp.config import settings
+    from celerp.services.backup import check_restore_target
+    async with _recovery_locks():
+        await asyncio.to_thread(check_restore_target, settings.database_url)
+        yield
+
+
 def _restore_tools_missing():
     """The failed result when the database restore tools cannot be found, before anything is changed."""
     from celerp.services.backup import restore_tools
@@ -908,9 +923,9 @@ async def _prepare_or_fail(path: Path):
 async def run_recovery(path: Path):
     """System Recovery from a .celerp-backup: replaces the whole installation.
 
-    The archive is staged and checked first; then, holding the recovery locks, a
-    local safety archive of the current installation is made before anything is
-    overwritten. When no safety archive can be made nothing is changed: the result
+    The archive is staged and checked first; then, holding the recovery locks and with
+    the database checked, a local safety archive of the current installation is made
+    and checked like the archive before anything is overwritten. When no safety archive can be made nothing is changed: the result
     has ``needs_confirmation`` and the staged recovery waits CONFIRMATION_TTL for
     ``continue_recovery``.
     """
@@ -918,9 +933,13 @@ async def run_recovery(path: Path):
     if failure is not None:
         return failure
     try:
-        async with _recovery_locks():
+        async with _recovery_locks_on_a_replaceable_database():
             safety = await make_safety_archive()
             if safety.ok:
+                try:
+                    _remove_staging((await prepare_recovery(safety.path)).root)
+                except ValueError as exc:
+                    raise ValueError(f"The safety backup of this installation could not be restored: {exc}") from exc
                 await _cloud_safety_snapshot()
                 return await commit_recovery(prepared, safety.path)
     except Exception as exc:
@@ -971,7 +990,7 @@ async def continue_recovery(confirmation_id: str, digest: str):
     # The confirmation is used once.
     pending_path.unlink()
     try:
-        async with _recovery_locks():
+        async with _recovery_locks_on_a_replaceable_database():
             return await commit_recovery(prepared, None)
     except Exception as exc:
         return _start_failed(prepared, exc)
@@ -983,7 +1002,7 @@ async def bootstrap_recovery(path: Path):
     if failure is not None:
         return failure
     try:
-        async with _recovery_locks():
+        async with _recovery_locks_on_a_replaceable_database():
             return await commit_recovery(prepared, None)
     except Exception as exc:
         return _start_failed(prepared, exc)

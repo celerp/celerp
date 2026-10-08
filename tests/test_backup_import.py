@@ -388,7 +388,9 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         return None
 
     async def _safety():
-        return backup_import.SafetyResult(ok=True, path=tmp_path / "safety.celerp-backup")
+        path = tmp_path / "safety.celerp-backup"
+        path.write_bytes(_make_archive())
+        return backup_import.SafetyResult(ok=True, path=path)
 
     async def _every_company(session):
         return []
@@ -404,6 +406,7 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
     for name in ("_run_pg_restore", "_dispose_engine", "_reconcile_schema", "_cloud_safety_snapshot"):
         monkeypatch.setattr(backup_import, name, _none)
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
+    monkeypatch.setattr("celerp.services.backup.check_backup_dump", lambda path: None)
     monkeypatch.setattr(backup_import, "_apply_modules", _apply)
     monkeypatch.setattr("celerp.modules.registry.load_set", _every_company)
     monkeypatch.setattr("celerp.connectors.ownership.connector_maintenance_guard", _guard)
