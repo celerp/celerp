@@ -31,6 +31,21 @@ FULFILLED_ITEM_STATUSES: frozenset[str] = frozenset({"sold", "memo_out"})
 # Revert-to-draft for these types allows additional statuses (received, partially_received).
 INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 
+# Per-doc-type allowlist of the statuses POST /receive takes goods in. An issued purchase
+# document receives in every status its payments and earlier receipts or returns can move it
+# to; a void, closed or converted one receives nothing. A purchase order may receive while
+# still a draft (its receipt books its own entry); a draft bill or consignment has not been
+# issued, so it receives nothing. The finalized view offers Receive Goods from the same map.
+_RECEIVING_STATUSES = frozenset({
+    "final", "sent", "awaiting_payment", "partial", "paid",
+    "received", "partially_received", "partial_returned", "returned",
+})
+RECEIVABLE_STATUSES: dict[str, frozenset[str]] = {
+    "bill": _RECEIVING_STATUSES,
+    "consignment_in": _RECEIVING_STATUSES,
+    "purchase_order": _RECEIVING_STATUSES | {"draft"},
+}
+
 # Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
 # These are recurring template docs - they should never show a fulfill button.
 TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscription_po"})

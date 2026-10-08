@@ -119,7 +119,7 @@ async def test_a_bill_received_before_it_is_finalized_books_its_charge_where_the
     """An earlier release took goods in on a bill still a draft."""
     import celerp_docs.routes as docs_routes
 
-    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", lambda state: None)
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_when_not_open", lambda state: None)
     bill = await _freight_bill(client, auth)
     r = await _receive(client, auth, bill, _GOODS)
     assert r.status_code == 200, r.text

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 import time
 import json as _json
 
@@ -1028,7 +1030,6 @@ def _to_purchase_qty(sell_qty: float, factor: float, decimals: int | None) -> fl
     indivisible purchase unit (a box); a divisible unit (kg, decimals>0) keeps its
     precision. ``decimals=None`` falls back to a plain 4-dp round.
     """
-    import math
     if sell_qty <= 0:
         return 0
     raw = sell_qty / (factor or 1)
@@ -3187,29 +3188,23 @@ celerpUpdateBulkAlloc();
             form = await request.form()
             location_id = str(form.get("location_id", "")).strip()
             notes = str(form.get("notes", "")).strip() or None
+            # Only the selected rows submit a quantity. Each names its line; the server takes
+            # the goods, their kind and their cost from that line.
             received_items = []
-            idx = 0
-            while f"item_id_{idx}" in form or f"sku_{idx}" in form:
-                item_id = str(form.get(f"item_id_{idx}", "")).strip() or None
-                sku = str(form.get(f"sku_{idx}", "")).strip() or None
-                name = str(form.get(f"name_{idx}", "")).strip() or None
+            for key in sorted((k for k in form.keys() if re.fullmatch(r"qty_\d+", k)), key=lambda k: int(k[4:])):
+                idx = int(key[4:])
                 try:
-                    qty = float(str(form.get(f"qty_{idx}", "0")))
+                    qty = float(str(form.get(key, "")).strip())
                 except ValueError:
                     qty = 0.0
-                receive_as = str(form.get(f"receive_as_{idx}", "")).strip()
-                if qty > 0:
-                    item = {"po_line_index": idx, "quantity_received": qty}
-                    if receive_as:
-                        item["receive_as"] = receive_as
-                    if item_id:
-                        item["item_id"] = item_id
-                    if sku:
-                        item["sku"] = sku
-                    if name:
-                        item["name"] = name
-                    received_items.append(item)
-                idx += 1
+                if not (math.isfinite(qty) and qty > 0):
+                    return _action_error(t("documents.receive_pick_quantity"))
+                item = {"po_line_index": idx, "quantity_received": qty}
+                if line_id := str(form.get(f"line_id_{idx}", "")).strip():
+                    item["source_line_id"] = line_id
+                received_items.append(item)
+            if not received_items:
+                return _action_error(t("documents.receive_nothing_selected"))
             data = {"location_id": location_id, "received_items": received_items, **submitted_operation_key(form)}
             if notes:
                 data["notes"] = notes
@@ -5807,6 +5802,38 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
 
 
 
+def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float) -> FT:
+    """A quantity field for one selected line: at most ``max_qty``, starting at ``default``,
+    with its unit beside it. ESC leaves the field. The server checks the quantity again."""
+    return Span(
+        Input(type="number", name=name, min="0", max=f"{max_qty:g}", step="any", value=f"{default:g}",
+              cls="form-input form-input--sm line-qty-input",
+              onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"),
+        Span(unit_label, cls="line-qty-unit") if unit_label else "",
+        cls="line-qty",
+    )
+
+
+def _receive_rows(line_items: list) -> list:
+    """One row per document line for the Receive Goods form, a fieldset the page script shows
+    and enables only while its line is selected. A line still awaiting goods offers what it awaits;
+    a line received in full says so and submits nothing."""
+    rows = []
+    for i, li in enumerate(line_items):
+        outstanding = max(0.0, float(li.get("quantity") or 0) - float(li.get("quantity_received") or 0))
+        label = Span(li.get("sku") or li.get("description") or li.get("name") or "--", cls="receive-row__label")
+        if outstanding <= 1e-9:
+            body = [label, Span(t("documents.already_received"), cls="text-muted")]
+        else:
+            body = [label, _line_qty_input(f"qty_{i}", outstanding, li.get("purchase_unit") or li.get("unit") or "",
+                                           outstanding)]
+            if li.get("line_id"):
+                body.append(Input(type="hidden", name=f"line_id_{i}", value=li["line_id"]))
+        rows.append(Fieldset(*body, cls="receive-row inline-form-row", data_line_index=str(i),
+                             disabled=True, style="display:none"))
+    return rows
+
+
 def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
@@ -5879,22 +5906,12 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         ]
     if show_fulfill or show_reserve:
         if is_inbound:
-            # Build hidden line-item inputs for POST /receive from the doc's line items.
-            line_inputs = []
-            for i, li in enumerate(inbound_line_items or []):
-                line_inputs += [
-                    Input(type="hidden", name=f"item_id_{i}", value=li.get("entity_id") or li.get("item_id") or ""),
-                    Input(type="hidden", name=f"sku_{i}", value=li.get("sku") or ""),
-                    Input(type="hidden", name=f"name_{i}", value=li.get("description") or li.get("name") or li.get("sku") or ""),
-                    Input(type="hidden", name=f"receive_as_{i}", value=li.get("receive_as") or ""),
-                    Input(type="hidden", name=f"qty_{i}", value=str(float(li.get("quantity") or 0))),
-                ]
             loc_opts = [Option(loc.get("name", ""), value=loc.get("id", "")) for loc in (locations or [])]
             loc_el = (Select(*loc_opts, name="location_id", cls="form-input form-input--sm", id="li-bulk-location")
                       if loc_opts else "")
             children += [
                 Form(
-                    *line_inputs,
+                    *_receive_rows(inbound_line_items or []),
                     operation_key_input(),
                     Div(
                         loc_el,
@@ -5905,7 +5922,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     style="display:none",
                     hx_post=f"/docs/{entity_id}/receive",
                     hx_swap="none",
-                    onsubmit="return true",
+                    hx_confirm=t("documents.confirm_receive_selected"),
                 ),
                 Form(
                     Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
@@ -8849,11 +8866,11 @@ async function celerpCsvImport(input, entityId) {{
         )
         # Inbound docs (bill, consignment_in) show Receive Goods / Return Goods in toolbar.
         # They do NOT use fulfill-lines; the toolbar posts to /receive instead.
-        _inbound_doc_statuses = frozenset({"final", "sent", "awaiting_payment", "received", "partially_received"})
+        from celerp_docs.doc_constants import RECEIVABLE_STATUSES
         _inbound_receivable = (
             _is_vendor_doc
             and doc_type in ("bill", "consignment_in")
-            and status in _inbound_doc_statuses
+            and status in RECEIVABLE_STATUSES[doc_type]
             and bool(line_items)
         )
         _fin_show_fulfill = _fulfillable_status or _inbound_receivable
@@ -8910,7 +8927,7 @@ async function celerpCsvImport(input, entityId) {{
                 _li_status = item_status_map.get(li_eid, "") if item_status_map else ""
                 cells.append(Td(
                     Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku,
-                          data_item_status=_li_status, disabled=_cb_disabled),
+                          data_item_status=_li_status, data_line_index=str(idx), disabled=_cb_disabled),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
@@ -9062,11 +9079,22 @@ async function celerpCsvImport(input, entityId) {{
   var countEl=document.getElementById('li-bulk-count');
   var sel=document.getElementById('li-bulk-select');
   function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
+  // The receipt form shows and enables the row of each selected line only.
+  function _syncReceiveRows(){{
+    var picked={{}};
+    if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{picked[cb.getAttribute('data-line-index')]=1;}});
+    document.querySelectorAll('#li-bulk-fulfill-btn fieldset.receive-row').forEach(function(row){{
+      var on=!!picked[row.getAttribute('data-line-index')];
+      row.style.display=on?'':'none';
+      row.disabled=!on;
+    }});
+  }}
   function _update(){{
     var n=_n();
     if(countEl) countEl.textContent=_L.rows_selected.replace('{{n}}', n);
     if(toolbar) toolbar.style.display=n>0?'flex':'none';
     if(sel&&n===0) {{ sel.value=''; _hideBtns(); }}
+    _syncReceiveRows();
   }}
   if(table) table.addEventListener('change',function(e){{
     if(e.target&&e.target.classList.contains('li-select')) _update();
