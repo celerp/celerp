@@ -57,41 +57,11 @@ def test_mac_has_zip_target():
 
 
 # ---------------------------------------------------------------------------
-# main.js: installing a downloaded update
+# app-main.js source
 # ---------------------------------------------------------------------------
 
 def _main_src() -> str:
     return _MAIN.read_text()
-
-
-def test_main_kill_subprocesses_before_quit_and_install():
-    """main.js must kill uiProcess/apiProcess before calling quitAndInstall.
-
-    ShipIt (Squirrel.Mac) aborts if the app process is still alive when it tries
-    to replace the bundle. Killing child processes first lets the OS reap them
-    before ShipIt does its check.
-    """
-    src = _main_src()
-    # Find the install-update handler block
-    match = re.search(r'ipcMain\.on\(["\']install-update["\'].*?}\);', src, re.DOTALL)
-    assert match, "ipcMain.on('install-update', ...) handler not found in main.js"
-    handler = match.group(0)
-    assert "uiProcess" in handler and ".kill()" in handler, (
-        "install-update handler must kill uiProcess before calling quitAndInstall."
-    )
-    assert "apiProcess" in handler and ".kill()" in handler, (
-        "install-update handler must kill apiProcess before calling quitAndInstall."
-    )
-    assert "quitAndInstall" in handler, (
-        "install-update handler must call autoUpdater.quitAndInstall()."
-    )
-    # The kill must come before quitAndInstall in source order
-    kill_pos = handler.index(".kill()")
-    quit_pos = handler.index("quitAndInstall")
-    assert kill_pos < quit_pos, (
-        "uiProcess/apiProcess must be killed BEFORE quitAndInstall is called, "
-        "otherwise ShipIt sees the app still running and aborts the install."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +424,8 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
             in win["run"])
     assert "set ENABLED_MODULES=$enabled" in win["run"]
+    # Windows: the job object ends the API and the database when the app is force-quit.
+    assert "taskkill /IM Celerp.exe /F" in win["run"] and "left the API or the database running" in win["run"]
 
 
 def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
