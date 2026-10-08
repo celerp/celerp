@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal
 import types
 import uuid
 from datetime import datetime, timezone
@@ -18,9 +17,8 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services import auto_je
 from celerp.services.lot_origin import recognize_opening_lots
-from stock_books import older_release_lot
+from stock_books import book_older_opening, older_release_lot
 from test_helpers import make_authed_token, perm_setup, provision_company_books
 
 
@@ -115,9 +113,7 @@ async def test_kwd_manual_overpayment_uses_fils_not_cent_tolerance(client, sessi
 async def test_kwd_opening_inventory_posts_sub_cent_gap(client, session):
     auth = await _auth_company(session, "KWD")
     await older_release_lot(session, auth["company_id"], auth["user_id"], 0.005)
-    await auto_je.book_opening_inventory(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
-    await session.commit()
+    await book_older_opening(session, auth["company_id"], auth["user_id"])
     session.expire_all()
     row = await session.get(
         Projection, {"company_id": auth["company_id"],
