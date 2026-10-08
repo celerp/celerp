@@ -6975,11 +6975,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if pol["counting"]:
                 _desc_cell = Td(li.get("description") or li.get("name") or "--", cls="col-desc")
             cells = [
-                # data-* carries what the line currently has out, so a revert can offer to take
-                # back part of it instead of writing the whole lot off as returned.
+                # On a document that sends goods out, data-out-qty carries what the line has out,
+                # so a revert can offer to take back part of it instead of the whole lot.
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id,
                          **{"data-item-status": str((item_status_map or {}).get(li_entity_id, "")),
-                            "data-out-qty": f"{float(li.get('quantity') or 0):g}"}),
+                            **({"data-out-qty": f"{float(li.get('quantity') or 0):g}"}
+                               if doc_type in _FULFILLABLE_DOC_TYPES else {})}),
                    cls="col-checkbox li-checkbox-cell"),
                 Td(_static_ident_cell_content(li) if pol["counting"]
                    else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
