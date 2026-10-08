@@ -540,6 +540,7 @@
   "doc.due_date": "Due date:",
   "doc.email": "Email:",
   "doc.expense": "Expense",
+  "doc.asset": "Asset",
   "doc.export_line_items_csv": "Export line items to CSV",
   "doc.fulfilled": "Fulfilled",
   "doc.fully_received": "Fully received",

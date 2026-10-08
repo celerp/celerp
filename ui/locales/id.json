@@ -482,6 +482,7 @@
   "doc.due_date": "Tenggat waktu:",
   "doc.email": "E-mail:",
   "doc.expense": "Pengeluaran",
+  "doc.asset": "Aset",
   "doc.export_line_items_csv": "Ekspor item ke CSV",
   "doc.fulfilled": "Diproses",
   "doc.fully_received": "Diterima sepenuhnya",

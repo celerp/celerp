@@ -515,6 +515,7 @@
   "doc.due_date": "የመክፈያ ቀን፦",
   "doc.email": "ኢሜይል፦",
   "doc.expense": "ወጪ",
+  "doc.asset": "ንብረት",
   "doc.export_line_items_csv": "የመስመር ዕቃዎችን ወደ CSV ላክ",
   "doc.fulfilled": "ተፈጽሟል",
   "doc.fully_received": "ሙሉ በሙሉ ተቀብሏል",

@@ -482,6 +482,7 @@
   "doc.due_date": "Fälligkeitsdatum:",
   "doc.email": "E-Mail:",
   "doc.expense": "Aufwand",
+  "doc.asset": "Anlagegut",
   "doc.export_line_items_csv": "Positionen als CSV exportieren",
   "doc.fulfilled": "Ausgeliefert",
   "doc.fully_received": "Vollständig empfangen",

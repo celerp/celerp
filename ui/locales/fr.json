@@ -482,6 +482,7 @@
   "doc.due_date": "Date d'échéance :",
   "doc.email": "Courriel :",
   "doc.expense": "Charge",
+  "doc.asset": "Immobilisation",
   "doc.export_line_items_csv": "Exporter les lignes en CSV",
   "doc.fulfilled": "Livré",
   "doc.fully_received": "Entièrement reçu",

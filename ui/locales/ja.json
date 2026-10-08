@@ -482,6 +482,7 @@
   "doc.due_date": "期日：",
   "doc.email": "電子メール:",
   "doc.expense": "経費",
+  "doc.asset": "資産",
   "doc.export_line_items_csv": "明細をCSVにエクスポート",
   "doc.fulfilled": "出荷済み",
   "doc.fully_received": "完全に受信しました",

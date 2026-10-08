@@ -482,6 +482,7 @@
   "doc.due_date": "Fecha de vencimiento:",
   "doc.email": "Correo electrónico:",
   "doc.expense": "Gasto",
+  "doc.asset": "Activo",
   "doc.export_line_items_csv": "Exportar artículos a CSV",
   "doc.fulfilled": "Procesado",
   "doc.fully_received": "Totalmente recibido",

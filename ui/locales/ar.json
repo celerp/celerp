@@ -482,6 +482,7 @@
   "doc.due_date": "تاريخ الاستحقاق:",
   "doc.email": "بريد إلكتروني:",
   "doc.expense": "مصروف",
+  "doc.asset": "أصل",
   "doc.export_line_items_csv": "تصدير البنود إلى CSV",
   "doc.fulfilled": "تم تنفيذه",
   "doc.fully_received": "تلقى بالكامل",

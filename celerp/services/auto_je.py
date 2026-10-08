@@ -32,7 +32,7 @@ from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
-from celerp.services.units import is_non_stock_line
+from celerp.services.units import is_non_stock_line, line_receive_kind
 from sqlalchemy import or_
 from sqlalchemy import select as _select
 
@@ -718,10 +718,8 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
 
 
 def bill_line_kind(line: dict) -> str:
-    """What a bill line brings in: stock, an expense or an asset. A line naming no item
-    or SKU, and no kind, is an expense."""
-    kind = str(line.get("receive_as") or "").strip().lower()
-    return kind or ("stock" if line.get("sku") or line.get("item_id") else "expense")
+    """What a bill line brings in: stock, an expense or an asset (see line_receive_kind)."""
+    return line_receive_kind(line)
 
 
 def po_receipt_role(doc: dict, receive_as: str = "stock") -> AccountRole:

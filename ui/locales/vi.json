@@ -482,6 +482,7 @@
   "doc.due_date": "Ngày đáo hạn:",
   "doc.email": "E-mail:",
   "doc.expense": "Chi phí",
+  "doc.asset": "Tài sản",
   "doc.export_line_items_csv": "Xuất mục hàng sang CSV",
   "doc.fulfilled": "Đã xuất hàng",
   "doc.fully_received": "Đã nhận đầy đủ",

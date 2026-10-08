@@ -49,6 +49,20 @@ def default_receive_as(inventory_type: str | None, sell_by: str | None = None) -
     return "stock"
 
 
+# How a purchase line's goods come in.
+RECEIVE_KINDS: tuple[str, ...] = ("stock", "expense", "asset")
+
+
+def line_receive_kind(line: dict) -> str:
+    """What a purchase line brings in: stock, an expense or an asset. The kind stored on the
+    line wins; a line saved without one is stock when it names an item or SKU and an expense
+    otherwise. A parcel a receipt created (``entity_id``) is not a catalog reference."""
+    kind = str(line.get("receive_as") or "").strip().lower()
+    if kind in RECEIVE_KINDS:
+        return kind
+    return "stock" if line.get("sku") or line.get("item_id") else "expense"
+
+
 def is_landed_component(inventory_type: str | None) -> bool:
     """True for a freight-typed line (a landed-cost component: freight/insurance/duty/import_vat)."""
     return (inventory_type or "stocked") == "freight"

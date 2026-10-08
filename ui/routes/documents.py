@@ -17,7 +17,7 @@ import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError
 from celerp.accounting_roles import account_label
-from celerp.services.units import default_receive_as
+from celerp.services.units import RECEIVE_KINDS, default_receive_as, line_receive_kind
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
@@ -229,6 +229,25 @@ def _enrich_line_meta(line_items: list[dict], item_meta: dict | None,
             if _it:
                 identifier_backfill(_li, _it)
     return item_meta_map, item_status_map, item_status_doc_map
+
+
+def _receive_kind_label(li: dict) -> str:
+    """A purchase line's kind (stock, expense or asset) in the user's language."""
+    return t(f"doc.{line_receive_kind(li)}")
+
+
+def _receive_kind_select(li: dict | None) -> FT:
+    """The Type select of a draft purchase row, showing the line's stored kind. A saved row is
+    marked as having its kind, so picking an item later does not change it; a new row (None)
+    takes its kind from the first item picked."""
+    kind = line_receive_kind(li) if li is not None else "stock"
+    return Select(
+        *[Option(t(f"doc.{k}"), value=k, selected=(k == kind)) for k in RECEIVE_KINDS],
+        data_name="receive_as",
+        cls="cell-input cell-input--select cell-input--xs",
+        onchange="this.dataset.kindSet='1';celerpAutoSave()",
+        **({"data-kind-set": "1"} if li is not None else {}),
+    )
 
 
 def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
@@ -6800,16 +6819,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 category_cell = None
 
             if _show_receive_as and is_draft:
-                _ra_val = li.get("receive_as", "stock")
-                receive_as_cell = Td(Select(
-                    Option(t("doc.stock"), value="stock", selected=(_ra_val == "stock")),
-                    Option(t("doc.expense"), value="expense", selected=(_ra_val == "expense")),
-                    data_name="receive_as",
-                    cls="cell-input cell-input--select cell-input--xs",
-                    onchange="celerpAutoSave()",
-                ), cls="col-type")
+                receive_as_cell = Td(_receive_kind_select(li), cls="col-type")
             elif _show_receive_as:
-                receive_as_cell = Td(li.get("receive_as", "stock").capitalize(), cls="col-type")
+                receive_as_cell = Td(_receive_kind_label(li), cls="col-type")
             else:
                 receive_as_cell = None
 
@@ -6975,13 +6987,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _cat_cell = None
 
             if _show_receive_as:
-                _ra_cell = Td(Select(
-                    Option(t("doc.stock"), value="stock", selected=True),
-                    Option(t("doc.expense"), value="expense"),
-                    data_name="receive_as",
-                    cls="cell-input cell-input--select cell-input--xs",
-                    onchange="celerpAutoSave()",
-                ), cls="col-type")
+                _ra_cell = Td(_receive_kind_select(None), cls="col-type")
             else:
                 _ra_cell = None
 
@@ -7687,8 +7693,13 @@ function celerpFillRow(row, data) {{
         barcodeDisp.textContent = data.barcode || '';
         barcodeDisp.style.display = data.barcode ? '' : 'none';
     }}
+    // A row's kind is set once, when the row is created; picking an item for a saved row
+    // never rewrites it.
     const receiveAsEl = row.querySelector('[data-name="receive_as"]');
-    if (receiveAsEl) receiveAsEl.value = data.receive_as || 'expense';
+    if (receiveAsEl && !receiveAsEl.dataset.kindSet) {{
+        receiveAsEl.value = data.receive_as || 'expense';
+        receiveAsEl.dataset.kindSet = '1';
+    }}
     const categoryEl = row.querySelector('[data-name="category"]');
     if (categoryEl && data.category) {{
         // Ensure option exists before setting value (category may not be in inventory yet)
@@ -7869,7 +7880,7 @@ async function celerpAcSearch(input, field) {{
             const row = input.closest('tr');
             if (row && _expenseTypes.includes(_CELERP_DOC_TYPE)) {{
                 const raEl = row.querySelector('[data-name="receive_as"]');
-                if (raEl) raEl.value = 'expense';
+                if (raEl) {{ raEl.value = 'expense'; raEl.dataset.kindSet = '1'; }}
             }}
         }});
         list.appendChild(custom);
@@ -8909,7 +8920,7 @@ async function celerpCsvImport(input, entityId) {{
                 # "fulfilled" = doc fully processed → show real status.
                 # All other statuses (final, awaiting_payment, etc.) = not yet received → "Not Received".
                 _doc_has_received = status in ("received", "partially_received") or doc.get("fulfillment_status") == "fulfilled"
-                if _is_vendor_doc and li.get("receive_as") == "expense":
+                if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
                 elif _is_vendor_doc and not _doc_has_received:
                     cells.append(Td(Span(t("documents.status_not_received"), cls="badge badge--not_received"), cls="col-item-status"))
@@ -8954,7 +8965,7 @@ async function celerpCsvImport(input, entityId) {{
                    *_desc_extra, cls="col-desc"),
             ]
             if _is_vendor_doc:
-                cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
+                cells.append(Td(_receive_kind_label(li), cls="col-type"))
             if pol["customs"]:
                 cells.append(Td(format_value(li.get("hs_code") or None), cls="col-hs"))
                 cells.append(Td(format_value(li.get("country_of_origin") or None), cls="col-origin"))

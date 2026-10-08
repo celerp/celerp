@@ -482,6 +482,7 @@
   "doc.due_date": "วันครบกำหนด:",
   "doc.email": "อีเมล:",
   "doc.expense": "ค่าใช้จ่าย",
+  "doc.asset": "สินทรัพย์",
   "doc.export_line_items_csv": "ส่งออกรายการสินค้าเป็น CSV",
   "doc.fulfilled": "จัดส่งแล้ว",
   "doc.fully_received": "ได้รับครบถ้วนแล้ว",
