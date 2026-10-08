@@ -239,14 +239,15 @@ OUTLIVES_ITS_COMPANY = {"payment_closures", "payment_recoveries", "unmatched_pay
 
 
 def test_every_table_and_column_this_release_adds_is_placed_for_company_backups():
-    from celerp.migrations._auto_stamp import extract_signatures, load_kernel_metadata
+    from celerp.migrations._auto_stamp import extract_signatures
+    from celerp.models.base import Base
     from celerp.services import company_backup as cb
 
     script = ScriptDirectory.from_config(build_alembic_config())
     added = {sig.table
              for rev in script.walk_revisions(base=RELEASE_HEAD, head="heads") if rev.revision != RELEASE_HEAD
              for sig in extract_signatures(Path(rev.path)) if sig.kind in ("create_table", "add_column")}
-    tables = load_kernel_metadata().tables
+    tables = Base.metadata.tables
 
     assert added >= OUTLIVES_ITS_COMPANY
     for table in sorted(added):

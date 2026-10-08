@@ -567,7 +567,7 @@ def test_a_restore_keeps_the_fence_while_psql_runs(scratch, tmp_path, monkeypatc
     admitted while it runs, even if the fence session ends meanwhile."""
     import subprocess as sp
     from celerp.migrations import compatibility
-    from celerp.services.backup import restore_database_file
+    from celerp.services.backup import dump_database, restore_database_file
     monkeypatch.setattr(celerp, "__version__", OLDER)
     url = scratch()
     seen = {}
@@ -578,6 +578,7 @@ def test_a_restore_keeps_the_fence_while_psql_runs(scratch, tmp_path, monkeypatc
             seen["newer"] = _run(NEWER, "migrate", url, tmp_path / "new", wait=2)
         return sp.CompletedProcess(command, 0, b"", b"")
 
+    (tmp_path / "dump").write_bytes(dump_database(url))
     held = compatibility.Fence.join(sync_url(url))
     try:
         restore_database_file(tmp_path / "dump", url, runner=runner)

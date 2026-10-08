@@ -29,7 +29,6 @@ from celerp.services.backup_import import _clear_restored_connector_state as _re
 from celerp.services.backup_import import _reconcile_connectors as _real_revoke
 from celerp.services.session_tracker import end_all_sessions as _real_end_sessions
 
-pytestmark = pytest.mark.asyncio
 
 SAFETY_WARNING = "A safety backup could not be made before restoring."
 SOURCE_DUMP = b"SOURCE-DUMP"
