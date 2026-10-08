@@ -2174,15 +2174,16 @@ async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp
 async def public_owner(real_engine):  # noqa: F811
     """A connection as the role that owns schema public. PostgreSQL 14 and older give it to
     the bootstrap superuser; where Celerp's role does not own it, ADMIN_DATABASE_URL names
-    one that does."""
+    one that does, connected here to the test's own database."""
     import os
 
+    from sqlalchemy import make_url
     from sqlalchemy.ext.asyncio import create_async_engine
     url = os.environ.get("ADMIN_DATABASE_URL")
     if url is None:
         yield real_engine
         return
-    engine = create_async_engine(url)
+    engine = create_async_engine(make_url(url).set(database=real_engine.url.database))
     yield engine
     await engine.dispose()
 
