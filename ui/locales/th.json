@@ -2259,6 +2259,7 @@
   "documents.lookup_error": "ข้อผิดพลาดในการค้นหา",
   "documents.code_names_several_lots": "{code} อยู่ในสินค้ามากกว่าหนึ่งรายการ แก้รหัสที่ซ้ำในคลังสินค้า หรือเลือกสินค้าด้วย SKU",
   "documents.lot_reserved_elsewhere": "{code} ถูกจองไว้ให้รายการอื่น ปล่อยการจองที่นั่นก่อน หรือเลือกสินค้าอื่น",
+  "documents.lot_reserved_by": "{code} ถูกจองไว้ใน {doc} ปล่อยการจองที่นั่นก่อน หรือเลือกสินค้าอื่น",
   "documents.lot_held_by_other_line": "{code} ถูกกันไว้ให้บรรทัดอื่นของเอกสารนี้ ใช้บรรทัดนั้น หรือเลือกสินค้าอื่น",
   "documents.mark_as_scanned": "ทำเครื่องหมายว่าสแกนแล้ว",
   "documents.memo_ref": "ใบยืม {ref}",

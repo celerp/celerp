@@ -2259,6 +2259,7 @@
   "documents.lookup_error": "Kesalahan pencarian",
   "documents.code_names_several_lots": "{code} ada di lebih dari satu barang. Perbaiki kode ganda di Inventaris, atau pilih barang lewat SKU.",
   "documents.lot_reserved_elsewhere": "{code} dipesan untuk catatan lain. Lepaskan di sana dulu atau pilih barang lain.",
+  "documents.lot_reserved_by": "{code} dipesan pada {doc}. Lepaskan di sana dulu atau pilih barang lain.",
   "documents.lot_held_by_other_line": "{code} ditahan untuk baris lain di dokumen ini. Gunakan baris itu atau pilih barang lain.",
   "documents.mark_as_scanned": "Tandai sebagai telah dipindai",
   "documents.memo_ref": "Catatan {ref}",

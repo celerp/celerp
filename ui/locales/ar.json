@@ -2259,6 +2259,7 @@
   "documents.lookup_error": "خطأ في البحث",
   "documents.code_names_several_lots": "{code} مسجل على أكثر من صنف. صحح الرمز المكرر في المخزون، أو اختر الصنف حسب SKU.",
   "documents.lot_reserved_elsewhere": "{code} محجوز لسجل آخر. حرره هناك أولا أو اختر صنفا آخر.",
+  "documents.lot_reserved_by": "{code} محجوز على {doc}. حرره هناك أولا أو اختر صنفا آخر.",
   "documents.lot_held_by_other_line": "{code} محجوز لسطر آخر في هذا المستند. استخدم ذلك السطر أو اختر صنفا آخر.",
   "documents.mark_as_scanned": "وضع علامة «تم المسح الضوئي»",
   "documents.memo_ref": "مذكرة {ref}",

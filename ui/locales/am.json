@@ -2366,6 +2366,7 @@
   "documents.lookup_error": "የመፈለጊያ ስህተት",
   "documents.code_names_several_lots": "{code} ከአንድ በላይ እቃ ላይ አለ። የተደገመውን ኮድ በክምችት ውስጥ ያስተካክሉ፣ ወይም እቃውን በSKU ይምረጡ።",
   "documents.lot_reserved_elsewhere": "{code} ለሌላ መዝገብ ተይዟል። መጀመሪያ እዚያ ይልቀቁት ወይም ሌላ እቃ ይምረጡ።",
+  "documents.lot_reserved_by": "{code} በ{doc} ላይ ተይዟል። መጀመሪያ እዚያ ይልቀቁት ወይም ሌላ እቃ ይምረጡ።",
   "documents.lot_held_by_other_line": "{code} ለዚህ ሰነድ ሌላ መስመር ተይዟል። ያንን መስመር ይጠቀሙ ወይም ሌላ እቃ ይምረጡ።",
   "documents.mark_as_scanned": "እንደተቃኘ ምልክት ያድርጉ",
   "documents.memo_ref": "ማስታወሻ {ref}",

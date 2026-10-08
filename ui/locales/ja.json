@@ -2259,6 +2259,7 @@
   "documents.lookup_error": "検索エラー",
   "documents.code_names_several_lots": "{code} は複数の品目に登録されています。在庫で重複したコードを修正するか、SKU で品目を選んでください。",
   "documents.lot_reserved_elsewhere": "{code} は別の記録で予約されています。先にそちらで解除するか、別の品目を選んでください。",
+  "documents.lot_reserved_by": "{code} は {doc} で予約されています。先にそちらで解除するか、別の品目を選んでください。",
   "documents.lot_held_by_other_line": "{code} はこの書類の別の行に確保されています。その行を使うか、別の品目を選んでください。",
   "documents.mark_as_scanned": "スキャン済みとしてマーク",
   "documents.memo_ref": "メモ {ref}",

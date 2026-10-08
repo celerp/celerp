@@ -2260,6 +2260,7 @@
   "documents.lookup_error": "Errore di ricerca",
   "documents.code_names_several_lots": "{code} è su più di un articolo. Correggi il codice duplicato in Inventario o scegli l'articolo per SKU.",
   "documents.lot_reserved_elsewhere": "{code} è riservato per un altro record. Rilascialo prima lì o scegli un altro articolo.",
+  "documents.lot_reserved_by": "{code} è riservato su {doc}. Rilascialo prima lì o scegli un altro articolo.",
   "documents.lot_held_by_other_line": "{code} è trattenuto per un'altra riga di questo documento. Usa quella riga o scegli un altro articolo.",
   "documents.mark_as_scanned": "Contrassegna come scansionato",
   "documents.memo_ref": "Memo {ref}",

@@ -315,7 +315,26 @@ def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None) -> bool
     return bool(holder) and holder != line_id
 
 
-def _hold_refusal(item: dict, code: str, *, doc_type: str, doc_id: str | None, line_id: str | None) -> str | None:
+async def _reserved_elsewhere(token: str, items: list[dict], code: str) -> str:
+    """The refusal for ``code`` whose lots ``items`` are held for another record, naming that
+    record by its number when they are all held by one whose number can be found (on the lot,
+    or by looking the record up); otherwise the plain wording."""
+    holders = {str(i.get("status_doc_id") or "") for i in items}
+    holder = holders.pop() if len(holders) == 1 else ""
+    number = next((str(i["status_doc_number"]) for i in items if i.get("status_doc_number")), "") if holder else ""
+    if holder and not number:
+        try:
+            held_by = await api.get_doc(token, holder)
+            number = str(held_by.get("doc_number") or held_by.get("ref_id") or "")
+        except APIError:
+            number = ""
+    if number:
+        return t("documents.lot_reserved_by", code=code, doc=number)
+    return t("documents.lot_reserved_elsewhere", code=code)
+
+
+async def _hold_refusal(token: str, item: dict, code: str, *, doc_type: str, doc_id: str | None,
+                        line_id: str | None) -> str | None:
     """Why this line may not take ``item`` by its exact code, or None. Mirrors the line
     rules the document API enforces (celerp.services.document_lines): a draft is not
     stock; another record's hold blocks the stock-claiming documents; a hold for another
@@ -329,7 +348,7 @@ def _hold_refusal(item: dict, code: str, *, doc_type: str, doc_id: str | None, l
     if doc_id and item.get("status_doc_id") == doc_id:
         return t("documents.lot_held_by_other_line", code=code)
     if doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES:
-        return t("documents.lot_reserved_elsewhere", code=code)
+        return await _reserved_elsewhere(token, [item], code)
     return None
 
 
@@ -367,14 +386,14 @@ async def _exact_physical_lot(token: str, code: str, *, doc_type: str, doc_id: s
     if not lots:
         return None
     if doc_type != "credit_note":
-        reason = _hold_refusal(lots[0], code, doc_type=doc_type, doc_id=doc_id, line_id=line_id)
+        reason = await _hold_refusal(token, lots[0], code, doc_type=doc_type, doc_id=doc_id, line_id=line_id)
         if reason:
             raise _PickerRefusal(reason)
     return lots[0]
 
 
-def _sales_options(items: list[dict], company_settings: dict, code: str, *, doc_id: str | None,
-                   line_id: str | None) -> list[dict]:
+async def _sales_options(token: str, items: list[dict], company_settings: dict, code: str, *,
+                         doc_id: str | None, line_id: str | None) -> list[dict]:
     """Forward-sale picker options for matched lots: drafts dropped, then splittable lots
     held for another record or another line dropped before consolidation, so a SKU's
     option only ever stands for (and counts) stock this line may draw. Raises
@@ -383,7 +402,7 @@ def _sales_options(items: list[dict], company_settings: dict, code: str, *, doc_
     items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
     drawable = [i for i in items if not (splitting_allowed(i) and _held_elsewhere(i, doc_id, line_id))]
     if items and not drawable:
-        raise _PickerRefusal(t("documents.lot_reserved_elsewhere", code=code))
+        raise _PickerRefusal(await _reserved_elsewhere(token, items, code))
     return _consolidate_sales_lots(drawable, company_settings)
 
 
@@ -1775,7 +1794,7 @@ def setup_routes(app):
                 found = found or (await api.list_items(token, params))["items"]
                 if is_credit_note:
                     return [i for i in found if str(i.get("status") or "").lower() != "draft"]
-                return _sales_options(found, ctx["settings"], code, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
+                return await _sales_options(token, found, ctx["settings"], code, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
 
             # GTIN names a product, not a lot, so it behaves like a SKU: forward sales
             # consolidate splittable lots; several remaining lots -> chooser.
@@ -1829,7 +1848,7 @@ def setup_routes(app):
                 return _J([extract(i) for i in items[:10]])
             found = (await api.list_items(token, {"q": q, "limit": 10}))["items"]
             try:
-                items = _sales_options(found, ctx["settings"], q, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
+                items = await _sales_options(token, found, ctx["settings"], q, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
             except _PickerRefusal:
                 items = []  # a list of text matches simply omits lots held elsewhere
             return _J([extract(i) for i in items])
