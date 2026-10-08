@@ -1416,3 +1416,5 @@ app.on("before-quit", async () => {
   if (apiProcess) apiProcess.kill();
   if (pgInstance) await pgInstance.stop();
 });
+
+for (const s of ["SIGTERM", "SIGINT"]) process.on(s, () => app.quit());
