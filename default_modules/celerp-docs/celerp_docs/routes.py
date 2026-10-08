@@ -43,7 +43,7 @@ from celerp.services.journal_accounts import require_destinations, require_line_
 from celerp.services.lot_origin import is_stock_type
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.services.business_time import business_date_at
+from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import (
@@ -1681,8 +1681,8 @@ async def create_doc(
         explicit_fields=payload.model_fields_set,
     ))
 
-    # Default issue_date to today so date filters and sorting work correctly on new docs
-    data.setdefault("issue_date", _date.today().isoformat())
+    # Default issue_date to the company's today so date filters and sorting work correctly on new docs
+    data.setdefault("issue_date", business_date_of(None, company.settings.get("timezone")))
 
     # Auto-compute total from line items if not explicitly provided (or zero)
     if not payload.total and payload.line_items:
@@ -3470,8 +3470,8 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
         raise HTTPException(status_code=409, detail="Amount exceeds invoice outstanding")
     amount = to_stored_float(amount_d)
 
-    payment_date = payment_date or datetime.now(timezone.utc).date().isoformat()
     _cn_company = await session.get(Company, company_id)
+    payment_date = payment_date or business_date_of(None, (_cn_company.settings or {}).get("timezone") if _cn_company else None)
     _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
     _cn_rate = float(_require_doc_rate_http(cn, _cn_base_currency))
     _require_doc_rate_http(inv, _cn_base_currency)
@@ -4853,7 +4853,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         if state.get("status") in {"void", "converted"}:
             raise HTTPException(status_code=409, detail="Cannot convert quotation in current status")
         valid_until = state.get("valid_until")
-        if valid_until and valid_until < datetime.now(timezone.utc).date().isoformat():
+        if valid_until and valid_until < business_date_of(None, (company.settings or {}).get("timezone")):
             raise HTTPException(status_code=409, detail="Cannot convert expired quotation")
         ref = next_draft_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
@@ -7398,11 +7398,7 @@ async def _fulfill_lines_impl(
     now = now_dt.isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
-    fulfillment_date = (
-        business_date_at(now_dt, company_settings.get("timezone"))
-        if (doc_type == "invoice" and shipments) or company_settings.get("lock_date")
-        else now_dt.date().isoformat()
-    )
+    fulfillment_date = business_date_at(now_dt, company_settings.get("timezone"))
 
     # A part of a lot ships as its own lot carved off first; a line whose bound lot is
     # carved names the carved part from then on.
@@ -7617,11 +7613,7 @@ async def _reverse_whole_lines(
     now_dt = datetime.now(timezone.utc)
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
-    reversal_date = (
-        business_date_at(now_dt, settings.get("timezone"))
-        if doc_type == "invoice" or settings.get("lock_date")
-        else now_dt.date().isoformat()
-    )
+    reversal_date = business_date_at(now_dt, settings.get("timezone"))
     for item_eid in to_revert:
         item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))

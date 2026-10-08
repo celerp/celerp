@@ -525,7 +525,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     fields are immutable: only supported lifecycle progress is applied, and a changed
     source fingerprint fails visibly rather than rewriting posted accounting.
     """
-    from datetime import date as _date
     from types import SimpleNamespace
 
     from sqlalchemy import select
@@ -535,6 +534,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company
     from celerp.models.projections import Projection
+    from celerp.services.business_time import business_date_of
     from celerp.services.money import to_decimal
     from celerp.services.pick import consolidate_sales_lots, plan_lot_draws, resolve_pick_method
     from celerp.services.units import is_non_stock_line
@@ -960,7 +960,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 "amount_paid": 0.0,
                 "amount_outstanding": total,
                 "currency": currency,
-                "issue_date": str(order.get("date_created") or "")[:10] or _date.today().isoformat(),
+                "issue_date": str(order.get("date_created") or "")[:10] or business_date_of(None, company_settings.get("timezone")),
                 "contact_id": contact_id,
                 "contact_name": contact_name,
                 "contact_email": billing.get("email"),
