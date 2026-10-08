@@ -6900,26 +6900,55 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _default_tax = next((tax for tax in _taxes_list if tax.get("is_default")), None)
         _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
 
-        def _tax_select(current_rate: float = 0.0, current_code: str = "", current_label: str = "") -> FT:
-            """Build tax <select> + hidden custom-rate input + hidden label for a line item."""
+        def _tax_select(li: dict | None = None) -> FT:
+            """Build tax <select> + hidden custom-rate input + hidden label for a line item.
+
+            The line's stored ``taxes`` decide what it shows (its ``tax_rate``/``tax_code``
+            only when it has none). Stored taxes also ride along in a hidden input, and the
+            client sends them back unchanged while the tax choice is unchanged, so a save
+            never rewrites taxes the user did not touch. Two or more taxes on one line show
+            as a single option naming them all.
+            """
+            li = li or {}
+            stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+            if len(stored) == 1:
+                current_rate = float(stored[0].get("rate", 0) or 0)
+                current_code = stored[0].get("code", "") or ""
+                current_label = stored[0].get("label", "") or ""
+            else:
+                current_rate = float(li.get("tax_rate", 0) or 0)
+                current_code = li.get("tax_code", "") or ""
+                current_label = ""
             # Determine selected value: match by code first, then by rate
             selected_val = "|0"
             is_custom = False
-            for tax in _taxes_list:
-                tcode = tax.get("name", "")
-                trate = float(tax.get("rate", 0))
-                if current_code and tcode == current_code:
-                    selected_val = f"{tcode}|{trate}"
-                    break
-                if not current_code and trate == current_rate and current_rate != 0:
-                    selected_val = f"{tcode}|{trate}"
-                    break
+            stored_option = None
+            if len(stored) > 1:
+                current_rate = sum(float(tx.get("rate", 0) or 0) for tx in stored)
+                current_label = " + ".join(
+                    f"{tx.get('code') or tx.get('label') or t('documents.tax')} ({float(tx.get('rate', 0) or 0)}%)"
+                    for tx in stored)
+                selected_val = "|stored"
+                stored_option = Option(current_label, value=selected_val, selected=True,
+                                       data_rate=str(current_rate))
             else:
-                if current_rate != 0 and not any(float(tax.get("rate", 0)) == current_rate for tax in _taxes_list):
-                    selected_val = "|custom"
-                    is_custom = True
+                for tax in _taxes_list:
+                    tcode = tax.get("name", "")
+                    trate = float(tax.get("rate", 0))
+                    if current_code and tcode == current_code:
+                        selected_val = f"{tcode}|{trate}"
+                        break
+                    if not current_code and trate == current_rate and current_rate != 0:
+                        selected_val = f"{tcode}|{trate}"
+                        break
+                else:
+                    if current_rate != 0 and not any(float(tax.get("rate", 0)) == current_rate for tax in _taxes_list):
+                        selected_val = "|custom"
+                        is_custom = True
 
             options = [Option(t("doc.no_tax"), value="|0", selected=(selected_val == "|0"))]
+            if stored_option is not None:
+                options.append(stored_option)
             for tax in _taxes_list:
                 tcode = tax.get("name", "")
                 trate = float(tax.get("rate", 0))
@@ -6933,13 +6962,17 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="cell-input cell-input--xs",
                 style=("display:inline-block;" if is_custom else "display:none;"),
             )
+            stored_input = (Input(type="hidden", value=_json.dumps(stored), data_name="taxes_json")
+                            if stored else "")
             return Div(
                 Select(*options, data_name="tax_select",
+                       data_orig=selected_val, data_orig_rate=str(current_rate),
                        cls="cell-input cell-input--select cell-input--xs",
                        onchange="celerpTaxChange(this)",
                        onblur="celerpAutoSave()"),
                 custom_input,
                 Input(type="hidden", value=current_label, data_name="tax_label"),
+                stored_input,
                 style="display:flex;gap:2px;align-items:center;",
             )
 
@@ -7131,8 +7164,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          data_name="discount_pct", oninput="celerpFieldEdited(this)",
                          onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
-                Td(_tax_select(float(li.get("tax_rate", 0) or 0), li.get("tax_code", "") or "",
-                              ((li.get("taxes") or [{}])[0].get("label", "") if li.get("taxes") else "")), cls="col-tax"),
+                Td(_tax_select(li), cls="col-tax"),
             ])
             if account_cell:
                 cells.append(account_cell)
@@ -8242,12 +8274,21 @@ function _celerpTaxRate(row) {{
     if (sel.value === '|custom') {{
         return parseFloat(row.querySelector('[data-name="tax_rate_custom"]')?.value || 0);
     }}
+    if (sel.value === '|stored') return parseFloat(sel.selectedOptions[0].dataset.rate || 0);
     return parseFloat(sel.value.split('|')[1] || 0);
 }}
 function _celerpTaxCode(row) {{
     const sel = row.querySelector('[data-name="tax_select"]');
-    if (!sel || sel.value === '|custom' || sel.value === '|0') return '';
+    if (!sel || sel.value === '|custom' || sel.value === '|0' || sel.value === '|stored') return '';
     return sel.value.split('|')[0];
+}}
+function _celerpStoredTaxes(row, rate) {{
+    // The line's stored taxes while its tax choice is unchanged, else null. Sending them
+    // back as they are keeps every tax the user did not touch (code, label, order, compound).
+    const sel = row.querySelector('[data-name="tax_select"]');
+    const el = row.querySelector('[data-name="taxes_json"]');
+    if (!sel || !el || sel.value !== sel.dataset.orig || rate !== parseFloat(sel.dataset.origRate)) return null;
+    return JSON.parse(el.value);
 }}
 function _celerpEditTaxLabel(key, rate, labelEl) {{
     const currentText = labelEl.textContent.replace(/:$/, '').replace(/\\s*\\(\\d+(\\.\\d+)?%\\)$/, '');
@@ -8607,7 +8648,8 @@ function _celerpCollectLines() {{
             }}
             const lineTotalEl = row.querySelector('.line-total');
             const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
-            const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
+            const taxList = _celerpStoredTaxes(row, rate)
+                || (rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : []);
             lines.push({{line_id: _celerpRowLineId(row), description: desc || '', sku: sku || '', quantity: qty, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
                          line_total: discounted, hs_code: hsCode || undefined,
