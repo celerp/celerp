@@ -12440,6 +12440,14 @@ class TestCatalogConsolidationEndpoint:
 
     _UNITS = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
 
+    @staticmethod
+    def _by_text(items):
+        """GET /items returning ``items`` for a text search; no lot carries the text as a
+        barcode or RFID tag."""
+        async def _list(_t, params):
+            return {"items": [] if "barcode" in params or "rfid_epc" in params else items}
+        return _list
+
     @pytest.mark.asyncio
     async def test_catalog_search_consolidates_splittable_lots(self, ui_client):
         items = [
@@ -12451,7 +12459,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=W", cookies=_authed())
         assert r.status_code == 200
@@ -12470,7 +12478,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=DIA", cookies=_authed())
         assert r.status_code == 200
@@ -12489,6 +12497,8 @@ class TestCatalogConsolidationEndpoint:
         ]
 
         async def _list(_t, params):
+            if "barcode" in params or "rfid_epc" in params:
+                return {"items": []}
             return {"items": sold if params.get("status") == "sold" else []}
 
         with (
