@@ -6930,6 +6930,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    # Customs rows carry hs_code as a visible column instead (one input per field).
                    None if pol["customs"] else Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
+                   Input(type="hidden", value=li.get("line_id") or "", data_name="line_id"),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
                    Input(type="hidden", value=str(li.get("item_quantity") or _meta.get("quantity") or qty), data_name="item_quantity"),
                    cls="cell--number col-total"),
@@ -7048,6 +7049,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          data_name="line_total"),
                    None if pol["customs"] else Input(type="hidden", value="", data_name="hs_code"),
                    Input(type="hidden", value="", data_name="entity_id"),
+                   Input(type="hidden", value="", data_name="line_id"),
                    Input(type="hidden", value="1", data_name="allow_splitting"),
                    Input(type="hidden", value="", data_name="item_quantity"),
                    cls="cell--number col-total"),
@@ -8299,6 +8301,24 @@ function _celerpReadQuantity(row) {{
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
 }}
+function _celerpNewLineId() {{
+    // A random UUID v4 from crypto.getRandomValues, which (unlike crypto.randomUUID)
+    // also works when the app is opened over plain HTTP on a local network.
+    const b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+}}
+function _celerpRowLineId(row) {{
+    // The row's stable line id: kept from the stored line, or minted once for a new row
+    // and written back so every later save sends the same id.
+    const el = row.querySelector('[data-name="line_id"]');
+    if (!el) return undefined;
+    if (!el.value) el.value = _celerpNewLineId();
+    return el.value;
+}}
 function _celerpCollectLines() {{
     // Returns the serialized lines, or null when a meaningful row carries an
     // invalid quantity - the caller aborts the whole save and sends nothing.
@@ -8343,7 +8363,7 @@ function _celerpCollectLines() {{
             const lineTotalEl = row.querySelector('.line-total');
             const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
             const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
-            lines.push({{description: desc || '', sku: sku || '', quantity: qty, unit,
+            lines.push({{line_id: _celerpRowLineId(row), description: desc || '', sku: sku || '', quantity: qty, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
                          line_total: discounted, hs_code: hsCode || undefined,
                          country_of_origin: countryOfOrigin || undefined,

@@ -64,7 +64,7 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "parent_id", "parent_sku", "children", "child_skus", "merged_into", "split_from",
     "transformed_from", "transformed_into", "fulfilled_for_docs", "catalog_item_id",
     "_catalog_sku_aliases",
-    "status_doc_id", "status_doc_number",
+    "status_doc_id", "status_doc_number", "status_line_entity_id",
     # manufactured-lot identity: a produced lot links to its product and its run, and flags itself
     "parent_item_id", "manufacturing_order_id", "lot",
     # files / media
@@ -319,13 +319,22 @@ def _stamp_status_doc(current: dict, data: dict) -> None:
     A doc-driven status change (fulfil, memo->invoice conversion, consignment
     receive) sends source_doc_id + doc_number and stamps the pairing; any status
     change without a source doc clears it, so the pairing can never outlive the
-    status that earned it."""
+    status that earned it.
+
+    A reservation also names the line of its document that holds the lot
+    (source_line_entity_id, the line's line_id). That stamp is kept only on a reserved
+    lot and is cleared by every other change, including a shipment, which records its
+    own source line."""
     if data.get("source_doc_id"):
         current["status_doc_id"] = data["source_doc_id"]
         current["status_doc_number"] = data.get("doc_number") or ""
     else:
         current.pop("status_doc_id", None)
         current.pop("status_doc_number", None)
+    if data.get("source_doc_id") and current.get("status") == "reserved" and data.get("source_line_entity_id"):
+        current["status_line_entity_id"] = data["source_line_entity_id"]
+    else:
+        current.pop("status_line_entity_id", None)
 
 
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:

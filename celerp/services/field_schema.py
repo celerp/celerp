@@ -35,8 +35,8 @@ AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "g
 SYSTEM_ITEM_KEYS: frozenset[str] = COST_DERIVED_ITEM_KEYS | {
     "entity_id", "company_id", "reserved_quantity", "quantity_fulfilled",
     "children", "child_skus", "merged_into", "split_from", "transformed_from", "transformed_into",
-    "fulfilled_for_docs", "status_doc_id", "status_doc_number", "manufacturing_order_id",
-    "files", "attachments", "preview_image_id",
+    "fulfilled_for_docs", "status_doc_id", "status_doc_number", "status_line_entity_id",
+    "manufacturing_order_id", "files", "attachments", "preview_image_id",
     LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, "consignment_flag", "is_expired", "_catalog_sku_aliases",
 }
 

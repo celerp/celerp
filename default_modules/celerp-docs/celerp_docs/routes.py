@@ -46,7 +46,7 @@ from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
-from celerp.services.document_lines import line_id_counts, line_item_id, linked_items
+from celerp.services.document_lines import line_id_counts, line_item_id, linked_items, strip_line_ids
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
@@ -89,6 +89,8 @@ def _validate_shipment_values(values: dict) -> None:
 
 
 class LineItem(BaseModel):
+    # The line's own stable identity, assigned where lines are written when omitted.
+    line_id: str | None = None
     item_id: str | None = None
     entity_id: str | None = None  # alias sent by the frontend; resolved to item_id below
     sku: str | None = None
@@ -1784,6 +1786,8 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
                     if k in _LI_FINALIZED_EDITABLE:
                         continue
                     orig_v = original.get(k)
+                    if k == "line_id" and not orig_v:
+                        continue  # a legacy line is given its id on its first save
                     if v != orig_v:
                         raise HTTPException(
                             status_code=409,
@@ -6409,7 +6413,8 @@ async def duplicate_list(
     ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "ref_id", "share_token"}}
-    new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id})
+    new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
+                     "line_items": strip_line_ids(state.get("line_items"))})
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
     await session.commit()
     return {"event_id": entry.id, "id": new_entity_id}

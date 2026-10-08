@@ -18,6 +18,7 @@ from celerp.services.document_lines import (
     assert_new_references_eligible,
     line_id_counts,
     linked_items,
+    normalize_line_ids,
 )
 from celerp.services.business_time import business_date_of
 
@@ -497,6 +498,9 @@ async def emit_event(
             )
             same = proj is not None and proj.entity_type == kwargs.get("entity_type")
             stored = (proj.state or {}) if same else {}
+            # Every line carries a stable line id: new lines get one, lines already on the
+            # record keep theirs, and a malformed or repeated id is refused.
+            normalize_line_ids(line_set, stored.get("line_items"))
             known = line_id_counts(stored.get("line_items"))
             items = await linked_items(session, kwargs.get("company_id"), line_set, known=known)
             # Prefer the event's own doc_type; otherwise the stored document's. A List has

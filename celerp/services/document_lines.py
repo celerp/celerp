@@ -14,11 +14,13 @@ items, and unlinked / free-text lines may repeat.
 """
 from __future__ import annotations
 
+import uuid
 from collections import Counter
 
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from celerp.accounting_roles import refusal
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
 from celerp.services.line_measures import splitting_allowed
@@ -212,3 +214,84 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
                     "item_id": ident,
                 },
             )
+
+
+# ---------------------------------------------------------------------------
+# Line identity: every document and List line carries a stable ``line_id`` (a UUID
+# string) so an action, a hold or a shipment can name one line even when two lines
+# share an item. The id is assigned where lines are written (emit_event), never
+# regenerated, and unique within its record.
+# ---------------------------------------------------------------------------
+
+def is_line_id(value) -> bool:
+    """True for a well-formed line id: a UUID, in its 36-character or 32-hex form."""
+    if not isinstance(value, str) or len(value) not in (32, 36):
+        return False
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def new_line_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _line_key(line: dict):
+    """What a line is about, for carrying a stored id onto an id-less incoming line: its
+    linked item, or for a free-text line its description."""
+    return line_item_id(line) or ("text", str(line.get("description") or ""))
+
+
+def normalize_line_ids(line_set, stored_lines) -> None:
+    """Give every line of ``line_set`` a line id, in place, and refuse a malformed or
+    repeated one (422 ``invalid_line_id`` / ``duplicate_line_id``).
+
+    A line that arrives without an id keeps the id its stored counterpart already had when
+    the evidence is unambiguous: the stored line at the same position is about the same
+    item (or, for a free-text line, has the same description), or it is the only stored
+    line for that item and the only incoming one. Otherwise it is a new line and gets a
+    new id. Whether an existing line may be removed, moved or rebound at all is
+    ``assert_protected_lines_kept``'s rule, judged after this."""
+    seen: set[str] = set()
+    for n, line in enumerate(line_set or [], 1):
+        if not isinstance(line, dict) or line.get("line_id") in (None, ""):
+            continue
+        lid = line["line_id"]
+        if not is_line_id(lid):
+            raise HTTPException(status_code=422, detail=refusal(
+                "line.invalid_line_id", f"Line {n} has an invalid line id.", line=n))
+        canon = uuid.UUID(lid).hex
+        if canon in seen:
+            raise HTTPException(status_code=422, detail=refusal(
+                "line.duplicate_line_id", f"Line {n} repeats the id of another line.", line=n))
+        seen.add(canon)
+    missing = [i for i, line in enumerate(line_set or []) if isinstance(line, dict) and not line.get("line_id")]
+    if not missing:
+        return
+    stored = [line for line in stored_lines or [] if isinstance(line, dict)]
+    free = {i: line for i, line in enumerate(stored)
+            if is_line_id(line.get("line_id")) and uuid.UUID(line["line_id"]).hex not in seen}
+    incoming_keys = Counter(_line_key(line_set[i]) for i in missing)
+    stored_keys = Counter(_line_key(line) for line in free.values())
+    for i in missing:
+        line = line_set[i]
+        key = _line_key(line)
+        pick = None
+        if i in free and _line_key(free[i]) == key:
+            pick = i
+        elif line_item_id(line) and incoming_keys[key] == 1 and stored_keys[key] == 1:
+            pick = next(j for j, s in free.items() if _line_key(s) == key)
+        if pick is not None:
+            line["line_id"] = free.pop(pick)["line_id"]
+            stored_keys[key] -= 1
+        else:
+            line["line_id"] = new_line_id()
+
+
+def strip_line_ids(line_items) -> list[dict]:
+    """Copies of ``line_items`` without their line ids, for a new record built from an old
+    one that must not share its line identities (a duplicate)."""
+    return [{k: v for k, v in line.items() if k != "line_id"} if isinstance(line, dict) else line
+            for line in line_items or []]

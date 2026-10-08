@@ -89,8 +89,12 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     "pieces",
     "cost_total",
     "cost_price",
-    # Status - children start as available regardless of parent's terminal status
+    # Status - children start as available regardless of parent's terminal status, so
+    # they never carry the parent's document or line pairing either
     "status",
+    "status_doc_id",
+    "status_doc_number",
+    "status_line_entity_id",
     # Timestamps - set fresh
     "created_at",
     "updated_at",

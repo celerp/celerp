@@ -484,6 +484,8 @@
   "doc.expense": "مصروف",
   "doc.export_line_items_csv": "تصدير البنود إلى CSV",
   "doc.fulfilled": "تم تنفيذه",
+  "line.invalid_line_id": "السطر {line} يحمل معرّف سطر غير صالح.",
+  "line.duplicate_line_id": "السطر {line} يكرر معرّف سطر آخر.",
   "doc.fully_received": "تلقى بالكامل",
   "doc.goods_received": "بضاعة مستلمة",
   "doc.gross_weight": "الوزن الإجمالي",

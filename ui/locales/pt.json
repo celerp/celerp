@@ -484,6 +484,8 @@
   "doc.expense": "Despesa",
   "doc.export_line_items_csv": "Exportar itens de linha para CSV",
   "doc.fulfilled": "Processado",
+  "line.invalid_line_id": "A linha {line} tem um identificador de linha inválido.",
+  "line.duplicate_line_id": "A linha {line} repete o identificador de outra linha.",
   "doc.fully_received": "Totalmente recebido",
   "doc.goods_received": "Mercadorias recebidas",
   "doc.gross_weight": "Peso bruto",
