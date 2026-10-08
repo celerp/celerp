@@ -502,6 +502,7 @@
   "lines.cannot_fulfil": "Não é possível processar: {reasons}",
   "lines.cannot_revert": "Não é possível recolher: {reasons}",
   "lines.revert_closed": "Não é possível recolher mercadorias em um registro fechado; reabra-o primeiro.",
+  "lines.shipped_elsewhere": "{lines} saiu em um documento. Marque-o como disponível nesse documento.",
   "lines.revert_status": "Não é possível recolher mercadorias enquanto o registro estiver neste status.",
   "lines.shipment_ambiguous": "{sku} foi enviado neste registro, mas nada registra para qual linha. Defina-o primeiro como disponível.",
   "lines.out_on_memo": "{sku} está fora em consignação. Use Definir como disponível para recuperá-lo primeiro.",

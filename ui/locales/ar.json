@@ -502,6 +502,7 @@
   "lines.cannot_fulfil": "تعذر تنفيذ الطلب: {reasons}",
   "lines.cannot_revert": "تعذر الاسترجاع: {reasons}",
   "lines.revert_closed": "لا يمكن استرجاع البضائع في سجل مغلق؛ أعد فتحه أولًا.",
+  "lines.shipped_elsewhere": "{lines} خرج بموجب مستند. عيّنه متاحًا في ذلك المستند.",
   "lines.revert_status": "لا يمكن استرجاع البضائع والسجل في هذه الحالة.",
   "lines.shipment_ambiguous": "تم شحن {sku} في هذا السجل ولا يوجد ما يسجل لأي بند. اجعله متاحًا أولًا.",
   "lines.out_on_memo": "{sku} خارج بموجب مذكرة. استخدم تعيين كمتاح لاسترجاعه أولًا.",

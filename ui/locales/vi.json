@@ -502,6 +502,7 @@
   "lines.cannot_fulfil": "Không thể giao hàng: {reasons}",
   "lines.cannot_revert": "Không thể nhận lại: {reasons}",
   "lines.revert_closed": "Không thể nhận lại hàng trên chứng từ đã đóng; hãy mở lại trước.",
+  "lines.shipped_elsewhere": "{lines} đã xuất theo một chứng từ. Hãy đặt là có sẵn trên chứng từ đó.",
   "lines.revert_status": "Không thể nhận lại hàng khi chứng từ đang ở trạng thái này.",
   "lines.shipment_ambiguous": "{sku} đã được giao trên bản ghi này nhưng không ghi nhận cho dòng nào. Hãy đặt lại là có sẵn trước.",
   "lines.out_on_memo": "{sku} đang được gửi theo phiếu ký gửi. Dùng Đặt là có sẵn để lấy về trước.",

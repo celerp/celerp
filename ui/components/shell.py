@@ -78,6 +78,46 @@ function _copiedFeedback(btn, restoreLabel) {
   btn.textContent = window.__shellI18n.copied;
   setTimeout(function() { btn.textContent = restoreLabel; }, 2000);
 }
+// Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
+// Each row is named by its line id; a page whose rows do not all carry one names them by
+// item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
+// the operation key the page was rendered with, so the same action sent again after a lost
+// answer is recorded once. A second click while a request is in flight sends nothing.
+// Resolves true on success; otherwise the reason is shown.
+var _celerpLineActionBusy = false;
+async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
+  if (_celerpLineActionBusy) return false;
+  var fd = new FormData();
+  celerpLineSelection(rows).forEach(function(kv) { fd.append(kv[0], kv[1]); });
+  (fields || []).forEach(function(kv) { fd.append(kv[0], kv[1]); });
+  if (key) fd.append('idempotency_key', key);
+  _celerpLineActionBusy = true;
+  var msg = fallbackMsg;
+  try {
+    var resp = await fetch(url, {method: 'POST', body: fd});
+    if (resp.status === 204) return true;
+    try {
+      var trig = resp.headers.get('HX-Trigger');
+      if (trig) { var t = JSON.parse(trig); if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message; }
+    } catch (e) {}
+  } catch (e) {
+  } finally {
+    _celerpLineActionBusy = false;
+  }
+  celerpToast(msg, 'error');
+  return false;
+}
+// The [name, value] pairs naming the chosen rows: line_id each when every row has one,
+// otherwise the item each row binds.
+function celerpLineSelection(rows) {
+  var byLine = rows.every(function(cb) { return cb.getAttribute('data-line-id'); });
+  var out = [];
+  rows.forEach(function(cb) {
+    var id = byLine ? cb.getAttribute('data-line-id') : cb.value;
+    if (id) out.push([byLine ? 'line_id' : 'selected', id]);
+  });
+  return out;
+}
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }

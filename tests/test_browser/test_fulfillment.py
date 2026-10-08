@@ -335,7 +335,9 @@ def test_stock_shortage_returns_409_with_details(api):
     r3 = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_id]})
     assert r3.status_code == 409, f"Expected 409 for stock shortage, got {r3.status_code}: {r3.text}"
 
-    detail = r3.json().get("detail", "")
+    detail = r3.json()["detail"]
+    assert detail["message_key"] == "lines.cannot_fulfil"
+    detail = detail["message"]
     assert "Unobtainium Block" in detail or sku in detail or "short" in detail.lower() or "stock" in detail.lower(), \
         f"Error message should name the item/shortage. Got: {detail!r}"
 
@@ -372,8 +374,8 @@ def test_double_fulfill_returns_error(api):
 
 def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     """Set-as-available over a MIXED selection (one reserved line + one sold line)
-    returns BOTH to available. The client handler partitions the checked rows by
-    data-item-status and dispatches reserve-lines(release) + revert-lines together."""
+    returns BOTH to available, in one set-available request that takes back the shipped
+    line and releases the held one."""
     sku_r = f"MIX-RES-{uuid.uuid4().hex[:6]}"
     sku_s = f"MIX-SOLD-{uuid.uuid4().hex[:6]}"
     item_r = _create_item(api, sku_r, qty=1)
@@ -414,8 +416,8 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     for i in range(boxes.count()):
         boxes.nth(i).check()
     page.locator("#li-bulk-select").select_option(value="li-revert")
-    # Set as available is a plain button (not an HTMX submit form): its handler
-    # awaits both the release and revert calls before reloading.
+    # Set as available is a plain button (not an HTMX submit form): its handler sends one
+    # set-available request before reloading.
     page.locator("#li-bulk-revert-btn").click()
 
     # Both partitions land available: the reserved half released, the sold half reverted.
@@ -430,6 +432,58 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     assert deadline_ok, (
         f"mixed set-as-available did not route both: reserved-half={s_r}, sold-half={s_s}"
     )
+
+
+def _shipped_memo(api, sku, qty):
+    item = _create_item(api, sku, qty=qty)
+    r = api.post("/docs", json={
+        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}",
+        "line_items": [{"sku": sku, "name": sku, "quantity": qty, "unit_price": 10.0,
+                        "line_total": 10.0 * qty, "item_id": item, "sell_by": "piece"}],
+        "total": 10.0 * qty,
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+    assert api.post(f"/docs/{doc_id}/finalize").status_code in {200, 201}
+    line_id = api.get(f"/docs/{doc_id}").json()["line_items"][0]["line_id"]
+    assert api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_ids": [line_id]}).status_code == 200
+    assert api.get(f"/items/{item}").json()["status"] == "memo_out"
+    return doc_id, item
+
+
+def _open_return(page, ui_server, doc_id):
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo return")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-revert")
+    field = page.locator(".li-return-qty input").first
+    field.wait_for(state="visible")
+    return field
+
+
+def test_memo_part_return_uses_the_line_quantity_field(page, ui_server, api):
+    """Part of a memo line comes back through its own quantity field, in one request."""
+    doc_id, item = _shipped_memo(api, f"MPR-{uuid.uuid4().hex[:6]}", 5)
+    page.on("dialog", lambda d: d.accept())
+    field = _open_return(page, ui_server, doc_id)
+    field.fill("2")
+    page.locator("#li-bulk-revert-btn").click()
+    for _ in range(30):
+        st = api.get(f"/items/{item}").json()
+        if float(st["quantity"]) == 3:
+            break
+        page.wait_for_timeout(200)
+    assert st["status"] == "memo_out" and float(st["quantity"]) == 3, st
+
+
+def test_cancelling_the_return_sends_nothing(page, ui_server, api):
+    doc_id, item = _shipped_memo(api, f"MPC-{uuid.uuid4().hex[:6]}", 2)
+    page.on("dialog", lambda d: d.dismiss())
+    _open_return(page, ui_server, doc_id)
+    page.locator("#li-bulk-revert-btn").click()
+    page.wait_for_timeout(1000)
+    st = api.get(f"/items/{item}").json()
+    assert st["status"] == "memo_out" and float(st["quantity"]) == 2, st
 
 
 def test_draft_quotation_bulk_reserve(page, ui_server, api):

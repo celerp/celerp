@@ -34,7 +34,9 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_doc_files_section
-from ui.components.operation_key import operation_key_input, operation_key_vals, submitted_operation_key
+from ui.components.operation_key import (
+    operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
+)
 
 
 from celerp.output.doc_print import (
@@ -824,6 +826,19 @@ def _render_fulfillment_badge(doc: dict):
     if fs == "partial":
         return Span(t("doc.partially_fulfilled"), cls="badge badge--amber")
     return None
+
+
+def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float | None = None) -> FT:
+    """A quantity field for part of one line, with the unit it is counted in. ``max_qty`` is
+    the most the line allows; the page checks the entry against it before anything is sent,
+    and the server proves it again."""
+    return Span(
+        Input(type="number", name=name, min="0", step="any", max=f"{max_qty:g}",
+              value=f"{(max_qty if default is None else default):g}", data_max=f"{max_qty:g}",
+              cls="li-qty-input", style="width:6em;"),
+        Span(unit_label, cls="meta-value meta-value--muted unit-label") if unit_label else None,
+        cls="li-qty-field",
+    )
 
 
 def _action_error(msg: str):
@@ -3688,33 +3703,41 @@ celerpUpdateBulkAlloc();
     # Fulfillment toggle routes
     # -----------------------------------------------------------------------
 
-    @app.post("/docs/{entity_id}/fulfill-lines")
-    async def doc_fulfill_lines(request: Request, entity_id: str):
+    def _line_action_form(form, action: str) -> dict:
+        """The selection a line action form names: ``line_id`` per chosen line (older rows
+        without one send their item as ``selected``), and the page's key for this action, so
+        the same action sent again is answered with the first result."""
+        return {"line_ids": list(form.getlist("line_id")), "line_entity_ids": list(form.getlist("selected")),
+                "idempotency_key": required_operation_key(form, action)}
+
+    async def _line_action_proxy(request: Request, call, redirect: str | None = None):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
-        line_entity_ids = list(form.getlist("selected"))
         try:
-            await api.fulfill_lines(token, entity_id, line_entity_ids)
+            kwargs = call(form)
+            send, entity_id = kwargs.pop("_send"), kwargs.pop("entity_id")
+            await send(token, entity_id, **kwargs)
+        except ValueError as exc:
+            return _action_error(str(exc))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
             return _action_error(detail)
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _R("", status_code=204, headers={"HX-Redirect": redirect} if redirect else None)
 
-    @app.post("/docs/{entity_id}/revert-lines")
-    async def doc_revert_lines(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
-        token = _token(request)
-        if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+    @app.post("/docs/{entity_id}/fulfill-lines")
+    async def doc_fulfill_lines(request: Request, entity_id: str):
+        return await _line_action_proxy(
+            request, lambda form: {"_send": api.fulfill_lines, "entity_id": entity_id, **_line_action_form(form, "fulfil")},
+            redirect=f"/docs/{entity_id}")
+
+    def _set_available_form(form, entity_id: str, is_list: bool) -> dict:
         import re as _re_qty
-        form = await request.form()
-        line_entity_ids = list(form.getlist("selected"))
-        # qty[<entity_id>] marks a line where only part of the lot is coming back.
+        # qty[<line id>] marks a line where only part of what went out is coming back.
         quantities: dict[str, float] = {}
         for key, value in form.multi_items():
             m = _re_qty.match(r"qty\[(.+)\]$", key)
@@ -3723,40 +3746,32 @@ celerpUpdateBulkAlloc();
             try:
                 quantities[m.group(1)] = float(value)
             except (TypeError, ValueError):
-                return _action_error(t("documents.invalid_returned_quantity", id=m.group(1)))
-        try:
-            await api.unfulfill_lines(token, entity_id, line_entity_ids, quantities=quantities or None)
-        except APIError as e:
-            if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
-            return _action_error(detail)
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+                raise ValueError(t("documents.invalid_returned_quantity", id=m.group(1)))
+        return {"_send": api.set_lines_available, "entity_id": entity_id, **_line_action_form(form, "set-available"),
+                "quantities": quantities, "is_list": is_list}
 
-    async def _reserve_lines_proxy(request: Request, entity_id: str, is_list: bool):
-        from starlette.responses import Response as _R
-        token = _token(request)
-        if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-        form = await request.form()
-        line_entity_ids = list(form.getlist("selected"))
+    @app.post("/docs/{entity_id}/set-available")
+    async def doc_set_available(request: Request, entity_id: str):
+        return await _line_action_proxy(
+            request, lambda form: _set_available_form(form, entity_id, False))
+
+    @app.post("/lists/{entity_id}/set-available")
+    async def list_set_available(request: Request, entity_id: str):
+        return await _line_action_proxy(
+            request, lambda form: _set_available_form(form, entity_id, True))
+
+    def _reserve_form(form, entity_id: str, is_list: bool) -> dict:
         new_status = form.get("new_status") or "reserved"
-        try:
-            await api.reserve_lines(token, entity_id, line_entity_ids, new_status, is_list=is_list)
-        except APIError as e:
-            if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
-            return _action_error(detail)
-        return _R("", status_code=204)
+        return {"_send": api.reserve_lines, "entity_id": entity_id, **_line_action_form(form, new_status),
+                "new_status": new_status, "is_list": is_list}
 
     @app.post("/docs/{entity_id}/reserve-lines")
     async def doc_reserve_lines(request: Request, entity_id: str):
-        return await _reserve_lines_proxy(request, entity_id, is_list=False)
+        return await _line_action_proxy(request, lambda form: _reserve_form(form, entity_id, False))
 
     @app.post("/lists/{entity_id}/reserve-lines")
     async def list_reserve_lines(request: Request, entity_id: str):
-        return await _reserve_lines_proxy(request, entity_id, is_list=True)
+        return await _line_action_proxy(request, lambda form: _reserve_form(form, entity_id, True))
 
     @app.post("/docs/{entity_id}/receive-return")
     async def doc_receive_return(request: Request, entity_id: str):
@@ -5793,11 +5808,13 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     show_fulfill=True: add Set as shipped / Set as available as dropdown options.
     show_reserve=True: add Set as reserved (ledger-neutral) as a dropdown option.
+    show_release=True: add Set as available alone, for a draft that may still hold stock
+    (a draft cannot reserve, but gives back what it holds).
     is_inbound=True: show Receive Goods / Return Goods targeting POST/DELETE /receive.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
@@ -5820,7 +5837,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             options.append(Option(_fulfill_label, value="li-fulfill"))
         if show_reserve:
             options.append(Option(_reserve_label, value="li-reserve"))
-        if show_fulfill or show_reserve:
+        if show_fulfill or show_reserve or show_release:
             options.append(Option(_revert_label, value="li-revert"))
     else:
         options = [
@@ -5863,7 +5880,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                    cls="btn btn--secondary btn--sm", style="display:none",
                    onclick="liBulkSetScanned(false)"),
         ]
-    if show_fulfill or show_reserve:
+    if show_fulfill or show_reserve or show_release:
         if is_inbound:
             # Build hidden line-item inputs for POST /receive from the doc's line items.
             line_inputs = []
@@ -5921,9 +5938,9 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                            cls="btn btn--primary btn--sm", style="display:none",
                            onclick="liBulkReserveConfirmed()"),
                 )
-            # "Set as available" dispatches per line: a reserved line releases via reserve-lines,
-            # a sold/memo line reverts via revert-lines. A plain button (not an HTMX form) so the
-            # handler can await BOTH calls before refreshing - a mixed selection needs two routes.
+            # "Set as available" sends the whole selection to set-available in one request: held
+            # lines give their hold back, shipped lines take their goods back. A plain button (not
+            # an HTMX form) so the handler can check every return quantity and confirm first.
             children.append(
                 Button(_revert_label, type="button", id="li-bulk-revert-btn",
                        cls="btn btn--warning btn--sm", style="display:none",
@@ -5934,6 +5951,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         id="li-bulk-toolbar",
         cls="bulk-toolbar",
         style="display:none",
+        **operation_key_attrs(),
     )
 
 
@@ -6844,11 +6862,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if pol["counting"]:
                 _desc_cell = Td(li.get("description") or li.get("name") or "--", cls="col-desc")
             cells = [
-                # data-* carries what the line currently has out, so a revert can offer to take
-                # back part of it instead of writing the whole lot off as returned.
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id,
                          **{"data-item-status": str((item_status_map or {}).get(li_entity_id, "")),
-                            "data-out-qty": f"{float(li.get('quantity') or 0):g}"}),
+                            "data-line-id": str(li.get("line_id") or "")}),
                    cls="col-checkbox li-checkbox-cell"),
                 Td(_static_ident_cell_content(li) if pol["counting"]
                    else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
@@ -7192,8 +7208,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _pl_bar,
                 cls="line-toolbar",
             ),
+            # Lists reserve while still drafts; a draft document cannot (acquiring stock is
+            # gated by its status) but gives back any hold it kept from before.
             _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF),
-                             show_reserve=is_list),
+                             show_reserve=is_list, show_release=_draft_show_item_status),
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
@@ -8767,27 +8785,22 @@ async function celerpCsvImport(input, entityId) {{
     }}
   }};
   async function _liDraftSetStatus(target){{
-    var ids=[];
-    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
-    if(!ids.length){{
+    var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked'))
+      .filter(function(cb){{return cb.value;}}):[];
+    if(!rows.length){{
       if(window.celerpToast)celerpToast(_L.no_inventory_status,'error');
       return;
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
-    if(!window.confirm(_confirm.replace('{{n}}', ids.length))) return;
+    if(!window.confirm(_confirm.replace('{{n}}', rows.length))) return;
     // Persist pending edits first so the server sees every selected line, then act.
     await _celerpPersist();
-    var fd=new FormData();
-    ids.forEach(function(id){{fd.append('selected',id);}});
-    fd.append('new_status',target);
-    var resp=await fetch(_CELERP_BASE + _CELERP_EID + '/reserve-lines',{{method:'POST',body:fd}});
-    if(resp.status===204){{ window.location.reload(); return; }}
-    var msg=(target==='reserved'?_L.could_not_set_reserved:_L.could_not_set_available);
-    try{{
-      var trig=resp.headers.get('HX-Trigger');
-      if(trig){{ var t=JSON.parse(trig); if(t&&t.celerpToast&&t.celerpToast.message) msg=t.celerpToast.message; }}
-    }}catch(e){{}}
-    if(window.celerpToast) celerpToast(msg,'error');
+    var _bar=document.getElementById('li-bulk-toolbar');
+    var _key=_bar?_bar.getAttribute('data-operation-key'):'';
+    var ok=(target==='reserved')
+      ? await celerpLineAction(_CELERP_BASE + _CELERP_EID + '/reserve-lines', rows, [['new_status','reserved']], _key, _L.could_not_set_reserved)
+      : await celerpLineAction(_CELERP_BASE + _CELERP_EID + '/set-available', rows, [], _key, _L.could_not_set_available);
+    if(ok) window.location.reload();
   }}
   window.liBulkReserveConfirmed=function(){{ _liDraftSetStatus('reserved'); }};
   window.liBulkAvailableConfirmed=function(){{ _liDraftSetStatus('available'); }};
@@ -8917,7 +8930,8 @@ async function celerpCsvImport(input, entityId) {{
                 _li_status = item_status_map.get(li_eid, "") if item_status_map else ""
                 cells.append(Td(
                     Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku,
-                          data_item_status=_li_status, disabled=_cb_disabled),
+                          data_item_status=_li_status, data_line_id=str(li.get("line_id") or ""),
+                          disabled=_cb_disabled),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
@@ -8976,8 +8990,17 @@ async function celerpCsvImport(input, entityId) {{
             if pol["customs"]:
                 cells.append(Td(format_value(li.get("hs_code") or None), cls="col-hs"))
                 cells.append(Td(format_value(li.get("country_of_origin") or None), cls="col-origin"))
+            # A line out on memo can come back in part: its field, in the units it went out
+            # in, shows when Set as available is chosen.
+            _return_qty = None
+            if (_fin_show_bulk and li.get("line_id") and qty > 0
+                    and (item_status_map or {}).get(li_eid) == "memo_out"):
+                _return_qty = Div(
+                    _line_qty_input(f"qty[{li['line_id']}]", qty, li.get("unit") or li.get("sell_by") or ""),
+                    cls="li-return-qty", style="display:none;",
+                    title=t("documents.memo_return_prompt", qty=f"{qty:g}"))
             cells.extend([
-                Td(qty_label(li), cls="col-qty"),
+                Td(qty_label(li), _return_qty, cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(li.get("tax_rate")), cls="col-tax"),
@@ -9061,7 +9084,6 @@ async function celerpCsvImport(input, entityId) {{
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
     "sold_reserve_warn": t("documents.sold_reserve_warn"),
-    "memo_return_prompt": t("documents.memo_return_prompt"),
     "qty_between": t("documents.qty_between"),
   })};
   var table=document.getElementById('{_fin_bulk_id}');
@@ -9102,6 +9124,9 @@ async function celerpCsvImport(input, entityId) {{
     else if(action==='li-fulfill'){{ if(fulfillBtn) fulfillBtn.style.display=''; }}
     else if(action==='li-reserve'){{ if(reserveBtn) reserveBtn.style.display=''; }}
     else if(action==='li-revert'){{ if(revertBtn) revertBtn.style.display=''; }}
+    if(table) table.querySelectorAll('.li-return-qty').forEach(function(el){{
+      el.style.display=(action==='li-revert')?'':'none';
+    }});
   }};
   window.liBulkLabelsConfirmed=function(){{
     var ids=[];
@@ -9122,11 +9147,15 @@ async function celerpCsvImport(input, entityId) {{
     document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
   }};
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
+  // The operation key this page was rendered with (see ui/components/operation_key.py).
+  function _liKey(){{ return toolbar?(toolbar.getAttribute('data-operation-key')||''):''; }}
+  // Set as shipped posts the HTMX form: it names each chosen line and carries the page's key.
   window.submitLiBulkAction=function(formEl){{
-    formEl.querySelectorAll('input[name="selected"]').forEach(function(el){{el.remove();}});
-    if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{
-      if(!cb.value) return;
-      var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=cb.value;
+    formEl.querySelectorAll('input[name="selected"],input[name="line_id"],input[name="idempotency_key"]')
+      .forEach(function(el){{el.remove();}});
+    var pairs=celerpLineSelection(_liCheckedRows()).concat([['idempotency_key',_liKey()]]);
+    pairs.forEach(function(kv){{
+      var inp=document.createElement('input');inp.type='hidden';inp.name=kv[0];inp.value=kv[1];
       formEl.appendChild(inp);
     }});
     return true;
@@ -9134,81 +9163,52 @@ async function celerpCsvImport(input, entityId) {{
   function _liCheckedRows(){{
     return table?Array.prototype.slice.call(table.querySelectorAll('.li-select:checked')):[];
   }}
-  async function _liShowErr(resp,fallback){{
-    var msg=fallback;
-    try{{
-      var trig=resp.headers.get('HX-Trigger');
-      if(trig){{ var t=JSON.parse(trig); if(t&&t.celerpToast&&t.celerpToast.message) msg=t.celerpToast.message; }}
-    }}catch(e){{}}
-    if(window.celerpToast) celerpToast(msg,'error');
-  }}
-  // "Set as reserved": status change on the selected lines. Single fetch; reload only on
-  // 204 (the proxy answers 200 with a toast header on failure). A line this doc already
-  // shipped is taken back into stock first (sale reversed), so the confirm says exactly that.
+
+  // "Set as reserved": status change on the selected lines, one request. A line this doc
+  // already shipped is taken back into stock first (sale reversed), so the confirm says so.
   window.liBulkReserveConfirmed=async function(){{
     var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
-    var ids=rows.map(function(cb){{return cb.value;}});
     var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
-    var msg=_L.confirm_set_reserved.replace('{{n}}', ids.length);
+    var msg=_L.confirm_set_reserved.replace('{{n}}', rows.length);
     if(sold){{
       msg=_L.sold_reserve_warn.replace('{{n}}', sold);
     }}
     if(!window.confirm(msg)) return;
-    var fd=new FormData();
-    ids.forEach(function(id){{fd.append('selected',id);}});
-    fd.append('new_status','reserved');
-    var resp=await fetch(_liBase+_liEid+'/reserve-lines',{{method:'POST',body:fd}});
-    if(resp.status===204){{ window.location.reload(); return; }}
-    await _liShowErr(resp,_L.could_not_set_reserved);
+    if(await celerpLineAction(_liBase+_liEid+'/reserve-lines', rows, [['new_status','reserved']], _liKey(), _L.could_not_set_reserved))
+      window.location.reload();
   }};
-  // "Set as available": a reserved line releases via reserve-lines; a sold/memo line reverts
-  // via revert-lines. Partition the selection by data-item-status, issue both fetches, and only
-  // refresh once both return 204. A single memo line can be part-returned (the rest stays out).
+  // "Set as available": one request for the whole selection. Held lines give their hold back,
+  // shipped lines take their goods back, and a memo line can come back in part (its quantity
+  // field). Every quantity is checked and the confirm answered before anything is sent;
+  // cancelling sends nothing.
   window.liBulkAvailableConfirmed=async function(){{
-    var rows=_liCheckedRows();
+    var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
-    var releaseIds=[], revertRows=[];
-    rows.forEach(function(cb){{
-      if(!cb.value) return;
+    var acting=rows.filter(function(cb){{
       var st=cb.getAttribute('data-item-status')||'';
-      if(st==='reserved') releaseIds.push(cb.value);
-      else if(st==='sold'||st==='memo_out') revertRows.push(cb);
-      // already-available (or otherwise non-actionable) lines are skipped.
+      return st==='reserved'||st==='sold'||st==='memo_out';
     }});
-    if(!releaseIds.length && !revertRows.length){{
-      if(window.celerpToast)celerpToast(_L.none_can_available,'error');
-      return;
-    }}
-    var total=releaseIds.length+revertRows.length;
-    if(!window.confirm(_L.confirm_set_available.replace('{{n}}', total))) return;
-    var calls=[];
-    if(releaseIds.length){{
-      var fd=new FormData();
-      releaseIds.forEach(function(id){{fd.append('selected',id);}});
-      fd.append('new_status','available');
-      calls.push(fetch(_liBase+_liEid+'/reserve-lines',{{method:'POST',body:fd}}));
-    }}
-    if(revertRows.length){{
-      var rf=new FormData();
-      revertRows.forEach(function(cb){{rf.append('selected',cb.value);}});
-      if(revertRows.length===1){{
-        var cb=revertRows[0];
-        var outQty=parseFloat(cb.getAttribute('data-out-qty')||'0');
-        if(cb.getAttribute('data-item-status')==='memo_out'&&outQty>1){{
-          var answer=window.prompt(_L.memo_return_prompt.replace('{{qty}}', outQty),String(outQty));
-          if(answer===null) return;
-          var qty=parseFloat(answer);
-          if(!(qty>0)||qty>outQty){{ alert(_L.qty_between.replace('{{qty}}', outQty)); return; }}
-          if(qty!==outQty) rf.append('qty['+cb.value+']',String(qty));
-        }}
+    if(!acting.length){{ if(window.celerpToast)celerpToast(_L.none_can_available,'error'); return; }}
+    var fields=[];
+    for(var i=0;i<acting.length;i++){{
+      var tr=acting[i].closest('tr');
+      var inp=tr?tr.querySelector('.li-return-qty input'):null;
+      if(!inp) continue;
+      var max=parseFloat(inp.getAttribute('data-max'));
+      var raw=String(inp.value||'').trim();
+      var qty=parseFloat(raw);
+      if(!raw||!(qty>0)||qty>max){{
+        if(window.celerpToast) celerpToast(_L.qty_between.replace('{{qty}}', max),'error');
+        inp.focus();
+        return;
       }}
-      calls.push(fetch('/docs/'+_liEid+'/revert-lines',{{method:'POST',body:rf}}));
+      // The whole line coming back needs no quantity: everything still out returns.
+      if(qty!==max) fields.push([inp.name,String(qty)]);
     }}
-    var resps=await Promise.all(calls);
-    if(resps.every(function(r){{return r.status===204;}})){{ window.location.reload(); return; }}
-    var bad=resps.filter(function(r){{return r.status!==204;}})[0];
-    await _liShowErr(bad,_L.could_not_set_available);
+    if(!window.confirm(_L.confirm_set_available.replace('{{n}}', acting.length))) return;
+    if(await celerpLineAction(_liBase+_liEid+'/set-available', acting, fields, _liKey(), _L.could_not_set_available))
+      window.location.reload();
   }};
 }})();
 """) if _fin_show_bulk else None,

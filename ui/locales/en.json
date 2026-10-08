@@ -560,6 +560,7 @@
   "lines.cannot_fulfil": "Cannot fulfill: {reasons}",
   "lines.cannot_revert": "Cannot take back: {reasons}",
   "lines.revert_closed": "Goods cannot be taken back on a closed record; reopen it first.",
+  "lines.shipped_elsewhere": "{lines} went out on a document. Set it as available on that document.",
   "lines.revert_status": "Goods cannot be taken back while the record is in this status.",
   "lines.shipment_ambiguous": "{sku} was shipped on this record but nothing records for which line. Set it as available first.",
   "lines.out_on_memo": "{sku} is out on memo. Use Set as available to take it back first.",

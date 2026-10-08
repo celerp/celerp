@@ -6266,6 +6266,38 @@ async def reserve_list_lines(
                                             may_acquire=may_acquire, commit=False))
 
 
+@lists_router.post("/{entity_id}/set-available")
+async def set_list_lines_available(
+    entity_id: str,
+    body: FulfillLinesRequest,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("fulfill_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Give back what chosen List lines hold. A List never ships, so a line whose goods are
+    sold or out on memo is refused: they are taken back on the document that shipped them."""
+    row = await _get_list_for_update(session, company_id, entity_id)
+
+    async def run(indices: list[int]) -> dict:
+        line_items = row.state.get("line_items", [])
+        locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+        shipped = []
+        for i in indices:
+            bound = locked.get(str(line_item_id(line_items[i]) or ""))
+            if not by_line.get(i) and bound is not None and bound.state.get("status") in ("sold", "memo_out"):
+                shipped.append(str(line_items[i].get("sku") or i + 1))
+        if shipped:
+            names = ", ".join(shipped)
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.shipped_elsewhere",
+                f"{names} went out on a document. Set it as available on that document.", lines=names))
+        return await _reserve_lines_impl(row, entity_id, "available", indices, user, session,
+                                         may_acquire=False, commit=False)
+
+    return await _line_action(session, company_id, user, row, "set-available", body, run)
+
+
 @lists_router.post("/{entity_id}/revert-to-draft")
 async def revert_list_to_draft(
     entity_id: str,
@@ -7367,26 +7399,35 @@ def _return_order(lots: list[Projection], bound: str | None) -> list[Projection]
     return sorted(lots, key=lambda p: (p.entity_id == bound, p.entity_id))
 
 
-async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices: list[int], user, session) -> dict:
+def _check_revert_status(state: dict) -> None:
+    """Refuse taking goods back while the document's status does not allow it."""
+    status = state.get("status")
+    if status == "closed":
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.revert_closed", "Goods cannot be taken back on a closed record; reopen it first."))
+    if status not in REVERTIBLE_STATUSES[state.get("doc_type", "")]:
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.revert_status", "Goods cannot be taken back while the record is in this status."))
+
+
+async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices: list[int], user, session,
+                             *, holding: frozenset[int] = frozenset()) -> dict:
     """Take back what this document shipped, whole or in part, without committing.
 
     ``indices`` are the chosen lines: each gives back every lot it shipped. With none, the
     legacy body names the lots. Every lot is proved before anything changes: it is out
     (sold or on memo) for this document and its shipment's line can be told. Any line or
-    lot that fails refuses the whole request."""
+    lot that fails refuses the whole request. A line in ``holding`` gives back a hold
+    elsewhere, so having nothing out is not an error for it; the status is checked only
+    when something is to come back."""
     company_id = row.company_id
     entity_id = row.entity_id
     state = row.state
     doc_type = state.get("doc_type", "")
-    allowed = REVERTIBLE_STATUSES.get(doc_type)
-    if allowed is None:
+    if doc_type not in REVERTIBLE_STATUSES:
         raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
-    if state.get("status") == "closed":
-        raise HTTPException(status_code=409, detail=refusal(
-            "lines.revert_closed", "Goods cannot be taken back on a closed record; reopen it first."))
-    if state.get("status") not in allowed:
-        raise HTTPException(status_code=409, detail=refusal(
-            "lines.revert_status", "Goods cannot be taken back while the record is in this status."))
+    if not holding:
+        _check_revert_status(state)
 
     line_items = state.get("line_items", [])
     quantities = body.quantities or {}
@@ -7427,9 +7468,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                 errors.append(_unattributed(eid))
         for i in indices:
             lots = [out[eid] for eid, idx in line_of.items() if idx == i]
+            name = line_items[i].get('sku') or line_items[i].get('description') or i + 1
             if not lots:
-                errors.append(f"{line_items[i].get('sku') or line_items[i].get('description') or i + 1}: "
-                              "nothing is out on this line")
+                if i not in holding:
+                    errors.append(f"{name}: nothing is out on this line")
+                elif str(line_items[i].get("line_id")) in quantities:
+                    errors.append(f"{name}: a hold is given back whole")
                 continue
             groups.append((str(line_items[i].get("line_id")), lots, line_item_id(line_items[i])))
     else:
@@ -7483,6 +7527,10 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         reasons = "; ".join(errors)
         raise HTTPException(status_code=422, detail=refusal(
             "lines.cannot_revert", f"Cannot take back: {reasons}", reasons=reasons))
+    if holding:
+        if not groups:
+            return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": []}
+        _check_revert_status(state)
 
     cid = uuid.UUID(str(company_id))
     uid = user.id
@@ -7771,6 +7819,47 @@ async def reserve_lines(
         session, company_id, user, row, "reserve", body,
         lambda indices: _reserve_lines_impl(row, entity_id, body.new_status, indices, user, session,
                                             may_acquire=may_acquire, commit=False))
+
+
+class SetAvailableRequest(RevertLinesRequest):
+    """Set chosen lines as available: a line that holds stock gives its hold back, a line
+    this document shipped takes its goods back. ``quantities`` (by line id) returns part of
+    a shipped line; a hold is always given back whole."""
+
+
+async def _set_available_impl(row: Projection, body: SetAvailableRequest, indices: list[int], user, session) -> dict:
+    """Give back holds and take back shipments on the chosen lines, without committing.
+    Every line is proved before anything changes, so the lines come back together or not
+    at all."""
+    _locked, by_line = await _line_stock(session, row.company_id, row.entity_id,
+                                         row.state.get("line_items", []), indices)
+    holding = frozenset(i for i in indices if by_line.get(i))
+    taken = await _revert_lines_impl(row, body, indices, user, session, holding=holding)
+    released: list[str] = []
+    if holding:
+        released = (await _reserve_lines_impl(row, row.entity_id, "available", sorted(holding), user, session,
+                                              may_acquire=False, commit=False))["released"]
+    return {**taken, "released": released}
+
+
+@router.post("/{entity_id}/set-available")
+async def set_lines_available(
+    entity_id: str,
+    body: SetAvailableRequest,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("fulfill_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set chosen lines of an invoice or memo as available in one request: holds are given
+    back and shipped goods are taken back, all or nothing."""
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    doc_type = row.state.get("doc_type", "")
+    if doc_type not in RESERVABLE_DOC_STATUSES:
+        raise HTTPException(status_code=422, detail=f"set-available is not supported for doc type: {doc_type}")
+    return await _line_action(
+        session, company_id, user, row, "set-available", body,
+        lambda indices: _set_available_impl(row, body, indices, user, session))
 
 
 class ReturnReceivedItem(BaseModel):

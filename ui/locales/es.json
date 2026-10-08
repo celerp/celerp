@@ -502,6 +502,7 @@
   "lines.cannot_fulfil": "No se puede procesar: {reasons}",
   "lines.cannot_revert": "No se puede recuperar: {reasons}",
   "lines.revert_closed": "No se puede recuperar mercancía en un registro cerrado; reábralo primero.",
+  "lines.shipped_elsewhere": "{lines} salió en un documento. Márquelo como disponible en ese documento.",
   "lines.revert_status": "No se puede recuperar mercancía mientras el registro está en este estado.",
   "lines.shipment_ambiguous": "{sku} se envió en este registro pero nada registra para qué línea. Márquelo primero como disponible.",
   "lines.out_on_memo": "{sku} está fuera en consignación. Use Marcar como disponible para recuperarlo primero.",

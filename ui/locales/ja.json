@@ -502,6 +502,7 @@
   "lines.cannot_fulfil": "出荷できません: {reasons}",
   "lines.cannot_revert": "戻せません: {reasons}",
   "lines.revert_closed": "クローズしたレコードでは商品を戻せません。先に再オープンしてください。",
+  "lines.shipped_elsewhere": "{lines} は伝票で出荷されています。その伝票で在庫ありに設定してください。",
   "lines.revert_status": "この状態のレコードでは商品を戻せません。",
   "lines.shipment_ambiguous": "{sku} はこの記録で出荷されましたが、どの行か記録がありません。まず在庫ありに戻してください。",
   "lines.out_on_memo": "{sku} はメモで貸出中です。まず「在庫ありに設定」で戻してください。",

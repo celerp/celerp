@@ -502,6 +502,7 @@
   "lines.cannot_fulfil": "Ausführung nicht möglich: {reasons}",
   "lines.cannot_revert": "Rücknahme nicht möglich: {reasons}",
   "lines.revert_closed": "Bei einem geschlossenen Datensatz kann keine Ware zurückgenommen werden; öffnen Sie ihn zuerst wieder.",
+  "lines.shipped_elsewhere": "{lines} ist mit einem Beleg ausgegangen. Setzen Sie es auf diesem Beleg auf verfügbar.",
   "lines.revert_status": "In diesem Status des Datensatzes kann keine Ware zurückgenommen werden.",
   "lines.shipment_ambiguous": "{sku} wurde mit diesem Datensatz versandt, aber nichts hält fest, für welche Zeile. Setzen Sie es zuerst auf verfügbar.",
   "lines.out_on_memo": "{sku} ist auf Kommission draußen. Nehmen Sie es zuerst mit Als verfügbar setzen zurück.",

@@ -1528,30 +1528,39 @@ async def reopen_doc(token: str, entity_id: str, idempotency_key: str | None = N
         return _raise(await c.post(f"/docs/{entity_id}/reopen", json={"idempotency_key": idempotency_key})).json()
 
 
-async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
+async def fulfill_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                        line_entity_ids: list[str] | None = None, idempotency_key: str | None = None) -> dict:
+    """Ship the chosen lines, named by line id (or, on older rows, by their item)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={"line_entity_ids": line_entity_ids})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "idempotency_key": idempotency_key})).json()
 
 
-async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str],
-                          quantities: dict[str, float] | None = None) -> dict:
-    """Revert whole lines, or pass quantities={item_id: qty_coming_back} to take back only
-    part of a lot; the remainder stays out with the customer."""
-    payload: dict = {"line_entity_ids": line_entity_ids}
-    if quantities:
-        payload["quantities"] = quantities
+async def set_lines_available(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                              line_entity_ids: list[str] | None = None,
+                              quantities: dict[str, float] | None = None,
+                              idempotency_key: str | None = None, is_list: bool = False) -> dict:
+    """Set as available in one request: lines holding stock give it back, lines that shipped
+    take their goods back. quantities={line_id: qty_coming_back} takes back only part of a
+    memo line; the rest stays out with the customer."""
+    base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json=payload)).json()
+        return _raise(await c.post(f"{base}/{entity_id}/set-available", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "quantities": quantities or None, "idempotency_key": idempotency_key})).json()
 
 
-async def reserve_lines(token: str, entity_id: str, line_entity_ids: list[str],
-                        new_status: str, is_list: bool = False) -> dict:
+async def reserve_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                        line_entity_ids: list[str] | None = None, new_status: str,
+                        idempotency_key: str | None = None, is_list: bool = False) -> dict:
     """Set lines reserved or available (ledger-neutral). is_list routes to the list router,
     whose reserve-lines wrapper serves list rows (the docs router 404s them)."""
     base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
-        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines",
-                                   json={"line_entity_ids": line_entity_ids, "new_status": new_status})).json()
+        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "new_status": new_status, "idempotency_key": idempotency_key})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None,

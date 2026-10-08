@@ -502,6 +502,7 @@
   "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
   "lines.cannot_revert": "Tidak dapat mengambil kembali: {reasons}",
   "lines.revert_closed": "Barang tidak dapat diambil kembali pada catatan yang ditutup; buka kembali terlebih dahulu.",
+  "lines.shipped_elsewhere": "{lines} sudah keluar lewat sebuah dokumen. Tandai tersedia di dokumen tersebut.",
   "lines.revert_status": "Barang tidak dapat diambil kembali saat catatan dalam status ini.",
   "lines.shipment_ambiguous": "{sku} dikirim pada catatan ini tetapi tidak ada catatan untuk baris yang mana. Setel dulu sebagai tersedia.",
   "lines.out_on_memo": "{sku} sedang keluar sebagai memo. Gunakan Setel sebagai tersedia untuk menariknya kembali dulu.",
