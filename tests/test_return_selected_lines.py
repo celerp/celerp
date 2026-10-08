@@ -280,3 +280,25 @@ def test_return_copy_in_every_locale(key):
     from ui import i18n
     for code in i18n.available_langs():
         assert i18n.t(key, code) != key, (key, code)
+
+
+@pytest.mark.parametrize("by", ["line", "item"])
+async def test_return_part_of_a_piece_is_refused(client, session, auth, by):
+    """Pieces go back to the supplier whole, named by line or by lot."""
+    sku = f"RPC-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": sku, "name": "Piece", "quantity": 0, "sell_by": "piece"})
+    assert r.status_code == 200, r.text
+    bill, [line_id] = await _issued(client, session, auth, "bill", [
+        {"item_id": r.json()["id"], "sku": sku, "name": "Piece", "quantity": 4, "unit_price": 2.0}])
+    r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 4})
+    assert r.status_code == 200, r.text
+    [parcel] = (await _state(session, auth, bill))["received_item_ids"]
+    if by == "line":
+        r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": 1.5})
+    else:
+        r = await client.post(f"/docs/{bill}/return-items", headers=auth["headers"],
+                              json={"items": [{"item_id": parcel, "quantity_returned": 1.5}]})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "quantity.precision"
+    assert await _qty(session, auth, parcel) == 4

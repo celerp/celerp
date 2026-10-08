@@ -12,6 +12,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refusal
+
 # Units sold by weight/volume/length allow fractional quantities.
 # "piece" (decimals=0) enforces positive integers.
 DEFAULT_UNITS: list[dict] = [
@@ -106,16 +108,17 @@ def exceeds_precision(qty: float, decimals: int) -> bool:
     return d != d.quantize(Decimal(10) ** -decimals, rounding=ROUND_HALF_UP)
 
 
-def validate_quantity(qty: float, decimals: int, *, label: str = "Quantity") -> None:
+def validate_quantity(qty: float, decimals: int, *, label: str | None = None) -> None:
     """Raise HTTP 422 if *qty* has more decimal places than *decimals* allows.
 
-    label: human-readable name included in the error message (e.g. item name).
+    label: the item or line the quantity is for, named in the message when given.
     """
     if exceeds_precision(qty, decimals):
-        raise HTTPException(
-            status_code=422,
-            detail=f"{label}: quantity {qty} exceeds allowed precision ({decimals} decimal places for this unit)",
-        )
+        rule = f"{qty:g} is more precise than this unit allows (at most {decimals} decimal places)."
+        detail = (refusal("quantity.precision", f"{label}: {rule}", label=label, qty=f"{qty:g}", decimals=decimals)
+                  if label else
+                  refusal("quantity.precision_plain", rule, qty=f"{qty:g}", decimals=decimals))
+        raise HTTPException(status_code=422, detail=detail)
 
 
 def validate_positive(qty: float, *, label: str = "Quantity") -> None:

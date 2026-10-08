@@ -567,6 +567,8 @@
   "lines.out_on_memo": "{sku} is out on memo. Use Set as available to take it back first.",
   "lines.not_stock": "{sku} is not a stock item, so nothing can be reserved.",
   "lines.unavailable": "Not available: {reasons}",
+  "quantity.precision": "{label}: {qty} is more precise than this unit allows (at most {decimals} decimal places).",
+  "quantity.precision_plain": "{qty} is more precise than this unit allows (at most {decimals} decimal places).",
   "lines.lot_held_by": "{sku} is held by {doc} (status: {status}).",
   "lines.lot_status": "{sku} has status {status}.",
   "lines.fulfil_status": "Lines cannot be fulfilled while this record's status is {doc_status}.",

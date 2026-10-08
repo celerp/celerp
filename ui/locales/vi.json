@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} đang được gửi theo phiếu ký gửi. Dùng Đặt là có sẵn để lấy về trước.",
   "lines.not_stock": "{sku} không phải mặt hàng tồn kho nên không có gì để giữ.",
   "lines.unavailable": "Không có sẵn: {reasons}",
+  "quantity.precision": "{label}: {qty} chính xác hơn mức đơn vị này cho phép (tối đa {decimals} chữ số thập phân).",
+  "quantity.precision_plain": "{qty} chính xác hơn mức đơn vị này cho phép (tối đa {decimals} chữ số thập phân).",
   "lines.lot_held_by": "{sku} đang được giữ bởi {doc} (trạng thái: {status}).",
   "lines.lot_status": "{sku} có trạng thái {status}.",
   "lines.fulfil_status": "Không thể thực hiện các dòng khi trạng thái của chứng từ này là {doc_status}.",

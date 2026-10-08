@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} ist auf Kommission draußen. Nehmen Sie es zuerst mit Als verfügbar setzen zurück.",
   "lines.not_stock": "{sku} ist kein Lagerartikel, daher kann nichts reserviert werden.",
   "lines.unavailable": "Nicht verfügbar: {reasons}",
+  "quantity.precision": "{label}: {qty} ist genauer, als diese Einheit erlaubt (höchstens {decimals} Nachkommastellen).",
+  "quantity.precision_plain": "{qty} ist genauer, als diese Einheit erlaubt (höchstens {decimals} Nachkommastellen).",
   "lines.lot_held_by": "{sku} wird von {doc} gehalten (Status: {status}).",
   "lines.lot_status": "{sku} hat den Status {status}.",
   "lines.fulfil_status": "Positionen können nicht erfüllt werden, solange dieser Beleg den Status {doc_status} hat.",

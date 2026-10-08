@@ -178,3 +178,31 @@ async def test_a_list_refuses_goods_a_document_shipped(client, h):
     assert _key(r) == "lines.shipped_elsewhere"
     assert (await item(client, h, a))["status"] == "sold"
     assert (await item(client, h, b))["status"] == "reserved"
+
+
+def _plain(detail, code: str) -> str:
+    from ui import i18n
+    try:
+        i18n.set_lang(code)
+        return i18n.refusal_text(detail)
+    finally:
+        i18n.set_lang("en")
+
+
+@pytest.mark.parametrize("path", ["set-available", "revert-lines"])
+async def test_taking_back_part_of_a_piece_is_refused(client, h, path):
+    """A piece item comes back in whole pieces: half a piece is refused in plain words,
+    and nothing is split off."""
+    a = await lot(client, h, "SA-P", 3)
+    d = await doc(client, h, [line(a, 3, sku="SA-P")], doc_type="memo")
+    [lid] = await line_ids(client, h, d)
+    await _fulfil(client, h, d, [lid])
+    r = await client.post(f"/docs/{d}/{path}", headers=h, json={"line_ids": [lid], "quantities": {lid: 0.5}})
+    assert r.status_code == 422, r.text
+    assert _key(r) == "quantity.precision"
+    text = _plain(r.json()["detail"], "es")
+    assert "0.5" in text and "SA-P" in text and "precision" not in text, text
+    st = await item(client, h, a)
+    assert st["status"] == "memo_out" and float(st["quantity"]) == 3
+    r = await client.post(f"/docs/{d}/{path}", headers=h, json={"line_ids": [lid], "quantities": {lid: 1}})
+    assert r.status_code == 200, r.text

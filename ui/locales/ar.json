@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} خارج بموجب مذكرة. استخدم تعيين كمتاح لاسترجاعه أولًا.",
   "lines.not_stock": "{sku} ليس صنف مخزون، لذا لا يوجد ما يمكن حجزه.",
   "lines.unavailable": "غير متاح: {reasons}",
+  "quantity.precision": "{label}: {qty} أدق مما تسمح به هذه الوحدة (بحد أقصى {decimals} منازل عشرية).",
+  "quantity.precision_plain": "{qty} أدق مما تسمح به هذه الوحدة (بحد أقصى {decimals} منازل عشرية).",
   "lines.lot_held_by": "{sku} محجوز بواسطة {doc} (الحالة: {status}).",
   "lines.lot_status": "حالة {sku} هي {status}.",
   "lines.fulfil_status": "لا يمكن تنفيذ البنود ما دامت حالة هذا السجل {doc_status}.",

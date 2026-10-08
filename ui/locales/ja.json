@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} はメモで貸出中です。まず「在庫ありに設定」で戻してください。",
   "lines.not_stock": "{sku} は在庫品目ではないため、確保できるものはありません。",
   "lines.unavailable": "利用できません: {reasons}",
+  "quantity.precision": "{label}: {qty} はこの単位で使える精度を超えています（小数点以下 {decimals} 桁まで）。",
+  "quantity.precision_plain": "{qty} はこの単位で使える精度を超えています（小数点以下 {decimals} 桁まで）。",
   "lines.lot_held_by": "{sku} は {doc} で確保されています（ステータス: {status}）。",
   "lines.lot_status": "{sku} のステータスは {status} です。",
   "lines.fulfil_status": "この記録のステータスが {doc_status} の間は明細を処理できません。",

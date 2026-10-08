@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} sedang keluar sebagai memo. Gunakan Setel sebagai tersedia untuk menariknya kembali dulu.",
   "lines.not_stock": "{sku} bukan barang persediaan, jadi tidak ada yang bisa dipesan.",
   "lines.unavailable": "Tidak tersedia: {reasons}",
+  "quantity.precision": "{label}: {qty} lebih presisi daripada yang diizinkan satuan ini (paling banyak {decimals} angka desimal).",
+  "quantity.precision_plain": "{qty} lebih presisi daripada yang diizinkan satuan ini (paling banyak {decimals} angka desimal).",
   "lines.lot_held_by": "{sku} ditahan oleh {doc} (status: {status}).",
   "lines.lot_status": "{sku} berstatus {status}.",
   "lines.fulfil_status": "Baris tidak dapat diproses selama status catatan ini {doc_status}.",

@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} está fora em consignação. Use Definir como disponível para recuperá-lo primeiro.",
   "lines.not_stock": "{sku} não é um item de estoque, então nada pode ser reservado.",
   "lines.unavailable": "Não disponível: {reasons}",
+  "quantity.precision": "{label}: {qty} é mais preciso do que esta unidade permite (no máximo {decimals} casas decimais).",
+  "quantity.precision_plain": "{qty} é mais preciso do que esta unidade permite (no máximo {decimals} casas decimais).",
   "lines.lot_held_by": "{sku} está retido por {doc} (status: {status}).",
   "lines.lot_status": "{sku} tem o status {status}.",
   "lines.fulfil_status": "As linhas não podem ser processadas enquanto o status deste registro for {doc_status}.",

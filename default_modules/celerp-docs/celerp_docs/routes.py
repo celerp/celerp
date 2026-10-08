@@ -4559,6 +4559,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     owned = doc_type != "consignment_in"
     lots = await lock_projections(session, company_id, [it.item_id for it in items])
     added = _lot_additions(row.state)
+    unit_map = await _get_unit_map(session, company_id)
     currency = await auto_je.company_currency(session, company_id)
     goods_role = auto_je.po_receipt_role(row.state)
     goods: dict = {}  # cost leaving, per lot inventory account (or role, for goods not held as stock)
@@ -4579,6 +4580,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 "docs.return_not_on_hand",
                 f"Cannot return {sku}: it is {status}, not on hand. Goods sold, out on memo or reserved go back "
                 "to the supplier only once they are back in stock and free.", sku=sku, status=status))
+        validate_line_quantity(it.quantity_returned, item.state.get("sell_by"), unit_map, label=sku)
         current_qty = float(item.state.get("quantity", 0) or 0)
         free = _free_on_hand(item.state)
         if it.quantity_returned > free + 1e-9:
@@ -7741,6 +7743,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     to_revert: list[str] = []
     # lot -> quantity coming back, for lots where only part of it returns.
     partial_plan: dict[str, tuple[float, str]] = {}
+    unit_map = await _get_unit_map(session, company_id) if quantities else {}
     for key, lots, bound in groups:
         label = str(lots[0].state.get("sku") or key)
         total = sum(float(p.state.get("quantity") or 0) for p in lots)
@@ -7754,6 +7757,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         if back > total + 1e-9:
             errors.append(f"{label}: cannot return {back:g} of {total:g} that went out")
             continue
+        validate_line_quantity(back, lots[0].state.get("sell_by"), unit_map, label=label, require_positive=False)
         remaining = float(back)
         for proj in _return_order(lots, bound):
             qty = float(proj.state.get("quantity") or 0)
@@ -7789,13 +7793,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     returned_brief: list[dict] = []
     if partial_plan:
         from celerp_inventory.routes import split_off_child
-        _unit_map = await _get_unit_map(session, company_id)
         for parent_eid, (qty_back, key) in partial_plan.items():
             parent_proj = locked[parent_eid]
             _sb = parent_proj.state.get("sell_by") or ""
             _sku_p = parent_proj.state.get("sku", "")
-            child_weight = qty_back if is_weight_unit(_sb, _unit_map) else (body.weights or {}).get(key)
-            child_pieces = qty_back if is_pieces_unit(_sb, _unit_map) else (body.pieces or {}).get(key)
+            child_weight = qty_back if is_weight_unit(_sb, unit_map) else (body.weights or {}).get(key)
+            child_pieces = qty_back if is_pieces_unit(_sb, unit_map) else (body.pieces or {}).get(key)
             try:
                 child_eid, _child_sku = await split_off_child(
                     session, company_id=cid, user_id=uid, parent_proj=parent_proj,

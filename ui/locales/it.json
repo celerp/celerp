@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} è fuori in conto visione. Usa Imposta come disponibile per riprenderlo prima.",
   "lines.not_stock": "{sku} non è un articolo a magazzino, quindi non si può riservare nulla.",
   "lines.unavailable": "Non disponibile: {reasons}",
+  "quantity.precision": "{label}: {qty} è più preciso di quanto consenta questa unità (al massimo {decimals} decimali).",
+  "quantity.precision_plain": "{qty} è più preciso di quanto consenta questa unità (al massimo {decimals} decimali).",
   "lines.lot_held_by": "{sku} è trattenuto da {doc} (stato: {status}).",
   "lines.lot_status": "{sku} ha lo stato {status}.",
   "lines.fulfil_status": "Le righe non possono essere evase finché lo stato di questo documento è {doc_status}.",

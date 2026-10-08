@@ -509,6 +509,8 @@
   "lines.out_on_memo": "{sku} ถูกส่งออกตามใบฝากขาย ใช้ ตั้งเป็นพร้อมขาย เพื่อรับคืนก่อน",
   "lines.not_stock": "{sku} ไม่ใช่สินค้าคงคลัง จึงไม่มีอะไรให้จอง",
   "lines.unavailable": "ไม่พร้อมใช้งาน: {reasons}",
+  "quantity.precision": "{label}: {qty} ละเอียดเกินกว่าที่หน่วยนี้อนุญาต (ทศนิยมได้ไม่เกิน {decimals} ตำแหน่ง)",
+  "quantity.precision_plain": "{qty} ละเอียดเกินกว่าที่หน่วยนี้อนุญาต (ทศนิยมได้ไม่เกิน {decimals} ตำแหน่ง)",
   "lines.lot_held_by": "{sku} ถูกถือไว้โดย {doc} (สถานะ: {status})",
   "lines.lot_status": "{sku} มีสถานะ {status}",
   "lines.fulfil_status": "ไม่สามารถดำเนินการรายการได้ขณะที่เอกสารนี้มีสถานะ {doc_status}",
