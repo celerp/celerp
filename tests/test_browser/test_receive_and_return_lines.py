@@ -53,9 +53,9 @@ def test_receipt_summary_shows_after_the_reload_and_one_line_goes_back(page, ui_
     rows = page.locator("#li-bulk-revert-btn fieldset.receive-row:visible")
     assert rows.count() == 2
     # The expense line has no goods to send back; the stock line offers both units.
-    assert rows.nth(0).locator("input.line-qty-input").input_value() == "2"
-    assert rows.nth(1).locator("input.line-qty-input").count() == 0
-    rows.nth(0).locator("input.line-qty-input").fill("1")
+    assert rows.nth(0).locator("input.li-qty-input").input_value() == "2"
+    assert rows.nth(1).locator("input.li-qty-input").count() == 0
+    rows.nth(0).locator("input.li-qty-input").fill("1")
     with page.expect_response(lambda r: r.url.endswith(f"/docs/{bill}/return-goods"), timeout=10000) as resp:
         page.click("#li-bulk-revert-btn button[type=submit]")
     assert resp.value.status == 204, resp.value.headers.get("hx-trigger")
