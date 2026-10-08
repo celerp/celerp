@@ -1731,19 +1731,20 @@ async def test_a_backup_using_an_extension_this_database_cannot_install_is_refus
         await company(real_engine, user, "Beta Trading", "beta")
         await _execute(real_engine, "DO $$ BEGIN " + grant.format("REVOKE", "FROM") + "; END $$")
         refusal = ("This backup uses database extensions that Celerp's database user cannot install here. "
-                   "Remove them from the database the backup was taken from, or have a database administrator "
-                   "allow that user to install them, then try again: pg_trgm")
+                   "Remove them from {}, or have a database administrator allow that user to install them, "
+                   "then try again: pg_trgm")
         if entry == "recovery":
             connector_calls = _record_connector_calls(monkeypatch)
             result = await backup_import.run_recovery(source)
-            assert result.ok is False and result.error == refusal, result.error
+            assert result.ok is False and result.error == refusal.format(
+                "the database the backup was taken from"), result.error
             _assert_nothing_started(rec, connector_calls, [])
         else:
             monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
             monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
             result, children = update.run_update("1.1.0", _update_steps())
             assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
-            assert _refusal_shown(update) == refusal
+            assert _refusal_shown(update) == refusal.format("this database")
             assert not runtime.release_dir("1.1.0").exists()
             assert "in_progress" not in update.read_state()
         assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
