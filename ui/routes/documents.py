@@ -3386,7 +3386,8 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
+                                                **toast_header(t("documents.receipt_undone"), "info")})
 
     # T7: Refund payment
     @app.post("/docs/{entity_id}/refund")
@@ -3878,6 +3879,9 @@ celerpUpdateBulkAlloc();
                 "idempotency_key": required_operation_key(form, action)}
 
     async def _line_action_proxy(request: Request, call, redirect: str | None = None):
+        """Send a line action and answer with a toast saying what it did, shown on the page
+        the caller opens next. ``call`` returns the API call and its arguments, plus ``_done``:
+        the message key naming the action, with a ``_one`` and a ``_many`` form."""
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -3885,7 +3889,7 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         try:
             kwargs = call(form)
-            send, entity_id = kwargs.pop("_send"), kwargs.pop("entity_id")
+            send, entity_id, done = kwargs.pop("_send"), kwargs.pop("entity_id"), kwargs.pop("_done")
             await send(token, entity_id, **kwargs)
         except ValueError as exc:
             return _action_error(str(exc))
@@ -3893,12 +3897,15 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
-        return _R("", status_code=204, headers={"HX-Redirect": redirect} if redirect else None)
+        n = len(kwargs["line_ids"]) + len(kwargs["line_entity_ids"])
+        toast = toast_header(t(f"{done}_{'one' if n == 1 else 'many'}", n=n), "info")
+        return _R("", status_code=204, headers={**toast, **({"HX-Redirect": redirect} if redirect else {})})
 
     @app.post("/docs/{entity_id}/fulfill-lines")
     async def doc_fulfill_lines(request: Request, entity_id: str):
         return await _line_action_proxy(
-            request, lambda form: {"_send": api.fulfill_lines, "entity_id": entity_id, **_line_action_form(form, "fulfil")},
+            request, lambda form: {"_send": api.fulfill_lines, "entity_id": entity_id, "_done": "documents.lines_shipped",
+                          **_line_action_form(form, "fulfil")},
             redirect=f"/docs/{entity_id}")
 
     def _set_available_form(form, entity_id: str, is_list: bool) -> dict:
@@ -3913,7 +3920,8 @@ celerpUpdateBulkAlloc();
                 quantities[m.group(1)] = float(value)
             except (TypeError, ValueError):
                 raise ValueError(t("documents.invalid_returned_quantity", id=m.group(1)))
-        return {"_send": api.set_lines_available, "entity_id": entity_id, **_line_action_form(form, "set-available"),
+        return {"_send": api.set_lines_available, "entity_id": entity_id, "_done": "documents.lines_available",
+                **_line_action_form(form, "set-available"),
                 "quantities": quantities, "is_list": is_list}
 
     @app.post("/docs/{entity_id}/set-available")
@@ -3928,7 +3936,8 @@ celerpUpdateBulkAlloc();
 
     def _reserve_form(form, entity_id: str, is_list: bool) -> dict:
         new_status = form.get("new_status") or "reserved"
-        return {"_send": api.reserve_lines, "entity_id": entity_id, **_line_action_form(form, new_status),
+        done = "documents.lines_reserved" if new_status == "reserved" else "documents.lines_available"
+        return {"_send": api.reserve_lines, "entity_id": entity_id, "_done": done, **_line_action_form(form, new_status),
                 "new_status": new_status, "is_list": is_list}
 
     @app.post("/docs/{entity_id}/reserve-lines")
