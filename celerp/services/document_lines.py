@@ -295,3 +295,156 @@ def strip_line_ids(line_items) -> list[dict]:
     one that must not share its line identities (a duplicate)."""
     return [{k: v for k, v in line.items() if k != "line_id"} if isinstance(line, dict) else line
             for line in line_items or []]
+
+
+# ---------------------------------------------------------------------------
+# Protected lines: a line that holds stock for its record, shipped stock for it, or had
+# goods received on it is what that stock or receipt points at. Holds name their line by
+# id; shipments and receipts recorded before line ids existed name it by position. So no
+# write may remove such a line, give it another id or bind it to another item, and a
+# shipped or received line also keeps its position. Quantities, prices and descriptions
+# stay editable; moving stock or receipts goes through the line actions themselves.
+# ---------------------------------------------------------------------------
+
+_PROTECTED_MESSAGES = {
+    "held": ("line.protected_held",
+             "Line {line} ({sku}) holds reserved stock. Set it as available before removing it or "
+             "changing its item."),
+    "shipped": ("line.protected_shipped",
+                "Line {line} ({sku}) has shipped stock. Set it as available before removing, moving "
+                "or changing its item."),
+    "received": ("line.protected_received",
+                 "Line {line} ({sku}) has received goods. Undo or return them before removing, moving "
+                 "or changing the line's item or type."),
+}
+
+
+def _counterpart(stored: dict, index: int, line_set: list) -> int | None:
+    """The position in ``line_set`` of the stored line at ``index``: the line with its id,
+    or for an older line without one the line at the same position."""
+    lid = stored.get("line_id")
+    for n, line in enumerate(line_set):
+        if isinstance(line, dict) and lid and line.get("line_id") == lid:
+            return n
+    if not lid and index < len(line_set) and isinstance(line_set[index], dict) \
+            and not line_set[index].get("line_id"):
+        return index
+    return None
+
+
+def _untouched(stored_lines: list, line_set: list) -> bool:
+    """True when every stored line is still in place with the same id, item and kind:
+    nothing any protection is about has changed."""
+    from celerp.services.auto_je import bill_line_kind
+    if len(line_set) < len(stored_lines):
+        return False
+    for old, new in zip(stored_lines, line_set):
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            return False
+        if old.get("line_id") != new.get("line_id") or line_item_id(old) != line_item_id(new) \
+                or bill_line_kind(old) != bill_line_kind(new):
+            return False
+    return True
+
+
+async def _protected_lines(session, company_id, owner_id: str, stored: dict) -> dict[int, tuple[str, set[str]]]:
+    """Each protected stored line: its index to (why, the lots it holds or shipped)."""
+    from celerp.services.auto_je import doc_line_of_lot
+    from celerp.services.pick import attribute_holds
+
+    lines = stored.get("line_items") or []
+    out: dict[int, tuple[str, set[str]]] = {}
+
+    def mark(index: int, why: str, lots=()) -> None:
+        if 0 <= index < len(lines):
+            kind, own = out.get(index, (why, set()))
+            # Shipped and received outrank held: they also pin the line's position.
+            out[index] = (kind if kind != "held" else why, own | set(lots))
+
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "item",
+        Projection.state["status_doc_id"].as_string() == owner_id,
+    ))).scalars().all()
+    held = {r.entity_id: r.state for r in rows if (r.state or {}).get("status") == "reserved"}
+    by_line, _orphans, ambiguous = attribute_holds(lines, held)
+    for index, lots in by_line.items():
+        mark(index, "held", lots)
+    for eid, indices in ambiguous.items():
+        for index in indices:
+            mark(index, "held", [eid])
+    for r in rows:
+        st = r.state or {}
+        if st.get("status") not in ("sold", "memo_out"):
+            continue
+        index = await doc_line_of_lot(session, company_id, owner_id, stored, r.entity_id, st)
+        if index is not None:
+            mark(index, "shipped", [r.entity_id])
+            continue
+        # Nothing tells which line shipped it: every line it could belong to stays put.
+        sku = str(st.get("sku") or "").strip()
+        for n, line in enumerate(lines):
+            if line_item_id(line) == r.entity_id or (sku and str(line.get("sku") or "").strip() == sku):
+                mark(n, "shipped", [r.entity_id])
+
+    index_of = {li.get("line_id"): n for n, li in enumerate(lines) if isinstance(li, dict) and li.get("line_id")}
+    for entry in [*(stored.get("received_items") or []), *(stored.get("returned_items") or [])]:
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source_line_id")
+        if source:
+            index = index_of.get(source)
+        else:
+            try:
+                index = int(entry.get("po_line_index"))
+            except (TypeError, ValueError):
+                index = None
+        if index is not None:
+            mark(index, "received")
+    return out
+
+
+async def assert_protected_lines_kept(session, company_id, owner_id: str, stored: dict, line_set) -> None:
+    """Refuse a write of ``line_set`` over the stored record ``stored`` that removes, re-ids
+    or rebinds a line holding or having shipped stock, or that had goods received, or that
+    moves a shipped or received line (409 ``line.protected_held`` / ``_shipped`` /
+    ``_received``). A line may be rebound only to a lot it holds or shipped itself, or to a
+    part split off its own item: that is how reserving and shipping part of a lot, and
+    recording a historical delivery, name the lot the line now stands for."""
+    from celerp.services.auto_je import bill_line_kind
+
+    stored_lines = [li for li in stored.get("line_items") or [] if isinstance(li, dict)]
+    line_set = list(line_set or [])
+    if not stored_lines or _untouched(stored_lines, line_set):
+        return
+    protected = await _protected_lines(session, company_id, owner_id, {**stored, "line_items": stored_lines})
+    if not protected:
+        return
+    rebound = {line_item_id(line_set[n]) for index, _ in protected.items()
+               if (n := _counterpart(stored_lines[index], index, line_set)) is not None
+               and line_item_id(line_set[n]) and line_item_id(line_set[n]) != line_item_id(stored_lines[index])}
+    rebound.discard(None)
+    parts = {}
+    if rebound:
+        parts = {r.entity_id: (r.state or {}).get("split_from") for r in (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            Projection.entity_id.in_(rebound)))).scalars().all()}
+    for index in sorted(protected):
+        why, lots = protected[index]
+        old = stored_lines[index]
+        n = _counterpart(old, index, line_set)
+        ok = n is not None
+        if ok:
+            new = line_set[n]
+            was, now = line_item_id(old), line_item_id(new)
+            if now != was and not (now in lots or (was and parts.get(now) == was)):
+                ok = False
+            if why != "held" and n != index:
+                ok = False
+            if why == "received" and bill_line_kind(old) != bill_line_kind(new):
+                ok = False
+        if not ok:
+            key, text = _PROTECTED_MESSAGES[why]
+            sku = str(old.get("sku") or old.get("description") or old.get("name") or "")
+            raise HTTPException(status_code=409, detail=refusal(
+                key, text.format(line=index + 1, sku=sku), line=index + 1, sku=sku))

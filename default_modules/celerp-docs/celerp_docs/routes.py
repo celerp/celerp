@@ -60,7 +60,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -1811,25 +1811,6 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         # longer be persisted onto a document.
         await _validate_document_line_quantities(new_line_items, session, company_id)
 
-        # Fix 3: guard against deleting fulfilled line items via the patch endpoint.
-        # Compare the current doc's entity_ids against the incoming list; any entity_id
-        # that disappears must not be in a fulfilled state.
-        existing_eids = {
-            li.get("entity_id") or li.get("item_id") or ""
-            for li in (row.state.get("line_items") or [])
-        } - {""}
-        incoming_eids = {
-            li.get("entity_id") or li.get("item_id") or ""
-            for li in new_line_items
-        } - {""}
-        removed_eids = existing_eids - incoming_eids
-        for eid in removed_eids:
-            item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-            if item_proj and item_proj.state.get("status") in FULFILLED_ITEM_STATUSES:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
-                )
 
     # Money fields are stored at currency precision. The client computes subtotal/tax/total as
     # raw JS floats and legacy values may already carry IEEE-754 tails, so round both old and new

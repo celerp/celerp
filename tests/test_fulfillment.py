@@ -713,10 +713,11 @@ async def test_invoice_finalize_promotes_memo_out_items_to_sold(client, session,
 
 @pytest.mark.asyncio
 async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids):
-    """Fix 3: PATCH doc with line_items.new that omits a fulfilled entity_id must be rejected.
+    """PATCH doc with line_items.new that omits a line whose lot this document shipped
+    must be rejected.
 
-    Sets up the state via the service layer (bypassing Fix 1) to test the PATCH guard
-    independently: draft doc + item in sold state (simulates a forced/migrated state).
+    Sets up the state via the service layer (bypassing the revert guard) to test the line
+    guard independently: draft doc + its item sold on it (simulates a forced/migrated state).
     """
     import uuid as _uuid
     from celerp.events.engine import emit_event
@@ -743,7 +744,7 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
         entity_id=item_id,
         entity_type="item",
         event_type="item.status.set",
-        data={"new_status": "sold"},
+        data={"new_status": "sold", "source_doc_id": doc_id},
         actor_id=_setup_ids["user_id"],
         location_id=None,
         source="test",
@@ -762,7 +763,7 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
         "fields_changed": {"line_items": {"new": remaining_lines}},
     })
     assert r.status_code == 409, r.text
-    assert "fulfilled" in r.text.lower()
+    assert r.json()["detail"]["message_key"] == "line.protected_shipped"
 
 
 @pytest.mark.asyncio

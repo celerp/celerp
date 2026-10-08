@@ -560,6 +560,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp_docs.routes import (
         finalize_document,
         _fulfill_lines_impl,
+        _held_lots,
         _release_holds,
         _reserve_lines_impl,
         _get_doc,
@@ -669,22 +670,12 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             existing is not None
             and existing_state.get("woocommerce_source_fingerprint") == source_fingerprint
         )
-        owns_reserved_stock = False
-        if existing is not None and not existing_state.get("finalized"):
-            for li in existing_state.get("line_items", []):
-                item_id = li.get("item_id") or li.get("entity_id")
-                if not item_id:
-                    continue
-                item = await session.get(
-                    Projection, {"company_id": cid, "entity_id": item_id}
-                )
-                if (
-                    item is not None
-                    and (item.state or {}).get("status") == "reserved"
-                    and (item.state or {}).get("status_doc_id") == entity_id
-                ):
-                    owns_reserved_stock = True
-                    break
+        # Any lot the order holds counts, not only the lots its lines bind: a line that
+        # holds stock may not be rewritten until the hold is reconciled.
+        owns_reserved_stock = (
+            existing is not None and not existing_state.get("finalized")
+            and bool(await _held_lots(session, cid, entity_id))
+        )
 
         if (
             existing is not None

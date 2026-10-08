@@ -16,6 +16,7 @@ from celerp.projections.engine import ITEM_BIRTHS, ProjectionEngine
 from celerp.services.document_lines import (
     assert_document_item_uniqueness,
     assert_new_references_eligible,
+    assert_protected_lines_kept,
     line_id_counts,
     linked_items,
     normalize_line_ids,
@@ -501,6 +502,11 @@ async def emit_event(
             # Every line carries a stable line id: new lines get one, lines already on the
             # record keep theirs, and a malformed or repeated id is refused.
             normalize_line_ids(line_set, stored.get("line_items"))
+            # A line that holds, shipped or received stock keeps its id, its item and (once
+            # shipped or received) its position.
+            await assert_protected_lines_kept(
+                session, kwargs.get("company_id"), kwargs.get("entity_id"), stored, line_set,
+            )
             known = line_id_counts(stored.get("line_items"))
             items = await linked_items(session, kwargs.get("company_id"), line_set, known=known)
             # Prefer the event's own doc_type; otherwise the stored document's. A List has

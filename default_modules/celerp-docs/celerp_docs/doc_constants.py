@@ -22,10 +22,6 @@ FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
 # List docs reserve via a separate list-type predicate in routes.py, never through this map.
 RESERVABLE_DOC_STATUSES: dict[str, frozenset[str]] = dict(FULFILLABLE_STATUSES)
 
-# Item statuses that indicate a line item has been fulfilled.
-# Used by revert-to-draft guard (Fix 1) and line-delete guard (Fix 3).
-FULFILLED_ITEM_STATUSES: frozenset[str] = frozenset({"sold", "memo_out"})
-
 # Doc types where goods are received via POST /receive (creates inventory parcels).
 # These docs must NOT use fulfill-lines / revert-lines — those endpoints are outbound-only.
 # Revert-to-draft for these types allows additional statuses (received, partially_received).
