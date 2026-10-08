@@ -1663,6 +1663,23 @@ async def test_a_backup_holding_other_objects_is_refused_before_anything_changes
     assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
 
 
+async def test_a_recovery_without_room_for_the_restore_changes_nothing(tmp_path, monkeypatch, code_config, real_engine):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    _free_space(monkeypatch, 2**30)
+    result = await backup_import.run_recovery(source)
+    assert result.ok is False, result.error
+    assert result.error.startswith("Not enough free disk space to restore this backup"), result.error
+    _assert_nothing_started(rec, connector_calls, [])
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
 async def test_a_safety_archive_that_could_not_be_restored_stops_the_recovery(
         tmp_path, monkeypatch, code_config, real_engine):
     """An extension's own objects are no Celerp table to refuse in the database, but a safety
@@ -1756,6 +1773,25 @@ async def test_an_update_of_a_database_holding_other_objects_stops_before_anythi
         assert await _exists(real_engine, kind)
     finally:
         await _drop(real_engine, kind)
+
+
+async def test_an_update_without_room_to_roll_back_stops_before_anything_changes(tmp_path, monkeypatch, real_engine):
+    from celerp import runtime
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    _free_space(monkeypatch, 2**30)
+    result, children = update.run_update("1.1.0", steps)
+    assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+    assert not runtime.release_dir("1.1.0").exists()
+    assert "in_progress" not in update.read_state()
+    assert await _company_names(real_engine) == {"Alpha Trading"}
 
 
 # ── A database restore is all or nothing ─────────────────────────────────────
@@ -1861,6 +1897,30 @@ async def test_a_failed_restore_changes_nothing(tmp_path, real_engine, break_res
             await _restore(dump, break_restore(dump))
         await _assert_unchanged(real_engine, tables)
         assert list(tmp_path.iterdir()) == [dump]
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+def _free_space(monkeypatch, free: int) -> None:
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(2 * free, free, free))
+
+
+@pytest.mark.parametrize("short", [1, 0], ids=["one byte short", "exactly enough"])
+async def test_a_restore_needs_ten_times_the_dump_and_1_gib_free_beside_it(tmp_path, monkeypatch, real_engine, short):
+    """The script pg_restore writes beside the dump measured up to 6.7 times its size, on the
+    disk the database usually lives on."""
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        tables = await _tables(real_engine)
+        _free_space(monkeypatch, dump.stat().st_size * 10 + 2**30 - short)
+        if short:
+            with pytest.raises(ValueError, match="Not enough free disk space to restore this backup"):
+                await _restore(dump)
+            await _assert_unchanged(real_engine, tables)
+        else:
+            await _restore(dump)
+            assert await _company_names(real_engine) == {"Alpha Trading"}
     finally:
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
 

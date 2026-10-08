@@ -400,6 +400,7 @@ class TestRestoreDatabaseUsesResolvedPath:
         monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [bin_dir])
         monkeypatch.setenv("PATH", "")
 
+        (tmp_path / "database.dump").write_bytes(b"PGDMP")
         # Should not raise — binary is found via candidate dir
         restore_database_file(tmp_path / "database.dump", "postgresql+asyncpg://u:p@localhost/db")
 
