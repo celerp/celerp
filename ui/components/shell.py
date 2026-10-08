@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
-from celerp.services.update import CARD_REASONS, PIP_BLOCKERS
+from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs
 from ui.components.table import searchable_select
@@ -1204,7 +1204,7 @@ document.addEventListener('DOMContentLoaded', function() {
       function resultText(r) {
         if (r.ok) return i18n.updateResultOk.replace('{version}', r.to);
         var text = r.outcome === 'rollback_failed' ? i18n.updateResultRollbackFailed : i18n.updateResultFailed;
-        return text.replace('{version}', r.to).replace('{reason}', r.reason || '');
+        return text.replace('{version}', r.to).replace('{reason}', r.detail || i18n.updateReasons[r.reason]);
       }
 
       function render(s) {
@@ -1804,6 +1804,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "updateResultFailed": t("shell.update_result_failed", lang),
         "updateResultRollbackFailed": t("shell.update_result_rollback_failed", lang),
         "updateBlocked": {code: t(f"shell.update_blocked_{code}", lang) for code in CARD_REASONS},
+        "updateReasons": {code: t(reason_key(code), lang) for code in REASON_CODES},
         "starOnGithub": t("shell.star_on_github", lang),
         "appreciateSupport": t("shell.appreciate_support", lang),
         "importHint": t("shell.import_hint", lang),

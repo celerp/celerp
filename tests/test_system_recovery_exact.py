@@ -1657,7 +1657,8 @@ async def test_a_backup_holding_other_objects_is_refused_before_anything_changes
     connector_calls = _record_connector_calls(monkeypatch)
     result = await backup_import.run_recovery(source)
     assert result.ok is False, result.error
-    assert result.error.startswith("This backup holds database objects Celerp does not restore: "), result.error
+    assert result.error.startswith("This backup holds database objects Celerp does not restore. Remove them from "
+                                   "the database the backup was taken from, then try again: "), result.error
     _assert_nothing_started(rec, connector_calls, [])
     assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
 
@@ -1729,18 +1730,20 @@ async def test_a_backup_using_an_extension_this_database_cannot_install_is_refus
         source = await backup_export.export_full() if entry == "recovery" else None
         await company(real_engine, user, "Beta Trading", "beta")
         await _execute(real_engine, "DO $$ BEGIN " + grant.format("REVOKE", "FROM") + "; END $$")
+        refusal = ("This backup uses database extensions that Celerp's database user cannot install here. "
+                   "Remove them from the database the backup was taken from, or have a database administrator "
+                   "allow that user to install them, then try again: pg_trgm")
         if entry == "recovery":
             connector_calls = _record_connector_calls(monkeypatch)
             result = await backup_import.run_recovery(source)
-            assert result.ok is False and result.error == (
-                "This backup uses database extensions that Celerp's database user cannot install here: "
-                "pg_trgm"), result.error
+            assert result.ok is False and result.error == refusal, result.error
             _assert_nothing_started(rec, connector_calls, [])
         else:
             monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
             monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
             result, children = update.run_update("1.1.0", _update_steps())
             assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+            assert _refusal_shown(update) == refusal
             assert not runtime.release_dir("1.1.0").exists()
             assert "in_progress" not in update.read_state()
         assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
@@ -1837,6 +1840,13 @@ async def test_a_recovery_puts_back_every_table_part_exactly(tmp_path, monkeypat
         await _execute(real_engine, "DROP SEQUENCE IF EXISTS zz_numbers")
 
 
+def _refusal_shown(update) -> str:
+    """Why the update did not start, as the install owner's update card gets it; other users
+    get only the reason code."""
+    assert "detail" not in update.status(owner=False)["last_result"]
+    return update.status(owner=True)["last_result"]["detail"]
+
+
 @pytest.mark.parametrize("kind", ["view", "enum", "foreign key from another schema"])
 async def test_an_update_of_a_database_holding_other_objects_stops_before_anything_changes(
         tmp_path, monkeypatch, real_engine, kind):
@@ -1854,6 +1864,8 @@ async def test_an_update_of_a_database_holding_other_objects_stops_before_anythi
     try:
         result, children = update.run_update("1.1.0", steps)
         assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+        shown = _refusal_shown(update)
+        assert shown.startswith("Celerp restores only its own tables") and UNSUPPORTED[kind][1] in shown, shown
         assert not update.dump_path().exists()
         assert not runtime.release_dir("1.1.0").exists()
         assert "in_progress" not in update.read_state()
@@ -1876,6 +1888,7 @@ async def test_an_update_without_room_to_roll_back_stops_before_anything_changes
     _free_space(monkeypatch, 2**30)
     result, children = update.run_update("1.1.0", steps)
     assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+    assert _refusal_shown(update).startswith("Not enough free disk space to restore this backup")
     assert not runtime.release_dir("1.1.0").exists()
     assert "in_progress" not in update.read_state()
     assert await _company_names(real_engine) == {"Alpha Trading"}

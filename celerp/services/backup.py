@@ -294,8 +294,8 @@ def check_backup_dump(dump_path: Path, database_url: str) -> None:
     lines = [line for line in listing.decode(errors="replace").splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
     if other:
-        raise ValueError("This backup holds database objects Celerp does not restore: "
-                         + "; ".join(other))
+        raise ValueError("This backup holds database objects Celerp does not restore. Remove them from the "
+                         "database the backup was taken from, then try again: " + "; ".join(other))
     extensions = sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match})
     if extensions:
         pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
@@ -303,7 +303,9 @@ def check_backup_dump(dump_path: Path, database_url: str) -> None:
                              _UNINSTALLABLE_EXTENSIONS.format(" ".join(extensions)), "-d", pg_url], None, timeout=60)
         if blocked.strip():
             raise ValueError("This backup uses database extensions that Celerp's database user cannot install "
-                             "here: " + ", ".join(blocked.decode().split()))
+                             "here. Remove them from the database the backup was taken from, or have a database "
+                             "administrator allow that user to install them, then try again: "
+                             + ", ".join(blocked.decode().split()))
 
 
 def restore_tools() -> tuple[str, str]:

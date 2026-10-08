@@ -59,7 +59,8 @@ ROLLED_BACK = "rolled_back"  # the new version failed after the database changed
 ROLLBACK_FAILED = "rollback_failed"  # the database could not be restored; Celerp stays stopped until it is
 
 # Why an attempt did not install, as recorded in last_result["reason"]. Error
-# detail goes to the log only; everything recorded here can be shown to anyone.
+# detail goes to the log only, except why the database could not be backed up for
+# a rollback, which last_result["detail"] keeps for the install owner.
 # Why an update did not go ahead; each code is the message ``update.reason.<code>``.
 REASON_CODES = ("backup_failed", "install_failed", "migrate_failed", "verify_failed", "interrupted")
 
@@ -323,6 +324,8 @@ def status(*, owner: bool) -> dict:
         last_result = read_state().get("last_result")
     except UpdateStateError:
         last_result = None
+    if last_result and not owner:
+        last_result.pop("detail", None)
     return {
         "current": installed_version(),
         "latest": _check["latest"],
@@ -471,7 +474,9 @@ async def update_loop(restart: Callable[[], None]) -> None:
 
 
 class Steps:
-    """The work behind each update step. Every method raises on failure."""
+    """The work behind each update step. Every method raises on failure; `dump`
+    raises ValueError, in words for the install owner, for a database it could not
+    back up so that a rollback restores it exactly."""
 
     def preflight(self) -> None: ...
     def dump(self, path: Path) -> None: ...
@@ -495,10 +500,12 @@ def _result(current: str, target: str, outcome: str, reason: str) -> dict:
             "reason": reason, "at": _now(), "notified": False}
 
 
-def _finish(state: dict, current: str, target: str, outcome: str, reason: str = "") -> dict:
+def _finish(state: dict, current: str, target: str, outcome: str, reason: str = "", detail: str = "") -> dict:
     """Record the outcome. A failed rollback keeps the update in progress, so
     every start retries it and nothing serves the half-restored database."""
     result = _result(current, target, outcome, reason)
+    if detail:
+        result["detail"] = detail
     if outcome != ROLLBACK_FAILED:
         state.pop("in_progress", None)
     state["last_result"] = result
@@ -508,7 +515,7 @@ def _finish(state: dict, current: str, target: str, outcome: str, reason: str = 
             failed.append(target)
     write_state(state)
     level = logging.INFO if outcome == OK else logging.ERROR
-    log.log(level, "update %s -> %s: %s %s", current, target, outcome, reason)
+    log.log(level, "update %s -> %s: %s %s %s", current, target, outcome, reason, detail)
     return result
 
 
@@ -551,6 +558,8 @@ def run_update(target: str, steps: Steps) -> tuple[dict, tuple]:
     _mark(state, current, target, "backup")
     try:
         steps.dump(dump)
+    except ValueError as exc:
+        return _finish(state, current, target, FAILED, "backup_failed", str(exc).rstrip(".")), ()
     except Exception:
         log.exception("update backup failed")
         return _finish(state, current, target, FAILED, "backup_failed"), ()
