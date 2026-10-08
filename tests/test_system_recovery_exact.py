@@ -1548,6 +1548,8 @@ UNSUPPORTED = {
                 "trigger zz_touch on table companies",
                 "EXISTS (SELECT FROM pg_trigger WHERE tgname = 'zz_touch')",
                 ["DROP TRIGGER IF EXISTS zz_touch ON companies", "DROP FUNCTION IF EXISTS zz_touch()"]),
+    "rule": (["CREATE RULE zz_keep AS ON DELETE TO companies DO INSTEAD NOTHING"], "rule zz_keep on table companies",
+             "EXISTS (SELECT FROM pg_rewrite WHERE rulename = 'zz_keep')", ["DROP RULE IF EXISTS zz_keep ON companies"]),
     "schema": (["CREATE SCHEMA zz", "CREATE TABLE zz.jobs (id int)"], "schema zz",
                "to_regclass('zz.jobs') IS NOT NULL", ["DROP SCHEMA IF EXISTS zz CASCADE"]),
     "foreign key from another schema": (
@@ -1773,8 +1775,8 @@ async def test_a_recovery_without_room_for_the_restore_changes_nothing(tmp_path,
 
 async def test_a_safety_archive_that_could_not_be_restored_stops_the_recovery(
         tmp_path, monkeypatch, code_config, real_engine):
-    """The role's default privileges are no object in the database to refuse, but a safety
-    archive holding them is not one Celerp could put back."""
+    """A publication is no object in the public schema to refuse, but a safety archive
+    holding it is not one Celerp could put back."""
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
     rec = _Recovery(tmp_path, monkeypatch, real_database=True)
@@ -1783,14 +1785,14 @@ async def test_a_safety_archive_that_could_not_be_restored_stops_the_recovery(
     source = await backup_export.export_full()
     await company(real_engine, user, "Beta Trading", "beta")
     connector_calls = _record_connector_calls(monkeypatch)
-    await _execute(real_engine, "ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO PUBLIC")
+    await _execute(real_engine, "CREATE PUBLICATION zz_feed")
     try:
         result = await backup_import.run_recovery(source)
     finally:
-        await _execute(real_engine, "ALTER DEFAULT PRIVILEGES REVOKE SELECT ON TABLES FROM PUBLIC")
+        await _execute(real_engine, "DROP PUBLICATION IF EXISTS zz_feed")
     assert result.ok is False, result.error
     assert "The safety backup of this installation could not be restored: " in result.error, result.error
-    assert "DEFAULT ACL - DEFAULT PRIVILEGES FOR TABLES" in result.error, result.error
+    assert "PUBLICATION - zz_feed" in result.error, result.error
     assert backup_import.recovery_incomplete() is False
     assert connector_calls == []
     rec.cloud_snapshot.assert_not_awaited()
@@ -1839,6 +1841,97 @@ async def test_a_recovery_puts_back_every_table_part_exactly(tmp_path, monkeypat
     finally:
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_parts, zz_log")
         await _execute(real_engine, "DROP SEQUENCE IF EXISTS zz_numbers")
+
+
+# Parts of Celerp's own tables a restore puts back: (create, a lookup that holds while they
+# exist, drop).
+TABLE_PARTS = {
+    "check constraint not yet validated": (
+        ["ALTER TABLE companies ADD CONSTRAINT zz_named CHECK (name <> '') NOT VALID"],
+        "EXISTS (SELECT FROM pg_constraint WHERE conname = 'zz_named' AND NOT convalidated)",
+        ["ALTER TABLE companies DROP CONSTRAINT IF EXISTS zz_named"]),
+    "index comment": (
+        ["CREATE INDEX zz_by_name ON companies (name)", "COMMENT ON INDEX zz_by_name IS 'by name'"],
+        "obj_description(to_regclass('zz_by_name'), 'pg_class') = 'by name'", ["DROP INDEX IF EXISTS zz_by_name"]),
+    "constraint comment": (
+        ["ALTER TABLE companies ADD CONSTRAINT zz_named CHECK (name <> '')",
+         "COMMENT ON CONSTRAINT zz_named ON companies IS 'named'"],
+        "(SELECT obj_description(oid, 'pg_constraint') FROM pg_constraint WHERE conname = 'zz_named') = 'named'",
+        ["ALTER TABLE companies DROP CONSTRAINT IF EXISTS zz_named"]),
+    "extended statistics": (
+        ["CREATE STATISTICS zz_stats ON id, name FROM companies", "COMMENT ON STATISTICS zz_stats IS 'stats'"],
+        "(SELECT obj_description(oid, 'pg_statistic_ext') FROM pg_statistic_ext WHERE stxname = 'zz_stats') = 'stats'",
+        ["DROP STATISTICS IF EXISTS zz_stats"]),
+    "row security": (
+        ["ALTER TABLE companies ENABLE ROW LEVEL SECURITY"],
+        "(SELECT relrowsecurity FROM pg_class WHERE oid = 'companies'::regclass)",
+        ["ALTER TABLE companies DISABLE ROW LEVEL SECURITY"]),
+    "row security policy": (
+        ["ALTER TABLE companies ENABLE ROW LEVEL SECURITY", "CREATE POLICY zz_all ON companies USING (true)",
+         "COMMENT ON POLICY zz_all ON companies IS 'all'"],
+        "(SELECT obj_description(oid, 'pg_policy') FROM pg_policy WHERE polname = 'zz_all') = 'all'",
+        ["DROP POLICY IF EXISTS zz_all ON companies", "ALTER TABLE companies DISABLE ROW LEVEL SECURITY"]),
+}
+
+
+@pytest.mark.parametrize("part", list(TABLE_PARTS))
+async def test_a_recovery_puts_back_a_table_part(tmp_path, monkeypatch, code_config, real_engine, part):
+    from celerp.services import backup_export, backup_import
+    create, lookup, drop = TABLE_PARTS[part]
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    for sql in create:
+        await _execute(real_engine, sql)
+    try:
+        source = await backup_export.export_full()
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, lookup)
+    finally:
+        for sql in drop:
+            await _execute(real_engine, sql)
+
+
+@pytest.mark.parametrize("entry", ["recovery", "update rollback"])
+async def test_a_database_set_up_by_celerp_is_restored(tmp_path, monkeypatch, code_config, real_engine, entry):
+    """The default privileges Celerp grants its own database user at setup belong to the
+    installation; a restore leaves them as they are."""
+    import asyncio
+
+    from celerp import cli
+    from celerp.services import backup, backup_export, backup_import
+    from test_helpers import DATABASE_URL
+    pg_url = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    # Setup runs these statements as the database administrator; here the test's own role runs them.
+    monkeypatch.setattr(cli, "_psql", lambda sql, db, *flags: subprocess.run(
+        [backup._find_pg_tool("psql"), "-X", "-v", "ON_ERROR_STOP=1", *flags, "-c", sql, "-d", pg_url],
+        capture_output=True, text=True))
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    role = cli._parse_db_url(DATABASE_URL)
+    assert cli._fix_ownership_statements(role["user"], role["dbname"]) is None
+    try:
+        if entry == "recovery":
+            source = await backup_export.export_full()
+            await company(real_engine, user, "Beta Trading", "beta")
+            result = await backup_import.run_recovery(source)
+            assert result.ok is True, result.error
+        else:
+            steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.dump, dump)
+            await company(real_engine, user, "Beta Trading", "beta")
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        for kind in ("TABLES", "SEQUENCES"):
+            await _execute(real_engine, f"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON {kind} "
+                                        f"FROM {role['user']}")
 
 
 def _refusal_shown(update) -> str:

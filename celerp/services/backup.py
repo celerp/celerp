@@ -200,15 +200,18 @@ DO $$ DECLARE names text; BEGIN
   IF names IS NOT NULL THEN EXECUTE 'DROP SEQUENCE ' || names; END IF;
 END $$"""
 
-# What a restore would not replace exactly: any other object in public, a trigger, rule or
-# policy on Celerp's tables, one of them this role cannot drop, an object elsewhere
-# depending on them, and any schema besides public. Extension members are left alone.
+# What a restore would not replace exactly: any other object in public, a trigger or rule
+# on Celerp's tables, one of them this role cannot drop, an object elsewhere depending on
+# them, and any schema besides public. Extension members and default privileges, which a
+# restore leaves as they are, are left alone, as are statistics on Celerp's tables.
 _UNSUPPORTED_OBJECTS = f"""WITH ours AS (SELECT c.oid, c.relowner, c.reltype FROM {_CELERP_RELATIONS})
 SELECT DISTINCT found FROM (
   SELECT pg_describe_object(d.classid, d.objid, 0) FROM pg_depend d
    WHERE d.refclassid = 'pg_namespace'::regclass AND d.refobjid = 'public'::regnamespace
-     AND d.classid <> 'pg_extension'::regclass
+     AND d.classid NOT IN ('pg_extension'::regclass, 'pg_default_acl'::regclass)
      AND NOT (d.classid = 'pg_class'::regclass AND d.objid IN (SELECT oid FROM ours))
+     AND NOT (d.classid = 'pg_statistic_ext'::regclass
+              AND d.objid IN (SELECT oid FROM pg_statistic_ext WHERE stxrelid IN (SELECT oid FROM ours)))
      AND NOT EXISTS (SELECT FROM pg_depend e WHERE e.classid = d.classid AND e.objid = d.objid
                                                AND e.deptype = 'e')
   UNION ALL
@@ -217,9 +220,7 @@ SELECT DISTINCT found FROM (
   UNION ALL
   SELECT pg_describe_object('pg_rewrite'::regclass, oid, 0) FROM pg_rewrite
    WHERE ev_class IN (SELECT oid FROM ours)
-  UNION ALL
-  SELECT pg_describe_object('pg_policy'::regclass, oid, 0) FROM pg_policy
-   WHERE polrelid IN (SELECT oid FROM ours)
+
   UNION ALL
   SELECT format('%s, owned by %s', oid::regclass, relowner::regrole) FROM ours
    WHERE NOT pg_has_role(relowner, 'USAGE')
@@ -240,14 +241,16 @@ SELECT DISTINCT found FROM (
 ) AS screen (found)"""
 
 # The pg_restore -l entries of a Celerp backup: its tables and sequences in public with
-# their data, defaults, constraints, indexes, partitions, comments and grants, the public
-# schema itself, which a restore leaves as it is, and extensions, which it drops and creates.
+# their data, defaults, constraints, indexes, partitions, statistics, row security,
+# comments and grants, the public schema itself and default privileges, which a restore
+# leaves as they are, and extensions, which it drops and creates.
 _SCHEMA_ENTRY = r"\d+; \d+ \d+ (?:SCHEMA -|COMMENT - SCHEMA|ACL - SCHEMA) public \S+$"
 _EXTENSION_ENTRY = re.compile(r'\d+; \d+ \d+ (?:EXTENSION -|COMMENT - EXTENSION) "?([a-z0-9_-]+)"? $')
 _BACKUP_ENTRY = re.compile(
     r"\d+; \d+ \d+ (?:(?:TABLE|TABLE DATA|TABLE ATTACH|SEQUENCE|SEQUENCE OWNED BY|SEQUENCE SET|DEFAULT|CONSTRAINT"
-    r"|FK CONSTRAINT|INDEX|INDEX ATTACH) public |(?:COMMENT|ACL) public (?:TABLE|COLUMN|SEQUENCE) )|" + _SCHEMA_ENTRY
-    + "|" + _EXTENSION_ENTRY.pattern)
+    r"|CHECK CONSTRAINT|FK CONSTRAINT|INDEX|INDEX ATTACH|STATISTICS|ROW SECURITY|POLICY) public "
+    r"|COMMENT public (?:TABLE|COLUMN|SEQUENCE|INDEX|CONSTRAINT|STATISTICS|POLICY) |ACL public (?:TABLE|COLUMN|SEQUENCE) "
+    r"|DEFAULT ACL \S+ DEFAULT PRIVILEGES FOR )|" + _SCHEMA_ENTRY + "|" + _EXTENSION_ENTRY.pattern)
 
 # Of the extensions named, those this role could not drop and create again in this database.
 _UNINSTALLABLE_EXTENSIONS = """SELECT n.name FROM unnest(string_to_array('{}', ' ')) AS n (name)
