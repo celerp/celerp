@@ -18,6 +18,8 @@ from httpx import AsyncClient
 from celerp.services.company_lock import locked_company
 
 
+pytestmark = pytest.mark.usefixtures("docs_running")
+
 # When Stripe reported a payment paid, and the books its page opened with.
 PAID = datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc)
 BOOKS = {"deposit_account": "1111", "timezone": "UTC", "base_currency": "USD", "rate": "1"}

@@ -11,12 +11,15 @@ import uuid
 import pytest
 
 
-@pytest.fixture
-def docs_not_running(monkeypatch):
+@pytest.fixture(params=["not installed", "installed but not loaded"])
+def docs_not_running(request, monkeypatch):
     """The process state of an install that has not loaded Documents."""
-    for name in [m for m in sys.modules if m == "celerp_docs" or m.startswith("celerp_docs.")]:
-        monkeypatch.delitem(sys.modules, name)
-    monkeypatch.setitem(sys.modules, "celerp_docs", None)
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-docs"])
+    if request.param == "not installed":
+        for name in [m for m in sys.modules if m == "celerp_docs" or m.startswith("celerp_docs.")]:
+            monkeypatch.delitem(sys.modules, name)
+        monkeypatch.setitem(sys.modules, "celerp_docs", None)
 
 
 async def _owner(client) -> dict:

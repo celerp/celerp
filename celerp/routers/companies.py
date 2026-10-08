@@ -353,12 +353,12 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         require_phone(payload.settings.get("phone"))
-        from importlib.util import find_spec
+        from celerp.modules.loader import is_running
         from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
         # Empty is the default deposit account.
         chosen = [k for k in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY)
                   if payload.settings.get(k) not in (None, "")]
-        if chosen and find_spec("celerp_docs") is None:
+        if chosen and not is_running("celerp-docs"):
             raise HTTPException(status_code=422, detail=(
                 "Turn on Documents on the Modules page before choosing a deposit account."))
         for key in chosen:

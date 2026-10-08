@@ -922,3 +922,11 @@ def files_unchecked(monkeypatch):
     test can change them after admission and reach the checks that follow it."""
     from celerp.modules import loader
     monkeypatch.setattr(loader, "check_unchanged", lambda module: None)
+
+
+@pytest.fixture
+def docs_running(monkeypatch):
+    """Record Documents as loaded, as it is in an installation that takes online payments.
+    The harness mounts its routes directly, so the loader would otherwise not list it."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])
