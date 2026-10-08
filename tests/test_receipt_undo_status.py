@@ -43,7 +43,7 @@ def _receives_on_drafts(monkeypatch) -> None:
     """Receive as an earlier release did, which took goods in on a bill still a draft."""
     import celerp_docs.routes as docs_routes
 
-    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", lambda state: None)
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_when_not_open", lambda state: None)
 
 
 async def _receive_and_undo(client, h: dict, bill: str, sku: str) -> dict:

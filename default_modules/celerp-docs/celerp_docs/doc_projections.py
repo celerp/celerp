@@ -76,6 +76,39 @@ def _status_without_receipts(state: dict) -> str:
     return _payment_status(*_payment_balances(state, to_decimal(state.get("amount_paid", 0))))
 
 
+def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:
+    """Whether ``line`` holds the goods a receipt entry names: its item or SKU. An entry naming
+    neither (an expense or asset line) is held by a line naming neither, the one ``in_place``
+    at its recorded position whatever it is called, any other only under the same name."""
+    item_id = entry.get("item_id")
+    sku = str(entry.get("sku") or "").strip()
+    if item_id or sku:
+        return bool((item_id and line.get("item_id") == item_id)
+                    or (sku and str(line.get("sku") or "").strip() == sku))
+    if line.get("item_id") or str(line.get("sku") or "").strip():
+        return False
+    name = str(entry.get("name") or "").strip()
+    return in_place or (bool(name) and str(line.get("name") or line.get("description") or "").strip() == name)
+
+
+def received_line_index(lines: list[dict], entry: dict) -> int | None:
+    """The document line a receipt (or return) entry is for, or None when it cannot be told.
+
+    An entry recorded with its line's id names that line wherever it now sits. An older entry
+    names its line by position, trusted only while the line there still holds the entry's
+    goods; otherwise the one line holding them. Two lines holding them leave it untold.
+    """
+    line_id = entry.get("source_line_id")
+    if line_id:
+        found = [i for i, li in enumerate(lines) if li.get("line_id") == line_id]
+        return found[0] if len(found) == 1 else None
+    index = int(entry.get("po_line_index", -1))
+    if 0 <= index < len(lines) and _holds_receipt(lines[index], entry, in_place=True):
+        return index
+    found = [i for i, li in enumerate(lines) if _holds_receipt(li, entry)]
+    return found[0] if len(found) == 1 else None
+
+
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
 
@@ -336,21 +369,19 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                         assigned_id = next(created_id_iter, None)
             if not assigned_id:
                 continue
-            idx = int(recv.get("po_line_index", -1))
-            if 0 <= idx < len(line_items):
+            idx = received_line_index(line_items, recv)
+            if idx is not None:
                 line_items[idx].setdefault("entity_id", assigned_id)
-            else:
-                sku = (recv.get("sku") or "").strip()
-                if sku:
-                    for li in line_items:
-                        if str(li.get("sku") or "").strip() == sku and not li.get("entity_id"):
-                            li["entity_id"] = assigned_id
-                            break
+        received_on: dict[int, float] = {}
+        for x in current["received_items"]:
+            idx = received_line_index(line_items, x)
+            if idx is not None:
+                received_on[idx] = received_on.get(idx, 0.0) + float(x.get("quantity_received", 0) or 0)
         all_received = True
         any_received = False
         for idx, line in enumerate(line_items):
             ordered = float(line.get("quantity", 0) or 0)
-            rec_qty = sum(float(x.get("quantity_received", 0) or 0) for x in current["received_items"] if int(x.get("po_line_index", -1)) == idx)
+            rec_qty = received_on.get(idx, 0.0)
             # Update per-line received tracking
             line["quantity_received"] = rec_qty
             if rec_qty > 0:
@@ -369,15 +400,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("returned_items", [])
         current["returned_items"].extend(returned)
 
-        # Calculate total received vs total returned per item
-        received_items = current.get("received_items", [])
-        total_received = sum(float(x.get("quantity_received", 0) or 0) for x in received_items)
-        total_returned = sum(float(x.get("quantity_returned", 0) or 0) for x in current["returned_items"])
-
-        if total_received > 0 and total_returned + 1e-9 >= total_received:
-            current["status"] = "returned"
-        elif total_returned > 0:
-            current["status"] = "partial_returned"
+        if "all_returned" in data:
+            current["status"] = "returned" if data["all_returned"] else "partial_returned"
+        else:
+            # Returns recorded before the event said so: compare the raw quantities.
+            received_items = current.get("received_items", [])
+            total_received = sum(float(x.get("quantity_received", 0) or 0) for x in received_items)
+            total_returned = sum(float(x.get("quantity_returned", 0) or 0) for x in current["returned_items"])
+            if total_received > 0 and total_returned + 1e-9 >= total_received:
+                current["status"] = "returned"
+            elif total_returned > 0:
+                current["status"] = "partial_returned"
     elif event_type == "doc.return_received":
         # Customer return on a credit note: track what came back (status unchanged - CN stays final/paid)
         items = data.get("items", [])
@@ -387,15 +420,21 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # Undo a receive-return: clear the received items list
         current["return_received_items"] = []
     elif event_type == "doc.receive_undone":
-        # Returns were made from the received goods, so they go with them.
+        # Undo refuses once goods went back, but earlier releases undid receipts with returns
+        # on them, and those returns went with the receipt.
+        created = set(current.get("received_item_ids") or [])
         current["received_items"] = []
         current["received_item_ids"] = []
         current["returned_items"] = []
         current["status"] = _status_without_receipts(current)
         current.pop("pre_receipt_status", None)
-        # Clear entity_id from line items so per-line status column resets to "Not Received".
+        # Each line forgets the parcel the receipt created and what it received; an item the
+        # line named before the receipt stays.
         for li in current.get("line_items", []):
-            li.pop("entity_id", None)
+            if li.get("entity_id") in created:
+                li.pop("entity_id")
+            if "quantity_received" in li:
+                li["quantity_received"] = 0
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
         # Carries the allowlisted shared-document fields; status forced to "received".

@@ -67,11 +67,6 @@ async def test_goods_sent_back_after_a_remap_return_landed_cost_to_the_bills_cle
     assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2") == {
         "1130-P": 20.0, "1130-FRT": 5.0, "1130-FR2": 0.0}
 
-    r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2") == {
-        "1130-P": 15.0, "1130-FRT": 10.0, "1130-FR2": 0.0}
-
 
 async def _bill_posting_freight_to(session, client, auth, code: str) -> str:
     """A bill brought over from another system, naming the account its freight was posted to."""
@@ -119,7 +114,7 @@ async def test_a_bill_received_before_it_is_finalized_books_its_charge_where_the
     """An earlier release took goods in on a bill still a draft."""
     import celerp_docs.routes as docs_routes
 
-    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", lambda state: None)
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_when_not_open", lambda state: None)
     bill = await _freight_bill(client, auth)
     r = await _receive(client, auth, bill, _GOODS)
     assert r.status_code == 200, r.text

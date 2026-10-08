@@ -1576,6 +1576,11 @@ async def undo_receive_return(token: str, entity_id: str) -> dict:
         return _raise(await c.delete(f"/docs/{entity_id}/receive-return")).json()
 
 
+async def return_goods(token: str, entity_id: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/return-items", json=data)).json()
+
+
 async def undo_receive_goods(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/receive")).json()

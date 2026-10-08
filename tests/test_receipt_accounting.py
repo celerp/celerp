@@ -192,7 +192,7 @@ async def test_goods_added_to_stock_on_hand_can_be_sent_back_and_the_bill_revert
 
 
 @pytest.mark.asyncio
-async def test_undoing_a_receipt_after_a_return_takes_back_only_what_is_left(client, session, auth):
+async def test_a_receipt_with_goods_sent_back_cannot_be_undone(client, session, auth):
     item_id = await _item(client, auth, 100.0, qty=10)
     po = await _doc(client, auth, "purchase_order",
                     [{"item_id": item_id, "name": "Lot", "quantity": 5, "unit_price": 14.0}])
@@ -203,16 +203,13 @@ async def test_undoing_a_receipt_after_a_return_takes_back_only_what_is_left(cli
     await _finalize(client, auth, po)
     kept = {"1130-OB": _OPENING + 42.0, "2110": -42.0}
     assert await _books(session, auth, *kept) == kept
+    lot = await _state(session, auth, item_id)
 
     r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-    lot = await _state(session, auth, item_id)
-    assert (lot["quantity"], lot["cost_base"]) == (10, 100.0)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.undo_receipt_after_return"
+    assert await _state(session, auth, item_id) == lot
     assert await _books(session, auth, *kept) == kept
-
-    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
-    assert r.status_code == 200, r.text
-    assert await _books(session, auth, *kept) == {"1130-OB": _OPENING, "2110": 0.0}
 
 
 @pytest.mark.parametrize("doc_type", ["purchase_order", "bill"])
@@ -306,9 +303,9 @@ async def test_goods_sent_back_on_a_bill_return_their_landed_cost(client, sessio
         "1130-P": 20.0, "1130-FRT": 5.0, "2110": -25.0}
 
     r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
-    assert r.status_code == 200, r.text
+    assert r.status_code == 409, r.text
     assert await _books(session, auth, "1130-P", "1130-FRT", "2110") == {
-        "1130-P": 15.0, "1130-FRT": 10.0, "2110": -25.0}
+        "1130-P": 20.0, "1130-FRT": 5.0, "2110": -25.0}
 
 
 @pytest.mark.asyncio

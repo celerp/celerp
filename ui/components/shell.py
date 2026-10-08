@@ -156,7 +156,10 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!hdr) return;
   try {
     var obj = JSON.parse(hdr);
-    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
+    // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
+    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) {
+      try { sessionStorage.setItem('celerp_pending_toast', JSON.stringify(obj.celerpToast)); } catch(ex) {}
+    } else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;
@@ -168,6 +171,13 @@ document.addEventListener('htmx:afterRequest', function(e) {
       document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
     }
   } catch(ex) {}
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var pending;
+  try { pending = sessionStorage.getItem('celerp_pending_toast'); sessionStorage.removeItem('celerp_pending_toast'); } catch(ex) {}
+  if (!pending) return;
+  try { var t = JSON.parse(pending); celerpToast(t.message, t.type || 'error', t.persist); } catch(ex) {}
 });
 
 function showGlobalUiError(message) {

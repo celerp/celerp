@@ -17,7 +17,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 from sqlalchemy import select, func as _func, text
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.doc_money import document_money
+from celerp_docs.doc_projections import received_line_index
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
@@ -53,14 +54,14 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
+from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
 from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RECEIVABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, VENDOR_DOC_TYPES
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -257,13 +258,17 @@ def _step_id(key: str, *parts) -> uuid.UUID:
 
 
 async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_type: str,
-                       entity_id: str | None, digest: str) -> dict | None:
-    """What an earlier call of this same request returned, or None when there was none."""
+                       entity_id: str | None, digest: str, with_event_id: bool = False) -> dict | None:
+    """What an earlier call of this same request returned, or None when there was none.
+    ``with_event_id``: the call answered with its event's id beside the recorded result."""
     replay = await find_event_by_idempotency(session, company_id, key)
     if replay is None:
         return None
     _check_replay(replay, event_type=event_type, digest=digest, entity_id=entity_id)
-    return (replay.metadata_ or {}).get("result") or {"event_id": replay.id}
+    result = (replay.metadata_ or {}).get("result")
+    if with_event_id:
+        return {"event_id": replay.id, **(result or {})}
+    return result or {"event_id": replay.id}
 
 
 _PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id"})
@@ -431,6 +436,7 @@ class DocPaymentBody(BaseModel):
 
 class ReceivedItem(BaseModel):
     po_line_index: int = -1  # optional; -1 means not specified (e.g. one-click bill receive)
+    source_line_id: str | None = None  # the document line's id; wins over po_line_index
     item_id: str | None = None
     quantity_received: FiniteFloat = Field(gt=0)
     condition: str = "good"
@@ -440,6 +446,15 @@ class ReceivedItem(BaseModel):
     receive_as: str | None = None  # taken from the document line when not given
     category: str | None = None
     attributes: dict | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unnamed_line(self, handler):
+        # A receipt that names no line id serializes as it always has, so a retry of one
+        # sent before line ids existed still matches its earlier run.
+        data = handler(self)
+        if data.get("source_line_id") is None:
+            data.pop("source_line_id", None)
+        return data
 
 
 class ReceiveBody(BaseModel):
@@ -1479,6 +1494,17 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             for li in doc.get("line_items") or []:
                 li.pop("shipped_label", None)
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
+    if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and doc.get("status") in SUPPLIER_RETURN_STATUSES:
+        # How much of each line can still go back to the supplier, in stock units. Lines whose
+        # goods cannot be traced to them alone carry no figure and are not offered for return.
+        traced = await _line_return_lots(session, company_id, row.state, lock=False)
+        if traced is not None:
+            by_line, shared = traced
+            doc["line_items"] = [
+                {**li, "returnable_quantity": sum(q for _, q in by_line[i])}
+                if i in by_line and not any(lot in shared for lot, _ in by_line[i]) else li
+                for i, li in enumerate(doc.get("line_items") or [])
+            ]
     return doc
 
 
@@ -3661,40 +3687,58 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     return result
 
 
-_RECEIVING_DOC_LABEL = {"purchase_order": "purchase order", "bill": "bill"}
+_RECEIVING_DOC_LABEL = {"purchase_order": "purchase order", "bill": "bill", "consignment_in": "consignment"}
 
 
 def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]) -> None:
     """Tie received goods to the document line they are for, and take what they are from it.
 
-    The receipt names the line by its index, else by the line's item, SKU or name. Whatever
-    else it says about the goods (item, SKU, stock or expense) must agree with that line.
-    Goods received on a consignment need no line.
+    The receipt names the line by its id, else by its index, else by the one line holding its
+    item, SKU or name. Whatever else it says about the goods (item, SKU, stock or expense)
+    must agree with that line. Goods no line is for, or that two lines could be for, are
+    refused: the line is added or changed first.
     """
-    doc_type = doc.get("doc_type")
-    label = _RECEIVING_DOC_LABEL.get(doc_type, "document")
+    label = _RECEIVING_DOC_LABEL.get(doc.get("doc_type"), "document")
     lines = doc.get("line_items") or []
     what = it.sku or it.name or it.item_id or "Received item"
-    if it.po_line_index != -1:
+    if it.source_line_id:
+        found = [i for i, li in enumerate(lines) if li.get("line_id") == it.source_line_id]
+        if len(found) != 1:
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.receive_line_unknown",
+                f"{what}: that line is not on this document. Reload the document and pick the line again.",
+                what=what))
+        index = found[0]
+        if it.po_line_index not in (-1, index):
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.receive_line_mismatch",
+                f"{what}: that line has moved on this document. Reload the document and pick the line again.",
+                what=what))
+    elif it.po_line_index != -1:
         if not 0 <= it.po_line_index < len(lines):
             raise HTTPException(status_code=422, detail=f"{what}: line {it.po_line_index + 1} is not on this {label}.")
         index = it.po_line_index
     else:
-        index = next((i for i, li in enumerate(lines)
-                      if (it.item_id and li.get("item_id") == it.item_id)
-                      or (it.sku and str(li.get("sku") or "").strip() == it.sku.strip())), None)
-        if index is None and not (it.item_id or it.sku) and (it.name or "").strip():
-            index = next((i for i, li in enumerate(lines)
-                          if str(li.get("name") or li.get("description") or "").strip() == it.name.strip()), None)
+        found = [i for i, li in enumerate(lines)
+                 if (it.item_id and li.get("item_id") == it.item_id)
+                 or (it.sku and str(li.get("sku") or "").strip() == it.sku.strip())]
+        if not found and not (it.item_id or it.sku) and (it.name or "").strip():
+            found = [i for i, li in enumerate(lines)
+                     if str(li.get("name") or li.get("description") or "").strip() == it.name.strip()]
+        if len(found) > 1:
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.receive_line_ambiguous",
+                f"{what}: more than one line on this document holds it. Pick the line to receive it on.",
+                what=what))
+        index = found[0] if found else None
     if index is None:
-        if doc_type == "consignment_in":
-            it.receive_as = it.receive_as or "stock"
-            return
         raise HTTPException(status_code=422, detail=f"{what}: it is not on this {label}. Add it to the {label} first.")
     line = lines[index]
-    line_item = line.get("item_id") or None
+    # The line's item, else the item it was written against; never a parcel a receipt made.
+    pre_receipt = line.get("entity_id") if line.get("entity_id") not in set(doc.get("received_item_ids") or []) else None
+    line_item = line.get("item_id") or pre_receipt or None
     line_sku = str(line.get("sku") or "").strip() or None
-    line_kind = auto_je.bill_line_kind(line) if doc_type == "bill" else line.get("receive_as") or "stock"
+    line_kind = line_receive_kind(line)
     if it.item_id and it.item_id != line_item and not (line_item is None and line_sku
                                                       and item_skus.get(it.item_id) == line_sku):
         raise HTTPException(status_code=422, detail=f"{what}: that item is not the one on line {index + 1} of this {label}.")
@@ -3705,35 +3749,24 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
             status_code=422,
             detail=f"{what}: line {index + 1} of this {label} is received as {line_kind}, not {it.receive_as}.")
     it.po_line_index = index
+    it.source_line_id = line.get("line_id") or None
     it.item_id = it.item_id or line_item
     it.sku = line_sku or it.sku
     it.receive_as = line_kind
     it.name = it.name or line.get("name") or line.get("description") or None
 
 
-def _doc_line_index(lines: list[dict], po_line_index: int, item_id: str | None, sku: str | None) -> int | None:
-    """The document line received goods are for: the line at po_line_index, else the line
-    naming their item or SKU."""
-    if 0 <= po_line_index < len(lines):
-        return po_line_index
-    return next((i for i, li in enumerate(lines)
-                 if (item_id and li.get("item_id") == item_id)
-                 or (sku and str(li.get("sku") or "").strip() == sku.strip())), None)
-
-
 async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
     """What the received goods cost in the books' currency, or None when no line prices them.
 
-    The document line prices them per purchase unit in the document's currency: the line
-    at po_line_index, else the line naming this item or its SKU. A unit cost given on the
-    receipt (per stock unit, in the books' currency) must agree with that line, since the
-    bill books the line.
+    The document line the receipt was resolved to prices them per purchase unit in the
+    document's currency. A unit cost given on the receipt (per stock unit, in the books'
+    currency) must agree with that line, since the bill books the line.
     """
     lines = doc.get("line_items") or []
-    line_index = _doc_line_index(lines, it.po_line_index, it.item_id, it.sku)
-    if line_index is None:
+    if not 0 <= it.po_line_index < len(lines):
         return None
-    line = lines[line_index]
+    line = lines[it.po_line_index]
     currency = str(doc.get("currency") or "").upper()
     unit = document_line_unit(line, currency)
     if unit is None:
@@ -3758,16 +3791,22 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
     return cost
 
 
-def _refuse_receipt_on_a_draft_bill(state: dict) -> None:
-    """A bill not yet issued books nothing, so goods received on it would sit on no entry.
-    That includes a draft an earlier release already received goods on."""
-    if state.get("doc_type") != "bill":
-        return
-    if state.get("status") == "draft" or (state.get("pre_receipt_status") == "draft" and not state.get("finalized")):
+def _refuse_receipt_when_not_open(state: dict) -> None:
+    """Goods are received only in the statuses RECEIVABLE_STATUSES names for the document.
+
+    A bill not yet issued books nothing, so goods received on it would sit on no entry. That
+    includes a draft an earlier release already received goods on."""
+    if state.get("doc_type") == "bill" and (
+            state.get("status") == "draft"
+            or (state.get("pre_receipt_status") == "draft" and not state.get("finalized"))):
         raise HTTPException(status_code=409, detail=refusal(
             "docs.receive_draft_bill",
             "This bill is still a draft, so it has not booked these goods. "
             "Finalize the bill first, then receive them."))
+    if state.get("status") not in RECEIVABLE_STATUSES.get(state.get("doc_type"), frozenset()):
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.receive_not_open",
+            "This document is not open for receiving, so no goods can be received on it."))
 
 
 @router.post("/{entity_id}/receive")
@@ -3777,12 +3816,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("receive", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.received",
-                                   entity_id=entity_id, digest=digest)) is not None:
+                                   entity_id=entity_id, digest=digest, with_event_id=True)) is not None:
         return done
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
         raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
-    _refuse_receipt_on_a_draft_bill(row.state)
+    _refuse_receipt_when_not_open(row.state)
 
     location_uuid = None
     if payload.location_id:
@@ -3851,25 +3890,21 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
 
     doc_label = _RECEIVING_DOC_LABEL.get(doc_type, "document")
-    if not is_consignment:
-        # A line is received up to what it orders. Goods sent back are credited against the
-        # line, so replacing them means raising the line first.
-        lines = row.state.get("line_items") or []
-        held = _line_quantities_received(row.state)
-        for it in payload.received_items:
-            line_index = _doc_line_index(lines, it.po_line_index, it.item_id, it.sku)
-            if line_index is None:
-                continue
-            before = held.get(line_index, 0.0)
-            held[line_index] = before + float(it.quantity_received)
-            ordered = float(lines[line_index].get("quantity") or 0)
-            if held[line_index] > ordered + 1e-9:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(f"{it.name or it.sku or it.item_id}: this {doc_label} line is for {ordered:g} "
-                            f"and {before:g} has been received, so at most {max(0.0, ordered - before):g} "
-                            f"more can be received. Change the line first to receive more."),
-                )
+    # A line is received up to what it orders, across every receipt on it. Goods sent back
+    # are credited against the line, so replacing them means raising the line first.
+    lines = row.state.get("line_items") or []
+    held = _line_quantities_received(row.state)
+    for it in payload.received_items:
+        before = held.get(it.po_line_index, 0.0)
+        held[it.po_line_index] = before + float(it.quantity_received)
+        ordered = float(lines[it.po_line_index].get("quantity") or 0)
+        if held[it.po_line_index] > ordered + 1e-9:
+            raise HTTPException(
+                status_code=422,
+                detail=(f"{it.name or it.sku or it.item_id}: this {doc_label} line is for {ordered:g} "
+                        f"and {before:g} has been received, so at most {max(0.0, ordered - before):g} "
+                        f"more can be received. Change the line first to receive more."),
+            )
 
     # Received parcels each get a fresh sequential barcode so every physical lot is
     # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
@@ -4087,6 +4122,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     landed_by_account[code] = landed_by_account.get(code, 0.0) + sum(
                         u * stock_qty_received for u in _landed.values())
 
+    # What this receipt did with each line it received: stock lines add stock, the rest none.
+    line_counts = {"stock": 0, "expense": 0, "asset": 0}
+    for it in payload.received_items:
+        line_counts[it.receive_as] += 1
+    result = {"line_counts": line_counts}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
         data={
@@ -4098,7 +4138,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             "created_item_ids": created_item_ids,
         },
         actor_id=user.id, location_id=location_uuid, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        idempotency_key=key, metadata_={"request": digest, "result": result},
     )
 
     if doc_type == "purchase_order":
@@ -4127,7 +4167,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         )
     # consignment_in: no JE (goods not owned).
     await session.commit()
-    return {"event_id": entry.id}
+    return {"event_id": entry.id, **result}
 
 
 def _lot_additions(doc: dict) -> dict[str, tuple[float, float]]:
@@ -4150,7 +4190,7 @@ def _line_quantities_received(doc: dict) -> dict[int, float]:
     lines = doc.get("line_items") or []
     received: dict[int, float] = {}
     for x in doc.get("received_items") or []:
-        line_index = _doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), x.get("sku"))
+        line_index = received_line_index(lines, x)
         if line_index is not None:
             received[line_index] = received.get(line_index, 0.0) + float(x.get("quantity_received") or 0)
     return received
@@ -4324,9 +4364,58 @@ async def _returnable_quantities(session: AsyncSession, company_id, doc: dict) -
     return got
 
 
-# Item statuses meaning the goods are not on our shelf, so they cannot be handed back to a
-# supplier: they are at a customer, gone, or no longer a live parcel.
-_NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged", "disposed"})
+def _receipt_lots_by_line(state: dict) -> tuple[dict[int, list[str]], set[str]] | None:
+    """The lots each document line's stock receipts went into, in receipt order, and the lots
+    more than one line fed. A purchase order receipt names the lot it added to; every other
+    stock receipt made the next parcel the document records. None when a receipt cannot be
+    paired with its lot and its line, as then no line's goods can be told apart."""
+    lines = state.get("line_items") or []
+    created = iter(state.get("received_item_ids") or [])
+    inbound = state.get("doc_type") in INBOUND_DOC_TYPES
+    by_line: dict[int, list[str]] = {}
+    fed_by: dict[str, set[int]] = {}
+    for x in state.get("received_items") or []:
+        if (x.get("receive_as") or "stock") != "stock":
+            continue
+        lot = x["item_id"] if x.get("item_id") and not inbound else next(created, None)
+        index = received_line_index(lines, x)
+        if lot is None or index is None:
+            return None
+        if lot not in by_line.setdefault(index, []):
+            by_line[index].append(lot)
+        fed_by.setdefault(lot, set()).add(index)
+    if next(created, None) is not None:
+        return None
+    return by_line, {lot for lot, fed in fed_by.items() if len(fed) > 1}
+
+
+def _free_on_hand(state: dict | None) -> float:
+    """Stock units of a lot on our shelf and held for nothing: none unless the lot is available."""
+    from celerp_inventory.projections import is_item_available
+
+    if state is None or not is_item_available(state):
+        return 0.0
+    return max(0.0, float(state.get("quantity") or 0) - float(state.get("reserved_quantity") or 0))
+
+
+async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, lock: bool
+                            ) -> tuple[dict[int, list[tuple[str, float]]], set[str]] | None:
+    """Line index -> [(lot, stock units of it the line can send back now)] in receipt order, and
+    the lots more than one line fed; None when the receipts cannot be traced to their lines. A
+    line sends back what it brought in and has not sent back, while it is on hand and free."""
+    traced = _receipt_lots_by_line(doc)
+    if traced is None:
+        return None
+    by_line, shared = traced
+    ids = sorted({lot for lots in by_line.values() for lot in lots})
+    if lock:
+        states = {eid: r.state for eid, r in (await lock_projections(session, company_id, ids)).items()}
+    else:
+        states = {r.entity_id: r.state for r in (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(ids)))).scalars()} if ids else {}
+    returnable = await _returnable_quantities(session, company_id, doc)
+    return {index: [(lot, max(0.0, min(returnable.get(lot, 0.0), _free_on_hand(states.get(lot))))) for lot in lots]
+            for index, lots in by_line.items()}, shared
 
 
 class ReturnItem(BaseModel):
@@ -4334,14 +4423,100 @@ class ReturnItem(BaseModel):
     quantity_returned: FiniteFloat = Field(gt=0)
 
 
+class ReturnLine(BaseModel):
+    """A document line to send goods back from, by its id (or its position when it has none),
+    and the stock units to send back. The server finds the lots."""
+    line_id: str | None = None
+    line_index: int | None = None
+    quantity_returned: FiniteFloat = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _names_one_line(self):
+        if (self.line_id is None) == (self.line_index is None):
+            raise ValueError("Name each line by its line_id, or by line_index when it has no id.")
+        return self
+
+
 class ReturnBody(BaseModel):
-    items: list[ReturnItem]
+    items: list[ReturnItem] = Field(default_factory=list)
+    lines: list[ReturnLine] | None = None
     notes: str | None = None
     idempotency_key: str | None = None
+
+    @model_validator(mode="after")
+    def _items_or_lines(self):
+        if bool(self.items) == bool(self.lines):
+            raise ValueError("Give the items or the lines to return, one of the two.")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_lines(self, handler):
+        # A request naming lots serializes as it always has, so its retries still match.
+        data = handler(self)
+        if data.get("lines") is None:
+            data.pop("lines", None)
+        return data
+
+
+def _line_label(line: dict) -> str:
+    return str(line.get("sku") or line.get("name") or line.get("description") or "--")
+
+
+async def _return_lines_as_lots(session: AsyncSession, company_id, doc: dict,
+                                lines: list[ReturnLine]) -> list[tuple[ReturnItem, str | None]]:
+    """The lots and quantities selected lines send back, each with its line's id: every line's
+    quantity is taken from its lots in receipt order, from goods on hand and free."""
+    doc_lines = doc.get("line_items") or []
+    picked: list[int] = []
+    for ln in lines:
+        if ln.line_id is not None:
+            found = [i for i, li in enumerate(doc_lines) if li.get("line_id") == ln.line_id]
+            index = found[0] if len(found) == 1 else None
+        else:
+            index = (ln.line_index if 0 <= ln.line_index < len(doc_lines)
+                     and not doc_lines[ln.line_index].get("line_id") else None)
+        if index is None:
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.return_line_unknown",
+                "A selected line is not on this document as named. Reload the document and select the lines again."))
+        if index in picked:
+            raise HTTPException(status_code=422, detail="Each line can be selected once.")
+        picked.append(index)
+    traced = await _line_return_lots(session, company_id, doc, lock=True)
+    if traced is None:
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.return_line_untraced",
+            "Some goods received on this document cannot be traced to their line, so they cannot be returned by line."))
+    by_line, shared = traced
+    out: list[tuple[ReturnItem, str | None]] = []
+    for ln, index in zip(lines, picked):
+        line = doc_lines[index]
+        lots = by_line.get(index, [])
+        if any(lot in shared for lot, _ in lots):
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.return_line_shared",
+                f"{_line_label(line)}: goods received on this line went into the same stock as another line's, "
+                "so they cannot be returned by line.", name=_line_label(line)))
+        free = sum(q for _, q in lots)
+        if ln.quantity_returned > free + 1e-9:
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.return_line_not_on_hand",
+                f"{_line_label(line)}: at most {free:g} received on this line is on hand and free to return. "
+                "Goods sold, out on memo or reserved go back to the supplier only once they are back in stock "
+                "and free.", name=_line_label(line), qty=f"{free:g}"))
+        left = float(ln.quantity_returned)
+        for lot, q in lots:
+            take = min(q, left)
+            if take > 1e-9:
+                out.append((ReturnItem(item_id=lot, quantity_returned=take), line.get("line_id")))
+                left -= take
+    return out
 
 
 @router.post("/{entity_id}/return-items")
 async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Send received goods back to the supplier, named either by lot (``items``) or by document
+    line (``lines``, a stock quantity per line, taken from that line's lots on the server)."""
     # A return takes goods off the lots it reads, so it waits for any receipt or cost
     # change in flight and reads what that one committed.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -4352,15 +4527,22 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     doc_type = row.state.get("doc_type")
     if doc_type not in ("consignment_in", "bill", "purchase_order"):
         raise HTTPException(status_code=409, detail="return-items is only valid for bills, POs, and consignment_in documents")
-    if row.state.get("status") not in ("received", "partially_received", "partial_returned", "awaiting_payment"):
+    if row.state.get("status") not in SUPPLIER_RETURN_STATUSES:
         raise HTTPException(status_code=409, detail="Document must be in received/partial/awaiting_payment status to return items")
 
+    from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import goods_basis
+
+    if payload.lines:
+        picked = await _return_lines_as_lots(session, company_id, row.state, payload.lines)
+    else:
+        picked = [(it, None) for it in payload.items]
+    items = [it for it, _ in picked]
 
     # A document sends back only goods it brought in, and no more than it still holds of them.
     label = {**_RECEIVING_DOC_LABEL, "consignment_in": "consignment"}[doc_type]
     returnable = await _returnable_quantities(session, company_id, row.state)
-    for it in payload.items:
+    for it in items:
         if it.quantity_returned <= 0:
             raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")
         left = returnable.get(it.item_id)
@@ -4375,7 +4557,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
 
     # Owned goods leave the books at what they carried; consigned goods were never on them.
     owned = doc_type != "consignment_in"
-    lots = await lock_projections(session, company_id, [it.item_id for it in payload.items])
+    lots = await lock_projections(session, company_id, [it.item_id for it in items])
     added = _lot_additions(row.state)
     currency = await auto_je.company_currency(session, company_id)
     goods_role = auto_je.po_receipt_role(row.state)
@@ -4383,26 +4565,30 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     landed_by_kind: dict[str, float] = {}
     landed_by_account: dict[str, float] = {}
     returned: list[dict] = []
-    for line_no, it in enumerate(payload.items):
+    for line_no, (it, source_line_id) in enumerate(picked):
         item = lots.get(it.item_id)
         if item is None or item.entity_type != "item":
             raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
-        # Only goods actually on the shelf can go back to a supplier. Anything out on memo
-        # is at a customer's site and anything sold has left; shrinking those here would
-        # quietly write off stock that is still owed back to us.
-        _item_status = str(item.state.get("status") or "").lower()
-        if _item_status in _NOT_ON_HAND_STATUSES:
-            raise HTTPException(
-                status_code=409,
-                detail=(f"Cannot return {item.state.get('sku', it.item_id)}: it is "
-                        f"'{_item_status}', not on hand. Bring it back into stock first."),
-            )
+        # Only goods on the shelf and held for nothing can go back to a supplier. Goods out on
+        # memo are at a customer's site, sold goods have left, and reserved goods are promised:
+        # shrinking any of them here would write off stock still owed to someone.
+        sku = item.state.get("sku") or it.item_id
+        status = str(item.state.get("status") or "").lower()
+        if not is_item_available(item.state):
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.return_not_on_hand",
+                f"Cannot return {sku}: it is {status}, not on hand. Goods sold, out on memo or reserved go back "
+                "to the supplier only once they are back in stock and free.", sku=sku, status=status))
         current_qty = float(item.state.get("quantity", 0) or 0)
-        if it.quantity_returned > current_qty + 1e-9:
-            raise HTTPException(status_code=409, detail=f"Cannot return more than on-hand quantity for {it.item_id}")
+        free = _free_on_hand(item.state)
+        if it.quantity_returned > free + 1e-9:
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.return_more_than_free",
+                f"Cannot return {it.quantity_returned:g} of {sku}: {free:g} is on hand and not reserved.",
+                qty=f"{it.quantity_returned:g}", sku=sku, free=f"{free:g}"))
         new_qty = max(0.0, current_qty - it.quantity_returned)
         adjustment: dict = {"new_qty": new_qty}
-        returned.append(it.model_dump())
+        returned.append({**it.model_dump(), **({"source_line_id": source_line_id} if source_line_id else {})})
         if not owned:
             adjustment["consignment_flag"] = None if new_qty == 0 else "in"
         else:
@@ -4448,6 +4634,10 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             "items": returned,
             "returned_by": str(user.id),
             "notes": payload.notes,
+            # Whether the document now holds nothing to send back, judged in stock units here
+            # because a line's received quantity may be in a purchase unit.
+            "all_returned": all(left <= 1e-9 for left in returnable.values()) and not any(
+                (x.get("receive_as") or "stock") != "stock" for x in row.state.get("received_items") or []),
         },
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
@@ -8259,6 +8449,19 @@ async def undo_receive_return(
     return {"undone": True, "item_ids": item_ids}
 
 
+async def _receipt_already_undone(session: AsyncSession, company_id, entity_id: str) -> bool:
+    """True when the document's latest receipt event is an undo."""
+    from celerp.models.ledger import LedgerEntry
+
+    latest = (await session.execute(
+        select(LedgerEntry.event_type)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+               LedgerEntry.event_type.in_(("doc.received", "doc.receive_undone")))
+        .order_by(LedgerEntry.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    return latest == "doc.receive_undone"
+
+
 @router.delete("/{entity_id}/receive")
 async def undo_receive(
     entity_id: str,
@@ -8267,21 +8470,31 @@ async def undo_receive(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo a goods-received on a bill.
+    """Undo everything received on a bill.
 
-    Archives the parcels the receipts created, takes back off each lot already on hand
-    what the receipts added to it, and returns the landed cost they capitalised. The
-    bill still stands, so what it booked stays booked. Clears received_items and
-    received_item_ids on the bill projection.
+    A receipt exists when the bill has received anything, expense and asset lines
+    included. Archives the parcels the receipts created, takes back off each lot already
+    on hand what the receipts added to it, and returns the landed cost they capitalised.
+    The bill still stands, so what it booked stays booked. Goods already returned to the
+    supplier keep the receipt in place: undoing it would orphan the posted return. Undoing
+    a receipt already undone reports that instead of failing.
     """
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "bill":
         raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
+    if not state.get("received_items"):
+        if await _receipt_already_undone(session, company_id, entity_id):
+            return {"undone": True, "item_ids": [], "already_undone": True}
+        raise HTTPException(status_code=409, detail="No received goods to revert")
+    if state.get("returned_items"):
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.undo_receipt_after_return",
+            "Some of these goods were already returned to the supplier, so the receipt cannot be "
+            "undone. The return stays on record.",
+        ))
     received_item_ids = state.get("received_item_ids") or []
     added = _lot_additions(state)
-    if not received_item_ids and not added:
-        raise HTTPException(status_code=409, detail="No received goods to revert")
     stock_lines = sum(1 for x in state.get("received_items") or []
                       if (x.get("receive_as") or "stock") == "stock" and "lot_quantity_added" not in x)
     if stock_lines != len(received_item_ids):
@@ -8303,9 +8516,9 @@ async def undo_receive(
                if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in.get(iid, 0.0))) is not None]
     for lot, (qty, _) in added.items():
         lot_state = item_rows.get(lot) or {}
-        on_hand = float(lot_state.get("quantity") or 0)
-        if str(lot_state.get("status") or "").lower() in _NOT_ON_HAND_STATUSES or on_hand + 1e-9 < qty:
-            blocked.append(f"SKU '{lot_state.get('sku') or lot}' has {on_hand:g} on hand, {qty:g} came in on this document")
+        free = _free_on_hand(lot_state)
+        if free + 1e-9 < qty:
+            blocked.append(f"SKU '{lot_state.get('sku') or lot}' has {free:g} on hand and free, {qty:g} came in on this document")
     if blocked:
         raise HTTPException(
             status_code=409,
