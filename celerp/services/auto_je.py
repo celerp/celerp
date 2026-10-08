@@ -31,7 +31,7 @@ from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_p
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
-from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
+from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
 from sqlalchemy import or_
 from sqlalchemy import select as _select
@@ -246,59 +246,49 @@ def lot_unit_cost(state: dict) -> float:
     return float(state.get("cost_price") or 0) + landed
 
 
-async def _span_line_lots(
-    session, company_id, primary_proj, needed: float, doc_id: str | None, exclude: set[str],
-) -> tuple[list[dict], float, float]:
-    """Resolve a spanning line's draws across the SKU's sibling lots.
+async def doc_lot_pool(session, company_id, doc_id: str | None, line_items: list[dict]):
+    """Every lot a document's lines may draw from, read once: ``(lots, attributed)``.
 
-    Eligible siblings: same company, item entity, same SKU, positive quantity,
-    not in exclude (lots bound to or already drawn by the document's other lines),
-    and either available or reserved by doc_id (this document's own hold).
-    Draw order is the bound lot first, then the effective pick method. Returns
-    (lots, provisional_qty, amount); the shortfall no lot covers is priced
-    provisionally at the bound lot's unit cost.
-    """
-    from celerp.models.company import Company
-
-    sku = str(primary_proj.state.get("sku") or "").strip()
-    company = await session.get(Company, company_id)
-    method = resolve_pick_method(primary_proj.state, (company.settings or {}) if company else {})
-
-    def _lot(entity_id: str, created_at, state: dict) -> dict:
-        return {
-            "entity_id": entity_id,
-            "quantity": float(state.get("quantity") or 0),
-            "created_at": created_at.isoformat() if created_at else "",
-            "expires_at": state.get("expires_at"),
-            "unit_cost": lot_unit_cost(state),
-            "state": state,
-        }
+    ``lots`` maps entity id to a lot dict (pick.as_lot) carrying the document-level
+    demand claim; ``attributed`` maps each line index to the holds of ``doc_id`` that
+    belong to it (pick.attribute_holds), so one line never draws another line's hold."""
+    from celerp_inventory.projections import demand_claim
 
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
-    siblings: list[dict] = []
-    for r in rows:
-        if r.entity_id == primary_proj.entity_id or r.entity_id in exclude:
-            continue
-        s = r.state or {}
-        if str(s.get("sku") or "").strip() != sku:
-            continue
-        if float(s.get("quantity") or 0) <= 1e-9:
-            continue
-        status = s.get("status") or "available"
-        if not (status == "available"
-                or (status == "reserved" and doc_id is not None and s.get("status_doc_id") == doc_id)):
-            continue
-        siblings.append(_lot(r.entity_id, r.created_at, s))
+    lots = {r.entity_id: as_lot(r.entity_id, r.created_at, r.state or {}, demand_claim(r.state or {}, doc_id))
+            for r in rows}
+    held = {eid: lot["state"] for eid, lot in lots.items() if lot["claim"] == "reserved"}
+    attributed, _orphans, _ambiguous = attribute_holds(line_items, held)
+    return lots, attributed
 
-    primary = _lot(primary_proj.entity_id, primary_proj.created_at, primary_proj.state)
-    draws, short_qty = plan_lot_draws(primary, needed, siblings, method)
-    lots = [{"lot_entity_id": lot["entity_id"], "qty": take, "unit_cost": lot["unit_cost"], "state": lot["state"]}
-            for lot, take, _is_full in draws]
-    amount = sum(take * lot["unit_cost"] for lot, take, _is_full in draws)
+
+def _span_line_lots(
+    lots: dict[str, dict], attributed: dict[int, list[str]], line_items: list[dict], index: int,
+    primary_proj, needed: float, method: str, remaining: dict[str, float],
+) -> tuple[list[dict], float, float]:
+    """Resolve a spanning line's draws across the SKU's lots with the shared line
+    planner: the line's own holds, its bound lot, then free lots of the SKU in pick
+    order, never a lot another line holds or binds, and never stock an earlier line of
+    the document already drew (``remaining``). Returns (lots, provisional_qty, amount);
+    the shortfall no lot covers is priced provisionally at the bound lot's unit cost.
+    """
+    own, primary, free = line_draw_sources(line_items, index, lots, attributed, method)
+    bound = primary_proj.entity_id
+    held_elsewhere = any(bound in ids for i, ids in attributed.items() if i != index)
+    if primary is None and bound not in {lot["entity_id"] for lot in own} and not held_elsewhere:
+        # The bound lot is what the line names: it is costed first whatever its status,
+        # as long as no other line holds it.
+        primary = lots.get(bound) or as_lot(bound, primary_proj.created_at, primary_proj.state or {}, None)
+    draws, short_qty = plan_line_draws(needed, own=own, primary=primary, free=free,
+                                       method=method, remaining=remaining)
+    unit_cost = lot_unit_cost(primary_proj.state or {})
+    out = [{"lot_entity_id": lot["entity_id"], "qty": take, "unit_cost": lot_unit_cost(lot["state"]),
+            "state": lot["state"]} for lot, take, _is_full in draws]
+    amount = sum(row["qty"] * row["unit_cost"] for row in out)
     if short_qty > 1e-9:
-        amount += short_qty * primary["unit_cost"]
-    return lots, short_qty, amount
+        amount += short_qty * unit_cost
+    return out, short_qty, amount
 
 
 async def compute_doc_cogs(
@@ -318,9 +308,9 @@ async def compute_doc_cogs(
     reserved by doc_id - in the effective pick order; whatever no lot covers
     stays priced at the bound lot's cost as provisional_qty.
 
-    Lines are allocated together in document order, the way fulfillment draws
-    them: a lot bound to another line, or already drawn by an earlier line's span,
-    is never a sibling.
+    Lines are allocated together in document order with the shared line planner, the
+    way fulfillment draws them: a lot another line holds or binds is never a sibling,
+    and stock an earlier line drew is not drawn again.
 
     Non-stock lines (service, freight) hold no goods and contribute nothing.
     Per-line amounts are clamped at zero so one mis-costed lot cannot cancel
@@ -328,8 +318,9 @@ async def compute_doc_cogs(
     """
     result = CogsResult()
     line_items = doc.get("line_items", [])
-    bound = doc_bound_lots(line_items)
-    span_consumed: set[str] = set()
+    pool: tuple | None = None
+    remaining: dict[str, float] = {}
+    settings: dict | None = None
     for index, li in enumerate(line_items):
         line_qty = float(li.get("quantity") or 0)
         if line_qty <= 0:
@@ -349,10 +340,14 @@ async def compute_doc_cogs(
         if spans:
             result.ambiguous = True
         if spans and span_lots:
-            lots, provisional_qty, amount = await _span_line_lots(
-                session, company_id, proj, line_qty, doc_id,
-                exclude=(bound - {str(item_id)}) | span_consumed)
-            span_consumed.update(lot["lot_entity_id"] for lot in lots)
+            if pool is None:
+                from celerp.models.company import Company
+                company = await session.get(Company, company_id)
+                settings = (company.settings or {}) if company else {}
+                pool = await doc_lot_pool(session, company_id, doc_id, line_items)
+            lots, provisional_qty, amount = _span_line_lots(
+                pool[0], pool[1], line_items, index, proj, line_qty,
+                resolve_pick_method(state, settings), remaining)
         else:
             lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost, "state": state}]
             provisional_qty = 0.0
