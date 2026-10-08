@@ -582,7 +582,7 @@
   "doc.total_declared_value": "Valeur totale déclarée",
   "doc.tracking": "N° de suivi",
   "doc.u2630": "\\u2630",
-  "doc.unvoid": "Annuler",
+  "doc.unvoid": "Annuler l'annulation",
   "doc.valid_until": "Valable jusqu'au :",
   "doc.voided": "Annulé",
   "error.all_fields_required": "Tous les champs sont obligatoires.",

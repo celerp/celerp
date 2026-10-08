@@ -582,7 +582,7 @@
   "doc.total_declared_value": "Total nilai yang dideklarasikan",
   "doc.tracking": "No. resi",
   "doc.u2630": "\\u2630",
-  "doc.unvoid": "Batalkan",
+  "doc.unvoid": "Pulihkan pembatalan",
   "doc.valid_until": "Berlaku hingga:",
   "doc.voided": "Tidak berlaku",
   "error.all_fields_required": "Semua bidang wajib diisi.",

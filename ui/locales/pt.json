@@ -582,7 +582,7 @@
   "doc.total_declared_value": "Valor total declarado",
   "doc.tracking": "N.º de rastreamento",
   "doc.u2630": "\\u2630",
-  "doc.unvoid": "Não anular",
+  "doc.unvoid": "Desfazer anulação",
   "doc.valid_until": "Válido até:",
   "doc.voided": "Anulado",
   "error.all_fields_required": "Todos os campos são obrigatórios.",

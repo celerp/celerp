@@ -582,7 +582,7 @@
   "doc.total_declared_value": "Tổng trị giá khai báo",
   "doc.tracking": "Mã vận đơn",
   "doc.u2630": "\\u2630",
-  "doc.unvoid": "Không có hiệu lực",
+  "doc.unvoid": "Khôi phục chứng từ đã hủy",
   "doc.valid_until": "Có hiệu lực cho đến:",
   "doc.voided": "Vô hiệu",
   "error.all_fields_required": "Tất cả các trường là bắt buộc.",

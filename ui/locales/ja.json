@@ -582,7 +582,7 @@
   "doc.total_declared_value": "申告価格合計",
   "doc.tracking": "追跡番号",
   "doc.u2630": "\\u2630",
-  "doc.unvoid": "ボイドなし",
+  "doc.unvoid": "無効を取り消す",
   "doc.valid_until": "有効期限:",
   "doc.voided": "無効化されました",
   "error.all_fields_required": "すべてのフィールドは必須です。",

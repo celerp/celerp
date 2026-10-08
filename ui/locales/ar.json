@@ -582,7 +582,7 @@
   "doc.total_declared_value": "إجمالي القيمة المصرح بها",
   "doc.tracking": "رقم التتبع",
   "doc.u2630": "\\u2630",
-  "doc.unvoid": "غير باطل",
+  "doc.unvoid": "التراجع عن الإلغاء",
   "doc.valid_until": "صالحة حتى:",
   "doc.voided": "باطل",
   "error.all_fields_required": "جميع الحقول مطلوبة.",

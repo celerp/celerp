@@ -582,7 +582,7 @@
   "doc.total_declared_value": "มูลค่าสำแดงรวม",
   "doc.tracking": "เลขติดตามพัสดุ",
   "doc.u2630": "\\u2630",
-  "doc.unvoid": "ยกเลิก",
+  "doc.unvoid": "ยกเลิกการเป็นโมฆะ",
   "doc.valid_until": "ใช้ได้จนถึง:",
   "doc.voided": "เป็นโมฆะ",
   "error.all_fields_required": "ต้องระบุข้อมูลทุกช่อง",
