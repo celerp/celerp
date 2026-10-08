@@ -537,6 +537,7 @@ _FULFILL_EXPECTED = {
         "event.doc.partially_fulfilled": "በከፊል ተፈጽሟል",
         "event.doc.fulfillment_reversed": "የትዕዛዝ አፈጻጸም ተቀልብሷል",
         "activity.change.fulfilled_items": "የተፈጸሙ ዕቃዎች ተዘምነዋል",
+        "lines.cannot_fulfil": "ትዕዛዝ መፈጸም አልተቻለም፦ {reasons}",
     },
     "ar": {
         "btn.fulfill_deduct_inventory": "تنفيذ الطلب / خصم المخزون",
@@ -550,6 +551,7 @@ _FULFILL_EXPECTED = {
         "event.doc.partially_fulfilled": "تم تنفيذه جزئيًا",
         "event.doc.fulfillment_reversed": "تم التراجع عن تنفيذ الطلب",
         "activity.change.fulfilled_items": "تم تحديث العناصر المُنفَّذة",
+        "lines.cannot_fulfil": "تعذر تنفيذ الطلب: {reasons}",
     },
     "es": {
         "btn.fulfill_deduct_inventory": "Procesar pedido / Descontar inventario",
@@ -563,6 +565,7 @@ _FULFILL_EXPECTED = {
         "event.doc.partially_fulfilled": "Procesado parcialmente",
         "event.doc.fulfillment_reversed": "Procesamiento revertido",
         "activity.change.fulfilled_items": "Artículos procesados actualizados",
+        "lines.cannot_fulfil": "No se puede procesar: {reasons}",
     },
     "id": {
         "btn.fulfill_deduct_inventory": "Proses pesanan / Kurangi inventori",
@@ -576,6 +579,7 @@ _FULFILL_EXPECTED = {
         "event.doc.partially_fulfilled": "Diproses sebagian",
         "event.doc.fulfillment_reversed": "Pemrosesan dibatalkan",
         "activity.change.fulfilled_items": "Barang yang telah diproses diperbarui",
+        "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
     },
     "pt": {
         "btn.fulfill_deduct_inventory": "Processar pedido / Deduzir estoque",
@@ -589,6 +593,7 @@ _FULFILL_EXPECTED = {
         "event.doc.partially_fulfilled": "Processado parcialmente",
         "event.doc.fulfillment_reversed": "Processamento revertido",
         "activity.change.fulfilled_items": "Itens processados atualizados",
+        "lines.cannot_fulfil": "Não é possível processar: {reasons}",
     },
 }
 

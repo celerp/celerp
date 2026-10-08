@@ -884,7 +884,7 @@ async def test_fulfill_lines_rejects_stock_shortage(client, auth):
     r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [item_id]})
     assert r.status_code == 409, r.text
-    assert "stock" in r.json()["detail"].lower()
+    assert "stock" in r.json()["detail"]["message"].lower()
     # Nothing was fulfilled — the item stays available.
     item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item["status"] == "available"
@@ -904,7 +904,7 @@ async def test_fulfill_lines_rejects_partial_when_splitting_off(client, auth):
     r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [item_id]})
     assert r.status_code == 409, r.text
-    assert "splitting" in r.json()["detail"].lower()
+    assert "splitting" in r.json()["detail"]["message"].lower()
     item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item["status"] == "available"
 
@@ -1018,7 +1018,7 @@ async def test_fulfill_whole_draw_secondary_must_equal(client, auth):
     fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                            json={"line_entity_ids": [item_id]})
     assert fr.status_code == 409, fr.text
-    assert "whole" in fr.json()["detail"].lower()
+    assert "whole" in fr.json()["detail"]["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -1486,12 +1486,15 @@ async def test_reserve_lines_rejects_non_available_line(client, session, auth, _
         {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
     ])
 
-    # Reserve A on its own first.
-    r1 = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+    # Another invoice reserves A first.
+    other = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+    ])
+    r1 = await client.post(f"/docs/{other}/reserve-lines", headers=auth["headers"],
                            json={"line_entity_ids": [eid_a], "new_status": "reserved"})
     assert r1.status_code == 200, r1.text
 
-    # Now try to reserve both; A is no longer available, so the whole request fails and B is untouched.
+    # Now try to reserve both; A is held elsewhere, so the whole request fails and B is untouched.
     r2 = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
                            json={"line_entity_ids": [eid_a, eid_b], "new_status": "reserved"})
     assert r2.status_code == 422, r2.text
@@ -2976,7 +2979,7 @@ async def test_reserve_shipped_cross_lot_invoice_covers_complete_allocation(clie
     released = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
                                  json={"line_entity_ids": [lot_a], "new_status": "available"})
     assert released.status_code == 200, released.text
-    assert set(released.json()["reserved"]) == {lot_a, lot_b}
+    assert set(released.json()["released"]) == {lot_a, lot_b}
     for eid in (lot_a, lot_b):
         item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
         assert item["status"] == "available"

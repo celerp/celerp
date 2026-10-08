@@ -691,6 +691,12 @@ class PaymentBatchRecorded(BaseModel):
     remaining: float
 
 
+class LineActionRecorded(BaseModel):
+    owner_id: str
+    action: str
+    line_ids: list[str]
+
+
 class DocPaymentRefunded(BaseModel):
     amount: float
     reason: str | None = None
@@ -1388,6 +1394,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.refund_reversed": DocPaymentRefundReversed,
     "doc.payment.stripe_released": DocPaymentStripeReleased,
     "payment_batch.recorded": PaymentBatchRecorded,
+    "line_action.recorded": LineActionRecorded,
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,

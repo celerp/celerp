@@ -558,10 +558,10 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     )
     from celerp.services.company_lock import lock_company
     from celerp_docs.routes import (
-        FulfillLinesRequest,
         finalize_document,
         _fulfill_lines_impl,
         _reserve_lines_impl,
+        _lines_holding,
         _get_doc,
         apply_doc_payment,
     )
@@ -1026,9 +1026,9 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             changed = True
             doc = await _get_doc(session, cid, entity_id, for_update=True)
 
-        stock_ids: list[str] = []
-        fulfill_ids: list[str] = []
-        for li in doc.state.get("line_items", []):
+        stock_lines: list[int] = []
+        fulfill_lines: list[int] = []
+        for idx, li in enumerate(doc.state.get("line_items", [])):
             item_id = li.get("item_id") or li.get("entity_id")
             if not item_id:
                 continue
@@ -1039,14 +1039,14 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             non_stock = is_non_stock_line(st.get("inventory_type"), st.get("sell_by"))
             if non_stock:
                 if wc_status == "completed":
-                    fulfill_ids.append(item_id)
+                    fulfill_lines.append(idx)
                 continue
             item_status = str(st.get("status") or "")
             owner_doc = st.get("status_doc_id")
             claim = demand_claim(st, entity_id)
             if wc_status in {"on-hold", "processing"}:
                 if claim == FREE_STOCK:
-                    stock_ids.append(item_id)
+                    stock_lines.append(idx)
                 elif claim == OWN_RESERVED:
                     pass
                 elif item_status == "sold" and owner_doc == entity_id:
@@ -1058,7 +1058,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                     )
             elif wc_status == "completed":
                 if claim is not None:
-                    fulfill_ids.append(item_id)
+                    fulfill_lines.append(idx)
                 elif item_status == "sold" and owner_doc == entity_id:
                     pass
                 else:
@@ -1067,22 +1067,18 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         f"inventory is {item_status!r}"
                     )
 
-        if wc_status in {"on-hold", "processing"} and stock_ids:
+        if wc_status in {"on-hold", "processing"} and stock_lines:
             doc = await _get_doc(session, cid, entity_id, for_update=True)
             await _reserve_lines_impl(
-                doc, entity_id, "reserved", stock_ids, actor, session, commit=False
+                doc, entity_id, "reserved", stock_lines, actor, session, may_acquire=True, commit=False
             )
             changed = True
-        elif wc_status == "completed" and fulfill_ids:
-            await _fulfill_lines_impl(
-                entity_id, FulfillLinesRequest(line_entity_ids=fulfill_ids),
-                cid, actor, session, commit=False,
-            )
+        elif wc_status == "completed" and fulfill_lines:
+            await _fulfill_lines_impl(entity_id, fulfill_lines, cid, actor, session, commit=False)
             changed = True
 
         if wc_status in stock_release_statuses:
             doc = await _get_doc(session, cid, entity_id, for_update=True)
-            reserved_ids: list[str] = []
             sold_items: list[Projection] = []
             for li in doc.state.get("line_items", []):
                 item_id = li.get("item_id") or li.get("entity_id")
@@ -1092,13 +1088,12 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 if item is None:
                     continue
                 st = item.state or {}
-                if st.get("status") == "reserved" and st.get("status_doc_id") == entity_id:
-                    reserved_ids.append(item_id)
-                elif st.get("status") == "sold" and st.get("status_doc_id") == entity_id:
+                if st.get("status") == "sold" and st.get("status_doc_id") == entity_id:
                     sold_items.append(item)
-            if reserved_ids:
+            holding = await _lines_holding(session, cid, entity_id, doc.state.get("line_items", []))
+            if holding:
                 await _reserve_lines_impl(
-                    doc, entity_id, "available", reserved_ids, actor, session, commit=False
+                    doc, entity_id, "available", holding, actor, session, may_acquire=False, commit=False
                 )
                 changed = True
             for sold in sold_items:

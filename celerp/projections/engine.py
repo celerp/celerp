@@ -33,7 +33,7 @@ ITEM_BIRTHS = frozenset({"item.created", "item.snapshot"})
 # handler or by the projection handler of the module that owns it. A schema in the event
 # catalog says an event may be written, never how a rebuild must apply it.
 MERGE_EVENTS = frozenset({
-    "payment_batch.recorded",
+    "payment_batch.recorded", "line_action.recorded",
     "scan.barcode", "scan.rfid", "scan.nfc", "scan.resolved",
     "sub.created", "sub.updated", "sub.paused", "sub.cancelled", "sub.resumed",
     "sub.generated", "sub.expired",

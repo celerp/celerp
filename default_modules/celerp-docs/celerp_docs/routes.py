@@ -42,7 +42,6 @@ from celerp.services.journal_accounts import require_destinations, require_line_
 from celerp.services.lot_origin import is_stock_type
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.payments import recorded_unmatched, return_unmatched
-from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
@@ -474,20 +473,28 @@ class DocBatchImportRequest(BaseModel):
 
 
 class FulfillLinesRequest(BaseModel):
-    line_entity_ids: list[str]
+    """The lines an action applies to: ``line_ids`` names each line by its line id.
 
-    @field_validator("line_entity_ids")
+    ``line_entity_ids`` names lines by the item they bind, for clients written before
+    lines had ids; each item must be on exactly one line. Send one of the two.
+    ``idempotency_key`` names one submission: sending it again returns the first result."""
+    line_ids: list[str] = Field(default_factory=list)
+    line_entity_ids: list[str] = Field(default_factory=list)
+    idempotency_key: str | None = None
+
+    @field_validator("line_ids", "line_entity_ids")
     @classmethod
     def strip_empty(cls, v: list[str]) -> list[str]:
-        """Drop empty strings and de-duplicate — JS bulk selects may include value="" rows."""
+        """Drop empty strings and de-duplicate: bulk selects may include value="" rows."""
         return list(dict.fromkeys(eid for eid in v if eid))
 
 
 class RevertLinesRequest(FulfillLinesRequest):
     """Revert whole lines, or return part of one.
 
-    ``quantities`` maps an item entity_id to the quantity coming back. Omit it, or give
-    the item's whole quantity, to take the whole lot back. A smaller quantity is a partial
+    ``quantities`` maps a chosen line (its line id, or its item id when lines are chosen
+    by item) to the quantity coming back. Omit it, or give the whole quantity out, to take
+    it all back. A smaller quantity is a partial
     return: that much is split off and comes back into stock, and the remainder stays out
     with the customer, so goods still in their hands are never written off as returned.
 
@@ -6273,13 +6280,16 @@ async def reserve_list_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Set selected lines reserved/available on a draft or finalized list of any type (ledger-neutral)."""
+    """Reserve or release chosen lines of a List of any type (ledger-neutral). Release works
+    in any status; newly reserving stock needs a draft or finalized List."""
     # Company first, as the document path does, so a document being created with one of
     # these items either sees the reservation or is seen by it.
     row = await _get_list_for_update(session, company_id, entity_id)
-    if row.state.get("status") not in (DRAFT, FINALIZED):
-        raise HTTPException(status_code=409, detail=f"Cannot reserve on a list in status '{row.state.get('status')}'")
-    return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
+    may_acquire = row.state.get("status") in (DRAFT, FINALIZED)
+    return await _line_action(
+        session, company_id, user, row, "reserve", body,
+        lambda indices: _reserve_lines_impl(row, entity_id, body.new_status, indices, user, session,
+                                            may_acquire=may_acquire, commit=False))
 
 
 @lists_router.post("/{entity_id}/revert-to-draft")
@@ -6692,18 +6702,202 @@ async def batch_import_lists(
 # ---------------------------------------------------------------------------
 # Fulfillment endpoints
 # ---------------------------------------------------------------------------
-def _validate_line_entity_ids_subset(line_entity_ids: list[str], doc_state: dict) -> None:
-    """Guard: every item entity_id must belong to this document's line_items."""
-    doc_eids: set[str] = {
-        li.get("entity_id") or li.get("item_id") or ""
-        for li in doc_state.get("line_items", [])
-    } - {""}
-    foreign = set(line_entity_ids) - doc_eids
-    if foreign:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Item IDs not linked to this document: {', '.join(sorted(foreign))}",
+def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) -> list[int]:
+    """The lines a request names, as positions in ``line_items``, in document order.
+
+    ``line_ids`` must each name a line on the record. A legacy ``line_entity_ids`` entry
+    names the line that binds that item, and only when exactly one line does: an item on
+    several lines does not say which of them is meant."""
+    if body.line_ids and body.line_entity_ids:
+        raise HTTPException(status_code=422, detail=refusal(
+            "lines.choose_one_selector", "Name the lines by line id or by item, not both."))
+    if not body.line_ids and not body.line_entity_ids:
+        raise HTTPException(status_code=422, detail=refusal("lines.none_selected", "Choose at least one line."))
+    if body.line_ids:
+        index_of = {li.get("line_id"): i for i, li in enumerate(line_items) if li.get("line_id")}
+        if any(lid not in index_of for lid in body.line_ids):
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.not_on_document", "A line you chose is no longer on this record. Reload it and choose again."))
+        return sorted({index_of[lid] for lid in body.line_ids})
+    binders: dict[str, list[int]] = {}
+    for i, li in enumerate(line_items):
+        if line_item_id(li):
+            binders.setdefault(str(line_item_id(li)), []).append(i)
+    chosen: set[int] = set()
+    for eid in body.line_entity_ids:
+        lines = binders.get(eid, [])
+        if not lines:
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.not_on_document", "A line you chose is no longer on this record. Reload it and choose again."))
+        if len(lines) > 1:
+            sku = str(line_items[lines[0]].get("sku") or "")
+            raise HTTPException(status_code=409, detail=refusal(
+                "lines.item_on_several_lines",
+                f"{sku} is on more than one line, so choose the line itself.", sku=sku))
+        chosen.add(lines[0])
+    return sorted(chosen)
+
+
+async def _line_stock(
+    session, company_id, owner_id: str, line_items: list[dict], indices: list[int],
+) -> tuple[dict[str, Projection], dict[int, list[str]]]:
+    """Lock the stock the chosen lines can touch and say which line holds which lot.
+
+    Locks every lot a chosen line binds, every lot the owner holds or shipped, and all
+    other lots of those products. Returns the locked lots and the owner's holds by line.
+    A hold several lines bind with nothing recording which one holds it is refused when
+    one of them is chosen: no line may treat it as its own."""
+    from celerp.services.pick import attribute_holds
+    owned = await _memo_allocation_items(session, company_id, owner_id)
+    seeds = {str(line_item_id(line_items[i])) for i in indices if line_item_id(line_items[i])}
+    locked = await _lock_item_sku_lots(session, company_id, seeds | {p.entity_id for p in owned})
+    held = {eid: p.state for eid, p in locked.items()
+            if p.state.get("status") == "reserved" and p.state.get("status_doc_id") == owner_id}
+    by_line, _orphans, ambiguous = attribute_holds(line_items, held)
+    for eid, binders in ambiguous.items():
+        if set(binders) & set(indices):
+            sku = str(locked[eid].state.get("sku") or "")
+            raise HTTPException(status_code=409, detail=refusal(
+                "lines.hold_ambiguous",
+                f"{sku} is held for more than one line and nothing records which. "
+                "Release those lines and reserve them again.", sku=sku))
+    return locked, by_line
+
+
+async def _lines_holding(session, company_id, owner_id: str, line_items: list[dict]) -> list[int]:
+    """The lines of a document or List that hold stock for it, in document order."""
+    from celerp.services.pick import attribute_holds
+    held = {p.entity_id: p.state for p in await _memo_allocation_items(session, company_id, owner_id)
+            if p.state.get("status") == "reserved"}
+    by_line, _orphans, ambiguous = attribute_holds(line_items, held)
+    return sorted(set(by_line) | {i for binders in ambiguous.values() for i in binders})
+
+
+def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection]) -> Projection | None:
+    """The lot line ``index`` binds, or None for a non-stock line (a service or charge).
+    A line that binds no item has nothing to reserve or ship and is refused."""
+    proj = locked.get(str(line_item_id(line_items[index]) or ""))
+    if proj is None:
+        raise HTTPException(status_code=422, detail=refusal(
+            "lines.no_item", f"Line {index + 1} names no inventory item.", line=index + 1))
+    if is_non_stock_line(proj.state.get("inventory_type"), proj.state.get("sell_by")):
+        return None
+    return proj
+
+
+def _line_plan(
+    line_items: list[dict], index: int, locked: dict[str, Projection], by_line: dict[int, list[str]],
+    owner_id: str, company_settings: dict, remaining: dict[str, float],
+) -> tuple[list[tuple[dict, float, bool]], float, list[dict]]:
+    """Plan line ``index`` against the locked lots: ``(draws, shortfall, own holds)``.
+
+    The line takes its own holds first, then its free bound lot, then (when the product may
+    be split across lots) free lots of the same product in pick order. ``remaining`` is
+    shared by every line of one operation, so two lines never take the same stock."""
+    from celerp.services.pick import as_lot, line_draw_sources, plan_line_draws, resolve_pick_method
+    from celerp_inventory.projections import demand_claim
+    bound = locked[str(line_item_id(line_items[index]))]
+    lots = {eid: as_lot(eid, p.created_at, p.state, demand_claim(p.state, owner_id)) for eid, p in locked.items()}
+    method = resolve_pick_method(bound.state, company_settings)
+    own, primary, free = line_draw_sources(line_items, index, lots, by_line, method)
+    needed = float(line_items[index].get("quantity") or 0)
+    draws, short = plan_line_draws(needed, own=own, primary=primary, free=free, method=method,
+                                   remaining=remaining, span=splitting_allowed(bound.state))
+    return draws, short, own
+
+
+def _unavailable(bound: Projection, owner_id: str) -> str | None:
+    """Why line stock bound to ``bound`` cannot be taken by ``owner_id``, or None when it can."""
+    from celerp_inventory.projections import demand_claim
+    st = bound.state
+    if demand_claim(st, owner_id) is not None:
+        return None
+    by = st.get("status_doc_number")
+    where = f" by {by}" if by and st.get("status_doc_id") != owner_id else ""
+    return f"{st.get('sku', '')}: must be 'available', is '{st.get('status', '')}'{where}"
+
+
+def _refuse_unavailable(reasons: list[str]) -> None:
+    if reasons:
+        text = "; ".join(reasons)
+        raise HTTPException(status_code=422, detail=refusal(
+            "lines.unavailable", f"Not available: {text}", reasons=text))
+
+
+def _carve_measures(line: dict, lot_state: dict, qty: float, unit_map: dict, *, whole_line: bool) -> dict:
+    """The measures of a ``qty`` part carved off a lot. The part that is a line's whole
+    quantity off its own bound lot takes the line's stated weight and pieces; any other
+    part only the measure the lot is sold by (split_off_child refuses what that leaves out)."""
+    if whole_line:
+        return _plan_line_carve({**line, "quantity": qty}, lot_state, unit_map)
+    sell_by = lot_state.get("sell_by")
+    return {"child_qty": qty,
+            "child_weight": qty if is_weight_unit(sell_by, unit_map) else None,
+            "child_pieces": qty if is_pieces_unit(sell_by, unit_map) else None}
+
+
+async def _apply_split_plan(
+    session, *, company_id, uid, owner: Projection, splits: list[dict], source: str,
+) -> list[str]:
+    """Carve each planned part off its lot, in plan order, and point each line that named
+    the lot at its part. Each split is ``{"lot": Projection, "line": index or None, and the
+    child measures}``; returns the part ids in the same order.
+
+    Emits no status or transition event: each caller applies its own afterwards (fulfil
+    ships the parts, reserve holds or frees them). The row lock that keeps two carves of
+    one lot from losing an update lives in split_off_child, the one carve primitive. The
+    line update is the owner's own event (``doc.updated`` or ``list.updated``)."""
+    from celerp_inventory.routes import split_off_child
+
+    state = owner.state
+    new_lines = [dict(li) for li in state.get("line_items", [])]
+    retargeted = False
+    children: list[str] = []
+    for split in splits:
+        lot = split["lot"]
+        try:
+            child_eid, child_sku = await split_off_child(
+                session, company_id=uuid.UUID(str(company_id)), user_id=uid, parent_proj=lot,
+                child_qty=split["child_qty"], child_weight=split.get("child_weight"),
+                child_pieces=split.get("child_pieces"),
+            )
+        except ValueError as exc:
+            sku = str(lot.state.get("sku") or "")
+            raise HTTPException(status_code=409, detail=refusal(
+                "lines.cannot_split", f"Cannot split {sku}: {exc}", sku=sku, reason=str(exc)))
+        children.append(child_eid)
+        if split.get("line") is not None:
+            li = new_lines[split["line"]]
+            li["entity_id"] = child_eid
+            li["item_id"] = child_eid
+            li["sku"] = child_sku
+            retargeted = True
+    if retargeted:
+        await emit_event(
+            session, company_id=uuid.UUID(str(company_id)), entity_id=owner.entity_id,
+            entity_type=owner.entity_type, event_type=f"{owner.entity_type}.updated",
+            data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_lines}}},
+            actor_id=uid, location_id=None, source=source,
+            idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        state["line_items"] = new_lines
+    return children
+
+
+async def _set_lot_status(session, *, company_id, uid, owner: Projection, lot_id: str,
+                          line_id: str | None) -> None:
+    """Hold ``lot_id`` for the owner's line ``line_id``, or with no line free it."""
+    data: dict = {"new_status": "reserved" if line_id else "available"}
+    if line_id:
+        data.update({"source_doc_id": owner.entity_id,
+                     "doc_number": owner.state.get("doc_number") or owner.state.get("ref_id") or "",
+                     "source_line_entity_id": line_id})
+    await emit_event(
+        session, company_id=uuid.UUID(str(company_id)), entity_id=lot_id, entity_type="item",
+        event_type="item.status.set", data=data, actor_id=uid, location_id=None,
+        source="reservation", idempotency_key=str(uuid.uuid4()),
+        metadata_={"doc_id": owner.entity_id},
+    )
 
 
 async def _validate_revert_entity_ids_subset(
@@ -6716,8 +6910,7 @@ async def _validate_revert_entity_ids_subset(
     same SKU; fulfill stamps each drawn lot status_doc_id==this memo but the sibling is not
     a line_items row. Revert is the memo's own settlement workflow, so it must accept those
     siblings to return them to stock. The union arm applies ONLY to memos; every other doc
-    type keeps the line_items-only universe, so an invoice/PO revert is unchanged. The
-    shared _validate_line_entity_ids_subset (fulfill, reserve) is deliberately left as-is."""
+    type keeps the line_items-only universe, so an invoice/PO revert is unchanged."""
     doc_eids: set[str] = {
         li.get("entity_id") or li.get("item_id") or ""
         for li in doc_state.get("line_items", [])
@@ -6769,58 +6962,6 @@ async def _lock_item_sku_lots(
     return locked
 
 
-async def _plan_span_draws(
-    session, company_id, primary_proj, needed: float, exclude: set,
-    owner_entity_id: str = "", locked_lots: dict[str, Projection] | None = None,
-):
-    """Plan a cross-lot draw of ``needed`` units for a splittable SKU.
-
-    Consumes the line's bound (primary) lot first - so the doc line's own parcel is
-    always marked fulfilled - then draws the shortfall from the SKU's other available
-    lots in the effective pick order (FIFO/FEFO/LIFO, resolved from the item's
-    pick_method / company inventory_method). COGS is each drawn lot's own cost
-    (specific identification by lot), so the order yields FIFO-cost / LIFO-cost.
-
-    A lot reserved BY ``owner_entity_id`` is a candidate too: this document's own hold is
-    being converted to a real draw ("set as shipped" on a reserved line). Lots reserved by
-    another document stay excluded - that is the fulfil-time exclusivity point.
-
-    Returns ``[(lot_proj, take_qty, is_full)]`` covering ``needed``, or None when the
-    SKU's total available stock (minus already-committed lots) is still short.
-    """
-    from celerp.services.pick import plan_lot_draws, resolve_pick_method
-    from celerp.models.company import Company
-    from celerp_inventory.projections import demand_claim
-    sku = str(primary_proj.state.get("sku") or "").strip()
-    company = await session.get(Company, company_id)
-    company_settings = (company.settings or {}) if company else {}
-    method = resolve_pick_method(primary_proj.state, company_settings)
-    rows = list((locked_lots or await _lock_item_sku_lots(
-        session, company_id, {primary_proj.entity_id}
-    )).values())
-    # The bound lot stays a candidate when it is empty (a product record whose stock
-    # was made into lots of its own), as finalize's costing treats it (_span_line_lots).
-    lots = [r for r in rows
-            if str(r.state.get("sku") or "").strip() == sku
-            and demand_claim(r.state, owner_entity_id) is not None
-            and (float(r.state.get("quantity") or 0) > 1e-9 or r.entity_id == primary_proj.entity_id)
-            and r.entity_id not in exclude]
-    by_id = {l.entity_id: l for l in lots}
-    if primary_proj.entity_id not in by_id:
-        return None
-
-    def _d(p):
-        return {"entity_id": p.entity_id,
-                "quantity": float(p.state.get("quantity") or 0),
-                "created_at": p.created_at.isoformat() if p.created_at else "",
-                "expires_at": p.state.get("expires_at")}
-    others = [_d(l) for l in lots if l.entity_id != primary_proj.entity_id]
-    draws, short_qty = plan_lot_draws(_d(primary_proj), needed, others, method)
-    if short_qty > 1e-9:
-        return None  # truly short across all lots
-    return [(by_id[lot["entity_id"]], take, is_full) for lot, take, is_full in draws]
-
-
 def _plan_line_carve(line: dict, parcel_state: dict, unit_map: dict) -> dict | None:
     """Plan how to carve the invoiced portion off a parent parcel for an on-page split.
 
@@ -6848,69 +6989,22 @@ def _plan_line_carve(line: dict, parcel_state: dict, unit_map: dict) -> dict | N
     }
 
 
-async def _apply_split_plan(
-    session, *, company_id, cid, uid, entity_id: str, state: dict,
-    split_plan: dict[str, dict], fetched: dict[str, Projection], source: str,
-) -> dict[str, tuple[str, str]]:
-    """Carve each planned child off its parent, retarget the doc lines to the child, and
-    emit the doc.updated line-items change. Returns ``{parent_eid: (child_eid, child_sku)}``.
-
-    Emits no status/transition event - each caller applies its own transition afterward
-    (fulfill emits item.fulfilled; reserve retargets its item.status.set), so fulfill's
-    semantics never leak into reserve. The parent-projection FOR UPDATE lock that keeps
-    two concurrent carves of one parcel from losing an update lives in split_off_child,
-    the single carve primitive both paths share.
-    """
-    from celerp_inventory.routes import split_off_child
-
-    remap: dict[str, tuple[str, str]] = {}
-    new_line_items = [dict(li) for li in state.get("line_items", [])]
-    for parent_eid, plan in split_plan.items():
-        try:
-            child_eid, child_sku = await split_off_child(
-                session, company_id=cid, user_id=uid, parent_proj=fetched[parent_eid],
-                child_qty=plan["child_qty"], child_weight=plan.get("child_weight"),
-                child_pieces=plan.get("child_pieces"),
-            )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
-            )
-        remap[parent_eid] = (child_eid, child_sku)
-        fetched[child_eid] = await session.get(
-            Projection, {"company_id": company_id, "entity_id": child_eid})
-        for nli in new_line_items:
-            if (nli.get("entity_id") or nli.get("item_id")) == parent_eid:
-                nli["entity_id"] = child_eid
-                nli["item_id"] = child_eid
-                nli["sku"] = child_sku
-                break
-    await emit_event(
-        session, company_id=cid, entity_id=entity_id, entity_type="doc",
-        event_type="doc.updated",
-        data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_line_items}}},
-        actor_id=uid, location_id=None, source=source,
-        idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
-    state["line_items"] = new_line_items
-    return remap
-
-
 async def _fulfill_lines_impl(
     entity_id: str,
-    body: FulfillLinesRequest,
+    indices: list[int],
     company_id: str,
     user,
     session: AsyncSession,
     *,
     commit: bool = True,
 ) -> dict:
-    """Fulfill specific line items by entity_id. Valid for memo and invoice docs only.
+    """Ship the lines at ``indices``. Valid for memo and invoice docs only.
 
-    Inbound doc types (bill, consignment_in) must use POST /receive instead.
+    Each line ships what it holds and, when that is short of its quantity, free stock as a
+    reservation would take it; a line holding more than its quantity is refused until it is
+    reserved again. Another line's hold is never shipped. A shortage on any line refuses the
+    whole request. Inbound doc types (bill, consignment_in) must use POST /receive instead.
     """
-    from celerp_inventory.projections import demand_claim
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     doc_type = state.get("doc_type", "")
@@ -6921,185 +7015,107 @@ async def _fulfill_lines_impl(
     if state.get("status") not in allowed_statuses:
         raise HTTPException(status_code=409, detail=f"Cannot fulfill a {doc_type} in status '{state.get('status')}'")
 
-    _validate_line_entity_ids_subset(body.line_entity_ids, state)
+    line_items = state.get("line_items", [])
+    locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    unit_map = await _get_unit_map(session, company_id)
+    company = await session.get(Company, company_id)
+    company_settings = (company.settings or {}) if company else {}
 
-    if not body.line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
-
-    # Each line keyed by the item parcel it references (for qty + split measures).
-    # Line indices are captured before any split remap: _apply_split_plan rewrites
-    # lines in place, so the index is the stable key the finalize JE's per-line
-    # COGS allocation snapshot is also keyed by.
-    line_qty_by_eid: dict[str, float] = {}
-    line_by_eid: dict[str, dict] = {}
-    line_index_by_eid: dict[str, int] = {}
-    for _idx, li in enumerate(state.get("line_items", [])):
-        _eid = li.get("entity_id") or li.get("item_id") or ""
-        if _eid:
-            line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
-            line_by_eid[_eid] = li
-            line_index_by_eid[_eid] = _idx
-
-    _unit_map = await _get_unit_map(session, company_id)
-
-    errors: list[str] = []          # 422: item not found / not available
-    blocked: list[str] = []         # 409: stock shortage / non-splittable partial
-    to_fulfill: list[str] = []
-    service_eids: set[str] = set()  # service lines: rendered, not picked from stock
-    split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
-    fetched: dict[str, Projection] = {}
-    span_consumed: set[str] = set()  # extra lots pulled in by cross-lot spanning
-    fulfillment_line_index: dict[str, int] = {}
-    _locked_lots = await _lock_item_sku_lots(session, company_id, set(body.line_entity_ids))
-    # Lines are drawn in document order and a lot bound to another line is never a
-    # spanning sibling (doc_bound_lots), matching the allocation finalize recognized.
-    _bound_lots = doc_bound_lots(state.get("line_items", []))
-    for item_eid in sorted(body.line_entity_ids, key=lambda e: line_index_by_eid.get(e, len(line_index_by_eid))):
-        item_proj = _locked_lots.get(item_eid)
-        if item_proj is None:
-            errors.append(f"{item_eid}: item not found")
+    blocked: list[str] = []
+    unavailable: list[str] = []
+    service_lines: set[int] = set()
+    remaining: dict[str, float] = {}
+    # (line index, lot, quantity taken, whole lot) in plan order.
+    shipments: list[tuple[int, Projection, float, bool]] = []
+    for idx in indices:
+        bound = _stock_line(line_items, idx, locked)
+        if bound is None:
+            service_lines.add(idx)
             continue
-        # Non-stock lines (service or freight charge) have no physical stock: mark them done
-        # without any stock/availability guard.
-        if is_non_stock_line(item_proj.state.get("inventory_type"), item_proj.state.get("sell_by")):
-            service_eids.add(item_eid)
+        line = line_items[idx]
+        sku = bound.state.get("sku", "")
+        line_qty = float(line.get("quantity") or 0)
+        draws, short, own = _line_plan(line_items, idx, locked, by_line, entity_id, company_settings, remaining)
+        held = sum(lot["quantity"] for lot in own)
+        if held > line_qty + 1e-9:
+            blocked.append(f"{sku}: holds {held:g} for a line of {line_qty:g}; reserve the line again first")
             continue
-        # Free stock ships, and so does a line reserved BY THIS document - the reservation was
-        # this doc's own hold, now converted to a real stock draw. A line reserved by ANOTHER
-        # document is the exclusivity point and cannot be sent from here.
-        if demand_claim(item_proj.state, entity_id) is None:
-            errors.append(
-                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', "
-                f"is '{item_proj.state.get('status', '')}'"
-            )
+        if short > 1e-9:
+            if reason := _unavailable(bound, entity_id):
+                unavailable.append(reason)
+            else:
+                blocked.append(f"{sku}: insufficient stock - invoiced {line_qty:g}, available {line_qty - short:g}")
             continue
-        # Stock guard: the invoiced quantity must not exceed the parcel's stock,
-        # and a partial draw is only allowed when the item permits splitting.
-        sku = item_proj.state.get("sku", "")
-        line_qty = line_qty_by_eid.get(item_eid, 0.0)
-        available = float(item_proj.state.get("quantity", 0))
-        if line_qty > available + 1e-9:
-            # Cross-lot spanning: a splittable product can draw the shortfall from other
-            # lots of the same SKU (bound lot first, then FIFO/FEFO/LIFO). Each drawn lot
-            # is fulfilled at its own cost (specific identification by lot).
-            if splitting_allowed(item_proj.state):
-                _draws = await _plan_span_draws(
-                    session, company_id, item_proj, line_qty,
-                    exclude=set(to_fulfill) | span_consumed | (_bound_lots - {item_eid}),
-                    owner_entity_id=entity_id, locked_lots=_locked_lots,
-                )
-                if _draws is not None:
-                    for _lot, _take, _full in _draws:
-                        _leid = _lot.entity_id
-                        fetched[_leid] = _lot
-                        to_fulfill.append(_leid)
-                        span_consumed.add(_leid)
-                        if item_eid in line_index_by_eid:
-                            fulfillment_line_index[_leid] = line_index_by_eid[item_eid]
-                        if not _full:
-                            _lsb = _lot.state.get("sell_by")
-                            split_plan[_leid] = {
-                                "child_qty": _take,
-                                "child_weight": _take if is_weight_unit(_lsb, _unit_map) else None,
-                                "child_pieces": _take if is_pieces_unit(_lsb, _unit_map) else None,
-                            }
-                    continue
-            blocked.append(
-                f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
-            )
-            continue
-        # Split-on-fulfill is blocked only when splitting is explicitly disabled.
-        # A missing/None allow_splitting (e.g. older imports) is treated as splittable.
-        if line_qty + 1e-9 < available and not splitting_allowed(item_proj.state):
-            blocked.append(
-                f"{sku}: invoiced {line_qty:g} of {available:g} but 'Allow Splitting' is off — "
-                f"enable splitting or invoice the full quantity"
-            )
-            continue
-        _line = line_by_eid.get(item_eid, {})
-        _sb = item_proj.state.get("sell_by")
-        # Whole draw: taking all the quantity takes the whole parcel, so the secondary
-        # measures (not the sell-by one) must match the parcel exactly.
-        if abs(line_qty - available) <= 1e-9:
-            _checks = []
-            if not is_pieces_unit(_sb, _unit_map):
-                _checks.append(("pcs", (item_proj.state.get("attributes") or {}).get("pieces"), _line.get("pieces")))
-            if not is_weight_unit(_sb, _unit_map):
-                _checks.append(("weight", item_proj.state.get("weight"), _line.get("weight")))
-            _bad = next(((n, p, v) for n, p, v in _checks
-                         if p is not None and v is not None and abs(float(v) - float(p)) > 1e-9), None)
-            if _bad:
-                _n, _p, _v = _bad
+        for lot, take, full in draws:
+            proj = locked[lot["entity_id"]]
+            if not full and not splitting_allowed(proj.state):
                 blocked.append(
-                    f"{sku}: invoicing the whole quantity must take all {float(_p):g} {_n} (got {float(_v):g})"
-                )
+                    f"{sku}: invoiced {take:g} of {lot['quantity']:g} but 'Allow Splitting' is off - "
+                    f"enable splitting or invoice the full quantity")
                 continue
-        fetched[item_eid] = item_proj
-        to_fulfill.append(item_eid)
-        if item_eid in line_index_by_eid:
-            fulfillment_line_index[item_eid] = line_index_by_eid[item_eid]
-        # Partial draw of a splittable parcel: split off the invoiced amount as a child
-        # and fulfill that; the mother keeps the remainder. A full or over-invoiced line
-        # takes the whole parcel and plans no carve.
-        _carve = _plan_line_carve(_line, item_proj.state, _unit_map)
-        if _carve is not None:
-            split_plan[item_eid] = _carve
+            if full and proj.entity_id == line_item_id(line) and abs(take - line_qty) <= 1e-9:
+                # Taking a whole lot as the whole line: the secondary measures the line
+                # states (not the sell-by one) must match the lot exactly.
+                sell_by = proj.state.get("sell_by")
+                checks = []
+                if not is_pieces_unit(sell_by, unit_map):
+                    checks.append(("pcs", (proj.state.get("attributes") or {}).get("pieces"), line.get("pieces")))
+                if not is_weight_unit(sell_by, unit_map):
+                    checks.append(("weight", proj.state.get("weight"), line.get("weight")))
+                bad = next(((n, p, v) for n, p, v in checks
+                            if p is not None and v is not None and abs(float(v) - float(p)) > 1e-9), None)
+                if bad:
+                    blocked.append(f"{sku}: invoicing the whole quantity must take all {float(bad[1]):g} {bad[0]} "
+                                   f"(got {float(bad[2]):g})")
+                    continue
+            shipments.append((idx, proj, take, full))
 
-    # A shortage or a non-splittable partial prohibits the whole fulfill.
+    # A shortage, a non-splittable part or a line holding too much refuses the whole fulfil.
     if blocked:
-        raise HTTPException(status_code=409, detail="Cannot fulfill: " + "; ".join(blocked))
-
-    if errors and not to_fulfill and not service_eids:
-        raise HTTPException(status_code=422, detail={"errors": errors})
-
-    if not to_fulfill and not service_eids:
-        raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
+        reasons = "; ".join(blocked)
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.cannot_fulfil", f"Cannot fulfill: {reasons}", reasons=reasons))
+    _refuse_unavailable(unavailable)
 
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
-    company = await session.get(Company, company_id)
-    company_settings = (company.settings or {}) if company else {}
     fulfillment_date = (
         business_date_at(now_dt, company_settings.get("timezone"))
-        if (doc_type == "invoice" and to_fulfill) or company_settings.get("lock_date")
+        if (doc_type == "invoice" and shipments) or company_settings.get("lock_date")
         else now_dt.date().isoformat()
     )
 
-    # Split partial draws: carve the invoiced amount off each parcel as a child,
-    # retarget fulfillment to the child, and rewrite the doc line to reference it.
-    if split_plan:
-        remap = await _apply_split_plan(
-            session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id,
-            state=state, split_plan=split_plan, fetched=fetched, source="fulfillment",
-        )
-        for parent_eid, (child_eid, _child_sku) in remap.items():
-            to_fulfill[to_fulfill.index(parent_eid)] = child_eid
-            if parent_eid in fulfillment_line_index:
-                fulfillment_line_index[child_eid] = fulfillment_line_index.pop(parent_eid)
-            del fetched[parent_eid]
+    # A part of a lot ships as its own lot carved off first; a line whose bound lot is
+    # carved names the carved part from then on.
+    splits = [{"lot": proj, "line": idx if proj.entity_id == line_item_id(line_items[idx]) else None,
+               **_carve_measures(line_items[idx], proj.state, take, unit_map,
+                                 whole_line=proj.entity_id == line_item_id(line_items[idx])
+                                 and abs(take - float(line_items[idx].get("quantity") or 0)) <= 1e-9)}
+              for idx, proj, take, full in shipments if not full]
+    children = iter(await _apply_split_plan(
+        session, company_id=company_id, uid=uid, owner=row, splits=splits, source="fulfillment"))
 
     total_cogs = 0.0
-    fulfilled_lines: set[int] = set()
-    _line_ids = {i: li.get("line_id") for i, li in enumerate(state.get("line_items") or [])}
-    for item_eid in to_fulfill:
-        item_proj = fetched[item_eid]
-        qty = float(item_proj.state.get("quantity", 0))
-        total_cogs += auto_je.lot_cost_of_sale(item_proj.state)
-        _line_idx = fulfillment_line_index.get(item_eid)
-        if _line_idx is not None:
-            fulfilled_lines.add(_line_idx)
+    shipped: list[str] = []
+    fulfilled_lines: set[int] = set(service_lines)
+    for idx, proj, take, full in shipments:
+        lot_id = proj.entity_id if full else next(children)
+        lot = await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
+        total_cogs += auto_je.lot_cost_of_sale(lot.state)
+        shipped.append(lot_id)
+        fulfilled_lines.add(idx)
         await emit_event(
             session,
             company_id=cid,
-            entity_id=item_eid,
+            entity_id=lot_id,
             entity_type="item",
             event_type="item.fulfilled",
             data={
                 "source_doc_id": entity_id,
                 "doc_number": state.get("doc_number") or state.get("ref_id") or "",
-                "quantity_fulfilled": qty,
+                "quantity_fulfilled": take,
                 "fulfilled_by": str(uid),
                 "doc_type": doc_type,
                 "ts": fulfillment_date,
@@ -7108,13 +7124,13 @@ async def _fulfill_lines_impl(
             location_id=None,
             source="fulfillment",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={"doc_id": entity_id, "line_index": _line_idx,
-                       "source_line_id": _line_ids.get(_line_idx)},
+            metadata_={"doc_id": entity_id, "line_index": idx,
+                       "source_line_id": line_items[idx].get("line_id")},
         )
 
     # True up the invoice's recognized COGS to the actual cost of what it shipped.
-    if doc_type == "invoice" and to_fulfill:
-        _lines = "-".join(str(i) for i in sorted(fulfilled_lines))
+    if doc_type == "invoice" and shipped:
+        _lines = "-".join(str(i) for i in sorted(fulfilled_lines - service_lines))
         try:
             await auto_je.reconcile_doc_cogs(
                 session, company_id=cid, user_id=uid, doc_id=entity_id,
@@ -7126,21 +7142,20 @@ async def _fulfill_lines_impl(
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
-    # A line drawn wholly from other lots of its SKU (its own record held none) is fulfilled too.
-    fulfilled_eids = set(to_fulfill) | service_eids
     line_items = state.get("line_items", [])
     all_statuses: list[str] = []
     for _idx, li in enumerate(line_items):
-        li_eid = li.get("entity_id") or li.get("item_id") or ""
+        li_eid = line_item_id(li)
         if not li_eid:
             continue
-        if li_eid in fulfilled_eids or _idx in fulfilled_lines:
+        if _idx in fulfilled_lines:
             all_statuses.append("memo_out")
         else:
             li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
             all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
 
-    fulfilled_brief = _line_item_brief(line_items, to_fulfill)
+    done_eids = shipped + [str(line_item_id(line_items[i])) for i in sorted(service_lines)]
+    fulfilled_brief = _line_item_brief(line_items, done_eids)
     if all_statuses and all(s in ("memo_out", "sold") for s in all_statuses):
         doc_fulfillment_status = "fulfilled"
         doc_event_type = "doc.fulfilled"
@@ -7157,9 +7172,8 @@ async def _fulfill_lines_impl(
         doc_event_type = "doc.partially_fulfilled"
         # Lines on the doc not in this fulfill batch are still pending.
         unfulfilled_brief = _line_item_brief(
-            line_items, [li.get("entity_id") or li.get("item_id") for _idx, li in enumerate(line_items)
-                         if (li.get("entity_id") or li.get("item_id")) and (li.get("entity_id") or li.get("item_id")) not in fulfilled_eids
-                         and _idx not in fulfilled_lines])
+            line_items, [line_item_id(li) for _idx, li in enumerate(line_items)
+                         if line_item_id(li) and _idx not in fulfilled_lines])
         doc_event_data = {
             "fulfilled_items": fulfilled_brief,
             "unfulfilled_items": unfulfilled_brief,
@@ -7185,7 +7199,32 @@ async def _fulfill_lines_impl(
 
     if commit:
         await session.commit()
-    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
+    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": shipped}
+
+
+async def _line_action(session, company_id, user, owner: Projection, action: str,
+                       body: FulfillLinesRequest, run) -> dict:
+    """Run one line action on ``owner`` once per key: resolve the chosen lines, call
+    ``run(indices)`` and record the request and its result, even when it changed nothing,
+    so the same key replays that result and a different request under it is refused."""
+    key, digest = _operation(f"{action}-lines", owner.entity_id, body)
+    record_id = f"line_action:{_step_id(key)}"
+    if (done := await _earlier_run(session, company_id, key, event_type="line_action.recorded",
+                                   entity_id=record_id, digest=digest)) is not None:
+        return done
+    line_items = owner.state.get("line_items", [])
+    indices = _selected_line_indices(line_items, body)
+    chosen = [str(line_items[i].get("line_id")) for i in indices if line_items[i].get("line_id")]
+    result = await run(indices)
+    await emit_event(
+        session, company_id=uuid.UUID(str(company_id)), entity_id=record_id,
+        entity_type="line_action", event_type="line_action.recorded",
+        data={"owner_id": owner.entity_id, "action": action, "line_ids": chosen},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=key, metadata_={"request": digest, "result": result},
+    )
+    await session.commit()
+    return result
 
 
 @router.post("/{entity_id}/fulfill-lines")
@@ -7197,7 +7236,10 @@ async def fulfill_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    return await _fulfill_lines_impl(entity_id, body, company_id, user, session, commit=True)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    return await _line_action(
+        session, company_id, user, row, "fulfill", body,
+        lambda indices: _fulfill_lines_impl(entity_id, indices, company_id, user, session, commit=False))
 
 
 async def _expand_invoice_line_allocations(
@@ -7477,142 +7519,208 @@ async def revert_lines(
     }
 
 
-async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session, *, commit: bool = True) -> dict:
-    """Set selected lines to ``reserved`` or ``available`` (ledger-neutral for available lines).
+async def _reserve_lines_impl(
+    row, entity_id, new_status, indices: list[int], user, session, *,
+    may_acquire: bool, commit: bool = True,
+) -> dict:
+    """Reserve or release the lines at ``indices`` of a document or List.
 
-    All-or-nothing: every selected line is pre-validated first; if any line fails its guard the
-    request commits nothing and returns 422 with the full per-line error list (GDR 2e). A
-    ``reserved`` target requires the line ``available`` - or ``sold`` by THIS document, in which
-    case the sale is reversed first (stock restored - the same path Set as available uses) and
-    the line is then reserved, atomically in one request; held for the invoice again, it keeps
-    its cost of sales. An ``available`` target requires the line ``reserved`` and owned by this
-    document. Reserve stamps this document as owner; release clears the ownership stamp (emit
-    without source_doc_id).
-
-    Shared by the docs-router and lists-router wrappers - both bind their lines by item_id, so
-    line resolution is uniform across surfaces. A list can never own a sold line (only docs
-    fulfil), so the reverse-then-reserve branch is unreachable from the lists wrapper.
+    Release gives back everything each line holds. Reserve makes each line hold exactly
+    its quantity: what it holds already stays, a shortfall is taken from its free bound lot
+    and then (when the product may span lots) from free lots of the same product, and a
+    surplus goes back to stock last-picked first, so the line keeps its bound lot. Taking
+    new stock needs ``may_acquire`` (the record's status allows reserving); keeping or
+    giving back stock does not. A line this document already shipped is taken back into
+    stock and held again in the same request. Every line is planned before anything
+    changes, so a shortage or refusal on one line changes nothing on any line.
     """
-    from celerp_inventory.projections import is_item_available
+    company_id = row.company_id
     state = row.state
-    _validate_line_entity_ids_subset(line_entity_ids, state)
-    if not line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
+    line_items = state.get("line_items", [])
+    locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    uid = user.id
 
-    # Each line keyed by the item parcel it references, so a partial reserve can carve
-    # only the invoiced portion (the same measures the fulfill split uses).
-    line_qty_by_eid: dict[str, float] = {}
-    line_by_eid: dict[str, dict] = {}
-    for li in state.get("line_items", []):
-        _eid = li.get("entity_id") or li.get("item_id") or ""
-        if _eid:
-            line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
-            line_by_eid[_eid] = li
-    unit_map = await _get_unit_map(session, row.company_id)
+    if new_status == "available":
+        empty = [i for i in indices if not by_line.get(i)]
+        if empty:
+            names = ", ".join(str(line_items[i].get("sku") or i + 1) for i in empty)
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.nothing_held", f"Nothing is held for {names}.", lines=names))
+        released = [eid for i in indices for eid in by_line[i]]
+        for eid in released:
+            await _set_lot_status(session, company_id=company_id, uid=uid, owner=row, lot_id=eid, line_id=None)
+        if commit:
+            await session.commit()
+        return {"new_status": new_status, "reserved": [], "released": released}
 
-    errors: list[str] = []
-    blocked: list[str] = []  # 409: partial reserve of a non-splittable parcel
-    split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial reserves)
-    projs: dict[str, Projection] = {}
-    to_unship: dict[str, Projection] = {}
-    _locked_lots = await _lock_item_sku_lots(session, row.company_id, set(line_entity_ids))
-    for eid in line_entity_ids:
-        proj = _locked_lots.get(eid)
-        if proj is None:
-            errors.append(f"{eid}: item not found")
+    unit_map = await _get_unit_map(session, company_id)
+    company = await session.get(Company, company_id)
+    company_settings = (company.settings or {}) if company else {}
+
+    # Lots this record shipped, by the line that shipped them. A line with a shipment is
+    # held again by taking the shipment back, not by drawing new stock.
+    shipped: dict[int, list[str]] = {}
+    for eid, proj in locked.items():
+        st = proj.state
+        if st.get("status_doc_id") != entity_id or st.get("status") not in ("sold", "memo_out"):
             continue
-        if is_non_stock_line(proj.state.get("inventory_type"), proj.state.get("sell_by")):
-            errors.append(f"{eid} ({proj.state.get('sku', '')}): a non-stock line cannot be reserved")
+        idx = await auto_je.doc_line_of_lot(session, company_id, entity_id, state, eid, st)
+        sku = str(st.get("sku") or "")
+        if idx is None:
+            if any(str(line_items[i].get("sku") or "") == sku for i in indices):
+                raise HTTPException(status_code=409, detail=refusal(
+                    "lines.shipment_ambiguous",
+                    f"{sku} was shipped on this record but nothing records for which line. "
+                    "Set it as available first.", sku=sku))
             continue
-        sku = proj.state.get("sku", "")
-        item_status = proj.state.get("status", "")
-        if new_status == "reserved":
-            if item_status == "sold" and proj.state.get("status_doc_id") == entity_id:
-                to_unship[eid] = proj
-            elif item_status == "memo_out":
-                errors.append(f"{eid} ({sku}): out on memo - use 'Set as available' to take it back first")
+        if idx not in indices:
+            continue
+        if st.get("status") == "memo_out":
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.out_on_memo",
+                f"{sku} is out on memo. Use Set as available to take it back first.", sku=sku))
+        shipped.setdefault(idx, []).append(eid)
+
+    blocked: list[str] = []
+    unavailable: list[str] = []
+    needs_status: list[str] = []
+    remaining: dict[str, float] = {}
+    # Planned changes, in plan order: (kind, line index, lot, quantity).
+    #   carve_held - carve ``qty`` off a lot already held as its own lot and hold that
+    #   carve_excess - carve ``qty`` off a held lot and give the part back
+    #   carve_take - carve ``qty`` off a free lot and hold the part
+    #   take - hold a whole free lot
+    #   give - give a whole held lot back
+    changes: list[tuple[str, int, Projection, float]] = []
+    for idx in indices:
+        bound = _stock_line(line_items, idx, locked)
+        sku = str((bound.state if bound else {}).get("sku") or line_items[idx].get("sku") or f"Line {idx + 1}")
+        if bound is None:
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.not_stock", f"{sku} is not a stock item, so nothing can be reserved.", sku=sku))
+        if idx in shipped:
+            if not may_acquire:
+                needs_status.append(sku)
+            continue
+        line_qty = float(line_items[idx].get("quantity") or 0)
+        draws, short, own = _line_plan(line_items, idx, locked, by_line, entity_id, company_settings, remaining)
+        if short > 1e-9:
+            if reason := _unavailable(bound, entity_id):
+                unavailable.append(reason)
+            else:
+                blocked.append(f"{sku}: needs {line_qty:g}, {line_qty - short:g} available")
+            continue
+        drawn = {lot["entity_id"] for lot, _take, _full in draws}
+        for lot, take, full in draws:
+            proj = locked[lot["entity_id"]]
+            is_own = lot.get("claim") == "reserved"
+            whole = float(proj.state.get("quantity") or 0)
+            if not is_own and not may_acquire:
+                needs_status.append(sku)
+                break
+            if full:
+                if not is_own:
+                    changes.append(("take", idx, proj, take))
                 continue
-            elif not is_item_available(proj.state):
-                _owner = proj.state.get("status_doc_number")
-                _where = f" by {_owner}" if _owner and proj.state.get("status_doc_id") != entity_id else ""
-                errors.append(f"{eid} ({sku}): must be 'available' to reserve, is '{item_status}'{_where}")
+            if not splitting_allowed(proj.state):
+                blocked.append(f"{sku}: needs {take:g} of {whole:g} but 'Allow Splitting' is off; "
+                               "enable splitting or reserve the full quantity")
                 continue
-        else:  # available (release)
-            if item_status != "reserved":
-                errors.append(f"{eid} ({sku}): only a reserved line can be set available, is '{item_status}'")
-                continue
-            if proj.state.get("status_doc_id") != entity_id:
-                errors.append(f"{eid} ({sku}): reserved by another document")
-                continue
-        # A partially-invoiced line reserves only the invoiced portion: carve a child and
-        # reserve that. A partial reserve of an explicitly non-splittable parcel is gated
-        # exactly as partial fulfillment is. A full or over-invoiced line reserves whole.
-        if new_status == "reserved" and eid not in to_unship:
-            _carve = _plan_line_carve(line_by_eid.get(eid, {}), proj.state, unit_map)
-            if _carve is not None:
-                if not splitting_allowed(proj.state):
-                    blocked.append(
-                        f"{sku}: invoiced {line_qty_by_eid.get(eid, 0):g} of "
-                        f"{float(proj.state.get('quantity', 0)):g} but 'Allow Splitting' is off; "
-                        f"enable splitting or reserve the full quantity")
-                    continue
-                split_plan[eid] = _carve
-        projs[eid] = proj
+            if not is_own:
+                changes.append(("carve_take", idx, proj, take))
+            elif proj.entity_id == line_item_id(line_items[idx]) and abs(take - line_qty) <= 1e-9:
+                # The bound lot shrinks to exactly the line: carve the line's part with the
+                # line's own measures so weight and pieces follow the line.
+                changes.append(("carve_held", idx, proj, take))
+            else:
+                changes.append(("carve_excess", idx, proj, whole - take))
+        changes.extend(("give", idx, locked[lot["entity_id"]], 0.0)
+                       for lot in own if lot["entity_id"] not in drawn)
 
     if blocked:
-        raise HTTPException(status_code=409, detail="Cannot reserve: " + "; ".join(blocked))
-    if errors:
-        raise HTTPException(status_code=422, detail={"errors": errors})
+        reasons = "; ".join(blocked)
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.cannot_reserve", f"Cannot reserve: {reasons}", reasons=reasons))
+    _refuse_unavailable(unavailable)
+    if needs_status:
+        skus = ", ".join(needs_status)
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.reserve_status",
+            f"Cannot reserve {skus}: stock can only be newly reserved on a record in a status that allows it.",
+            skus=skus))
 
-    cid = uuid.UUID(str(row.company_id))
-    reserve_eids = list(line_entity_ids)
-    if new_status == "available" and state.get("doc_type") == "invoice":
-        await _expand_invoice_line_allocations(
-            session, row.company_id, entity_id, state, reserve_eids, projs
-        )
     reconcile = None
-    if to_unship:
-        # Take the shipped goods back into stock before reserving them - the reversal and the
-        # reserve share this transaction, so a failure commits neither.
-        to_unship_ids = list(to_unship)
+    held: list[str] = []
+    if shipped:
+        # Take the shipped goods back into stock before holding them again; both share this
+        # transaction, so a failure keeps neither.
+        line_of = {eid: idx for idx, eids in shipped.items() for eid in eids}
+        to_revert = [eid for eids in shipped.values() for eid in eids]
+        fetched = {eid: locked[eid] for eid in to_revert}
         _status, reconcile = await _reverse_whole_lines(
-            session, company_id=row.company_id, cid=cid, uid=user.id, entity_id=entity_id,
-            state=state, doc_type=state.get("doc_type", ""), to_revert=to_unship_ids,
-            fetched=to_unship,
+            session, company_id=company_id, cid=uuid.UUID(str(company_id)), uid=uid, entity_id=entity_id,
+            state=state, doc_type=state.get("doc_type", ""), to_revert=to_revert, fetched=fetched,
         )
-        reserve_eids.extend(eid for eid in to_unship_ids if eid not in reserve_eids)
-        projs.update(to_unship)
-    # Carve the invoiced portion off each partial parcel and reserve the child instead of
-    # the mother; the mother keeps its remainder available.
-    remap: dict[str, tuple[str, str]] = {}
-    if split_plan:
-        remap = await _apply_split_plan(
-            session, company_id=row.company_id, cid=cid, uid=user.id, entity_id=entity_id,
-            state=state, split_plan=split_plan, fetched=projs, source="reservation",
-        )
-    doc_number = state.get("doc_number") or state.get("ref_id") or ""
-    reserved_eids: list[str] = []
-    for eid in reserve_eids:
-        target_eid = remap[eid][0] if eid in remap else eid
-        reserved_eids.append(target_eid)
-        # Reserve stamps this doc as owner (source_doc_id present); release omits it so
-        # _stamp_status_doc clears the ownership stamp - a true handoff back to the pool.
-        data: dict = {"new_status": new_status}
-        if new_status == "reserved":
-            data["source_doc_id"] = entity_id
-            data["doc_number"] = doc_number
-        await emit_event(
-            session, company_id=cid, entity_id=target_eid, entity_type="item",
-            event_type="item.status.set", data=data,
-            actor_id=user.id, location_id=None, source="reservation",
-            idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
-        )
+        for eid in to_revert:
+            if eid not in line_of:
+                lot = fetched.get(eid) or locked.get(eid)
+                idx = await auto_je.doc_line_of_lot(session, company_id, entity_id, state, eid,
+                                                    lot.state if lot else {})
+                if idx is None:
+                    sku = str((lot.state if lot else {}).get("sku") or "")
+                    raise HTTPException(status_code=409, detail=refusal(
+                        "lines.shipment_ambiguous",
+                        f"{sku} was shipped on this record but nothing records for which line. "
+                        "Set it as available first.", sku=sku))
+                line_of[eid] = idx
+            await _set_lot_status(session, company_id=company_id, uid=uid, owner=row, lot_id=eid,
+                                  line_id=line_items[line_of[eid]].get("line_id"))
+            held.append(eid)
+
+    carves = [(kind, idx, proj, qty) for kind, idx, proj, qty in changes if kind.startswith("carve")]
+    splits = [{"lot": proj,
+               "line": idx if kind in ("carve_held", "carve_take")
+               and proj.entity_id == line_item_id(line_items[idx]) else None,
+               **_carve_measures(line_items[idx], proj.state, qty, unit_map,
+                                 whole_line=kind != "carve_excess"
+                                 and proj.entity_id == line_item_id(line_items[idx])
+                                 and abs(qty - float(line_items[idx].get("quantity") or 0)) <= 1e-9)}
+              for kind, idx, proj, qty in carves]
+    children = dict(zip(range(len(carves)), await _apply_split_plan(
+        session, company_id=company_id, uid=uid, owner=row, splits=splits, source="reservation")))
+
+    released: list[str] = []
+    n = 0
+    for kind, idx, proj, _qty in changes:
+        line_id = line_items[idx].get("line_id")
+        if kind == "take":
+            await _set_lot_status(session, company_id=company_id, uid=uid, owner=row,
+                                  lot_id=proj.entity_id, line_id=line_id)
+            held.append(proj.entity_id)
+        elif kind == "give":
+            await _set_lot_status(session, company_id=company_id, uid=uid, owner=row,
+                                  lot_id=proj.entity_id, line_id=None)
+            released.append(proj.entity_id)
+        else:
+            child = children[n]
+            n += 1
+            if kind == "carve_excess":
+                # The carved part is a new lot, created available: it is already given back.
+                released.append(child)
+                continue
+            await _set_lot_status(session, company_id=company_id, uid=uid, owner=row,
+                                  lot_id=child, line_id=line_id)
+            held.append(child)
+            if kind == "carve_held":
+                await _set_lot_status(session, company_id=company_id, uid=uid, owner=row,
+                                      lot_id=proj.entity_id, line_id=None)
+                released.append(proj.entity_id)
     if reconcile is not None:
         await reconcile()
 
     if commit:
         await session.commit()
-    return {"new_status": new_status, "reserved": reserved_eids}
+    return {"new_status": new_status, "reserved": held, "released": released}
 
 
 @router.post("/{entity_id}/reserve-lines")
@@ -7624,15 +7732,18 @@ async def reserve_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Set selected lines reserved/available on an invoice or memo (ledger-neutral)."""
+    """Reserve or release chosen lines of an invoice or memo (ledger-neutral). Release works
+    in any status; newly reserving stock needs a status that allows reserving."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type", "")
     allowed = RESERVABLE_DOC_STATUSES.get(doc_type)
     if allowed is None:
         raise HTTPException(status_code=422, detail=f"reserve-lines is not supported for doc type: {doc_type}")
-    if row.state.get("status") not in allowed:
-        raise HTTPException(status_code=409, detail=f"Cannot reserve on a {doc_type} in status '{row.state.get('status')}'")
-    return await _reserve_lines_impl(row, entity_id, body.new_status, body.line_entity_ids, user, session)
+    may_acquire = row.state.get("status") in allowed
+    return await _line_action(
+        session, company_id, user, row, "reserve", body,
+        lambda indices: _reserve_lines_impl(row, entity_id, body.new_status, indices, user, session,
+                                            may_acquire=may_acquire, commit=False))
 
 
 class ReturnReceivedItem(BaseModel):

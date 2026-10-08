@@ -153,18 +153,24 @@ def attribute_holds(
     """Which line of a document or List holds each lot it has reserved.
 
     ``held`` maps each lot the owner holds to its state. A lot stamped with a line id
-    belongs to that line while the line exists. An unstamped (older) hold belongs to the
-    one line that binds it; bound by no line it is an orphan, bound by several it is
-    ambiguous and no line may treat it as its own. Returns ``(by_line, orphans,
-    ambiguous)``: line index to its lots, unattributable lots, and ambiguous lots to the
-    indices of the lines that bind them.
+    belongs to that line while the line exists; once the line is gone it is an orphan.
+    An unstamped (older) hold belongs to the one line that binds it, or, bound by no
+    line, to the one line of the same product (an older reservation took sibling lots
+    without recording the line). Matching several lines either way it is ambiguous and
+    no line may treat it as its own; matching none it is an orphan. Returns
+    ``(by_line, orphans, ambiguous)``: line index to its lots, unattributable lots, and
+    ambiguous lots to the indices of the lines they match.
     """
     index_of = {li.get("line_id"): i for i, li in enumerate(line_items) if li.get("line_id")}
     binders: dict[str, list[int]] = {}
+    carriers: dict[str, list[int]] = {}
     for i, li in enumerate(line_items):
         eid = line_item_id(li)
         if eid:
             binders.setdefault(str(eid), []).append(i)
+            sku = str(li.get("sku") or "").strip()
+            if sku:
+                carriers.setdefault(sku, []).append(i)
     by_line: dict[int, list[str]] = {}
     orphans: list[str] = []
     ambiguous: dict[str, list[int]] = {}
@@ -177,7 +183,7 @@ def attribute_holds(
             else:
                 by_line.setdefault(idx, []).append(eid)
             continue
-        lines = binders.get(eid, [])
+        lines = binders.get(eid) or carriers.get(str((st or {}).get("sku") or "").strip(), [])
         if len(lines) == 1:
             by_line.setdefault(lines[0], []).append(eid)
         elif lines:

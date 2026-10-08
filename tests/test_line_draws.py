@@ -147,3 +147,15 @@ def test_stamped_hold_follows_its_line_not_its_binding():
     assert by_line == {1: ["item:a"]} and not orphans and not ambiguous
     gone, orphans, _ = attribute_holds([_line("item:a", 1, L1)], held)
     assert gone == {} and orphans == ["item:a"]
+
+
+def test_legacy_sibling_hold_belongs_to_the_one_line_of_its_product():
+    from celerp.services.pick import attribute_holds
+    held = {"item:sib": {"sku": "S", "status": "reserved", "status_doc_id": OWNER}}
+    one, orphans, ambiguous = attribute_holds([_line("item:a", 4, L1)], held)
+    assert one == {0: ["item:sib"]} and not orphans and not ambiguous
+    two, orphans, ambiguous = attribute_holds([_line("item:a", 1, L1), _line("item:b", 1, L2)], held)
+    assert two == {} and ambiguous == {"item:sib": [0, 1]}
+    other = {"item:sib": {"sku": "T", "status": "reserved", "status_doc_id": OWNER}}
+    none, orphans, _ = attribute_holds([_line("item:a", 1, L1)], other)
+    assert none == {} and orphans == ["item:sib"]
