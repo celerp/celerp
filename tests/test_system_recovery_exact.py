@@ -2279,6 +2279,29 @@ def _free_space(monkeypatch, free: int) -> None:
     monkeypatch.setattr(shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(2 * free, free, free))
 
 
+async def test_an_update_without_room_for_its_last_dump_is_refused_before_dumping_again(
+        tmp_path, monkeypatch, code_config, real_engine):
+    """A refusal for disk space names what the owner can change, so it is not recorded and
+    the next window tries again. The last update's dump, which the next one replaces, shows
+    there is still no room without taking another full dump."""
+    import asyncio
+
+    from celerp.services import backup, update
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    steps, dump = _update_steps(), update.dump_path()
+    dump.parent.mkdir(parents=True)
+    await asyncio.to_thread(steps.dump, dump)
+    _free_space(monkeypatch, dump.stat().st_size * 10 + 2**30 - 1)
+    dumps, data = [], dump.read_bytes()
+    monkeypatch.setattr(backup, "dump_database", lambda *args, **kwargs: dumps.append(args) or data)
+    for _ in range(2):
+        result, children = await asyncio.to_thread(update.run_update, "1.1.0", steps)
+        assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+        assert result["detail"].startswith("Not enough free disk space to restore this backup"), result
+    assert dumps == []
+    assert update.read_state().get("failed_versions", []) == []
+
+
 @pytest.mark.parametrize("short", [1, 0], ids=["one byte short", "exactly enough"])
 async def test_a_restore_needs_ten_times_the_dump_and_1_gib_free_beside_it(tmp_path, monkeypatch, real_engine, short):
     """The script pg_restore writes beside the dump measured up to 6.7 times its size, on the

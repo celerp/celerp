@@ -283,7 +283,7 @@ _SCRIPT_PER_DUMP_BYTE = 10
 _FREE_SPACE_FLOOR = 1 << 30
 
 
-def _check_free_space(dump_path: Path) -> None:
+def check_free_space(dump_path: Path) -> None:
     need = dump_path.stat().st_size * _SCRIPT_PER_DUMP_BYTE + _FREE_SPACE_FLOOR
     free = shutil.disk_usage(dump_path.parent).free
     if free < need:
@@ -298,7 +298,7 @@ def check_backup_dump(dump_path: Path, database_url: str,
     install, or the roles, collations, tablespaces and encoding it needs that this
     database does not have (``_check_server_objects``), or when the disk beside it has no
     room to restore it. `source` names, for the owner, the database the dump was taken from."""
-    _check_free_space(dump_path)
+    check_free_space(dump_path)
     listing = _run_tool([_find_pg_tool("pg_restore"), "-l", str(dump_path)], None, timeout=60)
     lines = [line for line in listing.decode(errors="replace").splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
@@ -399,7 +399,7 @@ def restore_database_file(dump_path: Path, database_url: str, *, runner=None) ->
     from celerp.migrations.compatibility import mutating_scope
 
     pg_restore, psql = restore_tools()
-    _check_free_space(dump_path)
+    check_free_space(dump_path)
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url), \
             tempfile.TemporaryDirectory(dir=dump_path.parent) as work:

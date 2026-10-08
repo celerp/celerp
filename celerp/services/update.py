@@ -822,6 +822,9 @@ class SupervisorSteps(Steps):
         # A rollback restores the dump taken next into this database.
         self._backup.check_restore_target(self.db_url)
         self._backup.check_database_extensions(self.db_url)
+        # The last update's dump, which the next one replaces, shows whether there is room.
+        if dump_path().exists():
+            self._backup.check_free_space(dump_path())
 
     def dump(self, path: Path) -> None:
         data = self._backup.dump_database(self.db_url, runner=_bound_run)
