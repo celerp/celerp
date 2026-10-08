@@ -220,11 +220,15 @@ END $$"""
 
 
 def restore_tools() -> tuple[str, str]:
-    """pg_restore and psql, which a database restore needs; RuntimeError naming a missing one."""
+    """pg_restore and psql, which a database restore needs; RuntimeError naming one that
+    is missing or does not run."""
     try:
-        return _find_pg_tool("pg_restore"), _find_pg_tool("psql")
+        tools = _find_pg_tool("pg_restore"), _find_pg_tool("psql")
     except FileNotFoundError as exc:
         raise RuntimeError(str(exc)) from exc
+    for tool in tools:
+        _run_tool([tool, "--version"], None, timeout=10)
+    return tools
 
 
 def restore_database_file(dump_path: Path, database_url: str, *, runner=None) -> None:
@@ -254,14 +258,16 @@ def restore_database_file(dump_path: Path, database_url: str, *, runner=None) ->
                        "-c", _EMPTY_PUBLIC, "-f", str(script), "-d", pg_url], runner)
 
 
-def _run_tool(command: list[str], runner) -> None:
+def _run_tool(command: list[str], runner, timeout: int = 600) -> None:
     name = Path(command[0]).stem
     try:
-        result = (runner or subprocess.run)(command, capture_output=True, timeout=600)
+        result = (runner or subprocess.run)(command, capture_output=True, timeout=timeout)
     except FileNotFoundError as exc:
         raise RuntimeError(f"{name} not found") from exc
+    except OSError as exc:
+        raise RuntimeError(f"{name} could not run: {exc.strerror}") from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{name} timed out after 600 seconds") from exc
+        raise RuntimeError(f"{name} timed out after {timeout} seconds") from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
         raise RuntimeError(f"{name} failed (exit {result.returncode}): {stderr}")

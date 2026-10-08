@@ -179,7 +179,8 @@ def test_restore_database_success(monkeypatch, tmp_path):
     dump.write_bytes(b"dump_data")
     monkeypatch.setattr(subprocess, "run", fake_run)
     restore_database_file(dump, "postgresql+asyncpg://u:p@localhost/db")
-    assert calls[0][-1] == str(dump)
+    assert [cmd[1:] for cmd in calls[:2]] == [["--version"], ["--version"]]
+    assert calls[2][-1] == str(dump)
 
 
 @pytest.mark.usefixtures("_no_scope")

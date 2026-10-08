@@ -1821,15 +1821,26 @@ async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine)
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
 
 
-# Without psql nothing starts: no marker, no safety archive, no connector or cloud call.
+# Without a psql that runs nothing starts: no marker, no safety archive, no connector or cloud call.
 
-def _without_psql(monkeypatch, tmp_path: Path) -> Path:
+# The error each kind of unusable psql gives.
+PSQL = {
+    "missing": "psql not found",
+    "not executable": "psql could not run",
+    "failing": "psql failed (exit 127)",
+}
+
+
+def _without_psql(monkeypatch, tmp_path: Path, psql: str = "missing") -> Path:
     from celerp.config import settings
     from celerp.services import backup
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for tool in ("pg_dump", "pg_restore"):
         (bin_dir / tool).symlink_to(backup._find_pg_tool(tool))
+    if psql != "missing":
+        (bin_dir / "psql").write_text("#!/bin/sh\necho 'libpq.so.5: cannot open shared object file' >&2\nexit 127\n")
+        (bin_dir / "psql").chmod(0o755 if psql == "failing" else 0o644)
     monkeypatch.setattr(settings, "pg_bin_dir", str(bin_dir))
     return bin_dir
 
@@ -1847,9 +1858,10 @@ def _record_connector_calls(monkeypatch) -> list[str]:
     return calls
 
 
+@pytest.mark.parametrize("psql", list(PSQL))
 @pytest.mark.parametrize("entry", ["system recovery", "bootstrap recovery", "confirmed recovery"])
 async def test_a_recovery_without_psql_changes_nothing_and_can_be_repeated(
-        tmp_path, monkeypatch, code_config, real_engine, entry):
+        tmp_path, monkeypatch, code_config, real_engine, entry, psql):
     from celerp.config import settings
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
@@ -1872,9 +1884,9 @@ async def test_a_recovery_without_psql_changes_nothing_and_can_be_repeated(
         return await backup_import.continue_recovery(pending.confirmation_id, pending.archive_digest)
 
     staged = rec.staging()
-    _without_psql(monkeypatch, tmp_path)
+    _without_psql(monkeypatch, tmp_path, psql)
     result = await _start()
-    assert result.ok is False and "psql not found" in result.error, result.error
+    assert result.ok is False and PSQL[psql] in result.error, result.error
     assert backup_import.recovery_incomplete() is False
     assert connector_calls == []
     assert rec.safety_archives() == []
@@ -1908,7 +1920,8 @@ async def test_an_update_without_psql_stops_before_anything_changes(tmp_path, mo
     assert await _company_names(real_engine) == {"Alpha Trading"}
 
 
-async def test_an_update_rollback_after_a_failed_restore_can_be_repeated(tmp_path, monkeypatch, real_engine):
+@pytest.mark.parametrize("psql", list(PSQL))
+async def test_an_update_rollback_after_a_failed_restore_can_be_repeated(tmp_path, monkeypatch, real_engine, psql):
     """The rollback an update runs (SupervisorSteps.restore): a failed attempt changes
     nothing, and the next start repeats it."""
     import asyncio
@@ -1922,8 +1935,8 @@ async def test_an_update_rollback_after_a_failed_restore_can_be_repeated(tmp_pat
         lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
     try:
         tables = await _tables(real_engine)
-        _without_psql(monkeypatch, tmp_path)
-        with pytest.raises(RuntimeError, match="psql not found"):
+        _without_psql(monkeypatch, tmp_path, psql)
+        with pytest.raises(RuntimeError, match=re.escape(PSQL[psql])):
             await asyncio.to_thread(steps.restore, dump, "1.1.0")
         await _assert_unchanged(real_engine, tables)
         monkeypatch.setattr(settings, "pg_bin_dir", "")
