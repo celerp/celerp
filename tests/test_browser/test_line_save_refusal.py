@@ -75,3 +75,21 @@ def test_delete_selected_asks_first(page, ui_server, api, draft):
     with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
         page.click("#li-bulk-delete-btn")
     assert rows.count() == 1
+
+
+def test_any_refused_save_restores_the_stored_lines(page, ui_server, api, draft):
+    """A save refused for a reason other than a protected line (here a date check) puts the
+    deleted row back too, with the reason in a toast."""
+    rows = _open(page, ui_server, draft)
+    reason = "The due date cannot be before the issue date."
+    page.route("**/docs/*/lines", lambda route: route.fulfill(
+        status=400, content_type="application/json", body=json.dumps({"error": reason})))
+    rows.first.locator(".li-select").check()
+    page.select_option("#li-bulk-select", "li-delete")
+    page.once("dialog", lambda d: d.accept())
+    with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
+        page.click("#li-bulk-delete-btn")
+
+    page.locator(".toast__msg", has_text=reason).wait_for(timeout=8000)
+    page.wait_for_function("document.querySelectorAll('#line-body tr').length === 2", timeout=8000)
+    assert page.evaluate("window.__sameLoad") is True, "the page must not reload"

@@ -476,6 +476,23 @@ def test_memo_part_return_uses_the_line_quantity_field(page, ui_server, api):
     assert st["status"] == "memo_out" and float(st["quantity"]) == 3, st
 
 
+def test_a_refused_take_back_quantity_names_the_lowest_it_accepts(page, ui_server, api):
+    """The take-back field refuses 0, so its message starts at the unit's smallest step: 1 piece."""
+    doc_id, item = _shipped_memo(api, f"MPZ-{uuid.uuid4().hex[:6]}", 8)
+    dialogs = []
+    page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+    field = _open_return(page, ui_server, doc_id)
+    assert field.get_attribute("min") == "1" and field.get_attribute("step") == "1"
+    field.fill("0")
+    page.locator("#li-bulk-revert-btn").click()
+    toast = page.locator(".toast-container .toast--error").last
+    toast.wait_for(state="visible", timeout=5000)
+    assert "Enter a quantity between 1 and 8." in toast.inner_text()
+    assert not dialogs
+    st = api.get(f"/items/{item}").json()
+    assert st["status"] == "memo_out" and float(st["quantity"]) == 8, st
+
+
 def test_cancelling_the_return_sends_nothing(page, ui_server, api):
     doc_id, item = _shipped_memo(api, f"MPC-{uuid.uuid4().hex[:6]}", 2)
     page.on("dialog", lambda d: d.dismiss())

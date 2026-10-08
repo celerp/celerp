@@ -107,7 +107,7 @@ def test_reserve_does_not_run_after_a_failed_save(page, ui_server, api):
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="domcontentloaded")
     page.locator("#line-body tr .li-select").first.check()
     page.evaluate("liBulkReserveConfirmed()")
-    page.locator("#save-status", has_text=_BLOCKED).wait_for(timeout=5000)
+    assert _BLOCKED in _error_toast(page)
     page.wait_for_timeout(500)
     assert reserves == []
 
@@ -122,7 +122,7 @@ def test_finalize_does_not_run_after_a_failed_save(page, ui_server, api):
     finalizes = _posts(page, "/action/finalize")
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.locator("button[onclick*='action/finalize']").first.click()
-    page.locator("#save-status", has_text=_BLOCKED).wait_for(timeout=5000)
+    assert _BLOCKED in _error_toast(page)
     page.wait_for_timeout(500)
     assert finalizes == []
     assert api.get(f"/docs/{doc_id}").json()["status"] == "draft"

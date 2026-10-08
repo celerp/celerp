@@ -82,30 +82,37 @@ function _copiedFeedback(btn, restoreLabel) {
 // Each row is named by its line id; a page whose rows do not all carry one names them by
 // item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
 // the operation key the page was rendered with, so the same action sent again after a lost
-// answer is recorded once. A second click while a request is in flight sends nothing.
-// Resolves true on success; otherwise the reason is shown.
-var _celerpLineActionBusy = false;
+// answer is recorded once. Resolves true on success, keeping the server's toast for the
+// page the caller opens next; otherwise the reason is shown.
 async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
-  if (_celerpLineActionBusy) return false;
   var fd = new FormData();
   celerpLineSelection(rows).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   (fields || []).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   if (key) fd.append('idempotency_key', key);
-  _celerpLineActionBusy = true;
   var msg = fallbackMsg;
   try {
     var resp = await fetch(url, {method: 'POST', body: fd});
-    if (resp.status === 204) return true;
-    try {
-      var trig = resp.headers.get('HX-Trigger');
-      if (trig) { var t = JSON.parse(trig); if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message; }
-    } catch (e) {}
+    var t = null;
+    try { t = JSON.parse(resp.headers.get('HX-Trigger') || 'null'); } catch (e) {}
+    if (resp.status === 204) {
+      if (t && t.celerpToast) _celerpKeepToast(t.celerpToast);
+      return true;
+    }
+    if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message;
   } catch (e) {
-  } finally {
-    _celerpLineActionBusy = false;
   }
   celerpToast(msg, 'error');
   return false;
+}
+// One line action at a time: the second click of a double click, or a click while another
+// action's confirm or request is open, does nothing. ``run`` resolves true when the page is
+// reloading, which keeps the guard on until it has.
+var _celerpLineActionBusy = false;
+async function celerpLineActionOnce(e, run) {
+  if ((e && e.detail > 1) || _celerpLineActionBusy) return;
+  _celerpLineActionBusy = true;
+  var leaving = false;
+  try { leaving = await run(); } finally { if (!leaving) _celerpLineActionBusy = false; }
 }
 // The [name, value] pairs naming the chosen rows: line_id each when every row has one,
 // otherwise the item each row binds.
@@ -151,6 +158,10 @@ function celerpToast(message, type, persist, action) {
   // is clicked; the rest auto-dismiss after 6s.
   if (!persist) setTimeout(function() { _dismissToast(toast); }, 6000);
 }
+// Keep a toast for the next page load, which shows it (a redirect or reload follows).
+function _celerpKeepToast(toast) {
+  try { sessionStorage.setItem('celerp_pending_toast', JSON.stringify(toast)); } catch(ex) {}
+}
 function _dismissToast(toast) {
   toast.classList.remove('toast--visible');
   setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
@@ -161,9 +172,8 @@ document.addEventListener('htmx:afterRequest', function(e) {
   try {
     var obj = JSON.parse(hdr);
     // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
-    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) {
-      try { sessionStorage.setItem('celerp_pending_toast', JSON.stringify(obj.celerpToast)); } catch(ex) {}
-    } else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
+    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
+    else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;

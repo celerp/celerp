@@ -4349,13 +4349,10 @@ class TestListsCreateBlank:
         assert r.json()["ok"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("key, restore", [
-        ("line.protected_held", True), ("line.protected_shipped", True),
-        ("line.protected_received", True), ("docs.some_other_refusal", False),
-    ])
-    async def test_save_lines_refusal_of_a_protected_line_asks_for_the_stored_lines(self, ui_client, key, restore):
-        """A save refused because a line is protected keeps the stored lines on the server, so the
-        page is told to put them back; any other refusal leaves the user's edits in place."""
+    @pytest.mark.parametrize("key", ["line.protected_held", "docs.some_other_refusal"])
+    async def test_save_lines_refusal_returns_the_translated_reason(self, ui_client, key):
+        """A refused save answers 400 with the translated reason; the page puts the stored lines back
+        for every refusal (tests/test_browser/test_line_save_refusal.py)."""
         from ui.api_client import _api_error
         detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
         refused = _api_error(409, {"detail": detail}, "")
@@ -4366,8 +4363,7 @@ class TestListsCreateBlank:
                 cookies=_authed(),
             )
         assert r.status_code == 400
-        assert r.json()["error"]
-        assert r.json().get("restore", False) is restore
+        assert r.json() == {"error": r.json()["error"]} and r.json()["error"]
 
     @pytest.mark.asyncio
     async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):

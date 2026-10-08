@@ -1841,11 +1841,15 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if not is_draft:
         locked_fields = set(fields_changed) - _FINALIZED_EDITABLE_FIELDS
         if locked_fields:
-            status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
-            raise HTTPException(
-                status_code=409,
-                detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
-            )
+            status = row.state.get("status") or "final"
+            # A void document comes back through Unvoid; revert to Draft refuses it.
+            if status == "void":
+                raise HTTPException(status_code=409, detail=refusal(
+                    "docs.edit_void", "This document is void and cannot be edited. To make changes, Unvoid it first."))
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.edit_locked",
+                f"This document is {status.replace('_', ' ')} and cannot be edited. To make changes, revert it to Draft first.",
+                doc_status=status))
         # Guard: line_items patch on finalized doc may only touch _LI_FINALIZED_EDITABLE fields
         if "line_items" in fields_changed:
             incoming_lis = (fields_changed["line_items"].get("new") or [])
@@ -7741,22 +7745,24 @@ def _check_revert_status(state: dict) -> None:
 
 
 async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices: list[int], user, session,
-                             *, holding: frozenset[int] = frozenset()) -> dict:
+                             *, holding: frozenset[int] | None = None) -> dict:
     """Take back what this document shipped, whole or in part, without committing.
 
     ``indices`` are the chosen lines: each gives back every lot it shipped. With none, the
     legacy body names the lots. Every lot is proved before anything changes: it is out
     (sold or on memo) for this document and its shipment's line can be told. Any line or
-    lot that fails refuses the whole request. A line in ``holding`` gives back a hold
-    elsewhere, so having nothing out is not an error for it; the status is checked only
-    when something is to come back."""
+    lot that fails refuses the whole request. ``holding`` is given when the user chose Set as
+    available, and the refusal names that action: a line in it gives back a hold elsewhere,
+    so having nothing out is not an error for it; the status is checked only when something
+    is to come back."""
+    set_available = holding is not None
     company_id = row.company_id
     entity_id = row.entity_id
     state = row.state
     doc_type = state.get("doc_type", "")
     if doc_type not in REVERTIBLE_STATUSES:
         raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
-    if not holding:
+    if not set_available:
         _check_revert_status(state)
 
     line_items = state.get("line_items", [])
@@ -7799,7 +7805,10 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             lots = [out[eid] for eid, idx in line_of.items() if idx == i]
             name = line_items[i].get('sku') or line_items[i].get('description') or i + 1
             if not lots:
-                if i not in holding:
+                if set_available and i not in holding:
+                    errors.append(refusal("lines.available_nothing_held",
+                                          f"{name}: nothing is held or out on this line", name=name))
+                elif not set_available:
                     errors.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line",
                                           name=name))
                 elif str(line_items[i].get("line_id")) in quantities:
@@ -7867,10 +7876,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                 remaining = 0.0
 
     if errors:
+        reasons = "; ".join(e["message"] for e in errors)
         raise HTTPException(status_code=422, detail=refusal(
-            "lines.cannot_revert", f"Cannot take back: {'; '.join(e['message'] for e in errors)}",
-            reasons=errors))
-    if holding:
+            "lines.cannot_set_available", f"Cannot set as available: {reasons}", reasons=errors)
+            if set_available else
+            refusal("lines.cannot_revert", f"Cannot take back: {reasons}", reasons=errors))
+    if set_available:
         if not groups:
             return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": []}
         _check_revert_status(state)
