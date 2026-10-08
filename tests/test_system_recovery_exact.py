@@ -1730,6 +1730,7 @@ async def test_a_backup_using_an_extension_this_database_can_install_is_restored
             assert result.ok is True, result.error
         else:
             steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.preflight)
             await asyncio.to_thread(steps.dump, dump)
             await company(real_engine, user, "Beta Trading", "beta")
             await asyncio.to_thread(steps.restore, dump, "1.1.0")
@@ -1769,7 +1770,10 @@ async def test_a_backup_using_an_extension_this_database_cannot_install_is_refus
         else:
             monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
             monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
-            result, children = update.run_update("1.1.0", _update_steps())
+            steps = _update_steps()
+            with pytest.raises(ValueError, match="pg_trgm"):
+                steps.preflight()
+            result, children = update.run_update("1.1.0", steps)
             assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
             assert _refusal_shown(update) == refusal.format("this database")
             assert not runtime.release_dir("1.1.0").exists()
@@ -1949,6 +1953,7 @@ async def test_a_database_set_up_by_celerp_is_restored(tmp_path, monkeypatch, co
             assert result.ok is True, result.error
         else:
             steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.preflight)
             await asyncio.to_thread(steps.dump, dump)
             await company(real_engine, user, "Beta Trading", "beta")
             await asyncio.to_thread(steps.restore, dump, "1.1.0")
@@ -1981,9 +1986,12 @@ async def test_an_update_of_a_database_holding_other_objects_stops_before_anythi
     await company(real_engine, user, "Alpha Trading", "alpha")
     await _create(real_engine, kind)
     try:
+        with pytest.raises(ValueError) as refused:
+            steps.preflight()
         result, children = update.run_update("1.1.0", steps)
         assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
         shown = _refusal_shown(update)
+        assert shown == str(refused.value).rstrip(".")
         assert shown.startswith("Celerp restores only its own tables") and UNSUPPORTED[kind][1] in shown, shown
         assert not update.dump_path().exists()
         assert not runtime.release_dir("1.1.0").exists()

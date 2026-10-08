@@ -265,14 +265,18 @@ _UNINSTALLABLE_EXTENSIONS = """SELECT n.name FROM unnest(string_to_array('{}', '
 def check_restore_target(database_url: str) -> None:
     """ValueError naming what a restore into this database would not replace exactly
     (``_UNSUPPORTED_OBJECTS``); read-only."""
-    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-    found = _run_tool([_find_pg_tool("psql"), "-X", "-q", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1",
-                       "-c", _UNSUPPORTED_OBJECTS, "-d", pg_url], None, timeout=60)
-    names = found.decode(errors="replace").split("\n")
-    if any(names):
+    names = _psql(database_url, _UNSUPPORTED_OBJECTS)
+    if names:
         raise ValueError("Celerp restores only its own tables and sequences in the public schema. "
                          "Remove or move these database objects, then try again: "
-                         + "; ".join(name for name in names if name))
+                         + "; ".join(name for name in names.split("\n") if name))
+
+
+def _psql(database_url: str, sql: str) -> str:
+    """The rows `sql` returns, one per line, read-only."""
+    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    return _run_tool([_find_pg_tool("psql"), "-X", "-q", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+                      "-c", sql, "-d", pg_url], None, timeout=60).decode(errors="replace").strip()
 
 
 # The script pg_restore writes beside a dump measured 4.6 to 6.7 times the dump's size.
@@ -301,16 +305,22 @@ def check_backup_dump(dump_path: Path, database_url: str,
     if other:
         raise ValueError("This backup holds database objects Celerp does not restore. Remove them from "
                          f"{source}, then try again: " + "; ".join(other))
-    extensions = sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match})
-    if extensions:
-        pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-        blocked = _run_tool([_find_pg_tool("psql"), "-X", "-q", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c",
-                             _UNINSTALLABLE_EXTENSIONS.format(" ".join(extensions)), "-d", pg_url], None, timeout=60)
-        if blocked.strip():
-            raise ValueError("This backup uses database extensions that Celerp's database user cannot install "
-                             f"here. Remove them from {source}, or have a database administrator allow that "
-                             "user to install them, then try again: "
-                             + ", ".join(blocked.decode().split()))
+    _check_extensions(sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match}),
+                      database_url, source)
+
+
+def check_database_extensions(database_url: str) -> None:
+    """``check_backup_dump``'s extension check for a dump of this database, before one is taken.
+    pg_dump leaves out the extensions built into PostgreSQL."""
+    names = _psql(database_url, "SELECT extname FROM pg_extension WHERE oid >= 16384")
+    _check_extensions(names.split(), database_url, "this database")
+
+
+def _check_extensions(extensions: list[str], database_url: str, source: str) -> None:
+    if extensions and (blocked := _psql(database_url, _UNINSTALLABLE_EXTENSIONS.format(" ".join(extensions)))):
+        raise ValueError("This backup uses database extensions that Celerp's database user cannot install "
+                         f"here. Remove them from {source}, or have a database administrator allow that "
+                         "user to install them, then try again: " + ", ".join(blocked.split()))
 
 
 def restore_tools() -> tuple[str, str]:

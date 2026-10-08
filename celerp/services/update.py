@@ -502,14 +502,16 @@ def _result(current: str, target: str, outcome: str, reason: str) -> dict:
 
 def _finish(state: dict, current: str, target: str, outcome: str, reason: str = "", detail: str = "") -> dict:
     """Record the outcome. A failed rollback keeps the update in progress, so
-    every start retries it and nothing serves the half-restored database."""
+    every start retries it and nothing serves the half-restored database. A
+    refusal with a detail names what to change in the database, so automatic
+    updates try the version again."""
     result = _result(current, target, outcome, reason)
     if detail:
         result["detail"] = detail
     if outcome != ROLLBACK_FAILED:
         state.pop("in_progress", None)
     state["last_result"] = result
-    if outcome != OK:
+    if outcome != OK and not detail:
         failed = state.setdefault("failed_versions", [])
         if target not in failed:
             failed.append(target)
@@ -544,10 +546,12 @@ def run_update(target: str, steps: Steps) -> tuple[dict, tuple]:
     """
     target = validate_target(target)
     current = installed_version()
-    # A tool missing here is not the release's fault: nothing is recorded, so the
-    # same version is tried again once the tool is back.
+    # Not the release's fault, so the same version is tried again: a refusal names
+    # what to change in this database, and a missing tool records nothing.
     try:
         steps.preflight()
+    except ValueError as exc:
+        return _finish(read_state(), current, target, FAILED, "backup_failed", str(exc).rstrip(".")), ()
     except Exception:
         log.exception("update backup cannot start")
         return _result(current, target, FAILED, "backup_failed"), ()
@@ -815,10 +819,11 @@ class SupervisorSteps(Steps):
 
     def preflight(self) -> None:
         self._backup.restore_tools()
+        # A rollback restores the dump taken next into this database.
+        self._backup.check_restore_target(self.db_url)
+        self._backup.check_database_extensions(self.db_url)
 
     def dump(self, path: Path) -> None:
-        # A rollback restores this dump into this database.
-        self._backup.check_restore_target(self.db_url)
         data = self._backup.dump_database(self.db_url, runner=_bound_run)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
