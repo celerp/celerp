@@ -11,7 +11,7 @@ import uuid
 from dataclasses import asdict, dataclass, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
@@ -1493,6 +1493,19 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             # never fabricate a label.
             for li in doc.get("line_items") or []:
                 li.pop("shipped_label", None)
+        # How much of each line is still out (on memo or sold), the most Set as available
+        # can take back on it.
+        out, line_of = await _lots_out(session, company_id, entity_id, row.state,
+                                       await _memo_allocation_items(session, company_id, entity_id))
+        out_by_line: dict[int, float] = {}
+        for eid, idx in line_of.items():
+            if idx is not None:
+                out_by_line[idx] = out_by_line.get(idx, 0.0) + float(out[eid].state.get("quantity") or 0)
+        lines = list(doc.get("line_items") or [])
+        for i, qty in out_by_line.items():
+            if i < len(lines):
+                lines[i] = {**lines[i], "out_quantity": qty}
+        doc["line_items"] = lines
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
     returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES
     if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
@@ -7665,6 +7678,17 @@ def _return_order(lots: list[Projection], bound: str | None) -> list[Projection]
     return sorted(lots, key=lambda p: (p.entity_id == bound, p.entity_id))
 
 
+async def _lots_out(session, company_id, entity_id: str, state: dict,
+                    lots: Iterable[Projection]) -> tuple[dict[str, Projection], dict[str, int | None]]:
+    """The lots this document has out (sold or on memo), and the line whose shipment sent
+    each, None where nothing records it."""
+    out = {p.entity_id: p for p in lots
+           if p.state.get("status_doc_id") == entity_id and p.state.get("status") in ("memo_out", "sold")}
+    line_of = {eid: await auto_je.doc_line_of_lot(session, company_id, entity_id, state, eid, p.state)
+               for eid, p in out.items()}
+    return out, line_of
+
+
 def _check_revert_status(state: dict) -> None:
     """Refuse taking goods back while the document's status does not allow it."""
     status = state.get("status")
@@ -7712,10 +7736,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     ))).scalars().all()) if named else set()
     owned = {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
     locked = await _lock_item_sku_lots(session, company_id, owned | present)
-    out = {eid: p for eid, p in locked.items()
-           if p.state.get("status_doc_id") == entity_id and p.state.get("status") in ("memo_out", "sold")}
-    line_of = {eid: await auto_je.doc_line_of_lot(session, company_id, entity_id, state, eid, p.state)
-               for eid, p in out.items()}
+    out, line_of = await _lots_out(session, company_id, entity_id, state, locked.values())
 
     def _sku(eid: str) -> str:
         return str(locked[eid].state.get("sku") or "") if eid in locked else ""

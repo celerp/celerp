@@ -9330,14 +9330,16 @@ async function celerpCsvImport(input, entityId) {{
                 cells.append(Td(format_value(li.get("hs_code") or None), cls="col-hs"))
                 cells.append(Td(format_value(li.get("country_of_origin") or None), cls="col-origin"))
             # A line out on memo can come back in part: its field, in the units it went out
-            # in, shows when Set as available is chosen.
+            # in, starts at and allows no more than what is still out, and shows when Set as
+            # available is chosen.
             _return_qty = None
-            if (_fin_show_bulk and li.get("line_id") and qty > 0
+            _out_qty = float(li.get("out_quantity") or 0)
+            if (_fin_show_bulk and li.get("line_id") and _out_qty > 0
                     and (item_status_map or {}).get(li_eid) == "memo_out"):
                 _return_qty = Div(
-                    _line_qty_input(f"qty[{li['line_id']}]", qty, li.get("unit") or li.get("sell_by") or ""),
+                    _line_qty_input(f"qty[{li['line_id']}]", _out_qty, li.get("unit") or li.get("sell_by") or ""),
                     cls="li-return-qty", style="display:none;",
-                    title=t("documents.memo_return_prompt", qty=f"{qty:g}"))
+                    title=t("documents.memo_return_prompt", qty=f"{_out_qty:g}"))
             cells.extend([
                 Td(qty_label(li), _return_qty, cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
