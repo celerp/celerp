@@ -540,6 +540,7 @@ async def add_contact_person(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
+    require_phone(payload.phone)
     person_id = f"person:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -571,6 +572,9 @@ async def update_contact_person(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
+    person = next((p for p in row.state.get("people") or [] if p.get("person_id") == person_id), {})
+    if payload.phone != person.get("phone"):
+        require_phone(payload.phone)
     entry = await emit_event(
         session,
         company_id=company_id,

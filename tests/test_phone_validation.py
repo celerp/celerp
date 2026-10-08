@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A phone saved on a contact or the company has at least 4 digits and at most 40 characters,
-or is empty.
+"""A phone saved on a contact, a contact person or the company has at least 4 digits and at
+most 40 characters, not counting surrounding spaces, or is empty.
 
 Phones already stored are never rechecked: a contact keeping an old phone can still be
 edited, and imports are unchanged.
@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 pytestmark = pytest.mark.asyncio
 
@@ -83,3 +84,41 @@ async def test_a_phone_over_40_characters_is_refused(client):
     r = await client.patch("/companies/me", headers=h, json={"settings": {"phone": long_phone}})
     assert r.status_code == 422 and "at most 40 characters" in r.text, r.text
     assert (await client.post("/crm/contacts", headers=h, json={"name": "Max Phone", "phone": long_phone[:40]})).status_code == 200
+
+
+async def test_a_padded_phone_is_measured_without_its_surrounding_spaces(client):
+    h = await _reg(client)
+    padded = "+66812345678" + " " * 30
+    cid = await _contact(client, h, phone=padded)
+    assert (await _patch_phone(client, h, cid, padded)).status_code == 200
+    assert (await client.patch("/companies/me", headers=h, json={"settings": {"phone": padded}})).status_code == 200
+
+
+async def test_a_contact_person_phone_is_checked_when_given_or_changed(client):
+    h = await _reg(client)
+    cid = await _contact(client, h)
+    people = f"/crm/contacts/{cid}/people"
+    for bad, refusal in (("12", _REFUSAL), ("081 234 5678" + "9" * 29, "at most 40 characters")):
+        r = await client.post(people, headers=h, json={"name": "Person", "phone": bad})
+        assert r.status_code == 422 and refusal in r.text, r.text
+    r = await client.post(people, headers=h, json={"name": "Person", "phone": "081 234 5678"})
+    assert r.status_code == 200, r.text
+    pid = r.json()["person_id"]
+    r = await client.patch(f"{people}/{pid}", headers=h, json={"phone": "12"})
+    assert r.status_code == 422 and _REFUSAL in r.text, r.text
+    assert (await client.patch(f"{people}/{pid}", headers=h, json={"phone": ""})).status_code == 200
+    assert (await client.post(people, headers=h, json={"name": "No Phone"})).status_code == 200
+
+
+async def test_a_contact_person_keeping_an_old_phone_can_still_be_edited(client, session):
+    from celerp.models.projections import Projection
+    h = await _reg(client)
+    cid = await _contact(client, h)
+    r = await client.post(f"/crm/contacts/{cid}/people", headers=h, json={"name": "Old", "phone": "081 234 5678"})
+    pid = r.json()["person_id"]
+    row = (await session.execute(select(Projection).where(Projection.entity_id == cid))).scalar_one()
+    row.state = {**row.state, "people": [{**p, "phone": "12"} for p in row.state["people"]]}
+    await session.commit()
+    r = await client.patch(f"/crm/contacts/{cid}/people/{pid}", headers=h,
+                           json={"name": "Renamed", "phone": "12", "is_primary": False})
+    assert r.status_code == 200, r.text
