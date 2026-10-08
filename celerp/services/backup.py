@@ -240,12 +240,23 @@ SELECT DISTINCT found FROM (
 ) AS screen (found)"""
 
 # The pg_restore -l entries of a Celerp backup: its tables and sequences in public with
-# their data, defaults, constraints, indexes, partitions, comments and grants, and the public
-# schema itself, which a restore leaves as it is.
+# their data, defaults, constraints, indexes, partitions, comments and grants, the public
+# schema itself, which a restore leaves as it is, and extensions, which it drops and creates.
 _SCHEMA_ENTRY = r"\d+; \d+ \d+ (?:SCHEMA -|COMMENT - SCHEMA|ACL - SCHEMA) public \S+$"
+_EXTENSION_ENTRY = re.compile(r'\d+; \d+ \d+ (?:EXTENSION -|COMMENT - EXTENSION) "?([a-z0-9_-]+)"? $')
 _BACKUP_ENTRY = re.compile(
     r"\d+; \d+ \d+ (?:(?:TABLE|TABLE DATA|TABLE ATTACH|SEQUENCE|SEQUENCE OWNED BY|SEQUENCE SET|DEFAULT|CONSTRAINT"
-    r"|FK CONSTRAINT|INDEX|INDEX ATTACH) public |(?:COMMENT|ACL) public (?:TABLE|COLUMN|SEQUENCE) )|" + _SCHEMA_ENTRY)
+    r"|FK CONSTRAINT|INDEX|INDEX ATTACH) public |(?:COMMENT|ACL) public (?:TABLE|COLUMN|SEQUENCE) )|" + _SCHEMA_ENTRY
+    + "|" + _EXTENSION_ENTRY.pattern)
+
+# Of the extensions named, those this role could not drop and create again in this database.
+_UNINSTALLABLE_EXTENSIONS = """SELECT n.name FROM unnest(string_to_array('{}', ' ')) AS n (name)
+ WHERE EXISTS (SELECT FROM pg_extension e WHERE e.extname = n.name AND NOT pg_has_role(e.extowner, 'USAGE'))
+    OR NOT EXISTS (SELECT FROM pg_available_extensions a
+                     JOIN pg_available_extension_versions v ON v.name = a.name AND v.version = a.default_version
+                    WHERE a.name = n.name
+                      AND (current_setting('is_superuser') = 'on' OR NOT v.superuser
+                           OR v.trusted AND has_database_privilege(current_database(), 'CREATE')))"""
 
 
 def check_restore_target(database_url: str) -> None:
@@ -274,16 +285,25 @@ def _check_free_space(dump_path: Path) -> None:
                          f"on the disk holding {dump_path.parent}, and {free >> 20} MB is.")
 
 
-def check_backup_dump(dump_path: Path) -> None:
+def check_backup_dump(dump_path: Path, database_url: str) -> None:
     """ValueError naming the entries of a pg_dump archive that are not a Celerp backup's
-    (``_BACKUP_ENTRY``), or when the disk beside it has no room to restore it."""
+    (``_BACKUP_ENTRY``) or the extensions in it a restore into this database could not
+    install, or when the disk beside it has no room to restore it."""
     _check_free_space(dump_path)
     listing = _run_tool([_find_pg_tool("pg_restore"), "-l", str(dump_path)], None, timeout=60)
-    other = [line.split(" ", 3)[3] for line in listing.decode(errors="replace").splitlines()
-             if line and not line.startswith(";") and not _BACKUP_ENTRY.match(line)]
+    lines = [line for line in listing.decode(errors="replace").splitlines() if line and not line.startswith(";")]
+    other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
     if other:
         raise ValueError("This backup holds database objects Celerp does not restore: "
                          + "; ".join(other))
+    extensions = sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match})
+    if extensions:
+        pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+        blocked = _run_tool([_find_pg_tool("psql"), "-X", "-q", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c",
+                             _UNINSTALLABLE_EXTENSIONS.format(" ".join(extensions)), "-d", pg_url], None, timeout=60)
+        if blocked.strip():
+            raise ValueError("This backup uses database extensions that Celerp's database user cannot install "
+                             "here: " + ", ".join(blocked.decode().split()))
 
 
 def restore_tools() -> tuple[str, str]:

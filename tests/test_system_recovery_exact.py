@@ -177,7 +177,7 @@ class _Recovery:
             return None
 
         monkeypatch.setattr(backup, "dump_database", _dump)
-        monkeypatch.setattr(backup, "check_backup_dump", lambda path: None)
+        monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
         monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", _none)
 
@@ -1662,6 +1662,94 @@ async def test_a_backup_holding_other_objects_is_refused_before_anything_changes
     assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
 
 
+async def _is_superuser(engine) -> bool:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return (await conn.execute(text("SELECT current_setting('is_superuser') = 'on'"))).scalar()
+
+
+async def _exists_sql(engine, predicate: str) -> bool:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return (await conn.execute(text(f"SELECT {predicate}"))).scalar()
+
+
+def _update_steps():
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    return update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+
+
+@pytest.mark.parametrize("extension", ["pg_trgm", "uuid-ossp"])
+@pytest.mark.parametrize("entry", ["recovery", "update rollback"])
+async def test_a_backup_using_an_extension_this_database_can_install_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine, entry, extension):
+    import asyncio
+
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, f'CREATE EXTENSION "{extension}"')
+    try:
+        if entry == "recovery":
+            source = await backup_export.export_full()
+            await company(real_engine, user, "Beta Trading", "beta")
+            result = await backup_import.run_recovery(source)
+            assert result.ok is True, result.error
+        else:
+            steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.dump, dump)
+            await company(real_engine, user, "Beta Trading", "beta")
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, f"EXISTS (SELECT FROM pg_extension WHERE extname = '{extension}')")
+    finally:
+        await _execute(real_engine, f'DROP EXTENSION IF EXISTS "{extension}"')
+
+
+@pytest.mark.parametrize("entry", ["recovery", "update"])
+async def test_a_backup_using_an_extension_this_database_cannot_install_is_refused_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, entry):
+    """Here the role may not create extensions, so a restore could not put pg_trgm back."""
+    from celerp import runtime
+    from celerp.services import backup_export, backup_import, update
+    if await _is_superuser(real_engine):
+        pytest.skip("a superuser can install every available extension")
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, "CREATE EXTENSION pg_trgm")
+    grant = "EXECUTE format('{} CREATE ON DATABASE %I {} CURRENT_USER', current_database())"
+    try:
+        source = await backup_export.export_full() if entry == "recovery" else None
+        await company(real_engine, user, "Beta Trading", "beta")
+        await _execute(real_engine, "DO $$ BEGIN " + grant.format("REVOKE", "FROM") + "; END $$")
+        if entry == "recovery":
+            connector_calls = _record_connector_calls(monkeypatch)
+            result = await backup_import.run_recovery(source)
+            assert result.ok is False and result.error == (
+                "This backup uses database extensions that Celerp's database user cannot install here: "
+                "pg_trgm"), result.error
+            _assert_nothing_started(rec, connector_calls, [])
+        else:
+            monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+            monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+            result, children = update.run_update("1.1.0", _update_steps())
+            assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+            assert not runtime.release_dir("1.1.0").exists()
+            assert "in_progress" not in update.read_state()
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        assert await _exists_sql(real_engine, "EXISTS (SELECT FROM pg_extension WHERE extname = 'pg_trgm')")
+    finally:
+        await _execute(real_engine, "DO $$ BEGIN " + grant.format("GRANT", "TO") + "; END $$")
+        await _execute(real_engine, "DROP EXTENSION IF EXISTS pg_trgm")
+
+
 async def test_a_recovery_without_room_for_the_restore_changes_nothing(tmp_path, monkeypatch, code_config, real_engine):
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
@@ -1681,8 +1769,8 @@ async def test_a_recovery_without_room_for_the_restore_changes_nothing(tmp_path,
 
 async def test_a_safety_archive_that_could_not_be_restored_stops_the_recovery(
         tmp_path, monkeypatch, code_config, real_engine):
-    """An extension's own objects are no Celerp table to refuse in the database, but a safety
-    archive holding the extension is not one Celerp could put back."""
+    """The role's default privileges are no object in the database to refuse, but a safety
+    archive holding them is not one Celerp could put back."""
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
     rec = _Recovery(tmp_path, monkeypatch, real_database=True)
@@ -1691,14 +1779,14 @@ async def test_a_safety_archive_that_could_not_be_restored_stops_the_recovery(
     source = await backup_export.export_full()
     await company(real_engine, user, "Beta Trading", "beta")
     connector_calls = _record_connector_calls(monkeypatch)
-    await _execute(real_engine, "CREATE EXTENSION pg_trgm")
+    await _execute(real_engine, "ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO PUBLIC")
     try:
         result = await backup_import.run_recovery(source)
     finally:
-        await _execute(real_engine, "DROP EXTENSION IF EXISTS pg_trgm")
+        await _execute(real_engine, "ALTER DEFAULT PRIVILEGES REVOKE SELECT ON TABLES FROM PUBLIC")
     assert result.ok is False, result.error
     assert "The safety backup of this installation could not be restored: " in result.error, result.error
-    assert "EXTENSION - pg_trgm" in result.error, result.error
+    assert "DEFAULT ACL - DEFAULT PRIVILEGES FOR TABLES" in result.error, result.error
     assert backup_import.recovery_incomplete() is False
     assert connector_calls == []
     rec.cloud_snapshot.assert_not_awaited()

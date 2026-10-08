@@ -401,6 +401,7 @@ def _stage_members(archive: Path, root: Path) -> None:
 
 
 def _prepare_sync(path: Path) -> PreparedRecovery:
+    from celerp.config import settings
     from celerp.services.backup import check_backup_dump
     _purge_expired_staging()
     meta = validate_archive(path)
@@ -411,7 +412,7 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         shutil.copyfile(path, root / _STAGED_ARCHIVE)
         digest = _sha256(root / _STAGED_ARCHIVE)
         _stage_members(root / _STAGED_ARCHIVE, root)
-        check_backup_dump(root / _STAGED_DUMP)
+        check_backup_dump(root / _STAGED_DUMP, settings.database_url)
         prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
                                     files=_staged_files(root))
         (root / _STAGED_RECORD).write_text(json.dumps({
