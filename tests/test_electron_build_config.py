@@ -417,6 +417,8 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     win = by_name["Boot smoke (Windows, require db:ok)"]
     for smoke in (unix, win):
         assert names.index(check["name"]) < names.index(smoke["name"])
+        # A hung app fails the step with its log instead of holding the runner for hours.
+        assert smoke["timeout-minutes"] == 15
     assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
             and "export ENABLED_MODULES" in unix["run"])
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.

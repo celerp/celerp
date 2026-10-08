@@ -632,6 +632,7 @@ jobs:
       # or fails to load stops startup, so readiness also proves they all load.
       # We poll (never sleep) and fail fast if the process dies (crash on launch).
       - name: Boot smoke (launch the packaged app, require db:ok)
+        timeout-minutes: 15
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -706,6 +707,7 @@ jobs:
       # the port via machine env — the relaunched, restricted process inherits the
       # machine environment (it would not inherit our process env).
       - name: Boot smoke (Windows, require db:ok)
+        timeout-minutes: 15
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
