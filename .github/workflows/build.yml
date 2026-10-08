@@ -42,8 +42,8 @@ env:
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
   # Runs once before all three platform builds. A tag whose release is already
-  # published is refused: a shipped version is never rebuilt, the next patch
-  # version ships instead.
+  # published, on GitHub or on PyPI, is refused: a shipped version is never
+  # rebuilt, the next patch version ships instead.
   prepare-release:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -59,6 +59,12 @@ jobs:
             404) echo "No published release for $GITHUB_REF_NAME" ;;
             200) echo "ERROR: $GITHUB_REF_NAME is already published" >&2; exit 1 ;;
             *) echo "ERROR: release lookup returned HTTP $STATUS" >&2; exit 1 ;;
+          esac
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/celerp/${GITHUB_REF_NAME#v}/json")
+          case "$STATUS" in
+            404) echo "celerp ${GITHUB_REF_NAME#v} is not on PyPI" ;;
+            200) echo "ERROR: celerp ${GITHUB_REF_NAME#v} is already on PyPI" >&2; exit 1 ;;
+            *) echo "ERROR: PyPI lookup returned HTTP $STATUS" >&2; exit 1 ;;
           esac
 
   # Compute the build matrix: the bugfix branch and pull requests build macOS only.
@@ -1030,32 +1036,33 @@ jobs:
   # release stays a draft, and /releases/latest keeps serving the previous
   # complete release: no 404 window during a build, and no partial release.
   publish-release:
-    needs: [build, openapi-asset]
+    needs: [prepare-release, setup-matrix, build, openapi-asset]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
       # PyPI cannot take a release back, so the GitHub release follows it: it is
-      # published only once publish.yml succeeded for this commit. Waits up to 90
-      # minutes; anything else leaves the release a draft.
+      # published only once publish.yml's publish job succeeded for this tag and
+      # commit (scripts/release_gate.py). That stays true when a later attempt
+      # fails, so re-running only this job after a failure here needs no new PyPI
+      # upload. Waits up to 90 minutes; anything else leaves the release a draft.
       - name: Wait for the PyPI release of this commit
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -eo pipefail
           for _ in $(seq 90); do
-            RUN=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/celerp/celerp/actions/workflows/publish.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=1" \
-              | python3 -c "import sys,json; r=json.load(sys.stdin)['workflow_runs']; print('%s %s attempt %s' % (r[0]['status'], r[0]['conclusion'], r[0]['run_attempt']) if r else 'not started')")
-            echo "publish.yml: $RUN"
-            case "$RUN" in
-              "completed success "*) exit 0 ;;
-              completed*) echo "ERROR: the PyPI release did not succeed" >&2; exit 1 ;;
+            STATUS=0
+            python3 scripts/release_gate.py pypi-release || STATUS=$?
+            case "$STATUS" in
+              0) exit 0 ;;
+              3) sleep 60 ;;
+              *) exit 1 ;;
             esac
-            sleep 60
           done
           echo "ERROR: the PyPI release did not finish within 90 minutes" >&2
           exit 1
@@ -1130,6 +1137,7 @@ jobs:
           - Check which platform failed in the logs (e.g. macOS notarization / an expired Apple agreement).
 
           Re-pushing the tag after a fix re-drafts and re-publishes automatically once every platform succeeds.
+          If this version is already on PyPI and only publishing the release failed, re-run just the failed jobs of this run; a version on PyPI is never built again.
           EOF
           TITLE="Release build failed: $TAG"
           EXISTING=$(gh issue list --repo "$REPO" --state open --label release-failure \
