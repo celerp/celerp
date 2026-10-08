@@ -811,13 +811,14 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
     anchors inside the badge span (an anchor may not nest inside an anchor).
 
     held: (held, quantity) of a line this document reserves. When the line holds other
-    than its quantity, as after a quantity edit, the badge reads "Reserved h of q" and
-    never a plain "Reserved"."""
+    than its quantity, as after a quantity edit, the badge reads "Reserved h of q" (less)
+    or "Holds h, needs q" (more), never a plain "Reserved"."""
     if status_val and status_val in _STATUS_BADGE:
         label_key, badge_cls = _STATUS_BADGE[status_val]
         label = t(label_key)
         if status_val == "reserved" and held is not None and abs(held[0] - held[1]) > 1e-9:
-            label = t("documents.status_reserved_part", held=f"{held[0]:g}", qty=f"{held[1]:g}")
+            key = "documents.status_reserved_over" if held[0] > held[1] else "documents.status_reserved_part"
+            label = t(key, held=f"{held[0]:g}", qty=f"{held[1]:g}")
         if status_doc and status_doc[0]:
             doc_id, doc_number = status_doc
             badge_el = Span(

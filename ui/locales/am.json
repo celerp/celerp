@@ -2487,6 +2487,7 @@
   "documents.status_not_received": "አልደረሰም",
   "documents.status_reserved": "የተጠበቀ",
   "documents.status_reserved_part": "ከ{qty} {held} ተይዟል",
+  "documents.status_reserved_over": "{held} ይዟል፣ የሚያስፈልገው {qty}",
   "documents.status_received": "ተቀብሏል",
   "documents.status_received_part": "ከ{qty} {received} ተቀብሏል",
   "documents.status_part_returned": "በከፊል ተመልሷል",

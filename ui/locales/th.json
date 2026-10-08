@@ -2380,6 +2380,7 @@
   "documents.status_not_received": "ยังไม่ได้รับ",
   "documents.status_reserved": "จองแล้ว",
   "documents.status_reserved_part": "จองแล้ว {held} จาก {qty}",
+  "documents.status_reserved_over": "ถืออยู่ {held} ต้องการ {qty}",
   "documents.status_received": "รับแล้ว",
   "documents.status_received_part": "รับแล้ว {received} จาก {qty}",
   "documents.status_part_returned": "คืนบางส่วนแล้ว",

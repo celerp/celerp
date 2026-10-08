@@ -2380,6 +2380,7 @@
   "documents.status_not_received": "Chưa nhận",
   "documents.status_reserved": "Đã đặt giữ",
   "documents.status_reserved_part": "Đã giữ {held}/{qty}",
+  "documents.status_reserved_over": "Đang giữ {held}, cần {qty}",
   "documents.status_received": "Đã nhận",
   "documents.status_received_part": "Đã nhận {received}/{qty}",
   "documents.status_part_returned": "Đã trả một phần",

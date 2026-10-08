@@ -2506,6 +2506,7 @@
   "documents.status_not_received": "Not Received",
   "documents.status_reserved": "Reserved",
   "documents.status_reserved_part": "Reserved {held} of {qty}",
+  "documents.status_reserved_over": "Holds {held}, needs {qty}",
   "documents.status_received": "Received",
   "documents.status_received_part": "Received {received} of {qty}",
   "documents.status_part_returned": "Part returned",

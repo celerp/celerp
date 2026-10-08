@@ -4,7 +4,8 @@
 
 Reading a document or a List reports how much each line holds, from the holds stamped
 with their line. The status badge of a line its record reserves reads "Reserved h of q"
-when the two differ, as after a quantity edit, and never a plain "Reserved"."""
+when it holds less, "Holds h, needs q" when it holds more, as after a quantity edit, and
+never a plain "Reserved"."""
 from __future__ import annotations
 
 import pytest
@@ -80,5 +81,6 @@ def test_a_line_whose_item_another_record_reserves_shows_no_count():
 
 def test_the_badge_reports_a_mismatch_either_way():
     from ui.routes.documents import _item_status_badge_cell
-    assert "Reserved 6 of 2" in to_xml(_item_status_badge_cell("reserved", "item:1", held=(6, 2)))
+    over = to_xml(_item_status_badge_cell("reserved", "item:1", held=(6, 2)))
+    assert "Holds 6, needs 2" in over and "6 of 2" not in over
     assert "Reserved 0 of 2" in to_xml(_item_status_badge_cell("reserved", "item:1", held=(0, 2)))

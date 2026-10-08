@@ -2380,6 +2380,7 @@
   "documents.status_not_received": "No recibido",
   "documents.status_reserved": "Reservado",
   "documents.status_reserved_part": "Reservado {held} de {qty}",
+  "documents.status_reserved_over": "Retiene {held}, necesita {qty}",
   "documents.status_received": "Recibido",
   "documents.status_received_part": "Recibido {received} de {qty}",
   "documents.status_part_returned": "Devuelto en parte",

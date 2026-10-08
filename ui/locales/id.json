@@ -2380,6 +2380,7 @@
   "documents.status_not_received": "Belum Diterima",
   "documents.status_reserved": "Dipesan",
   "documents.status_reserved_part": "Dipesan {held} dari {qty}",
+  "documents.status_reserved_over": "Menahan {held}, perlu {qty}",
   "documents.status_received": "Diterima",
   "documents.status_received_part": "Diterima {received} dari {qty}",
   "documents.status_part_returned": "Dikembalikan sebagian",
