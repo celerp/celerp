@@ -1328,6 +1328,31 @@ def running_254(monkeypatch):
     monkeypatch.setattr(celerp, "__version__", "2.5.4")
 
 
+@pytest.mark.parametrize("entry", ["recovery", "confirmed recovery", "bootstrap recovery"])
+async def test_every_recovery_checks_its_backup_again_once_locked(rec, tmp_path, monkeypatch, entry):
+    """What the database lets Celerp install can change while a backup waits to be restored,
+    so its dump is checked again under the locks, before the marker and the first revoke."""
+    from celerp.services import backup, backup_import
+    archive = _archive(tmp_path / "src.celerp-backup")
+    monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: rec.record(f"check {Path(path).parent.name}"))
+    real_mark = backup_import._mark_recovery_started
+    monkeypatch.setattr(backup_import, "_mark_recovery_started",
+                        lambda *a: (rec.record("marker"), real_mark(*a))[1])
+    if entry == "bootstrap recovery":
+        result = await backup_import.bootstrap_recovery(archive)
+    else:
+        if entry == "confirmed recovery":
+            rec.fail_safety()
+        result = await backup_import.run_recovery(archive)
+        if entry == "confirmed recovery":
+            result = await backup_import.continue_recovery(result.confirmation_id, result.archive_digest)
+    assert result.ok is True, result.error
+    names = rec.names()
+    staged = next(name for name in names if name.startswith("check "))
+    locked = [i for i, (name, _, guard) in enumerate(rec.calls) if name == staged and guard]
+    assert locked and locked[-1] < names.index("marker") < names.index("revoke"), rec.calls
+
+
 @pytest.mark.parametrize("kind", ["local", "cloud"])
 async def test_newer_backup_refused_before_any_recovery_step(rec, tmp_path, running_254, kind):
     """A backup made by a newer Celerp is refused before the safety archive, the recovery

@@ -884,14 +884,16 @@ async def _recovery_locks():
 
 
 @asynccontextmanager
-async def _recovery_locks_on_a_replaceable_database():
+async def _recovery_locks_on_a_replaceable_database(prepared: PreparedRecovery):
     """The recovery locks, then ValueError, before anything is changed, for a database the
-    restore would not replace exactly (``backup.check_restore_target``)."""
+    restore would not replace exactly (``backup.check_restore_target``) or a staged dump it
+    can no longer restore (``backup.check_backup_dump``)."""
     import asyncio
     from celerp.config import settings
-    from celerp.services.backup import check_restore_target
+    from celerp.services.backup import check_backup_dump, check_restore_target
     async with _recovery_locks():
         await asyncio.to_thread(check_restore_target, settings.database_url)
+        await asyncio.to_thread(check_backup_dump, prepared.root / _STAGED_DUMP, settings.database_url)
         yield
 
 
@@ -934,7 +936,7 @@ async def run_recovery(path: Path):
     if failure is not None:
         return failure
     try:
-        async with _recovery_locks_on_a_replaceable_database():
+        async with _recovery_locks_on_a_replaceable_database(prepared):
             safety = await make_safety_archive()
             if safety.ok:
                 try:
@@ -991,7 +993,7 @@ async def continue_recovery(confirmation_id: str, digest: str):
     # The confirmation is used once.
     pending_path.unlink()
     try:
-        async with _recovery_locks_on_a_replaceable_database():
+        async with _recovery_locks_on_a_replaceable_database(prepared):
             return await commit_recovery(prepared, None)
     except Exception as exc:
         return _start_failed(prepared, exc)
@@ -1003,7 +1005,7 @@ async def bootstrap_recovery(path: Path):
     if failure is not None:
         return failure
     try:
-        async with _recovery_locks_on_a_replaceable_database():
+        async with _recovery_locks_on_a_replaceable_database(prepared):
             return await commit_recovery(prepared, None)
     except Exception as exc:
         return _start_failed(prepared, exc)
