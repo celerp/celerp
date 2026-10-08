@@ -54,7 +54,7 @@ from celerp.migrations._auto_stamp import (
 
 
 @contextlib.contextmanager
-def _pg_inspector_for_models():
+def _pg_inspector_for_models(drop_tables=()):
     """create_all the full model schema into an isolated Postgres schema and
     yield an inspector over it. Mirrors the production dev-startup path
     (create_all on Postgres), so the stamp walker is tested against real
@@ -76,6 +76,9 @@ def _pg_inspector_for_models():
     engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
     try:
         metadata.create_all(engine)
+        with engine.begin() as conn:
+            for table in drop_tables:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
         yield inspect(engine)
     finally:
         engine.dispose()
@@ -582,6 +585,30 @@ class TestRealMigrationsVsSchema:
             f"Walker stuck at base against a fully-create_all'd schema. "
             f"signatures found: {list(sigs_by_rev.keys())[:5]}..."
         )
+
+
+    def test_module_models_loaded_in_the_app_do_not_move_the_stamp(self):
+        """System Recovery reconciles inside the running app, where modules have
+        registered their tables on the shared Base. A backup whose modules never
+        created those tables must get the same stamp as a bare kernel schema."""
+        import celerp_accounting.models  # noqa: F401
+        import celerp_labels.models  # noqa: F401
+        from alembic.script import ScriptDirectory
+        cfg = build_alembic_config()
+        revs = list(ScriptDirectory.from_config(cfg).walk_revisions())
+        versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
+        sigs_by_rev = {s[0].rev: s for s in map(extract_signatures, versions_dir.glob("*.py")) if s}
+        module_tables = ("accounts", "bank_accounts", "bank_statement_lines", "label_templates",
+                         "marketplace_configs", "reconciliation_rules", "reconciliation_sessions")
+
+        with _pg_inspector_for_models() as ins:
+            with_module_tables = find_safe_stamp(
+                revs, sigs_by_rev, ins, expected_metadata=load_kernel_metadata())
+        with _pg_inspector_for_models(drop_tables=module_tables) as ins:
+            kernel_only = find_safe_stamp(
+                revs, sigs_by_rev, ins, expected_metadata=load_kernel_metadata())
+
+        assert kernel_only == with_module_tables
 
 
 class TestCliStampsBehindOnDevSchema:
