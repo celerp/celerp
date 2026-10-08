@@ -19845,16 +19845,24 @@ class TestAPIErrorStructuredDetail:
         assert isinstance(e.data, dict)
         assert e.data["conflicts"] == conflicts
 
-    def test_apierror_message_less_dict_detail_passes_through(self):
-        """{"errors": [...]} details (fulfill/revert/reserve) must NOT be unwrapped:
-        their consumers json-dump the dict themselves."""
+    def test_apierror_errors_list_detail_renders_plain_and_keeps_its_payload(self):
+        """{"errors": [...]} details (fulfill/revert/reserve) render as plain text; the
+        payload itself rides on APIError.data for callers that branch on it."""
         from ui.api_client import APIError, _raise
-        detail = {"errors": [{"entity_id": "item:x", "error": "not available"}]}
+        detail = {"errors": ["RAW-1: not available"]}
         with pytest.raises(APIError) as exc:
             _raise(self._resp(detail))
         e = exc.value
-        assert e.detail == detail
-        assert e.data is None
+        assert e.detail == "RAW-1: not available"
+        assert e.data == detail
+
+    def test_apierror_field_map_detail_passes_through(self):
+        """A field-by-field detail map stays a dict for its page to lay out."""
+        from ui.api_client import APIError, _raise
+        detail = {"company_name": "Required"}
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp(detail))
+        assert exc.value.detail == detail and exc.value.data is None
 
     def test_apierror_preserves_top_level_code_with_string_detail(self):
         """A scan_run_conflict body - a machine `code` beside a plain-string detail -

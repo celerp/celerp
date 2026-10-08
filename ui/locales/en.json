@@ -2334,7 +2334,6 @@
   "documents.enter_a_number": "Enter a number",
   "documents.duplicate_item_on_document": "Item is already on this document.",
   "documents.error_detail": "Error: {detail}",
-  "documents.failed_to_create_document": "Failed to create document.",
   "documents.finalize_label_consignment_in": "Issue Consignment In",
   "documents.finalize_label_credit_note": "Issue Credit Note",
   "documents.finalize_label_invoice": "Issue Invoice",

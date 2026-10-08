@@ -2208,7 +2208,6 @@
   "documents.enter_a_number": "Digite um número",
   "documents.duplicate_item_on_document": "O item já está neste documento.",
   "documents.error_detail": "Erro: {detail}",
-  "documents.failed_to_create_document": "Falha ao criar o documento.",
   "documents.finalize_label_consignment_in": "Emitir nota de consignação",
   "documents.finalize_label_credit_note": "Emitir nota de crédito",
   "documents.finalize_label_invoice": "Emitir fatura",

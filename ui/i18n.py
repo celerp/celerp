@@ -253,18 +253,46 @@ def reconcile_reason(reason: str) -> str:
 
 
 def refusal_text(detail) -> str:
-    """An API refusal in the user's language. A structured refusal carries ``message``
-    (English), ``message_key`` and ``params``; its ``message_key`` is translated with
-    those params. Anything else is shown as the server wrote it, the ``detail`` of a body
-    carrying a machine code included."""
+    """An API refusal in the user's language, as plain sentences.
+
+    A structured refusal carries ``message`` (English), ``message_key`` and ``params``;
+    its ``message_key`` is translated with those params. ``{"errors": [...]}`` and lists
+    render every entry in turn, a body's ``detail`` renders what it holds, and plain text
+    is shown as the server wrote it. Internal record ids never reach the user. Anything
+    else renders as "", so callers fall back to their own plain message."""
+    if isinstance(detail, str):
+        return _without_ids(detail)
+    if isinstance(detail, list):
+        return " ".join(text for text in (refusal_text(d) for d in detail) if text)
     if not isinstance(detail, dict):
-        return str(detail or "")
-    message = str(detail.get("message") or detail.get("detail") or "")
+        return ""
+    if "message" not in detail:
+        if "errors" in detail:
+            return refusal_text(detail["errors"])
+        return refusal_text(detail.get("detail"))
+    message = _without_ids(str(detail.get("message") or ""))
     key = detail.get("message_key")
     if not key:
         return message
     params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
-    return t_or(str(key), message, **params)
+    return _without_ids(t_or(str(key), message, **params))
+
+
+# A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>.
+_INTERNAL_ID = re.compile(
+    r"\b(?:[a-z_]+:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+
+
+def _without_ids(text: str) -> str:
+    """``text`` with internal record ids removed: ``item:<uuid> (RAW-2): reason`` reads
+    ``RAW-2: reason``."""
+    if not _INTERNAL_ID.search(text):
+        return text
+    text = _INTERNAL_ID.sub("", text)
+    text = re.sub(r"^\s*\(([^()]*)\)", r"\1", text)  # "(RAW-2): x" once its id is gone
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip().lstrip(":;,").strip()
 
 
 _ICON = re.compile(r"^\W+")

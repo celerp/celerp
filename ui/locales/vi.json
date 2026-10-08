@@ -2208,7 +2208,6 @@
   "documents.enter_a_number": "Nhập số",
   "documents.duplicate_item_on_document": "Mặt hàng đã có trên tài liệu này.",
   "documents.error_detail": "Lỗi: {detail}",
-  "documents.failed_to_create_document": "Không thể tạo tài liệu.",
   "documents.finalize_label_consignment_in": "Phát hành phiếu giao hàng",
   "documents.finalize_label_credit_note": "Phát hành phiếu tín dụng",
   "documents.finalize_label_invoice": "Phát hành hóa đơn",

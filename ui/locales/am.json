@@ -2315,7 +2315,6 @@
   "documents.enter_a_number": "ቁጥር አስገባ",
   "documents.duplicate_item_on_document": "ዕቃው አስቀድሞ በዚህ ሰነድ ላይ ነው።",
   "documents.error_detail": "ስህተት: {detail}",
-  "documents.failed_to_create_document": "ሰነድ መፍጠር አልተሳካም።",
   "documents.finalize_label_consignment_in": "ገቢ አደራ አረጋግጥ",
   "documents.finalize_label_credit_note": "እትም የክሬዲት ማስታወሻ",
   "documents.finalize_label_invoice": "እትም የሽያጭ ደረሰኝ",

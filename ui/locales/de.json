@@ -2209,7 +2209,6 @@
   "documents.enter_a_number": "Geben Sie eine Zahl ein",
   "documents.duplicate_item_on_document": "Der Artikel ist bereits in diesem Dokument enthalten.",
   "documents.error_detail": "Fehler: {detail}",
-  "documents.failed_to_create_document": "Dokument konnte nicht erstellt werden.",
   "documents.finalize_label_consignment_in": "Sendung ausstellen",
   "documents.finalize_label_credit_note": "Gutschrift ausstellen",
   "documents.finalize_label_invoice": "Rechnung ausstellen",
