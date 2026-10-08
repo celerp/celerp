@@ -591,13 +591,16 @@ async def test_finalize_dedupes_duplicate_item_lines(client):
     iid = await _item(client, t, "DUP-1", loc=loc, qty=4, barcode="9001")
     audit = (await _audit(client, t, loc))["id"]
 
-    # Seeded with one line for the item; inject a second identical line via the editable-save path.
+    # Seeded with one line for the item; inject a second line for the same item via the
+    # editable-save path. The copy is a new row, so it carries no line id of its own.
     # A line_items patch pins the current version (the concurrency guard a real editor carries).
     state = await _state(client, t, audit)
     line = state["line_items"][0]
-    await client.patch(f"/lists/{audit}", headers=_h(t),
-                       json={"expected_version": state["version"],
-                             "fields_changed": {"line_items": {"old": [line], "new": [line, dict(line)]}}})
+    copy = {k: v for k, v in line.items() if k != "line_id"}
+    r = await client.patch(f"/lists/{audit}", headers=_h(t),
+                           json={"expected_version": state["version"],
+                                 "fields_changed": {"line_items": {"old": [line], "new": [line, copy]}}})
+    assert r.status_code == 200, r.text
     assert len((await _state(client, t, audit))["line_items"]) == 2  # duplicate present pre-finalize
 
     await _finalize(client, t, audit)
