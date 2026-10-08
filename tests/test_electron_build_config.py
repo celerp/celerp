@@ -188,37 +188,6 @@ def test_main_initial_check_deferred_until_did_finish_load():
     )
 
 
-def test_build_yml_delete_checks_http_status():
-    """build.yml asset deletion must check HTTP status and fail on 5xx errors.
-
-    Using curl -s without status checking means a failed delete (5xx) goes unnoticed,
-    and the subsequent publish step may fail with 'asset already exists'.
-    Using -f/-fsS would fail on 404 (asset not yet uploaded on first build), so we
-    check the status code explicitly and only fail on >= 500.
-    """
-    yml = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
-    clear_idx = yml.find("Clear existing release assets")
-    assert clear_idx != -1, "Asset-clearing step not found in build.yml"
-    # Scan to the end of this step (the next `- name:` or EOF) rather than a fixed-size
-    # window - the delete loop sits near the end of the step and a short slice misses it.
-    next_step = yml.find("\n      - name:", clear_idx + 1)
-    step_block = yml[clear_idx: next_step if next_step != -1 else len(yml)]
-    assert "%{http_code}" in step_block, (
-        "build.yml DELETE step does not capture HTTP status code. "
-        "Use curl -w '%{http_code}' and fail on >= 500."
-    )
-    assert ">= 500" in step_block or "-ge 500" in step_block, (
-        "build.yml DELETE step does not fail on 5xx responses. "
-        "A server-side delete failure will silently allow a stale asset to remain."
-    )
-    assert "tr -d" in step_block and r"\r" in step_block, (
-        "build.yml DELETE step does not strip \\r from curl output. "
-        "On Windows Git Bash, curl -w '%{http_code}' appends \\r, causing "
-        "[ \"204\\r\" -ge 500 ] to exit with code 3 (integer expression expected). "
-        "Pipe through | tr -d '\\r'."
-    )
-
-
 def test_build_yml_has_prepare_release_job():
     """build.yml must have a prepare-release job that runs before the build matrix.
 

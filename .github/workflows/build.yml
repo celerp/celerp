@@ -38,54 +38,25 @@ env:
 
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
-  # Runs once before all three platform builds. Creates the GitHub release and
-  # clears any stale assets from a previous attempt at the same tag. This
-  # eliminates the race condition where Mac's electron-builder uploads its first
-  # asset before Windows/Linux reach the asset-clearing step.
+  # Runs once before all three platform builds. A tag whose release is already
+  # published is refused: a shipped version is never rebuilt, the next patch
+  # version ships instead.
   prepare-release:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Clear existing release assets (retag support)
+      - name: Refuse a tag that is already released
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/tags/$TAG" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || true)
-          if [ -z "$RELEASE_ID" ]; then
-            echo "No existing release for $TAG - nothing to clear"
-            exit 0
-          fi
-          echo "Release $RELEASE_ID found for $TAG - reverting to draft + clearing assets"
-          # Take the existing release out of "latest" while we rebuild (retag), so
-          # /releases/latest/download/* keeps serving the previous complete release
-          # instead of 404-ing on a half-uploaded asset. publish-release re-publishes
-          # it once every platform succeeds.
-          curl -s -X PATCH -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
-            -d '{"draft":true}' >/dev/null
-          ASSET_IDS=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" \
-            | python3 -c "import sys,json; [print(a['id']) for a in json.load(sys.stdin)]" 2>/dev/null || true)
-          if [ -z "$ASSET_IDS" ]; then
-            echo "No assets to delete"
-            exit 0
-          fi
-          for ASSET_ID in $ASSET_IDS; do
-            echo "Deleting asset $ASSET_ID"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/celerp/celerp/releases/assets/$ASSET_ID" | tr -d '\r')
-            if [ "$STATUS" -ge 500 ]; then
-              echo "ERROR: DELETE asset $ASSET_ID returned HTTP $STATUS - aborting"
-              exit 1
-            fi
-            echo "Deleted asset $ASSET_ID (HTTP $STATUS)"
-          done
-          echo "Assets cleared"
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/tags/$GITHUB_REF_NAME")
+          case "$STATUS" in
+            404) echo "No published release for $GITHUB_REF_NAME" ;;
+            200) echo "ERROR: $GITHUB_REF_NAME is already published" >&2; exit 1 ;;
+            *) echo "ERROR: release lookup returned HTTP $STATUS" >&2; exit 1 ;;
+          esac
 
   # Compute the build matrix: the bugfix branch and pull requests build macOS only.
   # Bugfix pushes use the normal signed-dev path; pull requests remain unsigned
@@ -1029,7 +1000,33 @@ jobs:
     needs: [build, openapi-asset]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
     steps:
+      # PyPI cannot take a release back, so the GitHub release follows it: it is
+      # published only once publish.yml succeeded for this commit. Waits up to 90
+      # minutes; anything else leaves the release a draft.
+      - name: Wait for the PyPI release of this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          for _ in $(seq 90); do
+            RUN=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/celerp/celerp/actions/workflows/publish.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=1" \
+              | python3 -c "import sys,json; r=json.load(sys.stdin)['workflow_runs']; print('%s %s attempt %s' % (r[0]['status'], r[0]['conclusion'], r[0]['run_attempt']) if r else 'not started')")
+            echo "publish.yml: $RUN"
+            case "$RUN" in
+              "completed success "*) exit 0 ;;
+              completed*) echo "ERROR: the PyPI release did not succeed" >&2; exit 1 ;;
+            esac
+            sleep 60
+          done
+          echo "ERROR: the PyPI release did not finish within 90 minutes" >&2
+          exit 1
+
       - name: Publish the draft release as latest
         shell: bash
         env:
@@ -1040,9 +1037,9 @@ jobs:
           # The release is still a draft; get-release-by-tag only returns published
           # releases, so list releases (drafts included for an authed token) and
           # match on tag_name.
-          INFO=$(curl -s -H "Authorization: token $GH_TOKEN" \
+          INFO=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases?per_page=100" \
-            | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else '%s %s' % (r['id'], 1 if (r.get('body') or '').strip() else 0))" 2>/dev/null || true)
+            | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else '%s %s' % (r['id'], 1 if (r.get('body') or '').strip() else 0))")
           RELEASE_ID="${INFO%% *}"
           HAS_BODY="${INFO##* }"
           if [ -z "$RELEASE_ID" ]; then
@@ -1053,7 +1050,7 @@ jobs:
           # release (GitHub generate-notes). Only when the body is empty - a
           # hand-written draft body always wins.
           if [ "$HAS_BODY" = "0" ]; then
-            PAYLOAD=$(curl -s -X POST -H "Authorization: token $GH_TOKEN" \
+            PAYLOAD=$(curl -fsS -X POST -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/celerp/celerp/releases/generate-notes" \
               -d "{\"tag_name\":\"$TAG\"}" \
               | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'true','body':notes.get('body','')}))")
@@ -1061,14 +1058,9 @@ jobs:
             PAYLOAD='{"draft":false,"make_latest":"true"}'
           fi
           echo "Publishing release $RELEASE_ID ($TAG) as latest"
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
-            -H "Authorization: token $GH_TOKEN" \
+          curl -fsS -o /dev/null -X PATCH -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
-            -d "$PAYLOAD")
-          if [ "$STATUS" -ge 300 ]; then
-            echo "ERROR: publish PATCH returned HTTP $STATUS" >&2
-            exit 1
-          fi
+            -d "$PAYLOAD"
           echo "Published $TAG as latest."
 
   # ── Alert on a failed release build ──────────────────────────────────────────

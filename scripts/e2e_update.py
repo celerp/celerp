@@ -619,8 +619,10 @@ print(sum(1 for pid in sys.argv[1:] if serving(pid)))
 
     def seeded_location_present(self) -> bool:
         status, body = http("GET", self.api + "/companies/me/locations", self.owner)
+        if status != 200:
+            raise Failed(f"locations: {status}")
         items = body.get("items", body) if isinstance(body, dict) else body
-        return status == 200 and any(loc.get("name") == "E2E Warehouse" for loc in items)
+        return any(loc.get("name") == "E2E Warehouse" for loc in items)
 
     def system_notices(self) -> list[dict]:
         status, body = http("GET", self.api + "/notifications?limit=100", self.owner)
@@ -932,6 +934,7 @@ def r2(work: Path, wheel: Path) -> None:
         inst.start()
         inst.register()
         inst.seed()
+        base = inst.version()
         status, _ = http("GET", inst.api + "/system/update", inst.owner)
         if status == 200:
             t0 = request_update(inst, version)
@@ -942,6 +945,10 @@ def r2(work: Path, wheel: Path) -> None:
             inst.pip("install", "-q", str(wheel))
             inst.start(expect_version=version)
         check(inst.version() == version, f"serving {version}")
+        if tuple(map(int, base.split(".")[:3])) < (2, 5, 4):
+            status, _ = http("GET", inst.api + "/companies/me", inst.owner)
+            check(status == 401, f"the update signed out sessions from {base} ({status})")
+        inst.owner = inst.login("owner@example.com")
         check(inst.seeded_location_present(), "data carried to the new release")
         stop_and_check_clean(inst)
     finally:
