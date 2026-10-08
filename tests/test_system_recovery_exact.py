@@ -1419,3 +1419,90 @@ async def test_own_or_older_copys_recovery_is_resumed(rec, tmp_path, running_254
     assert rec.names().index("revoke") < rec.names().index("pg_restore")
     assert rec.restored[-1] == SOURCE_DUMP
     assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}
+
+
+# ── A recovery replaces the whole database ───────────────────────────────────
+
+async def _execute(engine, sql: str) -> None:
+    from sqlalchemy import text
+    async with engine.begin() as conn:
+        await conn.execute(text(sql))
+
+
+async def _tables(engine) -> set[str]:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return {r[0] for r in await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))}
+
+
+async def _company_names(engine) -> set[str]:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return {r[0] for r in await conn.execute(text("SELECT name FROM companies"))}
+
+
+async def test_recovery_into_a_database_with_tables_the_backup_lacks(tmp_path, monkeypatch, code_config,
+                                                                     real_engine):
+    """An older backup has no table a newer release added; the newer table references
+    one the backup restores, and the recovery still replaces the database."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await _execute(real_engine, "CREATE TABLE zz_newer (company_id uuid REFERENCES companies(id))")
+    await _execute(real_engine, "INSERT INTO zz_newer SELECT id FROM companies")
+    result = await backup_import.run_recovery(source)
+    assert result.ok is True, result.error
+    assert "zz_newer" not in await _tables(real_engine)
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+async def test_failed_recovery_of_a_backup_with_extra_tables_is_put_back(tmp_path, monkeypatch, code_config,
+                                                                          real_engine):
+    """A backup holding a module table this installation lacks fails after its restore;
+    putting the installation back from the safety archive removes that table again."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, "CREATE TABLE zz_module (company_id uuid REFERENCES companies(id))")
+    source = await backup_export.export_full()
+    await _execute(real_engine, "DROP TABLE zz_module")
+    await company(real_engine, user, "Beta Trading", "beta")
+    failed = _inject(monkeypatch, "schema")
+    result = await backup_import.run_recovery(source)
+    assert failed == ["schema"]
+    assert result.ok is False and "put back" in result.error, result.error
+    assert backup_import.recovery_incomplete() is False
+    assert "zz_module" not in await _tables(real_engine)
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+async def test_recovery_stopped_after_the_database_was_emptied_is_finished_at_next_start(
+        tmp_path, monkeypatch, code_config, real_engine):
+    """A recovery that stopped between emptying the database and restoring it is finished
+    from its marked archive at the next start, not opened as a fresh installation."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    safety = await backup_export.export_full()
+    backup_import._mark_recovery_started(safety, [])
+    await _execute(real_engine, "DROP TABLE companies CASCADE")
+    await backup_import.finish_incomplete_recovery()
+    assert backup_import.recovery_incomplete() is False
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+async def test_backup_with_no_modules_enables_no_modules(rec, real_engine, tmp_path):
+    """An empty module list is the backup's module set, not a missing one."""
+    from celerp.services import backup_import
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
+    result = await backup_import.run_recovery(_archive(tmp_path / "none.celerp-backup", modules=[]))
+    assert result.ok is True, result.error
+    assert _enabled() == []

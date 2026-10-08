@@ -181,6 +181,19 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
+# Empties the public schema in one transaction. Dropping its tables and sequences needs
+# only their ownership, which Celerp's database role has; dropping the schema itself
+# would also need the schema's, which PostgreSQL 14 and older give the superuser.
+_EMPTY_PUBLIC = """DO $$ DECLARE r record; BEGIN
+  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+    EXECUTE format('DROP TABLE IF EXISTS public.%I CASCADE', r.tablename);
+  END LOOP;
+  FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' LOOP
+    EXECUTE format('DROP SEQUENCE IF EXISTS public.%I CASCADE', r.sequencename);
+  END LOOP;
+END $$"""
+
+
 def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
     """Restore a database from a pg_dump custom-format file, in the database's
     mutating scope (celerp.migrations.compatibility): pg_restore writes from a
@@ -197,8 +210,7 @@ def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: b
     with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url):
         if clean_schema:
             with held.engine(poolclass=pool.NullPool) as engine, engine.begin() as conn:
-                conn.execute(text("DROP SCHEMA public CASCADE"))
-                conn.execute(text("CREATE SCHEMA public"))
+                conn.execute(text(_EMPTY_PUBLIC))
         with held.write_window():
             _run_pg_restore(dump_path, database_url, clean_schema, runner)
 

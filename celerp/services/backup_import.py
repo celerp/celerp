@@ -20,7 +20,7 @@ import shutil
 import tarfile
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
@@ -57,10 +57,9 @@ class ImportMeta:
     pg_version: str
     created_at: str
     company_name: str
-    # Modules the source system had enabled at export time. Empty for old
-    # backups (pre-2026-06-04). Used by the install pass to surface
-    # missing modules to the user before they reach a broken dashboard.
-    enabled_modules: list[str] = field(default_factory=list)
+    # Modules the source system had enabled at export time; None for backups from
+    # before 2026-06-04, which did not record them.
+    enabled_modules: list[str] | None = None
 
 
 def _pg_major(version_text: str | None) -> int | None:
@@ -117,7 +116,7 @@ def validate_archive(path: Path) -> ImportMeta:
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
         company_name=meta_data.get("company_name", "unknown"),
-        enabled_modules=list(meta_data.get("enabled_modules") or []),
+        enabled_modules=meta_data.get("enabled_modules"),
     )
 
     # PostgreSQL forward-compatibility: pg_restore cannot read a backup made by a NEWER
@@ -153,7 +152,7 @@ async def _run_pg_restore(dump_path: Path, database_url: str) -> None:
     """Run pg_restore from the staged dump file off the event loop (blocking subprocess)."""
     import asyncio
     from celerp.services.backup import restore_database_file
-    await asyncio.to_thread(restore_database_file, dump_path, database_url)
+    await asyncio.to_thread(restore_database_file, dump_path, database_url, clean_schema=True)
 
 
 async def _reconcile_schema() -> None:
@@ -532,8 +531,6 @@ def _roll_back_roots(root: Path, swapped: list[tuple[str, Path, bool]], protecte
 
 def _apply_modules(modules: list[str]) -> bool:
     """Make the enabled modules exactly *modules*; returns True when a restart was scheduled."""
-    if not modules:
-        return False
     from celerp.config import replace_enabled_modules
     if not replace_enabled_modules(modules):
         log.info("Enabled modules unchanged - skipping restart")
@@ -762,7 +759,9 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
         # every payment it ever recorded is delivered again.
         payments.record_recovery(session, (await session.scalars(sa.select(Company.id))).all())
         # Backups without module metadata take the set from every restored company.
-        modules = prepared.meta.enabled_modules or await load_set(session)
+        modules = prepared.meta.enabled_modules
+        if modules is None:
+            modules = await load_set(session)
         # No session from before the replacement stays valid; this also
         # commits the connector cleanup and the recorded restore.
         await session_tracker.end_all_sessions(session)

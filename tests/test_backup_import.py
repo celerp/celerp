@@ -242,25 +242,25 @@ class TestValidateArchiveEnabledModules:
         finally:
             path.unlink(missing_ok=True)
 
-    def test_enabled_modules_defaults_to_empty_list(self):
-        """Backwards compat: old archives without the key still parse."""
+    def test_enabled_modules_is_none_for_archives_that_did_not_record_them(self):
+        """Old archives without the key parse, and are told apart from an empty set."""
         from celerp.services.backup_import import validate_archive
         archive = _make_archive(extra_meta={})  # no enabled_modules
         path = _write_archive_to_tmp(archive)
         try:
             meta = validate_archive(path)
-            assert meta.enabled_modules == []
+            assert meta.enabled_modules is None
         finally:
             path.unlink(missing_ok=True)
 
-    def test_enabled_modules_can_be_none_in_json(self):
-        """enabled_modules: null in JSON should become empty list, not None."""
+    def test_enabled_modules_null_in_json_means_not_recorded(self):
+        """enabled_modules: null in JSON reads as not recorded, never as an empty set."""
         from celerp.services.backup_import import validate_archive
         archive = _make_archive(extra_meta={"enabled_modules": None})
         path = _write_archive_to_tmp(archive)
         try:
             meta = validate_archive(path)
-            assert meta.enabled_modules == []
+            assert meta.enabled_modules is None
         finally:
             path.unlink(missing_ok=True)
 
@@ -592,8 +592,8 @@ class TestApplyModulesRestarts:
         assert kill_calls == [], "Unchanged module set must not trigger a restart"
 
     @pytest.mark.asyncio
-    async def test_apply_modules_skips_restart_when_empty(self, monkeypatch):
-        """Empty module list: no restart, no config write."""
+    async def test_apply_modules_writes_an_empty_set(self, monkeypatch):
+        """A backup with no modules enabled is restored with no modules enabled."""
         from celerp.services import backup_import
 
         config_written: list[list[str]] = []
@@ -603,10 +603,9 @@ class TestApplyModulesRestarts:
         kill_calls: list[tuple[int, int]] = []
         monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
-        assert backup_import._apply_modules([]) is False
+        assert backup_import._apply_modules([]) is True
 
-        assert config_written == [], "Empty list should not write config"
-        assert kill_calls == [], "Empty list should not trigger restart"
+        assert config_written == [[]]
 
 
 # ---------------------------------------------------------------------------
