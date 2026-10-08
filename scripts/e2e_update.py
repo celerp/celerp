@@ -60,6 +60,8 @@ from smoke_records import http, module_get  # noqa: E402  (shared with the packa
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
 MARKER_TABLE = "e2e_update_marker"
+# Non-ASCII text, so a rollback restores it through psql the way every platform's users write it.
+SEEDED_LOCATION = "E2E Warehouse คลัง Café"
 MARKER_REVISION = "e2e0update0marker"
 BROKEN_DEP = "e2e-broken-dep"
 PG_PACKAGE = "celerp-postgres"
@@ -587,7 +589,7 @@ print(sum(1 for pid in sys.argv[1:] if serving(pid)))
 
     def seed(self) -> None:
         status, _ = http("POST", self.api + "/companies/me/locations", self.owner,
-                         {"name": "E2E Warehouse", "type": "warehouse"})
+                         {"name": SEEDED_LOCATION, "type": "warehouse"})
         check(status == 200, "a location was created")
 
     def enable_modules(self, *names: str) -> None:
@@ -622,7 +624,7 @@ print(sum(1 for pid in sys.argv[1:] if serving(pid)))
         if status != 200:
             raise Failed(f"locations: {status}")
         items = body.get("items", body) if isinstance(body, dict) else body
-        return any(loc.get("name") == "E2E Warehouse" for loc in items)
+        return any(loc.get("name") == SEEDED_LOCATION for loc in items)
 
     def system_notices(self) -> list[dict]:
         status, body = http("GET", self.api + "/notifications?limit=100", self.owner)
