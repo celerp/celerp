@@ -113,7 +113,8 @@ def _build_router() -> APIRouter:
         company = await locked_company(session, company_id)
         key = (body and body.idempotency_key) or str(uuid.uuid4())
         if (earlier := await find_event_by_idempotency(session, company_id, key)) is not None:
-            if earlier.event_type != "doc.updated" or earlier.entity_id != entity_id:
+            if (earlier.event_type != "doc.updated" or earlier.entity_id != entity_id
+                    or "result" not in (earlier.metadata_ or {})):
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return earlier.metadata_["result"]
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})

@@ -504,6 +504,20 @@ async def test_generate_key_used_on_another_subscription_is_refused(client):
 
 
 @pytest.mark.asyncio
+async def test_generate_key_used_to_edit_the_template_is_refused(client):
+    h = _h(await _register(client))
+    eid = (await client.post("/docs", json={"doc_type": "subscription_invoice", "frequency": "monthly",
+                                            "line_items": [{"description": "S", "quantity": 1, "unit_price": 100.0}]},
+                             headers=h)).json()["id"]
+    edit = {"fields_changed": {"notes": {"old": None, "new": "x"}}, "idempotency_key": "gen-e"}
+    assert (await client.patch(f"/docs/{eid}", json=edit, headers=h)).status_code == 200
+    assert (await client.post(f"/subscriptions/{eid}/activate", headers=h)).status_code == 200
+    r = await client.post(f"/subscriptions/{eid}/generate", json={"idempotency_key": "gen-e"}, headers=h)
+    assert r.status_code == 409, r.text
+    assert await _generated(client, h, eid) == []
+
+
+@pytest.mark.asyncio
 async def test_generate_in_a_locked_period_is_refused_and_writes_nothing(client, session):
     from datetime import date
     from celerp.services.company_lock import locked_company
