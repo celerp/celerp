@@ -2354,6 +2354,7 @@
   "documents.status_available": "มีในสต็อก",
   "documents.status_not_received": "ยังไม่ได้รับ",
   "documents.status_reserved": "จองแล้ว",
+  "documents.status_reserved_part": "จองแล้ว {held} จาก {qty}",
   "documents.tax": "ภาษี",
   "documents.terms_placeholder": "ข้อความข้อกำหนดและเงื่อนไข",
   "documents.th_comment": "ความคิดเห็น",

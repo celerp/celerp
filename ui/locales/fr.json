@@ -2355,6 +2355,7 @@
   "documents.status_available": "En stock",
   "documents.status_not_received": "Non reçu",
   "documents.status_reserved": "Réservé",
+  "documents.status_reserved_part": "Réservé {held} sur {qty}",
   "documents.tax": "Taxe",
   "documents.terms_placeholder": "Texte des conditions générales",
   "documents.th_comment": "Commentaire",

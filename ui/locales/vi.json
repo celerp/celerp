@@ -2354,6 +2354,7 @@
   "documents.status_available": "Còn hàng",
   "documents.status_not_received": "Chưa nhận",
   "documents.status_reserved": "Đã đặt giữ",
+  "documents.status_reserved_part": "Đã giữ {held}/{qty}",
   "documents.tax": "Thuế",
   "documents.terms_placeholder": "Văn bản điều khoản và điều kiện",
   "documents.th_comment": "Ghi chú",

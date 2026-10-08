@@ -88,7 +88,8 @@ def _sql_spy():
 # positional subscript over state -> 'line_items'). So "a SELECT whose select-list, up to
 # its FROM clause, contains the bare projections.state column reference" is precisely the
 # full-document fetch being removed.
-_BARE_STATE_COL = re.compile(r"\bprojections\.state\b")
+# A JSON path read (``projections.state ->> 'key'``) returns one value, not the state row.
+_BARE_STATE_COL = re.compile(r"\bprojections\.state\b(?!\s*->)")
 
 
 def _full_state_fetches(captured, entity_id: str) -> list[str]:

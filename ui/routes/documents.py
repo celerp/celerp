@@ -666,17 +666,24 @@ _STATUS_BADGE: dict[str, tuple[str, str]] = {
 }
 
 
-def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, str] | None = None) -> FT:
+def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, str] | None = None,
+                            held: tuple[float, float] | None = None) -> FT:
     """Status column cell for a document line: linked badge when the item's status is
     known, muted '-' otherwise. Shared by the draft and finalized line tables.
 
     status_doc: (doc_entity_id, doc_number) of the document that caused the status.
     The badge then reads STATUS: DOC-NUMBER with the number linked to that document,
     the same format the inventory page uses. The label and the doc number are sibling
-    anchors inside the badge span (an anchor may not nest inside an anchor)."""
+    anchors inside the badge span (an anchor may not nest inside an anchor).
+
+    held: (held, quantity) of a line this document reserves. When the line holds other
+    than its quantity, as after a quantity edit, the badge reads "Reserved h of q" and
+    never a plain "Reserved"."""
     if status_val and status_val in _STATUS_BADGE:
         label_key, badge_cls = _STATUS_BADGE[status_val]
         label = t(label_key)
+        if status_val == "reserved" and held is not None and abs(held[0] - held[1]) > 1e-9:
+            label = t("documents.status_reserved_part", held=f"{held[0]:g}", qty=f"{held[1]:g}")
         if status_doc and status_doc[0]:
             doc_id, doc_number = status_doc
             badge_el = Span(
@@ -4284,6 +4291,7 @@ celerpUpdateBulkAlloc();
             resp = {}
         lst = resp.get("list", {}) or {}
         lst["line_items"] = resp.get("items", []) or []
+        lst["line_holds"] = resp.get("line_holds") or {}
         _line_total = resp.get("total", len(lst["line_items"]))
 
         # Inject doc_type so _doc_detail() treats it as a list
@@ -5974,6 +5982,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     status = doc.get("status", "draft")
     doc_type = doc.get("doc_type", "")
     is_draft = status == "draft"
+    _holds = doc.get("line_holds")
+
+    def _line_held(li: dict, status_doc: tuple[str, str] | None) -> tuple[float, float] | None:
+        """(held, quantity) of a line whose item this record reserves, for its status badge."""
+        if _holds is None or not status_doc or status_doc[0] != entity_id or not li.get("line_id"):
+            return None
+        return float(_holds.get(str(li["line_id"])) or 0), float(li.get("quantity") or 0)
     # Remaining balance (net of applied payments/credits) - what a Pay button
     # would charge; all payment hints/labels use this, never the face total.
     _pay_due = float(outstanding_balance(doc) or 0)
@@ -6875,7 +6890,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if _draft_show_item_status:
                 cells.insert(1, _item_status_badge_cell(
                     (item_status_map or {}).get(li_entity_id, ""), li_entity_id,
-                    status_doc=(item_status_doc_map or {}).get(li_entity_id)))
+                    status_doc=(item_status_doc_map or {}).get(li_entity_id),
+                    held=_line_held(li, (item_status_doc_map or {}).get(li_entity_id))))
             if category_cell:
                 cells.append(category_cell)
             if receive_as_cell:
@@ -8949,7 +8965,8 @@ async function celerpCsvImport(input, entityId) {{
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
                         status_val, li_eid,
-                        status_doc=(item_status_doc_map or {}).get(li_eid)))
+                        status_doc=(item_status_doc_map or {}).get(li_eid),
+                        held=_line_held(li, (item_status_doc_map or {}).get(li_eid))))
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
                 _key = _SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None

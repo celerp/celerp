@@ -2461,6 +2461,7 @@
   "documents.status_available": "በክምችት ውስጥ",
   "documents.status_not_received": "አልደረሰም",
   "documents.status_reserved": "የተጠበቀ",
+  "documents.status_reserved_part": "ከ{qty} {held} ተይዟል",
   "documents.tax": "ግብር",
   "documents.terms_placeholder": "ውሎች እና ሁኔታዎች ጽሑፍ",
   "documents.th_comment": "አስተያየት",

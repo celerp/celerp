@@ -2355,6 +2355,7 @@
   "documents.status_available": "Auf Lager",
   "documents.status_not_received": "Nicht erhalten",
   "documents.status_reserved": "Reserviert",
+  "documents.status_reserved_part": "Reserviert {held} von {qty}",
   "documents.tax": "Steuer",
   "documents.terms_placeholder": "Text zu den Allgemeinen Geschäftsbedingungen",
   "documents.th_comment": "Kommentar",

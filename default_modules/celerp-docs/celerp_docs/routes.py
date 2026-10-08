@@ -1436,6 +1436,25 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     return {eid: _label(eid) for eid in item_eids}
 
 
+async def _line_holds(session: AsyncSession, company_id, owner_id: str) -> dict[str, float]:
+    """How much each line of a document or List holds, by line id, read from the holds
+    stamped with their line. A page shows a line holding less than its quantity as held in
+    part, never as fully reserved. Kept apart from the lines so no line write can store it."""
+    rows = (await session.execute(select(
+        Projection.state["status_line_entity_id"].as_string(), Projection.state["quantity"].as_string(),
+    ).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "item",
+        Projection.state["status_doc_id"].as_string() == owner_id,
+        Projection.state["status"].as_string() == "reserved",
+    ))).all()
+    holds: dict[str, float] = {}
+    for line_id, qty in rows:
+        if line_id:
+            holds[line_id] = holds.get(line_id, 0.0) + float(qty or 0)
+    return holds
+
+
 @router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
@@ -1459,6 +1478,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             # never fabricate a label.
             for li in doc.get("line_items") or []:
                 li.pop("shipped_label", None)
+    doc["line_holds"] = await _line_holds(session, company_id, entity_id)
     return doc
 
 
@@ -5438,7 +5458,8 @@ async def get_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
-    return row.state | {"id": row.entity_id, "version": row.version}
+    return row.state | {"id": row.entity_id, "version": row.version,
+                        "line_holds": await _line_holds(session, company_id, entity_id)}
 
 
 _PAGE_LIMIT_MAX = 100
@@ -5504,7 +5525,7 @@ async def get_list_page(
     header["version"] = head.version
     item_meta = await _page_item_meta(session, company_id, items)
     return {"list": header, "items": items, "total": total, "version": head.version,
-            "item_meta": item_meta}
+            "item_meta": item_meta, "line_holds": await _line_holds(session, company_id, entity_id)}
 
 
 async def _page_item_meta(session: AsyncSession, company_id, page_items: list[dict]) -> dict:

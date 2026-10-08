@@ -2480,6 +2480,7 @@
   "documents.status_available": "In Stock",
   "documents.status_not_received": "Not Received",
   "documents.status_reserved": "Reserved",
+  "documents.status_reserved_part": "Reserved {held} of {qty}",
   "documents.tax": "Tax",
   "documents.terms_placeholder": "Terms & conditions text",
   "documents.th_comment": "Comment",

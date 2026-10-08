@@ -2354,6 +2354,7 @@
   "documents.status_available": "متوفر في المخزون",
   "documents.status_not_received": "لم يتم استلامه",
   "documents.status_reserved": "محجوز",
+  "documents.status_reserved_part": "محجوز {held} من {qty}",
   "documents.tax": "ضريبة",
   "documents.terms_placeholder": "نص الشروط والأحكام",
   "documents.th_comment": "تعليق",

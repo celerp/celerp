@@ -2354,6 +2354,7 @@
   "documents.status_available": "Em estoque",
   "documents.status_not_received": "Não recebido",
   "documents.status_reserved": "Reservado",
+  "documents.status_reserved_part": "Reservado {held} de {qty}",
   "documents.tax": "Imposto",
   "documents.terms_placeholder": "Texto dos termos e condições",
   "documents.th_comment": "Comentário",
