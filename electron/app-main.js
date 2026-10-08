@@ -26,7 +26,8 @@ let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-
 // embedded-postgres resolves binary paths via __dirname inside app.asar, then
 // calls child_process.spawn() on those paths. This fails with ENOTDIR because
 // the OS sees app.asar as a file, not a directory.
-// Fix: rewrite .asar/ → .asar.unpacked/ before the spawn hits the OS.
+// Fix: rewrite .asar/ → .asar.unpacked/ before the spawn hits the OS, in the
+// arguments too: through a launcher the binary is an argument, not the program.
 
 function rewriteAsarPath(p) {
   if (typeof p === "string" && p.includes("app.asar") && !p.includes("app.asar.unpacked")) {
@@ -39,7 +40,7 @@ function rewriteAsarPath(p) {
 // from 'child_process', so a local wrapper would not affect it.
 const _spawn = childProcess.spawn.bind(childProcess);
 childProcess.spawn = function spawn(cmd, args, opts) {
-  return _spawn(rewriteAsarPath(cmd), args, opts);
+  return _spawn(rewriteAsarPath(cmd), Array.isArray(args) ? args.map(rewriteAsarPath) : args, opts);
 };
 const spawn = childProcess.spawn;
 
