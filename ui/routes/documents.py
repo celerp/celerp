@@ -3302,7 +3302,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         summary = _receive_summary(result.get("line_counts"))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **(toast_header(summary, "info") if summary else {})})
@@ -3328,7 +3328,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.delete("/docs/{entity_id}/receive")
