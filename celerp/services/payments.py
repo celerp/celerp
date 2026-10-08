@@ -21,6 +21,11 @@ from celerp.services.money import round_money, to_decimal
 
 log = logging.getLogger(__name__)
 
+# GL account online payments clear to, per channel and for online payments generally.
+# With neither chosen, payments land on the company's default deposit account.
+ONLINE_DEPOSIT_ACCOUNT_KEY = "stripe_deposit_account"
+WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY = "woocommerce_deposit_account"
+
 
 def payments_enabled() -> bool:
     """Whether online payment is available (cached flag from Celerp Connect).

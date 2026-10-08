@@ -217,6 +217,8 @@ def _local_panel(modules: list[dict], lang: str = "en",
         if not enabled:
             status_filter = t("modules.badge_disabled", lang)
             status_parts.append(Span(status_filter, cls="badge badge--inactive"))
+            if running and not m.get("is_default"):
+                status_parts.append(_restart_badge(lang, owner))
         elif running:
             status_filter = t("modules.badge_running", lang)
             status_parts.append(Span(status_filter, cls="badge badge--active"))

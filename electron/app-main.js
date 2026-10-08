@@ -26,7 +26,8 @@ let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-
 // embedded-postgres resolves binary paths via __dirname inside app.asar, then
 // calls child_process.spawn() on those paths. This fails with ENOTDIR because
 // the OS sees app.asar as a file, not a directory.
-// Fix: rewrite .asar/ → .asar.unpacked/ before the spawn hits the OS.
+// Fix: rewrite .asar/ → .asar.unpacked/ before the spawn hits the OS, in the
+// arguments too: through a launcher the binary is an argument, not the program.
 
 function rewriteAsarPath(p) {
   if (typeof p === "string" && p.includes("app.asar") && !p.includes("app.asar.unpacked")) {
@@ -39,7 +40,7 @@ function rewriteAsarPath(p) {
 // from 'child_process', so a local wrapper would not affect it.
 const _spawn = childProcess.spawn.bind(childProcess);
 childProcess.spawn = function spawn(cmd, args, opts) {
-  return _spawn(rewriteAsarPath(cmd), args, opts);
+  return _spawn(rewriteAsarPath(cmd), Array.isArray(args) ? args.map(rewriteAsarPath) : args, opts);
 };
 const spawn = childProcess.spawn;
 
@@ -170,6 +171,12 @@ let uiPort = null;
 const formerUiPorts = new Set();
 
 const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart");
+const { createShutdown } = require("./shutdown");
+// Stops the servers and then the database, once; every way the app exits waits for it.
+const lifecycle = createShutdown({
+  children: () => [apiProcess, uiProcess],
+  stopDatabase: () => (pgInstance ? pgInstance.stop() : undefined),
+});
 const {
   dbModeDecision,
   applyDbModePersist,
@@ -311,6 +318,7 @@ async function startPostgres(dbPort) {
     // Prevent locale-derived SQL_ASCII clusters on Linux/macOS first boot.
     // Windows uses initialisePostgresWindows(), which already passes UTF-8.
     initdbFlags: ["--encoding=UTF8"],
+    launcher: process.platform === "win32" ? [] : [pythonBin(), "-I", path.join(APP_DIR, "celerp", "desktop_child.py")],
   });
 
   // Only run initdb on first boot — PG_VERSION is written by initdb and
@@ -378,7 +386,7 @@ async function mayOpenDatabase(dbUrl) {
     shell,
   });
   if (!allowed) {
-    if (pgInstance) await pgInstance.stop().catch(() => {});
+    await lifecycle.shutdown();
     app.exit(0);
   }
   return allowed;
@@ -526,7 +534,7 @@ function startApi(dbUrl, cfg) {
     };
     apiProcess = spawn(
       pythonBin(),
-      ["-m", "uvicorn", "celerp.main:app", "--host", "127.0.0.1", "--port", String(apiPort), "--timeout-graceful-shutdown", "3"],
+      serverArgs("celerp.main:app", apiPort),
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
     const apiLog = openProcessLog("api.log");
@@ -546,6 +554,14 @@ function startApi(dbUrl, cfg) {
       reject(new Error(`API port ${apiPort} never opened. Full log: ${logFile}\n${stderr.slice(-3000)}`))
     );
   });
+}
+
+// On Linux and macOS a server stops when the app's end of its stdin closes, which the
+// system does when the app exits however it ends (celerp/desktop_child.py). On Windows
+// the app's job object ends its children.
+function serverArgs(asgiApp, port) {
+  const uvicorn = ["uvicorn", asgiApp, "--host", "127.0.0.1", "--port", String(port), "--timeout-graceful-shutdown", "3"];
+  return process.platform === "win32" ? ["-m", ...uvicorn] : ["-m", "celerp.desktop_child", ...uvicorn];
 }
 
 function startUi(dbUrl, cfg) {
@@ -576,7 +592,7 @@ function startUi(dbUrl, cfg) {
     };
     uiProcess = spawn(
       pythonBin(),
-      ["-m", "uvicorn", "ui.app:app", "--host", "127.0.0.1", "--port", String(uiPort), "--timeout-graceful-shutdown", "3"],
+      serverArgs("ui.app:app", uiPort),
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
     const uiLog = openProcessLog("ui.log");
@@ -781,11 +797,9 @@ function setLoadingStatus(msg) {
 
 // Restart the way the in-app "Restart" button does: drop the sentinel and let
 // the API process exit so watchForRestart respawns API + UI, leaving the embedded
-// Postgres running. A full app.relaunch()/quit() instead tears down the whole
-// process - before-quit's async pgInstance.stop() isn't awaited by Electron, so
-// the relaunched instance can race the still-shutting-down Postgres for the
-// shared data-dir lock and fail to boot. Falls back to a full relaunch only if
-// the sentinel can't be written or no API process is running.
+// Postgres running, which is quicker than a full app.relaunch()/quit() that stops
+// and starts everything. Falls back to a full relaunch only if the sentinel can't
+// be written or no API process is running.
 function requestServerRestart() {
   try {
     const sentinel = path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested");
@@ -1062,20 +1076,12 @@ function createWindow() {
 
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
 // ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to
-// replace the bundle. autoUpdater.quitAndInstall() calls app.quit() internally, but
-// Electron's process lingers long enough for ShipIt to see it and cancel. We kill
-// subprocesses first, then give them 500ms to exit before handing off to ShipIt.
+// replace the bundle, so the servers and the database have exited before the
+// installer is handed over; its app.quit() then finds nothing left to stop.
 ipcMain.on("install-update", async () => {
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
-  if (uiProcess) uiProcess.kill();
-  if (apiProcess) apiProcess.kill();
-  if (pgInstance) {
-    try { await pgInstance.stop(); } catch (_) {}
-  }
-  // Small delay so OS can reap child processes before ShipIt checks
-  setTimeout(() => {
-    autoUpdater.quitAndInstall(true, true);
-  }, 500);
+  await lifecycle.shutdown();
+  autoUpdater.quitAndInstall(true, true);
 });
 
 // restart-app: renderer triggers a full relaunch via window.celerp.restartApp()
@@ -1370,6 +1376,8 @@ app.whenReady().then(async () => {
       // Sentinel must live next to PYTHON_CONFIG_PATH so Python's config_path().parent
       // resolves to the same directory that Electron watches.
       sentinelPath: path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested"),
+      isStopping: () => lifecycle.stopping,
+      trackRestart: lifecycle.trackRestart,
       onCrash: (err) => {
         showError("Celerp crashed", err?.message ?? String(err));
         app.quit();
@@ -1409,10 +1417,15 @@ app.on("activate", () => {
   else if (uiPort) createWindow();
 });
 
-app.on("before-quit", async () => {
+// Electron does not wait for an async before-quit, so the first quit is held until
+// the servers and the database have stopped, and then the app quits again.
+app.on("before-quit", (event) => {
   isQuitting = true;
+  if (lifecycle.stopped) return;
+  event.preventDefault();
+  if (lifecycle.stopping) return;
   applyRelaySleepState(false);  // C4: release the power-save assertion (also auto-released on exit)
-  if (uiProcess) uiProcess.kill();
-  if (apiProcess) apiProcess.kill();
-  if (pgInstance) await pgInstance.stop();
+  lifecycle.shutdown().then(() => app.quit());
 });
+
+for (const s of ["SIGTERM", "SIGINT"]) process.on(s, () => app.quit());

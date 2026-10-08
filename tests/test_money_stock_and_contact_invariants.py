@@ -304,7 +304,7 @@ async def test_audit_undo_refuses_after_later_cost_change(_db_engine):
 @pytest.mark.asyncio
 async def test_refinalize_waits_for_a_cost_correction_in_flight(_db_engine):
     """A re-finalized invoice keeps its number, so nothing else makes it wait."""
-    from celerp_docs.routes import _finalize_doc_impl
+    from celerp_docs.routes import finalize_document
     from celerp_inventory.services import restate_item_cost
 
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -332,7 +332,7 @@ async def test_refinalize_waits_for_a_cost_correction_in_flight(_db_engine):
             data={"fields_changed": {"cost_total": {"old": 100, "new": 120}}},
             actor_id=user_id, source="test", idempotency_key=str(uuid.uuid4()),
         )
-        task = asyncio.create_task(_finalize_doc_impl(
+        task = asyncio.create_task(finalize_document(
             doc_id, company_id, types.SimpleNamespace(id=user_id), finalize, commit=True))
         await asyncio.sleep(0.3)
         assert not task.done()

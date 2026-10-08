@@ -196,13 +196,6 @@ from celerp_manufacturing.ui_routes import setup_ui_routes as _setup_mfg_ui
 _setup_mfg(app)
 _setup_mfg_ui(_ui_app)
 
-# Register connectors module routes onto the test app.
-_conn_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-connectors")
-if _os.path.abspath(_conn_src) not in [_os.path.abspath(p) for p in _sys.path]:
-    _sys.path.insert(0, _os.path.abspath(_conn_src))
-from celerp_connectors.routes import setup_api_routes as _setup_connectors
-_setup_connectors(app)
-
 # Register docs module routes onto the test app.
 _docs_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-docs")
 if _os.path.abspath(_docs_src) not in [_os.path.abspath(p) for p in _sys.path]:
@@ -254,20 +247,6 @@ from celerp_dashboard.setup import setup_api_routes as _setup_dashboard
 from celerp_dashboard.ui_routes import setup_ui_routes as _setup_dashboard_ui
 _setup_dashboard(app)
 _setup_dashboard_ui(_ui_app)
-
-# Register AI module routes onto the test app.
-_ai_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-ai")
-if _os.path.abspath(_ai_src) not in [_os.path.abspath(p) for p in _sys.path]:
-    _sys.path.insert(0, _os.path.abspath(_ai_src))
-from celerp_ai.setup import setup_api_routes as _setup_ai
-_setup_ai(app)
-
-# Register backup module routes onto the test app.
-_backup_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-backup")
-if _os.path.abspath(_backup_src) not in [_os.path.abspath(p) for p in _sys.path]:
-    _sys.path.insert(0, _os.path.abspath(_backup_src))
-from celerp_backup.setup import setup_api_routes as _setup_backup
-_setup_backup(app)
 
 # Register admin module routes onto the test app.
 _admin_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-admin")
@@ -922,3 +901,11 @@ def files_unchecked(monkeypatch):
     test can change them after admission and reach the checks that follow it."""
     from celerp.modules import loader
     monkeypatch.setattr(loader, "check_unchanged", lambda module: None)
+
+
+@pytest.fixture
+def docs_running(monkeypatch):
+    """Record Documents as loaded, as it is in an installation that takes online payments.
+    The harness mounts its routes directly, so the loader would otherwise not list it."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])

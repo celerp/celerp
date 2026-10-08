@@ -12,6 +12,7 @@ import io
 import json
 import re
 import secrets
+import shutil
 import tarfile
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
@@ -63,7 +64,7 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
     recorded calls. With ``safety_error`` the safety archive cannot be made."""
     import celerp.connectors.ownership as ownership
     from celerp.config import settings
-    from celerp.services import backup_import
+    from celerp.services import backup, backup_import
 
     calls: dict[str, list] = {"safety": [], "restore": []}
     monkeypatch.setattr(settings, "data_dir", tmp_path)
@@ -74,8 +75,7 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
             return backup_import.SafetyResult(ok=False, error=safety_error)
         path = tmp_path / "recovery-safety" / "pre-recovery.celerp-backup"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"SAFETY")
-        return backup_import.SafetyResult(ok=True, path=path)
+        return backup_import.SafetyResult(ok=True, path=_archive(path, dump=b"SAFETY"))
 
     async def _restore(dump_path, url):
         calls["restore"].append(dump_path.read_bytes())
@@ -88,7 +88,9 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
         return None
 
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
+    monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
+    monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
     monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
     for name in ("_reconcile_connectors", "_dispose_engine", "_reconcile_schema",
                  "_clear_restored_connector_state"):

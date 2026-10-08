@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  # Builds and verifies a candidate without a tag. Publishing runs only on a tag.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, for example 2.5.4"
+        required: true
 
 jobs:
   build:
@@ -18,12 +24,19 @@ jobs:
           python-version: "3.12"
 
       - name: Verify version matches tag
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           pip install build setuptools-scm
-          TAG=${GITHUB_REF#refs/tags/v}
-          PKG=$(python -c "from setuptools_scm import get_version; print(get_version())")
-          echo "Tag: $TAG, Package: $PKG"
-          [ "$TAG" = "$PKG" ] || { echo "Version mismatch!"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version: $VERSION"; exit 1; }
+            TAG=$VERSION
+          else
+            TAG=${GITHUB_REF#refs/tags/v}
+            PKG=$(python -c "from setuptools_scm import get_version; print(get_version())")
+            echo "Tag: $TAG, Package: $PKG"
+            [ "$TAG" = "$PKG" ] || { echo "Version mismatch!"; exit 1; }
+          fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
 
       # The release requires exactly the dependency set CI tested, so an install
@@ -115,11 +128,38 @@ jobs:
 
   publish:
     needs: [verify, pins]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      actions: read
+      contents: read
       id-token: write  # Required for PyPI trusted publishing
     steps:
+      - uses: actions/checkout@v7
+
+      # PyPI cannot take a release back, so it follows the desktop builds of this
+      # tag and commit: scripts/release_gate.py says when build.yml's run built every
+      # platform and attached the API schema. build.yml's release job waits for this
+      # workflow, so this waits for those jobs, never its whole run. Waits up to 4
+      # hours; anything else publishes nothing.
+      - name: Wait for the desktop builds of this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for _ in $(seq 240); do
+            STATUS=0
+            python3 scripts/release_gate.py desktop-builds || STATUS=$?
+            case "$STATUS" in
+              0) exit 0 ;;
+              3) sleep 60 ;;
+              *) exit 1 ;;
+            esac
+          done
+          echo "ERROR: the desktop builds did not finish within 4 hours" >&2
+          exit 1
+
       - uses: actions/download-artifact@v8
         with:
           name: dist

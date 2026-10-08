@@ -1895,29 +1895,14 @@ async def create_subscription(token: str, data: dict) -> dict:
         return _raise(await c.post("/docs", json=data)).json()
 
 
-async def pause_subscription(token: str, entity_id: str) -> dict:
+SUBSCRIPTION_ACTIONS = ("activate", "generate", "pause", "resume", "cancel")
+
+
+async def subscription_action(token: str, entity_id: str, action: str, body: dict | None = None) -> dict:
+    if action not in SUBSCRIPTION_ACTIONS:
+        raise ValueError(f"Unknown subscription action: {action}")
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/pause")).json()
-
-
-async def resume_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/resume")).json()
-
-
-async def cancel_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
-
-
-async def generate_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/generate")).json()
-
-
-async def activate_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/activate")).json()
+        return _raise(await c.post(f"/subscriptions/{entity_id}/{action}", json=body)).json()
 
 
 # ---------------------------------------------------------------------------

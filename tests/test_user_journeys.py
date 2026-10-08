@@ -735,21 +735,21 @@ class TestWorkflows:
 
     @pytest.mark.asyncio
     async def test_subscription_pause(self, ui):
-        with _Patches({"ui.api_client.pause_subscription": AsyncMock(return_value={"ok": True}),
+        with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
             r = await ui.post("/subscriptions/sub:1/pause", cookies=_c())
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_subscription_resume(self, ui):
-        with _Patches({"ui.api_client.resume_subscription": AsyncMock(return_value={"ok": True}),
+        with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
             r = await ui.post("/subscriptions/sub:1/resume", cookies=_c())
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_subscription_generate(self, ui):
-        with _Patches({"ui.api_client.generate_subscription": AsyncMock(return_value={"ok": True}),
+        with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
             r = await ui.post("/subscriptions/sub:1/generate", cookies=_c())
         assert r.status_code in (200, 204, 302, 303)

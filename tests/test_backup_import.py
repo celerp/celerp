@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import tarfile
 from pathlib import Path
 
@@ -388,7 +389,9 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
         return None
 
     async def _safety():
-        return backup_import.SafetyResult(ok=True, path=tmp_path / "safety.celerp-backup")
+        path = tmp_path / "safety.celerp-backup"
+        path.write_bytes(_make_archive())
+        return backup_import.SafetyResult(ok=True, path=path)
 
     async def _every_company(session):
         return []
@@ -401,9 +404,11 @@ def _stub_recovery(monkeypatch, tmp_path, *, restart: bool = False) -> dict:
     async def _guard():
         yield
 
-    for name in ("_run_pg_restore", "_dispose_engine", "_reconcile_schema", "_cloud_safety_snapshot"):
+    for name in ("_run_restore_script", "_dispose_engine", "_reconcile_schema", "_cloud_safety_snapshot"):
         monkeypatch.setattr(backup_import, name, _none)
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
+    monkeypatch.setattr("celerp.services.backup.check_backup_dump", lambda path, url: None)
+    monkeypatch.setattr("celerp.services.backup.write_restore_script", shutil.copyfile)
     monkeypatch.setattr(backup_import, "_apply_modules", _apply)
     monkeypatch.setattr("celerp.modules.registry.load_set", _every_company)
     monkeypatch.setattr("celerp.connectors.ownership.connector_maintenance_guard", _guard)
@@ -592,8 +597,8 @@ class TestApplyModulesRestarts:
         assert kill_calls == [], "Unchanged module set must not trigger a restart"
 
     @pytest.mark.asyncio
-    async def test_apply_modules_skips_restart_when_empty(self, monkeypatch):
-        """Empty module list: no restart, no config write."""
+    async def test_apply_modules_writes_an_empty_set(self, monkeypatch):
+        """A backup with no modules enabled is restored with no modules enabled."""
         from celerp.services import backup_import
 
         config_written: list[list[str]] = []
@@ -603,10 +608,9 @@ class TestApplyModulesRestarts:
         kill_calls: list[tuple[int, int]] = []
         monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
 
-        assert backup_import._apply_modules([]) is False
+        assert backup_import._apply_modules([]) is True
 
-        assert config_written == [], "Empty list should not write config"
-        assert kill_calls == [], "Empty list should not trigger restart"
+        assert config_written == [[]]
 
 
 # ---------------------------------------------------------------------------

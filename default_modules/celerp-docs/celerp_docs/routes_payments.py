@@ -28,6 +28,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import payments as pay
+from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
 from celerp.services.account_roles import resolve
 from celerp.services.auth import get_current_company_id, get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone
@@ -43,10 +44,6 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Only these can be paid online (a bill/PO is money you owe, not money owed to you).
 _PAYABLE_TYPES = frozenset({"invoice", "proforma"})
-# GL account online payments clear to, per channel and for online payments generally.
-# With neither chosen, payments land on the company's default deposit account.
-ONLINE_DEPOSIT_ACCOUNT_KEY = "stripe_deposit_account"
-WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY = "woocommerce_deposit_account"
 
 
 async def _doc_for_token(session: AsyncSession, token: str):

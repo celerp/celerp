@@ -333,13 +333,18 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
 
 
 def load_kernel_metadata():
-    """Register and return the current kernel model schema used by create_all."""
+    """Return the current kernel model schema. Loaded modules register their own
+    tables on the same Base; those are not the kernel's."""
+    from sqlalchemy import MetaData
     from celerp.models.base import Base
     import celerp.models  # noqa: F401
     import celerp.models.company  # noqa: F401
     import celerp.models.ledger  # noqa: F401
     import celerp.models.projections  # noqa: F401
-    return Base.metadata
+    kernel = MetaData()
+    for table in {m.local_table for m in Base.registry.mappers if m.class_.__module__.startswith("celerp.")}:
+        table.to_metadata(kernel)
+    return kernel
 
 
 def find_safe_stamp(

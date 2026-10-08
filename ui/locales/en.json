@@ -1517,7 +1517,7 @@
   "settings.running": "Running",
   "settings.scheduler": "Scheduler",
   "settings.seeds_all_category_schemas_for_a_vertical_in_one_c": "Seeds all category schemas for a vertical in one click.",
-  "settings.share_this_url_with_your_team_members_to_access_ce": "Share this URL with your team members to connect to Celerp remotely while this terminal is running.",
+  "settings.share_this_url_with_your_team_members_to_access_ce": "Share this address with your team. They open it in any browser, in the office or away, with nothing to install. This computer is the server, so keep Celerp running on it.",
   "settings.stopped": "Stopped",
   "settings.subscribe": "Subscribe",
   "settings.system_price_list_cannot_be_deleted": "'{name}' is a system price list and cannot be deleted.",

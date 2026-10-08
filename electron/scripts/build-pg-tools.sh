@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-pg-tools.sh — build relocatable pg_dump / pg_restore from source (macOS).
+# build-pg-tools.sh - build relocatable pg_dump / pg_restore / psql from source (macOS).
 #
 # Builds one architecture's tree. The CI macOS job calls it twice (arm64, then
 # x86_64) on a single arm64 runner; the x86_64 pass cross-compiles with
@@ -14,7 +14,7 @@
 # Required env (pinned in .github/workflows/build.yml):
 #   PG_VERSION, PG_SHA256, OPENSSL_VERSION, OPENSSL_SHA256
 #
-# Produces:  <out_dir>/bin/{pg_dump,pg_restore}  +  <out_dir>/lib/libpq.5.dylib
+# Produces:  <out_dir>/bin/{pg_dump,pg_restore,psql}  +  <out_dir>/lib/libpq.5.dylib
 # Fails loudly if any binary still references a non-system, non-bundled path.
 
 set -euo pipefail
@@ -78,7 +78,7 @@ tar xzf openssl.tar.gz
   make -j"$JOBS"
   make install_sw )
 
-# ── 3. Build libpq + pg_dump/pg_restore (client only; no server, no psql) ─────
+# ── 3. Build libpq + pg_dump/pg_restore/psql (client only; no server) ────────
 tar xjf postgresql.tar.bz2
 cd "postgresql-${PG_VERSION}"
 ./configure \
@@ -98,12 +98,14 @@ cd "postgresql-${PG_VERSION}"
 make -C src/backend generated-headers
 make -C src/interfaces/libpq -j"$JOBS"
 make -C src/bin/pg_dump      -j"$JOBS"
+make -C src/bin/psql         -j"$JOBS"
 
 # ── 4. Collect into the output tree ──────────────────────────────────────────
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/bin" "$OUT_DIR/lib"
 cp src/bin/pg_dump/pg_dump    "$OUT_DIR/bin/"
 cp src/bin/pg_dump/pg_restore "$OUT_DIR/bin/"
+cp src/bin/psql/psql          "$OUT_DIR/bin/"
 LIBPQ_SRC="$(first_glob src/interfaces/libpq/libpq.*.dylib)"
 [ -n "$LIBPQ_SRC" ] || { echo "ERROR: libpq dylib not found after build" >&2; exit 1; }
 LIBPQ="$(basename "$LIBPQ_SRC")"
@@ -148,7 +150,7 @@ install_name_tool -id "@rpath/${LIBPQ}" "$OUT_DIR/lib/${LIBPQ}"
 repoint "$OUT_DIR/lib/${LIBPQ}" 'libssl\.'    "$LIBSSL"
 repoint "$OUT_DIR/lib/${LIBPQ}" 'libcrypto\.' "$LIBCRYPTO"
 install_name_tool -add_rpath "@loader_path" "$OUT_DIR/lib/${LIBPQ}"
-for b in pg_dump pg_restore; do
+for b in pg_dump pg_restore psql; do
   bin="$OUT_DIR/bin/$b"
   repoint "$bin" 'libpq\.'     "$LIBPQ"
   repoint "$bin" 'libssl\.'    "$LIBSSL"
@@ -167,7 +169,7 @@ audit() {
     exit 1
   fi
 }
-for f in "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore" \
+for f in "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore" "$OUT_DIR/bin/psql" \
          "$OUT_DIR/lib/${LIBPQ}" "$OUT_DIR/lib/${LIBSSL}" "$OUT_DIR/lib/${LIBCRYPTO}"; do
   audit "$f"
   # No pipe to grep -q here: that would SIGPIPE lipo and (with pipefail) misfire.
@@ -185,7 +187,7 @@ done
 # packaging time; this ad-hoc pass just makes them runnable here. Sign dylibs
 # before the binaries that load them.
 for f in "$OUT_DIR/lib/${LIBCRYPTO}" "$OUT_DIR/lib/${LIBSSL}" "$OUT_DIR/lib/${LIBPQ}" \
-         "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore"; do
+         "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore" "$OUT_DIR/bin/psql"; do
   codesign --remove-signature "$f" >/dev/null 2>&1 || true
   codesign -s - -f "$f"
 done
@@ -193,5 +195,6 @@ done
 # ── 7. Smoke test (x86_64 binary runs under Rosetta on the arm64 runner) ─────
 "$OUT_DIR/bin/pg_dump" --version
 "$OUT_DIR/bin/pg_restore" --version
+"$OUT_DIR/bin/psql" --version
 
 echo "==> OK: $ARCH tree at $OUT_DIR"

@@ -44,6 +44,7 @@ from celerp.services.permissions import (
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services import company_lifecycle
+from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
@@ -351,14 +352,20 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        from celerp_docs.routes_payments import (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
-                                                 require_online_deposit_account)
-        for key in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY):
-            value = payload.settings.get(key)
-            if value in (None, ""):  # empty: the default
-                continue
+        require_phone(payload.settings.get("phone"))
+        from celerp.modules.loader import is_running
+        from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
+        # Empty is the default deposit account.
+        chosen = [k for k in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY)
+                  if payload.settings.get(k) not in (None, "")]
+        if chosen and not is_running("celerp-docs"):
+            raise HTTPException(status_code=422, detail=(
+                "Turn on Documents on the Modules page before choosing a deposit account."))
+        for key in chosen:
+            value = payload.settings[key]
             if not isinstance(value, str):
                 raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+            from celerp_docs.routes_payments import require_online_deposit_account
             await require_online_deposit_account(session, company_id, value)
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
@@ -1732,7 +1739,7 @@ async def list_modules(
                     "version": manifest_source.get("version", "unknown"),
                     "description": manifest_source.get("description", ""),
                     "author": manifest_source.get("author", ""),
-                    "depends_on": list(manifest_source.get("depends_on") or []),
+                    "depends_on": list(v) if isinstance(v := manifest_source.get("depends_on"), list) else [],
                     # The module's owned table prefix, surfaced so the UI can
                     # gate the irreversible Purge action on a module that owns
                     # tables. None when the manifest declares none.

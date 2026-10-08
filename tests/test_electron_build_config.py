@@ -57,41 +57,11 @@ def test_mac_has_zip_target():
 
 
 # ---------------------------------------------------------------------------
-# main.js: installing a downloaded update
+# app-main.js source
 # ---------------------------------------------------------------------------
 
 def _main_src() -> str:
     return _MAIN.read_text()
-
-
-def test_main_kill_subprocesses_before_quit_and_install():
-    """main.js must kill uiProcess/apiProcess before calling quitAndInstall.
-
-    ShipIt (Squirrel.Mac) aborts if the app process is still alive when it tries
-    to replace the bundle. Killing child processes first lets the OS reap them
-    before ShipIt does its check.
-    """
-    src = _main_src()
-    # Find the install-update handler block
-    match = re.search(r'ipcMain\.on\(["\']install-update["\'].*?}\);', src, re.DOTALL)
-    assert match, "ipcMain.on('install-update', ...) handler not found in main.js"
-    handler = match.group(0)
-    assert "uiProcess" in handler and ".kill()" in handler, (
-        "install-update handler must kill uiProcess before calling quitAndInstall."
-    )
-    assert "apiProcess" in handler and ".kill()" in handler, (
-        "install-update handler must kill apiProcess before calling quitAndInstall."
-    )
-    assert "quitAndInstall" in handler, (
-        "install-update handler must call autoUpdater.quitAndInstall()."
-    )
-    # The kill must come before quitAndInstall in source order
-    kill_pos = handler.index(".kill()")
-    quit_pos = handler.index("quitAndInstall")
-    assert kill_pos < quit_pos, (
-        "uiProcess/apiProcess must be killed BEFORE quitAndInstall is called, "
-        "otherwise ShipIt sees the app still running and aborts the install."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,37 +155,6 @@ def test_main_initial_check_deferred_until_did_finish_load():
     assert check_idx != -1, (
         "checkForUpdates() is not called inside the did-finish-load handler. "
         "Initial update checks may fire before the renderer is ready."
-    )
-
-
-def test_build_yml_delete_checks_http_status():
-    """build.yml asset deletion must check HTTP status and fail on 5xx errors.
-
-    Using curl -s without status checking means a failed delete (5xx) goes unnoticed,
-    and the subsequent publish step may fail with 'asset already exists'.
-    Using -f/-fsS would fail on 404 (asset not yet uploaded on first build), so we
-    check the status code explicitly and only fail on >= 500.
-    """
-    yml = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
-    clear_idx = yml.find("Clear existing release assets")
-    assert clear_idx != -1, "Asset-clearing step not found in build.yml"
-    # Scan to the end of this step (the next `- name:` or EOF) rather than a fixed-size
-    # window - the delete loop sits near the end of the step and a short slice misses it.
-    next_step = yml.find("\n      - name:", clear_idx + 1)
-    step_block = yml[clear_idx: next_step if next_step != -1 else len(yml)]
-    assert "%{http_code}" in step_block, (
-        "build.yml DELETE step does not capture HTTP status code. "
-        "Use curl -w '%{http_code}' and fail on >= 500."
-    )
-    assert ">= 500" in step_block or "-ge 500" in step_block, (
-        "build.yml DELETE step does not fail on 5xx responses. "
-        "A server-side delete failure will silently allow a stale asset to remain."
-    )
-    assert "tr -d" in step_block and r"\r" in step_block, (
-        "build.yml DELETE step does not strip \\r from curl output. "
-        "On Windows Git Bash, curl -w '%{http_code}' appends \\r, causing "
-        "[ \"204\\r\" -ge 500 ] to exit with code 3 (integer expression expected). "
-        "Pipe through | tr -d '\\r'."
     )
 
 
@@ -412,7 +351,7 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
     publish_idx = workflow.index("  publish-release:")
     publish_block = workflow[publish_idx:publish_idx + 300]
     needs_line = next(l for l in publish_block.splitlines() if l.strip().startswith("needs:"))
-    assert needs_line.strip() == "needs: [build, openapi-asset]"
+    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, openapi-asset]"
 
 
 def test_build_workflow_exports_versioned_openapi_before_publish():
@@ -478,11 +417,26 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     win = by_name["Boot smoke (Windows, require db:ok)"]
     for smoke in (unix, win):
         assert names.index(check["name"]) < names.index(smoke["name"])
+        # A hung app fails the step with its log instead of holding the runner for hours.
+        assert smoke["timeout-minutes"] == 15
     assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
             and "export ENABLED_MODULES" in unix["run"])
+    # A boot that never gets ready shows the app's output and logs, then ends the app,
+    # which may not act on SIGTERM; the readiness poll itself cannot block.
+    assert 'curl -fs --max-time 5 "http://127.0.0.1:$API_PORT/health/ready"' in unix["run"]
+    failed = unix["run"].split('if [ -z "$ok" ]; then', 1)[1].split("\nfi\n", 1)[0]
+    assert failed.index("-path '*celerp-data/logs/*'") < failed.index('kill -9 "$APP_PID"')
+    assert "wait" not in failed
+    # The force-quit check reads the database's data directory from the running
+    # database; the app does not keep its data under $HOME on every runner.
+    assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
+    # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
+    assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
     assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
             in win["run"])
     assert "set ENABLED_MODULES=$enabled" in win["run"]
+    # Windows: the job object ends the API and the database when the app is force-quit.
+    assert "taskkill /IM Celerp.exe /F" in win["run"] and "left the API or the database running" in win["run"]
 
 
 def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
