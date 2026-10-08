@@ -1791,6 +1791,146 @@ async def test_a_backup_using_an_extension_this_database_cannot_install_is_refus
         await _execute(real_engine, "DROP EXTENSION IF EXISTS pg_trgm")
 
 
+@pytest.fixture
+async def zz_role(admin):
+    """A role of this test's own; roles belong to the whole server, not to one database."""
+    import uuid
+    name = f"zz_reader_{uuid.uuid4().hex[:8]}"
+    await _execute(admin, f"CREATE ROLE {name}")
+    yield name
+    await _execute(admin, f"DROP ROLE IF EXISTS {name}")
+
+
+def _policy_for(role: str) -> str:
+    return f"EXISTS (SELECT FROM pg_policies WHERE policyname = 'zz_readers' AND roles = ARRAY['{role}']::name[])"
+
+
+async def _autocommit(engine, *statements: str) -> None:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        for sql in statements:
+            await conn.execute(text(sql))
+
+
+@pytest.mark.parametrize("kind", ["policy role", "collation", "tablespace"])
+async def test_a_backup_needing_what_this_server_lacks_is_refused_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, admin, zz_role, kind):
+    """A policy's role, a collation or a tablespace the backup's tables use but this server
+    lacks is found with the rest of the backup, so the owner meets the refusal before the
+    marker and any connector revoke, not in the restore; once added, the backup restores."""
+    from celerp.services import backup_export, backup_import
+    name = zz_role.replace("reader", kind[:4])
+    use, drop, add, gone, found, exists = {
+        "policy role": (
+            f"CREATE POLICY zz_readers ON companies TO {zz_role} USING (true)", "DROP POLICY zz_readers ON companies",
+            [f"CREATE ROLE {zz_role}"], [f"DROP ROLE IF EXISTS {zz_role}"],
+            f"policy zz_readers on companies (role {zz_role})", _policy_for(zz_role)),
+        "collation": (
+            f"CREATE INDEX zz_names ON companies (name COLLATE pg_catalog.{name})", "DROP INDEX zz_names",
+            [f"CREATE COLLATION pg_catalog.{name} (locale = 'C')"], [f"DROP COLLATION IF EXISTS pg_catalog.{name}"],
+            f"collation {name}", "to_regclass('zz_names') IS NOT NULL"),
+        "tablespace": (
+            f"CREATE INDEX zz_names ON companies (name) TABLESPACE {name}", "DROP INDEX zz_names",
+            ["SET allow_in_place_tablespaces = on", f"CREATE TABLESPACE {name} LOCATION ''",
+             f"GRANT CREATE ON TABLESPACE {name} TO {real_engine.url.username}"],
+            [f"DROP TABLESPACE IF EXISTS {name}"], f"tablespace {name}",
+            f"(SELECT spcname FROM pg_class JOIN pg_tablespace t ON t.oid = reltablespace "
+            f"WHERE relname = 'zz_names') = '{name}'"),
+    }[kind]
+    if kind == "tablespace" and await _exists_sql(admin, "current_setting('server_version_num')::int < 150000"):
+        pytest.skip("a tablespace inside the data directory needs PostgreSQL 15")
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    if kind != "policy role":
+        await _autocommit(admin, *add)
+    try:
+        await _execute(real_engine, use)
+        source = await backup_export.export_full()
+        await _execute(real_engine, drop)
+        await _autocommit(admin, *gone)
+        await company(real_engine, user, "Beta Trading", "beta")
+        connector_calls = _record_connector_calls(monkeypatch)
+        result = await backup_import.run_recovery(source)
+        assert result.ok is False
+        assert result.error == (
+            "This backup needs database roles, collations, tablespaces or an encoding this database does not "
+            "have. Add them here, or stop using them in the database the backup was taken from, then try "
+            f"again: {found}"), result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        await _autocommit(admin, *add)
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, exists)
+    finally:
+        await _execute(real_engine, "DROP POLICY IF EXISTS zz_readers ON companies")
+        await _execute(real_engine, "DROP INDEX IF EXISTS zz_names")
+        if kind != "policy role":
+            await _autocommit(admin, *gone)
+
+
+async def test_a_backup_from_a_database_with_another_encoding_is_refused(tmp_path, real_engine, admin):
+    """Text the backup holds may have no form in this database's encoding."""
+    import asyncio
+    import subprocess
+    import uuid
+
+    from sqlalchemy import make_url
+
+    from celerp.services import backup
+    from test_helpers import DATABASE_URL
+    name = f"zz_latin_{uuid.uuid4().hex[:8]}"
+    await _autocommit(admin, f"CREATE DATABASE {name} ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' "
+                             "TEMPLATE template0")
+    try:
+        url = make_url(DATABASE_URL).set(database=name, drivername="postgresql")
+        dump = tmp_path / "latin1.dump"
+        subprocess.run([backup._find_pg_tool("pg_dump"), "--format=custom", "-f", str(dump),
+                        url.render_as_string(hide_password=False)], check=True)
+        with pytest.raises(ValueError) as refused:
+            await asyncio.to_thread(backup.check_backup_dump, dump, DATABASE_URL)
+        assert str(refused.value).endswith("then try again: encoding LATIN1, which this database does not use")
+    finally:
+        await _autocommit(admin, f"DROP DATABASE IF EXISTS {name}")
+
+
+@pytest.mark.parametrize("entry", ["recovery", "update rollback"])
+async def test_a_backup_with_a_policy_for_a_role_this_server_has_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine, admin, zz_role, entry):
+    """An update restores the database it dumped, whose policy roles PostgreSQL keeps from
+    being dropped, so only a recovery from another server can miss one."""
+    import asyncio
+
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, f"CREATE POLICY zz_readers ON companies TO {zz_role} USING (true)")
+    try:
+        if entry == "recovery":
+            source = await backup_export.export_full()
+            await company(real_engine, user, "Beta Trading", "beta")
+            result = await backup_import.run_recovery(source)
+            assert result.ok is True, result.error
+        else:
+            steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.preflight)
+            await asyncio.to_thread(steps.dump, dump)
+            await company(real_engine, user, "Beta Trading", "beta")
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, _policy_for(zz_role))
+        with pytest.raises(Exception, match="cannot be dropped because some objects depend on it"):
+            await _execute(admin, f"DROP ROLE {zz_role}")
+    finally:
+        await _execute(real_engine, "DROP POLICY IF EXISTS zz_readers ON companies")
+
+
 async def test_a_recovery_without_room_for_the_restore_changes_nothing(tmp_path, monkeypatch, code_config, real_engine):
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
@@ -2177,10 +2317,10 @@ async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp
 
 
 @pytest.fixture
-async def public_owner(real_engine):  # noqa: F811
-    """A connection as the role that owns schema public. PostgreSQL 14 and older give it to
-    the bootstrap superuser; where Celerp's role does not own it, ADMIN_DATABASE_URL names
-    one that does, connected here to the test's own database."""
+async def admin(real_engine):  # noqa: F811
+    """A connection as a database administrator, which owns schema public (PostgreSQL 14
+    and older give it to the bootstrap superuser) and may create roles. Where Celerp's role
+    is not one, ADMIN_DATABASE_URL names one, connected here to the test's own database."""
     import os
 
     from sqlalchemy import make_url
@@ -2194,7 +2334,7 @@ async def public_owner(real_engine):  # noqa: F811
     await engine.dispose()
 
 
-async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine, public_owner):
+async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine, admin):
     """A backup of a database whose public schema comment was cleared carries that comment,
     which only the schema's owner may set; the restore replaces the tables and leaves the
     schema as it is."""
@@ -2202,16 +2342,16 @@ async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine, p
     comment = "SELECT obj_description('public'::regnamespace, 'pg_namespace')"
     async with real_engine.connect() as conn:
         before = (await conn.execute(text(comment))).scalar()
-    await _execute(public_owner, "COMMENT ON SCHEMA public IS NULL")
+    await _execute(admin, "COMMENT ON SCHEMA public IS NULL")
     try:
         dump = await _restore_target(real_engine, tmp_path)
-        await _execute(public_owner, "COMMENT ON SCHEMA public IS 'kept'")
+        await _execute(admin, "COMMENT ON SCHEMA public IS 'kept'")
         await _restore(dump)
         assert await _company_names(real_engine) == {"Alpha Trading"}
         async with real_engine.connect() as conn:
             assert (await conn.execute(text(comment))).scalar() == "kept"
     finally:
-        await _execute(public_owner, f"COMMENT ON SCHEMA public IS {'NULL' if before is None else repr(before)}")
+        await _execute(admin, f"COMMENT ON SCHEMA public IS {'NULL' if before is None else repr(before)}")
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
 
 
