@@ -60,7 +60,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -6885,31 +6885,6 @@ async def _release_holds(session, *, company_id, uid, owner: Projection) -> list
     return released
 
 
-async def _validate_revert_entity_ids_subset(
-    session: AsyncSession, company_id, entity_id: str, doc_state: dict, line_entity_ids: list[str],
-) -> None:
-    """Revert-only guard: an id is owned by this doc if it is a line_items row OR, for a
-    memo, a cross-lot sibling this memo currently owns as its status document.
-
-    A memo line whose quantity exceeds its bound lot draws siblings from other lots of the
-    same SKU; fulfill stamps each drawn lot status_doc_id==this memo but the sibling is not
-    a line_items row. Revert is the memo's own settlement workflow, so it must accept those
-    siblings to return them to stock. The union arm applies ONLY to memos; every other doc
-    type keeps the line_items-only universe, so an invoice/PO revert is unchanged."""
-    doc_eids: set[str] = {
-        li.get("entity_id") or li.get("item_id") or ""
-        for li in doc_state.get("line_items", [])
-    } - {""}
-    if doc_state.get("doc_type") in {"memo", "invoice"}:
-        doc_eids |= {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
-    foreign = set(line_entity_ids) - doc_eids
-    if foreign:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Item IDs not linked to this document: {', '.join(sorted(foreign))}",
-        )
-
-
 async def _lock_item_sku_lots(
     session, company_id, item_ids: list[str] | set[str],
 ) -> dict[str, Projection]:
@@ -7188,17 +7163,18 @@ async def _fulfill_lines_impl(
 
 
 async def _line_action(session, company_id, user, owner: Projection, action: str,
-                       body: FulfillLinesRequest, run) -> dict:
-    """Run one line action on ``owner`` once per key: resolve the chosen lines, call
-    ``run(indices)`` and record the request and its result, even when it changed nothing,
-    so the same key replays that result and a different request under it is refused."""
+                       body: FulfillLinesRequest, run, select_lines=None) -> dict:
+    """Run one line action on ``owner`` once per key: resolve the chosen lines (with
+    ``select_lines``, by default _selected_line_indices), call ``run(indices)`` and record
+    the request and its result, even when it changed nothing, so the same key replays that
+    result and a different request under it is refused."""
     key, digest = _operation(f"{action}-lines", owner.entity_id, body)
     record_id = f"line_action:{_step_id(key)}"
     if (done := await _earlier_run(session, company_id, key, event_type="line_action.recorded",
                                    entity_id=record_id, digest=digest)) is not None:
         return done
     line_items = owner.state.get("line_items", [])
-    indices = _selected_line_indices(line_items, body)
+    indices = (select_lines or _selected_line_indices)(line_items, body)
     chosen = [str(line_items[i].get("line_id")) for i in indices if line_items[i].get("line_id")]
     result = await run(indices)
     await emit_event(
@@ -7376,6 +7352,180 @@ async def _reverse_whole_lines(
     return doc_fulfillment_status, reconcile
 
 
+def _revert_selection(line_items: list[dict], body: FulfillLinesRequest) -> list[int]:
+    """The lines a revert names. A legacy ``line_entity_ids`` body names the lots to take
+    back themselves (a lot drawn from another lot of a line's product is on no line), so it
+    selects no line; the lots are proved one by one instead."""
+    if body.line_entity_ids and not body.line_ids:
+        return []
+    return _selected_line_indices(line_items, body)
+
+
+def _return_order(lots: list[Projection], bound: str | None) -> list[Projection]:
+    """The order a part of a line comes back in: lots drawn from elsewhere first, the
+    line's own lot last, so the line keeps naming what is still out."""
+    return sorted(lots, key=lambda p: (p.entity_id == bound, p.entity_id))
+
+
+async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices: list[int], user, session) -> dict:
+    """Take back what this document shipped, whole or in part, without committing.
+
+    ``indices`` are the chosen lines: each gives back every lot it shipped. With none, the
+    legacy body names the lots. Every lot is proved before anything changes: it is out
+    (sold or on memo) for this document and its shipment's line can be told. Any line or
+    lot that fails refuses the whole request."""
+    company_id = row.company_id
+    entity_id = row.entity_id
+    state = row.state
+    doc_type = state.get("doc_type", "")
+    allowed = REVERTIBLE_STATUSES.get(doc_type)
+    if allowed is None:
+        raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
+    if state.get("status") == "closed":
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.revert_closed", "Goods cannot be taken back on a closed record; reopen it first."))
+    if state.get("status") not in allowed:
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.revert_status", "Goods cannot be taken back while the record is in this status."))
+
+    line_items = state.get("line_items", [])
+    quantities = body.quantities or {}
+    keys = [str(line_items[i].get("line_id")) for i in indices] if indices else body.line_entity_ids
+    unknown = [k for k in quantities if k not in keys]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"quantities names items that are not in line_entity_ids: {', '.join(sorted(unknown))}",
+        )
+
+    named = set(body.line_entity_ids)
+    present = set((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_(named),
+    ))).scalars().all()) if named else set()
+    owned = {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
+    locked = await _lock_item_sku_lots(session, company_id, owned | present)
+    out = {eid: p for eid, p in locked.items()
+           if p.state.get("status_doc_id") == entity_id and p.state.get("status") in ("memo_out", "sold")}
+    line_of = {eid: await auto_je.doc_line_of_lot(session, company_id, entity_id, state, eid, p.state)
+               for eid, p in out.items()}
+
+    def _sku(eid: str) -> str:
+        return str(locked[eid].state.get("sku") or "") if eid in locked else ""
+
+    def _unattributed(eid: str) -> str:
+        return f"{_sku(eid)} was shipped on this record but nothing records for which line"
+
+    errors: list[str] = []
+    # (key the request names it by, lots it covers) per chosen line or legacy lot.
+    groups: list[tuple[str, list[Projection], str | None]] = []
+    if indices:
+        chosen_skus = {str(line_items[i].get("sku") or "").strip() for i in indices} - {""}
+        chosen_items = {str(line_item_id(line_items[i]) or "") for i in indices} - {""}
+        for eid, idx in line_of.items():
+            if idx is None and (eid in chosen_items or _sku(eid).strip() in chosen_skus):
+                errors.append(_unattributed(eid))
+        for i in indices:
+            lots = [out[eid] for eid, idx in line_of.items() if idx == i]
+            if not lots:
+                errors.append(f"{line_items[i].get('sku') or line_items[i].get('description') or i + 1}: "
+                              "nothing is out on this line")
+                continue
+            groups.append((str(line_items[i].get("line_id")), lots, line_item_id(line_items[i])))
+    else:
+        for eid in body.line_entity_ids:
+            proj = locked.get(eid)
+            if proj is None:
+                errors.append(f"{eid}: item not found")
+            elif proj.state.get("status") not in ("memo_out", "sold"):
+                errors.append(f"{eid} ({_sku(eid)}): must be 'memo_out' or 'sold' to revert, "
+                              f"is '{proj.state.get('status', '')}'")
+            elif eid not in out:
+                errors.append(f"{eid} ({_sku(eid)}): was not shipped by this record")
+            elif line_of[eid] is None:
+                errors.append(_unattributed(eid))
+            else:
+                groups.append((eid, [proj], eid))
+
+    to_revert: list[str] = []
+    # lot -> quantity coming back, for lots where only part of it returns.
+    partial_plan: dict[str, tuple[float, str]] = {}
+    for key, lots, bound in groups:
+        label = str(lots[0].state.get("sku") or key)
+        total = sum(float(p.state.get("quantity") or 0) for p in lots)
+        back = quantities.get(key)
+        if back is None or abs(back - total) <= 1e-9:
+            to_revert.extend(p.entity_id for p in lots)
+            continue
+        if back <= 0:
+            errors.append(f"{label}: returned quantity must be greater than zero")
+            continue
+        if back > total + 1e-9:
+            errors.append(f"{label}: cannot return {back:g} of {total:g} that went out")
+            continue
+        remaining = float(back)
+        for proj in _return_order(lots, bound):
+            qty = float(proj.state.get("quantity") or 0)
+            if remaining <= 1e-9:
+                break
+            if remaining + 1e-9 >= qty:
+                to_revert.append(proj.entity_id)
+                remaining -= qty
+            elif proj.state.get("status") != "memo_out":
+                errors.append(f"{label}: only goods out on memo can be part-returned, "
+                              f"this one is '{proj.state.get('status')}'")
+                break
+            else:
+                partial_plan[proj.entity_id] = (remaining, key)
+                remaining = 0.0
+
+    if errors:
+        reasons = "; ".join(errors)
+        raise HTTPException(status_code=422, detail=refusal(
+            "lines.cannot_revert", f"Cannot take back: {reasons}", reasons=reasons))
+
+    cid = uuid.UUID(str(company_id))
+    uid = user.id
+    fetched = {eid: locked[eid] for eid in to_revert}
+
+    # Partial returns first: split the returned amount off the lot that is out. The child
+    # carries the returned goods and starts available (back in stock); the mother keeps the
+    # remainder and stays memo_out, so what the customer still holds is never lost.
+    returned_brief: list[dict] = []
+    if partial_plan:
+        from celerp_inventory.routes import split_off_child
+        _unit_map = await _get_unit_map(session, company_id)
+        for parent_eid, (qty_back, key) in partial_plan.items():
+            parent_proj = locked[parent_eid]
+            _sb = parent_proj.state.get("sell_by") or ""
+            _sku_p = parent_proj.state.get("sku", "")
+            child_weight = qty_back if is_weight_unit(_sb, _unit_map) else (body.weights or {}).get(key)
+            child_pieces = qty_back if is_pieces_unit(_sb, _unit_map) else (body.pieces or {}).get(key)
+            try:
+                child_eid, _child_sku = await split_off_child(
+                    session, company_id=cid, user_id=uid, parent_proj=parent_proj,
+                    child_qty=qty_back, child_weight=child_weight, child_pieces=child_pieces,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot return part of {_sku_p}: {exc}",
+                )
+            returned_brief.append({"item_id": child_eid, "sku": _sku_p, "quantity": qty_back})
+
+    doc_fulfillment_status, reconcile = await _reverse_whole_lines(
+        session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id, state=state,
+        doc_type=doc_type, to_revert=to_revert, fetched=fetched, returned_brief=returned_brief,
+    )
+    await reconcile()
+    return {
+        "fulfillment_status": doc_fulfillment_status,
+        "reverted": to_revert,
+        # Lots that came back in part: the new in-stock parcel per part-returned line.
+        "partially_returned": returned_brief,
+    }
+
+
 @router.post("/{entity_id}/revert-lines")
 async def revert_lines(
     entity_id: str,
@@ -7385,123 +7535,15 @@ async def revert_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Revert fulfillment for specific line items. Valid for memo and invoice docs only.
+    """Take back goods this memo or invoice shipped (Set as available on shipped lines).
 
     Inbound doc types (bill, consignment_in) must use DELETE /receive instead.
     """
     row = await _get_doc(session, company_id, entity_id, for_update=True)
-    state = row.state
-    if state.get("status") == "closed":
-        raise HTTPException(status_code=409, detail="Cannot revert a closed memo; reopen it first.")
-    doc_type = state.get("doc_type", "")
-
-    if FULFILLABLE_STATUSES.get(doc_type) is None:
-        raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
-
-    await _validate_revert_entity_ids_subset(session, company_id, entity_id, state, body.line_entity_ids)
-
-    if not body.line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
-
-    _returned_qty = body.quantities or {}
-    _unknown = [eid for eid in _returned_qty if eid not in body.line_entity_ids]
-    if _unknown:
-        raise HTTPException(
-            status_code=422,
-            detail=f"quantities names items that are not in line_entity_ids: {', '.join(sorted(_unknown))}",
-        )
-
-    errors: list[str] = []
-    to_revert: list[str] = []
-    # item_eid -> quantity coming back, for lines where only part of the lot returned.
-    partial_plan: dict[str, float] = {}
-    fetched: dict[str, Projection] = {}
-    _locked_lots = await _lock_item_sku_lots(session, company_id, set(body.line_entity_ids))
-    for item_eid in body.line_entity_ids:
-        item_proj = _locked_lots.get(item_eid)
-        if item_proj is None:
-            errors.append(f"{item_eid}: item not found")
-            continue
-        item_status = item_proj.state.get("status", "")
-        if item_status not in ("memo_out", "sold"):
-            errors.append(
-                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'memo_out' or 'sold' to revert, is '{item_status}'"
-            )
-            continue
-        _sku = item_proj.state.get("sku", "")
-        _qty_back = _returned_qty.get(item_eid)
-        if _qty_back is not None:
-            _on_hand = float(item_proj.state.get("quantity") or 0)
-            if _qty_back <= 0:
-                errors.append(f"{item_eid} ({_sku}): returned quantity must be greater than zero")
-                continue
-            if _qty_back > _on_hand + 1e-9:
-                errors.append(
-                    f"{item_eid} ({_sku}): cannot return {_qty_back:g} of {_on_hand:g} that went out"
-                )
-                continue
-            if abs(_qty_back - _on_hand) > 1e-9:
-                # Part of the lot is coming back; the rest stays with the customer.
-                if item_status != "memo_out":
-                    errors.append(
-                        f"{item_eid} ({_sku}): only goods out on memo can be part-returned, "
-                        f"this one is '{item_status}'"
-                    )
-                    continue
-                fetched[item_eid] = item_proj
-                partial_plan[item_eid] = float(_qty_back)
-                continue
-        fetched[item_eid] = item_proj
-        to_revert.append(item_eid)
-
-    if errors and not to_revert and not partial_plan:
-        raise HTTPException(status_code=422, detail={"errors": errors})
-
-    if not to_revert and not partial_plan:
-        raise HTTPException(status_code=422, detail="No revertible items in the provided line_entity_ids")
-
-    now = datetime.now(timezone.utc).isoformat()
-    cid = uuid.UUID(str(company_id))
-    uid = user.id
-
-    # Partial returns first: split the returned amount off the lot that is out. The child
-    # carries the returned goods and starts available (back in stock); the mother keeps the
-    # remainder and stays memo_out, so what the customer still holds is never lost.
-    returned_brief: list[dict] = []
-    if partial_plan:
-        from celerp_inventory.routes import split_off_child
-        _unit_map = await _get_unit_map(session, company_id)
-        for parent_eid, qty_back in partial_plan.items():
-            parent_proj = fetched[parent_eid]
-            _sb = parent_proj.state.get("sell_by") or ""
-            _sku = parent_proj.state.get("sku", "")
-            child_weight = qty_back if is_weight_unit(_sb, _unit_map) else (body.weights or {}).get(parent_eid)
-            child_pieces = qty_back if is_pieces_unit(_sb, _unit_map) else (body.pieces or {}).get(parent_eid)
-            try:
-                child_eid, _child_sku = await split_off_child(
-                    session, company_id=cid, user_id=uid, parent_proj=parent_proj,
-                    child_qty=qty_back, child_weight=child_weight, child_pieces=child_pieces,
-                )
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Cannot return part of {_sku}: {exc}",
-                )
-            returned_brief.append({"item_id": child_eid, "sku": _sku, "quantity": qty_back})
-
-    doc_fulfillment_status, reconcile = await _reverse_whole_lines(
-        session, company_id=company_id, cid=cid, uid=uid, entity_id=entity_id, state=state,
-        doc_type=doc_type, to_revert=to_revert, fetched=fetched, returned_brief=returned_brief,
-    )
-    await reconcile()
-
-    await session.commit()
-    return {
-        "fulfillment_status": doc_fulfillment_status,
-        "reverted": to_revert,
-        # Lots that came back in part: the new in-stock parcel per part-returned line.
-        "partially_returned": returned_brief,
-    }
+    return await _line_action(
+        session, company_id, user, row, "revert", body,
+        lambda indices: _revert_lines_impl(row, body, indices, user, session),
+        select_lines=_revert_selection)
 
 
 async def _reserve_lines_impl(

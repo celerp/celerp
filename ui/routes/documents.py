@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import time
 import json as _json
+from typing import NamedTuple
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -629,20 +630,24 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
         "show_account": False,
         "show_comment": False,
     }
-# Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
-# show the button on statuses the backend will reject.  Update when backend allowlist changes.
-# Inbound doc types (bill, consignment_in) are excluded - they use POST /receive.
-_FULFILLABLE_STATUSES_UI: dict[str, frozenset[str]] = {
-    "memo":    frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
-    "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
-}
-# Mirror of doc_constants.RESERVABLE_DOC_STATUSES - gates the "Set as reserved" / "Set as available"
-# UI on statuses the reserve-lines backend will accept. Distinct from the fulfillable set by name
-# (the backend map is too), so a future divergence is a one-line edit here, not a shared surprise.
-_RESERVABLE_STATUSES_UI: dict[str, frozenset[str]] = {
-    "memo":    frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
-    "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
-}
+class _LineActions(NamedTuple):
+    fulfil: bool
+    revert: bool
+    reserve: bool
+
+
+def _doc_line_actions(doc_type: str, status: str) -> _LineActions:
+    """Which line actions a document's status allows, read from the maps the API enforces
+    so the page never offers an action the API refuses. Inbound doc types (bill,
+    consignment_in) are in none of them: they receive through POST /receive."""
+    from celerp_docs.doc_constants import FULFILLABLE_STATUSES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES
+    return _LineActions(
+        fulfil=status in FULFILLABLE_STATUSES.get(doc_type, frozenset()),
+        revert=status in REVERTIBLE_STATUSES.get(doc_type, frozenset()),
+        reserve=status in RESERVABLE_DOC_STATUSES.get(doc_type, frozenset()),
+    )
+
+
 # Item-status badges, module level so the mapping is importable and unit-testable. The "reserved"
 # row is the manual-reservation badge; without it a reserved line fell through to a bare "-".
 # Value is (label i18n key, css class); the label resolves at render time via t()
@@ -8850,12 +8855,9 @@ async function celerpCsvImport(input, entityId) {{
         # or when doc type supports per-line fulfill/revert
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
-        # Fulfillable doc types: keep in sync with doc_constants.FULFILLABLE_STATUSES (different package).
-        _fulfillable_status = (
-            doc_type in _FULFILLABLE_DOC_TYPES
-            and status in _FULFILLABLE_STATUSES_UI.get(doc_type, frozenset())
-            and bool(line_items)
-        )
+        _line_acts = _doc_line_actions(doc_type, status)
+        # Set as shipped and Set as available share the toolbar's shipping options.
+        _fulfillable_status = (_line_acts.fulfil or _line_acts.revert) and bool(line_items)
         # Inbound docs (bill, consignment_in) show Receive Goods / Return Goods in toolbar.
         # They do NOT use fulfill-lines; the toolbar posts to /receive instead.
         _inbound_doc_statuses = frozenset({"final", "sent", "awaiting_payment", "received", "partially_received"})
@@ -8870,11 +8872,7 @@ async function celerpCsvImport(input, entityId) {{
         # finalized list of any type. Reserve/Release are ledger-neutral, so a list qualifies
         # with no fulfil capability - unlike Set as shipped, which stays invoice/memo only.
         # (Draft lists reserve too - handled on the draft branch, not here.)
-        _doc_reservable = (
-            doc_type in _RESERVABLE_STATUSES_UI
-            and status in _RESERVABLE_STATUSES_UI.get(doc_type, frozenset())
-            and bool(line_items)
-        )
+        _doc_reservable = _line_acts.reserve and bool(line_items)
         _list_reservable = (
             is_list
             and status == _LF
