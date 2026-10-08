@@ -502,6 +502,8 @@
   "lines.reserve_status": "{skus} kann nicht reserviert werden: neuer Bestand kann nur in einem Status reserviert werden, der dies erlaubt.",
   "lines.cannot_fulfil": "Ausführung nicht möglich: {reasons}",
   "lines.cannot_revert": "Rücknahme nicht möglich: {reasons}",
+  "lines.cannot_set_available": "Kann nicht als verfügbar markiert werden: {reasons}",
+  "lines.available_nothing_held": "{name}: auf dieser Zeile ist nichts reserviert oder draußen",
   "lines.revert_unattributed": "{sku} wurde mit diesem Beleg versandt, aber es ist nicht erfasst, zu welcher Zeile",
   "lines.revert_nothing_out": "{name}: auf dieser Zeile ist nichts draußen",
   "lines.revert_hold_whole": "{name}: eine Reservierung wird nur ganz freigegeben",

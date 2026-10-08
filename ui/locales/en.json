@@ -560,6 +560,8 @@
   "lines.reserve_status": "Cannot reserve {skus}: stock can only be newly reserved on a record in a status that allows it.",
   "lines.cannot_fulfil": "Cannot fulfill: {reasons}",
   "lines.cannot_revert": "Cannot take back: {reasons}",
+  "lines.cannot_set_available": "Cannot set as available: {reasons}",
+  "lines.available_nothing_held": "{name}: nothing is held or out on this line",
   "lines.revert_unattributed": "{sku} was shipped on this record but nothing records for which line",
   "lines.revert_nothing_out": "{name}: nothing is out on this line",
   "lines.revert_hold_whole": "{name}: a hold is given back whole",

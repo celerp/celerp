@@ -502,6 +502,8 @@
   "lines.reserve_status": "Impossibile riservare {skus}: nuovo stock si può riservare solo su un record in uno stato che lo consente.",
   "lines.cannot_fulfil": "Impossibile evadere: {reasons}",
   "lines.cannot_revert": "Impossibile riprendere: {reasons}",
+  "lines.cannot_set_available": "Impossibile impostare come disponibile: {reasons}",
+  "lines.available_nothing_held": "{name}: non c'è nulla di riservato o fuori su questa riga",
   "lines.revert_unattributed": "{sku} è stato spedito su questo documento, ma non risulta per quale riga",
   "lines.revert_nothing_out": "{name}: non c'è nulla fuori su questa riga",
   "lines.revert_hold_whole": "{name}: una riserva si rilascia per intero",

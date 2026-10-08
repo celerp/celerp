@@ -502,6 +502,8 @@
   "lines.reserve_status": "Impossible de réserver {skus} : du stock ne peut être nouvellement réservé que sur un enregistrement dont le statut le permet.",
   "lines.cannot_fulfil": "Exécution impossible : {reasons}",
   "lines.cannot_revert": "Reprise impossible : {reasons}",
+  "lines.cannot_set_available": "Impossible de marquer comme disponible : {reasons}",
+  "lines.available_nothing_held": "{name} : rien n'est réservé ni sorti sur cette ligne",
   "lines.revert_unattributed": "{sku} a été expédié sur ce document, mais rien n'indique pour quelle ligne",
   "lines.revert_nothing_out": "{name} : rien n'est sorti sur cette ligne",
   "lines.revert_hold_whole": "{name} : une réservation est libérée en entier",

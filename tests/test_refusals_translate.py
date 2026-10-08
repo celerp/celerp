@@ -102,8 +102,9 @@ async def test_taking_back_more_than_went_out_is_refused_in_the_users_language(c
     await _ok(await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": [l0]}))
     r = await client.post(f"/docs/{memo}/set-available", headers=h,
                           json={"line_ids": [l0], "quantities": {l0: 2}})
-    assert r.json()["detail"]["message_key"] == "lines.cannot_revert"
-    assert _in_spanish(r, 422) == "No se puede recuperar: RT-BACK: no se pueden devolver 2 de 1 que salieron"
+    assert r.json()["detail"]["message_key"] == "lines.cannot_set_available"
+    assert _in_spanish(r, 422) == ("No se puede marcar como disponible: "
+                                   "RT-BACK: no se pueden devolver 2 de 1 que salieron")
 
 
 async def test_each_take_back_reason_is_translated(client, h):
@@ -114,5 +115,6 @@ async def test_each_take_back_reason_is_translated(client, h):
     await _ok(await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": [l0]}))
     r = await client.post(f"/docs/{memo}/set-available", headers=h,
                           json={"line_ids": [l0, l1], "quantities": {l0: 0}})
-    assert _in_spanish(r, 422) == ("No se puede recuperar: RT-TWO-B: no hay nada fuera en esta línea; "
+    assert _in_spanish(r, 422) == ("No se puede marcar como disponible: "
+                                   "RT-TWO-B: no hay nada reservado ni fuera en esta línea; "
                                    "RT-TWO-A: la cantidad devuelta debe ser mayor que cero")

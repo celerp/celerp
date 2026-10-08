@@ -502,6 +502,8 @@
   "lines.reserve_status": "Không thể giữ {skus}: chỉ có thể giữ thêm hàng trên bản ghi ở trạng thái cho phép.",
   "lines.cannot_fulfil": "Không thể giao hàng: {reasons}",
   "lines.cannot_revert": "Không thể nhận lại: {reasons}",
+  "lines.cannot_set_available": "Không thể đặt thành có sẵn: {reasons}",
+  "lines.available_nothing_held": "{name}: không có gì đang được giữ hoặc ở ngoài trên dòng này",
   "lines.revert_unattributed": "{sku} đã được giao trên chứng từ này nhưng không có ghi nhận thuộc dòng nào",
   "lines.revert_nothing_out": "{name}: không có gì đang ở ngoài trên dòng này",
   "lines.revert_hold_whole": "{name}: hàng giữ chỉ được trả lại toàn bộ",

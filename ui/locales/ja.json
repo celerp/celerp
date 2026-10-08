@@ -502,6 +502,8 @@
   "lines.reserve_status": "{skus} を確保できません: 新たな在庫の確保は、それを許可するステータスの記録でのみ可能です。",
   "lines.cannot_fulfil": "出荷できません: {reasons}",
   "lines.cannot_revert": "戻せません: {reasons}",
+  "lines.cannot_set_available": "「利用可能」に設定できません: {reasons}",
+  "lines.available_nothing_held": "{name}: この行で確保中または出ているものはありません",
   "lines.revert_unattributed": "{sku} はこの記録で出荷されましたが、どの行の分か記録がありません",
   "lines.revert_nothing_out": "{name}: この行で出ているものはありません",
   "lines.revert_hold_whole": "{name}: 確保は全量でのみ解除できます",

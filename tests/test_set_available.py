@@ -73,9 +73,22 @@ async def test_one_line_with_nothing_to_give_back_changes_nothing(client, h):
     d, (a, b, _c), (l0, l1, l2) = await _held_and_sold(client, h, "SA-2")
     r = await _set_available(client, h, d, line_ids=[l0, l1, l2])
     assert r.status_code == 422, r.text
-    assert _key(r) == "lines.cannot_revert"
+    assert _key(r) == "lines.cannot_set_available"
+    assert r.json()["detail"]["message"] == "Cannot set as available: SA-2-C: nothing is held or out on this line"
     assert (await item(client, h, a))["status"] == "reserved"
     assert (await item(client, h, b))["status"] == "sold"
+
+
+async def test_a_stale_set_available_names_the_action_the_user_took(client, h):
+    """A second tab sets a held line available after the first already did: the refusal is
+    about setting it as available, not about taking goods back."""
+    d, _lots, (l0, _l1, _l2) = await _held_and_sold(client, h, "SA-5")
+    assert (await _set_available(client, h, d, line_ids=[l0])).status_code == 200
+    r = await _set_available(client, h, d, line_ids=[l0])
+    assert r.status_code == 422, r.text
+    assert _key(r) == "lines.cannot_set_available"
+    assert r.json()["detail"]["message"] == "Cannot set as available: SA-5-A: nothing is held or out on this line"
+    assert "take back" not in r.json()["detail"]["message"].lower()
 
 
 async def test_a_memo_line_comes_back_in_part_beside_a_released_hold(client, h):

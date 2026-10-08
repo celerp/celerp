@@ -535,6 +535,8 @@
   "lines.reserve_status": "{skus}ን ማስያዝ አልተቻለም፦ አዲስ ክምችት ሊያዝ የሚችለው ሁኔታው በሚፈቅድ መዝገብ ላይ ብቻ ነው።",
   "lines.cannot_fulfil": "ትዕዛዝ መፈጸም አልተቻለም፦ {reasons}",
   "lines.cannot_revert": "መመለስ አይቻልም: {reasons}",
+  "lines.cannot_set_available": "እንዳለ ማዘጋጀት አይቻልም: {reasons}",
+  "lines.available_nothing_held": "{name}: በዚህ መስመር ላይ የተያዘ ወይም ውጭ ያለ ምንም የለም",
   "lines.revert_unattributed": "{sku} በዚህ መዝገብ ላይ ተልኳል፣ ነገር ግን ለየትኛው መስመር እንደሆነ የተመዘገበ ነገር የለም",
   "lines.revert_nothing_out": "{name}: በዚህ መስመር ላይ ውጭ ያለ ምንም የለም",
   "lines.revert_hold_whole": "{name}: የተያዘ እቃ የሚለቀቀው ሙሉ በሙሉ ብቻ ነው",

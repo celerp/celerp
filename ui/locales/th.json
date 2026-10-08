@@ -502,6 +502,8 @@
   "lines.reserve_status": "จอง {skus} ไม่ได้: จองสต็อกเพิ่มได้เฉพาะรายการที่อยู่ในสถานะที่อนุญาตเท่านั้น",
   "lines.cannot_fulfil": "จัดส่งไม่ได้: {reasons}",
   "lines.cannot_revert": "รับคืนไม่ได้: {reasons}",
+  "lines.cannot_set_available": "ตั้งเป็นมีในสต็อกไม่ได้: {reasons}",
+  "lines.available_nothing_held": "{name}: ไม่มีสินค้าที่จองไว้หรือออกไปในรายการนี้",
   "lines.revert_unattributed": "{sku} ถูกส่งออกในเอกสารนี้ แต่ไม่มีบันทึกว่าเป็นของรายการใด",
   "lines.revert_nothing_out": "{name}: ไม่มีสินค้าออกไปในรายการนี้",
   "lines.revert_hold_whole": "{name}: การจองจะคืนได้ทั้งหมดเท่านั้น",

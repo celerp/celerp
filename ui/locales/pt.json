@@ -502,6 +502,8 @@
   "lines.reserve_status": "Não é possível reservar {skus}: novo estoque só pode ser reservado em um registro cujo status o permita.",
   "lines.cannot_fulfil": "Não é possível processar: {reasons}",
   "lines.cannot_revert": "Não é possível recolher: {reasons}",
+  "lines.cannot_set_available": "Não é possível definir como disponível: {reasons}",
+  "lines.available_nothing_held": "{name}: não há nada reservado nem fora nesta linha",
   "lines.revert_unattributed": "{sku} foi enviado neste registro, mas nada indica para qual linha",
   "lines.revert_nothing_out": "{name}: não há nada fora nesta linha",
   "lines.revert_hold_whole": "{name}: uma reserva é liberada por inteiro",

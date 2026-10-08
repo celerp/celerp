@@ -502,6 +502,8 @@
   "lines.reserve_status": "Tidak dapat memesan {skus}: stok baru hanya dapat dipesan pada catatan dengan status yang mengizinkannya.",
   "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
   "lines.cannot_revert": "Tidak dapat mengambil kembali: {reasons}",
+  "lines.cannot_set_available": "Tidak dapat ditetapkan sebagai tersedia: {reasons}",
+  "lines.available_nothing_held": "{name}: tidak ada yang dipesan atau keluar pada baris ini",
   "lines.revert_unattributed": "{sku} dikirim pada catatan ini tetapi tidak tercatat untuk baris mana",
   "lines.revert_nothing_out": "{name}: tidak ada yang keluar pada baris ini",
   "lines.revert_hold_whole": "{name}: penahanan dilepas secara utuh",
