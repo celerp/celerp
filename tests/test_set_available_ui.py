@@ -9,6 +9,7 @@ field in the units they went out in, one per line, so several can be part-return
 once. Draft rows carry no shipped quantity."""
 from __future__ import annotations
 
+import json
 import re
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
@@ -19,7 +20,7 @@ from fasthtml.common import to_xml
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
-from ui.api_client import APIError
+from ui.api_client import _api_error
 
 _L0 = "11111111-1111-4111-8111-111111111111"
 _L1 = "22222222-2222-4222-8222-222222222222"
@@ -54,9 +55,10 @@ async def test_the_proxy_sends_one_request_by_line_id_with_its_key(ui_client, ba
 
 @pytest.mark.asyncio
 async def test_the_proxy_shows_the_refusal(ui_client):
-    refused = AsyncMock(side_effect=APIError(422, {"message_key": "lines.cannot_revert",
-                                                   "message": "Cannot take back: S-1: nothing is out on this line",
-                                                   "params": {"reasons": "S-1: nothing is out on this line"}}))
+    body = {"detail": {"message_key": "lines.cannot_revert",
+                       "message": "Cannot take back: S-1: nothing is out on this line",
+                       "params": {"reasons": "S-1: nothing is out on this line"}}}
+    refused = AsyncMock(side_effect=_api_error(422, body, json.dumps(body)))
     with patch("ui.api_client.set_lines_available", new=refused):
         r = await ui_client.post("/docs/x:1/set-available", cookies=_cookies(),
                                  data={"line_id": [_L0], "idempotency_key": "k"})
