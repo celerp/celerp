@@ -2063,13 +2063,16 @@ async def test_a_recovery_without_psql_changes_nothing_and_can_be_repeated(
     assert await _company_names(real_engine) == {"Alpha Trading"}
 
 
-async def test_an_update_without_psql_stops_before_anything_changes(tmp_path, monkeypatch, real_engine):
+@pytest.mark.parametrize("psql", list(PSQL))
+async def test_an_update_without_psql_stops_before_anything_changes(tmp_path, monkeypatch, real_engine, psql):
+    """Nothing is recorded, so the next automatic update tries the same version again."""
     from celerp import runtime
+    from celerp.config import settings
     from celerp.services import update
     from test_helpers import DATABASE_URL
     monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
-    _without_psql(monkeypatch, tmp_path)
+    _without_psql(monkeypatch, tmp_path, psql)
     steps = update.SupervisorSteps(
         {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
         lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
@@ -2079,8 +2082,14 @@ async def test_an_update_without_psql_stops_before_anything_changes(tmp_path, mo
     assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
     assert not update.dump_path().exists()
     assert not runtime.release_dir("1.1.0").exists()
-    assert "in_progress" not in update.read_state()
+    assert update.read_state() == {}
     assert await _company_names(real_engine) == {"Alpha Trading"}
+
+    monkeypatch.setattr(settings, "pg_bin_dir", "")
+    monkeypatch.setattr(update, "self_update_blockers", lambda: [])
+    monkeypatch.setattr(update, "refresh_check", lambda: {"latest": "1.1.0", "error": ""})
+    monkeypatch.setattr(update, "request_update", lambda target: None)
+    assert update.request_available(automatic=True) == "1.1.0"
 
 
 @pytest.mark.parametrize("psql", list(PSQL))

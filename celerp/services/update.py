@@ -473,6 +473,7 @@ async def update_loop(restart: Callable[[], None]) -> None:
 class Steps:
     """The work behind each update step. Every method raises on failure."""
 
+    def preflight(self) -> None: ...
     def dump(self, path: Path) -> None: ...
     def stage(self, target: str) -> None: ...
     def migrate(self, target: str) -> None: ...
@@ -489,11 +490,15 @@ def _mark(state: dict, current: str, target: str, step: str, reason: str = "") -
     write_state(state)
 
 
+def _result(current: str, target: str, outcome: str, reason: str) -> dict:
+    return {"ok": outcome == OK, "outcome": outcome, "from": current, "to": target,
+            "reason": reason, "at": _now(), "notified": False}
+
+
 def _finish(state: dict, current: str, target: str, outcome: str, reason: str = "") -> dict:
     """Record the outcome. A failed rollback keeps the update in progress, so
     every start retries it and nothing serves the half-restored database."""
-    result = {"ok": outcome == OK, "outcome": outcome, "from": current, "to": target,
-              "reason": reason, "at": _now(), "notified": False}
+    result = _result(current, target, outcome, reason)
     if outcome != ROLLBACK_FAILED:
         state.pop("in_progress", None)
     state["last_result"] = result
@@ -532,6 +537,13 @@ def run_update(target: str, steps: Steps) -> tuple[dict, tuple]:
     """
     target = validate_target(target)
     current = installed_version()
+    # A tool missing here is not the release's fault: nothing is recorded, so the
+    # same version is tried again once the tool is back.
+    try:
+        steps.preflight()
+    except Exception:
+        log.exception("update backup cannot start")
+        return _result(current, target, FAILED, "backup_failed"), ()
     state = read_state()
     dump = dump_path()
     dump.parent.mkdir(parents=True, exist_ok=True)
@@ -792,9 +804,11 @@ class SupervisorSteps(Steps):
     def db_url(self) -> str:
         return self.cfg["database"]["url"]
 
+    def preflight(self) -> None:
+        self._backup.restore_tools()
+
     def dump(self, path: Path) -> None:
         # A rollback restores this dump into this database.
-        self._backup.restore_tools()
         self._backup.check_restore_target(self.db_url)
         data = self._backup.dump_database(self.db_url, runner=_bound_run)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
