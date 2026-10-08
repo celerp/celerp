@@ -153,7 +153,7 @@ async def _run_pg_restore(dump_path: Path, database_url: str) -> None:
     """Run pg_restore from the staged dump file off the event loop (blocking subprocess)."""
     import asyncio
     from celerp.services.backup import restore_database_file
-    await asyncio.to_thread(restore_database_file, dump_path, database_url, clean_schema=True)
+    await asyncio.to_thread(restore_database_file, dump_path, database_url)
 
 
 async def _reconcile_schema() -> None:
@@ -866,8 +866,22 @@ async def _recovery_locks():
             yield
 
 
+def _restore_tools_missing():
+    """The failed result when the database restore tools cannot be found, before anything is changed."""
+    from celerp.services.backup import restore_tools
+    try:
+        restore_tools()
+    except RuntimeError as exc:
+        log.error("System Recovery refused: %s", exc)
+        return _failed(f"System Recovery did not start: {exc}")
+    return None
+
+
 async def _prepare_or_fail(path: Path):
     """(prepared, None) or (None, failed result) for an archive that cannot be restored."""
+    missing = _restore_tools_missing()
+    if missing is not None:
+        return None, missing
     try:
         return await prepare_recovery(path), None
     except ValueError as exc:
@@ -938,6 +952,9 @@ async def continue_recovery(confirmation_id: str, digest: str):
     if not intact:
         _remove_staging(root)
         return _failed("The staged backup changed after it was checked. Start the recovery again.")
+    missing = _restore_tools_missing()
+    if missing is not None:
+        return missing
     # The confirmation is used once.
     pending_path.unlink()
     try:

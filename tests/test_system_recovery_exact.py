@@ -13,6 +13,7 @@ import io
 import json
 import re
 import shutil
+import subprocess
 import tarfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -1584,5 +1585,275 @@ async def test_update_rollback_restores_a_database_holding_other_objects(tmp_pat
     dump = tmp_path / "database.dump"
     dump.write_bytes(await asyncio.to_thread(backup.dump_database, DATABASE_URL))
     await company(real_engine, user, "Beta Trading", "beta")
-    await asyncio.to_thread(backup.restore_database_file, dump, DATABASE_URL, clean_schema=True)
+    await asyncio.to_thread(backup.restore_database_file, dump, DATABASE_URL)
     assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+
+# ── A database restore is all or nothing ─────────────────────────────────────
+
+async def _restore_target(engine, tmp_path: Path) -> Path:
+    """Dump a database with Alpha and a module table, then change it: Beta, and a module
+    table the dump lacks whose foreign key points into a table the dump recreates."""
+    import asyncio
+
+    from celerp.services import backup
+    from test_helpers import DATABASE_URL
+    user = await owner(engine)
+    await company(engine, user, "Alpha Trading", "alpha")
+    await _execute(engine, "CREATE TABLE zz_source (company_id uuid REFERENCES companies(id))")
+    await _execute(engine, "INSERT INTO zz_source SELECT id FROM companies")
+    dump = tmp_path / "database.dump"
+    dump.write_bytes(await asyncio.to_thread(backup.dump_database, DATABASE_URL))
+    await _execute(engine, "DROP TABLE zz_source")
+    await company(engine, user, "Beta Trading", "beta")
+    await _execute(engine, "CREATE TABLE zz_extra (company_id uuid REFERENCES companies(id))")
+    await _execute(engine, "INSERT INTO zz_extra SELECT id FROM companies")
+    return dump
+
+
+async def _restore(dump: Path, runner=None) -> None:
+    import asyncio
+
+    from celerp.services import backup
+    from test_helpers import DATABASE_URL
+    await asyncio.to_thread(backup.restore_database_file, dump, DATABASE_URL, runner=runner)
+
+
+async def _assert_unchanged(engine, tables: set[str]) -> None:
+    from sqlalchemy import text
+    assert tables <= await _tables(engine)  # the fence may add its own instance_meta
+    assert await _company_names(engine) == {"Alpha Trading", "Beta Trading"}
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT count(*) FROM zz_extra"))).scalar() == 2
+
+
+def _tool(command: list[str]) -> str:
+    return Path(command[0]).stem
+
+
+def _psql_never_runs(command, **kwargs):
+    assert _tool(command) != "psql", "psql ran after pg_restore failed"
+    return subprocess.run(command, **kwargs)
+
+
+async def test_a_restore_replaces_the_database_exactly(tmp_path, real_engine):
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        await _restore(dump)
+        assert "zz_extra" not in await _tables(real_engine)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        from sqlalchemy import text
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text("SELECT count(*) FROM zz_source"))).scalar() == 1
+        assert list(tmp_path.iterdir()) == [dump]
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+def _fails_after_restoring_data(dump: Path):
+    """A statement failing after the emptying and after every row was restored."""
+    def runner(command, **kwargs):
+        if _tool(command) == "psql":
+            with Path(command[command.index("-f") + 1]).open("a") as script:
+                script.write("SELECT 1/0;\n")
+        return subprocess.run(command, **kwargs)
+    return runner
+
+
+def _cut_short(dump: Path):
+    """pg_restore writes part of the script, then fails reading the rest of the dump."""
+    dump.write_bytes(dump.read_bytes()[: dump.stat().st_size // 2])
+    return _psql_never_runs
+
+
+def _disk_full(dump: Path):
+    """The disk fills while pg_restore writes the script."""
+    def runner(command, **kwargs):
+        command = [*command]
+        command[command.index("-f") + 1] = "/dev/full"
+        return _psql_never_runs(command, **kwargs)
+    return runner
+
+
+def _not_a_dump(dump: Path):
+    dump.write_bytes(b"not a dump")
+    return _psql_never_runs
+
+
+@pytest.mark.parametrize("break_restore", [_fails_after_restoring_data, _cut_short, _disk_full, _not_a_dump],
+                         ids=["a statement fails after the data", "the dump is cut short",
+                              "the disk is full", "the dump is unreadable"])
+async def test_a_failed_restore_changes_nothing(tmp_path, real_engine, break_restore):
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        tables = await _tables(real_engine)
+        with pytest.raises(RuntimeError, match="failed"):
+            await _restore(dump, break_restore(dump))
+        await _assert_unchanged(real_engine, tables)
+        assert list(tmp_path.iterdir()) == [dump]
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp_path, real_engine):
+    """The dump recreates zz_status, which a table outside public uses, so its drop fails, and the
+    error names that failure."""
+    await _execute(real_engine, "CREATE TYPE zz_status AS ENUM ('open', 'done')")
+    try:
+        dump = await _restore_target(real_engine, tmp_path)
+        await _execute(real_engine, "CREATE SCHEMA zz")
+        await _execute(real_engine, "CREATE TABLE zz.jobs (status public.zz_status)")
+        tables = await _tables(real_engine)
+        with pytest.raises(RuntimeError, match=r"psql failed \(exit 3\): psql:\S+: ERROR:  cannot drop type"):
+            await _restore(dump)
+        await _assert_unchanged(real_engine, tables)
+    finally:
+        await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+        await _execute(real_engine, "DROP TYPE IF EXISTS zz_status")
+
+
+async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine):
+    """psql is killed at its time limit while its transaction has already emptied part of
+    the database; the server rolls the transaction back."""
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from test_helpers import DATABASE_URL
+    dump = await _restore_target(real_engine, tmp_path)
+    blocker = create_async_engine(DATABASE_URL)
+    try:
+        tables = await _tables(real_engine)
+        async with blocker.connect() as conn, conn.begin():
+            await conn.execute(text("LOCK TABLE zz_extra IN ACCESS SHARE MODE"))
+
+            def runner(command, **kwargs):
+                return subprocess.run(command, **{**kwargs, "timeout": 3 if _tool(command) == "psql" else 60})
+
+            with pytest.raises(RuntimeError, match="psql timed out"):
+                await _restore(dump, runner)
+        async with real_engine.connect() as conn:
+            for _ in range(100):
+                if not (await conn.execute(text(
+                        "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'psql'"))).scalar():
+                    break
+                await asyncio.sleep(0.1)
+        await _assert_unchanged(real_engine, tables)
+    finally:
+        await blocker.dispose()
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+# Without psql nothing starts: no marker, no safety archive, no connector or cloud call.
+
+def _without_psql(monkeypatch, tmp_path: Path) -> Path:
+    from celerp.config import settings
+    from celerp.services import backup
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("pg_dump", "pg_restore"):
+        (bin_dir / tool).symlink_to(backup._find_pg_tool(tool))
+    monkeypatch.setattr(settings, "pg_bin_dir", str(bin_dir))
+    return bin_dir
+
+
+def _record_connector_calls(monkeypatch) -> list[str]:
+    from celerp.services import backup_import
+    calls = []
+    for name in ("_current_connectors", "_reconcile_connectors"):
+        real = getattr(backup_import, name)
+
+        async def _recorded(*a, _real=real, _name=name, **kw):
+            calls.append(_name)
+            return await _real(*a, **kw)
+        monkeypatch.setattr(backup_import, name, _recorded)
+    return calls
+
+
+@pytest.mark.parametrize("entry", ["system recovery", "bootstrap recovery", "confirmed recovery"])
+async def test_a_recovery_without_psql_changes_nothing_and_can_be_repeated(
+        tmp_path, monkeypatch, code_config, real_engine, entry):
+    from celerp.config import settings
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    if entry == "confirmed recovery":
+        rec.fail_safety()
+        pending = await backup_import.run_recovery(source)
+        assert pending.needs_confirmation is True, pending.error
+
+    async def _start():
+        if entry == "system recovery":
+            return await backup_import.run_recovery(source)
+        if entry == "bootstrap recovery":
+            return await backup_import.bootstrap_recovery(source)
+        return await backup_import.continue_recovery(pending.confirmation_id, pending.archive_digest)
+
+    staged = rec.staging()
+    _without_psql(monkeypatch, tmp_path)
+    result = await _start()
+    assert result.ok is False and "psql not found" in result.error, result.error
+    assert backup_import.recovery_incomplete() is False
+    assert connector_calls == []
+    assert rec.safety_archives() == []
+    rec.cloud_snapshot.assert_not_awaited()
+    assert rec.staging() == staged
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+    monkeypatch.setattr(settings, "pg_bin_dir", "")
+    result = await _start()
+    assert result.ok is True, result.error
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+async def test_an_update_without_psql_stops_before_anything_changes(tmp_path, monkeypatch, real_engine):
+    from celerp import runtime
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    _without_psql(monkeypatch, tmp_path)
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    result, children = update.run_update("1.1.0", steps)
+    assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+    assert not update.dump_path().exists()
+    assert not runtime.release_dir("1.1.0").exists()
+    assert "in_progress" not in update.read_state()
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+async def test_an_update_rollback_after_a_failed_restore_can_be_repeated(tmp_path, monkeypatch, real_engine):
+    """The rollback an update runs (SupervisorSteps.restore): a failed attempt changes
+    nothing, and the next start repeats it."""
+    import asyncio
+
+    from celerp.config import settings
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    dump = await _restore_target(real_engine, tmp_path)
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    try:
+        tables = await _tables(real_engine)
+        _without_psql(monkeypatch, tmp_path)
+        with pytest.raises(RuntimeError, match="psql not found"):
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        await _assert_unchanged(real_engine, tables)
+        monkeypatch.setattr(settings, "pg_bin_dir", "")
+        await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert "zz_extra" not in await _tables(real_engine)
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")

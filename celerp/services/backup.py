@@ -181,10 +181,11 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-# Drops the public tables and sequences a dump may lack, in one transaction; the restore
-# drops every object the dump recreates. Dropping the schema itself would need its
-# ownership, which PostgreSQL 14 and older give the superuser.
-_EMPTY_PUBLIC = """DO $$ DECLARE r record; BEGIN
+# Drops the public tables and sequences a dump may lack; the restore script drops every
+# object the dump recreates. Dropping the schema itself would need its ownership, which
+# PostgreSQL 14 and older give the superuser.
+_EMPTY_PUBLIC = """SET client_min_messages = warning;
+DO $$ DECLARE r record; BEGIN
   FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
     EXECUTE format('DROP TABLE IF EXISTS public.%I CASCADE', r.tablename);
   END LOOP;
@@ -194,45 +195,49 @@ _EMPTY_PUBLIC = """DO $$ DECLARE r record; BEGIN
 END $$"""
 
 
-def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
-    """Restore a database from a pg_dump custom-format file, in the database's
-    mutating scope (celerp.migrations.compatibility): pg_restore writes from a
-    process of its own, so it runs inside the fence's write window. The whole
+def restore_tools() -> tuple[str, str]:
+    """pg_restore and psql, which a database restore needs; RuntimeError naming a missing one."""
+    try:
+        return _find_pg_tool("pg_restore"), _find_pg_tool("psql")
+    except FileNotFoundError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def restore_database_file(dump_path: Path, database_url: str, *, runner=None) -> None:
+    """Replace the database with a pg_dump custom-format file, all or nothing:
+    pg_restore writes the dump as a script, and psql empties the public schema and
+    runs the script in one transaction. psql writes from a process of its own, so it
+    runs inside the fence's write window (celerp.migrations.compatibility). The whole
     replacement holds the schema key alone (``celerp.cli._migration_lock``), on a
     connection of its own, so it waits for every running company backup or restore
     and they are refused until it ends."""
-    from sqlalchemy import pool, text
+    import tempfile
 
     from celerp.cli import _migration_lock
     from celerp.db_url import sync_url
     from celerp.migrations.compatibility import mutating_scope
 
-    with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url):
-        if clean_schema:
-            with held.engine(poolclass=pool.NullPool) as engine, engine.begin() as conn:
-                conn.execute(text(_EMPTY_PUBLIC))
+    pg_restore, psql = restore_tools()
+    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url), \
+            tempfile.TemporaryDirectory(dir=dump_path.parent) as work:
+        script = Path(work) / "restore.sql"
+        script.touch(mode=0o600)
+        _run_tool([pg_restore, "--clean", "--if-exists", "--no-privileges", "--no-owner",
+                   "-f", str(script), str(dump_path)], runner)
         with held.write_window():
-            _run_pg_restore(dump_path, database_url, clean_schema, runner)
+            _run_tool([psql, "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "--single-transaction",
+                       "-c", _EMPTY_PUBLIC, "-f", str(script), "-d", pg_url], runner)
 
 
-def _run_pg_restore(dump_path: Path, database_url: str, clean_schema: bool, runner) -> None:
-    mode = ["--clean", "--if-exists", *(["--single-transaction", "--exit-on-error"] if clean_schema else [])]
-    runner = runner or subprocess.run
+def _run_tool(command: list[str], runner) -> None:
+    name = Path(command[0]).stem
     try:
-        command = _restore_command(database_url, mode)
-        command.append(str(dump_path))
-        result = runner(command, capture_output=True, timeout=600)
+        result = (runner or subprocess.run)(command, capture_output=True, timeout=600)
     except FileNotFoundError as exc:
-        raise RuntimeError("pg_restore not found in PATH") from exc
+        raise RuntimeError(f"{name} not found") from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("pg_restore timed out after 600 seconds") from exc
+        raise RuntimeError(f"{name} timed out after 600 seconds") from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        if clean_schema or "ERROR" in stderr.upper():
-            raise RuntimeError(f"pg_restore failed (exit {result.returncode}): {stderr}")
-
-
-def _restore_command(database_url: str, mode: list[str]) -> list[str]:
-    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-    pg_restore = _find_pg_tool("pg_restore")
-    return [pg_restore, *mode, "--no-password", "--no-privileges", "--no-owner", "-d", pg_url]
+        raise RuntimeError(f"{name} failed (exit {result.returncode}): {stderr}")

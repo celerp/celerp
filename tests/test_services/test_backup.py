@@ -149,7 +149,7 @@ def test_relay_base_url_from_http_url():
 
 
 # ── restore_database_file ──────────────────────────────────────────────────────────
-# These cover how pg_restore is found and invoked. The URL names no real database,
+# These cover how pg_restore and psql are found and invoked. The URL names no real database,
 # so the mutating scope it runs in (covered in tests/test_db_fence.py) and the schema
 # key it holds (covered in tests/test_schema_lock_race_pg.py) are stand-ins.
 
@@ -382,18 +382,19 @@ class TestDumpDatabaseUsesResolvedPath:
 
 @pytest.mark.usefixtures("_no_scope")
 class TestRestoreDatabaseUsesResolvedPath:
-    """restore_database_file must resolve pg_restore via _find_pg_tool."""
+    """restore_database_file must resolve pg_restore and psql via _find_pg_tool."""
 
     def test_finds_pg_restore_via_candidate_dir_on_macos(self, monkeypatch, tmp_path):
-        """When pg_restore is only in a candidate dir (not in PATH), restore_database_file finds it."""
+        """When pg_restore and psql are only in a candidate dir (not in PATH), restore_database_file finds them."""
         import sys as _sys
         from celerp.services import backup as backup_mod
         monkeypatch.setattr(_sys, "platform", "darwin")
 
         bin_dir = tmp_path / "fake_pg"
         bin_dir.mkdir()
-        (bin_dir / "pg_restore").write_text("#!/bin/sh\nexit 0\n")
-        (bin_dir / "pg_restore").chmod(0o755)
+        for tool in ("pg_restore", "psql"):
+            (bin_dir / tool).write_text("#!/bin/sh\nexit 0\n")
+            (bin_dir / tool).chmod(0o755)
 
         monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [bin_dir])
         monkeypatch.setenv("PATH", "")

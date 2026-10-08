@@ -793,6 +793,7 @@ class SupervisorSteps(Steps):
         return self.cfg["database"]["url"]
 
     def dump(self, path: Path) -> None:
+        self._backup.restore_tools()  # a rollback restores this dump
         data = self._backup.dump_database(self.db_url, runner=_bound_run)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
@@ -852,9 +853,7 @@ class SupervisorSteps(Steps):
         from celerp.migrations.compatibility import mutating_scope
 
         with mutating_scope(sync_url(self.db_url), accept=target):
-            self._backup.restore_database_file(
-                path, self.db_url, clean_schema=True, runner=_bound_run
-            )
+            self._backup.restore_database_file(path, self.db_url, runner=_bound_run)
 
     def stop_cluster(self) -> None:
         """Stop the embedded database, so the next supervisor starts it with
