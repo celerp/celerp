@@ -143,7 +143,7 @@ def test_wipe_missing_cluster_is_noop(config_dir):
     assert not embedded_pg.pgdata_dir(config_dir).exists()
 
 
-def test_bin_dir_has_pg_dump_and_restore(config_dir):
+def test_bin_dir_has_the_backup_and_restore_tools(config_dir):
     bd = embedded_pg.bin_dir()
     assert bd is not None
     from pathlib import Path
@@ -151,6 +151,7 @@ def test_bin_dir_has_pg_dump_and_restore(config_dir):
     exe = ".exe" if os.name == "nt" else ""
     assert (Path(bd) / f"pg_dump{exe}").exists()
     assert (Path(bd) / f"pg_restore{exe}").exists()
+    assert (Path(bd) / f"psql{exe}").exists()
 
 
 def test_backup_find_pg_tool_resolves_bundled(config_dir, monkeypatch):
@@ -327,7 +328,7 @@ def test_stop_cluster_stops_and_ensure_restarts_with_data(config_dir):
         engine.dispose()
 
 
-def test_clean_schema_restore_returns_database_to_the_dump(config_dir, monkeypatch):
+def test_restore_returns_database_to_the_dump(config_dir, monkeypatch):
     """What an update rollback relies on: after the restore the database is the
     dump exactly, including removal of tables created after it."""
     from celerp.config import settings
@@ -349,7 +350,7 @@ def test_clean_schema_restore_returns_database_to_the_dump(config_dir, monkeypat
 
     dump_path = config_dir / "database.dump"
     dump_path.write_bytes(dump)
-    backup.restore_database_file(dump_path, uri, clean_schema=True)
+    backup.restore_database_file(dump_path, uri)
 
     engine = create_engine(_sync(uri))
     try:
@@ -365,7 +366,7 @@ def test_clean_schema_restore_returns_database_to_the_dump(config_dir, monkeypat
         engine.dispose()
 
 
-def test_clean_schema_restore_of_bad_dump_raises(config_dir, monkeypatch):
+def test_restore_of_bad_dump_raises(config_dir, monkeypatch):
     from celerp.config import settings
     from celerp.services import backup
 
@@ -374,4 +375,4 @@ def test_clean_schema_restore_of_bad_dump_raises(config_dir, monkeypatch):
     bad = config_dir / "database.dump"
     bad.write_bytes(b"not a dump")
     with pytest.raises(RuntimeError, match="pg_restore failed"):
-        backup.restore_database_file(bad, uri, clean_schema=True)
+        backup.restore_database_file(bad, uri)

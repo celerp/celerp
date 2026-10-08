@@ -24,17 +24,20 @@ permissions:
 env:
   PBS_TAG: "20260414"
   PBS_PYTHON: "3.12.13"
-  # Bundled pg_dump/pg_restore, built from source (macOS). Pin version + SHA256
+  # Bundled pg_dump/pg_restore/psql, built from source (macOS). Pin version + SHA256
   # for every tarball. pg_dump 17.x dumps the embedded server (17) and any
   # external server <= 17.
   PG_VERSION: "17.10"
   PG_SHA256: "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90"
   OPENSSL_VERSION: "3.5.6"
   OPENSSL_SHA256: "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736"
-  # Windows pg_dump/pg_restore: extracted from the official PostgreSQL (EDB)
+  # Windows pg_dump/pg_restore/psql: extracted from the official PostgreSQL (EDB)
   # Windows binaries. The embedded server has no pg_dump, so backup needs these.
   PG_WIN_VERSION: "17.10-1"
   PG_WIN_SHA256: "f9aafca58e7026a1ef2caeee711acf761671e57904d430adc85f468374f5a821"
+  # The tools and their DLL closure (resolved via objdump): libpq, OpenSSL,
+  # gettext+iconv (LGPL), lz4, zstd, mingw winpthreads. Part of the cache key.
+  PG_WIN_FILES: "pg_dump.exe pg_restore.exe psql.exe libpq.dll libcrypto-3-x64.dll libssl-3-x64.dll libintl-9.dll libiconv-2.dll libwinpthread-1.dll liblz4.dll libzstd.dll"
 
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
@@ -204,7 +207,7 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install . -c constraints.txt
 
-      # ── Bundled pg_dump/pg_restore (macOS) ──────────────────────────────
+      # ── Bundled pg_dump/pg_restore/psql (macOS) ──────────────────────────────
       # Built from source for both arches in this one arm64 job (x86_64 slice
       # cross-compiled with Rosetta). Cached on version + script hash so normal
       # builds skip the multi-minute compile.
@@ -216,14 +219,14 @@ jobs:
           path: electron/pg-tools
           key: pg-tools-${{ runner.os }}-pg${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools.sh') }}
 
-      - name: Build bundled pg_dump/pg_restore (macOS, both arches)
+      - name: Build bundled pg_dump/pg_restore/psql (macOS, both arches)
         if: matrix.os == 'macos-latest' && steps.pg-tools-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           bash electron/scripts/build-pg-tools.sh arm64  "$PWD/electron/pg-tools/mac-arm64"
           bash electron/scripts/build-pg-tools.sh x86_64 "$PWD/electron/pg-tools/mac-x64"
 
-      # ── Bundled pg_dump/pg_restore (Windows) ────────────────────────────
+      # ── Bundled pg_dump/pg_restore/psql (Windows) ────────────────────────────
       # The @embedded-postgres Windows package ships no pg_dump, so extract it +
       # its transitive DLL closure from the official PostgreSQL (EDB) binaries.
       - name: Cache pg-tools (Windows)
@@ -232,9 +235,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: electron/pg-tools/win
-          key: pg-tools-win-${{ env.PG_WIN_VERSION }}-${{ env.PG_WIN_SHA256 }}
+          key: pg-tools-win-${{ env.PG_WIN_VERSION }}-${{ env.PG_WIN_SHA256 }}-${{ env.PG_WIN_FILES }}
 
-      - name: Fetch bundled pg_dump/pg_restore (Windows)
+      - name: Fetch bundled pg_dump/pg_restore/psql (Windows)
         if: matrix.os == 'windows-latest' && steps.pg-tools-win-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
@@ -244,18 +247,14 @@ jobs:
           echo "${PG_WIN_SHA256} *pg-win.zip" | sha256sum -c -
           DEST="electron/pg-tools/win/bin"
           mkdir -p "$DEST"
-          # pg_dump/pg_restore + their transitive DLL closure (resolved via objdump):
-          # libpq, OpenSSL (crypto/ssl), gettext+iconv (LGPL), lz4, zstd, mingw winpthreads.
-          7z e pg-win.zip -o"$DEST" -y \
-            "pgsql/bin/pg_dump.exe" "pgsql/bin/pg_restore.exe" \
-            "pgsql/bin/libpq.dll" "pgsql/bin/libcrypto-3-x64.dll" "pgsql/bin/libssl-3-x64.dll" \
-            "pgsql/bin/libintl-9.dll" "pgsql/bin/libiconv-2.dll" "pgsql/bin/libwinpthread-1.dll" \
-            "pgsql/bin/liblz4.dll" "pgsql/bin/libzstd.dll" >/dev/null
+          7z e pg-win.zip -o"$DEST" -y $(printf 'pgsql/bin/%s ' $PG_WIN_FILES) >/dev/null
           rm -f pg-win.zip
           ls "$DEST"
-          "$DEST/pg_dump.exe" --version   # smoke test (runs with the bundled DLLs)
+          for t in pg_dump pg_restore psql; do
+            PATH="/c/Windows/System32" "$DEST/$t.exe" --version   # runs with the bundled DLLs only
+          done
 
-      # ── Bundled pg_dump/pg_restore (Linux) ──────────────────────────────
+      # ── Bundled pg_dump/pg_restore/psql (Linux) ──────────────────────────────
       # No portable prebuilt exists (theseus-rs needs system OpenSSL-3; musl needs
       # the musl loader), so build from source in a manylinux_2_28 container
       # (glibc 2.28) for portability matching the rest of the AppImage.
@@ -267,7 +266,7 @@ jobs:
           path: electron/pg-tools/linux
           key: pg-tools-linux-${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools-linux.sh') }}
 
-      - name: Build bundled pg_dump/pg_restore (Linux, manylinux)
+      - name: Build bundled pg_dump/pg_restore/psql (Linux, manylinux)
         if: matrix.os == 'ubuntu-latest' && steps.pg-tools-linux-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
@@ -515,10 +514,10 @@ jobs:
           done
           echo "electron-builder failed after 3 attempts" >&2; exit 1
 
-      # Prove the licenses/ folder actually made it into the packaged artifact —
-      # the pre-build check only proves licenses/ existed before electron-builder
-      # ran, not that extraResources put it in the .app/.exe/.AppImage resources.
-      - name: Verify licenses landed in the packaged artifact
+      # Prove the licenses/ folder and the PostgreSQL tools actually made it into
+      # the packaged artifact: the pre-build checks only prove they existed before
+      # electron-builder ran, not that extraResources put them in the resources.
+      - name: Verify licenses and PostgreSQL tools in the packaged artifact
         shell: bash
         run: |
           set -eo pipefail
@@ -547,9 +546,6 @@ jobs:
             test -d "$RES/licenses/postgresql"   # from the built-from-source pg_dump tools
             test -d "$RES/licenses/openssl"
           fi
-          if [ "$OS" = "ubuntu-latest" ]; then
-            test -f "$RES/pg-linux/bin/pg_dump"  # backup pg_dump bundled
-          fi
           # Windows: the StackBuilder DLLs (wxWidgets + libcurl) must have been
           # pruned by afterPack — fail loudly if any leaked into the package
           # (otherwise we'd ship the wxWindows-licensed DLLs without attribution).
@@ -560,11 +556,48 @@ jobs:
               ls "$BIN"/wx*.dll "$BIN"/libcurl.dll 2>/dev/null >&2
               exit 1
             fi
-            # bundled pg_dump (for backup) + libpq must be packaged
-            test -f "$RES/pg-win/bin/pg_dump.exe"
-            test -f "$RES/pg-win/bin/libpq.dll"
           fi
-          echo "OK: third-party licenses present in packaged artifact"
+          # Backup and restore run these tools from the package: each must be
+          # executable, built for its architecture, and start with only the
+          # libraries the package ships plus the system's.
+          TOOLS="pg_dump pg_restore psql"
+          case "$OS" in
+            macos-latest)
+              for tree in "pg-arm64 arm64" "pg-x64 x86_64"; do
+                set -- $tree
+                for t in $TOOLS; do
+                  f="$RES/$1/bin/$t"
+                  test -x "$f"
+                  test "$(lipo -archs "$f")" = "$2"
+                  otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+                    case "$dep" in
+                      /usr/lib/*|/System/Library/*) ;;
+                      @rpath/*) test -f "$RES/$1/lib/${dep#@rpath/}" ;;
+                      *) echo "ERROR: $f needs $dep" >&2; exit 1 ;;
+                    esac
+                  done
+                  env -u DYLD_LIBRARY_PATH arch "-$2" "$f" --version
+                done
+              done ;;
+            windows-latest)
+              for t in $TOOLS; do
+                f="$RES/pg-win/bin/$t.exe"
+                test -x "$f"
+                pe="$(od -An -t u4 -j 60 -N 4 "$f" | tr -d ' ')"
+                test "$(od -An -t x2 -j $((pe + 4)) -N 2 "$f" | tr -d ' ')" = "8664"
+                # The loader finds DLLs beside the exe or in System32, nowhere else.
+                PATH="/c/Windows/System32" "$f" --version
+              done ;;
+            *)
+              for t in $TOOLS; do
+                f="$RES/pg-linux/bin/$t"
+                test -x "$f"
+                case "$(file -b "$f")" in "ELF 64-bit LSB"*x86-64*) ;; *) exit 1 ;; esac
+                if env -u LD_LIBRARY_PATH ldd "$f" | grep "not found"; then exit 1; fi
+                env -u LD_LIBRARY_PATH "$f" --version
+              done ;;
+          esac
+          echo "OK: third-party licenses and PostgreSQL tools present in packaged artifact"
 
       # The packaged default modules must be exactly the ones the lock names, with
       # the same content. The packaged Python runs the packaged loader's check.
