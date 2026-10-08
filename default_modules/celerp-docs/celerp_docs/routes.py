@@ -257,13 +257,17 @@ def _step_id(key: str, *parts) -> uuid.UUID:
 
 
 async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_type: str,
-                       entity_id: str | None, digest: str) -> dict | None:
-    """What an earlier call of this same request returned, or None when there was none."""
+                       entity_id: str | None, digest: str, with_event_id: bool = False) -> dict | None:
+    """What an earlier call of this same request returned, or None when there was none.
+    ``with_event_id``: the call answered with its event's id beside the recorded result."""
     replay = await find_event_by_idempotency(session, company_id, key)
     if replay is None:
         return None
     _check_replay(replay, event_type=event_type, digest=digest, entity_id=entity_id)
-    return (replay.metadata_ or {}).get("result") or {"event_id": replay.id}
+    result = (replay.metadata_ or {}).get("result")
+    if with_event_id:
+        return {"event_id": replay.id, **(result or {})}
+    return result or {"event_id": replay.id}
 
 
 _PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id"})
@@ -3807,7 +3811,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("receive", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.received",
-                                   entity_id=entity_id, digest=digest)) is not None:
+                                   entity_id=entity_id, digest=digest, with_event_id=True)) is not None:
         return done
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
@@ -4113,6 +4117,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     landed_by_account[code] = landed_by_account.get(code, 0.0) + sum(
                         u * stock_qty_received for u in _landed.values())
 
+    # What this receipt did with each line it received: stock lines add stock, the rest none.
+    line_counts = {"stock": 0, "expense": 0, "asset": 0}
+    for it in payload.received_items:
+        line_counts[it.receive_as] += 1
+    result = {"line_counts": line_counts}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
         data={
@@ -4124,7 +4133,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             "created_item_ids": created_item_ids,
         },
         actor_id=user.id, location_id=location_uuid, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        idempotency_key=key, metadata_={"request": digest, "result": result},
     )
 
     if doc_type == "purchase_order":
@@ -4153,7 +4162,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         )
     # consignment_in: no JE (goods not owned).
     await session.commit()
-    return {"event_id": entry.id}
+    return {"event_id": entry.id, **result}
 
 
 def _lot_additions(doc: dict) -> dict[str, tuple[float, float]]:

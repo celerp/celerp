@@ -3218,12 +3218,14 @@ celerpUpdateBulkAlloc();
             data = {"location_id": location_id, "received_items": received_items, **submitted_operation_key(form)}
             if notes:
                 data["notes"] = notes
-            await api.receive_po(token, entity_id, data)
+            result = await api.receive_po(token, entity_id, data)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(refusal_text(e.data or e.detail))
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        summary = _receive_summary(result.get("line_counts"))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
+                                                **(toast_header(summary, "info") if summary else {})})
 
     @app.post("/docs/{entity_id}/return-goods")
     async def return_goods_route(request: Request, entity_id: str):
@@ -5860,6 +5862,27 @@ def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float) 
         Span(unit_label, cls="line-qty-unit") if unit_label else "",
         cls="line-qty",
     )
+
+
+def _receive_summary(line_counts: dict | None) -> str:
+    """What a receipt did with its lines: how many added stock, and how many expense and asset
+    lines added none. Groups with no lines are left out; no counts, no summary."""
+    if not line_counts:
+        return ""
+
+    def _n(kind: str) -> str:
+        n = int(line_counts.get(kind) or 0)
+        return t(f"documents.receive_summary_{kind}_{'one' if n == 1 else 'many'}", n=n) if n else ""
+
+    parts = []
+    if stock := _n("stock"):
+        parts.append(stock)
+    no_stock = [g for g in (_n("expense"), _n("asset")) if g]
+    if len(no_stock) == 2:
+        parts.append(t("documents.receive_summary_no_stock_two", first=no_stock[0], second=no_stock[1]))
+    elif no_stock:
+        parts.append(t("documents.receive_summary_no_stock", groups=no_stock[0]))
+    return " ".join(parts)
 
 
 def _selected_line_quantities(form) -> list[tuple[int, float | None]]:
