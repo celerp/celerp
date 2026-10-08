@@ -3206,13 +3206,8 @@ celerpUpdateBulkAlloc();
             # Only the selected rows submit a quantity. Each names its line; the server takes
             # the goods, their kind and their cost from that line.
             received_items = []
-            for key in sorted((k for k in form.keys() if re.fullmatch(r"qty_\d+", k)), key=lambda k: int(k[4:])):
-                idx = int(key[4:])
-                try:
-                    qty = float(str(form.get(key, "")).strip())
-                except ValueError:
-                    qty = 0.0
-                if not (math.isfinite(qty) and qty > 0):
+            for idx, qty in _selected_line_quantities(form):
+                if qty is None:
                     return _action_error(t("documents.receive_pick_quantity"))
                 item = {"po_line_index": idx, "quantity_received": qty}
                 if line_id := str(form.get(f"line_id_{idx}", "")).strip():
@@ -3224,6 +3219,30 @@ celerpUpdateBulkAlloc();
             if notes:
                 data["notes"] = notes
             await api.receive_po(token, entity_id, data)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(refusal_text(e.data or e.detail))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+
+    @app.post("/docs/{entity_id}/return-goods")
+    async def return_goods_route(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            form = await request.form()
+            # Only the selected rows submit a quantity, in stock units. Each names its line.
+            lines = []
+            for idx, qty in _selected_line_quantities(form):
+                if qty is None:
+                    return _action_error(t("documents.receive_pick_quantity"))
+                line_id = str(form.get(f"line_id_{idx}", "")).strip()
+                lines.append({**({"line_id": line_id} if line_id else {"line_index": idx}), "quantity_returned": qty})
+            if not lines:
+                return _action_error(t("documents.return_nothing_selected"))
+            await api.return_goods(token, entity_id, {"lines": lines, **submitted_operation_key(form)})
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -5843,19 +5862,32 @@ def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float) 
     )
 
 
-def _receive_rows(line_items: list) -> list:
-    """One row per document line for the Receive Goods form, a fieldset the page script shows
-    and enables only while its line is selected. A line still awaiting goods offers what it awaits;
-    a line received in full says so and submits nothing."""
+def _selected_line_quantities(form) -> list[tuple[int, float | None]]:
+    """(line index, quantity) for each ``qty_<i>`` a line form submitted, in line order; the
+    quantity is None unless it is a positive number."""
+    out = []
+    for key in sorted((k for k in form.keys() if re.fullmatch(r"qty_\d+", k)), key=lambda k: int(k[4:])):
+        try:
+            qty = float(str(form.get(key, "")).strip())
+        except ValueError:
+            qty = 0.0
+        out.append((int(key[4:]), qty if math.isfinite(qty) and qty > 0 else None))
+    return out
+
+
+def _line_action_rows(line_items: list, available, unit, none_left: str) -> list:
+    """One row per document line for a form acting on the selected lines, a fieldset the page
+    script shows and enables only while its line is selected. A line with something to act on
+    offers all of it, ``available(line)`` in ``unit(line)``; any other line says ``none_left``
+    and submits nothing."""
     rows = []
     for i, li in enumerate(line_items):
-        outstanding = max(0.0, float(li.get("quantity") or 0) - float(li.get("quantity_received") or 0))
+        qty = available(li)
         label = Span(li.get("sku") or li.get("description") or li.get("name") or "--", cls="receive-row__label")
-        if outstanding <= 1e-9:
-            body = [label, Span(t("documents.already_received"), cls="text-muted")]
+        if qty <= 1e-9:
+            body = [label, Span(none_left, cls="text-muted")]
         else:
-            body = [label, _line_qty_input(f"qty_{i}", outstanding, li.get("purchase_unit") or li.get("unit") or "",
-                                           outstanding)]
+            body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty)]
             if li.get("line_id"):
                 body.append(Input(type="hidden", name=f"line_id_{i}", value=li["line_id"]))
         rows.append(Fieldset(*body, cls="receive-row inline-form-row", data_line_index=str(i),
@@ -5863,12 +5895,32 @@ def _receive_rows(line_items: list) -> list:
     return rows
 
 
+def _receive_rows(line_items: list) -> list:
+    """Receive Goods rows: a line still awaiting goods offers what it awaits, in its purchase unit."""
+    return _line_action_rows(
+        line_items,
+        lambda li: max(0.0, float(li.get("quantity") or 0) - float(li.get("quantity_received") or 0)),
+        lambda li: li.get("purchase_unit") or li.get("unit") or "",
+        t("documents.already_received"),
+    )
+
+
+def _return_rows(line_items: list) -> list:
+    """Return Goods rows: a line offers what of its goods is on hand and free, in stock units."""
+    return _line_action_rows(
+        line_items,
+        lambda li: float(li.get("returnable_quantity") or 0),
+        lambda li: li.get("unit") or "",
+        t("documents.nothing_to_return"),
+    )
+
+
 def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     show_fulfill=True: add Set as shipped / Set as available as dropdown options.
     show_reserve=True: add Set as reserved (ledger-neutral) as a dropdown option.
-    is_inbound=True: show Receive Goods / Return Goods targeting POST/DELETE /receive.
+    is_inbound=True: show Receive Goods / Return Goods for the selected lines' quantities.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -5954,12 +6006,14 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     hx_confirm=t("documents.confirm_receive_selected"),
                 ),
                 Form(
+                    *_return_rows(inbound_line_items or []),
+                    operation_key_input(),
                     Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
                     id="li-bulk-revert-btn",
                     style="display:none",
-                    hx_delete=f"/docs/{entity_id}/receive",
+                    hx_post=f"/docs/{entity_id}/return-goods",
                     hx_swap="none",
-                    hx_confirm=f"{_revert_label}?",
+                    hx_confirm=t("documents.confirm_return_selected"),
                 ),
             ]
         else:
@@ -9109,11 +9163,11 @@ async function celerpCsvImport(input, entityId) {{
   var countEl=document.getElementById('li-bulk-count');
   var sel=document.getElementById('li-bulk-select');
   function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
-  // The receipt form shows and enables the row of each selected line only.
+  // The receive and return forms show and enable the row of each selected line only.
   function _syncReceiveRows(){{
     var picked={{}};
     if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{picked[cb.getAttribute('data-line-index')]=1;}});
-    document.querySelectorAll('#li-bulk-fulfill-btn fieldset.receive-row').forEach(function(row){{
+    document.querySelectorAll('#li-bulk-fulfill-btn fieldset.receive-row, #li-bulk-revert-btn fieldset.receive-row').forEach(function(row){{
       var on=!!picked[row.getAttribute('data-line-index')];
       row.style.display=on?'':'none';
       row.disabled=!on;

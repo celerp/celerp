@@ -400,15 +400,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("returned_items", [])
         current["returned_items"].extend(returned)
 
-        # Calculate total received vs total returned per item
-        received_items = current.get("received_items", [])
-        total_received = sum(float(x.get("quantity_received", 0) or 0) for x in received_items)
-        total_returned = sum(float(x.get("quantity_returned", 0) or 0) for x in current["returned_items"])
-
-        if total_received > 0 and total_returned + 1e-9 >= total_received:
-            current["status"] = "returned"
-        elif total_returned > 0:
-            current["status"] = "partial_returned"
+        if "all_returned" in data:
+            current["status"] = "returned" if data["all_returned"] else "partial_returned"
+        else:
+            # Returns recorded before the event said so: compare the raw quantities.
+            received_items = current.get("received_items", [])
+            total_received = sum(float(x.get("quantity_received", 0) or 0) for x in received_items)
+            total_returned = sum(float(x.get("quantity_returned", 0) or 0) for x in current["returned_items"])
+            if total_received > 0 and total_returned + 1e-9 >= total_received:
+                current["status"] = "returned"
+            elif total_returned > 0:
+                current["status"] = "partial_returned"
     elif event_type == "doc.return_received":
         # Customer return on a credit note: track what came back (status unchanged - CN stays final/paid)
         items = data.get("items", [])

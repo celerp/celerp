@@ -225,9 +225,10 @@ class _ReceiveRows(HTMLParser):
     the inputs in those rows' fieldsets (the page's script enables only theirs) and every
     shared input."""
 
-    def __init__(self, selected: set[int]):
+    def __init__(self, selected: set[int], form_id: str = "li-bulk-fulfill-btn"):
         super().__init__()
         self.selected = selected
+        self.form_id = form_id
         self.fields: list[tuple[str, str]] = []
         self.qty_inputs: dict[str, dict] = {}
         self.confirm: str | None = None
@@ -237,7 +238,7 @@ class _ReceiveRows(HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "form":
-            self._inside = a.get("id") == "li-bulk-fulfill-btn"
+            self._inside = a.get("id") == self.form_id
             if self._inside:
                 self.confirm = a.get("hx-confirm")
         elif self._inside and tag == "fieldset":

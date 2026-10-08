@@ -46,6 +46,12 @@ RECEIVABLE_STATUSES: dict[str, frozenset[str]] = {
     "purchase_order": _RECEIVING_STATUSES | {"draft"},
 }
 
+# Statuses a purchase document sends goods back to its supplier in (POST /return-items): once
+# goods have come in on it, and until all of them have gone back.
+SUPPLIER_RETURN_STATUSES: frozenset[str] = frozenset({
+    "received", "partially_received", "partial_returned", "awaiting_payment",
+})
+
 # Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
 # These are recurring template docs - they should never show a fulfill button.
 TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscription_po"})
