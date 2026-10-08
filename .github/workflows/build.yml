@@ -669,15 +669,16 @@ jobs:
           ok=""
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             kill -0 "$APP_PID" 2>/dev/null || { echo "::error::app exited before becoming ready (crash on launch)"; break; }
-            if curl -fs "http://127.0.0.1:$API_PORT/health/ready" 2>/dev/null | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then
+            if curl -fs --max-time 5 "http://127.0.0.1:$API_PORT/health/ready" 2>/dev/null | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then
               ok=1; break
             fi
             sleep 1
           done
           if [ -z "$ok" ]; then
-            kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
             echo "::error::boot smoke FAILED on $RUNNER_OS - /health/ready never returned db:ok"
             echo "----- app log (tail) -----"; tail -n 200 "$LOG" || true
+            find "$HOME" -path '*celerp-data/logs/*' -type f -exec tail -n 100 {} + || true
+            kill -9 "$APP_PID" 2>/dev/null || true
             exit 1
           fi
           echo "boot smoke OK on $RUNNER_OS"

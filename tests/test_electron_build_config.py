@@ -421,6 +421,12 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
         assert smoke["timeout-minutes"] == 15
     assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
             and "export ENABLED_MODULES" in unix["run"])
+    # A boot that never gets ready shows the app's output and logs, then ends the app,
+    # which may not act on SIGTERM; the readiness poll itself cannot block.
+    assert 'curl -fs --max-time 5 "http://127.0.0.1:$API_PORT/health/ready"' in unix["run"]
+    failed = unix["run"].split('if [ -z "$ok" ]; then', 1)[1].split("\nfi\n", 1)[0]
+    assert failed.index("-path '*celerp-data/logs/*'") < failed.index('kill -9 "$APP_PID"')
+    assert "wait" not in failed
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
     assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
