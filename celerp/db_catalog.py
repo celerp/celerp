@@ -166,7 +166,7 @@ _UNDER = (
     "  WHERE c.relname = :t AND c.relnamespace = to_regnamespace(current_schema()) "
     "  UNION SELECT i.inhrelid FROM down JOIN pg_inherits i ON i.inhparent = down.oid) ")
 # Lock timeout and undefined table: a table being changed or gone.
-_OUT_OF_REACH = {"55P03", "42P01"}
+_OUT_OF_REACH = {"55P03", "42P01", "40P01"}
 
 
 class TableElsewhere(Exception):
@@ -265,8 +265,8 @@ async def _hold(session: AsyncSession, names: list[str], mode: str) -> str | Non
     under them in ``mode`` until the transaction ends, then return the first of them gone,
     replaced under the same name (dropped and made again, emptied, rewritten or swapped
     for another) or ``reshaped``, named as the catalog names it, or None. A table kept
-    locked by another connection past the lock timeout (or at once, with ``NOWAIT``)
-    counts as reshaped, as does one row security was turned on for (``hidden``).
+    locked by another connection past the lock timeout, or locked against this one in a
+    deadlock, counts as reshaped, as does one row security was turned on for (``hidden``).
     Rewriting a table's rows in place (VACUUM FULL, CLUSTER) stores them anew, so it
     counts as replaced too, and trying again succeeds."""
     for name in names:
@@ -301,11 +301,12 @@ async def hold(session: AsyncSession, names: list[str]) -> str | None:
 
 
 async def fence(session: AsyncSession, names: list[str]) -> str | None:
-    """``_hold`` in SHARE UPDATE EXCLUSIVE mode, refusing at once any table another
-    connection is changing: from here until the transaction ends no table can be joined
-    to them and no foreign key added to them. Writes to their rows still go on. Held only
-    for the short end of a long read, since it also waits out maintenance on the tables."""
-    return await _hold(session, names, "SHARE UPDATE EXCLUSIVE MODE NOWAIT")
+    """``_hold`` in SHARE UPDATE EXCLUSIVE mode: from here until the transaction ends no
+    table can be joined to them and no foreign key added to them. Writes to their rows
+    still go on. Held only for the short end of a long read. It waits out maintenance on
+    the tables within the lock timeout (Postgres cancels an autovacuum that blocks it), so
+    only a table another connection keeps changing past that is refused."""
+    return await _hold(session, names, "SHARE UPDATE EXCLUSIVE MODE")
 
 
 def changed_schema(expected: dict[str, Table], current: dict[str, Table], names: Collection[str]) -> str | None:

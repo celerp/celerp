@@ -2055,6 +2055,33 @@ async def test_only_a_table_kept_out_of_reach_refuses_the_hold(real_engine, time
         await _bk_drop(real_engine, "zz_gadgets")
 
 
+async def test_the_fence_waits_out_maintenance_on_a_carried_table(real_engine):
+    """Another connection holds zz_gadgets as maintenance does (VACUUM, ANALYZE) and lets
+    it go a moment later. The fence waits for it instead of refusing the backup, so routine
+    maintenance never fails a backup as a change of structure."""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from celerp import db_catalog
+
+    await _bk_sql(real_engine, _BK_GADGETS)
+    try:
+        async with real_engine.connect() as holder, AsyncSession(bind=real_engine) as session:
+            await holder.execute(text("LOCK TABLE zz_gadgets IN SHARE UPDATE EXCLUSIVE MODE"))
+
+            async def release():
+                await asyncio.sleep(0.3)
+                await holder.rollback()
+
+            released = asyncio.create_task(release())
+            assert await db_catalog.fence(session, ["zz_gadgets"]) is None
+            await released
+            await session.rollback()
+    finally:
+        await _bk_drop(real_engine, "zz_gadgets")
+
+
 async def test_a_carried_table_another_schema_inherits_from_is_refused(
         real_engine, real_client, tmp_path, monkeypatch):
     """A table of another schema inherits from the carried table "zz_Gadgets". The backup is
