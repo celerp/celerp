@@ -2287,10 +2287,10 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
         if item_status == "memo_out" or item_status == "reserved":
             pending += 1
     if pending:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot close: {pending} product(s) still awaiting resolution. Sell or return them first.",
-        )
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.close_goods_out",
+            f"This memo cannot be closed while {pending} product(s) are still out or held on it. "
+            "Sell or return them first.", count=pending))
     # A fully paid memo has already settled: bulk payment brought it to "paid" and there is
     # nothing left to resolve by closing. Read status from the locked fresh row above, so a
     # payment that committed after any earlier unlocked read is seen here; refuse rather than
@@ -3897,12 +3897,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         held[it.po_line_index] = before + float(it.quantity_received)
         ordered = float(lines[it.po_line_index].get("quantity") or 0)
         if held[it.po_line_index] > ordered + 1e-9:
-            raise HTTPException(
-                status_code=422,
-                detail=(f"{it.name or it.sku or it.item_id}: this {doc_label} line is for {ordered:g} "
-                        f"and {before:g} has been received, so at most {max(0.0, ordered - before):g} "
-                        f"more can be received. Change the line first to receive more."),
-            )
+            name, remaining = it.name or it.sku or it.item_id, max(0.0, ordered - before)
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.receive_more_than_line",
+                f"{name}: this line is for {ordered:g} and {before:g} has been received, so at most "
+                f"{remaining:g} more can be received. Change the line first to receive more.",
+                name=name, ordered=f"{ordered:g}", received=f"{before:g}", remaining=f"{remaining:g}"))
 
     # Received parcels each get a fresh sequential barcode so every physical lot is
     # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
@@ -3961,9 +3961,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     detail=(f"{it.sku or it.name or it.item_id}: no line on this {doc_label} prices it, "
                             f"so the received goods cannot be costed. Add it to the {doc_label} first."),
                 )
-        refusal = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
-        if refusal:
-            raise HTTPException(status_code=422, detail=refusal)
+        negative = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
+        if negative:
+            raise HTTPException(status_code=422, detail=negative)
         priced.append((conversion, stock_qty, cost))
 
     _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))
@@ -4524,7 +4524,12 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if doc_type not in ("consignment_in", "bill", "purchase_order"):
         raise HTTPException(status_code=409, detail="return-items is only valid for bills, POs, and consignment_in documents")
     if row.state.get("status") not in SUPPLIER_RETURN_STATUSES:
-        raise HTTPException(status_code=409, detail="Document must be in received/partial/awaiting_payment status to return items")
+        status = row.state.get("status") or ""
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.return_not_open",
+            f"Nothing can be returned on this document while it is {status.replace('_', ' ')}. Goods go back "
+            "to the supplier only after they are received, from a document that is still open.",
+            doc_status=status))
 
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import goods_basis
@@ -7661,10 +7666,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     def _sku(eid: str) -> str:
         return str(locked[eid].state.get("sku") or "") if eid in locked else ""
 
-    def _unattributed(eid: str) -> str:
-        return f"{_sku(eid)} was shipped on this record but nothing records for which line"
+    def _unattributed(eid: str) -> dict:
+        return refusal("lines.revert_unattributed",
+                       f"{_sku(eid)} was shipped on this record but nothing records for which line",
+                       sku=_sku(eid))
 
-    errors: list[str] = []
+    errors: list[dict] = []
     # (key the request names it by, lots it covers) per chosen line or legacy lot.
     groups: list[tuple[str, list[Projection], str | None]] = []
     if indices:
@@ -7678,21 +7685,27 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             name = line_items[i].get('sku') or line_items[i].get('description') or i + 1
             if not lots:
                 if i not in holding:
-                    errors.append(f"{name}: nothing is out on this line")
+                    errors.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line",
+                                          name=name))
                 elif str(line_items[i].get("line_id")) in quantities:
-                    errors.append(f"{name}: a hold is given back whole")
+                    errors.append(refusal("lines.revert_hold_whole", f"{name}: a hold is given back whole",
+                                          name=name))
                 continue
             groups.append((str(line_items[i].get("line_id")), lots, line_item_id(line_items[i])))
     else:
         for eid in body.line_entity_ids:
             proj = locked.get(eid)
             if proj is None:
-                errors.append(f"{eid}: item not found")
+                errors.append(refusal("lines.revert_item_missing", f"{eid}: item not found", name=eid))
             elif proj.state.get("status") not in ("memo_out", "sold"):
-                errors.append(f"{eid} ({_sku(eid)}): must be 'memo_out' or 'sold' to revert, "
-                              f"is '{proj.state.get('status', '')}'")
+                status = proj.state.get("status") or ""
+                errors.append(refusal(
+                    "lines.revert_not_out",
+                    f"{_sku(eid) or eid}: only goods out on memo or sold can be taken back, "
+                    f"this one is {status.replace('_', ' ')}", name=_sku(eid) or eid, status=status))
             elif eid not in out:
-                errors.append(f"{eid} ({_sku(eid)}): was not shipped by this record")
+                errors.append(refusal("lines.revert_not_shipped_here",
+                                      f"{_sku(eid) or eid}: was not shipped by this record", name=_sku(eid) or eid))
             elif line_of[eid] is None:
                 errors.append(_unattributed(eid))
             else:
@@ -7709,10 +7722,13 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             to_revert.extend(p.entity_id for p in lots)
             continue
         if back <= 0:
-            errors.append(f"{label}: returned quantity must be greater than zero")
+            errors.append(refusal("lines.revert_quantity_positive",
+                                  f"{label}: returned quantity must be greater than zero", name=label))
             continue
         if back > total + 1e-9:
-            errors.append(f"{label}: cannot return {back:g} of {total:g} that went out")
+            errors.append(refusal("lines.revert_more_than_out",
+                                  f"{label}: cannot return {back:g} of {total:g} that went out",
+                                  name=label, qty=f"{back:g}", total=f"{total:g}"))
             continue
         remaining = float(back)
         for proj in _return_order(lots, bound):
@@ -7723,17 +7739,20 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                 to_revert.append(proj.entity_id)
                 remaining -= qty
             elif proj.state.get("status") != "memo_out":
-                errors.append(f"{label}: only goods out on memo can be part-returned, "
-                              f"this one is '{proj.state.get('status')}'")
+                status = proj.state.get("status") or ""
+                errors.append(refusal(
+                    "lines.revert_part_not_memo",
+                    f"{label}: only goods out on memo can be part-returned, this one is {status.replace('_', ' ')}",
+                    name=label, status=status))
                 break
             else:
                 partial_plan[proj.entity_id] = (remaining, key)
                 remaining = 0.0
 
     if errors:
-        reasons = "; ".join(errors)
         raise HTTPException(status_code=422, detail=refusal(
-            "lines.cannot_revert", f"Cannot take back: {reasons}", reasons=reasons))
+            "lines.cannot_revert", f"Cannot take back: {'; '.join(e['message'] for e in errors)}",
+            reasons=errors))
     if holding:
         if not groups:
             return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": []}

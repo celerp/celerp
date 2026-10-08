@@ -317,7 +317,7 @@ async def test_receiving_more_than_the_line_orders_is_refused(client, session, a
     line = {"po_line_index": 0, "sku": sku, "name": "Beads"}
     r = await _receive(client, auth, po, {**line, "quantity_received": 15})
     assert r.status_code == 422, r.text
-    assert "10" in r.json()["detail"]
+    assert "10" in r.json()["detail"]["message"]
     r = await _receive(client, auth, po, {**line, "quantity_received": 6})
     assert r.status_code == 200, r.text
     r = await _receive(client, auth, po, {**line, "quantity_received": 5})

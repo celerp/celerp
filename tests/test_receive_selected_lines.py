@@ -100,7 +100,7 @@ async def test_receive_partial_then_remaining(client, session, auth):
     assert (await _state(session, auth, bill))["status"] == "received"
     r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 1})
     assert r.status_code == 422, r.text
-    assert "at most 0 more" in r.json()["detail"]
+    assert "at most 0 more" in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio

@@ -300,9 +300,10 @@ _ICON = re.compile(r"^\W+")
 
 def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
-    label without its icon), or a list of them (``steps`` joined by semicolons, others as
-    sentences), in the user's language; a ``role`` as its label and ``roles`` as their
-    labels; ``type``/``types`` as account types; ``status`` as an item status; ``reason``
+    label without its icon), or a list of them (``steps`` and ``reasons`` joined by
+    semicolons, others as sentences), in the user's language; a
+    ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
+    ``status`` as an item status and ``doc_status`` as a document status; ``reason``
     as why a production run waits for reconciling."""
     from ui.components.table import display_enum
 
@@ -311,13 +312,15 @@ def _refusal_param(name: str, value):
         # A sidebar item named in a sentence reads as its label, without its icon.
         return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
     if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
-        return ("; " if name == "steps" else " ").join(refusal_text(v) for v in value)
+        return ("; " if name in ("steps", "reasons") else " ").join(refusal_text(v) for v in value)
     if name == "role":
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
     if name == "status":
         return display_enum(value, "item_status")
+    if name == "doc_status":
+        return display_enum(value, "doc_status")
     if name == "reason":
         return reconcile_reason(str(value))
     if name == "type":
