@@ -274,8 +274,8 @@ def check_restore_target(database_url: str) -> None:
 def _psql(database_url: str, sql: str) -> str:
     """The rows `sql` returns, one per line, read-only."""
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-    return _run_tool([_find_pg_tool("psql"), "-X", "-q", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1",
-                      "-c", sql, "-d", pg_url], None, timeout=60).decode(errors="replace").strip()
+    return _text(_run_tool([_find_pg_tool("psql"), "-X", "-q", "-w", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+                            "-c", sql, "-d", pg_url], None, timeout=60)).strip()
 
 
 # The script pg_restore writes beside a dump measured 4.6 to 6.7 times the dump's size.
@@ -300,7 +300,7 @@ def check_backup_dump(dump_path: Path, database_url: str,
     room to restore it. `source` names, for the owner, the database the dump was taken from."""
     check_free_space(dump_path)
     listing = _run_tool([_find_pg_tool("pg_restore"), "-l", dump_path.name], None, timeout=60, cwd=dump_path.parent)
-    lines = [line for line in listing.decode(errors="replace").splitlines() if line and not line.startswith(";")]
+    lines = [line for line in _text(listing).splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
     if other:
         raise ValueError("This backup holds database objects Celerp does not restore. Remove them from "
@@ -337,8 +337,8 @@ def _check_server_objects(dump_path: Path, database_url: str, source: str) -> No
     """ValueError naming the roles of the dump's row security policies, and the collations
     and tablespaces of its tables and indexes, that this server does not have or, for a
     tablespace, this role may not use."""
-    script = _run_tool([_find_pg_tool("pg_restore"), "--schema-only", "-f", "-", dump_path.name], None,
-                       timeout=60, cwd=dump_path.parent).decode(errors="replace")
+    script = _text(_run_tool([_find_pg_tool("pg_restore"), "--schema-only", "-f", "-", dump_path.name], None,
+                             timeout=60, cwd=dump_path.parent))
     script = _TEXT.sub(lambda match: match[1] or "''", script)
     policies = [(_unquote(name), _unquote(table), [_unquote(role) for role in re.findall(_IDENTIFIER, roles)])
                 for name, table, roles in _POLICY_ROLES.findall(script)]
@@ -404,7 +404,7 @@ def restore_database_file(dump_path: Path, database_url: str, *, runner=None) ->
             tempfile.TemporaryDirectory(dir=dump_path.parent) as work:
         listing, script = Path(work).name + "/restore.list", Path(work).name + "/restore.sql"
         (dump_path.parent / script).touch(mode=0o600)
-        entries = _run_tool([pg_restore, "-l", dump_path.name], runner, cwd=dump_path.parent).decode(errors="replace")
+        entries = _text(_run_tool([pg_restore, "-l", dump_path.name], runner, cwd=dump_path.parent))
         (dump_path.parent / listing).write_text("".join(line for line in entries.splitlines(keepends=True)
                                                         if not re.match(_SCHEMA_ENTRY, line)))
         _run_tool([pg_restore, "--clean", "--if-exists", "--no-privileges", "--no-owner",
@@ -412,6 +412,11 @@ def restore_database_file(dump_path: Path, database_url: str, *, runner=None) ->
         with held.write_window():
             _run_tool([psql, "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "--single-transaction",
                        "-c", _EMPTY_PUBLIC, "-f", script, "-d", pg_url], runner, cwd=dump_path.parent)
+
+
+def _text(output: bytes) -> str:
+    """What a PostgreSQL tool printed, with the CRLF line ends it prints on Windows read as LF."""
+    return output.decode(errors="replace").replace("\r\n", "\n")
 
 
 def _run_tool(command: list[str], runner, timeout: int = 600, cwd: Path | None = None) -> bytes:

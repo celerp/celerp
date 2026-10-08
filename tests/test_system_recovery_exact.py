@@ -2410,7 +2410,15 @@ async def admin(real_engine):  # noqa: F811
     await engine.dispose()
 
 
-async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine, admin):
+def _windows_line_ends(command, **kwargs):
+    """The tools as on Windows, where pg_restore ends the lines it prints with CRLF."""
+    result = subprocess.run(command, **kwargs)
+    result.stdout = result.stdout.replace(b"\n", b"\r\n")
+    return result
+
+
+@pytest.mark.parametrize("runner", [None, _windows_line_ends], ids=["lf", "crlf"])
+async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine, admin, runner):
     """A backup of a database whose public schema comment was cleared carries that comment,
     which only the schema's owner may set; the restore replaces the tables and leaves the
     schema as it is."""
@@ -2422,7 +2430,7 @@ async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine, a
     try:
         dump = await _restore_target(real_engine, tmp_path)
         await _execute(admin, "COMMENT ON SCHEMA public IS 'kept'")
-        await _restore(dump)
+        await _restore(dump, runner)
         assert await _company_names(real_engine) == {"Alpha Trading"}
         async with real_engine.connect() as conn:
             assert (await conn.execute(text(comment))).scalar() == "kept"

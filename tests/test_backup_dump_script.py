@@ -36,14 +36,18 @@ def dump(tmp_path, monkeypatch):
     return path
 
 
-def test_a_restore_check_finds_the_dumps_tablespace_collation_and_policy_role(dump, monkeypatch):
+@pytest.mark.parametrize("line_end", [b"\n", b"\r\n"], ids=["lf", "crlf as on windows"])
+def test_a_restore_check_finds_the_dumps_tablespace_collation_and_policy_role(dump, monkeypatch, line_end):
     queries = []
+    run_tool = backup._run_tool
 
-    def psql(database_url, sql):
-        queries.append(sql)
-        return "role|v1_reader\ntablespace|ts_v1\n"
+    def tools(command, *args, **kwargs):
+        if Path(command[0]).stem == "psql":
+            queries.append(command[command.index("-c") + 1])
+            return b"role|v1_reader\ntablespace|ts_v1\n".replace(b"\n", line_end)
+        return run_tool(command, *args, **kwargs).replace(b"\n", line_end)
 
-    monkeypatch.setattr(backup, "_psql", psql)
+    monkeypatch.setattr(backup, "_run_tool", tools)
     with pytest.raises(ValueError) as refused:
         backup._check_server_objects(dump, "postgresql://celerp@localhost/celerp", "the old install")
 
