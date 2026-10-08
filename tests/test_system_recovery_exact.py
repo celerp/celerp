@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from company_backup_support import company, owner, token
-from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
+from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 
 from celerp.services.backup_import import _clear_restored_connector_state as _real_clear
 from celerp.services.backup_import import _reconcile_connectors as _real_revoke
@@ -1511,20 +1511,26 @@ async def test_failed_recovery_of_a_backup_with_extra_tables_is_put_back(tmp_pat
 
 
 async def test_recovery_stopped_after_the_database_was_emptied_is_finished_at_next_start(
-        tmp_path, monkeypatch, code_config, real_engine):
+        tmp_path, monkeypatch, code_config, committed_engine):
     """A recovery that stopped between emptying the database and restoring it is finished
-    from its marked archive at the next start, not opened as a fresh installation."""
+    from its marked archive at the next start, not opened as a fresh installation.
+    The test empties a database of its own, so a failure leaves the shared one intact."""
+    import celerp.db
+    from celerp.config import settings
     from celerp.services import backup_export, backup_import
+    monkeypatch.setattr(celerp.db, "engine", committed_engine)
+    monkeypatch.setattr(celerp.db, "SessionLocal", maker(committed_engine))
+    monkeypatch.setattr(settings, "database_url", committed_engine.url.render_as_string(hide_password=False))
     _set_enabled(["celerp-inventory"])
     _Recovery(tmp_path, monkeypatch, real_database=True)
-    user = await owner(real_engine)
-    await company(real_engine, user, "Alpha Trading", "alpha")
+    user = await owner(committed_engine)
+    await company(committed_engine, user, "Alpha Trading", "alpha")
     safety = await backup_export.export_full()
     backup_import._mark_recovery_started(safety, [])
-    await _execute(real_engine, "DROP TABLE companies CASCADE")
+    await _execute(committed_engine, "DROP TABLE companies CASCADE")
     await backup_import.finish_incomplete_recovery()
     assert backup_import.recovery_incomplete() is False
-    assert await _company_names(real_engine) == {"Alpha Trading"}
+    assert await _company_names(committed_engine) == {"Alpha Trading"}
 
 
 async def test_backup_from_2_5_3_keeps_the_restored_companies_modules(rec, real_engine, tmp_path, running_254):
