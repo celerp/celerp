@@ -181,9 +181,9 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-# Empties the public schema in one transaction. Dropping its tables and sequences needs
-# only their ownership, which Celerp's database role has; dropping the schema itself
-# would also need the schema's, which PostgreSQL 14 and older give the superuser.
+# Drops the public tables and sequences a dump may lack, in one transaction; the restore
+# drops every object the dump recreates. Dropping the schema itself would need its
+# ownership, which PostgreSQL 14 and older give the superuser.
 _EMPTY_PUBLIC = """DO $$ DECLARE r record; BEGIN
   FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
     EXECUTE format('DROP TABLE IF EXISTS public.%I CASCADE', r.tablename);
@@ -216,7 +216,7 @@ def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: b
 
 
 def _run_pg_restore(dump_path: Path, database_url: str, clean_schema: bool, runner) -> None:
-    mode = ["--single-transaction", "--exit-on-error"] if clean_schema else ["--clean", "--if-exists"]
+    mode = ["--clean", "--if-exists", *(["--single-transaction", "--exit-on-error"] if clean_schema else [])]
     runner = runner or subprocess.run
     try:
         command = _restore_command(database_url, mode)

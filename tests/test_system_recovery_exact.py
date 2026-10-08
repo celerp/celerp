@@ -1506,3 +1506,69 @@ async def test_backup_with_no_modules_enables_no_modules(rec, real_engine, tmp_p
     result = await backup_import.run_recovery(_archive(tmp_path / "none.celerp-backup", modules=[]))
     assert result.ok is True, result.error
     assert _enabled() == []
+
+
+# A database also holds types, functions, views and schemas a module or the operator made.
+OBJECTS = {
+    "enum": (["CREATE TYPE zz_status AS ENUM ('open', 'done')", "CREATE TABLE zz_jobs (status zz_status)"],
+             ["DROP TABLE IF EXISTS zz_jobs", "DROP TYPE IF EXISTS zz_status"]),
+    "function": (["CREATE FUNCTION zz_one() RETURNS int LANGUAGE sql AS 'SELECT 1'"],
+                 ["DROP FUNCTION IF EXISTS zz_one()"]),
+    "domain": (["CREATE DOMAIN zz_qty AS int CHECK (VALUE >= 0)"], ["DROP DOMAIN IF EXISTS zz_qty"]),
+    "view": (["CREATE VIEW zz_const AS SELECT 1 AS one"], ["DROP VIEW IF EXISTS zz_const"]),
+    "schema": (["CREATE SCHEMA zz", "CREATE TABLE zz.jobs (id int)"], ["DROP SCHEMA IF EXISTS zz CASCADE"]),
+}
+
+
+@pytest.fixture(params=list(OBJECTS))
+async def other_object(request, real_engine):
+    create, drop = OBJECTS[request.param]
+    for sql in create:
+        await _execute(real_engine, sql)
+    yield
+    for sql in drop:
+        await _execute(real_engine, sql)
+
+
+async def test_recovery_replaces_a_database_holding_other_objects(tmp_path, monkeypatch, code_config,
+                                                                  real_engine, other_object):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    result = await backup_import.run_recovery(source)
+    assert result.ok is True, result.error
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+async def test_failed_recovery_of_a_database_holding_other_objects_is_put_back(
+        tmp_path, monkeypatch, code_config, real_engine, other_object):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    _inject(monkeypatch, "schema")
+    result = await backup_import.run_recovery(source)
+    assert result.ok is False and "put back" in result.error, result.error
+    assert backup_import.recovery_incomplete() is False
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+async def test_update_rollback_restores_a_database_holding_other_objects(tmp_path, real_engine, other_object):
+    """The restore an update rollback runs (celerp.services.update)."""
+    import asyncio
+
+    from celerp.services import backup
+    from test_helpers import DATABASE_URL
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    dump = tmp_path / "database.dump"
+    dump.write_bytes(await asyncio.to_thread(backup.dump_database, DATABASE_URL))
+    await company(real_engine, user, "Beta Trading", "beta")
+    await asyncio.to_thread(backup.restore_database_file, dump, DATABASE_URL, clean_schema=True)
+    assert await _company_names(real_engine) == {"Alpha Trading"}
