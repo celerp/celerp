@@ -44,17 +44,27 @@ def _catalog(items: list[dict]):
     return list_items
 
 
+_DOCS = {"doc:other": {"entity_id": "doc:other", "doc_number": "SO-3"}}
+
+
+async def _get_doc(_token, entity_id):
+    if entity_id not in _DOCS:
+        raise APIError(404, "Not found")
+    return _DOCS[entity_id]
+
+
 def _patches(items, list_items=None):
     return (
         patch("ui.api_client.get_units", new=AsyncMock(return_value=_UNITS)),
         patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
         patch("ui.api_client.list_items", new=list_items or AsyncMock(side_effect=_catalog(items))),
+        patch("ui.api_client.get_doc", new=AsyncMock(side_effect=_get_doc)),
     )
 
 
 async def _get(ui_client, url, items, list_items=None):
-    p1, p2, p3 = _patches(items, list_items)
-    with p1, p2, p3:
+    p1, p2, p3, p4 = _patches(items, list_items)
+    with p1, p2, p3, p4:
         return await ui_client.get(url, cookies=_authed())
 
 
@@ -95,10 +105,23 @@ async def test_a_lookup_failure_is_an_error_not_a_no_match(ui_client):
 async def test_a_lot_reserved_on_another_invoice_is_refused_not_substituted(ui_client):
     held = {**TAGGED, "status": "reserved", "status_doc_id": "doc:other", "status_doc_number": "INV-9"}
     enter, search = await _three_ways(ui_client, "BC-77", [OLD, held], "&doc_id=doc:mine")
-    expected = _EN["documents.lot_reserved_elsewhere"].format(code="BC-77")
+    expected = _EN["documents.lot_reserved_by"].format(code="BC-77", doc="INV-9")
     for r in (enter, search):
         assert r.status_code == 409, r.text
         assert r.json()["error"] == expected
+
+
+@pytest.mark.parametrize("holder, expected", [
+    ("doc:other", ("documents.lot_reserved_by", {"doc": "SO-3"})),        # number looked up
+    ("doc:gone", ("documents.lot_reserved_elsewhere", {})),               # cannot be resolved
+])
+async def test_the_refusal_names_the_holding_record_when_it_can(ui_client, holder, expected):
+    held = {**TAGGED, "status": "reserved", "status_doc_id": holder}
+    enter, search = await _three_ways(ui_client, "BC-77", [OLD, held], "&doc_id=doc:mine")
+    key, extra = expected
+    for r in (enter, search):
+        assert r.status_code == 409, r.text
+        assert r.json()["error"] == _EN[key].format(code="BC-77", **extra)
 
 
 async def test_a_lot_held_for_another_line_cannot_be_rebound(ui_client):
@@ -129,7 +152,7 @@ async def test_a_sku_held_entirely_elsewhere_is_refused_not_fuzzy_matched(ui_cli
     enter = await _get(ui_client, "/docs/catalog-lookup?sku=W&doc_type=invoice&doc_id=doc:mine",
                        [held_old, held_new, lookalike])
     assert enter.status_code == 409, enter.text
-    assert enter.json()["error"] == _EN["documents.lot_reserved_elsewhere"].format(code="W")
+    assert enter.json()["error"] == _EN["documents.lot_reserved_by"].format(code="W", doc="SO-3")
 
 
 async def test_bill_free_text_entries_stay_selectable(ui_client):

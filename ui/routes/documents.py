@@ -315,7 +315,26 @@ def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None) -> bool
     return bool(holder) and holder != line_id
 
 
-def _hold_refusal(item: dict, code: str, *, doc_type: str, doc_id: str | None, line_id: str | None) -> str | None:
+async def _reserved_elsewhere(token: str, items: list[dict], code: str) -> str:
+    """The refusal for ``code`` whose lots ``items`` are held for another record, naming that
+    record by its number when they are all held by one whose number can be found (on the lot,
+    or by looking the record up); otherwise the plain wording."""
+    holders = {str(i.get("status_doc_id") or "") for i in items}
+    holder = holders.pop() if len(holders) == 1 else ""
+    number = next((str(i["status_doc_number"]) for i in items if i.get("status_doc_number")), "") if holder else ""
+    if holder and not number:
+        try:
+            held_by = await api.get_doc(token, holder)
+            number = str(held_by.get("doc_number") or held_by.get("ref_id") or "")
+        except APIError:
+            number = ""
+    if number:
+        return t("documents.lot_reserved_by", code=code, doc=number)
+    return t("documents.lot_reserved_elsewhere", code=code)
+
+
+async def _hold_refusal(token: str, item: dict, code: str, *, doc_type: str, doc_id: str | None,
+                        line_id: str | None) -> str | None:
     """Why this line may not take ``item`` by its exact code, or None. Mirrors the line
     rules the document API enforces (celerp.services.document_lines): a draft is not
     stock; another record's hold blocks the stock-claiming documents; a hold for another
@@ -329,7 +348,7 @@ def _hold_refusal(item: dict, code: str, *, doc_type: str, doc_id: str | None, l
     if doc_id and item.get("status_doc_id") == doc_id:
         return t("documents.lot_held_by_other_line", code=code)
     if doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES:
-        return t("documents.lot_reserved_elsewhere", code=code)
+        return await _reserved_elsewhere(token, [item], code)
     return None
 
 
@@ -367,14 +386,14 @@ async def _exact_physical_lot(token: str, code: str, *, doc_type: str, doc_id: s
     if not lots:
         return None
     if doc_type != "credit_note":
-        reason = _hold_refusal(lots[0], code, doc_type=doc_type, doc_id=doc_id, line_id=line_id)
+        reason = await _hold_refusal(token, lots[0], code, doc_type=doc_type, doc_id=doc_id, line_id=line_id)
         if reason:
             raise _PickerRefusal(reason)
     return lots[0]
 
 
-def _sales_options(items: list[dict], company_settings: dict, code: str, *, doc_id: str | None,
-                   line_id: str | None) -> list[dict]:
+async def _sales_options(token: str, items: list[dict], company_settings: dict, code: str, *,
+                         doc_id: str | None, line_id: str | None) -> list[dict]:
     """Forward-sale picker options for matched lots: drafts dropped, then splittable lots
     held for another record or another line dropped before consolidation, so a SKU's
     option only ever stands for (and counts) stock this line may draw. Raises
@@ -383,7 +402,7 @@ def _sales_options(items: list[dict], company_settings: dict, code: str, *, doc_
     items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
     drawable = [i for i in items if not (splitting_allowed(i) and _held_elsewhere(i, doc_id, line_id))]
     if items and not drawable:
-        raise _PickerRefusal(t("documents.lot_reserved_elsewhere", code=code))
+        raise _PickerRefusal(await _reserved_elsewhere(token, items, code))
     return _consolidate_sales_lots(drawable, company_settings)
 
 
@@ -816,6 +835,28 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
             )
         return Td(badge_el, cls="col-item-status")
     return Td(Span("-", cls="muted"), cls="col-item-status")
+
+
+def _vendor_line_badge(li: dict, doc_status: str) -> FT:
+    """What a purchase document did for one of its stock lines, from the document's own receipts
+    and returns, never the catalog item's status (other documents move the same item): Returned
+    or Part returned once the line sent goods back, else Received, Received n of m, or Not
+    Received. A document shared in as received carries no receipts of its own and reads
+    Received."""
+    returned = li.get("return_status")
+    if returned == "returned":
+        return Span(t("documents.line_label_returned"), cls="badge badge--inactive")
+    if returned == "partial_returned":
+        return Span(t("documents.status_part_returned"), cls="badge badge--warning")
+    qty = float(li.get("quantity") or 0)
+    received = float(li.get("quantity_received") or 0)
+    if (received > 1e-9 and received + 1e-9 >= qty) or (
+            doc_status == "received" and "quantity_received" not in li):
+        return Span(t("documents.status_received"), cls="badge badge--received")
+    if received > 1e-9:
+        return Span(t("documents.status_received_part", received=f"{received:g}", qty=f"{qty:g}"),
+                    cls="badge badge--pending")
+    return Span(t("documents.status_not_received"), cls="badge badge--not_received")
 
 
 def _item_link_eye(entity_id: str, title: str | None = None) -> FT:
@@ -1753,7 +1794,7 @@ def setup_routes(app):
                 found = found or (await api.list_items(token, params))["items"]
                 if is_credit_note:
                     return [i for i in found if str(i.get("status") or "").lower() != "draft"]
-                return _sales_options(found, ctx["settings"], code, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
+                return await _sales_options(token, found, ctx["settings"], code, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
 
             # GTIN names a product, not a lot, so it behaves like a SKU: forward sales
             # consolidate splittable lots; several remaining lots -> chooser.
@@ -1807,7 +1848,7 @@ def setup_routes(app):
                 return _J([extract(i) for i in items[:10]])
             found = (await api.list_items(token, {"q": q, "limit": 10}))["items"]
             try:
-                items = _sales_options(found, ctx["settings"], q, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
+                items = await _sales_options(token, found, ctx["settings"], q, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
             except _PickerRefusal:
                 items = []  # a list of text matches simply omits lots held elsewhere
             return _J([extract(i) for i in items])
@@ -3102,6 +3143,10 @@ celerpUpdateBulkAlloc();
             # so the page can open the resolution modal instead of the inline error.
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
+            # A protected line (holding, shipped or received) stays as stored, so the page puts
+            # the stored lines back rather than leave the refused edit on screen.
+            if isinstance(e.data, dict) and str(e.data.get("message_key") or "").startswith("line.protected_"):
+                payload["restore"] = True
             return JSONResponse(payload, status_code=400)
         return JSONResponse({"ok": True, "version": result.get("version")})
 
@@ -3329,7 +3374,9 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        done = t(f"documents.return_done_{'one' if len(lines) == 1 else 'many'}", n=len(lines))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
+                                                **toast_header(done, "info")})
 
     @app.delete("/docs/{entity_id}/receive")
     async def undo_receipt_route(request: Request, entity_id: str):
@@ -5932,6 +5979,12 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
 
 
 
+def _count_forms(key: str) -> dict[str, str]:
+    """A count message's singular and plural forms (``<key>_one`` / ``<key>_many``), for the
+    page script to pick by count with celerpCount."""
+    return {"one": t(f"{key}_one"), "many": t(f"{key}_many")}
+
+
 def _receive_summary(line_counts: dict | None) -> str:
     """What a receipt did with its lines: how many added stock, and how many expense and asset
     lines added none. Groups with no lines are left out; no counts, no summary."""
@@ -5966,21 +6019,25 @@ def _selected_line_quantities(form) -> list[tuple[int, float | None]]:
     return out
 
 
-def _line_action_rows(line_items: list, available, unit, none_left: str) -> list:
+def _line_action_rows(line_items: list, available, unit, none_left: str, note=None) -> list:
     """One row per document line for a form acting on the selected lines, a fieldset the page
     script shows and enables only while its line is selected. A line with something to act on
     offers all of it, ``available(line)`` in ``unit(line)``; any other line says ``none_left``
-    and submits nothing."""
+    and submits nothing. ``note(line, has_some)``, when given, may return a plain reason shown
+    in place of ``none_left`` or beside the field."""
     rows = []
     for i, li in enumerate(line_items):
         qty = available(li)
         label = Span(li.get("sku") or li.get("description") or li.get("name") or "--", cls="receive-row__label")
+        why = note(li, qty > 1e-9) if note else ""
         if qty <= 1e-9:
-            body = [label, Span(none_left, cls="text-muted")]
+            body = [label, Span(why or none_left, cls="text-muted")]
         else:
             body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty)]
             if li.get("line_id"):
                 body.append(Input(type="hidden", name=f"line_id_{i}", value=li["line_id"]))
+            if why:
+                body.append(Span(why, cls="text-muted receive-row__note"))
         rows.append(Fieldset(*body, cls="receive-row inline-form-row", data_line_index=str(i),
                              disabled=True, style="display:none"))
     return rows
@@ -5996,13 +6053,26 @@ def _receive_rows(line_items: list) -> list:
     )
 
 
+def _return_held_note(li: dict, has_some: bool) -> str:
+    """Why part or all of what a line brought in cannot go back now, from the document's
+    ``return_held`` (reason -> stock units): "2 reserved, 1 sold"; empty when nothing is held."""
+    held = li.get("return_held") or {}
+    parts = [t(f"documents.return_held_{reason}", qty=f"{units:g}")
+             for reason, units in held.items() if units > 1e-9]
+    if not parts:
+        return ""
+    return t("documents.return_held_some" if has_some else "documents.return_held_none", held=", ".join(parts))
+
+
 def _return_rows(line_items: list) -> list:
-    """Return Goods rows: a line offers what of its goods is on hand and free, in stock units."""
+    """Return Goods rows: a line offers what of its goods is on hand and free, in stock units,
+    and says what holds the rest."""
     return _line_action_rows(
         line_items,
         lambda li: float(li.get("returnable_quantity") or 0),
         lambda li: li.get("unit") or "",
         t("documents.nothing_to_return"),
+        _return_held_note,
     )
 
 
@@ -6900,26 +6970,55 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _default_tax = next((tax for tax in _taxes_list if tax.get("is_default")), None)
         _default_tax_value = f"{_default_tax.get('name', '')}|{float(_default_tax.get('rate', 0))}" if _default_tax else "|0"
 
-        def _tax_select(current_rate: float = 0.0, current_code: str = "", current_label: str = "") -> FT:
-            """Build tax <select> + hidden custom-rate input + hidden label for a line item."""
+        def _tax_select(li: dict | None = None) -> FT:
+            """Build tax <select> + hidden custom-rate input + hidden label for a line item.
+
+            The line's stored ``taxes`` decide what it shows (its ``tax_rate``/``tax_code``
+            only when it has none). Stored taxes also ride along in a hidden input, and the
+            client sends them back unchanged while the tax choice is unchanged, so a save
+            never rewrites taxes the user did not touch. Two or more taxes on one line show
+            as a single option naming them all.
+            """
+            li = li or {}
+            stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+            if len(stored) == 1:
+                current_rate = float(stored[0].get("rate", 0) or 0)
+                current_code = stored[0].get("code", "") or ""
+                current_label = stored[0].get("label", "") or ""
+            else:
+                current_rate = float(li.get("tax_rate", 0) or 0)
+                current_code = li.get("tax_code", "") or ""
+                current_label = ""
             # Determine selected value: match by code first, then by rate
             selected_val = "|0"
             is_custom = False
-            for tax in _taxes_list:
-                tcode = tax.get("name", "")
-                trate = float(tax.get("rate", 0))
-                if current_code and tcode == current_code:
-                    selected_val = f"{tcode}|{trate}"
-                    break
-                if not current_code and trate == current_rate and current_rate != 0:
-                    selected_val = f"{tcode}|{trate}"
-                    break
+            stored_option = None
+            if len(stored) > 1:
+                current_rate = sum(float(tx.get("rate", 0) or 0) for tx in stored)
+                current_label = " + ".join(
+                    f"{tx.get('code') or tx.get('label') or t('documents.tax')} ({float(tx.get('rate', 0) or 0)}%)"
+                    for tx in stored)
+                selected_val = "|stored"
+                stored_option = Option(current_label, value=selected_val, selected=True,
+                                       data_rate=str(current_rate))
             else:
-                if current_rate != 0 and not any(float(tax.get("rate", 0)) == current_rate for tax in _taxes_list):
-                    selected_val = "|custom"
-                    is_custom = True
+                for tax in _taxes_list:
+                    tcode = tax.get("name", "")
+                    trate = float(tax.get("rate", 0))
+                    if current_code and tcode == current_code:
+                        selected_val = f"{tcode}|{trate}"
+                        break
+                    if not current_code and trate == current_rate and current_rate != 0:
+                        selected_val = f"{tcode}|{trate}"
+                        break
+                else:
+                    if current_rate != 0 and not any(float(tax.get("rate", 0)) == current_rate for tax in _taxes_list):
+                        selected_val = "|custom"
+                        is_custom = True
 
             options = [Option(t("doc.no_tax"), value="|0", selected=(selected_val == "|0"))]
+            if stored_option is not None:
+                options.append(stored_option)
             for tax in _taxes_list:
                 tcode = tax.get("name", "")
                 trate = float(tax.get("rate", 0))
@@ -6933,13 +7032,17 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="cell-input cell-input--xs",
                 style=("display:inline-block;" if is_custom else "display:none;"),
             )
+            stored_input = (Input(type="hidden", value=_json.dumps(stored), data_name="taxes_json")
+                            if stored else "")
             return Div(
                 Select(*options, data_name="tax_select",
+                       data_orig=selected_val, data_orig_rate=str(current_rate),
                        cls="cell-input cell-input--select cell-input--xs",
                        onchange="celerpTaxChange(this)",
                        onblur="celerpAutoSave()"),
                 custom_input,
                 Input(type="hidden", value=current_label, data_name="tax_label"),
+                stored_input,
                 style="display:flex;gap:2px;align-items:center;",
             )
 
@@ -6973,6 +7076,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # reservation state reads back. Inbound drafts (bill, consignment in) have no
         # received items yet and stay without it.
         _draft_show_item_status = doc_type in _FULFILLABLE_DOC_TYPES or is_list
+        # Whether this draft holds any stock: a hold stamped with one of its lines, or a
+        # line's own item reserved by it.
+        _draft_holds = bool(_holds) or any(
+            (item_status_map or {}).get(_eid) == "reserved"
+            and (item_status_doc_map or {}).get(_eid, ("",))[0] == entity_id
+            for _eid in (li.get("entity_id") or li.get("item_id") or "" for li in line_items))
 
         def _li_editable_row(li: dict, idx: int) -> FT:
             qty = li.get("quantity", 0)
@@ -7131,8 +7240,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          data_name="discount_pct", oninput="celerpFieldEdited(this)",
                          onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
-                Td(_tax_select(float(li.get("tax_rate", 0) or 0), li.get("tax_code", "") or "",
-                              ((li.get("taxes") or [{}])[0].get("label", "") if li.get("taxes") else "")), cls="col-tax"),
+                Td(_tax_select(li), cls="col-tax"),
             ])
             if account_cell:
                 cells.append(account_cell)
@@ -7397,9 +7505,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             # Lists reserve while still drafts; a draft document cannot (acquiring stock is
-            # gated by its status) but gives back any hold it kept from before.
+            # gated by its status) but gives back any hold it kept from before, so it offers
+            # Set as available only while it holds something.
             _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF),
-                             show_reserve=is_list, show_release=_draft_show_item_status, can_delete=can_edit_lines),
+                             show_reserve=is_list, show_release=_draft_show_item_status and _draft_holds,
+                             can_delete=can_edit_lines),
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
@@ -7572,8 +7682,9 @@ window._L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_inventory_status": t("documents.no_inventory_items_status"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    "confirm_set_reserved": t("documents.confirm_set_reserved"),
-    "confirm_set_available": t("documents.confirm_set_available"),
+    "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
+    "confirm_set_available": _count_forms("documents.confirm_set_available"),
+    "confirm_delete_lines": _count_forms("documents.confirm_delete_lines"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
     "unexpected_error": t("error.unexpected_error_body"),
@@ -7629,32 +7740,6 @@ function _celerpPickerStatus(text) {{
     // never wipes a newer message before its own time is up.
     let _statusTimer = null;
     function _clearStatusSoon() {{ clearTimeout(_statusTimer); _statusTimer = setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
-    // Install a fresh #line-body tbody in place and, ONLY on a successful install, advance the tracked
-    // optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
-    // true iff the rows were installed - callers keep Add locked when it returns false rather than let
-    // a submission run against stale rows.
-    async function _installListBody(html, version) {{
-        if (!html) {{
-            // The page being viewed, not location.href: in-place paging never changes the URL.
-            const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
-                + '&limit=' + _CELERP_LINE_LIMIT);
-            const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
-            const fresh = doc.getElementById('{line_body_id}');
-            html = fresh ? fresh.outerHTML : '';
-        }}
-        const tbody = document.getElementById('{line_body_id}');
-        if (!tbody || !html) return false;
-        tbody.outerHTML = html;
-        const swapped = document.getElementById('{line_body_id}');
-        htmx.process(swapped);
-        swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-        // The installed rows are the stored window now, so the next save replaces exactly them.
-        if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
-        celerpUpdateTotals();
-        _celerpHadLines = true;
-        if (version != null) _celerpEntityVersion = version;
-        return true;
-    }}
     async function submitList() {{
         const raw = scanInput.value.trim();
         if (!raw) return;
@@ -7705,7 +7790,7 @@ function _celerpPickerStatus(text) {{
                         // could duplicate lines - and tell the operator to reload the page.
                         pendingRunKey = null;
                         let refreshed = false;
-                        try {{ refreshed = await _installListBody('', version); }} catch (_e) {{}}
+                        try {{ refreshed = await _celerpInstallLineBody('', version); }} catch (_e) {{}}
                         scanStatus.className = 'scan-bar-status scan-bar-status--err';
                         if (refreshed) {{
                             // Rows are current again and Add re-enables in finally: the operator can
@@ -7753,9 +7838,9 @@ function _celerpPickerStatus(text) {{
             }}
             // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
             // the lines are already committed and will appear on the next natural render. The version is
-            // advanced only inside a successful install (see _installListBody).
+            // advanced only inside a successful install (see _celerpInstallLineBody).
             try {{
-                await _installListBody(data.html || '', data.version);
+                await _celerpInstallLineBody(data.html || '', data.version);
             }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
             _clearStatusSoon();
             return true;
@@ -8242,12 +8327,21 @@ function _celerpTaxRate(row) {{
     if (sel.value === '|custom') {{
         return parseFloat(row.querySelector('[data-name="tax_rate_custom"]')?.value || 0);
     }}
+    if (sel.value === '|stored') return parseFloat(sel.selectedOptions[0].dataset.rate || 0);
     return parseFloat(sel.value.split('|')[1] || 0);
 }}
 function _celerpTaxCode(row) {{
     const sel = row.querySelector('[data-name="tax_select"]');
-    if (!sel || sel.value === '|custom' || sel.value === '|0') return '';
+    if (!sel || sel.value === '|custom' || sel.value === '|0' || sel.value === '|stored') return '';
     return sel.value.split('|')[0];
+}}
+function _celerpStoredTaxes(row, rate) {{
+    // The line's stored taxes while its tax choice is unchanged, else null. Sending them
+    // back as they are keeps every tax the user did not touch (code, label, order, compound).
+    const sel = row.querySelector('[data-name="tax_select"]');
+    const el = row.querySelector('[data-name="taxes_json"]');
+    if (!sel || !el || sel.value !== sel.dataset.orig || rate !== parseFloat(sel.dataset.origRate)) return null;
+    return JSON.parse(el.value);
 }}
 function _celerpEditTaxLabel(key, rate, labelEl) {{
     const currentText = labelEl.textContent.replace(/:$/, '').replace(/\\s*\\(\\d+(\\.\\d+)?%\\)$/, '');
@@ -8607,7 +8701,8 @@ function _celerpCollectLines() {{
             }}
             const lineTotalEl = row.querySelector('.line-total');
             const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
-            const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
+            const taxList = _celerpStoredTaxes(row, rate)
+                || (rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : []);
             lines.push({{line_id: _celerpRowLineId(row), description: desc || '', sku: sku || '', quantity: qty, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
                          line_total: discounted, hs_code: hsCode || undefined,
@@ -8623,6 +8718,32 @@ function _celerpCollectLines() {{
         }}
     }}
     return lines;
+}}
+/* Install a fresh #line-body tbody in place and, ONLY on a successful install, advance the tracked
+   optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
+   true iff the rows were installed - callers hold position when it returns false rather than let
+   a submission run against stale rows. */
+async function _celerpInstallLineBody(html, version) {{
+    if (!html) {{
+        // The page being viewed, not location.href: in-place paging never changes the URL.
+        const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
+            + '&limit=' + _CELERP_LINE_LIMIT);
+        const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+        const fresh = doc.getElementById('{line_body_id}');
+        html = fresh ? fresh.outerHTML : '';
+    }}
+    const tbody = document.getElementById('{line_body_id}');
+    if (!tbody || !html) return false;
+    tbody.outerHTML = html;
+    const swapped = document.getElementById('{line_body_id}');
+    htmx.process(swapped);
+    swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+    // The installed rows are the stored window now, so the next save replaces exactly them.
+    if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
+    celerpUpdateTotals();
+    _celerpHadLines = true;
+    if (version != null) _celerpEntityVersion = version;
+    return true;
 }}
 async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
@@ -8685,15 +8806,24 @@ async function _celerpPersistOnce() {{
         let msg = _L.save_failed;
         let conflicts = null;
         let stale = false;
+        let restore = false;
         try {{
             const e = await resp.json();
             if (e && e.error) msg = e.error;
+            if (e && e.restore) restore = true;
             if (e && e.reserved_conflicts) conflicts = e.reserved_conflicts;
             if (e && e.code === 'stale_version') stale = true;
         }} catch (_e) {{}}
         if (conflicts && conflicts.length) {{
             statusEl.textContent = '';
             _celerpShowReservedConflicts(conflicts);
+        }} else if (restore) {{
+            // Nothing was written and the refused line stays as stored: put the stored lines
+            // back in place so the table matches what is saved, and say why.
+            statusEl.textContent = '';
+            if (window.celerpToast) celerpToast(msg, 'error');
+            window._celerpSavedLineRevision = window._celerpLineRevision;
+            await _celerpInstallLineBody('', null);
         }} else if (stale) {{
             // Another save landed first, so this tab's rows are stale. Offer the only safe
             // way back to a consistent state - reload the latest before editing again - rather
@@ -9014,7 +9144,7 @@ async function celerpCsvImport(input, entityId) {{
       return;
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
-    if(!window.confirm(_confirm.replace('{{n}}', rows.length))) return;
+    if(!window.confirm(celerpCount(_confirm, rows.length))) return;
     // Persist pending edits first so the server sees every selected line, then act. A failed
     // save has already shown its reason; acting on top of it would use stale lines.
     if(!(await _celerpPersist())) return;
@@ -9049,7 +9179,10 @@ async function celerpCsvImport(input, entityId) {{
     _hideBtns(); _update();
   }};
   window.liBulkDeleteConfirmed=function(){{
-    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
+    var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
+    if(!rows.length) return;
+    if(!window.confirm(celerpCount(_L.confirm_delete_lines, rows.length))) return;
+    rows.forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';
     _hideBtns(); _update();
@@ -9154,15 +9287,10 @@ async function celerpCsvImport(input, entityId) {{
                     cls="col-checkbox li-checkbox-cell",
                 ))
             if _show_item_status:
-                # Inbound docs (bill, consignment_in): show real status once received.
-                # "received"/"partially_received" = items exist in inventory → show real status.
-                # "fulfilled" = doc fully processed → show real status.
-                # All other statuses (final, awaiting_payment, etc.) = not yet received → "Not Received".
-                _doc_has_received = status in ("received", "partially_received") or doc.get("fulfillment_status") == "fulfilled"
                 if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
-                elif _is_vendor_doc and not _doc_has_received:
-                    cells.append(Td(Span(t("documents.status_not_received"), cls="badge badge--not_received"), cls="col-item-status"))
+                elif _is_vendor_doc:
+                    cells.append(Td(_vendor_line_badge(li, status), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
@@ -9210,14 +9338,16 @@ async function celerpCsvImport(input, entityId) {{
                 cells.append(Td(format_value(li.get("hs_code") or None), cls="col-hs"))
                 cells.append(Td(format_value(li.get("country_of_origin") or None), cls="col-origin"))
             # A line out on memo can come back in part: its field, in the units it went out
-            # in, shows when Set as available is chosen.
+            # in, starts at and allows no more than what is still out, and shows when Set as
+            # available is chosen.
             _return_qty = None
-            if (_fin_show_bulk and li.get("line_id") and qty > 0
+            _out_qty = float(li.get("out_quantity") or 0)
+            if (_fin_show_bulk and li.get("line_id") and _out_qty > 0
                     and (item_status_map or {}).get(li_eid) == "memo_out"):
                 _return_qty = Div(
-                    _line_qty_input(f"qty[{li['line_id']}]", qty, li.get("unit") or li.get("sell_by") or ""),
+                    _line_qty_input(f"qty[{li['line_id']}]", _out_qty, li.get("unit") or li.get("sell_by") or ""),
                     cls="li-return-qty", style="display:none;",
-                    title=t("documents.memo_return_prompt", qty=f"{qty:g}"))
+                    title=t("documents.memo_return_prompt", qty=f"{_out_qty:g}"))
             cells.extend([
                 Td(qty_label(li), _return_qty, cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
@@ -9298,8 +9428,8 @@ async function celerpCsvImport(input, entityId) {{
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
     "no_lines_selected": t("documents.no_lines_selected"),
     "none_can_available": t("documents.none_can_available"),
-    "confirm_set_reserved": t("documents.confirm_set_reserved"),
-    "confirm_set_available": t("documents.confirm_set_available"),
+    "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
+    "confirm_set_available": _count_forms("documents.confirm_set_available"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
     "sold_reserve_warn": t("documents.sold_reserve_warn"),
@@ -9400,7 +9530,7 @@ async function celerpCsvImport(input, entityId) {{
     var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
-    var msg=_L.confirm_set_reserved.replace('{{n}}', rows.length);
+    var msg=celerpCount(_L.confirm_set_reserved, rows.length);
     if(sold){{
       msg=_L.sold_reserve_warn.replace('{{n}}', sold);
     }}
@@ -9436,7 +9566,7 @@ async function celerpCsvImport(input, entityId) {{
       // The whole line coming back needs no quantity: everything still out returns.
       if(qty!==max) fields.push([inp.name,String(qty)]);
     }}
-    if(!window.confirm(_L.confirm_set_available.replace('{{n}}', acting.length))) return;
+    if(!window.confirm(celerpCount(_L.confirm_set_available, acting.length))) return;
     if(await celerpLineAction(_liBase+_liEid+'/set-available', acting, fields, _liKey(), _L.could_not_set_available))
       window.location.reload();
   }};

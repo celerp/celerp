@@ -123,14 +123,14 @@ async def test_the_api_client_posts_the_selection_quantities_and_key():
     ]
 
 
-def _memo(status="sent", item_status="memo_out"):
+def _memo(status="sent", item_status="memo_out", out=(3, 1)):
     from ui.routes.documents import _doc_detail
     doc = {"entity_id": "doc:memo-1", "doc_type": "memo", "status": status, "ref_id": "M-1",
            "line_items": [
                {"line_id": _L0, "sku": "S-1", "item_id": "item:1", "entity_id": "item:1",
-                "quantity": 3, "sell_by": "carat", "unit_price": 1},
+                "quantity": 3, "sell_by": "carat", "unit_price": 1, "out_quantity": out[0]},
                {"line_id": _L1, "sku": "S-2", "item_id": "item:2", "entity_id": "item:2",
-                "quantity": 1, "sell_by": "piece", "unit_price": 1}]}
+                "quantity": 1, "sell_by": "piece", "unit_price": 1, "out_quantity": out[1]}]}
     return to_xml(_doc_detail(doc, item_status_map={"item:1": item_status, "item:2": item_status}))
 
 
@@ -143,6 +143,12 @@ def test_finalized_rows_name_their_line_and_offer_a_return_quantity_per_memo_lin
     assert "carat" in html[field.end():field.end() + 200]
     # Every memo line out with the customer gets its own field, so several part-return at once.
     assert re.search(rf'<input[^>]*name="qty\[{_L1}\]"[^>]*max="1"', html)
+
+
+def test_the_return_quantity_is_what_is_still_out_not_the_line_quantity():
+    html = _memo(out=(1.25, 1))
+    field = re.search(rf'<input[^>]*name="qty\[{_L0}\]"[^>]*>', html).group(0)
+    assert 'max="1.25"' in field and 'value="1.25"' in field and 'data-max="1.25"' in field
 
 
 def test_rows_not_out_on_memo_offer_no_return_quantity():
@@ -173,13 +179,14 @@ def test_the_line_quantity_field_is_shared():
     assert "kg" in html
 
 
-def _draft_toolbar(doc_type: str, entity_id: str):
+def _draft_toolbar(doc_type: str, entity_id: str, holder: str | None = None, line_holds: dict | None = None):
     from ui.routes.documents import _doc_detail
     d = {"entity_id": entity_id, "doc_type": doc_type, "status": "draft", "ref_id": "D-1",
+         "line_holds": line_holds or {},
          "line_items": [{"line_id": _L0, "sku": "S-1", "item_id": "item:1", "entity_id": "item:1",
                          "quantity": 3, "unit_price": 1}]}
     return to_xml(_doc_detail(d, item_status_map={"item:1": "reserved"},
-                              item_status_doc_map={"item:1": (entity_id, "D-1")}))
+                              item_status_doc_map={"item:1": (holder or entity_id, "D-1")}))
 
 
 def test_a_draft_document_releases_its_holds_but_never_reserves():
@@ -191,3 +198,13 @@ def test_a_draft_document_releases_its_holds_but_never_reserves():
 def test_a_draft_list_reserves_and_releases():
     html = _draft_toolbar("list", "list:q-1")
     assert 'value="li-revert"' in html and 'value="li-reserve"' in html
+
+
+def test_a_draft_document_holding_nothing_offers_no_set_as_available():
+    html = _draft_toolbar("invoice", "doc:inv-1", holder="doc:other")
+    assert 'value="li-revert"' not in html
+
+
+def test_a_draft_document_holding_another_lot_for_a_line_offers_set_as_available():
+    html = _draft_toolbar("invoice", "doc:inv-1", holder="doc:other", line_holds={_L0: 1})
+    assert 'value="li-revert"' in html

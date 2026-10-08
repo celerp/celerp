@@ -118,6 +118,10 @@ function celerpLineSelection(rows) {
   });
   return out;
 }
+// A count message in the form that reads right for n: forms is {one, many}, each with {n}.
+function celerpCount(forms, n) {
+  return forms[n === 1 ? 'one' : 'many'].replace('{n}', n);
+}
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }

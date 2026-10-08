@@ -4349,6 +4349,27 @@ class TestListsCreateBlank:
         assert r.json()["ok"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key, restore", [
+        ("line.protected_held", True), ("line.protected_shipped", True),
+        ("line.protected_received", True), ("docs.some_other_refusal", False),
+    ])
+    async def test_save_lines_refusal_of_a_protected_line_asks_for_the_stored_lines(self, ui_client, key, restore):
+        """A save refused because a line is protected keeps the stored lines on the server, so the
+        page is told to put them back; any other refusal leaves the user's edits in place."""
+        from ui.api_client import _api_error
+        detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
+        refused = _api_error(409, {"detail": detail}, "")
+        with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=refused)):
+            r = await ui_client.post(
+                "/docs/doc:INV-2026-0001/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+                cookies=_authed(),
+            )
+        assert r.status_code == 400
+        assert r.json()["error"]
+        assert r.json().get("restore", False) is restore
+
+    @pytest.mark.asyncio
     async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
         """POST /lists/{id}/lines saves only the submitted page slice via
         api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
@@ -4383,6 +4404,18 @@ class TestListsCreateBlank:
             )
         assert r.status_code == 409
         assert r.json()["code"] == "stale_version"
+
+    @pytest.mark.asyncio
+    async def test_line_confirms_read_right_for_one_line(self, ui_client):
+        """The line-action confirms carry a one-line form, so selecting one line never reads
+        "Set 1 lines", and Delete selected has a confirm of its own."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert r.status_code == 200
+        for text in ("Set 1 line as reserved?", "Set {n} lines as reserved?",
+                     "Set 1 line as available?", "Delete 1 line?", "Delete {n} lines?"):
+            assert text in r.text, text
+        assert "celerpCount(_L.confirm_delete_lines" in r.text
 
     @pytest.mark.asyncio
     async def test_save_lines_unauthorized_redirects(self, ui_client):
@@ -17196,20 +17229,30 @@ class TestInboundPerLineStatus:
         assert "badge--not_received" in html
         assert "Not Received" in html
 
-    def test_bill_received_shows_in_stock_badge(self):
-        """Stock line with entity_id on a received bill must show real item status ('In Stock')."""
+    def test_bill_line_badge_says_what_this_bill_received(self):
+        """A received line says what this bill did for it, never the catalog item's status:
+        a line in part received says how much, and a return on another line changes nothing."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+
+        def _line(sku, qty, received, **extra):
+            return {"sku": sku, "name": sku, "quantity": qty, "unit_price": 10, "line_total": qty * 10,
+                    "receive_as": "stock", "entity_id": f"item:{sku}", "quantity_received": received, **extra}
+
         doc = self._make_bill_finalized(line_items=[
-            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
-             "receive_as": "stock", "entity_id": "item:received-1"},
+            _line("FULL", 5, 5), _line("PART", 5, 3), _line("NONE", 5, 0),
+            _line("BACK", 2, 2, return_status="returned"),
+            _line("SOME", 4, 4, return_status="partial_returned"),
         ])
-        # Use "received" status - items are in inventory at this point
-        doc["status"] = "received"
-        html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
-        assert "badge--available" in html
-        assert "In Stock" in html
-        assert "Not Received" not in html
+        doc["status"] = "partial_returned"
+        # The catalog says otherwise for every line; the badge must not follow it.
+        html = to_xml(_doc_detail(doc, item_status_map={f"item:{s}": "available" for s in
+                                                        ("FULL", "PART", "NONE", "BACK", "SOME")}))
+        badges = [td.get_text(" ", strip=True)
+                  for td in BeautifulSoup(html, "html.parser").select("td.col-item-status")]
+        assert badges == ["Received", "Received 3 of 5", "Not Received", "Returned", "Part returned"]
+        assert "In Stock" not in html
 
     def test_bill_expense_line_shows_no_status_badge(self):
         """Expense line must not show any status badge."""

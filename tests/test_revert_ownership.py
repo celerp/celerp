@@ -158,6 +158,24 @@ async def test_part_of_a_line_comes_back_by_line_id(client, h):
     assert st["status"] == "memo_out" and float(st["quantity"]) == 3
 
 
+async def test_a_memo_line_says_how_much_is_still_out(client, h):
+    a = await lot(client, h, "RV-9", 5)
+    await lot(client, h, "RV-9", 5)
+    d = await doc(client, h, [line(a, 8, sku="RV-9")], doc_type="memo")
+    (l0,) = await line_ids(client, h, d)
+    await _fulfil(client, h, d, [l0])
+
+    async def _out():
+        r = await client.get(f"/docs/{d}", headers=h)
+        assert r.status_code == 200, r.text
+        return r.json()["line_items"][0]["out_quantity"]
+
+    assert await _out() == 8
+    r = await _revert(client, h, d, line_ids=[l0], quantities={l0: 4})
+    assert r.status_code == 200, r.text
+    assert await _out() == 4
+
+
 async def test_a_repeated_revert_with_one_key_takes_back_once(client, session, h):
     from celerp.models.ledger import LedgerEntry
     a = await lot(client, h, "RV-8", 1)
