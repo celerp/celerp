@@ -230,9 +230,10 @@ def test_the_app_mounts_each_route_once_and_its_api_schema_builds_without_warnin
     import warnings
     from collections import Counter
 
+    from celerp.ai.tools import _api_routes
     from celerp.main import app
 
-    mounted = Counter((r.path, frozenset(getattr(r, "methods", None) or ())) for r in app.routes)
+    mounted = Counter((path, frozenset(methods)) for path, methods, _ in _api_routes(app))
     assert [key for key, n in mounted.items() if n > 1] == []
     app.openapi_schema = None
     with warnings.catch_warnings(record=True) as caught:
