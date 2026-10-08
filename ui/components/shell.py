@@ -82,17 +82,13 @@ function _copiedFeedback(btn, restoreLabel) {
 // Each row is named by its line id; a page whose rows do not all carry one names them by
 // item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
 // the operation key the page was rendered with, so the same action sent again after a lost
-// answer is recorded once. A second click while a request is in flight sends nothing.
-// Resolves true on success, keeping the server's toast for the page the caller opens next;
-// otherwise the reason is shown.
-var _celerpLineActionBusy = false;
+// answer is recorded once. Resolves true on success, keeping the server's toast for the
+// page the caller opens next; otherwise the reason is shown.
 async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
-  if (_celerpLineActionBusy) return false;
   var fd = new FormData();
   celerpLineSelection(rows).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   (fields || []).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   if (key) fd.append('idempotency_key', key);
-  _celerpLineActionBusy = true;
   var msg = fallbackMsg;
   try {
     var resp = await fetch(url, {method: 'POST', body: fd});
@@ -104,11 +100,19 @@ async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
     }
     if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message;
   } catch (e) {
-  } finally {
-    _celerpLineActionBusy = false;
   }
   celerpToast(msg, 'error');
   return false;
+}
+// One line action at a time: the second click of a double click, or a click while another
+// action's confirm or request is open, does nothing. ``run`` resolves true when the page is
+// reloading, which keeps the guard on until it has.
+var _celerpLineActionBusy = false;
+async function celerpLineActionOnce(e, run) {
+  if ((e && e.detail > 1) || _celerpLineActionBusy) return;
+  _celerpLineActionBusy = true;
+  var leaving = false;
+  try { leaving = await run(); } finally { if (!leaving) _celerpLineActionBusy = false; }
 }
 // The [name, value] pairs naming the chosen rows: line_id each when every row has one,
 // otherwise the item each row binds.

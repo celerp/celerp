@@ -6084,6 +6084,13 @@ def _return_rows(line_items: list, unit_map: dict) -> list:
     )
 
 
+def _line_action_submit(label: str, cls: str) -> FT:
+    """The submit button of a line action form. The second click of a double click does
+    nothing, so the action's confirm is asked once; the form disables the button while its
+    request is on the way."""
+    return Button(label, type="submit", cls=cls, onclick="if(event.detail>1)event.preventDefault()")
+
+
 def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True, unit_map: dict | None = None) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
@@ -6170,7 +6177,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     operation_key_input(),
                     Div(
                         loc_el,
-                        Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
+                        _line_action_submit(_fulfill_label, "btn btn--primary btn--sm"),
                         cls="inline-form-row",
                     ),
                     id="li-bulk-fulfill-btn",
@@ -6178,28 +6185,31 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     hx_post=f"/docs/{entity_id}/receive",
                     hx_swap="none",
                     hx_confirm=t("documents.confirm_receive_selected"),
+                    hx_disabled_elt="find button[type=submit]",
                 ),
                 Form(
                     *_return_rows(inbound_line_items or [], unit_map or {}),
                     operation_key_input(),
-                    Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
+                    _line_action_submit(_revert_label, "btn btn--warning btn--sm"),
                     id="li-bulk-revert-btn",
                     style="display:none",
                     hx_post=f"/docs/{entity_id}/return-goods",
                     hx_swap="none",
                     hx_confirm=t("documents.confirm_return_selected"),
+                    hx_disabled_elt="find button[type=submit]",
                 ),
             ]
         else:
             if show_fulfill:
                 children.append(
                     Form(
-                        Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
+                        _line_action_submit(_fulfill_label, "btn btn--primary btn--sm"),
                         id="li-bulk-fulfill-btn",
                         style="display:none",
                         hx_post=f"/docs/{entity_id}/fulfill-lines",
                         hx_swap="none",
                         hx_confirm=f"{_fulfill_label}?",
+                        hx_disabled_elt="find button[type=submit]",
                         onsubmit="return submitLiBulkAction(this)",
                     )
                 )
@@ -6207,7 +6217,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                 children.append(
                     Button(_reserve_label, type="button", id="li-bulk-reserve-btn",
                            cls="btn btn--primary btn--sm", style="display:none",
-                           onclick="liBulkReserveConfirmed()"),
+                           onclick="liBulkReserveConfirmed(event)"),
                 )
             # "Set as available" sends the whole selection to set-available in one request: held
             # lines give their hold back, shipped lines take their goods back. A plain button (not
@@ -6215,7 +6225,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             children.append(
                 Button(_revert_label, type="button", id="li-bulk-revert-btn",
                        cls="btn btn--warning btn--sm", style="display:none",
-                       onclick="liBulkAvailableConfirmed()"),
+                       onclick="liBulkAvailableConfirmed(event)"),
             )
     return Div(
         *children,
@@ -9159,9 +9169,10 @@ async function celerpCsvImport(input, entityId) {{
       ? await celerpLineAction(_CELERP_BASE + _CELERP_EID + '/reserve-lines', rows, [['new_status','reserved']], _key, _L.could_not_set_reserved)
       : await celerpLineAction(_CELERP_BASE + _CELERP_EID + '/set-available', rows, [], _key, _L.could_not_set_available);
     if(ok) window.location.reload();
+    return ok;
   }}
-  window.liBulkReserveConfirmed=function(){{ _liDraftSetStatus('reserved'); }};
-  window.liBulkAvailableConfirmed=function(){{ _liDraftSetStatus('available'); }};
+  window.liBulkReserveConfirmed=function(e){{ return celerpLineActionOnce(e, function(){{ return _liDraftSetStatus('reserved'); }}); }};
+  window.liBulkAvailableConfirmed=function(e){{ return celerpLineActionOnce(e, function(){{ return _liDraftSetStatus('available'); }}); }};
   window.liBulkSetScanned=async function(scanned){{
     var ids=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
@@ -9533,7 +9544,8 @@ async function celerpCsvImport(input, entityId) {{
 
   // "Set as reserved": status change on the selected lines, one request. A line this doc
   // already shipped is taken back into stock first (sale reversed), so the confirm says so.
-  window.liBulkReserveConfirmed=async function(){{
+  window.liBulkReserveConfirmed=function(e){{ return celerpLineActionOnce(e, _liReserve); }};
+  async function _liReserve(){{
     var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
@@ -9542,14 +9554,17 @@ async function celerpCsvImport(input, entityId) {{
       msg=_L.sold_reserve_warn.replace('{{n}}', sold);
     }}
     if(!window.confirm(msg)) return;
-    if(await celerpLineAction(_liBase+_liEid+'/reserve-lines', rows, [['new_status','reserved']], _liKey(), _L.could_not_set_reserved))
-      window.location.reload();
-  }};
+    if(!(await celerpLineAction(_liBase+_liEid+'/reserve-lines', rows, [['new_status','reserved']], _liKey(), _L.could_not_set_reserved)))
+      return false;
+    window.location.reload();
+    return true;
+  }}
   // "Set as available": one request for the whole selection. Held lines give their hold back,
   // shipped lines take their goods back, and a memo line can come back in part (its quantity
   // field). Every quantity is checked and the confirm answered before anything is sent;
   // cancelling sends nothing.
-  window.liBulkAvailableConfirmed=async function(){{
+  window.liBulkAvailableConfirmed=function(e){{ return celerpLineActionOnce(e, _liSetAvailable); }};
+  async function _liSetAvailable(){{
     var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var acting=rows.filter(function(cb){{
@@ -9576,9 +9591,11 @@ async function celerpCsvImport(input, entityId) {{
       if(qty!==max) fields.push([inp.name,String(qty)]);
     }}
     if(!window.confirm(celerpCount(_L.confirm_set_available, acting.length))) return;
-    if(await celerpLineAction(_liBase+_liEid+'/set-available', acting, fields, _liKey(), _L.could_not_set_available))
-      window.location.reload();
-  }};
+    if(!(await celerpLineAction(_liBase+_liEid+'/set-available', acting, fields, _liKey(), _L.could_not_set_available)))
+      return false;
+    window.location.reload();
+    return true;
+  }}
 }})();
 """) if _fin_show_bulk else None,
             _fin_pager,
