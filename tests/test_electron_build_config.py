@@ -427,6 +427,9 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     failed = unix["run"].split('if [ -z "$ok" ]; then', 1)[1].split("\nfi\n", 1)[0]
     assert failed.index("-path '*celerp-data/logs/*'") < failed.index('kill -9 "$APP_PID"')
     assert "wait" not in failed
+    # The force-quit check reads the database's data directory from the running
+    # database; the app does not keep its data under $HOME on every runner.
+    assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
     # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
     assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
     assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'

@@ -677,7 +677,8 @@ jobs:
           if [ -z "$ok" ]; then
             echo "::error::boot smoke FAILED on $RUNNER_OS - /health/ready never returned db:ok"
             echo "----- app log (tail) -----"; tail -n 200 "$LOG" || true
-            find "$HOME" -path '*celerp-data/logs/*' -type f -exec tail -n 100 {} + || true
+            # The app keeps its data under the user's real home, which macOS reads without $HOME.
+            find "$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" -maxdepth 6 -path '*celerp-data/logs/*' -type f -exec tail -n 100 {} + || true
             kill -9 "$APP_PID" 2>/dev/null || true
             exit 1
           fi
@@ -687,7 +688,8 @@ jobs:
           # the database cleanly (it removes postmaster.pid on a clean stop).
           API=$(lsof -tiTCP:"$API_PORT" -sTCP:LISTEN | head -1)
           ELECTRON=$(ps -o ppid= -p "$API" | tr -d ' ')
-          PG_PIDFILE=$(find "$HOME" -name postmaster.pid | head -1)
+          PG_DATA=$(ps axww -o command= | sed -n 's|.*/postgres -D \(.*/celerp-data/postgres\) -p .*|\1|p' | head -1)
+          PG_PIDFILE="$PG_DATA/postmaster.pid"
           PG=$(head -1 "$PG_PIDFILE")
           echo "force-quit: app $ELECTRON, API $API, database $PG ($PG_PIDFILE)"
           [ -n "$API" ] && [ -n "$ELECTRON" ] && [ -n "$PG" ] || { echo "::error::force-quit: could not find the app's processes"; exit 1; }
