@@ -242,25 +242,25 @@ class TestValidateArchiveEnabledModules:
         finally:
             path.unlink(missing_ok=True)
 
-    def test_enabled_modules_is_none_for_archives_that_did_not_record_them(self):
-        """Old archives without the key parse, and are told apart from an empty set."""
+    def test_enabled_modules_defaults_to_empty_list(self):
+        """Backwards compat: old archives without the key still parse."""
         from celerp.services.backup_import import validate_archive
         archive = _make_archive(extra_meta={})  # no enabled_modules
         path = _write_archive_to_tmp(archive)
         try:
             meta = validate_archive(path)
-            assert meta.enabled_modules is None
+            assert meta.enabled_modules == []
         finally:
             path.unlink(missing_ok=True)
 
-    def test_enabled_modules_null_in_json_means_not_recorded(self):
-        """enabled_modules: null in JSON reads as not recorded, never as an empty set."""
+    def test_enabled_modules_can_be_none_in_json(self):
+        """enabled_modules: null in JSON should become empty list, not None."""
         from celerp.services.backup_import import validate_archive
         archive = _make_archive(extra_meta={"enabled_modules": None})
         path = _write_archive_to_tmp(archive)
         try:
             meta = validate_archive(path)
-            assert meta.enabled_modules is None
+            assert meta.enabled_modules == []
         finally:
             path.unlink(missing_ok=True)
 

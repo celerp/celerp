@@ -1498,12 +1498,26 @@ async def test_recovery_stopped_after_the_database_was_emptied_is_finished_at_ne
     assert await _company_names(real_engine) == {"Alpha Trading"}
 
 
-async def test_backup_with_no_modules_enables_no_modules(rec, real_engine, tmp_path):
-    """An empty module list is the backup's module set, not a missing one."""
+async def test_backup_from_2_5_3_keeps_the_restored_companies_modules(rec, real_engine, tmp_path, running_254):
+    """2.5.3 recorded an empty module list when it did not record the set."""
     from celerp.services import backup_import
+    _set_enabled(["celerp-inventory", "celerp-contacts"])
     user = await owner(real_engine)
-    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-labels"]})
-    result = await backup_import.run_recovery(_archive(tmp_path / "none.celerp-backup", modules=[]))
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    result = await backup_import.run_recovery(_archive(tmp_path / "v253.celerp-backup", modules=[], version="2.5.3"))
+    assert result.ok is True, result.error
+    assert set(_enabled()) == set(_closure(["celerp-inventory", "celerp-contacts"]))
+
+
+async def test_backup_with_no_modules_enables_no_modules(tmp_path, monkeypatch, code_config, real_engine):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-labels"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": []})
+    source = await backup_export.export_full()
+    await _execute(real_engine, """UPDATE companies SET settings = '{"enabled_modules": ["celerp-labels"]}'""")
+    result = await backup_import.run_recovery(source)
     assert result.ok is True, result.error
     assert _enabled() == []
 
