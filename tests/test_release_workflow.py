@@ -227,8 +227,10 @@ def test_the_desktop_build_names_are_the_ones_github_gives_the_tag_matrix():
     assert set(_BUILD) == {"ubuntu-latest", "windows-latest", "macos-latest"}
 
 
-def test_pypi_is_published_once_every_desktop_build_and_the_schema_succeeded(tmp_path, github):
-    code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "in_progress", None)],
+@pytest.mark.parametrize("ref", ["", "@refs/tags/v9.9.9"], ids=["bare path", "path with ref"])
+def test_pypi_is_published_once_every_desktop_build_and_the_schema_succeeded(tmp_path, github, ref):
+    run = _workflow_run("build.yml", _BUILD_RUN, "in_progress", None, path=f".github/workflows/build.yml{ref}")
+    code, out, _ = _publish_to_pypi(tmp_path, github, [run],
                                     {_BUILD_RUN: _build_jobs()})
     assert code == 0, out
     assert f"{_ACTIONS}/runs/{_BUILD_RUN}/jobs?filter=latest&per_page=100" in github.calls
@@ -269,8 +271,9 @@ def test_pypi_is_not_published_when_a_prerequisite_did_not_succeed(tmp_path, git
 
 @pytest.mark.parametrize("identity", [
     {"head_branch": "v9.9.8"}, {"head_branch": "develop"}, {"event": "pull_request"},
-    {"head_sha": "0" * 40}, {"path": ".github/workflows/ci.yml"},
-], ids=["other tag, same commit", "branch push", "pull request", "other commit", "other workflow"])
+    {"head_sha": "0" * 40}, {"path": ".github/workflows/ci.yml"}, {"path": ".github/workflows/ci.yml@refs/tags/v9.9.9"},
+], ids=["other tag, same commit", "branch push", "pull request", "other commit", "other workflow",
+        "other workflow with ref"])
 def test_pypi_is_never_published_on_the_strength_of_another_run(tmp_path, github, identity):
     other = _workflow_run("build.yml", _BUILD_RUN + 1, **identity)
     current = _workflow_run("build.yml", _BUILD_RUN, "completed", "failure")
@@ -341,8 +344,10 @@ def test_the_github_release_waits_for_every_build_prerequisite():
     assert {"prepare-release", "setup-matrix", "build", "openapi-asset"} <= set(job["needs"])
 
 
-def test_the_github_release_is_published_once_the_pypi_release_succeeded(tmp_path, github):
-    code, out, calls = _publish_on_github(tmp_path, github, [_workflow_run("publish.yml", _PUBLISH_RUN)],
+@pytest.mark.parametrize("ref", ["", "@refs/tags/v9.9.9"], ids=["bare path", "path with ref"])
+def test_the_github_release_is_published_once_the_pypi_release_succeeded(tmp_path, github, ref):
+    run = _workflow_run("publish.yml", _PUBLISH_RUN, path=f".github/workflows/publish.yml{ref}")
+    code, out, calls = _publish_on_github(tmp_path, github, [run],
                                           {_PUBLISH_RUN: _publish_jobs()})
     assert code == 0, out
     assert any("PATCH" in c and "releases/7" in c for c in calls), calls

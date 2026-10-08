@@ -61,7 +61,8 @@ def _list(url: str, key: str) -> list[dict]:
 def _run(workflow: str) -> dict:
     tag, sha = os.environ["GITHUB_REF_NAME"], os.environ["GITHUB_SHA"]
     runs = _list(f"{_api()}/workflows/{workflow}/runs?head_sha={sha}&event=push&per_page=100", "workflow_runs")
-    matching = [r for r in runs if r.get("path") == f".github/workflows/{workflow}" and r.get("head_sha") == sha
+    path = rf"\.github/workflows/{re.escape(workflow)}(@.+)?"
+    matching = [r for r in runs if re.fullmatch(path, r.get("path", "")) and r.get("head_sha") == sha
                 and r.get("event") == "push" and r.get("head_branch") == tag]
     if not matching:
         raise NotReady(f"no {workflow} run for {tag} at {sha} yet")
