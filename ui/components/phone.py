@@ -69,7 +69,11 @@ def phone_input_td(
   var inputEl  = document.getElementById({input_id!r});
   var hiddenEl = document.getElementById({hidden_id!r});
   if (!inputEl || !hiddenEl) return;
-  var iti = window.intlTelInput && window.intlTelInput(inputEl, {{
+  var iti = null;
+  function sync() {{ hiddenEl.value = (iti && iti.getNumber()) || inputEl.value; }}
+  inputEl.addEventListener('input', sync);
+  inputEl.addEventListener('countrychange', sync);
+  try {{ iti = window.intlTelInput ? window.intlTelInput(inputEl, {{
     nationalMode: false,
     separateDialCode: false,
     autoPlaceholder: 'aggressive',
@@ -82,10 +86,7 @@ def phone_input_td(
       if (v.startsWith('+1'))  {{ cb('us'); return; }}
       cb('th');
     }},
-  }});
-  function sync() {{ hiddenEl.value = (iti && iti.getNumber()) || inputEl.value; }}
-  inputEl.addEventListener('input', sync);
-  inputEl.addEventListener('countrychange', sync);
+  }}) : null; }} catch (e) {{ iti = null; }}
 }})();
 """
 

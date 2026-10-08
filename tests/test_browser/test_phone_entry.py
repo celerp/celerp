@@ -35,3 +35,12 @@ def test_a_partial_phone_is_refused_and_the_saved_one_kept(page: Page, fresh_com
     _edit_phone(page, cid, "12")
     assert fresh_company.get(f"/crm/contacts/{cid}").json()["phone"] == "+66812345678"
     assert page.locator(".cell-error").is_visible()
+
+
+def test_a_phone_typed_when_the_picker_fails_to_start_is_saved(page: Page, fresh_company):
+    page.route("**/vendor/intl-tel-input/*.js", lambda route: route.fulfill(
+        content_type="application/javascript",
+        body="window.intlTelInput = function () { throw new Error('init'); };"))
+    cid = fresh_company.post("/crm/contacts", json={"name": "Broken Picker", "phone": "+66811111111"}).json()["id"]
+    _edit_phone(page, cid, "081 234 5678")
+    assert fresh_company.get(f"/crm/contacts/{cid}").json()["phone"] == "081 234 5678"
