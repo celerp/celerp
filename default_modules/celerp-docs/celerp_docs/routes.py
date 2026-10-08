@@ -7761,7 +7761,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     doc_type = state.get("doc_type", "")
     if doc_type not in REVERTIBLE_STATUSES:
         raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
-    if not holding:
+    if not set_available:
         _check_revert_status(state)
 
     line_items = state.get("line_items", [])
@@ -7880,7 +7880,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             "lines.cannot_set_available", f"Cannot set as available: {reasons}", reasons=errors)
             if set_available else
             refusal("lines.cannot_revert", f"Cannot take back: {reasons}", reasons=errors))
-    if holding:
+    if set_available:
         if not groups:
             return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": []}
         _check_revert_status(state)

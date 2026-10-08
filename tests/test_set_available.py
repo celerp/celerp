@@ -219,3 +219,17 @@ async def test_taking_back_part_of_a_piece_is_refused(client, h, path):
     assert st["status"] == "memo_out" and float(st["quantity"]) == 3
     r = await client.post(f"/docs/{d}/{path}", headers=h, json={"line_ids": [lid], "quantities": {lid: 1}})
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("finalize", [False, True])
+async def test_a_line_holding_nothing_is_refused_plainly(client, h, finalize):
+    """Set as available stays offered on a line that holds nothing; choosing it says the line
+    holds nothing, on a draft as on a finalized record."""
+    a = await lot(client, h, f"SA-6-{int(finalize)}", 1)
+    d = await doc(client, h, [line(a, 1, sku=f"SA-6-{int(finalize)}")], finalize=finalize)
+    (l0,) = await line_ids(client, h, d)
+    r = await _set_available(client, h, d, line_ids=[l0])
+    assert r.status_code == 422, r.text
+    assert _key(r) == "lines.cannot_set_available"
+    assert r.json()["detail"]["message"] == (
+        f"Cannot set as available: SA-6-{int(finalize)}: nothing is held or out on this line")
