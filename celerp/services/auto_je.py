@@ -755,7 +755,7 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
         idem_create=je_idempotency_key(po_id, f"po.received{suffix}", "c"),
         idem_posted=je_idempotency_key(po_id, f"po.received{suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
-        ts=receive_date,
+        ts=await entry_day(session, company_id, receive_date),
         entries=entries,
         metadata_={"trigger": "doc.received", "doc_id": po_id},
     )
@@ -828,16 +828,15 @@ async def create_for_po_received(
 
 async def create_for_po_receipt(
     session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole | str, float],
-    receive_date: str | None = None,
 ) -> None:
     """Receipt entry for one batch of goods received on a purchase order.
 
     debits are what the received goods cost per role, or per lot inventory account
     for goods added to stock, in the books' currency: the same amounts the receipt
-    adds to the lots' cost."""
+    adds to the lots' cost. Dated today in the company's timezone (entry_day)."""
     await _post_po_receipt(
         session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=receipt_key,
-        debits=debits, receive_date=receive_date,
+        debits=debits, receive_date=None,
     )
 
 
@@ -978,7 +977,7 @@ async def _clearing_lines(session, company_id, doc_id: str, settings: dict, amou
 
 async def create_for_landed_capitalisation(
     session, *, company_id, user_id, doc_id: str, landed_by_kind: dict[str, float],
-    landed_by_account: dict[str, float], receive_suffix: str, receive_date: str | None = None,
+    landed_by_account: dict[str, float], receive_suffix: str,
 ) -> None:
     """Capitalise received landed cost from the clearing accounts into goods inventory on receipt:
     Dr the receiving lots' inventory accounts (``landed_by_account``) / Cr the clearing account
@@ -987,6 +986,7 @@ async def create_for_landed_capitalisation(
     The bill posting (create_for_bill_conversion) parks freight/insurance/duty/non-recoverable-VAT in
     the clearing accounts; this draws the received portion down into inventory so that COGS, which
     relieves the item's full cost_total (base + landed), reconciles against the same account.
+    Dated today in the company's timezone (entry_day).
     """
     currency = await company_currency(session, company_id)
     credits = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
@@ -1004,7 +1004,7 @@ async def create_for_landed_capitalisation(
         idem_create=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "p"),
         memo=f"Auto JE for {doc_id} landed-cost capitalisation",
-        ts=receive_date,
+        ts=await entry_day(session, company_id),
         entries=entries,
         metadata_={"trigger": "doc.landed_capitalised", "doc_id": doc_id},
     )
@@ -1012,7 +1012,7 @@ async def create_for_landed_capitalisation(
 
 async def create_for_supplier_return(
     session, *, company_id, user_id, doc_id: str, return_key: str, goods: dict[AccountRole | str, float],
-    landed_by_kind: dict[str, float], landed_by_account: dict[str, float], return_date: str | None = None,
+    landed_by_kind: dict[str, float], landed_by_account: dict[str, float],
 ) -> None:
     """Goods sent back to the supplier leave the books at what they carried.
 
@@ -1021,9 +1021,11 @@ async def create_for_supplier_return(
     or by the role goods not held in stock were received to. Each kind of landed cost they
     carried goes back to the clearing account the bill parked it in (Dr clearing / Cr the lots' inventory
     accounts, ``landed_by_account``) in an entry of its own, the reverse of the receipt's
-    capitalisation, so undoing the receipt returns only the landed cost still on the shelf."""
+    capitalisation, so undoing the receipt returns only the landed cost still on the shelf.
+    Both are dated today in the company's timezone (entry_day)."""
     currency = await company_currency(session, company_id)
     settings = await current_settings(session, company_id)
+    day = await entry_day(session, company_id)
     rounded = {key: round_money(amount or 0, currency) for key, amount in goods.items()}
     goods_d = sum(rounded.values(), _Dec(0))
     if goods_d > 0:
@@ -1043,7 +1045,7 @@ async def create_for_supplier_return(
             idem_create=je_idempotency_key(doc_id, f"items.returned:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} goods returned to supplier",
-            ts=return_date,
+            ts=day,
             entries=[ap_line, *goods_lines],
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
@@ -1060,7 +1062,7 @@ async def create_for_supplier_return(
             idem_create=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} landed cost returned with goods",
-            ts=return_date,
+            ts=day,
             entries=entries,
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )

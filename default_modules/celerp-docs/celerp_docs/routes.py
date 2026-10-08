@@ -4154,7 +4154,6 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
             receipt_key=key, debits=debits,
-            receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     elif doc_type == "bill" and landed_drawdown:
         # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
@@ -4163,7 +4162,6 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
             landed_by_kind=landed_drawdown, landed_by_account=landed_by_account, receive_suffix=key,
-            receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     # consignment_in: no JE (goods not owned).
     await session.commit()
@@ -4625,7 +4623,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if owned:
         await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account, return_date=datetime.now(timezone.utc).date().isoformat(),
+            goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account,
         )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
