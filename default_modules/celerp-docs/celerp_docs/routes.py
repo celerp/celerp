@@ -7093,6 +7093,26 @@ async def _apply_split_plan(
     return children
 
 
+async def _give_lines_ids(session, *, company_id, uid, owner: Projection, source: str) -> None:
+    """Give each line of ``owner`` that has no line id (a record from an older version) its
+    id, through the owner's own update event, so a hold or a shipment names its line the
+    way it does on a newer record. A record whose lines all have ids is left alone."""
+    state = owner.state
+    lines = state.get("line_items") or []
+    if all(li.get("line_id") for li in lines if isinstance(li, dict)):
+        return
+    new_lines = [dict(li) if isinstance(li, dict) else li for li in lines]
+    # emit_event gives every id-less line of the new set its id, in place.
+    await emit_event(
+        session, company_id=uuid.UUID(str(company_id)), entity_id=owner.entity_id,
+        entity_type=owner.entity_type, event_type=f"{owner.entity_type}.updated",
+        data={"fields_changed": {"line_items": {"old": lines, "new": new_lines}}},
+        actor_id=uid, location_id=None, source=source,
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    state["line_items"] = new_lines
+
+
 async def _set_lot_status(session, *, company_id, uid, owner: Projection, lot_id: str,
                           line_id: str | None) -> None:
     """Hold ``lot_id`` for the owner's line ``line_id``, or with no line free it."""
@@ -7218,6 +7238,7 @@ async def _fulfill_lines_impl(
     if state.get("status") not in allowed_statuses:
         raise HTTPException(status_code=409, detail=f"Cannot fulfill a {doc_type} in status '{state.get('status')}'")
 
+    await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=row, source="fulfillment")
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
     unit_map = await _get_unit_map(session, company_id)
@@ -7418,8 +7439,10 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
         return done
     line_items = owner.state.get("line_items", [])
     indices = (select_lines or _selected_line_indices)(line_items, body)
-    chosen = [str(line_items[i].get("line_id")) for i in indices if line_items[i].get("line_id")]
     result = await run(indices)
+    # Read after the action, which gives lines from an older version their ids.
+    line_items = owner.state.get("line_items", [])
+    chosen = [str(line_items[i].get("line_id")) for i in indices if line_items[i].get("line_id")]
     await emit_event(
         session, company_id=uuid.UUID(str(company_id)), entity_id=record_id,
         entity_type="line_action", event_type="line_action.recorded",
@@ -7839,6 +7862,8 @@ async def _reserve_lines_impl(
             await session.commit()
         return {"new_status": new_status, "reserved": [], "released": released}
 
+    await _give_lines_ids(session, company_id=company_id, uid=uid, owner=row, source="reservation")
+    line_items = state.get("line_items", [])
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}

@@ -75,3 +75,14 @@ async def set_list_lines(client, h, list_id: str, lines: list[dict]):
     v = (await state(client, h, list_id))["version"]
     return await client.patch(f"/lists/{list_id}", headers=h, json={
         "fields_changed": {"line_items": {"new": lines}}, "expected_version": v})
+
+
+async def drop_line_ids(session, entity_id: str) -> None:
+    """Store the record's lines without ids, as records imported from older versions are."""
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+    session.expire_all()
+    row = (await session.execute(select(Projection).where(Projection.entity_id == entity_id))).scalar_one()
+    row.state = {**row.state, "line_items": [
+        {k: v for k, v in li.items() if k != "line_id"} for li in row.state["line_items"]]}
+    await session.commit()

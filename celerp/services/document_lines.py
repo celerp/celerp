@@ -352,15 +352,16 @@ _PROTECTED_MESSAGES = {
 }
 
 
-def _counterpart(stored: dict, index: int, line_set: list) -> int | None:
+def _counterpart(stored: dict, index: int, line_set: list, stored_ids: set) -> int | None:
     """The position in ``line_set`` of the stored line at ``index``: the line with its id,
-    or for an older line without one the line at the same position."""
+    or for an older line without one the line at the same position, which is given its id
+    on this write unless that id is another stored line's."""
     lid = stored.get("line_id")
     for n, line in enumerate(line_set):
         if isinstance(line, dict) and lid and line.get("line_id") == lid:
             return n
     if not lid and index < len(line_set) and isinstance(line_set[index], dict) \
-            and not line_set[index].get("line_id"):
+            and line_set[index].get("line_id") not in stored_ids:
         return index
     return None
 
@@ -453,8 +454,9 @@ async def assert_protected_lines_kept(session, company_id, owner_id: str, stored
     protected = await _protected_lines(session, company_id, owner_id, {**stored, "line_items": stored_lines})
     if not protected:
         return
+    stored_ids = {li.get("line_id") for li in stored_lines if li.get("line_id")}
     rebound = {line_item_id(line_set[n]) for index, _ in protected.items()
-               if (n := _counterpart(stored_lines[index], index, line_set)) is not None
+               if (n := _counterpart(stored_lines[index], index, line_set, stored_ids)) is not None
                and line_item_id(line_set[n]) and line_item_id(line_set[n]) != line_item_id(stored_lines[index])}
     rebound.discard(None)
     parts = {}
@@ -465,7 +467,7 @@ async def assert_protected_lines_kept(session, company_id, owner_id: str, stored
     for index in sorted(protected):
         why, lots = protected[index]
         old = stored_lines[index]
-        n = _counterpart(old, index, line_set)
+        n = _counterpart(old, index, line_set, stored_ids)
         ok = n is not None
         if ok:
             new = line_set[n]
