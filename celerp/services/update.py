@@ -521,7 +521,7 @@ def _undo(steps: Steps, state: dict, current: str, target: str, reason: str) -> 
         steps.restore(dump, target)
     except Exception:
         log.exception("Restoring the database failed; it is retried at every start. The "
-                      "pre-update database is at %s (pg_restore --clean -d <url> %s).", dump, dump)
+                      "pre-update database is at %s.", dump)
         return _finish(state, current, target, ROLLBACK_FAILED, reason)
     runtime.discard(target)
     return _finish(state, current, target, ROLLED_BACK, reason)
