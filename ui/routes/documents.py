@@ -3143,10 +3143,6 @@ celerpUpdateBulkAlloc();
             # so the page can open the resolution modal instead of the inline error.
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
-            # A protected line (holding, shipped or received) stays as stored, so the page puts
-            # the stored lines back rather than leave the refused edit on screen.
-            if isinstance(e.data, dict) and str(e.data.get("message_key") or "").startswith("line.protected_"):
-                payload["restore"] = True
             return JSONResponse(payload, status_code=400)
         return JSONResponse({"ok": True, "version": result.get("version")})
 
@@ -8806,24 +8802,15 @@ async function _celerpPersistOnce() {{
         let msg = _L.save_failed;
         let conflicts = null;
         let stale = false;
-        let restore = false;
         try {{
             const e = await resp.json();
             if (e && e.error) msg = e.error;
-            if (e && e.restore) restore = true;
             if (e && e.reserved_conflicts) conflicts = e.reserved_conflicts;
             if (e && e.code === 'stale_version') stale = true;
         }} catch (_e) {{}}
         if (conflicts && conflicts.length) {{
             statusEl.textContent = '';
             _celerpShowReservedConflicts(conflicts);
-        }} else if (restore) {{
-            // Nothing was written and the refused line stays as stored: put the stored lines
-            // back in place so the table matches what is saved, and say why.
-            statusEl.textContent = '';
-            if (window.celerpToast) celerpToast(msg, 'error');
-            window._celerpSavedLineRevision = window._celerpLineRevision;
-            await _celerpInstallLineBody('', null);
         }} else if (stale) {{
             // Another save landed first, so this tab's rows are stale. Offer the only safe
             // way back to a consistent state - reload the latest before editing again - rather
@@ -8839,8 +8826,12 @@ async function _celerpPersistOnce() {{
             reload.onclick = function() {{ window.location.reload(); }};
             statusEl.append(label, reload);
         }} else {{
-            statusEl.textContent = '✗ ' + msg;
-            statusEl.style.color = 'red';
+            // Nothing was written: put the stored lines back in place so the table matches
+            // what is saved, and say why.
+            statusEl.textContent = '';
+            if (window.celerpToast) celerpToast(msg, 'error');
+            window._celerpSavedLineRevision = window._celerpLineRevision;
+            await _celerpInstallLineBody('', null);
         }}
         return false;
     }}
