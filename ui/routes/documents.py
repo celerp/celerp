@@ -3351,7 +3351,9 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        done = t(f"documents.return_done_{'one' if len(lines) == 1 else 'many'}", n=len(lines))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
+                                                **toast_header(done, "info")})
 
     @app.delete("/docs/{entity_id}/receive")
     async def undo_receipt_route(request: Request, entity_id: str):
@@ -5988,21 +5990,25 @@ def _selected_line_quantities(form) -> list[tuple[int, float | None]]:
     return out
 
 
-def _line_action_rows(line_items: list, available, unit, none_left: str) -> list:
+def _line_action_rows(line_items: list, available, unit, none_left: str, note=None) -> list:
     """One row per document line for a form acting on the selected lines, a fieldset the page
     script shows and enables only while its line is selected. A line with something to act on
     offers all of it, ``available(line)`` in ``unit(line)``; any other line says ``none_left``
-    and submits nothing."""
+    and submits nothing. ``note(line, has_some)``, when given, may return a plain reason shown
+    in place of ``none_left`` or beside the field."""
     rows = []
     for i, li in enumerate(line_items):
         qty = available(li)
         label = Span(li.get("sku") or li.get("description") or li.get("name") or "--", cls="receive-row__label")
+        why = note(li, qty > 1e-9) if note else ""
         if qty <= 1e-9:
-            body = [label, Span(none_left, cls="text-muted")]
+            body = [label, Span(why or none_left, cls="text-muted")]
         else:
             body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty)]
             if li.get("line_id"):
                 body.append(Input(type="hidden", name=f"line_id_{i}", value=li["line_id"]))
+            if why:
+                body.append(Span(why, cls="text-muted receive-row__note"))
         rows.append(Fieldset(*body, cls="receive-row inline-form-row", data_line_index=str(i),
                              disabled=True, style="display:none"))
     return rows
@@ -6018,13 +6024,26 @@ def _receive_rows(line_items: list) -> list:
     )
 
 
+def _return_held_note(li: dict, has_some: bool) -> str:
+    """Why part or all of what a line brought in cannot go back now, from the document's
+    ``return_held`` (reason -> stock units): "2 reserved, 1 sold"; empty when nothing is held."""
+    held = li.get("return_held") or {}
+    parts = [t(f"documents.return_held_{reason}", qty=f"{units:g}")
+             for reason, units in held.items() if units > 1e-9]
+    if not parts:
+        return ""
+    return t("documents.return_held_some" if has_some else "documents.return_held_none", held=", ".join(parts))
+
+
 def _return_rows(line_items: list) -> list:
-    """Return Goods rows: a line offers what of its goods is on hand and free, in stock units."""
+    """Return Goods rows: a line offers what of its goods is on hand and free, in stock units,
+    and says what holds the rest."""
     return _line_action_rows(
         line_items,
         lambda li: float(li.get("returnable_quantity") or 0),
         lambda li: li.get("unit") or "",
         t("documents.nothing_to_return"),
+        _return_held_note,
     )
 
 

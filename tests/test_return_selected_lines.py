@@ -11,6 +11,7 @@ apart from another line's. A request that names lots keeps its old shape and dig
 """
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -128,6 +129,30 @@ async def test_doc_says_what_each_line_sent_back(client, session, auth):
     # The whole bill went back: still said per line once the bill reads Returned.
     assert (await _state(session, auth, bill))["status"] == "returned"
     assert await _states() == ["returned", "returned"]
+
+
+async def test_return_form_says_why_a_line_is_capped(client, session, auth):
+    """A line whose goods are partly or wholly held says what holds them next to its field,
+    rather than a bare browser maximum or a plain "Nothing to return"."""
+    from ui.routes import documents
+
+    bill, ids = await _issued(client, session, auth, "bill", _stock_lines(2, qty=4))
+    for line_id in ids:
+        r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 4})
+        assert r.status_code == 200, r.text
+    first, second = (await _state(session, auth, bill))["received_item_ids"]
+    for parcel, qty in ((first, 2), (second, 4)):
+        r = await client.post(f"/items/{parcel}/reserve", headers=auth["headers"], json={"quantity": qty})
+        assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{bill}", headers=auth["headers"])).json()
+    assert [li.get("returnable_quantity") for li in doc["line_items"]] == [2, 0]
+    assert [li.get("return_held") for li in doc["line_items"]] == [{"reserved": 2}, {"reserved": 4}]
+
+    html = to_xml(documents._li_bulk_toolbar(bill, False, show_fulfill=True, is_inbound=True,
+                                             inbound_line_items=doc["line_items"], locations=[]))
+    assert "Not free to return: 2 reserved" in html
+    assert "Nothing to return: 4 reserved" in html
 
 
 async def test_return_refuses_reserved_lot(client, session, auth):
@@ -285,6 +310,7 @@ async def test_return_goods_form_posts_selected_lines(client, session, auth, mon
     resp = await handler(_Request([(n, "1" if n == "qty_0" else v) for n, v in form.fields]), bill)
     assert resp.status_code == 204, resp.body
     assert resp.headers["HX-Redirect"] == f"/docs/{bill}"
+    assert json.loads(resp.headers["HX-Trigger"])["celerpToast"]["message"] == "1 line returned to the supplier."
     assert sent[0]["lines"] == [{"line_id": ids[0], "quantity_returned": 1.0}]
     assert sent[0]["idempotency_key"]
     assert await _qty(session, auth, parcel) == 3
