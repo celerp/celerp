@@ -112,17 +112,25 @@ def test_setup_form_shows_code_field_only_when_required():
     assert 'name="setup_code"' not in to_xml(_setup_form({}, setup_code_required=False))
 
 
-def test_init_without_no_start_has_no_setup_code(tmp_config):
+@pytest.mark.asyncio
+async def test_init_that_starts_the_servers_also_needs_the_setup_code(tmp_config, client):
+    """An install made by plain `celerp init` cannot be claimed without the code it printed,
+    and its servers keep the same network binding as before."""
     runner = CliRunner()
     with patch("celerp.cli._test_db", return_value=None), \
          patch("celerp.cli._init_database"), \
-         patch("celerp.cli._start"):
+         patch("celerp.cli._start") as mock_start:
         result = runner.invoke(main, ["init",
                                       "--db-url", "postgresql+asyncpg://celerp:celerp@localhost/celerp"])
     assert result.exit_code == 0, result.output
-    cfg = _read_config()
-    assert not cfg["auth"].get("setup_code_hash")
-    assert not cfg["server"].get("headless")
+    mock_start.assert_called_once()
+    assert not _read_config()["server"].get("headless")
+    code = (_config_path().parent / "setup-code").read_text().strip()
+    assert f"Setup code: {code}" in result.output
+
+    assert (await client.post("/auth/register", json=_REG)).status_code == 403
+    r = await client.post("/auth/register", json={**_REG, "setup_code": code})
+    assert r.status_code == 200, r.text
 
 
 @pytest.mark.asyncio

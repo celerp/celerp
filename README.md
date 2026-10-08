@@ -50,7 +50,7 @@ pip install celerp
 celerp init        # sets up the database and launches Celerp
 ```
 
-Open **http://localhost:8080**. Done.
+Open **http://localhost:8080** and enter the one-time setup code `celerp init` printed on the first sign-up page.
 Your office can securely access the system at your IP address :8080.
 
 No PostgreSQL to install: `celerp init` uses your existing PostgreSQL server if one is

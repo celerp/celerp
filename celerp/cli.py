@@ -1078,24 +1078,21 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     db_url_val = cfg["database"]["url"]
     _init_database(db_url_val)
 
-    # Headless installs (a process manager runs `start`) are network-exposed, so the
-    # first-admin page shouldn't be claimable by whoever reaches it first. Mint a
-    # one-time setup code the operator must present; keep the API on loopback too.
-    setup_code = None
+    # The UI listens on every interface, so the first-admin page shouldn't be claimable
+    # by whoever reaches it first. Mint a one-time setup code the operator must present.
+    # Headless installs (a process manager runs `start`) also keep the API on loopback.
+    import hashlib
+    setup_code = secrets.token_hex(16)
+    cfg["auth"]["setup_code_hash"] = hashlib.sha256(setup_code.encode()).hexdigest()
     if no_start:
-        import hashlib
-        setup_code = secrets.token_hex(16)
-        cfg["auth"]["setup_code_hash"] = hashlib.sha256(setup_code.encode()).hexdigest()
         cfg["server"]["headless"] = True
 
     # Write config
     _write_config(cfg)
 
-    if setup_code:
-        from celerp.config import config_path as _cfg_path
-        code_file = _cfg_path().parent / "setup-code"
-        code_file.write_text(setup_code + "\n")
-        code_file.chmod(0o600)
+    code_file = config_path.parent / "setup-code"
+    code_file.write_text(setup_code + "\n")
+    code_file.chmod(0o600)
 
     api_port_val = cfg["server"]["api_port"]
     ui_port_val = cfg["server"]["ui_port"]
@@ -1115,14 +1112,12 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
             f"  Back us early: {_handoff('/github', medium='cli')}\n"
         )
 
+    click.echo(
+        f"\nSetup code: {setup_code}\n"
+        f"  Enter it on the first-admin page to claim this instance.\n"
+        f"  (also saved to {code_file})\n"
+    )
     if no_start:
-        if setup_code:
-            code_file = config_path.parent / "setup-code"
-            click.echo(
-                f"\nSetup code: {setup_code}\n"
-                f"  Enter it on the first-admin page to claim this instance.\n"
-                f"  (also saved to {code_file})\n"
-            )
         click.echo("Setup complete. Start the servers with: celerp start")
         return
     _start(cfg)
