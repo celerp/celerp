@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The release workflows' own step scripts, run with the GitHub API stubbed.
 
-PyPI cannot take a release back, so the GitHub release is published only after
-the PyPI release of the same commit succeeded, and a version already released is
-never rebuilt.
+PyPI cannot take a release back, so it is published only after every desktop
+build of the same commit succeeded, the GitHub release only after the PyPI
+release succeeded, and a version already released is never rebuilt.
 """
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ echo "$*" >> "$CURL_LOG"
 case "$*" in
   *http_code*) printf '%s' "$HTTP_STATUS" ;;
   *publish.yml/runs*) printf '%s' "$RUNS" ;;
+  *build.yml/runs*) printf '%s' "$BUILD_RUNS" ;;
+  */jobs*) printf '%s' "$JOBS" ;;
   *releases\?per_page*) printf '[{"id": 7, "tag_name": "v9.9.9", "body": "Notes"}]' ;;
   *) printf '{"id": 7}' ;;
 esac
@@ -42,7 +44,8 @@ def _env(tmp_path: Path, **env: str) -> dict:
         (bin_dir / name).chmod(0o755)
     return {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CURL_LOG": str(tmp_path / "curl.log"),
             "GH_TOKEN": "t", "GITHUB_SHA": "abc123", "GITHUB_REF_NAME": "v9.9.9",
-            "GITHUB_ENV": str(tmp_path / "github_env"), "HTTP_STATUS": "200", "RUNS": "", **env}
+            "GITHUB_ENV": str(tmp_path / "github_env"), "HTTP_STATUS": "200", "RUNS": "",
+            "BUILD_RUNS": "", "JOBS": "", **env}
 
 
 def _run(tmp_path: Path, script: str, env: dict) -> subprocess.CompletedProcess:
@@ -53,10 +56,14 @@ def _run(tmp_path: Path, script: str, env: dict) -> subprocess.CompletedProcess:
 
 
 def _run_job(tmp_path: Path, workflow: str, job: str, **env: str) -> tuple[int, str, list[str]]:
-    """Runs the job's steps in order as GitHub does, stopping at the first failure."""
+    """Runs the job's steps in order as GitHub does, stopping at the first failure. An
+    action step is only recorded as reached."""
     base = _env(tmp_path, **env)
     out, code = "", 0
     for step in _steps(workflow, job):
+        if "uses" in step:
+            out += f"reached {step['uses']}\n"
+            continue
         r = _run(tmp_path, step["run"], {**base, **step.get("env", {}), **env, "GH_TOKEN": "t"})
         out += r.stdout + r.stderr
         code = r.returncode
@@ -126,3 +133,46 @@ def test_a_manual_candidate_build_refuses_a_malformed_version(tmp_path, version)
 def test_pypi_publishing_runs_only_on_a_tag_push():
     job = yaml.safe_load((_WORKFLOWS / "publish.yml").read_text())["jobs"]["publish"]
     assert job.get("if") == "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+
+
+_PYPI = "reached pypa/gh-action-pypi-publish"
+_BUILD_RUNS = json.dumps({"workflow_runs": [{"id": 5}]})
+
+
+def _jobs(*builds: tuple[str, str | None]) -> str:
+    """build.yml's jobs: the release step that waits for PyPI, and the desktop builds."""
+    jobs = [{"name": "publish-release", "status": "queued", "conclusion": None}]
+    jobs += [{"name": f"build ({n})", "status": "in_progress" if c is None else "completed", "conclusion": c}
+             for n, c in enumerate(builds)]
+    return json.dumps({"jobs": jobs})
+
+
+@pytest.mark.parametrize("jobs", [
+    _jobs("success", "failure", None), _jobs("success", "cancelled", "success"),
+    json.dumps({"jobs": [{"name": "build", "status": "completed", "conclusion": "skipped"}]}),
+], ids=["one failed", "one cancelled", "never started"])
+def test_pypi_is_not_published_when_a_desktop_build_did_not_succeed(tmp_path, jobs):
+    code, out, calls = _run_job(tmp_path, "publish.yml", "publish", BUILD_RUNS=_BUILD_RUNS, JOBS=jobs)
+    assert code != 0, out
+    assert "a desktop build of this commit did not succeed" in out
+    assert _PYPI not in out
+
+
+@pytest.mark.parametrize("runs,jobs", [
+    (_BUILD_RUNS, _jobs("success", None, "success")),
+    (json.dumps({"workflow_runs": []}), ""),
+], ids=["still building", "not started"])
+def test_pypi_is_not_published_while_the_desktop_builds_never_finish(tmp_path, runs, jobs):
+    code, out, calls = _run_job(tmp_path, "publish.yml", "publish", BUILD_RUNS=runs, JOBS=jobs)
+    assert code != 0, out
+    assert "did not finish within 4 hours" in out
+    assert sum("build.yml/runs?head_sha=abc123&event=push&branch=v9.9.9" in c for c in calls) == 240
+    assert _PYPI not in out
+
+
+def test_pypi_is_published_once_every_desktop_build_succeeded(tmp_path):
+    code, out, calls = _run_job(tmp_path, "publish.yml", "publish", BUILD_RUNS=_BUILD_RUNS,
+                                JOBS=_jobs("success", "success", "success"))
+    assert code == 0, out
+    assert any("actions/runs/5/jobs" in c for c in calls), calls
+    assert _PYPI in out, out

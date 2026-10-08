@@ -132,8 +132,39 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      actions: read
       id-token: write  # Required for PyPI trusted publishing
     steps:
+      # PyPI cannot take a release back, so it follows the desktop builds of this
+      # commit: it is published only once every one of them succeeded. build.yml's
+      # release job waits for this workflow, so this waits for its build jobs, never
+      # its whole run. Waits up to 4 hours; anything else publishes nothing.
+      - name: Wait for the desktop builds of this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          API=https://api.github.com/repos/celerp/celerp/actions
+          for _ in $(seq 240); do
+            RUN=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
+              "$API/workflows/build.yml/runs?head_sha=$GITHUB_SHA&event=push&branch=$GITHUB_REF_NAME&per_page=1" \
+              | python3 -c "import sys,json; r=json.load(sys.stdin)['workflow_runs']; print(r[0]['id'] if r else '')")
+            BUILDS="not started"
+            if [ -n "$RUN" ]; then
+              BUILDS=$(curl -fsS -H "Authorization: token $GH_TOKEN" "$API/runs/$RUN/jobs?per_page=100" \
+                | python3 -c "import sys,json; b=[j['conclusion'] for j in json.load(sys.stdin)['jobs'] if j['name'] == 'build' or j['name'].startswith('build (')]; print('failed' if set(b) - {None, 'success'} else 'succeeded' if b and set(b) == {'success'} else 'running')")
+            fi
+            echo "desktop builds: $BUILDS"
+            case "$BUILDS" in
+              succeeded) exit 0 ;;
+              failed) echo "ERROR: a desktop build of this commit did not succeed" >&2; exit 1 ;;
+            esac
+            sleep 60
+          done
+          echo "ERROR: the desktop builds did not finish within 4 hours" >&2
+          exit 1
+
       - uses: actions/download-artifact@v8
         with:
           name: dist
