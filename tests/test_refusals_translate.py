@@ -62,7 +62,7 @@ async def test_receiving_part_of_a_piece_is_refused_in_the_users_language(client
     h = owner
     bill = await _bill(client, h, "RT-DEC", 2)
     text = _in_spanish(await _receive(client, h, bill, "RT-DEC", 1.5), 422)
-    assert text == "RT-DEC: 1.5 tiene más decimales de los que permite esta unidad (0)."
+    assert text == "RT-DEC: 1.5 es más preciso de lo que permite esta unidad (máximo 0 decimales)."
 
 
 async def test_receiving_more_than_the_line_is_refused_in_the_users_language(client, owner):
