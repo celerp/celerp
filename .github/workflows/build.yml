@@ -673,13 +673,32 @@ jobs:
             fi
             sleep 1
           done
-          kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
           if [ -z "$ok" ]; then
+            kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
             echo "::error::boot smoke FAILED on $RUNNER_OS - /health/ready never returned db:ok"
             echo "----- app log (tail) -----"; tail -n 200 "$LOG" || true
             exit 1
           fi
           echo "boot smoke OK on $RUNNER_OS"
+          # A force-quit app must not leave its servers running: kill the app itself
+          # (SIGKILL, no shutdown code runs) and require the API and the database to stop,
+          # the database cleanly (it removes postmaster.pid on a clean stop).
+          API=$(lsof -tiTCP:"$API_PORT" -sTCP:LISTEN | head -1)
+          ELECTRON=$(ps -o ppid= -p "$API" | tr -d ' ')
+          PG_PIDFILE=$(find "$HOME" -name postmaster.pid | head -1)
+          PG=$(head -1 "$PG_PIDFILE")
+          echo "force-quit: app $ELECTRON, API $API, database $PG ($PG_PIDFILE)"
+          [ -n "$API" ] && [ -n "$ELECTRON" ] && [ -n "$PG" ] || { echo "::error::force-quit: could not find the app's processes"; exit 1; }
+          kill -9 "$ELECTRON"
+          DEADLINE=$(( $(date +%s) + 30 ))
+          while { kill -0 "$API" || kill -0 "$PG" || [ -e "$PG_PIDFILE" ]; } 2>/dev/null && [ "$(date +%s)" -lt "$DEADLINE" ]; do sleep 1; done
+          kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
+          if { kill -0 "$API" || kill -0 "$PG" || [ -e "$PG_PIDFILE" ]; } 2>/dev/null; then
+            echo "::error::force-quit on $RUNNER_OS left the API or the database running"
+            ps -o pid,ppid,command -p "$API,$PG" || true
+            exit 1
+          fi
+          echo "force-quit OK on $RUNNER_OS: the API and the database stopped"
 
       # Windows runs elevated on the GitHub runner and bundled Postgres refuses to
       # run under an administrator token. The app self-de-elevates at startup

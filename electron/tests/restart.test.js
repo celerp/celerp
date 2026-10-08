@@ -64,6 +64,8 @@ function makeTestDeps({ sentinelExists = false, sentinelPath = "/tmp/test-sentin
     startUi,
     sentinelPath,
     onCrash,
+    isStopping: () => false,
+    trackRestart: (restart) => restart,
     fs,
   };
 
@@ -208,6 +210,8 @@ describe("watchForRestart", () => {
       startUi,
       sentinelPath: "/tmp/sentinel",
       onCrash,
+      isStopping: () => false,
+      trackRestart: (restart) => restart,
       fs,
     };
 
@@ -221,6 +225,61 @@ describe("watchForRestart", () => {
     apiEmitter.emit("exit", 0);
     await new Promise(r => setTimeout(r, 20));
     expect(startApi).toHaveBeenCalledTimes(2);
+    expect(onCrash).not.toHaveBeenCalled();
+  });
+});
+
+describe("watchForRestart once the app is stopping", () => {
+  test("an exit after shutdown started is neither a restart nor a crash", async () => {
+    const { deps, fs, startApi, onCrash } = makeTestDeps({ sentinelExists: true });
+    deps.isStopping = () => true;
+    const api = deps.getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    api.emit("exit", 1);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+    expect(startApi).not.toHaveBeenCalled();
+    expect(onCrash).not.toHaveBeenCalled();
+  });
+
+  test("a shutdown during a restart stops it before the UI starts", async () => {
+    const { deps, startUi, onCrash } = makeTestDeps({ sentinelExists: true });
+    let stopping = false;
+    deps.isStopping = () => stopping;
+    const startApi = deps.startApi;
+    deps.startApi = jest.fn(async (url) => { await startApi(url); stopping = true; });
+    const tracked = [];
+    deps.trackRestart = (restart) => tracked.push(restart);
+    const onRestart = jest.fn();
+    deps.onRestart = onRestart;
+    const api = deps.getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    api.emit("exit", 0);
+    expect(tracked).toHaveLength(1);
+    await tracked[0];
+
+    expect(deps.startApi).toHaveBeenCalledTimes(1);
+    expect(startUi).not.toHaveBeenCalled();
+    expect(onRestart).not.toHaveBeenCalled();
+    expect(onCrash).not.toHaveBeenCalled();
+  });
+
+  test("a restart that fails because the app is stopping is not reported as a crash", async () => {
+    const { deps, onCrash } = makeTestDeps({ sentinelExists: true });
+    let stopping = false;
+    deps.isStopping = () => stopping;
+    deps.startApi = jest.fn(async () => { stopping = true; throw new Error("killed"); });
+    const tracked = [];
+    deps.trackRestart = (restart) => tracked.push(restart);
+    const api = deps.getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    api.emit("exit", 0);
+    await tracked[0];
+
     expect(onCrash).not.toHaveBeenCalled();
   });
 });

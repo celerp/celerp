@@ -1,0 +1,32 @@
+diff --git a/dist/index.js b/dist/index.js
+index ccfe17a..9cdf669 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -34,6 +34,8 @@ const defaults = {
+     persistent: true,
+     initdbFlags: [],
+     postgresFlags: [],
++    // Command words put before the postgres binary, e.g. a program that runs it as its child.
++    launcher: [],
+     createPostgresUser: false,
+     onLog: console.log,
+     onError: console.error,
+@@ -171,13 +173,16 @@ class EmbeddedPostgres {
+             yield new Promise((resolve, reject) => {
+                 var _a;
+                 // Spawn a postgres server
+-                this.process = spawn(postgres, [
++                const [command, ...args] = [
++                    ...this.options.launcher,
++                    postgres,
+                     '-D',
+                     this.options.databaseDir,
+                     '-p',
+                     this.options.port.toString(),
+                     ...this.options.postgresFlags,
+-                ], Object.assign(Object.assign({}, permissionIds), { env: { LC_MESSAGES: LC_MESSAGES_LOCALE } }));
++                ];
++                this.process = spawn(command, args, Object.assign(Object.assign({}, permissionIds), { env: { LC_MESSAGES: LC_MESSAGES_LOCALE } }));
+                 // Connect to stderr, as that is where the messages get sent
+                 (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
+                     // Parse the data as a string and log it

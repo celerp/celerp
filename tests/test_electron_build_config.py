@@ -449,6 +449,8 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
         assert names.index(check["name"]) < names.index(smoke["name"])
     assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
             and "export ENABLED_MODULES" in unix["run"])
+    # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
+    assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
     assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
             in win["run"])
     assert "set ENABLED_MODULES=$enabled" in win["run"]
