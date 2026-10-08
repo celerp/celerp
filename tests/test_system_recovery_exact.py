@@ -178,7 +178,8 @@ class _Recovery:
 
         monkeypatch.setattr(backup, "dump_database", _dump)
         monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
-        monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+        monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
+        monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", _none)
 
         def _recorder(name):
@@ -657,7 +658,7 @@ async def test_recovery_stages_and_validates_files_before_destruction(rec, tmp_p
     rec.seed()
     before = rec.trees()
     seen: dict = {}
-    restore = backup_import._run_pg_restore
+    restore = backup_import._run_restore_script
 
     async def _restore(dump, url):
         staged = {p.name: p for p in (rec.data / "recovery-staging").rglob("*") if p.is_file()}
@@ -666,7 +667,7 @@ async def test_recovery_stages_and_validates_files_before_destruction(rec, tmp_p
         seen["dest"] = rec.trees()
         await restore(dump, url)
 
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
     result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
     assert result.ok is True, result.error
     assert seen["staged"] == {"new.pdf": SOURCE_FILES["attachments/new.pdf"], "new.txt": b"SOURCE-AI"}
@@ -888,7 +889,7 @@ def _inject(monkeypatch, boundary: str) -> list[str]:
     from celerp import config
     from celerp.services import backup_import, session_tracker
     target = {
-        "pg_restore": (backup_import, "_run_pg_restore", False),
+        "pg_restore": (backup_import, "_run_restore_script", False),
         "schema": (backup_import, "_reconcile_schema", False),
         "connector_cleanup": (backup_import, "_clear_restored_connector_state", True),
         "session_rotation": (session_tracker, "end_all_sessions", True),
@@ -1119,7 +1120,7 @@ async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp
     rec.seed()
     before, modules = rec.trees(), _enabled()
     tok = await _install_owner(real_engine)
-    real_restore = backup_import._run_pg_restore
+    real_restore = backup_import._run_restore_script
     broken = [True]
 
     async def _restore(dump, url):
@@ -1127,7 +1128,7 @@ async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp
         if broken:
             raise RuntimeError("disk full")
 
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
     result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
     assert result.ok is False and "restart Celerp" in result.error
     assert backup_import.recovery_incomplete() is True
@@ -1230,14 +1231,14 @@ async def test_boot_finishes_unfinished_recovery_before_schema_init(rec, tmp_pat
     blocker = await _break_schema_init(committed_engine)
     safety = _archive(tmp_path / "safety.celerp-backup", SOURCE_FILES)
     backup_import._mark_recovery_started(safety, [])
-    stub_restore = backup_import._run_pg_restore
+    stub_restore = backup_import._run_restore_script
 
     async def _restore(dump, url):
         await stub_restore(dump, url)
         async with committed_engine.begin() as conn:
             await conn.execute(text(f'DROP TABLE "{blocker}"'))
 
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
     main_mod, verified = _boot_to_schema(monkeypatch, committed_engine)
 
     async with main_mod.lifespan(None):
@@ -1513,9 +1514,11 @@ async def test_failed_recovery_of_a_backup_with_extra_tables_is_put_back(tmp_pat
 @pytest.mark.parametrize("safety", [True, False], ids=["with safety archive", "without safety archive"])
 async def test_a_backup_whose_late_table_data_is_unreadable(tmp_path, monkeypatch, code_config, real_engine,
                                                             real_client, safety):
-    """The checks before a restore read the archive's listing and schema, not every data
-    block, so a damaged block at the end of the dump is found only by the restore itself.
-    That restore stops before the database is changed."""
+    """A damaged block at the end of the dump is found while the backup is prepared, by
+    reading all of its data, so the recovery is refused before the safety archive, the
+    marker and any connector revoke, with or without a safety archive."""
+    from sqlalchemy import text
+
     from celerp.services import backup_export, backup_import
     _set_enabled(["celerp-inventory"])
     rec = _Recovery(tmp_path, monkeypatch, real_database=True)
@@ -1533,32 +1536,19 @@ async def test_a_backup_whose_late_table_data_is_unreadable(tmp_path, monkeypatc
             for name, body in {**members, "database.dump": bytes(dump)}.items():
                 _add(tar, name, body)
         await company(real_engine, user, "Beta Trading", "beta")
-
-        if safety:
-            result = await backup_import.run_recovery(damaged)
-            assert result.ok is False and "put back" in result.error, result.error
-        else:
+        connector_calls = _record_connector_calls(monkeypatch)
+        if not safety:
             rec.fail_safety()
-            first = await backup_import.run_recovery(damaged)
-            assert first.needs_confirmation, first
-            result = await backup_import.continue_recovery(first.confirmation_id, first.archive_digest)
-            assert result.ok is False and "restart Celerp" in result.error, result.error
-        print(f"\n[{'with' if safety else 'without'} safety archive] {result.error}")
-        assert "pg_restore failed" in result.error, result.error
 
+        result = await backup_import.run_recovery(damaged)
+        assert result.ok is False and not result.needs_confirmation, result
+        assert result.error.startswith("This backup file is damaged and cannot be restored: pg_restore failed"), \
+            result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 200
         assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
         async with real_engine.connect() as conn:
-            from sqlalchemy import text
             assert (await conn.execute(text("SELECT count(*) FROM zz_late"))).scalar() == 5000
-        if safety:
-            assert backup_import.recovery_incomplete() is False
-            assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401
-        else:
-            for start in range(2):
-                assert backup_import.recovery_incomplete() is True
-                assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 503
-                await backup_import.finish_incomplete_recovery()
-            assert backup_import.recovery_incomplete() is True
     finally:
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_late")
 

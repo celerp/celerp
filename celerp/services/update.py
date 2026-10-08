@@ -833,6 +833,7 @@ class SupervisorSteps(Steps):
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.chmod(path, 0o600)
+        self._backup.check_free_space(path)
         self._backup.check_backup_dump(path, self.db_url, "this database")
 
     def stage(self, target: str) -> None:

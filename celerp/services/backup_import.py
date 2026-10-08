@@ -162,11 +162,11 @@ async def _dispose_engine() -> None:
         log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
 
 
-async def _run_pg_restore(dump_path: Path, database_url: str) -> None:
-    """Run pg_restore from the staged dump file off the event loop (blocking subprocess)."""
+async def _run_restore_script(script: Path, database_url: str) -> None:
+    """Replace the database with the staged restore script off the event loop (blocking subprocess)."""
     import asyncio
-    from celerp.services.backup import restore_database_file
-    await asyncio.to_thread(restore_database_file, dump_path, database_url)
+    from celerp.services.backup import run_restore_script
+    await asyncio.to_thread(run_restore_script, script, database_url)
 
 
 async def _reconcile_schema() -> None:
@@ -268,6 +268,7 @@ _ABANDONED_STAGING_AGE = timedelta(days=1)
 
 _STAGED_ARCHIVE = "archive.celerp-backup"
 _STAGED_DUMP = "database.dump"
+_STAGED_SCRIPT = "restore.sql"
 _STAGED_FILES = "files"
 _STAGED_RECORD = "staged.json"
 _PENDING_RECORD = "pending.json"
@@ -302,6 +303,10 @@ class PreparedRecovery:
     @property
     def dump(self) -> Path:
         return self.root / _STAGED_DUMP
+
+    @property
+    def script(self) -> Path:
+        return self.root / _STAGED_SCRIPT
 
 
 @dataclass
@@ -402,7 +407,7 @@ def _stage_members(archive: Path, root: Path) -> None:
 
 def _prepare_sync(path: Path) -> PreparedRecovery:
     from celerp.config import settings
-    from celerp.services.backup import check_backup_dump
+    from celerp.services.backup import check_backup_dump, write_restore_script
     _purge_expired_staging()
     meta = validate_archive(path)
     staging_id = uuid.uuid4().hex
@@ -413,6 +418,10 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         digest = _sha256(root / _STAGED_ARCHIVE)
         _stage_members(root / _STAGED_ARCHIVE, root)
         check_backup_dump(root / _STAGED_DUMP, settings.database_url)
+        try:
+            write_restore_script(root / _STAGED_DUMP, root / _STAGED_SCRIPT)
+        except RuntimeError as exc:
+            raise ValueError(f"This backup file is damaged and cannot be restored: {exc}") from exc
         prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
                                     files=_staged_files(root))
         (root / _STAGED_RECORD).write_text(json.dumps({
@@ -430,9 +439,11 @@ async def prepare_recovery(path: Path) -> PreparedRecovery:
     Validates the archive, copies it under data_dir and records its sha256, and
     extracts the database dump and every restore-owned file into a staging
     directory on the installation's filesystem, refusing links, devices and paths
-    outside the restore roots. Raises ValueError for an archive that cannot be
-    restored, including a dump holding objects a Celerp backup does not
-    (``check_backup_dump``); nothing is left staged on failure.
+    outside the restore roots, then writes the script that restores the dump
+    (``backup.write_restore_script``), which reads all of its data. Raises ValueError
+    for an archive that cannot be restored, including a dump holding objects a Celerp
+    backup does not (``check_backup_dump``) or one that cannot be read; nothing is left
+    staged on failure.
     """
     import asyncio
     return await asyncio.to_thread(_prepare_sync, path)
@@ -768,7 +779,7 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
     from celerp.services import payments, session_tracker
 
     await _dispose_engine()
-    await _run_pg_restore(prepared.dump, settings.database_url)
+    await _run_restore_script(prepared.script, settings.database_url)
     await _reconcile_schema()
     async with get_session_ctx() as session:
         await _clear_restored_connector_state(session)

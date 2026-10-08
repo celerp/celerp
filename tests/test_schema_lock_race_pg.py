@@ -513,9 +513,9 @@ def _url(engine) -> str:
 
 
 class _Recovery:
-    """System Recovery's database restore (``restore_database_file``), run off the event
-    loop with pg_restore and psql stood in for: each run records the key's holders, then
-    waits for ``release`` before answering, or failing with *failure*."""
+    """The database restore (``restore_database_file``, whose psql step System Recovery runs), run off the event
+    loop with psql, which replaces the database, stood in for: it records the key's
+    holders, then waits for ``release`` before answering, or failing with *failure*."""
 
     def __init__(self, url: str, dump: Path, *, failure: str | None = None):
         from celerp.services.backup import dump_database, restore_database_file
@@ -525,6 +525,8 @@ class _Recovery:
         dump.write_bytes(dump_database(url))
 
         def runner(command, **kwargs):
+            if Path(command[0]).stem != "psql":
+                return subprocess.run(command, **kwargs)
             self.seen.append(_holders_now(url))
             self.started.set()
             self.release.wait(30)
@@ -560,7 +562,7 @@ async def test_system_recovery_holds_the_schema_key_alone_while_it_replaces_the_
     finally:
         recovery.release.set()
     await asyncio.wait_for(recovery.task, 15)
-    assert recovery.seen == [["ExclusiveLock"]] * 3
+    assert recovery.seen == [["ExclusiveLock"]]
     assert await asyncio.to_thread(_holders_now, scratch_url) == []
 
 
@@ -607,16 +609,16 @@ async def test_system_recovery_waits_for_a_running_company_backup(
         recovery.release.set()
     await asyncio.wait_for(recovery.task, 15)
     assert not replaced_during_backup
-    assert recovery.seen == [["ExclusiveLock"]] * 3
+    assert recovery.seen == [["ExclusiveLock"]]
     assert b"widget-marker" in members(out.read_bytes())["tables/zz_widgets.jsonl"]
     assert await _holders(real_engine) == []
 
 
-@pytest.mark.parametrize("failure", ["error", "timeout"], ids=["pg_restore fails", "pg_restore times out"])
+@pytest.mark.parametrize("failure", ["error", "timeout"], ids=["psql fails", "psql times out"])
 async def test_failed_system_recovery_restore_releases_the_schema_key(scratch_url, tmp_path, failure):
     recovery = _Recovery(scratch_url, tmp_path / "database.dump", failure=failure)
     recovery.release.set()
-    with pytest.raises(RuntimeError, match="pg_restore"):
+    with pytest.raises(RuntimeError, match="psql"):
         await asyncio.wait_for(recovery.task, 15)
     assert recovery.seen == [["ExclusiveLock"]]
     assert await asyncio.to_thread(_holders_now, scratch_url) == []

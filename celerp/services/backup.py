@@ -296,9 +296,8 @@ def check_backup_dump(dump_path: Path, database_url: str,
     """ValueError naming the entries of a pg_dump archive that are not a Celerp backup's
     (``_BACKUP_ENTRY``), the extensions in it a restore into this database could not
     install, or the roles, collations and tablespaces it needs that this database
-    does not have (``_check_server_objects``), or when the disk beside it has no
-    room to restore it. `source` names, for the owner, the database the dump was taken from."""
-    check_free_space(dump_path)
+    does not have (``_check_server_objects``). `source` names, for the owner, the
+    database the dump was taken from."""
     listing = _run_tool([_find_pg_tool("pg_restore"), "-l", dump_path.name], None, timeout=60, cwd=dump_path.parent)
     lines = [line for line in _text(listing).splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
@@ -384,34 +383,50 @@ def restore_tools() -> tuple[str, str]:
 
 
 def restore_database_file(dump_path: Path, database_url: str, *, runner=None) -> None:
-    """Replace the database with a pg_dump custom-format file, all or nothing:
-    pg_restore writes the dump as a script, and psql empties the public schema and
-    runs the script in one transaction. psql writes from a process of its own, so it
-    runs inside the fence's write window (celerp.migrations.compatibility). The whole
-    replacement holds the schema key alone (``celerp.cli._migration_lock``), on a
-    connection of its own, so it waits for every running company backup or restore
-    and they are refused until it ends."""
+    """Replace the database with a pg_dump custom-format file, all or nothing
+    (``write_restore_script``, then ``run_restore_script``)."""
     import tempfile
 
+    restore_tools()
+    with tempfile.TemporaryDirectory(dir=dump_path.parent) as work:
+        script = write_restore_script(dump_path, Path(work) / "restore.sql", runner=runner)
+        run_restore_script(script, database_url, runner=runner)
+
+
+def write_restore_script(dump_path: Path, script: Path, *, runner=None) -> Path:
+    """Write the SQL script that restores a pg_dump custom-format file to *script*, in the
+    dump's directory or one inside it, and return it. pg_restore reads every entry of the
+    dump to write it, so a dump it cannot read fails here, before anything is changed;
+    ValueError when the disk has no room for the script and the restore."""
+    check_free_space(dump_path)
+    pg_restore = _find_pg_tool("pg_restore")
+    name = script.relative_to(dump_path.parent).as_posix()
+    listing = name.removesuffix(".sql") + ".list"
+    script.touch(mode=0o600)
+    entries = _text(_run_tool([pg_restore, "-l", dump_path.name], runner, cwd=dump_path.parent))
+    (dump_path.parent / listing).write_text("".join(line for line in entries.splitlines(keepends=True)
+                                                    if not re.match(_SCHEMA_ENTRY, line)))
+    _run_tool([pg_restore, "--clean", "--if-exists", "--no-privileges", "--no-owner",
+               "-L", listing, "-f", name, dump_path.name], runner, cwd=dump_path.parent)
+    return script
+
+
+def run_restore_script(script: Path, database_url: str, *, runner=None) -> None:
+    """Replace the database with a ``write_restore_script`` script, all or nothing: psql
+    empties the public schema and runs the script in one transaction. psql writes from a
+    process of its own, so it runs inside the fence's write window
+    (celerp.migrations.compatibility). It holds the schema key alone
+    (``celerp.cli._migration_lock``), on a connection of its own, so it waits for every
+    running company backup or restore and they are refused until it ends."""
     from celerp.cli import _migration_lock
     from celerp.db_url import sync_url
     from celerp.migrations.compatibility import mutating_scope
 
-    pg_restore, psql = restore_tools()
-    check_free_space(dump_path)
+    psql = _find_pg_tool("psql")
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-    with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url), \
-            tempfile.TemporaryDirectory(dir=dump_path.parent) as work:
-        listing, script = Path(work).name + "/restore.list", Path(work).name + "/restore.sql"
-        (dump_path.parent / script).touch(mode=0o600)
-        entries = _text(_run_tool([pg_restore, "-l", dump_path.name], runner, cwd=dump_path.parent))
-        (dump_path.parent / listing).write_text("".join(line for line in entries.splitlines(keepends=True)
-                                                        if not re.match(_SCHEMA_ENTRY, line)))
-        _run_tool([pg_restore, "--clean", "--if-exists", "--no-privileges", "--no-owner",
-                   "-L", listing, "-f", script, dump_path.name], runner, cwd=dump_path.parent)
-        with held.write_window():
-            _run_tool([psql, "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "--single-transaction",
-                       "-c", _EMPTY_PUBLIC, "-f", script, "-d", pg_url], runner, cwd=dump_path.parent)
+    with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url), held.write_window():
+        _run_tool([psql, "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "--single-transaction",
+                   "-c", _EMPTY_PUBLIC, "-f", script.name, "-d", pg_url], runner, cwd=script.parent)
 
 
 def _text(output: bytes) -> str:

@@ -12,6 +12,7 @@ import io
 import json
 import re
 import secrets
+import shutil
 import tarfile
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
@@ -87,8 +88,9 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
         return None
 
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
     monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
+    monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
     monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
     for name in ("_reconcile_connectors", "_dispose_engine", "_reconcile_schema",
                  "_clear_restored_connector_state"):
