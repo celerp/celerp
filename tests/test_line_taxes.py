@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A line's taxes follow its amount, and the tax select names the tax it carries.
+"""A line's taxes follow its amount, and every view reads its rate the same way.
 
 A line edit recomputes each tax amount on the line from its rate, so the tax rows of
-the summary agree with the subtotal and total."""
+the summary agree with the subtotal and total. The tax select and the TAX % cell read
+the line's rate from its taxes, or its tax_rate when it has none."""
 from __future__ import annotations
 
 import re
@@ -57,3 +58,14 @@ def test_the_tax_select_names_a_line_tax_the_company_has_not_configured():
     html = _render("draft", {"taxes": [{"code": "VAT", "rate": 10, "amount": 17.4}]},
                    [{"name": "Standard Tax", "rate": 0}])
     assert _selected_tax(html) == "VAT (10.0%)"
+
+
+@pytest.mark.parametrize("li, shown", [
+    ({"taxes": [{"code": "VAT", "rate": 10, "amount": 17.4}]}, "10.0"),
+    ({"taxes": [{"code": "A", "rate": 5}, {"code": "B", "rate": 2.5}]}, "7.5"),
+    ({"tax_rate": 7}, "7.0"),
+    ({}, "--"),
+])
+def test_the_tax_cell_reads_the_line_taxes(li, shown):
+    html = _render("sent", li)
+    assert re.search(r'<td class="col-tax">([^<]*)</td>', html).group(1) == shown

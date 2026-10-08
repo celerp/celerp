@@ -9370,7 +9370,7 @@ async function celerpCsvImport(input, entityId) {{
                 Td(qty_label(li), _return_qty, cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
-                Td(format_value(li.get("tax_rate")), cls="col-tax"),
+                Td(format_value(_line_tax_rate(li) or None), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
                 acct_code = li.get("account_code") or ""
