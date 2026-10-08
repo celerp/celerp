@@ -1510,6 +1510,59 @@ async def test_failed_recovery_of_a_backup_with_extra_tables_is_put_back(tmp_pat
     assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
 
 
+@pytest.mark.parametrize("safety", [True, False], ids=["with safety archive", "without safety archive"])
+async def test_a_backup_whose_late_table_data_is_unreadable(tmp_path, monkeypatch, code_config, real_engine,
+                                                            real_client, safety):
+    """The checks before a restore read the archive's listing and schema, not every data
+    block, so a damaged block at the end of the dump is found only by the restore itself.
+    That restore stops before the database is changed."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    tok = await token(real_engine, user, await company(real_engine, user, "Alpha Trading", "alpha"))
+    await _execute(real_engine, "CREATE TABLE zz_late (n int, body text)")
+    try:
+        await _execute(real_engine, "INSERT INTO zz_late SELECT g, md5(g::text) || md5((g * 7)::text) "
+                                    "FROM generate_series(1, 5000) g")
+        members = _members(await backup_export.export_full())
+        dump = bytearray(members["database.dump"])
+        dump[-20000:-19900] = bytes(100)
+        damaged = tmp_path / "damaged.celerp-backup"
+        with tarfile.open(damaged, "w:gz") as tar:
+            for name, body in {**members, "database.dump": bytes(dump)}.items():
+                _add(tar, name, body)
+        await company(real_engine, user, "Beta Trading", "beta")
+
+        if safety:
+            result = await backup_import.run_recovery(damaged)
+            assert result.ok is False and "put back" in result.error, result.error
+        else:
+            rec.fail_safety()
+            first = await backup_import.run_recovery(damaged)
+            assert first.needs_confirmation, first
+            result = await backup_import.continue_recovery(first.confirmation_id, first.archive_digest)
+            assert result.ok is False and "restart Celerp" in result.error, result.error
+        print(f"\n[{'with' if safety else 'without'} safety archive] {result.error}")
+        assert "pg_restore failed" in result.error, result.error
+
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        async with real_engine.connect() as conn:
+            from sqlalchemy import text
+            assert (await conn.execute(text("SELECT count(*) FROM zz_late"))).scalar() == 5000
+        if safety:
+            assert backup_import.recovery_incomplete() is False
+            assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 401
+        else:
+            for start in range(2):
+                assert backup_import.recovery_incomplete() is True
+                assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 503
+                await backup_import.finish_incomplete_recovery()
+            assert backup_import.recovery_incomplete() is True
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_late")
+
+
 async def test_recovery_stopped_after_the_database_was_emptied_is_finished_at_next_start(
         tmp_path, monkeypatch, code_config, committed_engine):
     """A recovery that stopped between emptying the database and restoring it is finished
