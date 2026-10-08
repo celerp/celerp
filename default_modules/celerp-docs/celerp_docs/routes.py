@@ -4262,7 +4262,9 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
             data={"source_doc_id": entity_id, "doc_number": doc_number, "quantity_fulfilled": quantity,
                   "fulfilled_by": str(actor_id), "doc_type": "invoice", "ts": moved["date"]},
             actor_id=actor_id, location_id=None, source=source,
-            idempotency_key=f"{idempotency_key}:fulfilled:{lot_id}", metadata_={"doc_id": entity_id, "line_index": index},
+            idempotency_key=f"{idempotency_key}:fulfilled:{lot_id}",
+            metadata_={"doc_id": entity_id, "line_index": index,
+                       "source_line_id": (state.get("line_items") or [])[index].get("line_id")},
         )
         if index not in delivered:
             new_lines[index] = {**line, "entity_id": lot_id, "item_id": lot_id}
@@ -7080,6 +7082,7 @@ async def _fulfill_lines_impl(
 
     total_cogs = 0.0
     fulfilled_lines: set[int] = set()
+    _line_ids = {i: li.get("line_id") for i, li in enumerate(state.get("line_items") or [])}
     for item_eid in to_fulfill:
         item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))
@@ -7105,7 +7108,8 @@ async def _fulfill_lines_impl(
             location_id=None,
             source="fulfillment",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={"doc_id": entity_id, "line_index": _line_idx},
+            metadata_={"doc_id": entity_id, "line_index": _line_idx,
+                       "source_line_id": _line_ids.get(_line_idx)},
         )
 
     # True up the invoice's recognized COGS to the actual cost of what it shipped.

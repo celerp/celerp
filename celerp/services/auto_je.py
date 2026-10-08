@@ -1616,17 +1616,41 @@ def recorded_line_index(event) -> int | None:
     return idx if isinstance(idx, int) and not isinstance(idx, bool) else None
 
 
-def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: int | None) -> int | None:
-    """The index of the doc line a lot belongs to: the line naming the lot, else the
-    line its latest fulfillment for the doc recorded (``recorded``), else the only line
+def recorded_line(event) -> tuple[str | None, int | None]:
+    """The line id and line index an item.fulfilled event recorded, each None when absent."""
+    line_id = (event.metadata_ or {}).get("source_line_id")
+    return (line_id if isinstance(line_id, str) and line_id else None), recorded_line_index(event)
+
+
+def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: int | None,
+                source_line_id: str | None = None) -> int | None:
+    """The index of the doc line a lot belongs to, or None when it cannot be told safely.
+
+    In order: the line its shipment recorded by id (``source_line_id``), while that line is
+    still on the doc; the line its shipment recorded by position (``recorded``), while that
+    line still binds the lot or is of its SKU; the only line binding the lot; the only line
     of its SKU."""
-    for idx, line in enumerate(line_items):
-        if (line.get("entity_id") or line.get("item_id")) == lot_id:
-            return idx
-    if recorded is not None:
-        return recorded
+    if source_line_id:
+        for idx, line in enumerate(line_items):
+            if line.get("line_id") == source_line_id:
+                return idx
     sku = str(lot_state.get("sku") or "").strip()
-    matches = [idx for idx, line in enumerate(line_items) if str(line.get("sku") or "").strip() == sku]
+
+    def _binds(line: dict) -> bool:
+        return (line.get("entity_id") or line.get("item_id")) == lot_id
+
+    def _same_sku(line: dict) -> bool:
+        return bool(sku) and str(line.get("sku") or "").strip() == sku
+
+    if recorded is not None and 0 <= recorded < len(line_items) and (
+            _binds(line_items[recorded]) or _same_sku(line_items[recorded])):
+        return recorded
+    binders = [idx for idx, line in enumerate(line_items) if _binds(line)]
+    if len(binders) == 1:
+        return binders[0]
+    if binders:
+        return None
+    matches = [idx for idx, line in enumerate(line_items) if _same_sku(line)]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -1642,8 +1666,8 @@ async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot
         ).order_by(LedgerEntry.id.desc())
     )).scalars().all()
     latest = next((e for e in rows if (e.data or {}).get("source_doc_id") == doc_id), None)
-    recorded = recorded_line_index(latest) if latest is not None else None
-    return line_of_lot(doc_state.get("line_items", []), lot_id, lot_state, recorded)
+    line_id, recorded = recorded_line(latest) if latest is not None else (None, None)
+    return line_of_lot(doc_state.get("line_items", []), lot_id, lot_state, recorded, line_id)
 
 
 async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple[str, str, int], float]:
