@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, member, owner, snapshot, token
 from migration_support import OWNER_EMAIL, auth, count, maker, real_client, real_engine  # noqa: F401
+from test_company_backup_ui import ui  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -353,6 +354,24 @@ async def test_a_hidden_star_card_stays_hidden_after_a_reset(real_engine, real_c
                                 headers=auth(await token(real_engine, shared, b)))
     assert cta.status_code == 200, cta.text
     assert cta.json()["dismissed"] is True, cta.json()
+async def test_a_page_open_during_its_reset_shows_no_star_prompt(real_engine, real_client, ui, tmp_path,
+                                                                  monkeypatch):
+    """The page a reset is sent from still asks for the star prompt and supporter badge
+    with the sign-in the reset just ended; it shows neither instead of failing."""
+    _local_files(monkeypatch, tmp_path)
+    shared, solo, a, b = await _two_companies(real_engine, tmp_path)
+    ended = await token(real_engine, shared, a)
+    r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"}, headers=auth(ended))
+    assert r.status_code == 200, r.text
+
+    cookie = {"Cookie": f"celerp_token={ended}"}
+    badge = await ui.get("/stars/badge", headers=cookie)
+    cta = await ui.get("/stars/cta", params={"medium": "footer"}, headers=cookie)
+
+    assert (badge.status_code, badge.json()) == (200, {"badge": None}), badge.text
+    assert (cta.status_code, cta.json()) == (200, {}), cta.text
+
+
 async def test_a_reset_sent_again_while_the_first_runs_says_the_company_is_gone(real_engine, real_client,
                                                                                tmp_path, monkeypatch):
     import asyncio

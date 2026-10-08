@@ -40,30 +40,29 @@ def _claim_result_page(title: str, body: str) -> str:
 
 def setup_routes(app):
 
-    @app.get("/stars/cta")
-    async def proxy_star_cta(request: Request) -> Response:
+    async def _proxy_get(request: Request, path: str, nothing: str, params: dict | None = None) -> Response:
+        """The API's answer for the signed-in user, or *nothing* when there is no
+        sign-in, the API no longer accepts it, or the API is unreachable."""
         token = _token(request)
         if not token:
-            return Response("{}", media_type="application/json")
-        params = {"medium": request.query_params.get("medium", "footer"), "lang": get_lang(request)}
+            return Response(nothing, media_type="application/json")
         async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
-                r = await c.get("/stars/cta", params=params)
-                return Response(r.content, media_type="application/json", status_code=r.status_code)
+                r = await c.get(path, params=params)
             except (httpx.ConnectError, httpx.TimeoutException):
-                return Response("{}", media_type="application/json")
+                return Response(nothing, media_type="application/json")
+        if r.status_code == 401:
+            return Response(nothing, media_type="application/json")
+        return Response(r.content, media_type="application/json", status_code=r.status_code)
+
+    @app.get("/stars/cta")
+    async def proxy_star_cta(request: Request) -> Response:
+        params = {"medium": request.query_params.get("medium", "footer"), "lang": get_lang(request)}
+        return await _proxy_get(request, "/stars/cta", "{}", params)
 
     @app.get("/stars/badge")
     async def proxy_star_badge(request: Request) -> Response:
-        token = _token(request)
-        if not token:
-            return Response('{"badge":null}', media_type="application/json")
-        async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
-            try:
-                r = await c.get("/stars/badge")
-                return Response(r.content, media_type="application/json", status_code=r.status_code)
-            except (httpx.ConnectError, httpx.TimeoutException):
-                return Response('{"badge":null}', media_type="application/json")
+        return await _proxy_get(request, "/stars/badge", '{"badge":null}')
 
     @app.post("/stars/dismiss")
     async def proxy_star_dismiss(request: Request) -> Response:
