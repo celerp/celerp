@@ -2055,7 +2055,7 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
 _BILL_POSTED = frozenset({"purchase_order", "bill"})
 
 
-async def _finalize_doc_impl(
+async def finalize_document(
     entity_id: str,
     company_id: str,
     user,
@@ -2185,7 +2185,7 @@ async def finalize_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    return await _finalize_doc_impl(entity_id, company_id, user, session, commit=True)
+    return await finalize_document(entity_id, company_id, user, session, commit=True)
 
 
 @router.post("/{entity_id}/void")

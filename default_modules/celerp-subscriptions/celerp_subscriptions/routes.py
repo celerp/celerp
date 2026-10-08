@@ -8,21 +8,25 @@ templates and lifecycle actions (generate, pause, resume, cancel).
 """
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
+from celerp_docs.doc_money import document_money
+from celerp_docs.routes import finalize_document
 from celerp_docs.sequences import next_doc_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 
@@ -73,6 +77,10 @@ def _compute_due_date(issue_date: date, payment_terms: str | None, company: Comp
     return None
 
 
+class GenerateBody(BaseModel):
+    idempotency_key: str | None = Field(None, max_length=255)
+
+
 def _build_router() -> APIRouter:
     router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -95,13 +103,19 @@ def _build_router() -> APIRouter:
     @router.post("/{entity_id}/generate")
     async def generate_now(
         entity_id: str,
+        body: GenerateBody | None = None,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Generate a finalized document from the subscription template immediately."""
+        """Create the template's document and finalize it; a retry with the same key returns the first result."""
         company = await locked_company(session, company_id)
+        key = (body and body.idempotency_key) or str(uuid.uuid4())
+        if (earlier := await find_event_by_idempotency(session, company_id, key)) is not None:
+            if earlier.event_type != "doc.updated" or earlier.entity_id != entity_id:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return earlier.metadata_["result"]
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
             raise HTTPException(status_code=404, detail="Subscription template not found")
@@ -129,15 +143,7 @@ def _build_router() -> APIRouter:
         pf_ref = next_doc_ref(company, seq_type)
         doc_entity_id = f"doc:{pf_ref}"
 
-        line_items = list(state.get("line_items") or [])
-        for li in line_items:
-            li["line_total"] = float(li.get("quantity", 1)) * float(li.get("unit_price", 0))
-        subtotal = sum(li["line_total"] for li in line_items)
-        discount = float(state.get("discount") or 0)
-        shipping = float(state.get("shipping") or 0)
-        tax = float(state.get("tax") or 0)
-        total = subtotal - discount + tax + shipping
-
+        line_items = copy.deepcopy(list(state.get("line_items") or []))
         payment_terms = state.get("payment_terms")
         due_date = _compute_due_date(today, payment_terms, company)
         template_name = state.get("name") or entity_id
@@ -146,6 +152,9 @@ def _build_router() -> APIRouter:
         notes = f"{existing_notes}\n{auto_note}".strip() if existing_notes else auto_note
 
         currency = state.get("currency") or (company.settings or {}).get("currency", "USD")
+        money_inputs = {k: state[k] for k in ("discount", "discount_type", "shipping", "tax", "tax_rate", "doc_taxes")
+                        if k in state}
+        money = document_money(money_inputs, line_items, currency, keep_unrated_tax=True)
 
         doc_data: dict = {
             "doc_type": target_doc_type,
@@ -156,12 +165,9 @@ def _build_router() -> APIRouter:
             "line_items": line_items,
             "payment_terms": payment_terms,
             "currency": currency,
-            "discount": discount,
-            "shipping": shipping,
-            "tax": tax,
-            "subtotal": subtotal,
-            "total": total,
-            "amount_outstanding": total,
+            **money_inputs,
+            **money,
+            "amount_outstanding": money["total"],
             "issue_date": today.isoformat(),
             "subscription_id": entity_id,
             "notes": notes,
@@ -190,23 +196,9 @@ def _build_router() -> APIRouter:
             idempotency_key=str(uuid.uuid4()),
         )
         await session.flush()
-
-        # Immediately finalize: assign real INV/BILL ref and set status=final
-        inv_ref = next_doc_ref(company, target_doc_type)
-        finalize_data: dict = {"ref_id": inv_ref, "source_proforma_ref": pf_ref}
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=doc_entity_id,
-            entity_type="doc",
-            event_type="doc.finalized",
-            data=finalize_data,
-            actor_id=user.id,
-            location_id=None,
-            source="subscription",
-            idempotency_key=str(uuid.uuid4()),
-        )
+        await finalize_document(doc_entity_id, company_id, user, session, commit=False)
         await session.flush()
+        final_ref = (await session.get(Projection, {"company_id": company_id, "entity_id": doc_entity_id})).state["ref_id"]
 
         # Update template: next_run_date + append to generated_doc_ids
         today_str = today.isoformat()
@@ -217,6 +209,7 @@ def _build_router() -> APIRouter:
         )
         existing_ids = list(state.get("generated_doc_ids") or [])
         existing_ids.append(doc_entity_id)
+        result = {"doc_id": doc_entity_id, "ref_id": final_ref, "next_run_date": next_run}
 
         await emit_event(
             session,
@@ -231,11 +224,12 @@ def _build_router() -> APIRouter:
             actor_id=user.id,
             location_id=None,
             source="subscription",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=key,
+            metadata_={"result": result},
         )
 
         await session.commit()
-        return {"doc_id": doc_entity_id, "ref_id": inv_ref, "next_run_date": next_run}
+        return result
 
     @router.post("/{entity_id}/pause")
     async def pause_subscription(

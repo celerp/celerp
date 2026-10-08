@@ -559,7 +559,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp.services.company_lock import lock_company
     from celerp_docs.routes import (
         FulfillLinesRequest,
-        _finalize_doc_impl,
+        finalize_document,
         _fulfill_lines_impl,
         _reserve_lines_impl,
         _get_doc,
@@ -1022,7 +1022,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             )
 
         if wc_status in {"processing", "completed"} and not doc.state.get("finalized"):
-            await _finalize_doc_impl(entity_id, cid, actor, session, commit=False)
+            await finalize_document(entity_id, cid, actor, session, commit=False)
             changed = True
             doc = await _get_doc(session, cid, entity_id, for_update=True)
 
