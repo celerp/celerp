@@ -240,7 +240,7 @@ SELECT DISTINCT found FROM (
 
 # The pg_restore -l entries of a Celerp backup: its tables and sequences in public with
 # their data, defaults, constraints, indexes, partitions, comments and grants, and the public
-# schema itself.
+# schema itself, which a restore leaves as it is.
 _SCHEMA_ENTRY = r"\d+; \d+ \d+ (?:SCHEMA -|COMMENT - SCHEMA|ACL - SCHEMA) public \S+$"
 _BACKUP_ENTRY = re.compile(
     r"\d+; \d+ \d+ (?:(?:TABLE|TABLE DATA|TABLE ATTACH|SEQUENCE|SEQUENCE OWNED BY|SEQUENCE SET|DEFAULT|CONSTRAINT"
@@ -301,10 +301,13 @@ def restore_database_file(dump_path: Path, database_url: str, *, runner=None) ->
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url), \
             tempfile.TemporaryDirectory(dir=dump_path.parent) as work:
-        script = Path(work) / "restore.sql"
+        listing, script = Path(work) / "restore.list", Path(work) / "restore.sql"
         script.touch(mode=0o600)
+        entries = _run_tool([pg_restore, "-l", str(dump_path)], runner).decode(errors="replace")
+        listing.write_text("".join(line for line in entries.splitlines(keepends=True)
+                                   if not re.match(_SCHEMA_ENTRY, line)))
         _run_tool([pg_restore, "--clean", "--if-exists", "--no-privileges", "--no-owner",
-                   "-f", str(script), str(dump_path)], runner)
+                   "-L", str(listing), "-f", str(script), str(dump_path)], runner)
         with held.write_window():
             _run_tool([psql, "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "--single-transaction",
                        "-c", _EMPTY_PUBLIC, "-f", str(script), "-d", pg_url], runner)

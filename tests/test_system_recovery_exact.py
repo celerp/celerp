@@ -1838,8 +1838,9 @@ def _cut_short(dump: Path):
 def _disk_full(dump: Path):
     """The disk fills while pg_restore writes the script."""
     def runner(command, **kwargs):
-        command = [*command]
-        command[command.index("-f") + 1] = "/dev/full"
+        if "-f" in command:
+            command = [*command]
+            command[command.index("-f") + 1] = "/dev/full"
         return _psql_never_runs(command, **kwargs)
     return runner
 
@@ -1880,6 +1881,27 @@ async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp
         await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
         await _execute(real_engine, "DROP TYPE IF EXISTS zz_status")
+
+
+async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine):
+    """A backup of a database whose public schema comment was cleared carries that comment,
+    which only the schema's owner may set; the restore replaces the tables and leaves the
+    schema as it is."""
+    from sqlalchemy import text
+    comment = "SELECT obj_description('public'::regnamespace, 'pg_namespace')"
+    async with real_engine.connect() as conn:
+        before = (await conn.execute(text(comment))).scalar()
+    await _execute(real_engine, "COMMENT ON SCHEMA public IS NULL")
+    try:
+        dump = await _restore_target(real_engine, tmp_path)
+        await _execute(real_engine, "COMMENT ON SCHEMA public IS 'kept'")
+        await _restore(dump)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text(comment))).scalar() == "kept"
+    finally:
+        await _execute(real_engine, f"COMMENT ON SCHEMA public IS {'NULL' if before is None else repr(before)}")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
 
 
 async def test_a_restore_leaves_other_schemas_alone(tmp_path, real_engine):

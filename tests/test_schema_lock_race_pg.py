@@ -559,7 +559,7 @@ async def test_system_recovery_holds_the_schema_key_alone_while_it_replaces_the_
     finally:
         recovery.release.set()
     await asyncio.wait_for(recovery.task, 15)
-    assert recovery.seen == [["ExclusiveLock"], ["ExclusiveLock"]]
+    assert recovery.seen == [["ExclusiveLock"]] * 3
     assert await asyncio.to_thread(_holders_now, scratch_url) == []
 
 
@@ -606,7 +606,7 @@ async def test_system_recovery_waits_for_a_running_company_backup(
         recovery.release.set()
     await asyncio.wait_for(recovery.task, 15)
     assert not replaced_during_backup
-    assert recovery.seen == [["ExclusiveLock"], ["ExclusiveLock"]]
+    assert recovery.seen == [["ExclusiveLock"]] * 3
     assert b"widget-marker" in members(out.read_bytes())["tables/zz_widgets.jsonl"]
     assert await _holders(real_engine) == []
 
