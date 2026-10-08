@@ -295,8 +295,8 @@ def check_backup_dump(dump_path: Path, database_url: str,
                       source: str = "the database the backup was taken from") -> None:
     """ValueError naming the entries of a pg_dump archive that are not a Celerp backup's
     (``_BACKUP_ENTRY``), the extensions in it a restore into this database could not
-    install, or the roles, collations, tablespaces and encoding it needs that this
-    database does not have (``_check_server_objects``), or when the disk beside it has no
+    install, or the roles, collations and tablespaces it needs that this database
+    does not have (``_check_server_objects``), or when the disk beside it has no
     room to restore it. `source` names, for the owner, the database the dump was taken from."""
     check_free_space(dump_path)
     listing = _run_tool([_find_pg_tool("pg_restore"), "-l", str(dump_path)], None, timeout=60)
@@ -316,14 +316,13 @@ _POLICY_ROLES = re.compile(rf"^CREATE POLICY ({_IDENTIFIER}) ON {_IDENTIFIER}\.(
                            rf"(?: AS RESTRICTIVE)?(?: FOR [A-Z]+)? TO ({_IDENTIFIER}(?:, {_IDENTIFIER})*)", re.M)
 _COLLATION = re.compile(rf" COLLATE ((?:{_IDENTIFIER}\.)?{_IDENTIFIER})")
 _TABLESPACE = re.compile(rf"^SET default_tablespace = ({_IDENTIFIER});$", re.M)
-_ENCODING = re.compile(r"^SET client_encoding = '([^']+)';$", re.M)
+# String literals and comments, which name no object; quoted identifiers are kept.
+_TEXT = re.compile(r"""("(?:[^"]|"")*")|'(?:[^']|'')*'|--[^\n]*""")
 _MISSING = """SELECT 'role', n FROM unnest(ARRAY[{}]::text[]) AS n
  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = n)
 UNION ALL SELECT 'collation', n FROM unnest(ARRAY[{}]::text[]) AS n WHERE to_regcollation(n) IS NULL
 UNION ALL SELECT 'tablespace', n FROM unnest(ARRAY[{}]::text[]) AS n
- WHERE NOT EXISTS (SELECT FROM pg_tablespace WHERE spcname = n AND has_tablespace_privilege(oid, 'CREATE'))
-UNION ALL SELECT 'encoding', n || ', which this database does not use' FROM unnest(ARRAY[{}]::text[]) AS n
- WHERE n <> getdatabaseencoding()"""
+ WHERE NOT EXISTS (SELECT FROM pg_tablespace WHERE spcname = n AND has_tablespace_privilege(oid, 'CREATE'))"""
 
 
 def _unquote(identifier: str) -> str:
@@ -337,23 +336,23 @@ def _literals(names) -> str:
 def _check_server_objects(dump_path: Path, database_url: str, source: str) -> None:
     """ValueError naming the roles of the dump's row security policies, and the collations
     and tablespaces of its tables and indexes, that this server does not have or, for a
-    tablespace, this role may not use, or its encoding when this database's differs."""
+    tablespace, this role may not use."""
     script = _run_tool([_find_pg_tool("pg_restore"), "--schema-only", "-f", "-", str(dump_path)], None,
                        timeout=60).decode(errors="replace")
+    script = _TEXT.sub(lambda match: match[1] or "''", script)
     policies = [(_unquote(name), _unquote(table), [_unquote(role) for role in re.findall(_IDENTIFIER, roles)])
                 for name, table, roles in _POLICY_ROLES.findall(script)]
     roles = {role for _, _, names in policies for role in names}
     collations = set(_COLLATION.findall(script))
     tablespaces = {_unquote(name) for name in _TABLESPACE.findall(script)} - {"''"}
-    rows = _psql(database_url, _MISSING.format(_literals(roles), _literals(collations), _literals(tablespaces),
-                                               _literals(_ENCODING.findall(script))))
+    rows = _psql(database_url, _MISSING.format(_literals(roles), _literals(collations), _literals(tablespaces)))
     missing = [row.split("|", 1) for row in rows.split("\n") if row]
     absent = {name for kind, name in missing if kind == "role"}
     found = [f"policy {name} on {table} (role {', '.join(r for r in names if r in absent)})"
              for name, table, names in policies if absent.intersection(names)]
     found += [f"{kind} {name}" for kind, name in missing if kind != "role"]
     if found:
-        raise ValueError("This backup needs database roles, collations, tablespaces or an encoding this database "
+        raise ValueError("This backup needs database roles, collations or tablespaces this database "
                          f"does not have. Add them here, or stop using them in {source}, then try again: "
                          + "; ".join(found))
 

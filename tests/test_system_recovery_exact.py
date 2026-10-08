@@ -1856,7 +1856,7 @@ async def test_a_backup_needing_what_this_server_lacks_is_refused_before_anythin
         result = await backup_import.run_recovery(source)
         assert result.ok is False
         assert result.error == (
-            "This backup needs database roles, collations, tablespaces or an encoding this database does not "
+            "This backup needs database roles, collations or tablespaces this database does not "
             "have. Add them here, or stop using them in the database the backup was taken from, then try "
             f"again: {found}"), result.error
         _assert_nothing_started(rec, connector_calls, [])
@@ -1873,29 +1873,82 @@ async def test_a_backup_needing_what_this_server_lacks_is_refused_before_anythin
             await _autocommit(admin, *gone)
 
 
-async def test_a_backup_from_a_database_with_another_encoding_is_refused(tmp_path, real_engine, admin):
-    """Text the backup holds may have no form in this database's encoding."""
-    import asyncio
+async def test_a_backup_from_a_sql_ascii_install_with_thai_text_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine, admin):
+    """Installs from before 2.5.1 on Linux and macOS may have a SQL_ASCII database; pg_restore
+    brings their text into this one's encoding."""
     import subprocess
     import uuid
 
     from sqlalchemy import make_url
 
-    from celerp.services import backup
+    from celerp.services import backup, backup_export, backup_import
     from test_helpers import DATABASE_URL
-    name = f"zz_latin_{uuid.uuid4().hex[:8]}"
-    await _autocommit(admin, f"CREATE DATABASE {name} ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' "
-                             "TEMPLATE template0")
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "บริษัท Exim", "exim")
+    source = await backup_export.export_full()
+    name = f"zz_ascii_{uuid.uuid4().hex[:8]}"
+    await _autocommit(admin, f"CREATE DATABASE {name} ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C' "
+                             f"TEMPLATE template0 OWNER {real_engine.url.username}")
     try:
         url = make_url(DATABASE_URL).set(database=name, drivername="postgresql")
-        dump = tmp_path / "latin1.dump"
-        subprocess.run([backup._find_pg_tool("pg_dump"), "--format=custom", "-f", str(dump),
-                        url.render_as_string(hide_password=False)], check=True)
-        with pytest.raises(ValueError) as refused:
-            await asyncio.to_thread(backup.check_backup_dump, dump, DATABASE_URL)
-        assert str(refused.value).endswith("then try again: encoding LATIN1, which this database does not use")
+        legacy = tmp_path / "legacy.dump"
+        members = _members(source)
+        legacy.write_bytes(members["database.dump"])
+        subprocess.run([backup._find_pg_tool("pg_restore"), "--no-owner", "-d",
+                        url.render_as_string(hide_password=False), str(legacy)], check=True)
+        legacy.write_bytes(backup.dump_database(url.render_as_string(hide_password=False)))
+        script = subprocess.run([backup._find_pg_tool("pg_restore"), "-f", "-", str(legacy)],
+                                capture_output=True, check=True).stdout
+        assert b"SET client_encoding = 'SQL_ASCII';" in script and "บริษัท Exim".encode() in script
+        members["database.dump"] = legacy.read_bytes()
     finally:
         await _autocommit(admin, f"DROP DATABASE IF EXISTS {name}")
+    with tarfile.open(source, "w:gz") as tar:
+        for member, body in members.items():
+            _add(tar, member, body)
+    await company(real_engine, user, "Beta Trading", "beta")
+    result = await backup_import.run_recovery(source)
+    assert result.ok is True, result.error
+    assert await _company_names(real_engine) == {"บริษัท Exim"}
+
+
+async def test_an_update_while_pgclientencoding_is_set_is_not_refused(
+        tmp_path, monkeypatch, code_config, real_engine):
+    """pg_dump writes its archive in the client encoding the environment names; the update
+    restores into the database it dumped."""
+    import asyncio
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Café Müller", "cafe")
+    monkeypatch.setenv("PGCLIENTENCODING", "LATIN1")
+    steps, dump = _update_steps(), tmp_path / "database.dump"
+    await asyncio.to_thread(steps.preflight)
+    await asyncio.to_thread(steps.dump, dump)
+    await company(real_engine, user, "Beta Trading", "beta")
+    await asyncio.to_thread(steps.restore, dump, "1.1.0")
+    assert await _company_names(real_engine) == {"Café Müller"}
+
+
+async def test_a_backup_whose_table_comment_mentions_collate_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, "COMMENT ON TABLE companies IS 'sorted COLLATE nosuch here'")
+    try:
+        source = await backup_export.export_full()
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        await _execute(real_engine, "COMMENT ON TABLE companies IS NULL")
 
 
 @pytest.mark.parametrize("entry", ["recovery", "update rollback"])
