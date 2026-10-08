@@ -4,7 +4,8 @@
 
 A draft bill whose goods an earlier release received before it was issued is still a
 draft once the receipt is undone: it has not been issued and books no payable. An
-issued bill goes back to what its payments make it, so a paid bill stays paid.
+issued bill goes back to what its payments make it, so a paid bill stays paid and an
+unpaid one awaiting payment stays awaiting payment.
 """
 from __future__ import annotations
 
@@ -236,3 +237,18 @@ async def test_the_upgrade_fills_in_earlier_receipts_once(client, session, monke
     await _as_before_the_upgrade(session, cid, bill)
     assert (await record_legacy_receipts(session))["changed"] is False
     assert "pre_receipt_status" not in (await session.get(Projection, {"company_id": cid, "entity_id": bill})).state
+
+
+async def test_undoing_a_receipt_on_a_bill_converted_from_an_order_leaves_it_awaiting_payment(client):
+    h = await _owner(client)
+    r = await client.post("/docs", headers=h, json={"doc_type": "purchase_order", "line_items": [
+        {"sku": "RU-PO", "name": "Widget", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"}],
+        "subtotal": 100, "tax": 0, "total": 100})
+    assert r.status_code == 200, r.text
+    bill = r.json()["id"]
+    await _post(client, h, f"/docs/{bill}/finalize")
+    assert (await client.get(f"/docs/{bill}", headers=h)).json()["status"] == "awaiting_payment"
+
+    doc = await _receive_and_undo(client, h, bill, "RU-PO")
+
+    assert doc["status"] == "awaiting_payment"
