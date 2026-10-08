@@ -177,3 +177,18 @@ async def test_same_key_replays_and_a_no_op_is_recorded(client, session, h):
 
     other = await _reserve(client, h, d, [l0], "available", idempotency_key="k-reserve-2")
     assert other.status_code == 409
+
+
+async def test_reserve_a_line_whose_lot_was_sold_on_another_record_is_refused(client, h):
+    """No other lot quietly stands in for a line's lot that went out on another record."""
+    a = await lot(client, h, "RS-9", 3)
+    b = await lot(client, h, "RS-9", 3)
+    d = await doc(client, h, [line(a, 3, sku="RS-9")])
+    other = await doc(client, h, [line(a, 3, sku="RS-9")])
+    r = await client.post(f"/docs/{other}/fulfill-lines", headers=h, json={"line_ids": await line_ids(client, h, other)})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{d}/reserve-lines", headers=h,
+                          json={"new_status": "reserved", "line_ids": await line_ids(client, h, d)})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["params"]["reasons"][0]["params"]["doc"] == (await item(client, h, a))["status_doc_number"]
+    assert (await item(client, h, b))["status"] == "available"

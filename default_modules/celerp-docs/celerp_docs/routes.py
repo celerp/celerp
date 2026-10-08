@@ -7015,22 +7015,33 @@ def _line_plan(
     return draws, short, own
 
 
-def _unavailable(bound: Projection, owner_id: str) -> str | None:
+def _unavailable(bound: Projection, owner_id: str) -> dict | None:
     """Why line stock bound to ``bound`` cannot be taken by ``owner_id``, or None when it can."""
     from celerp_inventory.projections import demand_claim
     st = bound.state
     if demand_claim(st, owner_id) is not None:
         return None
+    sku, status = st.get("sku", ""), st.get("status", "")
     by = st.get("status_doc_number")
-    where = f" by {by}" if by and st.get("status_doc_id") != owner_id else ""
-    return f"{st.get('sku', '')}: must be 'available', is '{st.get('status', '')}'{where}"
+    if by and st.get("status_doc_id") != owner_id:
+        return refusal("lines.lot_held_by", f"{sku} is held by {by} (status: {status}).",
+                       sku=sku, doc=by, status=status)
+    return refusal("lines.lot_status", f"{sku} has status {status}.", sku=sku, status=status)
 
 
-def _refuse_unavailable(reasons: list[str]) -> None:
+def _stands_in(bound: Projection, owner_id: str, draws: list) -> bool:
+    """Whether a line's plan takes other stock in place of its bound lot, which went out
+    on another record: that line's stock is gone, and no other lot may quietly replace it."""
+    st = bound.state
+    return (st.get("status") in ("sold", "memo_out") and st.get("status_doc_id") not in (None, "", owner_id)
+            and any(lot.get("claim") != "reserved" for lot, _take, _full in draws))
+
+
+def _refuse_unavailable(reasons: list[dict]) -> None:
     if reasons:
-        text = "; ".join(reasons)
+        text = " ".join(r["message"] for r in reasons)
         raise HTTPException(status_code=422, detail=refusal(
-            "lines.unavailable", f"Not available: {text}", reasons=text))
+            "lines.unavailable", f"Not available: {text}", reasons=reasons))
 
 
 def _carve_measures(line: dict, lot_state: dict, qty: float, unit_map: dict, *, whole_line: bool) -> dict:
@@ -7236,7 +7247,9 @@ async def _fulfill_lines_impl(
     if allowed_statuses is None:
         raise HTTPException(status_code=422, detail=f"fulfill-lines is not supported for doc type: {doc_type}")
     if state.get("status") not in allowed_statuses:
-        raise HTTPException(status_code=409, detail=f"Cannot fulfill a {doc_type} in status '{state.get('status')}'")
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.fulfil_status", f"Lines cannot be fulfilled while this record's status is {state.get('status')}.",
+            doc_status=state.get("status")))
 
     await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=row, source="fulfillment")
     line_items = state.get("line_items", [])
@@ -7246,7 +7259,7 @@ async def _fulfill_lines_impl(
     company_settings = (company.settings or {}) if company else {}
 
     blocked: list[str] = []
-    unavailable: list[str] = []
+    unavailable: list[dict] = []
     service_lines: set[int] = set()
     remaining: dict[str, float] = {}
     # (line index, lot, quantity taken, whole lot) in plan order.
@@ -7264,7 +7277,7 @@ async def _fulfill_lines_impl(
         if held > line_qty + 1e-9:
             blocked.append(f"{sku}: holds {held:g} for a line of {line_qty:g}; reserve the line again first")
             continue
-        if short > 1e-9:
+        if short > 1e-9 or _stands_in(bound, entity_id, draws):
             if reason := _unavailable(bound, entity_id):
                 unavailable.append(reason)
             else:
@@ -7893,7 +7906,7 @@ async def _reserve_lines_impl(
         shipped.setdefault(idx, []).append(eid)
 
     blocked: list[str] = []
-    unavailable: list[str] = []
+    unavailable: list[dict] = []
     needs_status: list[str] = []
     remaining: dict[str, float] = {}
     # Planned changes, in plan order: (kind, line index, lot, quantity).
@@ -7915,7 +7928,7 @@ async def _reserve_lines_impl(
             continue
         line_qty = float(line_items[idx].get("quantity") or 0)
         draws, short, own = _line_plan(line_items, idx, locked, by_line, entity_id, company_settings, remaining)
-        if short > 1e-9:
+        if short > 1e-9 or _stands_in(bound, entity_id, draws):
             if reason := _unavailable(bound, entity_id):
                 unavailable.append(reason)
             else:

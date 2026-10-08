@@ -302,8 +302,9 @@ def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
     label without its icon), or a list of them (``steps`` joined by semicolons, others as
     sentences), in the user's language; a ``role`` as its label and ``roles`` as their
-    labels; ``type``/``types`` as account types; ``status`` as an item status; ``reason``
-    as why a production run waits for reconciling."""
+    labels; ``type``/``types`` as account types; ``status`` as an item status and
+    ``doc_status`` as a document status; ``reason`` as why a production run waits for
+    reconciling."""
     from ui.components.table import display_enum
 
     if isinstance(value, dict) and "message" in value:
@@ -318,6 +319,8 @@ def _refusal_param(name: str, value):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
     if name == "status":
         return display_enum(value, "item_status")
+    if name == "doc_status":
+        return display_enum(value, "doc_status")
     if name == "reason":
         return reconcile_reason(str(value))
     if name == "type":
