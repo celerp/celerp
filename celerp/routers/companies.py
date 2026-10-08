@@ -351,14 +351,19 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        from celerp_docs.routes_payments import (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
-                                                 require_online_deposit_account)
-        for key in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY):
-            value = payload.settings.get(key)
-            if value in (None, ""):  # empty: the default
-                continue
+        from importlib.util import find_spec
+        from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
+        # Empty is the default deposit account.
+        chosen = [k for k in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY)
+                  if payload.settings.get(k) not in (None, "")]
+        if chosen and find_spec("celerp_docs") is None:
+            raise HTTPException(status_code=422, detail=(
+                "Turn on Documents on the Modules page before choosing a deposit account."))
+        for key in chosen:
+            value = payload.settings[key]
             if not isinstance(value, str):
                 raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+            from celerp_docs.routes_payments import require_online_deposit_account
             await require_online_deposit_account(session, company_id, value)
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
