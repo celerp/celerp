@@ -17,6 +17,7 @@ import pytest
 from fasthtml.common import to_xml
 
 import ui.api_client as api_client
+from celerp.models.projections import Projection
 from test_cost_restatement import _item, _state
 from test_receipt_accounting import _books, _doc, _finalize, _parcels
 from test_receive_goods_form import _Request, _Routes
@@ -204,9 +205,20 @@ async def test_return_line_sharing_a_lot_is_refused(client, session, auth):
     assert await _qty(session, auth, lot) == 20
 
 
+async def _drop_line_ids(session, auth, doc_id: str) -> None:
+    """Store the document's lines without ids, as lines written before line ids were kept
+    still are: every line write since gives each line an id."""
+    session.expire_all()
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": doc_id})
+    row.state = {**row.state, "line_items": [
+        {k: v for k, v in li.items() if k != "line_id"} for li in row.state["line_items"]]}
+    await session.commit()
+
+
 async def test_legacy_line_without_id_returns_by_position(client, session, auth):
     bill = await _doc(client, auth, "bill", _stock_lines(1, qty=4))
     await _finalize(client, auth, bill)
+    await _drop_line_ids(session, auth, bill)
     r = await _post(client, auth, bill, {"po_line_index": 0, "quantity_received": 4})
     assert r.status_code == 200, r.text
     [parcel] = (await _state(session, auth, bill))["received_item_ids"]

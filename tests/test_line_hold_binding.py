@@ -10,8 +10,13 @@ import pytest
 from sqlalchemy.orm.attributes import flag_modified
 
 from celerp.models.projections import Projection
+from celerp.services.document_lines import line_item_id
 
 pytestmark = pytest.mark.asyncio
+
+
+L1 = str(uuid.uuid4())
+L2 = str(uuid.uuid4())
 
 
 async def _lot(client, auth) -> tuple[str, str]:
@@ -51,9 +56,9 @@ async def _save(client, auth, doc_id, lines):
 
 async def test_another_line_cannot_newly_take_a_lot_held_for_a_line(client, session, auth):
     eid, sku = await _lot(client, auth)
-    doc_id = await _invoice(client, auth, [_line("L1", eid, sku)])
-    await _hold(session, auth, eid, doc_id, "L1")
-    r = await _save(client, auth, doc_id, [_line("L1", eid, sku), _line("L2", eid, sku)])
+    doc_id = await _invoice(client, auth, [_line(L1, eid, sku)])
+    await _hold(session, auth, eid, doc_id, L1)
+    r = await _save(client, auth, doc_id, [_line(L1, eid, sku), _line(L2, eid, sku)])
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["errors"][0]["message_key"] == "item.held_for_other_line"
 
@@ -61,23 +66,28 @@ async def test_another_line_cannot_newly_take_a_lot_held_for_a_line(client, sess
 async def test_moving_the_reference_to_another_line_is_refused(client, session, auth):
     eid, sku = await _lot(client, auth)
     other, other_sku = await _lot(client, auth)
-    doc_id = await _invoice(client, auth, [_line("L1", eid, sku)])
-    await _hold(session, auth, eid, doc_id, "L1")
-    r = await _save(client, auth, doc_id, [_line("L1", other, other_sku), _line("L2", eid, sku)])
-    assert r.status_code == 422, r.text
+    doc_id = await _invoice(client, auth, [_line(L1, eid, sku)])
+    await _hold(session, auth, eid, doc_id, L1)
+    r = await _save(client, auth, doc_id, [_line(L1, other, other_sku), _line(L2, eid, sku)])
+    # The holding line may not give up its item while it holds it, so the move is refused
+    # before another line could take the lot.
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "line.protected_held"
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert [(li["line_id"], line_item_id(li)) for li in doc["line_items"]] == [(L1, eid)]
 
 
 async def test_the_holding_line_stays_editable(client, session, auth):
     eid, sku = await _lot(client, auth)
-    doc_id = await _invoice(client, auth, [_line("L1", eid, sku)])
-    await _hold(session, auth, eid, doc_id, "L1")
-    r = await _save(client, auth, doc_id, [_line("L1", eid, sku, qty=3)])
+    doc_id = await _invoice(client, auth, [_line(L1, eid, sku)])
+    await _hold(session, auth, eid, doc_id, L1)
+    r = await _save(client, auth, doc_id, [_line(L1, eid, sku, qty=3)])
     assert r.status_code == 200, r.text
 
 
 async def test_a_hold_without_line_attribution_is_the_whole_record(client, session, auth):
     eid, sku = await _lot(client, auth)
-    doc_id = await _invoice(client, auth, [_line("L1", eid, sku)])
+    doc_id = await _invoice(client, auth, [_line(L1, eid, sku)])
     await _hold(session, auth, eid, doc_id, None)
-    r = await _save(client, auth, doc_id, [_line("L1", eid, sku), _line("L2", eid, sku)])
+    r = await _save(client, auth, doc_id, [_line(L1, eid, sku), _line(L2, eid, sku)])
     assert r.status_code == 200, r.text

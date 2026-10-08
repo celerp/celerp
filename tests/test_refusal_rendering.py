@@ -76,13 +76,17 @@ def test_a_non_json_error_reads_as_a_plain_sentence(lang, code):
 
 # --- the line action proxies -------------------------------------------------
 
+_KEY = {"idempotency_key": "4b1e7c2a-0d5f-4e8a-9a37-6c1f2b8d9e05"}
+_LINES = {"line_id": _UUID, **_KEY}
+
 _ACTIONS = [
-    ("post", "/docs/doc:SO-1/reserve-lines", "reserve_lines", {"selected": "item:a"}),
-    ("post", "/lists/doc:LS-1/reserve-lines", "reserve_lines", {"selected": "item:a"}),
-    ("post", "/docs/doc:SO-1/fulfill-lines", "fulfill_lines", {"selected": "item:a"}),
-    ("post", "/docs/doc:SO-1/revert-lines", "unfulfill_lines", {"selected": "item:a"}),
+    ("post", "/docs/doc:SO-1/reserve-lines", "reserve_lines", _LINES),
+    ("post", "/lists/doc:LS-1/reserve-lines", "reserve_lines", _LINES),
+    ("post", "/docs/doc:SO-1/fulfill-lines", "fulfill_lines", _LINES),
+    ("post", "/docs/doc:SO-1/set-available", "set_lines_available", _LINES),
+    ("post", "/lists/doc:LS-1/set-available", "set_lines_available", _LINES),
     ("post", "/docs/doc:PO-1/receive", "receive_po",
-     {"location_id": "loc:1", "item_id_0": "item:a", "sku_0": "RAW-1", "qty_0": "1"}),
+     {"location_id": "loc:1", "line_id_0": _UUID, "qty_0": "1", **_KEY}),
     ("post", "/docs/doc:CN-1/receive-return", "receive_return",
      {"items[0][sku]": "RAW-1", "items[0][quantity]": "1"}),
     ("delete", "/docs/doc:CN-1/receive-return", "undo_receive_return", None),
@@ -90,11 +94,13 @@ _ACTIONS = [
 
 
 async def _toast(ui_client, method, path, api_fn, form, code, error) -> str:
-    with patch(f"ui.api_client.{api_fn}", new=AsyncMock(side_effect=error)):
+    call = AsyncMock(side_effect=error)
+    with patch(f"ui.api_client.{api_fn}", new=call):
         kwargs = {"cookies": {**_authed(), "celerp_lang": code}}
         if form is not None:
             kwargs["data"] = form
         r = await getattr(ui_client, method)(path, **kwargs)
+    call.assert_awaited_once()
     assert r.status_code == 200, r.text
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert toast["type"] == "error"
