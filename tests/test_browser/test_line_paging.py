@@ -152,27 +152,6 @@ def test_audit_scan_and_mark_on_page_two_stay_on_page_two(page, ui_server, api):
     assert len(_row_skus(page)) == _AUDIT_LINES - 100, "Mark as scanned swapped page 1's rows under the page-2 pager"
 
 
-def test_finalized_audit_delete_selected_keeps_rows_and_explains(page, ui_server, api):
-    """A finalized audit's item list is locked: Delete selected must leave every row in
-    place, say why, and leave nothing unsaved behind."""
-    audit_id, _ = _seed_audit(api, 3)
-    _finalize(page, ui_server, audit_id)
-    writes = _line_writes(page)
-    page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
-    before = _row_skus(page)
-    assert len(before) == 3
-    page.locator("#line-body tr").first.locator(".li-select").check()
-    page.select_option("#li-bulk-select", "li-delete")
-    page.locator("#li-bulk-delete-btn").click()
-    toast = page.locator(".toast-container .toast--error")
-    toast.wait_for(state="visible", timeout=5000)
-    assert "cannot be deleted" in toast.inner_text()
-    assert _row_skus(page) == before
-    page.wait_for_timeout(600)
-    assert page.evaluate("_celerpLinesDirty()") is False
-    assert writes == []
-
-
 def test_draft_scan_then_edit_saves_every_line_once(page, ui_server, api):
     """A scan adds its line on top of the page. The next autosave must store exactly the
     lines on screen, not the new line plus a repeat of the one it pushed down."""

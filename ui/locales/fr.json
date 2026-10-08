@@ -2164,7 +2164,6 @@
   "documents.another_document": "un autre document",
   "documents.applied_amount": "Appliqué à : {amount}",
   "documents.applied_to": "Appliqué à",
-  "documents.audit_lines_locked": "Les lignes d'un audit finalisé ne peuvent pas être supprimées. Sa liste d'articles est verrouillée dès la finalisation.",
   "documents.audit_no_locations": "Créez d'abord un emplacement (Paramètres > Stock > Emplacements) pour l'auditer.",
   "documents.audit_pick_location_hint": "Choisissez un emplacement à inventorier. Scannez ensuite les codes-barres pour confirmer le stock et l'ajuster.",
   "documents.audit_prepopulate_hint": "L'audit est prérempli avec les articles en stock à cet emplacement.",

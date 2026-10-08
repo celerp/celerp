@@ -2163,7 +2163,6 @@
   "documents.another_document": "Otro documento",
   "documents.applied_amount": "Aplicado: {amount}",
   "documents.applied_to": "Aplicado a",
-  "documents.audit_lines_locked": "No se pueden eliminar líneas de una auditoría finalizada. Su lista de artículos queda bloqueada al finalizarla.",
   "documents.audit_no_locations": "Crea primero una ubicación (Configuración > Inventario > Ubicaciones) para auditarla.",
   "documents.audit_pick_location_hint": "Elige una ubicación para realizar el recuento. A continuación, escanea los códigos de barras para confirmar el stock y ajustarlo.",
   "documents.audit_prepopulate_hint": "La auditoría aparece prellenada con los artículos almacenados en esta ubicación.",

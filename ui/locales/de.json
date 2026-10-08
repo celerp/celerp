@@ -2164,7 +2164,6 @@
   "documents.another_document": "Ein weiteres Dokument",
   "documents.applied_amount": "Angewendet: {amount}",
   "documents.applied_to": "Angewendet auf",
-  "documents.audit_lines_locked": "Zeilen einer abgeschlossenen Inventur können nicht gelöscht werden. Ihre Artikelliste ist nach dem Abschluss gesperrt.",
   "documents.audit_no_locations": "Legen Sie zunächst einen Standort an (Einstellungen > Lagerbestand > Standorte), um ihn zu prüfen.",
   "documents.audit_pick_location_hint": "Wählen Sie einen Standort für die Zählung aus. Scannen Sie anschließend die Barcodes, um den Bestand zu bestätigen und anzupassen.",
   "documents.audit_prepopulate_hint": "Die Prüfung ist bereits mit den an diesem Standort vorrätigen Artikeln vorbelegt.",

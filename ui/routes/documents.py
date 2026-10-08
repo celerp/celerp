@@ -4768,7 +4768,7 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _action_error(t("documents.session_expired"))
+            return _R(t("documents.session_expired"), status_code=401)
         form = await request.form()
         ids = [s for s in form.getlist("selected") if s]
         scanned = str(form.get("scanned", "1")).strip() not in ("0", "false", "")
@@ -5837,9 +5837,10 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, can_delete: bool = True) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
+    can_delete=False: the line structure is locked (a counting audit), so no Delete selected.
     show_fulfill=True: add Set as shipped / Set as available as dropdown options.
     show_reserve=True: add Set as reserved (ledger-neutral) as a dropdown option.
     is_inbound=True: show Receive Goods / Return Goods targeting POST/DELETE /receive.
@@ -5856,8 +5857,9 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     if not labels_only:
         options = [
             Option(t("doc.action"), value="", disabled=True, selected=True),
-            Option(t("btn.delete_selected"), value="li-delete"),
         ]
+        if can_delete:
+            options.append(Option(t("btn.delete_selected"), value="li-delete"))
         if labels_action:
             options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
         if show_fulfill:
@@ -5887,7 +5889,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
                onchange="liBulkActionSelected(this.value)"),
     ]
-    if not labels_only:
+    if not labels_only and can_delete:
         children.append(
             Button(t("btn.delete_selected"), type="button", id="li-bulk-delete-btn",
                    cls="btn btn--danger btn--sm", style="display:none",
@@ -6288,7 +6290,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
-                       onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
+                       onclick=f"event.preventDefault();(async()=>{{if(!(await _celerpPersist()))return;htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
                        title=finalize_tip, cls="btn btn--primary")
             )
     if status not in ("void", "draft", "closed") and _can_finalize and not suppress_doc_actions:
@@ -7235,7 +7237,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF),
-                             show_reserve=is_list),
+                             show_reserve=is_list, can_delete=can_edit_lines),
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
@@ -7412,7 +7414,7 @@ window._L = {_json.dumps({
     "confirm_set_available": t("documents.confirm_set_available"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
-    "audit_lines_locked": t("documents.audit_lines_locked"),
+    "unexpected_error": t("error.unexpected_error_body"),
 })};
 """ + (f"""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
@@ -8828,8 +8830,9 @@ async function celerpCsvImport(input, entityId) {{
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
     if(!window.confirm(_confirm.replace('{{n}}', ids.length))) return;
-    // Persist pending edits first so the server sees every selected line, then act.
-    await _celerpPersist();
+    // Persist pending edits first so the server sees every selected line, then act. A failed
+    // save has already shown its reason; acting on top of it would use stale lines.
+    if(!(await _celerpPersist())) return;
     var fd=new FormData();
     ids.forEach(function(id){{fd.append('selected',id);}});
     fd.append('new_status',target);
@@ -8853,24 +8856,19 @@ async function celerpCsvImport(input, entityId) {{
     ids.forEach(function(id){{ fd.append('selected', id); }});
     try{{
       var resp=await fetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
+      var html=await resp.text();
       if(resp.ok){{
-        var html=await resp.text();
         var tbody=document.getElementById('{line_body_id}');
         if(tbody&&html) tbody.outerHTML=html;
         htmx.process(document.getElementById('{line_body_id}'));
-      }}
-    }}catch(err){{}}
+      }} else if(window.celerpToast) celerpToast(html||_L.unexpected_error,'error');
+    }}catch(err){{
+      if(window.celerpToast) celerpToast(_L.unexpected_error,'error');
+    }}
     if(sel) sel.value='';
     _hideBtns(); _update();
   }};
   window.liBulkDeleteConfirmed=function(){{
-    // A counting audit's item list is locked: keep every row and say why.
-    if(!window._CELERP_CAN_EDIT_LINES){{
-      if(window.celerpToast) celerpToast(_L.audit_lines_locked,'error');
-      if(sel) sel.value='';
-      _hideBtns();
-      return;
-    }}
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';

@@ -2164,7 +2164,6 @@
   "documents.another_document": "un altro documento",
   "documents.applied_amount": "Applicato a: {amount}",
   "documents.applied_to": "Applicato a",
-  "documents.audit_lines_locked": "Le righe di un inventario finalizzato non possono essere eliminate. L'elenco degli articoli è bloccato dopo la finalizzazione.",
   "documents.audit_no_locations": "Crea prima una sede (Impostazioni > Inventario > Sedi) per effettuare la verifica.",
   "documents.audit_pick_location_hint": "Scegli una sede da conteggiare. Quindi scansiona i codici a barre per confermare le giacenze e correggerle.",
   "documents.audit_prepopulate_hint": "La verifica è precompilata con gli articoli in magazzino in questa sede.",

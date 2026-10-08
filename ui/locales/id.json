@@ -2163,7 +2163,6 @@
   "documents.another_document": "dokumen lain",
   "documents.applied_amount": "Diterapkan: {amount}",
   "documents.applied_to": "Diterapkan ke",
-  "documents.audit_lines_locked": "Baris audit yang sudah difinalisasi tidak dapat dihapus. Daftar barangnya dikunci setelah audit difinalisasi.",
   "documents.audit_no_locations": "Buat lokasi terlebih dahulu (Pengaturan > Persediaan > Lokasi) untuk melakukan audit.",
   "documents.audit_pick_location_hint": "Pilih lokasi yang akan dihitung. Kemudian pindai kode batang untuk mengonfirmasi stok dan menyesuaikannya.",
   "documents.audit_prepopulate_hint": "Audit ini telah diisi sebelumnya dengan item yang tersedia di lokasi ini.",
