@@ -3044,3 +3044,119 @@ async def test_fulfill_two_same_sku_bound_lots_draws_each_lot_once(
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, nets
+
+
+# ---------------------------------------------------------------------------
+# A lot out on a memo is that memo's: only an invoice made from it may sell it.
+# ---------------------------------------------------------------------------
+
+
+async def _lot_out_on_memo(client, auth, sku: str) -> tuple[str, str, str]:
+    """A lot shipped on a finalized memo: (lot id, memo id, memo number)."""
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    memo_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}])
+    await _fulfill_lines(client, auth, memo_id, eid)
+    lot = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert lot["status"] == "memo_out" and lot["status_doc_id"] == memo_id
+    return eid, memo_id, lot["status_doc_number"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("doc_type", ["invoice", "memo"])
+async def test_a_lot_out_on_a_memo_is_refused_on_another_document(client, auth, doc_type):
+    """Creating or editing another invoice or memo to take a lot out on a memo is refused,
+    naming the memo, in the user's language."""
+    from ui.i18n import refusal_text
+
+    sku = f"ONMEMO-{uuid.uuid4().hex[:6]}"
+    eid, _memo_id, memo_no = await _lot_out_on_memo(client, auth, sku)
+    line = {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}
+
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": [line]})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert f"out on memo {memo_no}" in detail["message"]
+    assert refusal_text(detail).startswith(f"{sku} is out on memo {memo_no}.")
+
+    other = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": []})
+    assert other.status_code == 200, other.text
+    r = await client.patch(f"/docs/{other.json()['id']}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"new": [line]}}})
+    assert r.status_code == 422, r.text
+    assert f"out on memo {memo_no}" in r.json()["detail"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_quotation_may_still_list_a_lot_out_on_a_memo(client, auth):
+    sku = f"ONMEMO-Q-{uuid.uuid4().hex[:6]}"
+    eid, _memo_id, _memo_no = await _lot_out_on_memo(client, auth, sku)
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "quotation", "line_items": [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}]})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_finalize_refuses_an_invoice_lot_out_on_another_memo(client, auth):
+    """An invoice drafted before its lot went out on a memo cannot sell that lot at finalize:
+    the finalize is refused naming the memo, and the lot stays out on the memo."""
+    sku = f"ONMEMO-F-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    line = {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}
+    inv = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": [line]})
+    assert inv.status_code == 200, inv.text
+    memo_id = await _create_memo(client, auth, [line])
+    await _fulfill_lines(client, auth, memo_id, eid)
+    memo_no = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status_doc_number"]
+
+    r = await client.post(f"/docs/{inv.json()['id']}/finalize", headers=auth["headers"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "documents.lot_on_memo_by"
+    assert r.json()["detail"]["params"]["doc"] == memo_no
+    lot = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert lot["status"] == "memo_out" and lot["status_doc_id"] == memo_id
+
+
+@pytest.mark.asyncio
+async def test_finalize_sells_the_source_memo_lot_on_the_invoice_number(client, session, auth, _setup_ids):
+    """An invoice made from a memo whose lot is still out on that memo (a memo converted
+    before conversion settled its lots) sells the lot at finalize, stamped with the
+    finalized invoice number, not the draft PF number."""
+    from celerp.events.engine import emit_event
+
+    sku = f"ONMEMO-S-{uuid.uuid4().hex[:6]}"
+    eid, memo_id, memo_no = await _lot_out_on_memo(client, auth, sku)
+    r = await client.post(f"/docs/{memo_id}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    invoice_id = r.json()["target_doc_id"]
+    # The lot as an older conversion left it: still out on the memo.
+    await emit_event(
+        session, company_id=_setup_ids["company_id"], entity_id=eid, entity_type="item",
+        event_type="item.status.set", data={"new_status": "memo_out", "source_doc_id": memo_id, "doc_number": memo_no},
+        actor_id=_setup_ids["user_id"], location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+
+    r = await client.post(f"/docs/{invoice_id}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    inv = (await client.get(f"/docs/{invoice_id}", headers=auth["headers"])).json()
+    assert inv["ref_id"].startswith("INV")
+    lot = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert lot["status"] == "sold" and lot["status_doc_id"] == invoice_id
+    assert lot["status_doc_number"] == inv["ref_id"]
+
+
+@pytest.mark.asyncio
+async def test_source_memo_cannot_be_claimed_by_a_client(client, auth):
+    """Only memo conversion records the memo an invoice was made from, so no client can
+    claim another memo's lots by naming it."""
+    sku = f"ONMEMO-C-{uuid.uuid4().hex[:6]}"
+    eid, memo_id, _memo_no = await _lot_out_on_memo(client, auth, sku)
+    line = {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "source_memo_id": memo_id, "line_items": [line]})
+    assert r.status_code == 422, r.text
+    inv = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": []})
+    r = await client.patch(f"/docs/{inv.json()['id']}", headers=auth["headers"], json={
+        "fields_changed": {"source_memo_id": {"new": memo_id}, "line_items": {"new": [line]}}})
+    assert r.status_code == 422, r.text

@@ -44,7 +44,11 @@ def _catalog(items: list[dict]):
     return list_items
 
 
-_DOCS = {"doc:other": {"entity_id": "doc:other", "doc_number": "SO-3"}}
+_DOCS = {
+    "doc:other": {"entity_id": "doc:other", "doc_number": "SO-3"},
+    "doc:mine": {"entity_id": "doc:mine", "doc_number": "PF-1"},
+    "doc:from-memo": {"entity_id": "doc:from-memo", "doc_number": "PF-2", "source_memo_id": "doc:memo"},
+}
 
 
 async def _get_doc(_token, entity_id):
@@ -122,6 +126,22 @@ async def test_the_refusal_names_the_holding_record_when_it_can(ui_client, holde
     for r in (enter, search):
         assert r.status_code == 409, r.text
         assert r.json()["error"] == _EN[key].format(code="BC-77", **extra)
+
+
+async def test_a_lot_out_on_another_memo_is_refused_naming_the_memo(ui_client):
+    out = {**TAGGED, "status": "memo_out", "status_doc_id": "doc:memo", "status_doc_number": "MEMO-4"}
+    enter, search = await _three_ways(ui_client, "BC-77", [OLD, out], "&doc_id=doc:mine")
+    expected = _EN["documents.lot_on_memo_by"].format(code="BC-77", doc="MEMO-4")
+    for r in (enter, search):
+        assert r.status_code == 409, r.text
+        assert r.json()["error"] == expected
+
+
+async def test_an_invoice_made_from_the_memo_may_take_its_lot(ui_client):
+    out = {**TAGGED, "status": "memo_out", "status_doc_id": "doc:memo", "status_doc_number": "MEMO-4"}
+    enter, search = await _three_ways(ui_client, "BC-77", [OLD, out], "&doc_id=doc:from-memo")
+    assert enter.status_code == 200 and enter.json()["entity_id"] == "item:tagged"
+    assert search.json()[0]["entity_id"] == "item:tagged"
 
 
 async def test_a_lot_held_for_another_line_cannot_be_rebound(ui_client):

@@ -131,44 +131,73 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
     return items
 
 
+def out_on_another_memo(state: dict, entity_id: str | None, source_memo_id: str | None) -> bool:
+    """A lot out on a memo belongs to that memo until it comes back or is invoiced from it:
+    only the memo itself (``entity_id``) or an invoice made from it (``source_memo_id``)
+    may take it. A memo_out lot that names no memo has no record that may take it."""
+    holder = state.get("status_doc_id")
+    return state.get("status") == "memo_out" and (not holder or holder not in (entity_id, source_memo_id))
+
+
+def memo_out_refusal(state: dict, sku: str) -> dict:
+    """The refusal for a lot out on a memo other than the one this record may take it from,
+    naming that memo when the lot carries its number."""
+    memo = state.get("status_doc_number")
+    if not memo:
+        return refusal("documents.lot_on_memo_elsewhere", f"{sku}: out on another memo - take it back there "
+                       "or invoice it from that memo", code=sku)
+    return refusal("documents.lot_on_memo_by", f"{sku}: out on memo {memo} - take it back there or invoice it "
+                   "from that memo", code=sku, doc=memo)
+
+
 def assert_new_references_eligible(
     items: dict[str, Projection], line_items, *, known: Counter, doc_type: str | None, entity_id: str | None,
+    source_memo_id: str | None = None,
 ) -> None:
     """Refuse a line set that newly references an item the record may not take.
 
     A draft item is not stock yet, and a deleted one is out of use until restored, so no
     document or List may newly reference either. An
     item reserved by another record, or by a status edit that no record owns, is held,
-    so an invoice or memo (which claim stock) may not newly reference it; quotations,
-    other documents and Lists may. "Newly" counts occurrences: a line beyond the number
+    and an item out on a memo is that memo's (``out_on_another_memo``: an invoice made
+    from the memo, ``source_memo_id``, may take it), so an invoice or memo (which claim
+    stock) may not newly reference either; quotations, other documents and Lists may.
+    "Newly" counts occurrences: a line beyond the number
     the stored record (``known``, ``line_id_counts``) held for that id is new, so a second
     line for an item the record already lists is judged like a first, while the lines it
     already held stay editable. ``items`` is what ``linked_items`` resolved, read under
     the company lock it takes for any such increase, which every change to an item's
     draft or reserved status also takes.
 
-    422 whose message names every refused item; ``conflicts`` lists the reserved ones
-    with the record holding each, for the page to link to.
+    422 with one refusal per refused item in ``errors`` and their English text joined in
+    ``message``; ``conflicts`` lists the reserved ones with the record holding each, for
+    the page to link to.
     """
-    reasons: list[str] = []
+    errors: list[dict] = []
     conflicts: list[dict] = []
     for ident in sorted(line_id_counts(line_items) - known):
         if ident not in items:
             continue  # linked_items has already judged a line whose item is gone
         state = items[ident].state or {}
         sku = state.get("sku") or ident
+        claims_stock = doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES
         if state.get("status") == DELETED:
-            reasons.append(f"{sku}: item was deleted - restore it from the Deleted list or pick another item")
+            errors.append(refusal(
+                "lines.item_deleted", f"{sku}: item was deleted - restore it from the Deleted list or pick another item",
+                sku=sku))
         elif str(state.get("status") or "").lower() == "draft":
-            reasons.append(f"{sku}: item is a draft - make it available first")
-        elif (doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES and state.get("status") == "reserved"
-              and state.get("status_doc_id") != entity_id):
+            errors.append(refusal("item.draft", f"{sku}: item is a draft - make it available first", sku=sku))
+        elif claims_stock and state.get("status") == "reserved" and state.get("status_doc_id") != entity_id:
             owner = state.get("status_doc_number") or state.get("status_doc_id") or "another document"
-            reasons.append(f"{sku}: reserved on {owner} - release it there first")
+            errors.append(refusal("documents.lot_reserved_by", f"{sku}: reserved on {owner} - release it there first",
+                                  code=sku, doc=owner))
             conflicts.append({"entity_id": ident, "sku": sku, "doc_id": state.get("status_doc_id"),
-                              "doc_number": state.get("status_doc_number"), "message": reasons[-1]})
-    if reasons:
-        raise HTTPException(status_code=422, detail={"message": "; ".join(reasons), "conflicts": conflicts})
+                              "doc_number": state.get("status_doc_number"), "message": errors[-1]["message"]})
+        elif claims_stock and out_on_another_memo(state, entity_id, source_memo_id):
+            errors.append(memo_out_refusal(state, sku))
+    if errors:
+        raise HTTPException(status_code=422, detail={
+            "message": "; ".join(e["message"] for e in errors), "errors": errors, "conflicts": conflicts})
 
 
 def assert_line_holds_respected(items: dict[str, Projection], line_items, stored_lines, *, entity_id: str | None) -> None:

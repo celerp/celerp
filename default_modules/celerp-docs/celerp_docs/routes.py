@@ -46,7 +46,9 @@ from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
-from celerp.services.document_lines import line_id_counts, line_item_id, linked_items, strip_line_ids
+from celerp.services.document_lines import (
+    line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, strip_line_ids,
+)
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
@@ -271,7 +273,7 @@ async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_typ
     return result or {"event_id": replay.id}
 
 
-_PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id"})
+_PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id", "source_memo_id"})
 
 
 def _refuse_protected_fields(fields_changed: dict) -> None:
@@ -2081,10 +2083,11 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
 async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: dict) -> None:
     """Finalizing an invoice books the cost of the lots its lines are bound to, so each must be
-    stock this invoice can sell: free, reserved to it, out on a memo (the customer keeps it), or
-    already sold to it or to the memo it was converted from. A lot sold elsewhere, expired or
-    otherwise not stock is refused by name and status (409) before anything is booked. A product
-    made from a recipe is exempt: an order for it is met by making it."""
+    stock this invoice can sell: free, reserved to it, out on the memo it was converted from (the
+    customer keeps it), or already sold to it or to that memo. A lot out on any other memo is
+    refused naming that memo, and a lot sold elsewhere, expired or otherwise not stock by name
+    and status (409), before anything is booked. A product made from a recipe is exempt: an
+    order for it is met by making it."""
     from celerp_inventory.projections import demand_claim, is_manufacturable
     lines = [li.get("entity_id") or li.get("item_id") for li in state.get("line_items") or []]
     lots = await lock_projections(session, company_id, lines)
@@ -2096,10 +2099,12 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
         if is_non_stock_line(lot.get("inventory_type"), lot.get("sell_by")) or is_manufacturable(lot):
             continue
         status = str(lot.get("status") or "").lower()
+        sku = lot.get("sku") or eid
+        if out_on_another_memo(lot, entity_id, state.get("source_memo_id")):
+            raise HTTPException(status_code=409, detail=memo_out_refusal(lot, sku))
         if demand_claim(lot, entity_id) is not None or status == "memo_out" or (
                 status == "sold" and lot.get("status_doc_id") in sold_to):
             continue
-        sku = lot.get("sku") or eid
         raise HTTPException(status_code=409, detail=refusal(
             "item.invoice_not_available", f"{sku} is {status}: only available stock can be invoiced.",
             sku=sku, status=status))
@@ -2203,8 +2208,10 @@ async def finalize_document(
         # lot at the sibling lots that will actually be drawn; import/repair paths
         # stay on exact bound-lot pricing.
         await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, span_lots=True)
-        # Promote memo_out items to sold: memo→invoice conversion leaves items in memo_out.
-        # Finalizing the invoice is the point at which the sale is confirmed.
+        # Promote memo_out items to sold: a memo converted before conversion settled its lots
+        # leaves them in memo_out, and finalizing the invoice is the point at which the sale
+        # is confirmed. _refuse_unsellable_lots has refused any lot out on another memo, so
+        # only the source memo's lots reach here. They are sold on the invoice's own number.
         _cid = uuid.UUID(str(company_id))
         for _li in _initial_doc_state.get("line_items", []):
             _eid = _li.get("entity_id") or _li.get("item_id") or ""
@@ -2215,8 +2222,7 @@ async def finalize_document(
                 await emit_event(
                     session, company_id=_cid, entity_id=_eid, entity_type="item",
                     event_type="item.status.set",
-                    data={"new_status": "sold", "source_doc_id": entity_id,
-                          "doc_number": _initial_doc_state.get("doc_number") or _initial_doc_state.get("ref_id") or ""},
+                    data={"new_status": "sold", "source_doc_id": entity_id, "doc_number": finalize_data["ref_id"]},
                     actor_id=_user_id, location_id=None, source="invoice_finalize",
                     idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
                 )

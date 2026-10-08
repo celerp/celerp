@@ -302,11 +302,15 @@ class _PickerRefusal(Exception):
         self.status = status
 
 
-def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None) -> bool:
-    """A reserved lot this line may not newly take: reserved to another record or to
-    none (``demand_claim``), or reserved to this record for another of its lines."""
+def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None, source_memo_id: str | None = None) -> bool:
+    """A lot this line may not newly take: reserved to another record or to none
+    (``demand_claim``), reserved to this record for another of its lines, or out on a memo
+    this record is not and was not made from (``out_on_another_memo``)."""
+    from celerp.services.document_lines import out_on_another_memo
     from celerp_inventory.projections import demand_claim
 
+    if out_on_another_memo(item, doc_id, source_memo_id):
+        return True
     if str(item.get("status") or "").lower() != "reserved":
         return False
     if demand_claim(item, doc_id) is None:
@@ -315,10 +319,11 @@ def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None) -> bool
     return bool(holder) and holder != line_id
 
 
-async def _reserved_elsewhere(token: str, items: list[dict], code: str) -> str:
-    """The refusal for ``code`` whose lots ``items`` are held for another record, naming that
-    record by its number when they are all held by one whose number can be found (on the lot,
-    or by looking the record up); otherwise the plain wording."""
+async def _held_by_another_record(token: str, items: list[dict], code: str) -> str:
+    """The refusal for ``code`` whose lots ``items`` are reserved for, or out on a memo to,
+    another record, naming that record by its number when they are all held by one whose
+    number can be found (on the lot, or by looking the record up); otherwise the plain
+    wording."""
     holders = {str(i.get("status_doc_id") or "") for i in items}
     holder = holders.pop() if len(holders) == 1 else ""
     number = next((str(i["status_doc_number"]) for i in items if i.get("status_doc_number")), "") if holder else ""
@@ -328,27 +333,28 @@ async def _reserved_elsewhere(token: str, items: list[dict], code: str) -> str:
             number = str(held_by.get("doc_number") or held_by.get("ref_id") or "")
         except APIError:
             number = ""
+    on_memo = all(str(i.get("status") or "").lower() == "memo_out" for i in items)
     if number:
-        return t("documents.lot_reserved_by", code=code, doc=number)
-    return t("documents.lot_reserved_elsewhere", code=code)
+        return t("documents.lot_on_memo_by" if on_memo else "documents.lot_reserved_by", code=code, doc=number)
+    return t("documents.lot_on_memo_elsewhere" if on_memo else "documents.lot_reserved_elsewhere", code=code)
 
 
 async def _hold_refusal(token: str, item: dict, code: str, *, doc_type: str, doc_id: str | None,
-                        line_id: str | None) -> str | None:
+                        line_id: str | None, source_memo_id: str | None) -> str | None:
     """Why this line may not take ``item`` by its exact code, or None. Mirrors the line
     rules the document API enforces (celerp.services.document_lines): a draft is not
-    stock; another record's hold blocks the stock-claiming documents; a hold for another
-    line of this record blocks every other line."""
+    stock; another record's hold, or a lot out on another memo, blocks the stock-claiming
+    documents; a hold for another line of this record blocks every other line."""
     from celerp.services.document_lines import DOCUMENT_ITEM_UNIQUE_DOC_TYPES
 
     if str(item.get("status") or "").lower() == "draft":
         return t("item.draft", sku=item.get("sku") or code)
-    if not _held_elsewhere(item, doc_id, line_id):
+    if not _held_elsewhere(item, doc_id, line_id, source_memo_id):
         return None
     if doc_id and item.get("status_doc_id") == doc_id:
         return t("documents.lot_held_by_other_line", code=code)
     if doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES:
-        return await _reserved_elsewhere(token, [item], code)
+        return await _held_by_another_record(token, [item], code)
     return None
 
 
@@ -376,7 +382,7 @@ async def _physical_lots(token: str, code: str, *, credit_note: bool) -> list[di
 
 
 async def _exact_physical_lot(token: str, code: str, *, doc_type: str, doc_id: str | None,
-                              line_id: str | None) -> dict | None:
+                              line_id: str | None, source_memo_id: str | None) -> dict | None:
     """The one lot ``code`` names physically, None when no lot carries it as a barcode
     or RFID tag. Raises ``_PickerRefusal`` when it names several lots, or one this line
     may not take: an exact code never falls back to another lot."""
@@ -386,23 +392,25 @@ async def _exact_physical_lot(token: str, code: str, *, doc_type: str, doc_id: s
     if not lots:
         return None
     if doc_type != "credit_note":
-        reason = await _hold_refusal(token, lots[0], code, doc_type=doc_type, doc_id=doc_id, line_id=line_id)
+        reason = await _hold_refusal(token, lots[0], code, doc_type=doc_type, doc_id=doc_id, line_id=line_id,
+                                     source_memo_id=source_memo_id)
         if reason:
             raise _PickerRefusal(reason)
     return lots[0]
 
 
 async def _sales_options(token: str, items: list[dict], company_settings: dict, code: str, *,
-                         doc_id: str | None, line_id: str | None) -> list[dict]:
+                         doc_id: str | None, line_id: str | None, source_memo_id: str | None) -> list[dict]:
     """Forward-sale picker options for matched lots: drafts dropped, then splittable lots
-    held for another record or another line dropped before consolidation, so a SKU's
-    option only ever stands for (and counts) stock this line may draw. Raises
-    ``_PickerRefusal`` when every matched lot is held elsewhere, rather than letting the
-    caller fall through to a different item."""
+    held for another record or another line, or out on another memo, dropped before
+    consolidation, so a SKU's option only ever stands for (and counts) stock this line may
+    draw. Raises ``_PickerRefusal`` when every matched lot is held elsewhere, rather than
+    letting the caller fall through to a different item."""
     items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
-    drawable = [i for i in items if not (splitting_allowed(i) and _held_elsewhere(i, doc_id, line_id))]
+    drawable = [i for i in items
+                if not (splitting_allowed(i) and _held_elsewhere(i, doc_id, line_id, source_memo_id))]
     if items and not drawable:
-        raise _PickerRefusal(await _reserved_elsewhere(token, items, code))
+        raise _PickerRefusal(await _held_by_another_record(token, items, code))
     return _consolidate_sales_lots(drawable, company_settings)
 
 
@@ -1749,11 +1757,16 @@ def setup_routes(app):
         settings = (await api.get_company(token)).get("settings") or {}
         unit_map = build_unit_map(await api.get_units(token))
         price_list = q.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
+        doc_type = q.get("doc_type", "").strip()
+        doc_id = q.get("doc_id", "").strip() or None
+        # An invoice made from a memo may take that memo's lots.
+        source_memo_id = (await api.get_doc(token, doc_id)).get("source_memo_id") if doc_type == "invoice" and doc_id else None
         return {
             "token": token,
             "settings": settings,
-            "doc_type": q.get("doc_type", "").strip(),
-            "doc_id": q.get("doc_id", "").strip() or None,
+            "doc_type": doc_type,
+            "doc_id": doc_id,
+            "source_memo_id": source_memo_id,
             "line_id": q.get("line_id", "").strip() or None,
             "extract": lambda item: _picker_item(item, resolve_price(item, price_list), unit_map),
         }
@@ -1784,7 +1797,7 @@ def setup_routes(app):
             token, extract = ctx["token"], ctx["extract"]
             is_credit_note = ctx["doc_type"] == "credit_note"
             lot = await _exact_physical_lot(token, code, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
-                                            line_id=ctx["line_id"])
+                                            line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
             if lot is not None:
                 return JSONResponse(extract(lot))
 
@@ -1794,7 +1807,8 @@ def setup_routes(app):
                 found = found or (await api.list_items(token, params))["items"]
                 if is_credit_note:
                     return [i for i in found if str(i.get("status") or "").lower() != "draft"]
-                return await _sales_options(token, found, ctx["settings"], code, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
+                return await _sales_options(token, found, ctx["settings"], code, doc_id=ctx["doc_id"],
+                                            line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
 
             # GTIN names a product, not a lot, so it behaves like a SKU: forward sales
             # consolidate splittable lots; several remaining lots -> chooser.
@@ -1827,7 +1841,7 @@ def setup_routes(app):
             ctx = await _picker_context(request)
             token, extract = ctx["token"], ctx["extract"]
             lot = await _exact_physical_lot(token, q, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
-                                            line_id=ctx["line_id"])
+                                            line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
             if lot is not None:
                 return _J([{**extract(lot), "exact": True}])
             if ctx["doc_type"] == "credit_note":
@@ -1848,7 +1862,8 @@ def setup_routes(app):
                 return _J([extract(i) for i in items[:10]])
             found = (await api.list_items(token, {"q": q, "limit": 10}))["items"]
             try:
-                items = await _sales_options(token, found, ctx["settings"], q, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
+                items = await _sales_options(token, found, ctx["settings"], q, doc_id=ctx["doc_id"],
+                                             line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
             except _PickerRefusal:
                 items = []  # a list of text matches simply omits lots held elsewhere
             return _J([extract(i) for i in items])

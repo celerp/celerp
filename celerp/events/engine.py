@@ -478,8 +478,9 @@ async def emit_event(
     #     or an import can carry the id of an item Undo removed); lines already on the
     #     stored document are carried forward, so an old document stays editable;
     #   - no line a write adds (counted per occurrence) may reference a draft item, and
-    #     none on an invoice or memo may reference an item reserved elsewhere, and none
-    #     may take a lot the record holds for another of its lines;
+    #     none on an invoice or memo may reference an item reserved elsewhere or out on a
+    #     memo it was not made from, and none may take a lot the record holds for another
+    #     of its lines;
     #   - an OUTBOUND document (invoice, memo) never repeats a physical item; the
     #     doc-type scope lives in assert_document_item_uniqueness beside the invariant.
     # Rebuild/replay applies events via apply_event, never emit_event, so historical
@@ -516,6 +517,7 @@ async def emit_event(
             doc_type = data.get("doc_type") or stored.get("doc_type")
             assert_new_references_eligible(
                 items, line_set, known=known, doc_type=doc_type, entity_id=kwargs.get("entity_id"),
+                source_memo_id=data.get("source_memo_id") or stored.get("source_memo_id"),
             )
             assert_line_holds_respected(
                 items, line_set, stored.get("line_items"), entity_id=kwargs.get("entity_id"),
