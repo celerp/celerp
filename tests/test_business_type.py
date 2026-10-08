@@ -390,7 +390,9 @@ async def test_untouched_purchasing_terms_follow_the_type(client):
     h = await _owner(client)
     assert (await client.get("/companies/me/purchasing-payment-terms", headers=h)).status_code == 200
     await _set(client, h, "gemstones")
-    assert (await _settings(client, h))["purchasing_payment_terms"] == payment_terms_for("gemstones")
+    assert "purchasing_payment_terms" not in await _settings(client, h)
+    shown = (await client.get("/companies/me/purchasing-payment-terms", headers=h)).json()
+    assert shown == payment_terms_for("gemstones")
 
 
 @pytest.mark.asyncio
@@ -417,11 +419,12 @@ async def test_generic_payment_terms_are_the_list_users_see(client):
     import celerp.routers.companies as companies
     import celerp.services.payment_terms as payment_terms
     assert companies.DEFAULT_PAYMENT_TERMS is payment_terms.DEFAULT_PAYMENT_TERMS
-    h = await _owner(client)
-    await _patch_settings(client, h, {"payment_terms": []})
-    shown = (await client.get("/companies/me/payment-terms", headers=h)).json()
+    shown = payment_terms.company_payment_terms({})
     assert shown == payment_terms_for(None)
     assert "Net 90" in [t["name"] for t in shown]
+    h = await _owner(client)
+    await _patch_settings(client, h, {"payment_terms": []})
+    assert (await client.get("/companies/me/payment-terms", headers=h)).json() == []
 
 
 # -- restart reporting -------------------------------------------------------------
