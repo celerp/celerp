@@ -418,15 +418,21 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # Undo a receive-return: clear the received items list
         current["return_received_items"] = []
     elif event_type == "doc.receive_undone":
-        # Returns were made from the received goods, so they go with them.
+        # Undo refuses once goods went back, but earlier releases undid receipts with returns
+        # on them, and those returns went with the receipt.
+        created = set(current.get("received_item_ids") or [])
         current["received_items"] = []
         current["received_item_ids"] = []
         current["returned_items"] = []
         current["status"] = _status_without_receipts(current)
         current.pop("pre_receipt_status", None)
-        # Clear entity_id from line items so per-line status column resets to "Not Received".
+        # Each line forgets the parcel the receipt created and what it received; an item the
+        # line named before the receipt stays.
         for li in current.get("line_items", []):
-            li.pop("entity_id", None)
+            if li.get("entity_id") in created:
+                li.pop("entity_id")
+            if "quantity_received" in li:
+                li["quantity_received"] = 0
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
         # Carries the allowlisted shared-document fields; status forced to "received".

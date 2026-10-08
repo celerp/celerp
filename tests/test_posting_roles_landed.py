@@ -67,11 +67,6 @@ async def test_goods_sent_back_after_a_remap_return_landed_cost_to_the_bills_cle
     assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2") == {
         "1130-P": 20.0, "1130-FRT": 5.0, "1130-FR2": 0.0}
 
-    r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2") == {
-        "1130-P": 15.0, "1130-FRT": 10.0, "1130-FR2": 0.0}
-
 
 async def _bill_posting_freight_to(session, client, auth, code: str) -> str:
     """A bill brought over from another system, naming the account its freight was posted to."""

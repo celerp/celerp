@@ -8022,6 +8022,19 @@ async def undo_receive_return(
     return {"undone": True, "item_ids": item_ids}
 
 
+async def _receipt_already_undone(session: AsyncSession, company_id, entity_id: str) -> bool:
+    """True when the document's latest receipt event is an undo."""
+    from celerp.models.ledger import LedgerEntry
+
+    latest = (await session.execute(
+        select(LedgerEntry.event_type)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+               LedgerEntry.event_type.in_(("doc.received", "doc.receive_undone")))
+        .order_by(LedgerEntry.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    return latest == "doc.receive_undone"
+
+
 @router.delete("/{entity_id}/receive")
 async def undo_receive(
     entity_id: str,
@@ -8030,21 +8043,31 @@ async def undo_receive(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo a goods-received on a bill.
+    """Undo everything received on a bill.
 
-    Archives the parcels the receipts created, takes back off each lot already on hand
-    what the receipts added to it, and returns the landed cost they capitalised. The
-    bill still stands, so what it booked stays booked. Clears received_items and
-    received_item_ids on the bill projection.
+    A receipt exists when the bill has received anything, expense and asset lines
+    included. Archives the parcels the receipts created, takes back off each lot already
+    on hand what the receipts added to it, and returns the landed cost they capitalised.
+    The bill still stands, so what it booked stays booked. Goods already returned to the
+    supplier keep the receipt in place: undoing it would orphan the posted return. Undoing
+    a receipt already undone reports that instead of failing.
     """
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "bill":
         raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
+    if not state.get("received_items"):
+        if await _receipt_already_undone(session, company_id, entity_id):
+            return {"undone": True, "item_ids": [], "already_undone": True}
+        raise HTTPException(status_code=409, detail="No received goods to revert")
+    if state.get("returned_items"):
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.undo_receipt_after_return",
+            "Some of these goods were already returned to the supplier, so the receipt cannot be "
+            "undone. The return stays on record.",
+        ))
     received_item_ids = state.get("received_item_ids") or []
     added = _lot_additions(state)
-    if not received_item_ids and not added:
-        raise HTTPException(status_code=409, detail="No received goods to revert")
     stock_lines = sum(1 for x in state.get("received_items") or []
                       if (x.get("receive_as") or "stock") == "stock" and "lot_quantity_added" not in x)
     if stock_lines != len(received_item_ids):

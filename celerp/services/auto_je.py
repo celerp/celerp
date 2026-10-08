@@ -33,7 +33,6 @@ from celerp.services.lot_origin import held_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
-from sqlalchemy import or_
 from sqlalchemy import select as _select
 
 R = AccountRole
@@ -2039,13 +2038,12 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
 
 
 async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: str, undo_key: str) -> None:
-    """Return the landed cost a bill's receipts capitalised, less what went back with returned
-    goods, to the clearing accounts."""
+    """Return the landed cost a bill's receipts capitalised to the clearing accounts. A receipt
+    with goods returned to the supplier is never undone, so no return's share is left to net."""
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
-        or_(*(Projection.entity_id.startswith(f"je:auto:{doc_id}:{kind}:", autoescape=True)
-              for kind in ("landed-cap", "landed-rtn"))),
+        Projection.entity_id.startswith(f"je:auto:{doc_id}:landed-cap:", autoescape=True),
     ))).scalars().all()
     for row in rows:
         await _void_je_if_posted(

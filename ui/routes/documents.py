@@ -890,6 +890,21 @@ def _list_line_pager(entity_id: str, offset: int, limit: int, total: int, save_f
     )
 
 
+def _render_undo_receipt_section(doc: dict, can_undo: bool):
+    """Undo receipt on a bill that has received anything. The API decides whether the
+    receipt can still be undone and explains when it cannot."""
+    if not can_undo or doc.get("doc_type") != "bill" or not doc.get("received_items"):
+        return ""
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    return Form(
+        Button(t("documents.undo_receipt"), type="submit", cls="btn btn--secondary btn--sm"),
+        id="undo-receipt-form",
+        hx_delete=f"/docs/{entity_id}/receive",
+        hx_confirm=t("documents.undo_receipt_confirm"),
+        hx_swap="none",
+    )
+
+
 def _render_receive_return_section(doc: dict):
     """Receive Returns button - shown on credit notes when celerp-inventory is installed.
 
@@ -3209,6 +3224,20 @@ celerpUpdateBulkAlloc();
             if notes:
                 data["notes"] = notes
             await api.receive_po(token, entity_id, data)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return _action_error(refusal_text(e.data or e.detail))
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+
+    @app.delete("/docs/{entity_id}/receive")
+    async def undo_receipt_route(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.undo_receive_goods(token, entity_id)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -6594,7 +6623,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 pass
 
     # --- Inventory section action buttons (rendered above line items, not in the top bar) ---
-    _receive_return_el = _render_receive_return_section(doc)
+    _receive_return_el = (_render_receive_return_section(doc)
+                          or _render_undo_receipt_section(doc, role_has_permission(settings or {}, role, "fulfill_documents")))
 
     # --- Slot: doc_detail_badges (module-contributed status badges) ---
     _slot_badges = []
