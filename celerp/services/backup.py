@@ -181,16 +181,40 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-# Drops the public tables and sequences a dump may lack; the restore script drops every
-# object the dump recreates. Dropping the schema itself would need its ownership, which
-# PostgreSQL 14 and older give the superuser.
+# Empties the public schema of what this role owns, so the restore leaves exactly the
+# dump there; the restore script drops every object the dump recreates. No CASCADE: an
+# object outside that set depending on one in it (another schema's foreign key or view)
+# makes PostgreSQL refuse the drop, and the restore with it. Tables go in one statement so
+# foreign keys among them need no CASCADE. Extension members and objects that depend
+# internally or automatically on another go with their owner. Dropping the schema itself
+# would need its ownership, which PostgreSQL 14 and older give the superuser.
 _EMPTY_PUBLIC = """SET client_min_messages = warning;
 DO $$ DECLARE r record; BEGIN
-  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
-    EXECUTE format('DROP TABLE IF EXISTS public.%I CASCADE', r.tablename);
-  END LOOP;
-  FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' LOOP
-    EXECUTE format('DROP SEQUENCE IF EXISTS public.%I CASCADE', r.sequencename);
+  FOR r IN
+    WITH ours AS (
+      SELECT CASE c.relkind WHEN 'v' THEN 1 WHEN 'm' THEN 2 WHEN 'S' THEN 4 ELSE 3 END AS step,
+             CASE c.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
+                            WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END AS kind,
+             c.oid::regclass::text AS name, 'pg_class'::regclass AS catalog, c.oid
+        FROM pg_class c
+       WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('v', 'm', 'r', 'p', 'S')
+         AND pg_has_role(c.relowner, 'USAGE')
+      UNION ALL
+      SELECT CASE p.prokind WHEN 'a' THEN 5 ELSE 6 END, CASE p.prokind WHEN 'a' THEN 'AGGREGATE' ELSE 'ROUTINE' END,
+             p.oid::regprocedure::text, 'pg_proc'::regclass, p.oid
+        FROM pg_proc p
+       WHERE p.pronamespace = 'public'::regnamespace AND pg_has_role(p.proowner, 'USAGE')
+      UNION ALL
+      SELECT 7, 'TYPE', t.oid::regtype::text, 'pg_type'::regclass, t.oid
+        FROM pg_type t
+       WHERE t.typnamespace = 'public'::regnamespace AND t.typtype IN ('c', 'd', 'e', 'r')
+         AND pg_has_role(t.typowner, 'USAGE'))
+    SELECT kind, string_agg(name, ', ') AS names FROM ours
+     WHERE NOT EXISTS (SELECT FROM pg_depend d WHERE d.classid = ours.catalog AND d.objid = ours.oid
+                                                AND d.objsubid = 0 AND d.deptype IN ('a', 'e', 'i'))
+     GROUP BY step, kind ORDER BY step
+  LOOP
+    EXECUTE format('DROP %s %s', r.kind, r.names);
   END LOOP;
 END $$"""
 

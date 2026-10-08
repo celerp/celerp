@@ -1705,13 +1705,85 @@ async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp
         await _execute(real_engine, "CREATE SCHEMA zz")
         await _execute(real_engine, "CREATE TABLE zz.jobs (status public.zz_status)")
         tables = await _tables(real_engine)
-        with pytest.raises(RuntimeError, match=r"psql failed \(exit 3\): psql:\S+: ERROR:  cannot drop type"):
+        with pytest.raises(RuntimeError, match=r"psql failed \(exit 1\): ERROR:  cannot drop type"):
             await _restore(dump)
         await _assert_unchanged(real_engine, tables)
     finally:
         await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
         await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
         await _execute(real_engine, "DROP TYPE IF EXISTS zz_status")
+
+
+# Made after the backup, so the dump lacks them: (create, lookup that is NULL once gone, drop).
+LATER = {
+    "enum": ("CREATE TYPE zz_status AS ENUM ('open', 'done')", "to_regtype('zz_status')",
+             "DROP TYPE IF EXISTS zz_status"),
+    "function": ("CREATE FUNCTION zz_one() RETURNS int LANGUAGE sql AS 'SELECT 1'", "to_regprocedure('zz_one()')",
+                 "DROP FUNCTION IF EXISTS zz_one()"),
+    "domain": ("CREATE DOMAIN zz_qty AS int CHECK (VALUE >= 0)", "to_regtype('zz_qty')", "DROP DOMAIN IF EXISTS zz_qty"),
+    "view": ("CREATE VIEW zz_const AS SELECT 1 AS one", "to_regclass('zz_const')", "DROP VIEW IF EXISTS zz_const"),
+    "materialized view": ("CREATE MATERIALIZED VIEW zz_one_row AS SELECT 1 AS one", "to_regclass('zz_one_row')",
+                          "DROP MATERIALIZED VIEW IF EXISTS zz_one_row"),
+}
+
+
+@pytest.mark.parametrize("kind", list(LATER))
+async def test_a_restore_removes_public_objects_the_backup_lacks(tmp_path, real_engine, kind):
+    from sqlalchemy import text
+    create, lookup, drop = LATER[kind]
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        await _execute(real_engine, create)
+        await _restore(dump)
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text(f"SELECT {lookup}"))).scalar() is None
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        await _execute(real_engine, drop)
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+async def test_a_restore_leaves_other_schemas_alone(tmp_path, real_engine):
+    from sqlalchemy import text
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        await _execute(real_engine, "CREATE SCHEMA zz")
+        await _execute(real_engine, "CREATE TABLE zz.jobs (id int)")
+        await _execute(real_engine, "INSERT INTO zz.jobs VALUES (1)")
+        await _restore(dump)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text("SELECT count(*) FROM zz.jobs"))).scalar() == 1
+    finally:
+        await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+# Objects outside public that depend on a public table: (create, lookup that holds while they exist).
+OUTSIDE = {
+    "foreign key": ("CREATE TABLE zz.links (company_id uuid REFERENCES public.companies(id))",
+                    "SELECT count(*) FROM pg_constraint WHERE conrelid = 'zz.links'::regclass AND contype = 'f'"),
+    "view": ("CREATE VIEW zz.names AS SELECT name FROM public.companies", "SELECT count(*) FROM zz.names"),
+}
+
+
+@pytest.mark.parametrize("kind", list(OUTSIDE))
+async def test_a_restore_that_would_change_another_schema_changes_nothing(tmp_path, real_engine, kind):
+    from sqlalchemy import text
+    create, lookup = OUTSIDE[kind]
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        await _execute(real_engine, "CREATE SCHEMA zz")
+        await _execute(real_engine, create)
+        tables = await _tables(real_engine)
+        with pytest.raises(RuntimeError, match=r"psql failed \(exit 1\): ERROR:  cannot drop desired"):
+            await _restore(dump)
+        await _assert_unchanged(real_engine, tables)
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text(lookup))).scalar() == (1 if kind == "foreign key" else 2)
+    finally:
+        await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
 
 
 async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine):
