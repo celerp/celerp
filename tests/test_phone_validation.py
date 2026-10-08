@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A phone saved on a contact or the company has at least 4 digits, or is empty.
+"""A phone saved on a contact or the company has at least 4 digits and at most 40 characters,
+or is empty.
 
 Phones already stored are never rechecked: a contact keeping an old phone can still be
 edited, and imports are unchanged.
@@ -72,3 +73,13 @@ async def test_a_contact_keeping_an_old_phone_can_still_be_edited(client):
     r = await client.patch(f"/crm/contacts/{cid}", headers=h,
                            json={"fields_changed": {"name": {"old": "Old Phone", "new": "Renamed"}}})
     assert r.status_code == 200, r.text
+
+
+async def test_a_phone_over_40_characters_is_refused(client):
+    h = await _reg(client)
+    long_phone = "081 234 5678" + "9" * 29
+    r = await client.post("/crm/contacts", headers=h, json={"name": "Long Phone", "phone": long_phone})
+    assert r.status_code == 422 and "at most 40 characters" in r.text, r.text
+    r = await client.patch("/companies/me", headers=h, json={"settings": {"phone": long_phone}})
+    assert r.status_code == 422 and "at most 40 characters" in r.text, r.text
+    assert (await client.post("/crm/contacts", headers=h, json={"name": "Max Phone", "phone": long_phone[:40]})).status_code == 200
