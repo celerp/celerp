@@ -56,9 +56,12 @@ async def older_release_lot(session, company_id, actor_id, cost: float, *, qty: 
 
 
 async def book_older_opening(session, company_id, user_id) -> None:
-    """Commit the opening inventory entry an older release booked for its pre-system stock."""
+    """Commit the opening inventory entry an older release booked for its pre-system stock,
+    under the company lock every caller of book_opening_inventory holds."""
     from celerp.services.auto_je import book_opening_inventory
+    from celerp.services.company_lock import locked_company
 
+    await locked_company(session, company_id)
     await book_opening_inventory(session, company_id=company_id, user_id=user_id, in_production=Decimal("0"))
     await session.commit()
 

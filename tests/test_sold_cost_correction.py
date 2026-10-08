@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select, text
@@ -26,6 +25,7 @@ from celerp.services import auto_je
 from test_cost_restatement import (
     _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
+from stock_books import book_older_opening
 from test_helpers import TZ, company_auth
 
 # The accounts a finalize entry posts cost of goods sold to on a seeded chart.
@@ -47,9 +47,7 @@ _VALUE_SOURCES = {SEEDED_TARGETS[r] for r in (R.RETAINED_EARNINGS, R.STOCK_GAIN,
 async def _trial_balance(session, auth) -> dict[str, float]:
     """Every account's posted total (debit positive), opening inventory reconciled, with
     the sources of a lot's value change pooled as one."""
-    await auto_je.book_opening_inventory(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
-    await session.commit()
+    await book_older_opening(session, auth["company_id"], auth["user_id"])
     session.expire_all()
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
@@ -162,9 +160,7 @@ def mark_sold(name: str):
 
 def reconcile_opening_inventory():
     async def step(client, session, auth, ctx):
-        await auto_je.book_opening_inventory(
-            session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
-        await session.commit()
+        await book_older_opening(session, auth["company_id"], auth["user_id"])
     return step
 
 

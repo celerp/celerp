@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 """Document-line identity, the linked-item reference rule, the new-reference eligibility
-rule, and the physical-item uniqueness invariant.
+rules (other records' holds, and holds for another line of the same record), and the
+physical-item uniqueness invariant.
 
 A line linked to an item must link to a real item of the same company: a stale form
 or an import can carry the id of an item that was removed (an undone import), and a
@@ -168,6 +169,38 @@ def assert_new_references_eligible(
                               "doc_number": state.get("status_doc_number"), "message": reasons[-1]})
     if reasons:
         raise HTTPException(status_code=422, detail={"message": "; ".join(reasons), "conflicts": conflicts})
+
+
+def assert_line_holds_respected(items: dict[str, Projection], line_items, stored_lines, *, entity_id: str | None) -> None:
+    """Refuse a line that newly takes a lot this record holds for another of its lines.
+
+    Reserving a line attributes the hold to it (the item's ``status_line_entity_id`` is
+    that line's ``line_id``), so the lot is that line's stock: no other line of the record
+    may newly reference it. "Newly" counts occurrences per (line_id, item) against the
+    stored record, so the holding line stays editable and a reference another line already
+    had is carried forward, while moving the reference to a different line is new. A hold
+    with no line attribution belongs to the whole record (``assert_new_references_eligible``
+    judges holds of other records). ``items`` is what ``linked_items`` resolved.
+
+    422 ``{"errors": [...]}`` with one refusal per refused line.
+    """
+    def pairs(lines) -> Counter:
+        return Counter((line.get("line_id"), line_item_id(line)) for line in lines or []
+                       if isinstance(line, dict) and line_item_id(line))
+
+    errors: list[dict] = []
+    for line_id, ident in sorted(pairs(line_items) - pairs(stored_lines), key=str):
+        state = (items[ident].state or {}) if ident in items else {}
+        holder = state.get("status_line_entity_id")
+        if (state.get("status") == "reserved" and entity_id and state.get("status_doc_id") == entity_id
+                and holder and holder != line_id):
+            sku = state.get("sku") or ident
+            errors.append(refusal(
+                "item.held_for_other_line",
+                f"{sku} is held for another line of this record: pick another item or release it there first.",
+                sku=sku))
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
 
 
 async def assert_document_item_uniqueness(session, company_id, doc_type, line_items) -> None:

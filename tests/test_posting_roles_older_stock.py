@@ -37,7 +37,7 @@ from celerp.models.projections import Projection
 from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import business_date_at
 from celerp.services.company_lock import locked_company
-from stock_books import assert_settled, older_release_lot
+from stock_books import assert_settled, book_older_opening, older_release_lot
 from test_cost_restatement import _state
 from test_helpers import TZ, in_language
 from test_money_stock_and_contact_invariants import _account_net
@@ -717,15 +717,6 @@ async def _opening_inventory(session, auth) -> dict | None:
     return row.state if row is not None and row.state.get("status") == "posted" else None
 
 
-async def _book_opening(session, auth) -> None:
-    """Book the opening inventory entry the way the upgrade does for an older release."""
-    from decimal import Decimal
-
-    from celerp.services.auto_je import book_opening_inventory
-
-    await book_opening_inventory(session, company_id=auth["company_id"], user_id=auth["user_id"],
-                                 in_production=Decimal("0"))
-    await session.commit()
 
 
 async def test_opening_stock_is_refused_on_a_locked_business_day_though_the_servers_is_not(
@@ -737,7 +728,7 @@ async def test_opening_stock_is_refused_on_a_locked_business_day_though_the_serv
     await _locked_through(session, auth, tz)
     _clock(monkeypatch, instant, host_day)
     with pytest.raises(HTTPException):
-        await _book_opening(session, auth)
+        await book_older_opening(session, auth["company_id"], auth["user_id"])
     await session.rollback()
     assert await _opening_inventory(session, auth) is None
     assert await _net(session, auth, "1130-OB") == (0.0,)
@@ -748,7 +739,7 @@ async def test_opening_stock_is_dated_the_business_day_when_the_servers_day_is_l
     await older_release_lot(session, auth["company_id"], auth["user_id"], 30.0)
     await _locked_through(session, auth, tz)
     _clock(monkeypatch, instant, host_day)
-    await _book_opening(session, auth)
+    await book_older_opening(session, auth["company_id"], auth["user_id"])
     je = await _opening_inventory(session, auth)
     assert je is not None and je["ts"][:10] == "2026-10-02"
     assert await _net(session, auth, "1130-OB") == (30.0,)

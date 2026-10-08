@@ -1594,6 +1594,25 @@ def reconcile_vertical_defaults(settings: dict, previous_vertical: str | None, t
 _SAMPLE_STOCK = "sample-stock"
 
 
+async def has_own_books(session: AsyncSession, company_id: uuid.UUID) -> bool:
+    """True once the company has posted a journal entry of its own, any entry other
+    than the sample stock setup booked or the removal of those samples."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    operation = sa.func.coalesce(LedgerEntry.metadata_["operation"].as_string(), "")
+    return (await session.scalar(sa.select(Projection.entity_id).join(LedgerEntry, sa.and_(
+        LedgerEntry.company_id == Projection.company_id, LedgerEntry.entity_id == Projection.entity_id,
+        LedgerEntry.event_type == "acc.journal_entry.created",
+    )).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.state["status"].as_string() == "posted",
+        operation != _SAMPLE_STOCK,
+    ).limit(1))) is not None
+
+
 async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
     """Every item the demo seeder created for the company, touched or not."""
     import sqlalchemy as sa

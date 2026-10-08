@@ -320,24 +320,28 @@ async def _bulk_api_client(token: str, timeout: float | httpx.Timeout = 10.0):
 
 def _api_error(status: int, body, text: str) -> APIError:
     """The APIError an error response raises: ``detail`` is the plain string the sites
-    render, in the user's language."""
-    detail = body.get("detail", text) if isinstance(body, dict) else text
-    data = None
-    if isinstance(detail, dict) and "message" in detail:
-        # Structured detail (message + extras): detail becomes the plain string
-        # the sites render, in the user's language (refusal_text); the full
-        # payload rides on APIError.data.
-        # Dict details WITHOUT a message key (e.g. {"errors": [...]} from
-        # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
-        data = detail
-        detail = refusal_text(detail) or text
-    elif isinstance(body, dict) and set(body) - {"detail"}:
-        # An error body carrying structured fields beyond `detail` (a top-level
-        # machine "code" like scan_run_conflict, with a plain-string detail):
-        # keep detail the string the sites render, carry the whole body on
-        # APIError.data so callers can branch on the code.
-        data = body
-    return APIError(status, detail, data=data)
+    render, in the user's language; ``data`` keeps the structured payload for callers
+    that branch on it.
+
+    A refusal (``message``) or a list of them (``errors``) renders through refusal_text.
+    A body that is not JSON (a proxy's error page) reads as a plain generic sentence.
+    Any other dict detail (a field-by-field map) passes through for its page to lay out;
+    an error body carrying fields beyond ``detail`` (a machine ``code``) rides on data."""
+    if not isinstance(body, dict):
+        return APIError(status, t("error.unexpected_error_body"))
+    detail = body.get("detail", text)
+    if isinstance(detail, dict) and ("message" in detail or "errors" in detail):
+        return APIError(status, refusal_text(detail) or t("error.unexpected_error_body"), data=detail)
+    if isinstance(detail, str):
+        detail = refusal_text(detail)
+    return APIError(status, detail, data=body if set(body) - {"detail"} else None)
+
+
+def error_message(e: APIError) -> str:
+    """An APIError as the plain sentence a page shows: the rendered refusal, else the
+    error's own text, else a generic sentence; never a raw payload or an empty string."""
+    text = refusal_text(e.data) or (e.detail if isinstance(e.detail, str) else "")
+    return text or t("error.unexpected_error_body")
 
 
 def error_text(r: httpx.Response, fallback: str) -> str:

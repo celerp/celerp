@@ -12440,6 +12440,14 @@ class TestCatalogConsolidationEndpoint:
 
     _UNITS = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
 
+    @staticmethod
+    def _by_text(items):
+        """GET /items returning ``items`` for a text search; no lot carries the text as a
+        barcode or RFID tag."""
+        async def _list(_t, params):
+            return {"items": [] if "barcode" in params or "rfid_epc" in params else items}
+        return _list
+
     @pytest.mark.asyncio
     async def test_catalog_search_consolidates_splittable_lots(self, ui_client):
         items = [
@@ -12451,7 +12459,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=W", cookies=_authed())
         assert r.status_code == 200
@@ -12470,7 +12478,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=DIA", cookies=_authed())
         assert r.status_code == 200
@@ -12489,6 +12497,8 @@ class TestCatalogConsolidationEndpoint:
         ]
 
         async def _list(_t, params):
+            if "barcode" in params or "rfid_epc" in params:
+                return {"items": []}
             return {"items": sold if params.get("status") == "sold" else []}
 
         with (
@@ -19845,16 +19855,24 @@ class TestAPIErrorStructuredDetail:
         assert isinstance(e.data, dict)
         assert e.data["conflicts"] == conflicts
 
-    def test_apierror_message_less_dict_detail_passes_through(self):
-        """{"errors": [...]} details (fulfill/revert/reserve) must NOT be unwrapped:
-        their consumers json-dump the dict themselves."""
+    def test_apierror_errors_list_detail_renders_plain_and_keeps_its_payload(self):
+        """{"errors": [...]} details (fulfill/revert/reserve) render as plain text; the
+        payload itself rides on APIError.data for callers that branch on it."""
         from ui.api_client import APIError, _raise
-        detail = {"errors": [{"entity_id": "item:x", "error": "not available"}]}
+        detail = {"errors": ["RAW-1: not available"]}
         with pytest.raises(APIError) as exc:
             _raise(self._resp(detail))
         e = exc.value
-        assert e.detail == detail
-        assert e.data is None
+        assert e.detail == "RAW-1: not available"
+        assert e.data == detail
+
+    def test_apierror_field_map_detail_passes_through(self):
+        """A field-by-field detail map stays a dict for its page to lay out."""
+        from ui.api_client import APIError, _raise
+        detail = {"company_name": "Required"}
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp(detail))
+        assert exc.value.detail == detail and exc.value.data is None
 
     def test_apierror_preserves_top_level_code_with_string_detail(self):
         """A scan_run_conflict body - a machine `code` beside a plain-string detail -

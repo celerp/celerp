@@ -18,7 +18,7 @@ from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.components.icons import import_icon
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 from celerp.accounting_roles import account_label
 from celerp.services.units import RECEIVE_KINDS, default_receive_as, line_receive_kind
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
@@ -288,9 +288,103 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
 
 
 def _consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[dict]:
-    """Compatibility wrapper around the canonical sales-lot selection primitive."""
+    """The canonical sales-lot selection primitive, for the forward-sale picker."""
     from celerp.services.pick import consolidate_sales_lots
     return consolidate_sales_lots(items, company_settings)
+
+
+class _PickerRefusal(Exception):
+    """A code the document picker must not resolve to a lot, with the sentence to show."""
+
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def _held_elsewhere(item: dict, doc_id: str | None, line_id: str | None) -> bool:
+    """A reserved lot this line may not newly take: reserved to another record or to
+    none (``demand_claim``), or reserved to this record for another of its lines."""
+    from celerp_inventory.projections import demand_claim
+
+    if str(item.get("status") or "").lower() != "reserved":
+        return False
+    if demand_claim(item, doc_id) is None:
+        return True
+    holder = item.get("status_line_entity_id")
+    return bool(holder) and holder != line_id
+
+
+def _hold_refusal(item: dict, code: str, *, doc_type: str, doc_id: str | None, line_id: str | None) -> str | None:
+    """Why this line may not take ``item`` by its exact code, or None. Mirrors the line
+    rules the document API enforces (celerp.services.document_lines): a draft is not
+    stock; another record's hold blocks the stock-claiming documents; a hold for another
+    line of this record blocks every other line."""
+    from celerp.services.document_lines import DOCUMENT_ITEM_UNIQUE_DOC_TYPES
+
+    if str(item.get("status") or "").lower() == "draft":
+        return t("item.draft", sku=item.get("sku") or code)
+    if not _held_elsewhere(item, doc_id, line_id):
+        return None
+    if doc_id and item.get("status_doc_id") == doc_id:
+        return t("documents.lot_held_by_other_line", code=code)
+    if doc_type in DOCUMENT_ITEM_UNIQUE_DOC_TYPES:
+        return t("documents.lot_reserved_elsewhere", code=code)
+    return None
+
+
+async def _physical_lots(token: str, code: str, *, credit_note: bool) -> list[dict]:
+    """Every distinct live lot whose barcode or RFID/EPC is exactly ``code``.
+
+    Barcode and RFID/EPC are one physical namespace, gathered together before any product
+    identifier (GTIN, SKU, name), so scan Enter, leaving the SKU field and the autocomplete
+    list resolve a code to the same lot. A credit note looks among sold lots first. The
+    API normalizes the rfid_epc filter (trim + upper). A failed lookup raises: it is never
+    reported as no match.
+    """
+    from celerp_inventory.routes import PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
+
+    async def exact(field: str) -> list[dict]:
+        params = {field: code, "limit": 20}
+        found = (await api.list_items(token, {**params, "status": "sold"}))["items"] if credit_note else []
+        return found or (await api.list_items(token, params))["items"]
+
+    lots: dict = {}
+    for item in (await exact("barcode")) + (await exact("rfid_epc")):
+        if str(item.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+            lots.setdefault(item.get("entity_id") or item.get("id"), item)
+    return list(lots.values())
+
+
+async def _exact_physical_lot(token: str, code: str, *, doc_type: str, doc_id: str | None,
+                              line_id: str | None) -> dict | None:
+    """The one lot ``code`` names physically, None when no lot carries it as a barcode
+    or RFID tag. Raises ``_PickerRefusal`` when it names several lots, or one this line
+    may not take: an exact code never falls back to another lot."""
+    lots = await _physical_lots(token, code, credit_note=doc_type == "credit_note")
+    if len(lots) > 1:
+        raise _PickerRefusal(t("documents.code_names_several_lots", code=code))
+    if not lots:
+        return None
+    if doc_type != "credit_note":
+        reason = _hold_refusal(lots[0], code, doc_type=doc_type, doc_id=doc_id, line_id=line_id)
+        if reason:
+            raise _PickerRefusal(reason)
+    return lots[0]
+
+
+def _sales_options(items: list[dict], company_settings: dict, code: str, *, doc_id: str | None,
+                   line_id: str | None) -> list[dict]:
+    """Forward-sale picker options for matched lots: drafts dropped, then splittable lots
+    held for another record or another line dropped before consolidation, so a SKU's
+    option only ever stands for (and counts) stock this line may draw. Raises
+    ``_PickerRefusal`` when every matched lot is held elsewhere, rather than letting the
+    caller fall through to a different item."""
+    items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
+    drawable = [i for i in items if not (splitting_allowed(i) and _held_elsewhere(i, doc_id, line_id))]
+    if items and not drawable:
+        raise _PickerRefusal(t("documents.lot_reserved_elsewhere", code=code))
+    return _consolidate_sales_lots(drawable, company_settings)
 
 
 def _enrich_doc_files(doc: dict) -> list[dict]:
@@ -305,7 +399,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import category_label, get_lang, refusal_text, t
+from ui.i18n import category_label, get_lang, t
 from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -1488,7 +1582,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             # A failed export is an error page, never a downloaded file that says "error".
-            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
+            return Response(content=error_message(e), status_code=e.status, media_type="text/plain")
         out_headers = {"Content-Disposition": "attachment; filename=documents.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -1509,7 +1603,7 @@ def setup_routes(app):
                 from starlette.responses import Response as _R
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             from starlette.responses import Response as _R
-            detail = e.detail if hasattr(e, "detail") and e.detail else t("documents.failed_to_create_document")
+            detail = error_message(e)
             return _R(
                 "",
                 status_code=200,
@@ -1561,7 +1655,7 @@ def setup_routes(app):
             })
             doc_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="modal-container")
+            return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
 
     @app.post("/docs/from-items/add")
@@ -1588,7 +1682,7 @@ def setup_routes(app):
                 "total": subtotal,
             })
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="modal-container")
+            return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
     @app.get("/docs/from-items/search")
@@ -1604,144 +1698,103 @@ def setup_routes(app):
         except APIError:
             docs = []
         return _send_to_option_list(docs, "doc")
+    async def _picker_context(request: Request) -> dict:
+        """What both picker endpoints read from the request and the company. A failed
+        read raises: the picker never guesses units or the draw order."""
+        from celerp.services.units import build_unit_map
+
+        token = _token(request)
+        q = request.query_params
+        settings = (await api.get_company(token)).get("settings") or {}
+        unit_map = build_unit_map(await api.get_units(token))
+        price_list = q.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
+        return {
+            "token": token,
+            "settings": settings,
+            "doc_type": q.get("doc_type", "").strip(),
+            "doc_id": q.get("doc_id", "").strip() or None,
+            "line_id": q.get("line_id", "").strip() or None,
+            "extract": lambda item: _picker_item(item, resolve_price(item, price_list), unit_map),
+        }
+
+    def _picker_error(e: Exception):
+        """A refusal or a failed lookup as JSON the editor shows: never an empty match."""
+        from starlette.responses import JSONResponse
+
+        if isinstance(e, _PickerRefusal):
+            return JSONResponse({"error": e.message}, status_code=e.status)
+        logger.warning("Document picker lookup failed: %s", e)
+        return JSONResponse({"error": error_message(e)}, status_code=502)
+
     @app.get("/docs/catalog-lookup")
     async def doc_catalog_lookup(request: Request):
-        """Lookup item by barcode, RFID/EPC, GTIN, or SKU. Returns {sku, description, unit_price} or {}."""
+        """Resolve one typed or scanned code: an exact barcode or RFID/EPC names one lot;
+        else GTIN, then SKU (a chooser when several lots remain), then a name match.
+        Returns the picked item, a chooser, or {} for no match; 409 for a code it must
+        not resolve, 502 when the lookup failed."""
         from starlette.responses import JSONResponse
-        from celerp_inventory.routes import duplicate_barcode_detail
-        token = _token(request)
-        if not token:
+        if not _token(request):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         code = request.query_params.get("sku", "").strip()
         if not code:
             return JSONResponse({})
-        price_list = request.query_params.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
-        is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
-        from celerp.services.units import build_unit_map
         try:
-            _unit_map = build_unit_map(await api.get_units(token))
-        except Exception:
-            _unit_map = {}
-        try:
-            _company_settings = (await api.get_company(token)).get("settings") or {}
-        except Exception:
-            _company_settings = {}
+            ctx = await _picker_context(request)
+            token, extract = ctx["token"], ctx["extract"]
+            is_credit_note = ctx["doc_type"] == "credit_note"
+            lot = await _exact_physical_lot(token, code, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
+                                            line_id=ctx["line_id"])
+            if lot is not None:
+                return JSONResponse(extract(lot))
 
-        def _extract(item: dict) -> dict:
-            return _picker_item(item, resolve_price(item, price_list), _unit_map)
+            async def matches(field: str, limit: int = 20) -> list[dict]:
+                params = {field: code, "limit": limit}
+                found = (await api.list_items(token, {**params, "status": "sold"}))["items"] if is_credit_note else []
+                found = found or (await api.list_items(token, params))["items"]
+                if is_credit_note:
+                    return [i for i in found if str(i.get("status") or "").lower() != "draft"]
+                return _sales_options(found, ctx["settings"], code, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
 
-        async def _first(params: dict) -> list:
-            resp = await api.list_items(token, params)
-            found = resp.get("items", []) if isinstance(resp, dict) else resp
-            # Drafts are not stock: never offer them on a document. The API rejects
-            # a draft line anyway; filtering here keeps the picker honest.
-            return [i for i in found if str(i.get("status") or "").lower() != "draft"]
-
-        def _ambiguous(code: str, items: list) -> dict:
-            # SKU maps to N physical lots - hand back a chooser instead of silently
-            # picking items[0]. Candidates carry batch_no/entity_id so the user picks a lot.
-            return {"ambiguous": True, "code": code, "candidates": [_extract(i) for i in items]}
-
-        async def _physical(field: str) -> list:
-            # Exact matches on one physical field, honoring the credit-note sold-first
-            # fallback. limit 20 (not 1) so a cross-field collision stays visible to the
-            # union below instead of being truncated to the first hit. The API normalizes
-            # the rfid_epc filter (trim + upper) so a typed lowercase tag still matches.
-            if is_credit_note:
-                return (await _first({field: code, "limit": 20, "status": "sold"})
-                        or await _first({field: code, "limit": 20}))
-            return await _first({field: code, "limit": 20})
-
-        try:
-            # Physical namespace: Barcode and RFID/EPC are ONE physical identity namespace.
-            # Gather exact matches on BOTH fields before returning either and dedup by
-            # physical item (entity_id). A value held as one item's barcode and another's
-            # rfid_epc spans two distinct lots: fail closed (409) exactly as the canonical
-            # resolver (/scanning/resolve) does, never silently selecting the first hit.
-            # Zero physical matches fall through to the product identifiers; exactly one
-            # resolves to that lot.
-            physical: dict = {}
-            for it in (await _physical("barcode")) + (await _physical("rfid_epc")):
-                physical.setdefault(it.get("entity_id") or it.get("id"), it)
-            if len(physical) > 1:
-                return JSONResponse({"error": duplicate_barcode_detail(code)}, status_code=409)
-            if len(physical) == 1:
-                return JSONResponse(_extract(next(iter(physical.values()))))
-
-            # GTIN identifies a product, not a physical lot, so it behaves like a SKU:
-            # forward sales consolidate splittable lots; >1 remaining -> chooser.
-            gtin_params = ({"gtin": code, "limit": 20, "status": "sold"} if is_credit_note
-                           else {"gtin": code, "limit": 20})
-            gtin_items = await _first(gtin_params)
-            if not gtin_items and is_credit_note:
-                gtin_items = await _first({"gtin": code, "limit": 20})
+            # GTIN names a product, not a lot, so it behaves like a SKU: forward sales
+            # consolidate splittable lots; several remaining lots -> chooser.
+            for field in ("gtin", "sku"):
+                found = await matches(field)
+                if len(found) > 1:
+                    return JSONResponse({"ambiguous": True, "code": code, "candidates": [extract(i) for i in found]})
+                if found:
+                    return JSONResponse(extract(found[0]))
             if not is_credit_note:
-                gtin_items = _consolidate_sales_lots(gtin_items, _company_settings)
-            if len(gtin_items) > 1:
-                return JSONResponse(_ambiguous(code, gtin_items))
-            if gtin_items:
-                return JSONResponse(_extract(gtin_items[0]))
-
-            # Exact SKU: forward sales consolidate splittable lots into one option (the
-            # pick-order-first lot); non-splittable / credit notes keep per-lot -> chooser.
-            sku_params = ({"sku": code, "limit": 20, "status": "sold"} if is_credit_note
-                          else {"sku": code, "limit": 20})
-            sku_items = await _first(sku_params)
-            if not sku_items and is_credit_note:
-                sku_items = await _first({"sku": code, "limit": 20})
-            if not is_credit_note:
-                sku_items = _consolidate_sales_lots(sku_items, _company_settings)
-            if len(sku_items) > 1:
-                return JSONResponse(_ambiguous(code, sku_items))
-            if sku_items:
-                return JSONResponse(_extract(sku_items[0]))
-
-            # Fuzzy fallback (non-credit-note only, mirrors prior behaviour).
-            if not is_credit_note:
-                q_items = await _first({"q": code, "limit": 1})
-                if q_items:
-                    return JSONResponse(_extract(q_items[0]))
-        except Exception:
-            pass
+                found = await matches("q", limit=1)
+                if found:
+                    return JSONResponse(extract(found[0]))
+        except (APIError, _PickerRefusal) as e:
+            return _picker_error(e)
         return JSONResponse({})
 
     @app.get("/docs/catalog-search")
     async def doc_catalog_search(request: Request):
-        """Search inventory items by SKU or name. Returns [{sku, description, unit_price, sell_by}]."""
+        """Autocomplete options for a typed code or name. An exact barcode or RFID/EPC
+        offers only its lot, marked ``exact``; otherwise items matching the text. 409 for a
+        code it must not resolve, 502 when the lookup failed."""
         from starlette.responses import JSONResponse as _J
-        token = _token(request)
-        if not token:
+        if not _token(request):
             return _J({"error": "unauthorized"}, status_code=401)
         q = request.query_params.get("q", "").strip()
-        price_list = request.query_params.get("price_list", DEFAULT_PRICE_LIST_NAME).strip() or DEFAULT_PRICE_LIST_NAME
-        is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
         if not q:
             return _J([])
-        from celerp.services.units import build_unit_map
         try:
-            _unit_map = build_unit_map(await api.get_units(token))
-        except Exception:
-            _unit_map = {}
-
-        def _extract(item: dict) -> dict:
-            return _picker_item(item, resolve_price(item, price_list), _unit_map)
-
-        try:
-            if is_credit_note:
-                _company_settings = {}
-            else:
-                try:
-                    _company_settings = (await api.get_company(token)).get("settings") or {}
-                except Exception:
-                    _company_settings = {}
-            if is_credit_note:
-                # Credit notes: search sold items first, then active, merge (sold first)
-                resp_sold = await api.list_items(token, {"q": q, "limit": 10, "status": "sold"})
-                sold = resp_sold.get("items", []) if isinstance(resp_sold, dict) else resp_sold
-                resp_active = await api.list_items(token, {"q": q, "limit": 10})
-                active = resp_active.get("items", []) if isinstance(resp_active, dict) else resp_active
-                # Dedup by physical lot (entity_id), NOT by sku: several lots can share
-                # one sku and each is a distinct, separately-selectable return candidate.
+            ctx = await _picker_context(request)
+            token, extract = ctx["token"], ctx["extract"]
+            lot = await _exact_physical_lot(token, q, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
+                                            line_id=ctx["line_id"])
+            if lot is not None:
+                return _J([{**extract(lot), "exact": True}])
+            if ctx["doc_type"] == "credit_note":
+                # Credit notes: sold lots first, then active ones, each lot separately
+                # selectable (deduped by entity_id, not by sku): you credit the exact lot
+                # the customer returns.
+                sold = (await api.list_items(token, {"q": q, "limit": 10, "status": "sold"}))["items"]
+                active = (await api.list_items(token, {"q": q, "limit": 10}))["items"]
                 seen = set()
                 items = []
                 for item in sold + active:
@@ -1751,16 +1804,15 @@ def setup_routes(app):
                     if key and key not in seen:
                         seen.add(key)
                         items.append(item)
-                return _J([_extract(i) for i in items[:10]])
-            else:
-                resp = await api.list_items(token, {"q": q, "limit": 10})
-                items = resp.get("items", []) if isinstance(resp, dict) else resp
-                items = [i for i in items if str(i.get("status") or "").lower() != "draft"]
-                # Forward sales: collapse splittable lots of a SKU into one option.
-                items = _consolidate_sales_lots(items, _company_settings)
-                return _J([_extract(i) for i in items])
-        except Exception:
-            return _J([])
+                return _J([extract(i) for i in items[:10]])
+            found = (await api.list_items(token, {"q": q, "limit": 10}))["items"]
+            try:
+                items = _sales_options(found, ctx["settings"], q, doc_id=ctx["doc_id"], line_id=ctx["line_id"])
+            except _PickerRefusal:
+                items = []  # a list of text matches simply omits lots held elsewhere
+            return _J([extract(i) for i in items])
+        except (APIError, _PickerRefusal) as e:
+            return _picker_error(e)
 
     # ── Line item CSV export/import ─────────────────────────────────
 
@@ -1795,7 +1847,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _Resp(content=f"Error: {e.detail}", status_code=e.status)
+            return _Resp(content=t("documents.error_detail", detail=error_message(e)), status_code=e.status)
         line_items = doc.get("line_items") or []
         doc_ref = (doc.get("ref_id") or doc.get("doc_number") or entity_id).replace(" ", "_")
 
@@ -1955,7 +2007,7 @@ def setup_routes(app):
                 "total": subtotal,
             })
         except APIError as e:
-            return _J({"error": str(e.detail)}, status_code=e.status)
+            return _J({"error": error_message(e)}, status_code=e.status)
 
         return _J({"ok": True, "imported": len(new_lines)})
 
@@ -2029,7 +2081,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _HR(f"<p>Error: {e.detail}</p>", status_code=e.status)
+            return _HR(to_xml(P(t("documents.error_detail", detail=error_message(e)))), status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
         if not lst.get("issue_date"):
@@ -2072,7 +2124,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             from starlette.responses import HTMLResponse as _HR
-            return _HR(f"<p>Error loading document: {e.detail}</p>", status_code=e.status)
+            return _HR(to_xml(P(t("documents.error_detail", detail=error_message(e)))), status_code=e.status)
         # Inject company fields
         doc = await _merge_company_letterhead(token, doc)
         # Fill any missing customer-facing fields independently from the selected contact.
@@ -2474,7 +2526,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         # Resolve contact fields to display names
         if field in ("contact_id", "commission_contact_id"):
             display_value = _resolve_contact_display(doc, field)
@@ -2497,7 +2549,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         value = str(doc.get(field, "") or "")
 
         restore_url = f"/docs/{entity_id}/field/{field}/display"
@@ -2727,7 +2779,7 @@ celerpUpdateBulkAlloc();
                 await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
@@ -2838,7 +2890,7 @@ celerpUpdateBulkAlloc();
             line_items[idx] = {**line_items[idx], field: value}
             await api.patch_doc(token, entity_id, {"line_items": line_items})
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         display_value = value
         if field == "account_code" and value:
             try:
@@ -2921,7 +2973,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_doc_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(refusal_text(e.data or e.detail))
+                return _action_error(error_message(e))
         return await _doc_notes_section_response(token, entity_id, is_list=False)
 
     @app.delete("/docs/{entity_id}/notes/{note_id}")
@@ -2991,7 +3043,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_list_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(refusal_text(e.data or e.detail))
+                return _action_error(error_message(e))
         return await _doc_notes_section_response(token, entity_id, is_list=True)
 
     @app.delete("/lists/{entity_id}/notes/{note_id}")
@@ -3045,7 +3097,7 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.patch_doc(token, entity_id, patch_data)
         except APIError as e:
-            payload = {"error": str(e.detail)}
+            payload = {"error": error_message(e)}
             # Foreign-reserved rejection: pass the structured conflict list through
             # so the page can open the resolution modal instead of the inline error.
             if isinstance(e.data, dict) and e.data.get("conflicts"):
@@ -3072,7 +3124,7 @@ celerpUpdateBulkAlloc();
         try:
             result = await reprice_fn(token, entity_id, price_list, expected_version)
         except APIError as e:
-            return JSONResponse({"error": str(e.detail)}, status_code=e.status or 400)
+            return JSONResponse({"error": error_message(e)}, status_code=e.status or 400)
         return JSONResponse(result)
 
     @app.post("/docs/{entity_id}/reprice")
@@ -3166,7 +3218,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             # Return error inline
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T4: Record payment
@@ -3201,7 +3253,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T1: Convert quotation to invoice
@@ -3217,7 +3269,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
     # T2: Receive PO goods
@@ -3290,7 +3342,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T7: Refund payment
@@ -3322,7 +3374,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # ---- Payment management routes ----
@@ -3341,7 +3393,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/delete-payment")
@@ -3357,7 +3409,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/apply-credit")
@@ -3375,7 +3427,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/refund-credit")
@@ -3396,7 +3448,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.delete("/docs/bulk-draft")
@@ -3415,7 +3467,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.delete_bulk_drafts(token, doc_ids)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         # Reload once the docs are actually gone (htmx triggers a full refresh).
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
@@ -3435,7 +3487,7 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.create_shipment_from_docs(token, doc_ids)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         ship_id = result.get("entity_id") or result.get("id", "")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
 
@@ -3458,7 +3510,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         # A doc concurrently closed, already paid, or shrunk under its row lock is skipped
         # by the API, not paid. Report every skipped doc by name and reason so the user is
         # never told a partial run fully succeeded; only a clean run refreshes the list.
@@ -3745,7 +3797,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.get_share_status(token, entity_id))
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
 
     @app.post("/docs/{entity_id}/share")
     async def create_share_link_route(request: Request, entity_id: str):
@@ -3758,7 +3810,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at))
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
 
     @app.delete("/docs/{entity_id}/share")
     async def revoke_share_link_route(request: Request, entity_id: str):
@@ -3769,7 +3821,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.revoke_share_link(token, entity_id))
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
 
     # -----------------------------------------------------------------------
     # Fulfillment toggle routes
@@ -3797,8 +3849,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
-            return _action_error(detail)
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": redirect} if redirect else None)
 
     @app.post("/docs/{entity_id}/fulfill-lines")
@@ -3877,7 +3928,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -3896,7 +3947,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -3927,7 +3978,7 @@ celerpUpdateBulkAlloc();
             await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.delete("/docs/{entity_id}/files/{file_id}")
@@ -3939,7 +3990,7 @@ celerpUpdateBulkAlloc();
             await api.delete_doc_file(token, entity_id, file_id)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/tag")
@@ -3953,7 +4004,7 @@ celerpUpdateBulkAlloc();
             await api.tag_doc_file(token, entity_id, file_id, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/description")
@@ -3967,7 +4018,7 @@ celerpUpdateBulkAlloc();
             await api.patch_doc_file_description(token, entity_id, file_id, description)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.get("/docs/{entity_id}/history")
@@ -4034,7 +4085,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
@@ -4053,7 +4104,7 @@ celerpUpdateBulkAlloc();
         try:
             r = await api.download_doc_file(token, entity_id, file_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
 
     @app.get("/lists")
@@ -4176,7 +4227,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
+            return Response(content=error_message(e), status_code=e.status, media_type="text/plain")
         out_headers = {"Content-Disposition": "attachment; filename=lists.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -4239,7 +4290,7 @@ celerpUpdateBulkAlloc();
             })
             list_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="modal-container")
+            return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
 
     @app.post("/lists/from-items/add")
@@ -4268,7 +4319,7 @@ celerpUpdateBulkAlloc();
                 "total": subtotal,
             }, expected_version=lst.get("version"))
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="modal-container")
+            return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
 
     @app.get("/lists/from-items/search")
@@ -4472,7 +4523,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         value = str(lst.get(field, "") or "")
         restore_url = f"/lists/{entity_id}/field/{field}/display"
         patch_url = f"/lists/{entity_id}/field/{field}"
@@ -4531,7 +4582,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         value = _resolve_contact_display(lst, field) if field == "contact_id" else lst.get(field)
         return _doc_display_cell(entity_id, field, value, "list")
 
@@ -4550,7 +4601,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
-                return _action_error(refusal_text(e.data or e.detail))
+                return _action_error(error_message(e))
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         if field == "contact_id":
             if value == "__new__":
@@ -4559,14 +4610,14 @@ celerpUpdateBulkAlloc();
                 # The backend copies the customer's details, currency and prices in the same save.
                 await api.patch_list(token, entity_id, {"contact_id": value}, expected_version=_form_version(form))
             except APIError as e:
-                return _action_error(refusal_text(e.data or e.detail))
+                return _action_error(error_message(e))
             # Customer details and repriced lines change together - re-render the page.
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             result = await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
         return _R(
             to_xml(cell),
@@ -4605,8 +4656,8 @@ celerpUpdateBulkAlloc();
             # A stale expected_version means someone else saved this list first; surface it
             # structurally (code, not English text) so the page can prompt a reload.
             if e.status == 409:
-                return JSONResponse({"code": "stale_version", "error": str(e.detail)}, status_code=409)
-            return JSONResponse({"error": str(e.detail)}, status_code=400)
+                return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
+            return JSONResponse({"error": error_message(e)}, status_code=400)
         return JSONResponse({"ok": True, "version": result.get("version")})
 
     @app.post("/lists/{entity_id}/action/{action}")
@@ -4664,7 +4715,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(refusal_text(e.data or e.detail))
+            return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
     async def _audit_line_tbody(token: str, entity_id: str, offset: int, limit: int) -> FT:
@@ -4778,7 +4829,7 @@ celerpUpdateBulkAlloc();
             # body: a machine `code` (e.g. scan_run_conflict) drives its recovery, a plain rejection is
             # shown as-is. Preserve the whole structured body when the backend sent one, else wrap the
             # string detail. Per-code failures are NOT this - they come back 200 in the JSON body.
-            body = e.data if isinstance(e.data, dict) and e.data.get("code") else {"detail": str(e.detail)}
+            body = e.data if isinstance(e.data, dict) and e.data.get("code") else {"detail": error_message(e)}
             if body.get("code") == "scan_run_conflict":
                 # The conflicting run already committed its batch, so the list projection has advanced.
                 # Hand back the current version so the client can resync its optimistic-lock token after
@@ -4812,14 +4863,14 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _action_error(t("documents.session_expired"))
+            return _R(t("documents.session_expired"), status_code=401)
         form = await request.form()
         ids = [s for s in form.getlist("selected") if s]
         scanned = str(form.get("scanned", "1")).strip() not in ("0", "false", "")
         try:
             await api.set_scanned(token, entity_id, ids or None, scanned)
         except APIError as e:
-            return _R(str(e.detail), status_code=e.status or 400)
+            return _R(error_message(e), status_code=e.status or 400)
         return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))))
 
     @app.post("/lists/{entity_id}/line/{item_id}")
@@ -4838,7 +4889,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.set_audit_count(token, entity_id, item_id, cq)
         except APIError as e:
-            return _action_error(e.detail)
+            return _action_error(error_message(e))
         display_val = f"{float(cq):g}" if cq is not None else _EMPTY
         edit_url = f"/lists/{entity_id}/line/{item_id}/counted/edit"
         return Div(
@@ -4860,7 +4911,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         prefill = f"{float(counted):g}" if counted is not None else ""
@@ -4894,7 +4945,7 @@ celerpUpdateBulkAlloc();
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         display_val = f"{float(counted):g}" if counted is not None else _EMPTY
@@ -4934,7 +4985,7 @@ celerpUpdateBulkAlloc();
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_editable_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -4972,7 +5023,7 @@ celerpUpdateBulkAlloc();
                 await api.set_writeoff_line(token, entity_id, line_id=line_id, **kwargs)
             except APIError as e:
                 return _writeoff_editable_cell(entity_id, line_id, field, kwargs.get(field, raw), opts, labels)(
-                    P(str(e.detail), cls="cell-error"))
+                    P(error_message(e), cls="cell-error"))
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError:
@@ -4991,7 +5042,7 @@ celerpUpdateBulkAlloc();
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -5955,9 +6006,10 @@ def _return_rows(line_items: list) -> list:
     )
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
+    can_delete=False: the line structure is locked (a counting audit), so no Delete selected.
     show_fulfill=True: add Set as shipped / Set as available as dropdown options.
     show_reserve=True: add Set as reserved (ledger-neutral) as a dropdown option.
     show_release=True: add Set as available alone, for a draft that may still hold stock
@@ -5976,8 +6028,9 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     if not labels_only:
         options = [
             Option(t("doc.action"), value="", disabled=True, selected=True),
-            Option(t("btn.delete_selected"), value="li-delete"),
         ]
+        if can_delete:
+            options.append(Option(t("btn.delete_selected"), value="li-delete"))
         if labels_action:
             options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
         if show_fulfill:
@@ -6007,7 +6060,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
                onchange="liBulkActionSelected(this.value)"),
     ]
-    if not labels_only:
+    if not labels_only and can_delete:
         children.append(
             Button(t("btn.delete_selected"), type="button", id="li-bulk-delete-btn",
                    cls="btn btn--danger btn--sm", style="display:none",
@@ -6408,7 +6461,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
-                       onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
+                       onclick=f"event.preventDefault();(async()=>{{if(!(await _celerpPersist()))return;htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
                        title=finalize_tip, cls="btn btn--primary")
             )
     if status not in ("void", "draft", "closed") and _can_finalize and not suppress_doc_actions:
@@ -7350,7 +7403,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # Lists reserve while still drafts; a draft document cannot (acquiring stock is
             # gated by its status) but gives back any hold it kept from before.
             _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF),
-                             show_reserve=is_list, show_release=_draft_show_item_status),
+                             show_reserve=is_list, show_release=_draft_show_item_status, can_delete=can_edit_lines),
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
@@ -7475,6 +7528,7 @@ function _celerpUnitFromTotal(total, qty) {{
 }}
 /* ── Price list / doc-type helpers ── */
 window._CELERP_DOC_TYPE = {repr(doc_type)};
+window._CELERP_DOC_ID = {_json.dumps(entity_id or "")};
 window._CELERP_IS_LIST = {repr("true" if is_list else "false")};
 window._CELERP_IS_DRAFT = {repr("true" if is_draft else "false")};
 // A counting (finalized) audit renders this section too, but its line structure is locked:
@@ -7526,7 +7580,7 @@ window._L = {_json.dumps({
     "confirm_set_available": t("documents.confirm_set_available"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
-    "audit_lines_locked": t("documents.audit_lines_locked"),
+    "unexpected_error": t("error.unexpected_error_body"),
 })};
 """ + (f"""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
@@ -7538,6 +7592,22 @@ function _celerpPriceListParam() {{
 }}
 function _celerpDocTypeParam() {{
     return _CELERP_DOC_TYPE ? '&doc_type=' + encodeURIComponent(_CELERP_DOC_TYPE) : '';
+}}
+/* The record and line a pick is for, so the picker never offers a lot held for another
+   record or another line. A new row has no line id yet. */
+function _celerpHolderParam(row) {{
+    const lineId = row ? (row.querySelector('[data-name="line_id"]')?.value || '') : '';
+    return (_CELERP_DOC_ID ? '&doc_id=' + encodeURIComponent(_CELERP_DOC_ID) : '')
+        + (lineId ? '&line_id=' + encodeURIComponent(lineId) : '');
+}}
+/* The sentence a refused or failed picker request carries, else the generic lookup error. */
+async function _celerpPickerError(resp) {{
+    try {{ const body = await resp.json(); if (body && body.error) return body.error; }} catch (e) {{}}
+    return _L.lookup_error;
+}}
+function _celerpPickerStatus(text) {{
+    const statusEl = document.getElementById('save-status');
+    if (statusEl) {{ statusEl.textContent = '\u2717 ' + text; statusEl.style.color = 'red'; }}
 }}
 /* ── Barcode scan bar ── */
 (function() {{
@@ -7746,8 +7816,15 @@ function _celerpDocTypeParam() {{
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
         try {{
-            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
-            if (!resp.ok) throw new Error('lookup failed');
+            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam() + _celerpHolderParam(null));
+            if (!resp.ok) {{
+                scanStatus.textContent = '✗ ' + await _celerpPickerError(resp);
+                scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                scanInput.value = '';
+                scanInput.focus();
+                _clearStatusSoon();
+                return;
+            }}
             const data = await resp.json();
             if (data.description || data.sku) {{
                 const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
@@ -7996,8 +8073,8 @@ async function celerpAcSearch(input, field) {{
     clearTimeout(_celerpAcTimer);
     _celerpAcTimer = setTimeout(async () => {{
         const pl = _celerpPriceListParam();
-        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam());
-        if (!resp.ok) return;
+        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam() + _celerpHolderParam(input.closest('tr')));
+        if (!resp.ok) {{ list.style.display = 'none'; _celerpPickerStatus(await _celerpPickerError(resp)); return; }}
         const items = await resp.json();
         list.innerHTML = '';
         items.forEach(item => {{
@@ -8014,8 +8091,7 @@ async function celerpAcSearch(input, field) {{
                 // Reject a non-splittable item already on another line: leave this
                 // row as the operator left it and show the message, no autosave.
                 if (row && !celerpFillRow(row, {{...item, description: item.description}})) {{
-                    const statusEl = document.getElementById('save-status');
-                    if (statusEl) {{ statusEl.textContent = '\\u2717 ' + _L.dup_on_doc; statusEl.style.color = 'red'; }}
+                    _celerpPickerStatus(_L.dup_on_doc);
                     return;
                 }}
                 celerpUpdateTotals();
@@ -8056,28 +8132,34 @@ function celerpAcBlur(input) {{
     const list = input.parentElement.querySelector('.catalog-ac-list');
     // If cursor moved to a dropdown option (mousedown), let that handler fire first
     setTimeout(() => {{ list.style.display = 'none'; }}, 200);
-    // If this is the SKU field and no entity_id linked yet, attempt a silent exact lookup.
-    // The fill (and its autosave) happen inside the async resolution, so that branch owns
-    // its own save: a rejected non-splittable duplicate must not be saved.
+    // If this is the SKU field and no entity_id linked yet, look the text up exactly: an
+    // exact barcode or RFID tag (the option marked exact, the same lot Enter picks), else
+    // an exact SKU. A refused or failed lookup is shown, never treated as no match. The
+    // fill (and its autosave) happen inside the async resolution, so that branch owns its
+    // own save: a rejected non-splittable duplicate must not be saved.
     if (input.dataset.name === 'sku') {{
         const row = input.closest('tr');
         const eidEl = row ? row.querySelector('[data-name="entity_id"]') : null;
         if (row && eidEl && !eidEl.value && input.value.trim()) {{
             const sku = input.value.trim();
             const pl = _celerpPriceListParam();
-            fetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam())
-              .then(r => r.ok ? r.json() : [])
+            fetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam() + _celerpHolderParam(row))
+              .then(async r => {{
+                if (!r.ok) {{ _celerpPickerStatus(await _celerpPickerError(r)); return []; }}
+                return r.json();
+              }})
               .then(items => {{
-                const exact = items.find(i => i.sku && i.sku.toLowerCase() === sku.toLowerCase());
+                const exact = items.find(i => i.exact)
+                    || items.find(i => i.sku && i.sku.toLowerCase() === sku.toLowerCase());
                 if (exact && exact.entity_id) {{
                     if (celerpFillRow(row, exact)) {{
                         celerpAutoSave();
                     }} else {{
-                        const statusEl = document.getElementById('save-status');
-                        if (statusEl) {{ statusEl.textContent = '\\u2717 ' + _L.dup_on_doc; statusEl.style.color = 'red'; }}
+                        _celerpPickerStatus(_L.dup_on_doc);
                     }}
                 }}
-              }});
+              }})
+              .catch(() => _celerpPickerStatus(_L.lookup_error));
         }}
     }}
     celerpAutoSave();
@@ -8937,8 +9019,9 @@ async function celerpCsvImport(input, entityId) {{
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
     if(!window.confirm(_confirm.replace('{{n}}', rows.length))) return;
-    // Persist pending edits first so the server sees every selected line, then act.
-    await _celerpPersist();
+    // Persist pending edits first so the server sees every selected line, then act. A failed
+    // save has already shown its reason; acting on top of it would use stale lines.
+    if(!(await _celerpPersist())) return;
     var _bar=document.getElementById('li-bulk-toolbar');
     var _key=_bar?_bar.getAttribute('data-operation-key'):'';
     var ok=(target==='reserved')
@@ -8957,24 +9040,19 @@ async function celerpCsvImport(input, entityId) {{
     ids.forEach(function(id){{ fd.append('selected', id); }});
     try{{
       var resp=await fetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
+      var html=await resp.text();
       if(resp.ok){{
-        var html=await resp.text();
         var tbody=document.getElementById('{line_body_id}');
         if(tbody&&html) tbody.outerHTML=html;
         htmx.process(document.getElementById('{line_body_id}'));
-      }}
-    }}catch(err){{}}
+      }} else if(window.celerpToast) celerpToast(html||_L.unexpected_error,'error');
+    }}catch(err){{
+      if(window.celerpToast) celerpToast(_L.unexpected_error,'error');
+    }}
     if(sel) sel.value='';
     _hideBtns(); _update();
   }};
   window.liBulkDeleteConfirmed=function(){{
-    // A counting audit's item list is locked: keep every row and say why.
-    if(!window._CELERP_CAN_EDIT_LINES){{
-      if(window.celerpToast) celerpToast(_L.audit_lines_locked,'error');
-      if(sel) sel.value='';
-      _hideBtns();
-      return;
-    }}
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';

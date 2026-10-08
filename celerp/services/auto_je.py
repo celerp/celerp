@@ -2233,11 +2233,19 @@ async def book_opening_inventory(
     account is changed; whatever is left goes to the current opening account.
 
     When the gap or its split changes, voids the old JE and posts a fresh one so
-    it stays current. Idempotent. Raises when the entry cannot be written (posting
-    accounts, a period lock on either half, an unreadable timezone), before anything
-    changes.
+    it stays current. Each void and repost is keyed on the entry's ledger version
+    read before it, so every restatement is its own transition and returning to an
+    earlier amount posts again. Idempotent. The caller holds the company lock
+    (company_lock.locked_company), which serializes concurrent restatements. Raises
+    when the entry cannot be written (posting accounts, a period lock on either half,
+    an unreadable timezone), before anything changes.
     """
     from sqlalchemy import select as _sel
+
+    from celerp.services.company_lock import holds_company_lock
+
+    if not holds_company_lock(session, company_id):
+        raise RuntimeError("book_opening_inventory needs the company lock; take locked_company() first")
 
     # --- Catalog cost: sum total_cost for stocked, non-consignment, non-archived items ---
     item_rows = (
@@ -2325,9 +2333,6 @@ async def book_opening_inventory(
             target = acc[R.INVENTORY_OPENING]
             split[target] = split.get(target, _Dec("0")) + left
 
-    def _signature(amounts: dict[str, _Dec]) -> str:
-        return ",".join(f"{code}={to_stored_float(v)}" for code, v in sorted(amounts.items()))
-
     if split == current:
         # Split is correct - but also void+repost if the JE is missing a ts (dateless legacy)
         if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
@@ -2339,6 +2344,7 @@ async def book_opening_inventory(
     from celerp.events.engine import _check_period_lock
 
     today = await entry_day(session, company_id)
+    version = (ob_proj.version if ob_proj else 0) or 0
     if ob_proj and ob_proj.state.get("status") == "posted":
         await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
     if needed_d > 0:
@@ -2356,7 +2362,7 @@ async def book_opening_inventory(
             actor_id=user_id,
             location_id=None,
             source="auto_je",
-            idempotency_key=f"opening-inv:{company_id}:void:{_signature(current)}",
+            idempotency_key=f"opening-inv:{company_id}:void:{version}",
             metadata_={"trigger": "opening_inventory.auto"},
         )
 
@@ -2368,8 +2374,8 @@ async def book_opening_inventory(
         company_id=company_id,
         user_id=user_id,
         je_id=ob_je_id,
-        idem_create=f"opening-inv:{company_id}:c:{_signature(split)}:{today}",
-        idem_posted=f"opening-inv:{company_id}:p:{_signature(split)}:{today}",
+        idem_create=f"opening-inv:{company_id}:c:{version}",
+        idem_posted=f"opening-inv:{company_id}:p:{version}",
         memo="Opening inventory balance (pre-system stock)",
         entries=[
             *(_line(code, R.INVENTORY_OPENING, debit=to_stored_float(v)) for code, v in sorted(split.items())),

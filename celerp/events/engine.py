@@ -15,6 +15,7 @@ from celerp.models.projections import Projection
 from celerp.projections.engine import ITEM_BIRTHS, ProjectionEngine
 from celerp.services.document_lines import (
     assert_document_item_uniqueness,
+    assert_line_holds_respected,
     assert_new_references_eligible,
     assert_protected_lines_kept,
     line_id_counts,
@@ -477,7 +478,8 @@ async def emit_event(
     #     or an import can carry the id of an item Undo removed); lines already on the
     #     stored document are carried forward, so an old document stays editable;
     #   - no line a write adds (counted per occurrence) may reference a draft item, and
-    #     none on an invoice or memo may reference an item reserved elsewhere;
+    #     none on an invoice or memo may reference an item reserved elsewhere, and none
+    #     may take a lot the record holds for another of its lines;
     #   - an OUTBOUND document (invoice, memo) never repeats a physical item; the
     #     doc-type scope lives in assert_document_item_uniqueness beside the invariant.
     # Rebuild/replay applies events via apply_event, never emit_event, so historical
@@ -514,6 +516,9 @@ async def emit_event(
             doc_type = data.get("doc_type") or stored.get("doc_type")
             assert_new_references_eligible(
                 items, line_set, known=known, doc_type=doc_type, entity_id=kwargs.get("entity_id"),
+            )
+            assert_line_holds_respected(
+                items, line_set, stored.get("line_items"), entity_id=kwargs.get("entity_id"),
             )
             await assert_document_item_uniqueness(
                 session, kwargs.get("company_id"), doc_type, line_set

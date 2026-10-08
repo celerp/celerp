@@ -55,16 +55,26 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TAX_NAMES = {t["name"] for t in TAX_REGIMES["_default"]["taxes"]}
+def _generic_taxes() -> list[dict]:
+    """The neutral tax list a company starts from until it configures its own."""
+    return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
+
+
+def _configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
+    """The list saved under ``key``, an explicitly saved empty list included; a copy
+    of ``default`` only when nothing was ever saved."""
+    value = settings.get(key)
+    return value if value is not None else copy.deepcopy(default)
 
 
 async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> None:
-    """Re-seed taxes and currency from the country in address if:
-    - address has a non-empty 'country' key
-    - company taxes are still at the generic _default (not yet customised)
+    """Seed the tax regime of the country in ``address`` into a company that has not
+    set anything up yet.
 
-    Safe to call multiple times — no-op if already customised.
-    """
+    Taxes are replaced only while they are unset or exactly the generic list, and the
+    currency only while none was ever saved. A company that has posted entries of its
+    own keeps both: changing them would silently restate its books, so it changes
+    them explicitly in settings. Safe to call repeatedly."""
     if not address:
         return
     country = str(address.get("country") or "").strip()
@@ -74,18 +84,18 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     company = await locked_company(session, company_id)
     if company is None:
         return
-
-    current_taxes = company.settings.get("taxes") or []
-    current_names = {t.get("name") for t in current_taxes}
-
-    # Only re-seed if taxes are empty or still match the generic _default set
-    if current_taxes and not current_names.issubset(_DEFAULT_TAX_NAMES | {""}):
-        return  # user has customised — don't overwrite
+    taxes = company.settings.get("taxes")
+    if taxes is not None and taxes != TAX_REGIMES["_default"]["taxes"]:
+        return
+    from celerp.services.demo import has_own_books
+    if await has_own_books(session, company_id):
+        return
 
     regime = get_regime(country)
     settings = dict(company.settings)
-    settings["taxes"] = regime["taxes"]
-    settings["currency"] = regime["currency"]
+    settings["taxes"] = copy.deepcopy(regime["taxes"])
+    if "currency" not in settings:
+        settings["currency"] = regime["currency"]
     company.settings = settings
 
 
@@ -1151,20 +1161,12 @@ async def patch_column_prefs(
 # Tax rates
 # ---------------------------------------------------------------------------
 
-DEFAULT_TAX_RATES: list[dict] = [
-    {"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True,
-     "description": "Standard VAT rate", "is_compound": False, "default_order": 0},
-    {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-     "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-]
-
-
 @router.get("/me/taxes")
 async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return company.settings.get("taxes") or DEFAULT_TAX_RATES
+    return _configured(company.settings, "taxes", _generic_taxes())
 
 
 @router.patch("/me/taxes")
@@ -1205,7 +1207,7 @@ async def import_taxes_batch(
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
-    taxes = list(settings.get("taxes") or DEFAULT_TAX_RATES)
+    taxes = list(_configured(settings, "taxes", _generic_taxes()))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
 
     records = [rec.data for rec in (payload.records or [])]
@@ -1438,35 +1440,16 @@ async def patch_terms_conditions(
 
 
 # ---------------------------------------------------------------------------
-# Purchasing taxes & payment terms (independent copies, seeded from sales)
+# Purchasing taxes & payment terms (independent copies, read from sales until saved)
 # ---------------------------------------------------------------------------
 
 def _purchasing_list(settings: dict, key: str, sales_key: str, default: list[dict]) -> list[dict]:
-    """Purchasing data as stored, or a copy of the sales data it is seeded from."""
+    """Purchasing data as stored, else a copy of the sales data while purchasing was
+    never saved. Reading never writes; only PATCH and import store purchasing data."""
     existing = settings.get(key)
     if existing is not None:
         return existing
-    return copy.deepcopy(settings.get(sales_key) or default)
-
-
-async def _seed_purchasing_key(
-    session: AsyncSession, company: Company, key: str, sales_key: str, default: list[dict],
-) -> list[dict]:
-    """Return purchasing data; on first access, copy from sales data and persist."""
-    existing = company.settings.get(key)
-    if existing is not None:
-        return existing
-    company = await locked_company(session, company.id)
-    existing = company.settings.get(key)
-    if existing is not None:
-        await session.commit()
-        return existing
-    seeded = _purchasing_list(company.settings, key, sales_key, default)
-    settings = dict(company.settings)
-    settings[key] = seeded
-    company.settings = settings
-    await session.commit()
-    return seeded
+    return copy.deepcopy(_configured(settings, sales_key, default))
 
 
 @router.get("/me/purchasing-taxes")
@@ -1477,7 +1460,7 @@ async def get_purchasing_taxes(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return await _seed_purchasing_key(session, company, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES)
+    return _purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes())
 
 
 @router.patch("/me/purchasing-taxes")
@@ -1509,7 +1492,7 @@ async def import_purchasing_taxes_batch(
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES))
+    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes()))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
@@ -1548,7 +1531,7 @@ async def get_purchasing_payment_terms(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return await _seed_purchasing_key(session, company, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
+    return _purchasing_list(company.settings, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
 
 
 @router.patch("/me/purchasing-payment-terms")
