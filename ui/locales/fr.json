@@ -4420,6 +4420,8 @@
   "docs.receive_not_open": "Ce document n'est pas ouvert à la réception, aucune marchandise ne peut donc y être reçue.",
   "docs.receive_more_than_line": "{name} : cette ligne porte sur {ordered} et {received} a déjà été reçu, donc au plus {remaining} de plus peut être reçu. Modifiez d'abord la ligne pour recevoir davantage.",
   "docs.return_not_open": "Rien ne peut être renvoyé sur ce document tant qu'il est {doc_status}. Les marchandises ne retournent au fournisseur qu'après leur réception, depuis un document encore ouvert.",
+  "docs.edit_locked": "Ce document est {doc_status} et ne peut pas être modifié. Pour le modifier, revenez d'abord au brouillon.",
+  "docs.edit_void": "Ce document est annulé et ne peut pas être modifié. Pour le modifier, levez d'abord l'annulation.",
   "docs.close_goods_out": "Ce mémo ne peut pas être clôturé tant que {count} produit(s) sont encore sortis ou réservés dessus. Vendez-les ou reprenez-les d'abord.",
   "docs.undo_receipt_after_return": "Une partie de ces marchandises a déjà été renvoyée au fournisseur, la réception ne peut donc pas être annulée. Le retour reste enregistré.",
   "docs.return_line_not_on_hand": "{name} : au plus {qty} de ce qui a été reçu sur cette ligne est en stock et libre pour un retour. Les marchandises vendues, en dépôt ou réservées ne repartent chez le fournisseur qu'une fois revenues en stock et libres.",

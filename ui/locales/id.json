@@ -4420,6 +4420,8 @@
   "docs.receive_not_open": "Dokumen ini tidak terbuka untuk penerimaan, jadi tidak ada barang yang dapat diterima di dokumen ini.",
   "docs.receive_more_than_line": "{name}: baris ini untuk {ordered} dan {received} sudah diterima, jadi paling banyak {remaining} lagi yang dapat diterima. Ubah barisnya terlebih dahulu untuk menerima lebih banyak.",
   "docs.return_not_open": "Tidak ada yang dapat dikembalikan pada dokumen ini selama statusnya {doc_status}. Barang dikembalikan ke pemasok hanya setelah diterima, dari dokumen yang masih terbuka.",
+  "docs.edit_locked": "Dokumen ini berstatus {doc_status} dan tidak dapat diedit. Untuk mengubahnya, kembalikan ke Draf terlebih dahulu.",
+  "docs.edit_void": "Dokumen ini dibatalkan dan tidak dapat diedit. Untuk mengubahnya, pulihkan pembatalannya terlebih dahulu.",
   "docs.close_goods_out": "Memo ini tidak dapat ditutup selama {count} produk masih di luar atau ditahan di memo ini. Jual atau ambil kembali terlebih dahulu.",
   "docs.undo_receipt_after_return": "Sebagian barang ini sudah dikembalikan ke pemasok, jadi penerimaan tidak dapat dibatalkan. Pengembalian tetap tercatat.",
   "docs.return_line_not_on_hand": "{name}: paling banyak {qty} dari yang diterima pada baris ini ada di stok dan bebas untuk dikembalikan. Barang yang terjual, keluar dengan memo, atau dipesan kembali ke pemasok hanya setelah kembali ke stok dan bebas.",

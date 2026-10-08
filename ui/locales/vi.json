@@ -4420,6 +4420,8 @@
   "docs.receive_not_open": "Chứng từ này không mở để nhận hàng, nên không thể nhận hàng trên chứng từ này.",
   "docs.receive_more_than_line": "{name}: dòng này là {ordered} và đã nhận {received}, nên chỉ có thể nhận thêm tối đa {remaining}. Hãy sửa dòng trước để nhận thêm.",
   "docs.return_not_open": "Không thể trả lại gì trên chứng từ này khi nó đang ở trạng thái {doc_status}. Hàng chỉ được trả lại nhà cung cấp sau khi đã nhận, từ một chứng từ còn mở.",
+  "docs.edit_locked": "Chứng từ này đang ở trạng thái {doc_status} và không thể chỉnh sửa. Để thay đổi, hãy hoàn nguyên về bản nháp trước.",
+  "docs.edit_void": "Chứng từ này đã bị hủy và không thể chỉnh sửa. Để thay đổi, hãy khôi phục chứng từ đã hủy trước.",
   "docs.close_goods_out": "Không thể đóng memo này khi còn {count} sản phẩm đang ở ngoài hoặc được giữ trên đó. Hãy bán hoặc nhận lại chúng trước.",
   "docs.undo_receipt_after_return": "Một phần hàng này đã được trả lại nhà cung cấp, nên không thể hoàn tác việc nhận hàng. Phiếu trả hàng vẫn được lưu.",
   "docs.return_line_not_on_hand": "{name}: tối đa {qty} trong số hàng nhận trên dòng này còn trong kho và có thể trả lại. Hàng đã bán, đang gửi theo phiếu ký gửi hoặc đã giữ chỉ được trả lại nhà cung cấp khi đã về kho và không bị giữ.",

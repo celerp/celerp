@@ -4418,6 +4418,8 @@
   "docs.receive_not_open": "This document is not open for receiving, so no goods can be received on it.",
   "docs.receive_more_than_line": "{name}: this line is for {ordered} and {received} has been received, so at most {remaining} more can be received. Change the line first to receive more.",
   "docs.return_not_open": "Nothing can be returned on this document while it is {doc_status}. Goods go back to the supplier only after they are received, from a document that is still open.",
+  "docs.edit_locked": "This document is {doc_status} and cannot be edited. To make changes, revert it to Draft first.",
+  "docs.edit_void": "This document is void and cannot be edited. To make changes, Unvoid it first.",
   "docs.close_goods_out": "This memo cannot be closed while {count} product(s) are still out or held on it. Sell or return them first.",
   "docs.undo_receipt_after_return": "Some of these goods were already returned to the supplier, so the receipt cannot be undone. The return stays on record.",
   "docs.return_line_not_on_hand": "{name}: at most {qty} received on this line is on hand and free to return. Goods sold, out on memo or reserved go back to the supplier only once they are back in stock and free.",

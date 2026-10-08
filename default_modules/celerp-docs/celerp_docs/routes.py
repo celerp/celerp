@@ -1839,11 +1839,15 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if not is_draft:
         locked_fields = set(fields_changed) - _FINALIZED_EDITABLE_FIELDS
         if locked_fields:
-            status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
-            raise HTTPException(
-                status_code=409,
-                detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
-            )
+            status = row.state.get("status") or "final"
+            # A void document comes back through Unvoid; revert to Draft refuses it.
+            if status == "void":
+                raise HTTPException(status_code=409, detail=refusal(
+                    "docs.edit_void", "This document is void and cannot be edited. To make changes, Unvoid it first."))
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.edit_locked",
+                f"This document is {status.replace('_', ' ')} and cannot be edited. To make changes, revert it to Draft first.",
+                doc_status=status))
         # Guard: line_items patch on finalized doc may only touch _LI_FINALIZED_EDITABLE fields
         if "line_items" in fields_changed:
             incoming_lis = (fields_changed["line_items"].get("new") or [])

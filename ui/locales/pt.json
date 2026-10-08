@@ -4420,6 +4420,8 @@
   "docs.receive_not_open": "Este documento não está aberto para recebimento, por isso não é possível receber mercadorias nele.",
   "docs.receive_more_than_line": "{name}: esta linha é de {ordered} e já foram recebidos {received}, então podem ser recebidos no máximo mais {remaining}. Altere a linha primeiro para receber mais.",
   "docs.return_not_open": "Nada pode ser devolvido neste documento enquanto ele está {doc_status}. As mercadorias voltam ao fornecedor somente depois de recebidas, a partir de um documento ainda aberto.",
+  "docs.edit_locked": "Este documento está {doc_status} e não pode ser editado. Para fazer alterações, reverta-o primeiro para rascunho.",
+  "docs.edit_void": "Este documento está anulado e não pode ser editado. Para fazer alterações, desfaça primeiro a anulação.",
   "docs.close_goods_out": "Este memo não pode ser fechado enquanto {count} produto(s) ainda estiverem fora ou reservados nele. Venda-os ou recolha-os primeiro.",
   "docs.undo_receipt_after_return": "Parte destas mercadorias já foi devolvida ao fornecedor, por isso o recebimento não pode ser desfeito. A devolução continua registrada.",
   "docs.return_line_not_on_hand": "{name}: no máximo {qty} do que foi recebido nesta linha está em estoque e livre para devolver. Mercadorias vendidas, em consignação ou reservadas voltam ao fornecedor só quando estiverem de novo em estoque e livres.",

@@ -557,7 +557,7 @@ async def test_finalized_doc_rejects_all_edits_with_clear_message(client, sessio
     r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
                            json={"fields_changed": {"issue_date": {"old": date.today().isoformat(), "new": new_date}}})
     assert r.status_code == 409
-    detail = r.json()["detail"]
+    detail = r.json()["detail"]["message"]
     assert "draft" in detail.lower(), f"Error must mention 'Draft': {detail!r}"
     assert "revert" in detail.lower(), f"Error must tell user to revert: {detail!r}"
 
@@ -574,7 +574,7 @@ async def test_non_editable_field_rejected_on_issued_doc(client, session):
     r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
                            json={"fields_changed": {"subtotal": {"old": 100, "new": 999}}})
     assert r.status_code == 409
-    assert "draft" in r.json()["detail"].lower()
+    assert "draft" in r.json()["detail"]["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -2729,3 +2729,27 @@ async def test_finalize_twice_without_revert_is_noop(client, session):
     assert second.json().get("already_finalized") is True
     second_state = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
     assert second_state["ref_id"] == first_ref
+
+
+@pytest.mark.asyncio
+async def test_editing_a_locked_document_says_how_to_unlock_it(client):
+    """A void document is unvoided, never reverted to Draft, so its refusal says so; any
+    other locked document is told to revert to Draft."""
+    token = await _register(client)
+    edit = {"fields_changed": {"notes": {"old": None, "new": "x"}}}
+
+    final = await _create_invoice(client, token)
+    await client.post(f"/docs/{final}/finalize", headers=_h(token))
+    r = await client.patch(f"/docs/{final}", headers=_h(token), json=edit)
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.edit_locked"
+    assert r.json()["detail"]["params"] == {"doc_status": "final"}
+    assert "revert it to Draft" in r.json()["detail"]["message"]
+
+    void = await _create_invoice(client, token)
+    await client.post(f"/docs/{void}/finalize", headers=_h(token))
+    assert (await client.post(f"/docs/{void}/void", headers=_h(token), json={"reason": "x"})).status_code == 200
+    r = await client.patch(f"/docs/{void}", headers=_h(token), json=edit)
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.edit_void"
+    assert "Unvoid" in r.json()["detail"]["message"] and "Draft" not in r.json()["detail"]["message"]
