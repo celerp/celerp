@@ -6238,6 +6238,14 @@ async def doc_detail_connectors(company: dict) -> set[str]:
         str(company.get("id") or ""), required_connectors("doc_detail_actions", "doc_detail_badges"))
 
 
+def _line_tax_rate(li: dict) -> float:
+    """A line's tax rate: the sum of its taxes' rates, or its tax_rate when it has none."""
+    stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+    if stored:
+        return sum(float(tx.get("rate", 0) or 0) for tx in stored)
+    return float(li.get("tax_rate", 0) or 0)
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None) -> FT:
     def _pick(*keys: str):
@@ -6991,45 +6999,40 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             The line's stored ``taxes`` decide what it shows (its ``tax_rate``/``tax_code``
             only when it has none). Stored taxes also ride along in a hidden input, and the
             client sends them back unchanged while the tax choice is unchanged, so a save
-            never rewrites taxes the user did not touch. Two or more taxes on one line show
-            as a single option naming them all.
+            never rewrites taxes the user did not touch. Taxes no configured tax matches,
+            two or more on one line included, show as a single option naming them all.
             """
             li = li or {}
             stored = [tx for tx in (li.get("taxes") or []) if isinstance(tx, dict)]
+            current_rate = _line_tax_rate(li)
             if len(stored) == 1:
-                current_rate = float(stored[0].get("rate", 0) or 0)
                 current_code = stored[0].get("code", "") or ""
                 current_label = stored[0].get("label", "") or ""
             else:
-                current_rate = float(li.get("tax_rate", 0) or 0)
-                current_code = li.get("tax_code", "") or ""
+                current_code = "" if stored else (li.get("tax_code", "") or "")
                 current_label = ""
-            # Determine selected value: match by code first, then by rate
+            # A configured tax shows by name when the line carries exactly it: the same code
+            # (or, with no code, the same rate) at the same rate.
             selected_val = "|0"
             is_custom = False
             stored_option = None
-            if len(stored) > 1:
-                current_rate = sum(float(tx.get("rate", 0) or 0) for tx in stored)
+            match = None if len(stored) > 1 else next((
+                tax for tax in _taxes_list
+                if float(tax.get("rate", 0)) == current_rate
+                and (tax.get("name", "") == current_code if current_code else current_rate != 0)), None)
+            if match is not None:
+                selected_val = f"{match.get('name', '')}|{float(match.get('rate', 0))}"
+            elif stored:
+                # Taxes no configured tax matches show as they are, named, never as Custom.
                 current_label = " + ".join(
                     f"{tx.get('code') or tx.get('label') or t('documents.tax')} ({float(tx.get('rate', 0) or 0)}%)"
                     for tx in stored)
                 selected_val = "|stored"
                 stored_option = Option(current_label, value=selected_val, selected=True,
                                        data_rate=str(current_rate))
-            else:
-                for tax in _taxes_list:
-                    tcode = tax.get("name", "")
-                    trate = float(tax.get("rate", 0))
-                    if current_code and tcode == current_code:
-                        selected_val = f"{tcode}|{trate}"
-                        break
-                    if not current_code and trate == current_rate and current_rate != 0:
-                        selected_val = f"{tcode}|{trate}"
-                        break
-                else:
-                    if current_rate != 0 and not any(float(tax.get("rate", 0)) == current_rate for tax in _taxes_list):
-                        selected_val = "|custom"
-                        is_custom = True
+            elif current_rate != 0:
+                selected_val = "|custom"
+                is_custom = True
 
             options = [Option(t("doc.no_tax"), value="|0", selected=(selected_val == "|0"))]
             if stored_option is not None:

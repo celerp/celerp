@@ -30,7 +30,7 @@ from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
-from celerp_docs.doc_money import document_money
+from celerp_docs.doc_money import document_money, refresh_line_taxes
 from celerp_docs.doc_projections import received_line_index
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
@@ -1894,6 +1894,9 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     # Stored values round at the stored currency, incoming ones at the currency this patch leaves.
     _old_currency = row.state.get("currency")
     _new_currency = (fields_changed.get("currency") or {}).get("new") or _old_currency
+    if is_draft and isinstance(new_line_items, list):
+        # Edited lines carry their old tax amounts; the summary reads them, so they follow the line.
+        refresh_line_taxes(new_line_items, _new_currency)
     _MONEY_FIELDS = {"subtotal", "tax", "total", "discount_amount"}
     def _round_field(field: str, value, *, incoming: bool = False):
         if field in _MONEY_FIELDS and value is not None:
