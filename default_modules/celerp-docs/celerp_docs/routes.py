@@ -8902,6 +8902,59 @@ async def _receipt_already_undone(session: AsyncSession, company_id, entity_id: 
     return latest == "doc.receive_undone"
 
 
+_RECEIPT_MEASURES = {"weight": ("weight", "weight_unit"), "pieces": ("pieces",)}
+
+
+async def _receipt_measures_on_lots(session: AsyncSession, company_id, entity_id: str, doc: dict) -> dict:
+    """Lot id -> {measure: what the document's standing receipts added to it} for each lot
+    they topped up. A measure is None when it cannot be given back reliably: a receipt
+    line left it out, or something other than these receipts changed it on the lot since
+    the first of them."""
+    from celerp.models.ledger import LedgerEntry
+
+    added: dict[str, dict] = {}
+    for x in doc.get("received_items") or []:
+        if "lot_quantity_added" not in x:
+            continue
+        lot = added.setdefault(x["item_id"], dict.fromkeys(_RECEIPT_MEASURES, 0.0))
+        for measure in _RECEIPT_MEASURES:
+            stated = x.get(measure)
+            lot[measure] = None if lot[measure] is None or stated is None else lot[measure] + float(stated)
+    if not added:
+        return added
+    last_undo = (await session.execute(
+        select(_func.max(LedgerEntry.id)).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+            LedgerEntry.event_type == "doc.receive_undone")
+    )).scalar_one_or_none() or 0
+    first_receipt = (await session.execute(
+        select(_func.min(LedgerEntry.id)).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+            LedgerEntry.event_type == "doc.received", LedgerEntry.id > last_undo)
+    )).scalar_one_or_none()
+    if first_receipt is None:
+        return {lot: dict.fromkeys(_RECEIPT_MEASURES) for lot in added}
+    later = (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(added)),
+               LedgerEntry.id > first_receipt,
+               LedgerEntry.event_type.in_(("item.updated", "item.patched", "item.created", "item.snapshot")))
+    )).all()
+    for lot, event_type, data, meta in later:
+        if event_type == "item.updated":
+            if (meta or {}).get("source_doc") == entity_id:
+                continue  # a later receipt on this document stating what it added
+            touched = set(data.get("fields_changed") or {})
+        elif event_type == "item.patched":
+            touched = {*data, *(data.get("attributes") or {})}
+        else:
+            touched = None  # recreated outright
+        for measure, keys in _RECEIPT_MEASURES.items():
+            if touched is None or touched & set(keys):
+                added[lot][measure] = None
+    return added
+
+
 @router.delete("/{entity_id}/receive")
 async def undo_receive(
     entity_id: str,
@@ -8953,6 +9006,8 @@ async def undo_receive(
     # Pre-flight: every parcel is still as the receipt left it and every lot still holds what came in.
     item_rows = {eid: r.state for eid, r in
                  (await lock_projections(session, company_id, [*received_item_ids, *added])).items()}
+    # Read under the lots' locks, so no change to their measures can slip in before the undo.
+    measures_added = await _receipt_measures_on_lots(session, company_id, entity_id, state)
     came_in = await _returnable_quantities(session, company_id, state)
     blocked = [why for iid in received_item_ids
                if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in.get(iid, 0.0))) is not None]
@@ -9003,12 +9058,15 @@ async def undo_receive(
             actor_id=user.id, location_id=None, source="receive_undo",
             idempotency_key=str(uuid.uuid4()), metadata_={"source_receive_undo": entity_id},
         )
-        # A receipt onto a lot on hand states no measures, so what the lot measures without
-        # those goods cannot be worked out: its measures other than the one it is sold by
-        # become unknown.
+        # The measures the receipts stated come back off the lot; one that cannot be given
+        # back reliably becomes unknown rather than a guess.
+        given_back = measures_added.get(lot) or {}
+        weight, pieces = given_back.get("weight"), given_back.get("pieces")
         await restock_measures(
             session, company_id=company_id, user_id=user.id, lot_id=lot, lot_state=lot_state,
             new_qty=new_qty, unit_map=unit_map, source="receive_undo",
+            weight_delta=-weight if weight is not None else None,
+            pieces_delta=-int(pieces) if pieces is not None else None,
             idempotency_key=str(uuid.uuid4()), metadata={"source_receive_undo": entity_id},
         )
 
