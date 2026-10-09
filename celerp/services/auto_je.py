@@ -236,8 +236,8 @@ class CogsResult:
     ``allocations`` is keyed by the line's index in doc["line_items"] as a
     string (JSON metadata round-trips string keys). Each entry carries the lots
     the line prices at (lot_entity_id, qty, unit_cost, and the inventory account the
-    lot is valued in), the provisional_qty no lot could cover (priced at the bound
-    lot's unit cost, on its account), and the line's total amount. ``by_account``
+    lot is valued in), the provisional_qty no lot could cover (costed only once
+    it ships), and the line's total amount. ``by_account``
     is the total split by those inventory accounts. ``ambiguous`` is True when at
     least one splittable line exceeds its bound lot, so bound-lot-only pricing is a
     guess rather than an exact cost. ``payables`` names the consignor payable account
@@ -274,8 +274,8 @@ async def _span_line_lots(
     not in exclude (lots bound to or already drawn by the document's other lines),
     and either available or reserved by doc_id (this document's own hold).
     Draw order is the bound lot first, then the effective pick method. Returns
-    (lots, provisional_qty, amount); the shortfall no lot covers is priced
-    provisionally at the bound lot's unit cost.
+    (lots, provisional_qty, amount); the shortfall no lot covers costs nothing until
+    goods for it ship, when fulfillment books their actual cost.
     """
     from celerp.models.company import Company
 
@@ -315,8 +315,6 @@ async def _span_line_lots(
     lots = [{"lot_entity_id": lot["entity_id"], "qty": take, "unit_cost": lot["unit_cost"], "state": lot["state"]}
             for lot, take, _is_full in draws]
     amount = sum(take * lot["unit_cost"] for lot, take, _is_full in draws)
-    if short_qty > 1e-9:
-        amount += short_qty * primary["unit_cost"]
     return lots, short_qty, amount
 
 
@@ -334,8 +332,8 @@ async def compute_doc_cogs(
     historical extrapolation) and leaves the ambiguity to the caller - the
     backfill refuses to post a guess. span_lots=True (live finalize) resolves
     the remainder across the SKU's other lots - available ones plus lots
-    reserved by doc_id - in the effective pick order; whatever no lot covers
-    stays priced at the bound lot's cost as provisional_qty.
+    reserved by doc_id - in the effective pick order; whatever no lot covers is
+    provisional_qty and costs nothing until it ships.
 
     Lines are allocated together in document order, the way fulfillment draws
     them: a lot bound to another line, or already drawn by an earlier line's span,
@@ -402,7 +400,6 @@ async def compute_doc_cogs(
             lot["account"] = await sold_account(lot["lot_entity_id"], states[lot["lot_entity_id"]]) if amount > 0 else None
         if amount > 0:
             parts = {lot["lot_entity_id"]: lot["qty"] * lot["unit_cost"] for lot in lots}
-            parts[str(item_id)] = parts.get(str(item_id), 0.0) + provisional_qty * unit_cost
             for lot_id, share in _shares(parts, amount).items():
                 code = await sold_account(lot_id, states[lot_id])
                 result.by_account[code] = result.by_account.get(code, 0.0) + share
@@ -1928,20 +1925,18 @@ async def _allocation_by_account(session, company_id, alloc: dict, amount: float
     """``amount`` of a line's finalize allocation, split over the accounts its lots are
     costed against (sold_lot_account), by each lot's share of the allocated cost. A lot
     allocated while on consignment and bought since is costed against the inventory it
-    became. The quantity no lot covered is priced at the bound lot's cost, so it sits
-    with the first lot."""
+    became."""
     lots = alloc.get("lots") or []
     if not amount or not lots:
         return {}
     payable_codes = scope_codes(await current_settings(session, company_id), R.CONSIGNOR_PAYABLE)
     parts: dict[str, float] = {}
-    for position, lot in enumerate(lots):
+    for lot in lots:
         code = lot.get("account")
         if not code or code in payable_codes:
             row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
             code = sold_lot_account((row.state or {}) if row is not None else {})
-        qty = float(lot.get("qty") or 0) + (float(alloc.get("provisional_qty") or 0) if position == 0 else 0.0)
-        parts[code] = parts.get(code, 0.0) + qty * float(lot.get("unit_cost") or 0)
+        parts[code] = parts.get(code, 0.0) + float(lot.get("qty") or 0) * float(lot.get("unit_cost") or 0)
     return _shares(parts, amount)
 
 

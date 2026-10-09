@@ -2377,9 +2377,9 @@ async def test_cogs_zero_cost_line_contributes_zero(client, session, auth, _setu
 
 @pytest.mark.asyncio
 async def test_cogs_parcel_qty_zero_falls_back(client, session, auth, _setup_ids):
-    """A line whose parcel has quantity <= 0 falls back to the parcel's cost_price for
-    the per-unit cost and posts no division error. Parcel: quantity 0, cost_price 7; line
-    draws 2, so COGS = 14. At merge-base finalize posts no COGS and never divides."""
+    """A line whose parcel has quantity <= 0 finalizes without a division error and
+    posts no cost of sales: no lot holds the 2 units invoiced, so they are costed when
+    goods for them ship. Parcel: quantity 0, cost_price 7; line of 2."""
     sku = f"COGSZQ-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"], json={
         "status": "available", "sku": sku, "name": sku, "quantity": 0,
@@ -2390,8 +2390,8 @@ async def test_cogs_parcel_qty_zero_falls_back(client, session, auth, _setup_ids
         {"sku": sku, "name": sku, "quantity": 2, "unit_price": 9.0, "entity_id": item_id},
     ])
     nets = await _je_net(client, auth["headers"])
-    assert nets.get("5100") == 14.0, (
-        f"parcel_qty<=0 must fall back to cost_price: 2*7=14, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("5100") is None, (
+        f"units no lot holds post no cost at finalize, got {nets.get('5100')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -2529,11 +2529,11 @@ async def test_cogs_finalize_spans_sibling_lots(client, session, auth, _setup_id
 
 
 @pytest.mark.asyncio
-async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, session, auth, _setup_ids):
-    """When the whole SKU is short of the invoiced quantity, finalize still succeeds:
-    the allocatable units price at their own lots' costs and the unallocatable
-    remainder prices provisionally at the bound lot's unit cost. Lots: A 2 at 10,
-    B 2 at 30 (total 4); line qty 5 bound to A posts 2*10 + 2*30 + 1*10 = 90."""
+async def test_cogs_finalize_oversell_costs_only_lots_on_hand(client, session, auth, _setup_ids):
+    """When the whole SKU is short of the invoiced quantity, finalize still succeeds and
+    costs only the units lots hold, each at its own lot's cost; the unit no lot holds is
+    costed when goods for it ship. Lots: A 2 at 10, B 2 at 30 (total 4); line qty 5
+    bound to A posts 2*10 + 2*30 = 80."""
     sku = f"SPANSHORT-{uuid.uuid4().hex[:6]}"
     lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
     await _create_item(client, auth, sku, 2, cost_price=30.0)
@@ -2541,10 +2541,10 @@ async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, ses
         {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
     ])
     nets = await _je_net(client, auth["headers"])
-    assert nets.get("5100") == 90.0, (
-        f"oversold line must post 2*10 + 2*30 + 1*10 = 90, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-OB") == -90.0, (
-        f"inventory relief must match at -90, got {nets.get('1130-OB')} (nets={nets})")
+    assert nets.get("5100") == 80.0, (
+        f"oversold line must post 2*10 + 2*30 = 80, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("1130-OB") == -80.0, (
+        f"inventory relief must match at -80, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
