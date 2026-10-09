@@ -236,6 +236,11 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current.pop("fulfillment_status", None)
             current.pop("received_items", None)
             current.pop("received_item_ids", None)
+            # Goods that went back went with the receipts: the revert reverses their returns too.
+            current.pop("returned_items", None)
+            if current.pop("returned_credit", None):
+                _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
+                current["amount_outstanding"] = to_stored_float(outstanding)
             # Clear entity_id from line items so they appear as "Not Received" again.
             for li in current.get("line_items", []):
                 li.pop("entity_id", None)

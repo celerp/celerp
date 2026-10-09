@@ -4484,6 +4484,7 @@
   "docs.imported_on_bill_next.cancel": "To cancel the bill, revert it to draft. The purchase order keeps its receipt and what went back from it.",
   "docs.undo_receipt_imported": "Goods this bill already held when it was imported have no receipt on it to undo. {next_step}",
   "docs.revert_imported_bill": "This bill cannot go back to draft: it already held goods when it was imported, and a draft bill holds none. {next_step}",
+  "docs.revert_returned_bill": "This bill cannot go back to draft: goods were received on it after it was made from its purchase order. To cancel the bill, void it.",
   "docs.void_imported_bill": "This bill cannot be voided: goods it received itself were booked against it, beside goods it already held when it was imported. {next_step}",
   "docs.void_imported_returned": "This bill cannot be voided: goods it already held when it was imported went back to the supplier from the purchase order, and that return stays with the order's receipt. {next_step}",
   "docs.imported_on_bill_next.receive": "To receive more, return anything received here first, then revert the bill to draft, receive the goods on the purchase order and convert it to a bill again.",

@@ -4486,6 +4486,7 @@
   "docs.imported_on_bill_next.cancel": "Para cancelar a fatura, volte-a para rascunho. A ordem de compra mantém o seu recebimento e o que foi devolvido por ela.",
   "docs.undo_receipt_imported": "Mercadorias que esta fatura já tinha quando foi importada não têm recebimento nela para desfazer. {next_step}",
   "docs.revert_imported_bill": "Esta fatura não pode voltar para rascunho: ela já tinha mercadorias quando foi importada, e uma fatura em rascunho não tem nenhuma. {next_step}",
+  "docs.revert_returned_bill": "Esta fatura não pode voltar a rascunho: foram recebidas mercadorias nela depois de ter sido criada a partir da sua ordem de compra. Para cancelar a fatura, anule-a.",
   "docs.void_imported_bill": "Esta fatura não pode ser anulada: mercadorias que ela mesma recebeu foram lançadas nela, ao lado de mercadorias que já tinha quando foi importada. {next_step}",
   "docs.void_imported_returned": "Esta fatura não pode ser anulada: mercadorias que já tinha quando foi importada foram devolvidas ao fornecedor pela ordem de compra, e essa devolução fica com o recebimento da ordem. {next_step}",
   "docs.imported_on_bill_next.receive": "Para receber mais, devolva primeiro tudo o que foi recebido aqui, depois reverta a fatura para rascunho, receba as mercadorias na ordem de compra e converta-a novamente em fatura.",

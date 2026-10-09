@@ -4486,6 +4486,7 @@
   "docs.imported_on_bill_next.cancel": "Um die Rechnung aufzuheben, setzen Sie sie auf Entwurf zurück. Die Bestellung behält ihren Wareneingang und das, was von ihr zurückgesendet wurde.",
   "docs.undo_receipt_imported": "Für Waren, die diese Rechnung beim Import bereits enthielt, gibt es auf ihr keinen Wareneingang, der rückgängig gemacht werden kann. {next_step}",
   "docs.revert_imported_bill": "Diese Rechnung kann nicht auf Entwurf zurückgesetzt werden: Sie enthielt beim Import bereits Waren, und eine Entwurfsrechnung enthält keine. {next_step}",
+  "docs.revert_returned_bill": "Diese Rechnung kann nicht in den Entwurf zurückgesetzt werden: Nachdem sie aus ihrer Bestellung erstellt wurde, wurde darauf Ware empfangen. Um die Rechnung aufzuheben, stornieren Sie sie.",
   "docs.void_imported_bill": "Diese Rechnung kann nicht storniert werden: Waren, die sie selbst empfangen hat, wurden auf sie gebucht, neben Waren, die sie beim Import bereits enthielt. {next_step}",
   "docs.void_imported_returned": "Diese Rechnung kann nicht storniert werden: Waren, die sie beim Import bereits enthielt, wurden über die Bestellung an den Lieferanten zurückgesendet, und diese Rücksendung bleibt beim Wareneingang der Bestellung. {next_step}",
   "docs.imported_on_bill_next.receive": "Um mehr zu empfangen, senden Sie zuerst alles hier Empfangene zurück, setzen Sie dann die Rechnung auf Entwurf zurück, nehmen Sie die Waren über die Bestellung an und wandeln Sie sie erneut in eine Rechnung um.",

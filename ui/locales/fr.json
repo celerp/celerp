@@ -4486,6 +4486,7 @@
   "docs.imported_on_bill_next.cancel": "Pour annuler la facture, remettez-la en brouillon. Le bon de commande garde sa réception et ce qui en a été renvoyé.",
   "docs.undo_receipt_imported": "Les marchandises que cette facture détenait déjà à son import n'ont aucune réception à annuler sur elle. {next_step}",
   "docs.revert_imported_bill": "Cette facture ne peut pas revenir en brouillon : elle détenait déjà des marchandises à son import, et une facture en brouillon n'en détient aucune. {next_step}",
+  "docs.revert_returned_bill": "Cette facture ne peut pas revenir en brouillon : des marchandises ont été reçues sur elle après sa création à partir de son bon de commande. Pour annuler la facture, annulez-la.",
   "docs.void_imported_bill": "Cette facture ne peut pas être annulée : des marchandises qu'elle a reçues elle-même ont été comptabilisées sur elle, à côté de marchandises qu'elle détenait déjà à son import. {next_step}",
   "docs.void_imported_returned": "Cette facture ne peut pas être annulée : des marchandises qu'elle détenait déjà à son import ont été renvoyées au fournisseur depuis le bon de commande, et ce renvoi reste lié à la réception de la commande. {next_step}",
   "docs.imported_on_bill_next.receive": "Pour recevoir davantage, renvoyez d'abord tout ce qui a été reçu ici, puis repassez la facture en brouillon, recevez la marchandise sur le bon de commande et convertissez-le de nouveau en facture.",

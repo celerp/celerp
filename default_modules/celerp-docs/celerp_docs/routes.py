@@ -2401,8 +2401,12 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
             "docs.void_imported_bill",
             "This bill cannot be voided: goods it received itself were booked against it, beside goods it "
             f"already held when it was imported. {_IMPORTED_NEXT_STEP[way]}", next_step=on_bill.next_step(way)))
-    moves = way == "void"
-    if row.state.get("received_items") and not (on_bill is not None and on_bill.settles):
+    # A document that sent back everything it received voids with its receipts and returns,
+    # which net to nothing. A bill whose goods all came in on the purchase order it was made
+    # from goes back to the order instead (below), which keeps them.
+    emptied = on_bill is None and await _sent_all_back(session, company_id, entity_id, row.state)
+    moves = way == "void" or (emptied and await _order_receipts_only(session, company_id, entity_id) is not True)
+    if row.state.get("received_items") and not (on_bill is not None and on_bill.settles) and not emptied:
         raise HTTPException(
             status_code=409,
             detail="Cannot void a document with received items; return the goods first")
@@ -2547,7 +2551,20 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     # received itself; one imported as a bill has no order to go back to, and is voided.
     on_bill = await _imported_on_bill(session, company_id, entity_id, state) if state.get("received_items") else None
     to_order = on_bill is not None and on_bill.way == "revert" and on_bill.settles
-    if to_order:
+    # A document that sent back everything it received reverts too: a bill whose goods all came
+    # in on the purchase order it was made from goes back to the order, which keeps them, and
+    # any other reverses its receipts and returns with it. A bill that received goods itself
+    # after it was made from an order has no draft to go back to that holds them, so it is voided.
+    emptied = _is_inbound and on_bill is None and await _sent_all_back(session, company_id, entity_id, state)
+    if emptied and state.get("doc_type") == "bill":
+        on_order = await _order_receipts_only(session, company_id, entity_id)
+        if on_order is False:
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.revert_returned_bill",
+                "This bill cannot go back to draft: goods were received on it after it was made from its "
+                "purchase order. To cancel the bill, void it."))
+        to_order = on_order is True
+    if to_order or emptied:
         _REVERTABLE = _REVERTABLE | {"partial_returned", "returned"}
     if on_bill is not None and not to_order and not on_bill.holds_own:
         raise HTTPException(status_code=409, detail=refusal(
@@ -2560,7 +2577,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
     # Both blocks below name the button on the document's lines that clears them, so the
     # user is sent to the action rather than left to guess where goods are returned.
-    if state.get("received_items") and not to_order:
+    if state.get("received_items") and not (to_order or emptied):
         raise HTTPException(
             status_code=409,
             detail="Cannot revert to draft while goods received on this document are still in stock. "
@@ -2707,8 +2724,9 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     on_bill = await _imported_on_bill(session, company_id, entity_id, state) if state.get("received_items") else None
     await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
                                           imported_receipt=on_bill is not None and on_bill.settles,
-                                          goods_movements=on_bill is not None and on_bill.way == "void"
-                                          and on_bill.billed)
+                                          goods_movements=(on_bill is not None and on_bill.way == "void"
+                                                           and on_bill.billed) or (on_bill is None and await
+                                                           _sent_all_back(session, company_id, entity_id, state)))
     if state.get("doc_type") == "invoice":
         # Cost corrections made while the invoice was void apply once it stands again.
         try:
@@ -4705,6 +4723,21 @@ async def _returnable_quantities(session: AsyncSession, company_id, doc_id: str,
     return got
 
 
+def _holds_goods(received: list[dict], left: dict[str, float]) -> bool:
+    """Whether a document still holds goods its receipts brought in (``received``, with
+    ``left`` from _returnable_quantities): any received as something other than stock, which
+    does not go back by return, or stock units not sent back yet."""
+    return any(not _stock_receipt(x) for x in received) or any(q > 1e-9 for q in left.values())
+
+
+async def _sent_all_back(session: AsyncSession, company_id, doc_id: str, doc: dict) -> bool:
+    """Whether a document that received goods sent every one of them back to the supplier, so
+    it holds none: it then voids or reverts like one that never received any."""
+    received = doc.get("received_items") or []
+    return bool(received) and not _holds_goods(
+        received, await _returnable_quantities(session, company_id, doc_id, doc))
+
+
 _IMPORTED_NEXT_STEP = {
     "revert": "To send them back, return anything received here first, then revert the bill to draft "
               "and return them from the purchase order.",
@@ -4773,7 +4806,7 @@ async def _imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc:
     own = received[len(imported):]
     left = await _returnable_quantities(session, company_id, doc_id, {
         **doc, "received_items": own, "received_item_ids": made[len(imported_made):]})
-    holds_own = any(not _stock_receipt(x) for x in own) or any(q > 1e-9 for q in left.values())
+    holds_own = _holds_goods(own, left)
     on_order = await _order_receipts_only(session, company_id, doc_id)
     billed = bool(own) if on_order is None else not on_order
     way = "revert" if on_order is not None else "return" if holds_own else "void"
