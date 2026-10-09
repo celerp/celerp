@@ -4452,6 +4452,7 @@
   "docs.receive_line_ambiguous": "{what}: Mehr als eine Position dieses Dokuments enthält es. Wählen Sie die Position, auf die es eingeht.",
   "docs.receive_line_mismatch": "{what}: Diese Position wurde im Dokument verschoben. Laden Sie das Dokument neu und wählen Sie die Position erneut.",
   "docs.receive_line_unknown": "{what}: Diese Position steht nicht in diesem Dokument. Laden Sie das Dokument neu und wählen Sie die Position erneut.",
+  "docs.receive_measure_is_quantity": "{name} wird nach {unit} verkauft, daher ist die empfangene Menge ({qty}) sein Maß. Lassen Sie dieses Maß weg oder geben Sie denselben Wert an.",
   "docs.receive_not_open": "Dieses Dokument ist nicht für den Wareneingang offen, daher kann darauf keine Ware eingehen.",
   "docs.receive_more_than_line": "{name}: Diese Zeile lautet auf {ordered} und {received} sind bereits eingegangen, daher können höchstens {remaining} weitere eingehen. Ändern Sie zuerst die Zeile, um mehr zu empfangen.",
   "docs.return_not_open": "Auf diesem Dokument kann nichts zurückgesendet werden, solange es {doc_status} ist. Ware geht nur nach dem Eingang an den Lieferanten zurück, von einem Dokument, das noch offen ist.",

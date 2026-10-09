@@ -4452,6 +4452,7 @@
   "docs.receive_line_ambiguous": "{what}: più di una riga di questo documento lo contiene. Scegli la riga su cui riceverlo.",
   "docs.receive_line_mismatch": "{what}: quella riga è stata spostata in questo documento. Ricarica il documento e scegli di nuovo la riga.",
   "docs.receive_line_unknown": "{what}: quella riga non è in questo documento. Ricarica il documento e scegli di nuovo la riga.",
+  "docs.receive_measure_is_quantity": "{name} è venduto a {unit}, quindi la quantità ricevuta ({qty}) è la sua misura. Ometti quella misura o indica lo stesso valore.",
   "docs.receive_not_open": "Questo documento non è aperto al ricevimento, quindi non si possono ricevere merci su di esso.",
   "docs.receive_more_than_line": "{name}: questa riga è per {ordered} e ne sono già stati ricevuti {received}, quindi se ne possono ricevere al massimo altri {remaining}. Modifica prima la riga per riceverne di più.",
   "docs.return_not_open": "Non si può rendere nulla su questo documento mentre è {doc_status}. La merce torna al fornitore solo dopo essere stata ricevuta, da un documento ancora aperto.",

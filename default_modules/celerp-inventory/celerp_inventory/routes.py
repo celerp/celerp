@@ -3826,6 +3826,48 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     return child_eid, child_sku
 
 
+async def restock_measures(session: AsyncSession, *, company_id, user_id, lot_id: str, lot_state: dict,
+                           new_qty: float, unit_map: dict, weight_delta: float | None = None,
+                           pieces_delta: int | None = None, source: str, idempotency_key: str,
+                           metadata: dict) -> None:
+    """Keep a lot's weight and pieces true when stock is added to or taken off it.
+
+    Call with the lot's state from before the quantity change, in the same transaction.
+    The measure the lot is sold by follows its new quantity. Any other known measure moves
+    by the signed delta stated for it; with no delta stated, or a result below zero, what
+    the lot now measures cannot be worked out, so the measure becomes unknown. An unknown
+    measure stays unknown, unless the lot held nothing before and the delta is all it holds.
+    Emits one ``item.updated`` when a measure changes; history is never rewritten.
+    """
+    sell_by = lot_state.get("sell_by") or ""
+    old_qty = float(lot_state.get("quantity") or 0)
+
+    def after(old: float | None, sold_by: bool, delta: float | None) -> float | None:
+        if sold_by:
+            return new_qty if old is not None else None
+        if delta is None:
+            return None
+        if old is None:
+            return delta if old_qty <= 1e-9 and delta > 0 else None
+        value = round(old + delta, 10)
+        return value if value >= 0 else None
+
+    fields_changed: dict[str, dict] = {}
+    old_weight = _read_float(lot_state, "weight")
+    weight = after(old_weight, is_weight_unit(sell_by, unit_map), weight_delta)
+    if weight != old_weight:
+        fields_changed["weight"] = {"old": lot_state.get("weight"), "new": weight}
+    old_pieces = _read_pieces(lot_state)
+    pieces = after(old_pieces, is_pieces_unit(sell_by, unit_map), pieces_delta)
+    if pieces != old_pieces:
+        fields_changed["pieces"] = {"old": old_pieces, "new": _to_int_pieces(pieces) if pieces is not None else None}
+    if fields_changed:
+        await emit_event(session, company_id=company_id, entity_id=lot_id, entity_type="item",
+                         event_type="item.updated", data={"fields_changed": fields_changed},
+                         actor_id=user_id, location_id=None, source=source,
+                         idempotency_key=idempotency_key, metadata_=metadata)
+
+
 @router.post("/{entity_id}/transform")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _validate_sku(payload.child_sku)

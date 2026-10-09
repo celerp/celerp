@@ -4452,6 +4452,7 @@
   "docs.receive_line_ambiguous": "{what}: có nhiều hơn một dòng trong chứng từ này chứa mặt hàng. Chọn dòng để nhận hàng.",
   "docs.receive_line_mismatch": "{what}: dòng đó đã bị di chuyển trong chứng từ này. Tải lại chứng từ và chọn lại dòng.",
   "docs.receive_line_unknown": "{what}: dòng đó không có trong chứng từ này. Tải lại chứng từ và chọn lại dòng.",
+  "docs.receive_measure_is_quantity": "{name} được bán theo {unit}, nên số lượng nhận ({qty}) chính là số đo của nó. Hãy bỏ trống số đo đó hoặc nhập cùng một con số.",
   "docs.receive_not_open": "Chứng từ này không mở để nhận hàng, nên không thể nhận hàng trên chứng từ này.",
   "docs.receive_more_than_line": "{name}: dòng này là {ordered} và đã nhận {received}, nên chỉ có thể nhận thêm tối đa {remaining}. Hãy sửa dòng trước để nhận thêm.",
   "docs.return_not_open": "Không thể trả lại gì trên chứng từ này khi nó đang ở trạng thái {doc_status}. Hàng chỉ được trả lại nhà cung cấp sau khi đã nhận, từ một chứng từ còn mở.",

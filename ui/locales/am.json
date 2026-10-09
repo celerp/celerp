@@ -4450,6 +4450,7 @@
   "docs.receive_line_ambiguous": "{what}: በዚህ ሰነድ ላይ ከአንድ በላይ መስመር ይዘዋል። የሚቀበሉበትን መስመር ይምረጡ።",
   "docs.receive_line_mismatch": "{what}: ያ መስመር በዚህ ሰነድ ላይ ተንቀሳቅሷል። ሰነዱን እንደገና ይጫኑና መስመሩን እንደገና ይምረጡ።",
   "docs.receive_line_unknown": "{what}: ያ መስመር በዚህ ሰነድ ላይ የለም። ሰነዱን እንደገና ይጫኑና መስመሩን እንደገና ይምረጡ።",
+  "docs.receive_measure_is_quantity": "{name} የሚሸጠው በ{unit} ነው፣ ስለዚህ የተቀበለው መጠን ({qty}) መለኪያው ነው። ያንን መለኪያ ይተዉት ወይም ተመሳሳይ ቁጥር ያስገቡ።",
   "docs.receive_not_open": "ይህ ሰነድ ለመቀበል ክፍት አይደለም፣ ስለዚህ በእሱ ላይ ምንም እቃ መቀበል አይቻልም።",
   "docs.receive_more_than_line": "{name}: ይህ መስመር ለ{ordered} ነው፣ {received} ደግሞ ተቀብሏል፣ ስለዚህ ቢበዛ {remaining} ተጨማሪ መቀበል ይቻላል። ተጨማሪ ለመቀበል መጀመሪያ መስመሩን ይቀይሩ።",
   "docs.return_not_open": "ይህ ሰነድ {doc_status} ሆኖ ሳለ በእሱ ላይ ምንም መመለስ አይቻልም። እቃዎች ለአቅራቢው የሚመለሱት ከተቀበሉ በኋላ ብቻ፣ አሁንም ክፍት ከሆነ ሰነድ ነው።",

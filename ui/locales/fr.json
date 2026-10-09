@@ -4452,6 +4452,7 @@
   "docs.receive_line_ambiguous": "{what} : plusieurs lignes de ce document le contiennent. Choisissez la ligne sur laquelle le recevoir.",
   "docs.receive_line_mismatch": "{what} : cette ligne a été déplacée dans ce document. Rechargez le document et choisissez à nouveau la ligne.",
   "docs.receive_line_unknown": "{what} : cette ligne ne figure pas dans ce document. Rechargez le document et choisissez à nouveau la ligne.",
+  "docs.receive_measure_is_quantity": "{name} est vendu par {unit}, donc la quantité reçue ({qty}) est sa mesure. Omettez cette mesure ou indiquez le même chiffre.",
   "docs.receive_not_open": "Ce document n'est pas ouvert à la réception, aucune marchandise ne peut donc y être reçue.",
   "docs.receive_more_than_line": "{name} : cette ligne porte sur {ordered} et {received} a déjà été reçu, donc au plus {remaining} de plus peut être reçu. Modifiez d'abord la ligne pour recevoir davantage.",
   "docs.return_not_open": "Rien ne peut être renvoyé sur ce document tant qu'il est {doc_status}. Les marchandises ne retournent au fournisseur qu'après leur réception, depuis un document encore ouvert.",

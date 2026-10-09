@@ -4452,6 +4452,7 @@
   "docs.receive_line_ambiguous": "{what}: lebih dari satu baris di dokumen ini memuatnya. Pilih baris untuk menerimanya.",
   "docs.receive_line_mismatch": "{what}: baris itu telah berpindah di dokumen ini. Muat ulang dokumen dan pilih barisnya lagi.",
   "docs.receive_line_unknown": "{what}: baris itu tidak ada di dokumen ini. Muat ulang dokumen dan pilih barisnya lagi.",
+  "docs.receive_measure_is_quantity": "{name} dijual per {unit}, jadi jumlah yang diterima ({qty}) adalah ukurannya. Kosongkan ukuran itu atau isi dengan angka yang sama.",
   "docs.receive_not_open": "Dokumen ini tidak terbuka untuk penerimaan, jadi tidak ada barang yang dapat diterima di dokumen ini.",
   "docs.receive_more_than_line": "{name}: baris ini untuk {ordered} dan {received} sudah diterima, jadi paling banyak {remaining} lagi yang dapat diterima. Ubah barisnya terlebih dahulu untuk menerima lebih banyak.",
   "docs.return_not_open": "Tidak ada yang dapat dikembalikan pada dokumen ini selama statusnya {doc_status}. Barang dikembalikan ke pemasok hanya setelah diterima, dari dokumen yang masih terbuka.",

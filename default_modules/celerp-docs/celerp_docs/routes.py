@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
-from typing import Literal, NamedTuple
+from typing import ClassVar, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -436,7 +436,26 @@ class DocPaymentBody(BaseModel):
         return _stored_conversion_rate(v)
 
 
-class ReceivedItem(BaseModel):
+class _StatedMeasures(BaseModel):
+    """The weight and pieces of the goods moving, when the user gives them. Left out they
+    are unknown, and so is what the lot they come from or go into measures."""
+    weight: FiniteFloat | None = None
+    pieces: FiniteFloat | None = None
+
+    _omit_when_absent: ClassVar[tuple[str, ...]] = ("weight", "pieces")
+
+    @model_serializer(mode="wrap")
+    def _omit_absent(self, handler):
+        # A request that gives none of these serializes as it did before they existed, so a
+        # retry of one sent then still matches its earlier run.
+        data = handler(self)
+        for key in self._omit_when_absent:
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+
+class ReceivedItem(_StatedMeasures):
     po_line_index: int = -1  # optional; -1 means not specified (e.g. one-click bill receive)
     source_line_id: str | None = None  # the document line's id; wins over po_line_index
     item_id: str | None = None
@@ -449,14 +468,7 @@ class ReceivedItem(BaseModel):
     category: str | None = None
     attributes: dict | None = None
 
-    @model_serializer(mode="wrap")
-    def _omit_unnamed_line(self, handler):
-        # A receipt that names no line id serializes as it always has, so a retry of one
-        # sent before line ids existed still matches its earlier run.
-        data = handler(self)
-        if data.get("source_line_id") is None:
-            data.pop("source_line_id", None)
-        return data
+    _omit_when_absent: ClassVar[tuple[str, ...]] = ("source_line_id", "weight", "pieces")
 
 
 class ReceiveBody(BaseModel):
@@ -4041,6 +4053,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     for it in payload.received_items:
         sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
+        _stated_measures(it.weight, it.pieces)
 
     doc_label = _RECEIVING_DOC_LABEL.get(doc_type, "document")
     # A line is received up to what it orders, across every receipt on it. Goods sent back
@@ -4064,6 +4077,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # actually holds. Allocate the whole batch in one locked call AFTER validation so
     # concurrent receipts mint distinct barcodes; the lock is held until this request
     # commits. The DB unique index is the backstop, not the normal mechanism.
+    from celerp_inventory.routes import restock_measures
     from celerp_inventory.services import (
         allocate_internal_codes,
         goods_basis,
@@ -4135,6 +4149,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
             if item is None:
                 raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
+            lot_before = dict(item.state)
+            measures = _receipt_measures(it, lot_before, unit_map, stock_qty_received)
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
             # The receipt adds what these goods cost to the lot's basis, so a delivery at a new
             # price moves the lot's unit cost to the weighted average of old and new stock.
@@ -4145,6 +4161,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 data=adjustment,
                 actor_id=user.id, location_id=None, source="api",
                 idempotency_key=_step_key(key, "line", line_no), metadata_={"source_doc": entity_id},
+            )
+            await restock_measures(
+                session, company_id=company_id, user_id=user.id, lot_id=it.item_id, lot_state=lot_before,
+                new_qty=new_qty, unit_map=unit_map, weight_delta=measures.get("weight"),
+                pieces_delta=measures.get("pieces"), source="api",
+                idempotency_key=_step_key(key, "line", line_no, "measures"), metadata={"source_doc": entity_id},
             )
             added_to_lot[line_no] = {"lot_quantity_added": stock_qty_received, "lot_cost_added": received_cost}
             if not is_consignment:
@@ -4232,6 +4254,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "quantity": stock_qty_received,
                 "location_id": payload.location_id,
             })
+            measures = _receipt_measures(it, item_data, unit_map, stock_qty_received)
+            if "weight" in measures:
+                item_data["weight"] = measures["weight"]
+            if "pieces" in measures:
+                item_data["attributes"] = {**(item_data.get("attributes") or {}), "pieces": measures["pieces"]}
             # Fresh sequential barcode per physical lot (unique + scannable), taken
             # from the batch allocated under the code-namespace lock above.
             item_data["barcode"] = _recv_barcodes[_recv_barcode_idx]
@@ -4608,22 +4635,6 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
             for reason, units in _held_back(states.get(lot), k, free).items():
                 held.setdefault(index, {})[reason] = held.get(index, {}).get(reason, 0.0) + units
     return _LineReturnLots(by_line, shared, kept, held)
-
-
-class _StatedMeasures(BaseModel):
-    """The weight and pieces of the goods going back, when the user gives them. Left out
-    they are unknown, and so is what the lot keeps."""
-    weight: FiniteFloat | None = None
-    pieces: FiniteFloat | None = None
-
-    @model_serializer(mode="wrap")
-    def _omit_absent_measures(self, handler):
-        # A request that gives no measures serializes as it always has, so its retries still match.
-        data = handler(self)
-        for key in ("weight", "pieces"):
-            if data.get(key) is None:
-                data.pop(key, None)
-        return data
 
 
 class ReturnItem(_StatedMeasures):
@@ -8865,8 +8876,10 @@ async def undo_receive(
                     "version, so the receipt cannot be reverted here. Correct those quantities with a "
                     "stock adjustment."),
         )
+    from celerp_inventory.routes import restock_measures
     from celerp_inventory.services import goods_basis
 
+    unit_map = await _get_unit_map(session, company_id)
     now = datetime.now(timezone.utc).isoformat()
 
     # Pre-flight: every parcel is still as the receipt left it and every lot still holds what came in.
@@ -8921,6 +8934,14 @@ async def undo_receive(
             event_type="item.quantity.adjusted", data=adjustment,
             actor_id=user.id, location_id=None, source="receive_undo",
             idempotency_key=str(uuid.uuid4()), metadata_={"source_receive_undo": entity_id},
+        )
+        # A receipt onto a lot on hand states no measures, so what the lot measures without
+        # those goods cannot be worked out: its measures other than the one it is sold by
+        # become unknown.
+        await restock_measures(
+            session, company_id=company_id, user_id=user.id, lot_id=lot, lot_state=lot_state,
+            new_qty=new_qty, unit_map=unit_map, source="receive_undo",
+            idempotency_key=str(uuid.uuid4()), metadata={"source_receive_undo": entity_id},
         )
 
     await emit_event(
@@ -9702,6 +9723,23 @@ async def undo_audit_adjust(
 # Mirrors the audit trio (create / set-line / terminal / undo) but is EVENT-based: the user enters the
 # known quantity leaving stock per line, with a destination expense or equity account and a comment,
 # rather than counting. The terminal carves or disposes each line's stock and posts one balanced JE.
+
+
+def _receipt_measures(it: ReceivedItem, lot: dict, unit_map: dict, stock_qty: float) -> dict:
+    """The weight and pieces a receipt line states for the ``stock_qty`` it brings into
+    ``lot`` (the lot's state, or the new parcel's fields). The measure the lot is sold by is
+    its quantity, so a different figure for it is refused rather than stored."""
+    measures = _stated_measures(it.weight, it.pieces)
+    sell_by = lot.get("sell_by") or ""
+    for measure, sold_by in (("weight", is_weight_unit), ("pieces", is_pieces_unit)):
+        if measure in measures and sold_by(sell_by, unit_map) and abs(measures[measure] - stock_qty) > 1e-9:
+            name = str(lot.get("sku") or it.name or it.sku or "")
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.receive_measure_is_quantity",
+                f"{name} is sold by {sell_by}, so the quantity received ({stock_qty:g}) is its measure. "
+                "Leave that measure out or give the same figure.",
+                name=name, unit=sell_by, qty=f"{stock_qty:g}"))
+    return measures
 
 
 def _stated_measures(weight: float | None, pieces: float | None) -> dict:
