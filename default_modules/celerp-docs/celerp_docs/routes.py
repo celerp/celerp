@@ -4862,6 +4862,56 @@ async def _refuse_imported_on_bill(session: AsyncSession, company_id, doc_id: st
                                     allowed)
 
 
+@dataclass(frozen=True)
+class _BillCharges:
+    """What a finalized bill charged for its stock lines (auto_je.bill_line_charges), in its
+    own currency, with the lines each lot's goods came in on."""
+
+    lines: dict[int, tuple[Decimal, Decimal, Decimal]]  # stock line -> (amount, discount, tax)
+    lot_line: dict[str, int]  # lot -> the one stock line its goods came in on
+
+    def rates(self, lot: str) -> tuple[Decimal, Decimal]:
+        """(what the bill charged after its discount, its tax), each per unit of what the goods
+        were priced at, for goods from ``lot``: its line's, or all stock lines' together for a
+        lot more than one line fed."""
+        line = self.lot_line.get(lot)
+        picked = [self.lines[line]] if line in self.lines else list(self.lines.values())
+        amount = sum((a for a, _, _ in picked), Decimal(0))
+        if not amount:
+            return Decimal(1), Decimal(0)
+        return (sum((a - d for a, d, _ in picked), Decimal(0)) / amount,
+                sum((t for _, _, t in picked), Decimal(0)) / amount)
+
+    def settles(self, state: dict, rate, currency: str) -> tuple[Decimal, dict] | None:
+        """Once every stock line came in whole and all of it went back: what the bill charged
+        for its goods, in its own currency, and what its returns together take off the books
+        (auto_je.ReturnCharges.settles). None while any of its goods are still to come or here."""
+        received = _line_quantities_received(state)
+        lines = state.get("line_items") or []
+        if any(received.get(i, 0.0) + 1e-9 < float(lines[i].get("quantity") or 0) for i in self.lines):
+            return None
+        doc_currency = str(state.get("currency") or currency)
+        goods = sum((a - d + t for a, d, t in self.lines.values()), Decimal(0))
+        total = round_money(state.get("total", 0) or 0, doc_currency)
+        return goods, {"payable": to_base(total, rate, currency) - to_base(total - goods, rate, currency),
+                       "tax": to_base(sum((t for _, _, t in self.lines.values()), Decimal(0)), rate, currency),
+                       "shipping": to_base(state.get("shipping", 0) or 0, rate, currency)}
+
+
+async def _bill_charge_rates(session: AsyncSession, company_id, doc_id: str, state: dict) -> _BillCharges | None:
+    """What a finalized bill charged for its goods (_BillCharges); None for any other document,
+    whose returns take off what was charged for the goods and nothing more."""
+    if state.get("doc_type") != "bill" or not state.get("finalized"):
+        return None
+    lines = state.get("line_items") or []
+    stock = {i: charge for i, (li, charge) in enumerate(zip(lines, auto_je.bill_line_charges(state)))
+             if auto_je.bill_line_kind(li) == "stock" and await auto_je.landed_role_for_line(session, company_id, li) is None}
+    lots = await _receipt_lots(session, company_id, doc_id, state)
+    by = _receipt_lots_by_line(state, lots) if lots is not None else None
+    lot_line = {lot: i for i, held in by[0].items() for lot in held if lot not in by[1]} if by else {}
+    return _BillCharges(lines=stock, lot_line=lot_line)
+
+
 def _receipt_lots_by_line(state: dict, lots: list[tuple[str, bool] | None]
                           ) -> tuple[dict[int, list[str]], set[str]] | None:
     """The lots each document line's stock receipts went into (``lots``, per receipt entry),
@@ -5402,8 +5452,21 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         if x.get("item_id") in made:
             made_gone[x["item_id"]] = made_gone.get(x["item_id"], 0.0) + float(
                 x.get("quantity_returned") or 0) - float(x.get("lot_quantity_taken") or 0)
-    landed_by_kind: dict[str, float] = {}
     landed_by_account: dict[str, float] = {}
+    # What a finalized bill charged for each line's goods, as a fraction of what the goods
+    # were priced at before its discount: what it charged after the discount, and its tax.
+    charging = await _bill_charge_rates(session, company_id, entity_id, row.state) if owned else None
+    charged: dict = {}  # what the bill charged for the goods after its discount, keyed as goods are
+    tax = Decimal(0)
+    # A lot whose cost was corrected while on hand goes back through the accounts the
+    # corrections were booked to, in step with how much of the correction has gone back.
+    restated_back: dict[str, tuple[Decimal, Decimal]] = {}
+    for x in row.state.get("returned_items") or []:
+        if "value_returned" in x:
+            done = restated_back.get(x["item_id"], (Decimal(0), Decimal(0)))
+            restated_back[x["item_id"]] = (done[0] + to_decimal(x["value_returned"]),
+                                           done[1] + to_decimal(x.get("gain_returned") or 0))
+    gain = Decimal(0)
     returned: list[dict] = []
     for line_no, (it, source_line_id) in enumerate(picked):
         item = lots.get(it.item_id)
@@ -5460,15 +5523,29 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                     others_cost = billed_rest + (basis - cost_added - made_cost + _charged(before)) * rest / others_qty
             share = basis if whole else min(
                 basis, to_stored_float(round_money(taken_cost + others_cost, currency)))
+            billed_lot = share if billed_rest is None else to_stored_float(
+                round_money(taken_cost, currency)) + billed_rest
             goods[target] = goods.get(target, 0.0) + share
-            billed[target] = billed.get(target, 0.0) + (share if billed_rest is None else to_stored_float(
-                round_money(taken_cost, currency)) + billed_rest)
+            billed[target] = billed.get(target, 0.0) + billed_lot
+            value = round_money(share, currency) - round_money(billed_lot, currency)
+            raised, lowered = await auto_je.lot_restatements(session, company_id, it.item_id)
+            done_value, done_gain = restated_back.get(it.item_id, (Decimal(0), Decimal(0)))
+            if raised != lowered:
+                back = round_money(raised * (done_value + value) / (raised - lowered), currency) - done_gain
+            else:
+                back = raised - done_gain if whole else Decimal(0)
+            back = max(back, value, Decimal(0))
+            gain += back
+            restated_back[it.item_id] = (done_value + value, done_gain + back)
+            if value or back:
+                returned[-1].update({"value_returned": to_stored_float(value), "gain_returned": to_stored_float(back)})
+            after_discount, taxed = charging.rates(it.item_id) if charging else (Decimal(1), Decimal(0))
+            charged[target] = charged.get(target, Decimal(0)) + to_decimal(billed_lot) * after_discount
+            tax += to_decimal(billed_lot) * taxed
             if it.item_id in added:
                 taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
-            for contribution, unit in (item.state.get("landed_contributions") or {}).items():
-                kind = contribution.rsplit("::", 1)[-1]
-                landed_by_kind[kind] = landed_by_kind.get(kind, 0.0) + float(unit or 0) * it.quantity_returned
+            for unit in (item.state.get("landed_contributions") or {}).values():
                 landed_by_account[origin] = landed_by_account.get(origin, 0.0) + float(unit or 0) * it.quantity_returned
         # The goods going back become their own lot, which leaves stock; the lot keeps the rest
         # with the rest of its cost. Goods that are the whole lot leave as that lot.
@@ -5498,16 +5575,27 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             idempotency_key=_step_key(key, "line", line_no), metadata_={"source_return": entity_id},
         )
 
+    # Whether the document now holds nothing to send back, judged in stock units here
+    # because a line's received quantity may be in a purchase unit.
+    all_returned = all(left <= 1e-9 for left in returnable.values()) and not any(
+        (x.get("receive_as") or "stock") != "stock" for x in row.state.get("received_items") or [])
     payable_credit = 0.0
     if owned:
         rate = _require_doc_rate_http(row.state, currency)
+        doc_currency = str(row.state.get("currency") or currency)
+        settles = charging.settles(row.state, rate, currency) if charging and all_returned else None
         payable = await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods=goods, billed=billed, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account,
+            goods=goods, billed=billed, gain=to_stored_float(gain), landed_by_account=landed_by_account,
+            charges=auto_je.ReturnCharges(charged=charged, tax=to_stored_float(tax),
+                                          settles=settles and settles[1]),
         )
         # What the document owes falls by what the return took off accounts payable, in the
-        # document's currency, so the document and the ledger show the same balance.
-        payable_credit = to_stored_float(round_money(payable / rate, str(row.state.get("currency") or currency)))
+        # document's currency, so the document and the ledger show the same balance. The last
+        # goods back take off what the bill charged for its goods, less what earlier returns took.
+        payable_credit = to_stored_float(
+            settles[0] - to_decimal(row.state.get("returned_credit") or 0) if settles
+            else round_money(payable / rate, doc_currency))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.items_returned",
@@ -5516,10 +5604,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             "returned_by": str(user.id),
             "notes": payload.notes,
             **({"payable_credit": payable_credit} if payable_credit else {}),
-            # Whether the document now holds nothing to send back, judged in stock units here
-            # because a line's received quantity may be in a purchase unit.
-            "all_returned": all(left <= 1e-9 for left in returnable.values()) and not any(
-                (x.get("receive_as") or "stock") != "stock" for x in row.state.get("received_items") or []),
+            "all_returned": all_returned,
         },
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},

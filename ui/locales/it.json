@@ -4486,7 +4486,7 @@
   "docs.imported_on_bill_next.cancel": "Per annullare la fattura, riportala a bozza. L'ordine d'acquisto mantiene il suo ricevimento e ciò che è stato reso da esso.",
   "docs.undo_receipt_imported": "La merce che questa fattura aveva già quando è stata importata non ha alcun ricevimento da annullare su di essa. {next_step}",
   "docs.revert_imported_bill": "Questa fattura non può tornare a bozza: aveva già della merce quando è stata importata, e una fattura in bozza non ne ha. {next_step}",
-  "docs.revert_returned_bill": "Questa fattura non può tornare in bozza: sono state ricevute merci su di essa dopo che è stata creata dal suo ordine di acquisto. Per annullare la fattura, stornala.",
+  "docs.revert_returned_bill": "Questa fattura non può tornare in bozza: sono state ricevute merci su di essa dopo che è stata creata dal suo ordine di acquisto. Per cancellare la fattura, annullala.",
   "docs.void_imported_bill": "Questa fattura non può essere annullata: la merce che ha ricevuto essa stessa è stata registrata su di essa, accanto a merce che aveva già quando è stata importata. {next_step}",
   "docs.void_imported_returned": "Questa fattura non può essere annullata: merce che aveva già quando è stata importata è stata resa al fornitore dall'ordine d'acquisto, e quel reso resta con il ricevimento dell'ordine. {next_step}",
   "docs.imported_on_bill_next.receive": "Per ricevere altro, restituisci prima tutto ciò che è stato ricevuto qui, poi riporta la fattura a bozza, ricevi la merce sull'ordine di acquisto e convertilo di nuovo in fattura.",

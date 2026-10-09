@@ -213,8 +213,8 @@ async def test_landed_cost_sent_back_after_a_remap_leaves_the_lot_account(sessio
     await _remap(session, auth, await _new_inventory_account(client, auth), "inventory_purchased")
     r = await _return(client, auth, bill, parcel, 1)
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1131", "1130-FRT") == {
-        "1130-P": 20.0, "1131": 0.0, "1130-FRT": 5.0}
+    assert await _books(session, auth, "1130-P", "1131", "1130-FRT", "6970") == {
+        "1130-P": 20.0, "1131": 0.0, "1130-FRT": 0.0, "6970": 5.0}
 
 
 @pytest.mark.asyncio

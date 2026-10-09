@@ -4486,7 +4486,7 @@
   "docs.imported_on_bill_next.cancel": "Untuk membatalkan tagihan, kembalikan ke draf. Pesanan pembelian tetap menyimpan penerimaannya dan barang yang dikembalikan darinya.",
   "docs.undo_receipt_imported": "Barang yang sudah dimiliki tagihan ini saat diimpor tidak memiliki penerimaan pada tagihan ini untuk dibatalkan. {next_step}",
   "docs.revert_imported_bill": "Tagihan ini tidak dapat kembali ke draf: tagihan ini sudah memiliki barang saat diimpor, dan tagihan draf tidak memiliki barang. {next_step}",
-  "docs.revert_returned_bill": "Tagihan ini tidak dapat dikembalikan ke draf: barang diterima pada tagihan ini setelah dibuat dari pesanan pembeliannya. Untuk membatalkan tagihan, batalkan (void) tagihan ini.",
+  "docs.revert_returned_bill": "Tagihan ini tidak dapat dikembalikan ke draf: barang diterima pada tagihan ini setelah dibuat dari pesanan pembeliannya. Untuk membatalkan tagihan, batalkan tagihan ini.",
   "docs.void_imported_bill": "Tagihan ini tidak dapat dibatalkan: barang yang diterimanya sendiri dicatat pada tagihan ini, di samping barang yang sudah dimilikinya saat diimpor. {next_step}",
   "docs.void_imported_returned": "Tagihan ini tidak dapat dibatalkan: barang yang sudah dimilikinya saat diimpor telah dikembalikan ke pemasok dari pesanan pembelian, dan pengembalian itu tetap bersama penerimaan pesanan. {next_step}",
   "docs.imported_on_bill_next.receive": "Untuk menerima lebih banyak, kembalikan dulu semua yang diterima di sini, lalu kembalikan tagihan ke draf, terima barang pada pesanan pembelian, dan ubah lagi menjadi tagihan.",

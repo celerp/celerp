@@ -328,7 +328,7 @@ async def test_goods_sent_back_from_stock_on_hand_leave_at_what_they_were_receiv
 
 
 @pytest.mark.asyncio
-async def test_goods_sent_back_on_a_bill_return_their_landed_cost(client, session, auth):
+async def test_goods_sent_back_on_a_bill_expense_their_landed_cost(client, session, auth):
     r = await client.post("/items", headers=auth["headers"], json={
         "status": "available", "sku": "FRT", "name": "Freight", "quantity": 0, "sell_by": "piece",
         "inventory_type": "freight", "landed_cost_kind": "freight"})
@@ -345,13 +345,13 @@ async def test_goods_sent_back_on_a_bill_return_their_landed_cost(client, sessio
     r = await _return(client, auth, bill, parcel_id, 1)
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, parcel_id))["cost_total"] == 20.0
-    assert await _books(session, auth, "1130-P", "1130-FRT", "2110") == {
-        "1130-P": 20.0, "1130-FRT": 5.0, "2110": -25.0}
+    # The freight the goods carried is a cost of goods that are gone, and the bill still owes it.
+    want = {"1130-P": 20.0, "1130-FRT": 0.0, "2110": -25.0, "6970": 5.0}
+    assert await _books(session, auth, *want) == want
 
     r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert await _books(session, auth, "1130-P", "1130-FRT", "2110") == {
-        "1130-P": 20.0, "1130-FRT": 5.0, "2110": -25.0}
+    assert await _books(session, auth, *want) == want
 
 
 @pytest.mark.asyncio

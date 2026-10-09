@@ -1010,35 +1010,106 @@ async def create_for_landed_capitalisation(
     )
 
 
+def bill_line_charges(doc: dict) -> list[tuple[_Dec, _Dec, _Dec]]:
+    """Per document line, what a bill charged for it in the document's currency: the line's
+    amount, its share of the bill's discount and the tax on it. The discount is shared over
+    the lines in proportion to their amounts, as the bill's entry books it
+    (create_for_bill_conversion). Each line carries the tax computed on it, and tax the bill
+    computed on its total is shared over the lines in proportion to what they cost after
+    the discount."""
+    currency = doc.get("currency", "USD")
+    items = doc.get("line_items") or []
+    gross = [max(round_money(to_decimal(li.get("line_total") or 0) or
+                             to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)), currency),
+                 _Dec(0)) for li in items]
+    goods = sum(gross, _Dec(0))
+    tax = round_money(to_decimal(doc.get("tax", 0) or 0), currency) if items else _Dec(0)
+    discount = (goods + tax + round_money(doc.get("shipping", 0) or 0, currency)
+                - round_money(doc.get("total", 0) or 0, currency))
+    discounts = (allocate_pro_rata(discount, gross, currency) if 0 < discount <= goods
+                 else [_Dec(0)] * len(items))
+    taxes = [round_money(sum((to_decimal(t.get("amount") or 0) for t in li.get("taxes") or []), _Dec(0)), currency)
+             for li in items]
+    net = [g - d for g, d in zip(gross, discounts)]
+    rest = tax - sum(taxes, _Dec(0))
+    if rest and sum(net, _Dec(0)) > 0:
+        taxes = [t + share for t, share in zip(taxes, allocate_pro_rata(rest, net, currency))]
+    return list(zip(gross, discounts, taxes))
+
+
+async def _sum_lines(session, company_id, prefix: str, settings: dict, sides: dict[str, str]) -> dict[str, _Dec]:
+    """Per role in ``sides``, what the posted entries whose id starts with ``prefix`` put on
+    lines of that role, on the side named (debit or credit)."""
+    out = {role: _Dec(0) for role in sides}
+    for row in (await session.execute(_select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+            Projection.entity_id.startswith(prefix, autoescape=True),
+    ))).scalars().all():
+        if row.state.get("status") != "posted":
+            continue
+        for e in row.state.get("entries") or []:
+            for role in set(sides).intersection(line_roles(settings, e)):
+                out[role] += to_decimal(e.get(sides[role]) or 0)
+    return out
+
+
+async def lot_restatements(session, company_id, lot_id: str) -> tuple[_Dec, _Dec]:
+    """What corrections to a lot's cost booked while it was on hand (lot_origin.book_value_change):
+    the increases, booked to stock gains, and the decreases, booked to stock shrinkage."""
+    settings = await current_settings(session, company_id)
+    got = await _sum_lines(session, company_id, f"je:auto:{lot_id}:value-changed:", settings,
+                           {R.STOCK_GAIN.value: "credit", R.STOCK_SHRINKAGE.value: "debit"})
+    return got[R.STOCK_GAIN.value], got[R.STOCK_SHRINKAGE.value]
+
+
+@dataclass(frozen=True)
+class ReturnCharges:
+    """What a supplier return takes off a bill beyond the goods' own cost, in the company's
+    currency. ``charged`` is what the bill charged for the goods after its discount, keyed as
+    the goods are, and ``tax`` the tax it booked on them. ``settles`` is set on the return that
+    sends back the last of the bill's goods: what all its returns together take off accounts
+    payable and input tax, and the shipping the bill charged, which no goods carry."""
+
+    charged: dict
+    tax: float = 0.0
+    settles: dict | None = None
+
+
 async def create_for_supplier_return(
     session, *, company_id, user_id, doc_id: str, return_key: str, goods: dict[AccountRole | str, float],
-    billed: dict[AccountRole | str, float], landed_by_kind: dict[str, float], landed_by_account: dict[str, float],
+    billed: dict[AccountRole | str, float], charges: ReturnCharges, gain: float,
+    landed_by_account: dict[str, float],
 ) -> _Dec:
     """Goods sent back to the supplier come off accounts payable at what the document charged
     for them. Returns the amount debited to accounts payable, in the company's currency.
 
-    ``goods`` is what the goods carried and ``billed`` what the document charged for them,
-    both keyed by the inventory account of the lot the goods leave, or by the role goods not
-    held in stock were received to. Dr AP / Cr goods for what was charged, AP on the account
-    the document recognized its payable on. Goods whose cost was corrected after they came in
-    carry more or less than that: the difference leaves the inventory account through the
-    account the correction was booked to (lot_origin.book_lot_value), a raised cost back off
-    stock gains and a lowered one back off stock shrinkage, in an entry of its own that a void
-    or revert of the document leaves standing, as the goods it values are gone. Each kind of
-    landed cost they carried goes back to the clearing account the bill parked it in (Dr
-    clearing / Cr the lots' inventory accounts, ``landed_by_account``) in an entry of its own,
-    the reverse of the receipt's capitalisation, so undoing the receipt returns only the
-    landed cost still on the shelf. All are dated today in the company's timezone (entry_day)."""
+    ``goods`` is what the goods carried and ``billed`` what the document charged for them
+    before any discount, both keyed by the inventory account of the lot the goods leave, or by
+    the role goods not held in stock were received to. Dr AP / Cr goods at what the document
+    charged after its discount / Cr input tax for the tax it booked on them (``charges``), AP on
+    the account the document recognized its payable on. The return that sends back the last of
+    the goods takes what the earlier returns left, so accounts payable and input tax hold
+    nothing more for the goods once all of them have gone back. Goods whose cost was corrected
+    after they came in carry more or less than was charged: the difference leaves the inventory
+    account back through the accounts the corrections were booked to (lot_origin.book_lot_value),
+    ``gain`` of it off stock gains and the rest off stock shrinkage, in an entry of its own that
+    a void or revert of the document leaves standing, as the goods it values are gone. Landed
+    cost the goods carried (``landed_by_account``) is a cost of goods that are gone: it is
+    expensed to stock shrinkage off the lots' inventory accounts, and so, once the last goods
+    go back, is the shipping the bill charged, off the clearing account it parked it in. The
+    bill still owes both. All are dated today in the company's timezone (entry_day)."""
     currency = await company_currency(session, company_id)
     settings = await current_settings(session, company_id)
     day = await entry_day(session, company_id)
     rounded = {key: round_money(billed[key] or 0, currency) for key in goods}
     revalued = {key: round_money(amount or 0, currency) - rounded[key] for key, amount in goods.items()}
     revalued = {key: change for key, change in revalued.items() if change}
-    if revalued:
-        gain = sum((c for c in revalued.values() if c > 0), _Dec(0))
-        shrinkage = -sum((c for c in revalued.values() if c < 0), _Dec(0))
-        acc = await resolve_many(session, company_id, [*([R.STOCK_GAIN] if gain else []),
+    change = sum(revalued.values(), _Dec(0))
+    gain_d = max(round_money(gain, currency), change, _Dec(0))
+    shrinkage = gain_d - change
+    if revalued or gain_d:
+        acc = await resolve_many(session, company_id, [*([R.STOCK_GAIN] if gain_d else []),
                                                        *([R.STOCK_SHRINKAGE] if shrinkage else [])])
 
         def _goods_line(key, debit=0.0, credit=0.0) -> dict:
@@ -1057,7 +1128,7 @@ async def create_for_supplier_return(
             memo=f"Auto JE for {doc_id} corrected cost of goods returned to supplier",
             ts=day,
             entries=[
-                *([_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, debit=to_stored_float(gain))] if gain else []),
+                *([_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, debit=to_stored_float(gain_d))] if gain_d else []),
                 *([_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE, credit=to_stored_float(shrinkage))]
                   if shrinkage else []),
                 *(_goods_line(key, credit=to_stored_float(max(c, _Dec(0))), debit=to_stored_float(max(-c, _Dec(0))))
@@ -1065,16 +1136,31 @@ async def create_for_supplier_return(
             ],
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
-    goods_d = sum(rounded.values(), _Dec(0))
-    if goods_d > 0:
+    credits = {key: round_money(charges.charged.get(key) or 0, currency) for key in goods}
+    tax_d = round_money(charges.tax, currency)
+    if charges.settles is not None:
+        # The last goods back take what the earlier returns left, so the bill's goods and
+        # their tax come off accounts payable and input tax exactly.
+        earlier = await _sum_lines(session, company_id, f"je:auto:{doc_id}:rtn:", settings,
+                                   {R.PAYABLE.value: "debit", R.TAX_INPUT.value: "credit"})
+        payable = round_money(charges.settles["payable"], currency) - earlier[R.PAYABLE.value]
+        tax_d = round_money(charges.settles["tax"], currency) - earlier[R.TAX_INPUT.value]
+        keys = sorted(credits, key=str)
+        weights = [abs(credits[k]) or abs(rounded[k]) for k in keys]
+        if sum(weights, _Dec(0)):
+            credits = dict(zip(keys, allocate_pro_rata(payable - tax_d, weights, currency)))
+    goods_d = sum(credits.values(), _Dec(0))
+    payable_d = goods_d + tax_d
+    if payable_d:
         ap = await party_origin(session, company_id, doc_id, R.PAYABLE, settings)
-        roles = [k for k, amt in rounded.items() if amt and isinstance(k, AccountRole)]
-        acc = await resolve_many(session, company_id, [*roles, *([] if ap else [R.PAYABLE])])
-        ap_line = (_origin_line(settings, ap, R.PAYABLE, debit=to_stored_float(goods_d)) if ap
-                   else _line(acc[R.PAYABLE], R.PAYABLE, debit=to_stored_float(goods_d)))
+        roles = [k for k, amt in credits.items() if amt and isinstance(k, AccountRole)]
+        acc = await resolve_many(session, company_id, [*roles, *([] if ap else [R.PAYABLE]),
+                                                       *([R.TAX_INPUT] if tax_d else [])])
+        ap_line = (_origin_line(settings, ap, R.PAYABLE, debit=to_stored_float(payable_d)) if ap
+                   else _line(acc[R.PAYABLE], R.PAYABLE, debit=to_stored_float(payable_d)))
         goods_lines = [_line(acc[k], k, credit=to_stored_float(amt)) if isinstance(k, AccountRole)
                        else _lot_line(settings, k, credit=to_stored_float(amt))
-                       for k, amt in rounded.items() if amt]
+                       for k, amt in credits.items() if amt]
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -1084,14 +1170,20 @@ async def create_for_supplier_return(
             idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} goods returned to supplier",
             ts=day,
-            entries=[ap_line, *goods_lines],
+            entries=[ap_line, *goods_lines,
+                     *([_line(acc[R.TAX_INPUT], R.TAX_INPUT, credit=to_stored_float(tax_d))] if tax_d else [])],
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
-    landed = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
-    landed_total = sum(landed.values(), _Dec(0))
-    if landed_total > 0:
-        entries = [*await _clearing_lines(session, company_id, doc_id, settings, landed, currency, debit=True),
-                   *_inventory_lines(settings, landed_total, landed_by_account, currency, debit=False)]
+    landed_total = round_money(sum((to_decimal(v or 0) for v in landed_by_account.values()), _Dec(0)), currency)
+    shipping = round_money((charges.settles or {}).get("shipping") or 0, currency)
+    if landed_total > 0 or shipping > 0:
+        acc = await resolve_many(session, company_id, [R.STOCK_SHRINKAGE])
+        entries = [_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE,
+                         debit=to_stored_float(max(landed_total, _Dec(0)) + max(shipping, _Dec(0)))),
+                   *(_inventory_lines(settings, landed_total, landed_by_account, currency, debit=False)
+                     if landed_total > 0 else []),
+                   *(await _clearing_lines(session, company_id, doc_id, settings, {"freight": shipping}, currency,
+                                           debit=False) if shipping > 0 else [])]
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -1099,12 +1191,12 @@ async def create_for_supplier_return(
             je_id=f"je:auto:{doc_id}:landed-rtn:{return_key}",
             idem_create=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "p"),
-            memo=f"Auto JE for {doc_id} landed cost returned with goods",
+            memo=f"Auto JE for {doc_id} landed cost of goods returned to supplier",
             ts=day,
             entries=entries,
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
-    return max(goods_d, _Dec(0))
+    return payable_d
 
 
 async def _bill_line_target(session, company_id, li: dict):
@@ -1218,15 +1310,10 @@ async def create_for_bill_conversion(
     tax_total_d = _Dec(0)
 
     if line_items:
-        for li in line_items:
-            line_total = round_money(
-                to_decimal(li.get("line_total") or 0) or
-                to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
-                currency,
-            )
+        for li, (line_total, discount, _tax) in zip(line_items, bill_line_charges(doc)):
             if line_total <= 0:
                 continue
-            lines.append((await _bill_line_target(session, company_id, li), line_total))
+            lines.append((await _bill_line_target(session, company_id, li), line_total - discount))
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
         # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
         tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
@@ -1236,13 +1323,8 @@ async def create_for_bill_conversion(
     if total_d <= 0:
         return
     # A bill total below its lines, tax and shipping is a discount on those lines: each line's
-    # cost is reduced by its share, so the debits sum to what the bill says is owed. Any other
-    # gap between the parts and the total is refused rather than posted unbalanced.
-    goods_d = sum((a for _, a in lines), _Dec(0))
-    discount_d = goods_d + tax_total_d + shipping_d - total_d
-    if 0 < discount_d <= goods_d:
-        shares = allocate_pro_rata(discount_d, [a for _, a in lines], currency)
-        lines = [(target, a - share) for (target, a), share in zip(lines, shares)]
+    # cost is reduced by its share (bill_line_charges), so the debits sum to what the bill says
+    # is owed. Any other gap between the parts and the total is refused rather than posted unbalanced.
     if tax_total_d > 0:
         lines.append((R.TAX_INPUT, tax_total_d))
     if shipping_d > 0:
@@ -1360,6 +1442,9 @@ _RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj")
 # posted at the same id, so the caller decides from the document, never from the id alone.
 _IMPORTED_RECEIPT = "rcv"
 _FULFILLMENT_COGS = re.compile(r"fulfill(?:-\d+)?")
+# The entries of a bill's own receipts and returns to the supplier: the goods, and the landed
+# cost the receipts capitalised and the returns expensed.
+_GOODS_MOVEMENTS = ("rcv", "rtn", "landed-cap", "landed-rtn")
 
 
 def _recognition_root(suffix: str, imported_receipt: bool = False,
@@ -1378,7 +1463,7 @@ def _recognition_root(suffix: str, imported_receipt: bool = False,
     root = re.sub(r"(?::unvoid(?::\d+)?)+$", "", suffix)
     if _FULFILLMENT_COGS.fullmatch(root) or (imported_receipt and root == _IMPORTED_RECEIPT):
         return root
-    if goods_movements and root.split(":")[0] in ("rcv", "rtn"):
+    if goods_movements and root.split(":")[0] in _GOODS_MOVEMENTS:
         return root
     for family in _RECOGNITION_FAMILIES:
         if root == family or root.startswith(f"{family}:"):
@@ -1423,7 +1508,7 @@ async def _doc_goods_movement_jes(session, company_id, doc_id: str) -> list[str]
         Projection.entity_type == "journal_entry",
         Projection.entity_id.startswith(prefix, autoescape=True),
     ))).scalars().all()
-    return [eid[len(prefix):] for eid in rows if eid[len(prefix):].split(":")[0] in ("rcv", "rtn")]
+    return [eid[len(prefix):] for eid in rows if eid[len(prefix):].split(":")[0] in _GOODS_MOVEMENTS]
 
 
 async def _doc_void_events(session, company_id, doc_id: str) -> list:
