@@ -113,10 +113,6 @@ async def _position(books: Books) -> dict:
             recognized.add(recognition.group(1))
         for line in lines:
             net = _d(line.get("debit")) - _d(line.get("credit"))
-            # A supplier return takes the goods off the payable but leaves the bill's own
-            # balance as it was: the supplier now owes that credit back.
-            if ":rtn:" in je_id and line.get("account") in ap:
-                net = D(0)
             for name, codes in (("inventory", inventory), ("ar", ar), ("ap", ap)):
                 if line.get("account") in codes:
                     balances[name] += net
