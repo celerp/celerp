@@ -3283,6 +3283,7 @@
   "documents.reopen_memo_confirm": "Buka kembali memo ini dan pulihkan statusnya sebelumnya?",
   "documents.line_label_returned": "Dikembalikan",
   "documents.line_label_not_shipped": "Belum dikirim",
+  "documents.line_label_on_memo_part": "Di Catatan {out} dari {qty}",
   "documents.th_shipped": "Pengiriman",
   "documents.search_all": "Cari dokumen",
   "documents.search_invoice": "Cari faktur",

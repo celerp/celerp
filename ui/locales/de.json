@@ -3283,6 +3283,7 @@
   "documents.reopen_memo_confirm": "Dieses Memo wieder öffnen und den vorherigen Status wiederherstellen?",
   "documents.line_label_returned": "Zurückgegeben",
   "documents.line_label_not_shipped": "Nicht versandt",
+  "documents.line_label_on_memo_part": "In Kommission {out} von {qty}",
   "documents.th_shipped": "Versand",
   "documents.search_all": "Dokumente durchsuchen",
   "documents.search_invoice": "Rechnungen durchsuchen",

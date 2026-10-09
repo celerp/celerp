@@ -3283,6 +3283,7 @@
   "documents.reopen_memo_confirm": "ይህን ማስታወሻ እንደገና ከፍተው ቀድሞ የነበረውን ሁኔታ ይመልሱ?",
   "documents.line_label_returned": "ተመልሷል",
   "documents.line_label_not_shipped": "አልተላከም",
+  "documents.line_label_on_memo_part": "በማስታወሻ ላይ ከ{qty} {out}",
   "documents.th_shipped": "ተልኳል",
   "documents.search_all": "ሰነዶችን ፈልግ",
   "documents.search_invoice": "የሽያጭ ደረሰኞችን ፈልግ",

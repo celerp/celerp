@@ -3283,6 +3283,7 @@
   "documents.reopen_memo_confirm": "Rouvrir ce mémo et restaurer son statut précédent ?",
   "documents.line_label_returned": "Retourné",
   "documents.line_label_not_shipped": "Non expédié",
+  "documents.line_label_on_memo_part": "En consignation {out} sur {qty}",
   "documents.th_shipped": "Expédition",
   "documents.search_all": "Rechercher des documents",
   "documents.search_invoice": "Rechercher des factures",

@@ -3283,6 +3283,7 @@
   "documents.reopen_memo_confirm": "Riaprire questo memo e ripristinare il suo stato precedente?",
   "documents.line_label_returned": "Restituito",
   "documents.line_label_not_shipped": "Non spedito",
+  "documents.line_label_on_memo_part": "Su promemoria {out} di {qty}",
   "documents.th_shipped": "Spedizione",
   "documents.search_all": "Cerca documenti",
   "documents.search_invoice": "Cerca fatture",

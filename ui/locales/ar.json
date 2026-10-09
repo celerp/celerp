@@ -3283,6 +3283,7 @@
   "documents.reopen_memo_confirm": "إعادة فتح هذه المذكرة واستعادة حالتها السابقة؟",
   "documents.line_label_returned": "أُرجع",
   "documents.line_label_not_shipped": "لم يُشحن",
+  "documents.line_label_on_memo_part": "في المذكرة {out} من {qty}",
   "documents.th_shipped": "الشحن",
   "documents.search_all": "البحث في الوثائق",
   "documents.search_invoice": "البحث في الفواتير",

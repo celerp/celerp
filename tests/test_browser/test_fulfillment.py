@@ -17,9 +17,11 @@ Covers:
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
+from playwright.sync_api import expect
 
 pytestmark = pytest.mark.browser
 
@@ -474,6 +476,20 @@ def test_memo_part_return_uses_the_line_quantity_field(page, ui_server, api):
             break
         page.wait_for_timeout(200)
     assert st["status"] == "memo_out" and float(st["quantity"]) == 3, st
+
+
+def test_a_memo_line_taken_back_in_part_says_how_much_is_still_out(page, ui_server, api):
+    """Straight after a part take-back, the line's shipped tag counts what is still out
+    against the line's quantity."""
+    doc_id, item = _shipped_memo(api, f"MPO-{uuid.uuid4().hex[:6]}", 3)
+    page.on("dialog", lambda d: d.accept())
+    field = _open_return(page, ui_server, doc_id)
+    field.fill("1")
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        page.locator("#li-bulk-revert-btn").click()
+    tag = page.locator("tbody td.col-shipped-label").first
+    expect(tag).to_have_text(re.compile(r"^\s*on memo 2 of 3\s*$", re.I))
+    assert float(api.get(f"/items/{item}").json()["quantity"]) == 2
 
 
 def test_a_refused_take_back_quantity_names_the_lowest_it_accepts(page, ui_server, api):

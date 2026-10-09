@@ -9480,8 +9480,14 @@ async function celerpCsvImport(input, entityId) {{
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
                 _key = _SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None
+                _text = t(_key) if _key else None
+                # Part taken back: say how much of the line is still out.
+                _still_out = float(li.get("out_quantity") or 0)
+                _line_qty = float(li.get("quantity") or 0)
+                if _lbl == "On Memo" and 1e-9 < _still_out < _line_qty - 1e-9:
+                    _text = t("documents.line_label_on_memo_part", out=f"{_still_out:g}", qty=f"{_line_qty:g}")
                 cells.append(Td(
-                    Span(t(_key), cls="badge badge--inactive") if _key else "--",
+                    Span(_text, cls="badge badge--inactive") if _text else "--",
                     cls="col-shipped-label",
                 ))
             # Pieces / Weight as compact sub-lines under the description (shared with
