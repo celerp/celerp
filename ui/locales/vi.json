@@ -497,6 +497,7 @@
   "lines.hold_ambiguous": "{sku} được giữ cho nhiều dòng và không có ghi nhận cho dòng nào. Hãy bỏ giữ các dòng đó rồi giữ lại.",
   "lines.no_item": "Dòng {line} không chỉ định mặt hàng tồn kho nào.",
   "lines.cannot_split": "Không thể tách {sku}: {reason}",
+  "lines.lot_already_invoiced": "{sku} đã được lập hóa đơn trên {docs} và chưa giao, nên không thể lập hóa đơn lại. Hãy giao hoặc hủy hóa đơn đó trước, hoặc lập hóa đơn cho hàng tồn khác.",
   "lots.splitting_off": "Cho phép tách đang tắt cho {sku}. Để {action} một phần, hãy bật Cho phép tách cho mặt hàng, hoặc {action} toàn bộ lô.",
   "lots.split_action.return": "trả lại",
   "lots.split_action.ship": "giao",

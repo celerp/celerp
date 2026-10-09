@@ -2117,6 +2117,80 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
             sku=sku, status=status))
 
 
+async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[str, Projection]) -> dict[str, tuple[float, list[str]]]:
+    """Stock other invoices have already booked the cost of and not yet shipped, per lot:
+    ``{lot: (quantity, invoice numbers)}``. A finalized invoice's line names the lot it
+    sells until it ships (a shipped part is carved off and named instead), so a line of an
+    open finalized invoice that names a lot still in stock holds that much of it."""
+    in_stock = {eid for eid, p in locked.items()
+                if str(p.state.get("status") or "").lower() in ("available", "reserved")}
+    if not in_stock:
+        return {}
+    binds = _sa.text(
+        "EXISTS (SELECT 1 FROM json_array_elements(projections.state -> 'line_items') AS elem "
+        "WHERE COALESCE(elem ->> 'item_id', elem ->> 'entity_id') = ANY(:lots))"
+    ).bindparams(_sa.bindparam("lots", value=sorted(in_stock), type_=_sa.ARRAY(_sa.String)))
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.entity_id != entity_id,
+        Projection.state["doc_type"].as_string() == "invoice",
+        Projection.state["finalized"].as_boolean().is_(True),
+        Projection.state["status"].as_string() != "void",
+        binds,
+    ))).scalars().all()
+    out: dict[str, tuple[float, list[str]]] = {}
+    for doc in rows:
+        for li in doc.state.get("line_items") or []:
+            eid = str(line_item_id(li) or "")
+            if eid not in in_stock:
+                continue
+            qty = min(float(li.get("quantity") or 0), float(locked[eid].state.get("quantity") or 0))
+            held, numbers = out.get(eid, (0.0, []))
+            number = str(doc.state.get("doc_number") or doc.state.get("ref_id") or doc.entity_id)
+            out[eid] = (held + qty, numbers if number in numbers else [*numbers, number])
+    return out
+
+
+async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, state: dict, company_settings: dict) -> None:
+    """Finalizing an invoice books the cost of the stock it sells, so it plans each stock line
+    the way shipping it will: a line that could be filled only by taking part of a lot that
+    may not be split is refused, and so is one whose stock another finalized invoice has
+    already booked and not yet shipped (its cost would be booked twice). Stock the customer
+    already has (out on the memo the invoice came from, or sold to it) is not drawn again.
+    A line no stock covers at all is a backorder and still finalizes."""
+    from celerp_inventory.projections import is_manufacturable
+    line_items = state.get("line_items") or []
+    sold_to = {entity_id, state.get("source_memo_id")} - {None, ""}
+    indices = [i for i, li in enumerate(line_items) if line_item_id(li)]
+    if not indices:
+        return
+    locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    claimed = await _invoiced_elsewhere(session, company_id, entity_id, locked)
+    remaining = {eid: float(locked[eid].state.get("quantity") or 0) - qty for eid, (qty, _n) in claimed.items()}
+    for i in indices:
+        bound = locked.get(str(line_item_id(line_items[i])))
+        if bound is None:
+            continue
+        lot = bound.state
+        status = str(lot.get("status") or "").lower()
+        if (is_non_stock_line(lot.get("inventory_type"), lot.get("sell_by")) or is_manufacturable(lot)
+                or status == "memo_out" or (status == "sold" and lot.get("status_doc_id") in sold_to)):
+            continue
+        sku = str(lot.get("sku") or bound.entity_id)
+        draws, short, _own, skipped = _line_plan(line_items, i, locked, by_line, entity_id, company_settings, remaining)
+        if short <= 1e-9:
+            continue
+        if skipped:
+            raise HTTPException(status_code=409, detail=splitting_off(str(skipped[0]["state"].get("sku") or sku), "invoice"))
+        taken = next((eid for eid in [bound.entity_id, *(lt["entity_id"] for lt, _t, _f in draws)] if eid in claimed), None)
+        if taken is not None:
+            numbers = ", ".join(claimed[taken][1])
+            raise HTTPException(status_code=409, detail=refusal(
+                "lines.lot_already_invoiced",
+                f"{sku} is already invoiced on {numbers} and not yet shipped, so it cannot be invoiced again. "
+                "Ship or void that invoice first, or invoice other stock.", sku=sku, docs=numbers))
+
+
 # Documents whose finalize posts the bill entry, each line to its own account when it names one.
 _BILL_POSTED = frozenset({"purchase_order", "bill"})
 
@@ -2148,6 +2222,8 @@ async def finalize_document(
         await require_line_destinations(session, company_id, row.state["line_items"])
     if row.state.get("doc_type") == "invoice":
         await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
+        await _refuse_unfillable_invoice_lines(session, company_id, entity_id, row.state,
+                                               (_company.settings or {}) if _company else {})
 
     # Snapshot scalar values early — avoids ORM lazy-load issues after multiple flush() calls.
     _initial_doc_state = dict(row.state)

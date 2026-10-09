@@ -497,6 +497,7 @@
   "lines.hold_ambiguous": "{sku} ist für mehr als eine Zeile reserviert und nichts hält fest, für welche. Geben Sie diese Zeilen frei und reservieren Sie sie neu.",
   "lines.no_item": "Zeile {line} nennt keinen Lagerartikel.",
   "lines.cannot_split": "{sku} kann nicht geteilt werden: {reason}",
+  "lines.lot_already_invoiced": "{sku} ist bereits auf {docs} fakturiert und noch nicht versendet, daher kann es nicht erneut fakturiert werden. Versenden oder stornieren Sie zuerst diese Rechnung, oder fakturieren Sie anderen Bestand.",
   "lots.splitting_off": "Teilen erlauben ist für {sku} ausgeschaltet. Um einen Teil davon zu {action}, schalten Sie Teilen erlauben für den Artikel ein. Die ganze Partie lässt sich immer {action}.",
   "lots.split_action.return": "zurücksenden",
   "lots.split_action.ship": "versenden",

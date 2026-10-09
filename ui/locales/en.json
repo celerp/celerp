@@ -555,6 +555,7 @@
   "lines.hold_ambiguous": "{sku} is held for more than one line and nothing records which. Release those lines and reserve them again.",
   "lines.no_item": "Line {line} names no inventory item.",
   "lines.cannot_split": "Cannot split {sku}: {reason}",
+  "lines.lot_already_invoiced": "{sku} is already invoiced on {docs} and not yet shipped, so it cannot be invoiced again. Ship or void that invoice first, or invoice other stock.",
   "lots.splitting_off": "Allow Splitting is off for {sku}. To {action} part of it, turn on Allow Splitting for the item, or {action} the whole parcel.",
   "lots.split_action.return": "return",
   "lots.split_action.ship": "ship",

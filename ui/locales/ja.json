@@ -497,6 +497,7 @@
   "lines.hold_ambiguous": "{sku} は複数の行のために確保されていますが、どの行か記録がありません。それらの行を解放してから再度確保してください。",
   "lines.no_item": "{line} 行目に在庫品目が指定されていません。",
   "lines.cannot_split": "{sku} を分割できません: {reason}",
+  "lines.lot_already_invoiced": "{sku} は {docs} で請求済みでまだ出荷されていないため、再度請求できません。先にその請求書を出荷または無効にするか、別の在庫を請求してください。",
   "lots.splitting_off": "{sku} は分割許可がオフです。一部を{action}するには品目の分割許可をオンにするか、ロット全体を{action}してください。",
   "lots.split_action.return": "返品",
   "lots.split_action.ship": "出荷",

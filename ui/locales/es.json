@@ -497,6 +497,7 @@
   "lines.hold_ambiguous": "{sku} está reservado para más de una línea y nada registra para cuál. Libere esas líneas y resérvelas de nuevo.",
   "lines.no_item": "La línea {line} no indica ningún artículo de inventario.",
   "lines.cannot_split": "No se puede dividir {sku}: {reason}",
+  "lines.lot_already_invoiced": "{sku} ya está facturado en {docs} y aún no se ha enviado, así que no se puede facturar de nuevo. Envíe o anule primero esa factura, o facture otro inventario.",
   "lots.splitting_off": "Permitir división está desactivado para {sku}. Para {action} una parte, active Permitir división en el artículo, o puede {action} el lote completo.",
   "lots.split_action.return": "devolver",
   "lots.split_action.ship": "enviar",

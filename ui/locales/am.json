@@ -530,6 +530,7 @@
   "lines.hold_ambiguous": "{sku} ለአንድ በላይ መስመር ተይዟል እና ለየትኛው እንደሆነ አልተመዘገበም። መስመሮቹን ለቀው እንደገና ያስይዙ።",
   "lines.no_item": "መስመር {line} ምንም የእቃ ክምችት አይጠቅስም።",
   "lines.cannot_split": "{sku}ን መከፋፈል አልተቻለም፦ {reason}",
+  "lines.lot_already_invoiced": "{sku} በ{docs} ላይ አስቀድሞ ደረሰኝ ተሰጥቶበታል እና ገና አልተላከም፣ ስለዚህ እንደገና ደረሰኝ ሊሰጥበት አይችልም። መጀመሪያ ያንን ደረሰኝ ይላኩ ወይም ይሰርዙ፣ ወይም ሌላ ክምችት ደረሰኝ ይስጡ።",
   "lots.splitting_off": "ለ{sku} መከፋፈል መፍቀድ ጠፍቷል። ከፊሉን {action} ለማድረግ ለዕቃው መከፋፈል መፍቀድን ያብሩ፣ ወይም ሙሉውን ጥቅል {action}።",
   "lots.split_action.return": "መመለስ",
   "lots.split_action.ship": "መላክ",
