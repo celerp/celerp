@@ -30,13 +30,13 @@ from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
-from celerp_docs.consignment_buy import buy_consignment, lineage as consignment_lineage
+from celerp_docs.consignment_buy import buy_consignment
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
-from celerp.services.account_roles import current_settings, is_consigned, lot_account, new_lot_account, role_map
+from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
@@ -4372,7 +4372,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if doc_type == "consignment_in":
         # Consigned goods are the consignor's wherever they went since: the parts of a lot
         # and goods a customer brought back can go back too, up to what each still holds.
-        for lot, _parent, link in await consignment_lineage(session, company_id, row.state.get("received_item_ids") or []):
+        for lot, _parent, link in await lineage(session, company_id, row.state.get("received_item_ids") or []):
             if link in ("split_from", "returned_from") and is_consigned(lot.state or {}):
                 returnable[lot.entity_id] = float((lot.state or {}).get("quantity") or 0)
     for it in payload.items:

@@ -31,6 +31,7 @@ from celerp.services.account_roles import (
     consignor_of,
     current_settings,
     is_consigned,
+    lineage,
     line_has_role,
     line_roles,
     lot_account,
@@ -2310,6 +2311,26 @@ def _line_skus(state: dict) -> set[str] | None:
     return skus
 
 
+async def _held_where(session, company_id, lot_ids: set[str]) -> dict[str, list[Projection]]:
+    """Per lot, the lots that hold its goods: the lot, then the parts split off it and the
+    lot it was merged into, and theirs in turn (account_roles.lineage). Goods made into
+    something else or that came back from a customer are other goods."""
+    rows: dict[str, Projection] = {}
+    parts: dict[str, list[str]] = {}
+    for row, parent, link in await lineage(session, company_id, sorted(lot_ids)):
+        rows[row.entity_id] = row
+        if link == "split_from":
+            parts.setdefault(parent, []).append(row.entity_id)
+    out: dict[str, list[Projection]] = {}
+    for root in sorted(lot_ids & set(rows)):
+        members: list[str] = [root]
+        for lot_id in members:
+            into = (rows[lot_id].state or {}).get("merged_into")
+            members += [m for m in (*parts.get(lot_id, []), into) if m in rows and m not in members]
+        out[root] = [rows[m] for m in members]
+    return out
+
+
 async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                            skus: set[str] | None = None) -> list[UnshippedClaim]:
     """Every claim finalized invoices hold on goods still on hand (UnshippedClaim), in
@@ -2317,11 +2338,12 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
     ``skus`` is given, invoices none of whose lines sell those SKUs.
 
     Only invoices that are final and not shipped in full count: not drafts, not voided.
-    A line's unshipped quantity is taken from its allocated lots in allocation order,
-    each lot only while it is still in stock and only up to what was allocated from it;
-    the line's recognized cost for its unshipped goods is shared over those lots by
-    their allocated cost. A lot no longer in stock claims nothing: its goods left stock
-    some other way."""
+    A line's unshipped quantity is taken from its allocated lots in allocation order, up
+    to what was allocated from each. The goods of an allocated lot are wherever they went
+    while still in stock: the lot itself, the parts split off it, and the lot it was
+    merged into (_held_where), each up to what it still holds. The line's recognized
+    cost for its unshipped goods is shared over those lots by their allocated cost. Goods
+    no longer in stock claim nothing: they left stock some other way."""
     docs = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
     open_docs: dict[str, dict] = {}
@@ -2335,21 +2357,29 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
             continue
         open_docs[doc.entity_id] = state
     books = await _read_books(session, company_id, open_docs)
+    held_where = await _held_where(session, company_id, {
+        lot["lot_entity_id"] for recognized in books.recognized.values()
+        for alloc in recognized.allocations.values() for lot in alloc.get("lots") or []})
     claims: list[UnshippedClaim] = []
     for doc_id, recognized in sorted(books.recognized.items(), key=lambda d: (d[1].seq, d[0])):
         _shipped, held, unshipped = await _recognized_by_account(session, company_id, doc_id, open_docs[doc_id], books)
         for idx, by_key in sorted(held.items()):
             left = unshipped.get(idx, 0.0)
+            used: dict[str, float] = {}
             taken: list[tuple[str, float, str, float, float]] = []  # lot, qty, key, weight, on hand
             for lot in recognized.allocations[str(idx)].get("lots") or []:
-                row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
-                value = _on_hand_value(row) if row is not None else None
-                qty = min(float(lot.get("qty") or 0), left)
-                if value is None or qty <= 1e-9:
-                    continue
-                left -= qty
-                key = await _allocated_lot_key(session, company_id, lot, books.payable_codes)
-                taken.append((lot["lot_entity_id"], qty, key, qty * float(lot.get("unit_cost") or 0), float(value)))
+                want = min(float(lot.get("qty") or 0), left)
+                key = None
+                for member in held_where.get(lot["lot_entity_id"], []):
+                    value = _on_hand_value(member)
+                    qty = min(want, float((member.state or {}).get("quantity") or 0) - used.get(member.entity_id, 0.0))
+                    if value is None or qty <= 1e-9:
+                        continue
+                    want -= qty
+                    left -= qty
+                    used[member.entity_id] = used.get(member.entity_id, 0.0) + qty
+                    key = key or await _allocated_lot_key(session, company_id, lot, books.payable_codes)
+                    taken.append((member.entity_id, qty, key, qty * float(lot.get("unit_cost") or 0), float(value)))
             # A lot set aside at no cost still holds its claim: the goods move with it
             # when another invoice ships them, at a cost of nothing.
             for key in dict.fromkeys(t[2] for t in taken):
@@ -2359,6 +2389,20 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                                           amount=shares.get(lot_id, 0.0), on_hand=on_hand)
                            for lot_id, qty, _key, _weight, on_hand in mine]
     return claims
+
+
+async def set_aside_on(session, company_id, lot_id: str, sku: str) -> dict[str, float]:
+    """{invoice number: quantity} of lot ``lot_id`` (selling ``sku``) that finalized
+    invoices have costed and not shipped (unshipped_claims)."""
+    out: dict[str, float] = {}
+    for claim in await unshipped_claims(session, company_id, skus={sku}):
+        if claim.lot_id != lot_id:
+            continue
+        doc = await session.get(Projection, {"company_id": company_id, "entity_id": claim.doc_id})
+        state = (doc.state if doc is not None else None) or {}
+        number = str(state.get("doc_number") or state.get("ref_id") or claim.doc_id)
+        out[number] = out.get(number, 0.0) + claim.qty
+    return out
 
 
 async def recognized_unshipped(session, company_id) -> dict[str, float]:

@@ -49,6 +49,7 @@ from .services import (
     is_item_field_key,
     item_price_mutex_groups,
     build_import_plan,
+    refuse_taking_set_aside_goods,
     source_header_semantics,
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
@@ -3780,6 +3781,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
+    await refuse_taking_set_aside_goods(session, company_id, parent, 0.0)
 
     # Validate
     if payload.child_quantity <= 0:

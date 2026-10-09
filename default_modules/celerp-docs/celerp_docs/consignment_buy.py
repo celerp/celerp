@@ -32,14 +32,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, AccountRole, refusal
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import consignor_of, is_consigned, new_lot_account, party_key
+from celerp.services.account_roles import consignor_of, is_consigned, lineage, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_money import UnratedTaxError, document_money
@@ -113,33 +113,6 @@ async def _sale_doc(session, company_id, lot_id: str) -> str | None:
     return (sale.data or {}).get("source_doc_id")
 
 
-async def lineage(session, company_id, roots) -> list[tuple[Projection, str | None, str | None]]:
-    """Every lot that came from ``roots``, roots first and each lot after the one it came
-    from: (lot, parent, link), where link names how it came from its parent (its parts
-    ``split_from``, ``transformed_from``, or goods a customer returned ``returned_from``),
-    and parent and link are None for a root."""
-    out: list[tuple[Projection, str | None, str | None]] = []
-    seen: set[str] = set()
-    frontier: dict[str, tuple[str | None, str | None]] = {root: (None, None) for root in roots}
-    while frontier:
-        seen |= set(frontier)
-        rows = (await session.execute(select(Projection).where(
-            Projection.company_id == company_id, Projection.entity_id.in_(sorted(frontier))))).scalars().all()
-        out += [(row, *frontier[row.entity_id]) for row in sorted(rows, key=lambda r: r.entity_id)]
-        children = (await session.execute(select(Projection).where(
-            Projection.company_id == company_id, Projection.entity_type == "item",
-            or_(*(Projection.state[key].as_string().in_(sorted(frontier))
-                  for key in ("split_from", "transformed_from", "returned_from")))))).scalars().all()
-        frontier = {}
-        for child in sorted(children, key=lambda r: r.entity_id):
-            if child.entity_id in seen:
-                continue
-            cs = child.state or {}
-            link = next(key for key in ("transformed_from", "split_from", "returned_from") if cs.get(key) in seen)
-            frontier[child.entity_id] = (cs[link], link)
-    return out
-
-
 async def _plan(session, company_id, state: dict) -> _Plan:
     lines = state.get("line_items") or []
     receipts = [x for x in state.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
@@ -168,7 +141,7 @@ async def _plan(session, company_id, state: dict) -> _Plan:
         of[root] = group
 
     for row, parent, link in await lineage(session, company_id, of):
-        if link == "transformed_from":
+        if link in ("transformed_from", "merged_into"):
             raise _changed(_sku(row.state or {}))
         if link == "split_from":
             of[row.entity_id] = of[parent]

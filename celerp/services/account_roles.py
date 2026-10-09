@@ -14,7 +14,7 @@ scopes; they never resolve today's map.
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
@@ -275,6 +275,37 @@ def sold_lot_account(state: dict) -> str:
 
 # How a lot came from another one, followed back to the lot received on a consignment.
 _LOT_PARENT_KEYS = ("split_from", "transformed_from", "returned_from")
+
+
+async def lineage(session: AsyncSession, company_id, roots) -> list[tuple[Projection, str | None, str | None]]:
+    """Every lot that came from ``roots``, roots first and each lot after the one it came
+    from: (lot, parent, link), where link names how it came from its parent (its parts
+    ``split_from``, ``transformed_from``, goods a customer returned ``returned_from``, or
+    the lot it was merged into ``merged_into``), and parent and link are None for a root."""
+    out: list[tuple[Projection, str | None, str | None]] = []
+    seen: set[str] = set()
+    frontier: dict[str, tuple[str | None, str | None]] = {root: (None, None) for root in roots}
+    while frontier:
+        seen |= set(frontier)
+        rows = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(sorted(frontier))))).scalars().all()
+        rows = sorted(rows, key=lambda r: r.entity_id)
+        out += [(row, *frontier[row.entity_id]) for row in rows]
+        children = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            or_(*(Projection.state[key].as_string().in_(sorted(frontier)) for key in _LOT_PARENT_KEYS))))).scalars().all()
+        frontier = {}
+        for child in sorted(children, key=lambda r: r.entity_id):
+            if child.entity_id in seen:
+                continue
+            cs = child.state or {}
+            link = next(key for key in ("transformed_from", "split_from", "returned_from") if cs.get(key) in seen)
+            frontier[child.entity_id] = (cs[link], link)
+        for row in rows:
+            into = (row.state or {}).get("merged_into")
+            if into and into not in seen and into not in frontier:
+                frontier[str(into)] = (row.entity_id, "merged_into")
+    return out
 
 
 async def consignor_of(session: AsyncSession, company_id, lot_id: str, state: dict) -> str | None:
