@@ -712,11 +712,14 @@ async def test_invoice_finalize_promotes_memo_out_items_to_sold(client, session,
 
 
 @pytest.mark.asyncio
-async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids):
-    """Fix 3: PATCH doc with line_items.new that omits a fulfilled entity_id must be rejected.
+@pytest.mark.parametrize("sent_out_by", ["this_doc", "elsewhere"])
+async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids, sent_out_by):
+    """PATCH doc with line_items.new that omits a line whose goods THIS document sent out
+    is rejected; a line whose goods went out some other way is not this document's, so
+    it can be dropped (or changed to other stock).
 
-    Sets up the state via the service layer (bypassing Fix 1) to test the PATCH guard
-    independently: draft doc + item in sold state (simulates a forced/migrated state).
+    Sets up the state via the service layer to test the PATCH guard independently: draft
+    doc + item sent out (simulates a forced/migrated state).
     """
     import uuid as _uuid
     from celerp.events.engine import emit_event
@@ -736,14 +739,15 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
     doc_id = r.json()["id"]
     # Doc is draft at this point
 
-    # Set item status to sold via service layer (bypassing HTTP guards)
+    # Send the item out via the service layer (bypassing HTTP guards)
     await emit_event(
         session,
         company_id=_setup_ids["company_id"],
         entity_id=item_id,
         entity_type="item",
-        event_type="item.status.set",
-        data={"new_status": "sold"},
+        event_type="item.fulfilled" if sent_out_by == "this_doc" else "item.status.set",
+        data=({"source_doc_id": doc_id, "quantity_fulfilled": 1.0, "fulfilled_by": str(_setup_ids["user_id"]),
+               "doc_type": "memo"} if sent_out_by == "this_doc" else {"new_status": "sold"}),
         actor_id=_setup_ids["user_id"],
         location_id=None,
         source="test",
@@ -761,6 +765,9 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
         "fields_changed": {"line_items": {"new": remaining_lines}},
     })
+    if sent_out_by == "elsewhere":
+        assert r.status_code == 200, r.text
+        return
     assert r.status_code == 409, r.text
     assert "fulfilled" in r.text.lower()
 

@@ -472,6 +472,13 @@ class DocBatchImportRequest(BaseModel):
     upsert: bool = False
 
 
+def _sent_out_by(item_state: dict, doc_id: str) -> bool:
+    """Whether document ``doc_id`` sent these goods out (sold or out on memo): it
+    fulfilled them, or holds them as their status document."""
+    return item_state.get("status") in FULFILLED_ITEM_STATUSES and (
+        doc_id in (item_state.get("fulfilled_for_docs") or []) or item_state.get("status_doc_id") == doc_id)
+
+
 class FulfillLinesRequest(BaseModel):
     line_entity_ids: list[str]
 
@@ -1812,9 +1819,9 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         # longer be persisted onto a document.
         await _validate_document_line_quantities(new_line_items, session, company_id)
 
-        # Fix 3: guard against deleting fulfilled line items via the patch endpoint.
-        # Compare the current doc's entity_ids against the incoming list; any entity_id
-        # that disappears must not be in a fulfilled state.
+        # A line whose goods THIS document sent out cannot be dropped until that is
+        # reverted. Goods another document shipped are not this one's: its line can be
+        # changed to other stock.
         existing_eids = {
             li.get("entity_id") or li.get("item_id") or ""
             for li in (row.state.get("line_items") or [])
@@ -1826,7 +1833,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         removed_eids = existing_eids - incoming_eids
         for eid in removed_eids:
             item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
-            if item_proj and item_proj.state.get("status") in FULFILLED_ITEM_STATUSES:
+            if item_proj and _sent_out_by(item_proj.state, entity_id):
                 raise HTTPException(
                     status_code=409,
                     detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
@@ -7017,9 +7024,13 @@ async def _fulfill_lines_impl(
         # this doc's own hold, now converted to a real stock draw. A line reserved by ANOTHER
         # document is the exclusivity point and cannot be sent from here.
         if demand_claim(item_proj.state, entity_id) is None:
+            elsewhere = ""
+            if item_proj.state.get("status") in FULFILLED_ITEM_STATUSES and not _sent_out_by(item_proj.state, entity_id):
+                elsewhere = (f": it went out on {item_proj.state.get('status_doc_number') or 'another document'}. "
+                             "Revert this document to draft and change the line to other stock to ship it")
             errors.append(
                 f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', "
-                f"is '{item_proj.state.get('status', '')}'"
+                f"is '{item_proj.state.get('status', '')}'{elsewhere}"
             )
             continue
         # Stock guard: the invoiced quantity must not exceed the parcel's stock,
