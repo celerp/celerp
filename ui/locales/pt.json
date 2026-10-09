@@ -4323,6 +4323,7 @@
   "consignment.no_consignor": "O estoque {sku} está numa consignação sem consignante, por isso não há a quem dever quando for vendido. Abra a consignação e escolha primeiro o consignante.",
   "consignment.unvoid.returned": "Esta fatura não pode ser restaurada: os bens que vendia voltaram ao consignante em {consignments} enquanto estava anulada. Crie uma nova fatura para os bens ainda detidos.",
   "consignment.receive.no_consignor": "Esta consignação não tem consignante, por isso não há a quem dever as mercadorias quando forem vendidas. Abra a consignação e escolha primeiro o consignante.",
+  "consignment.consignor_fixed": "O consignante está fixado: mercadorias desta consignação foram vendidas ou faturadas, e essas vendas são devidas a ele.",
   "consignment.buy.changed": "O estoque {sku} recebido nesta consignação mudou de uma forma que a fatura do fornecedor não consegue acompanhar (mesclado, transformado ou com custos de importação), por isso a compra não pode ser lançada sem adivinhar.",
   "consignment.buy.untraced": "O estoque {sku} desta consignação foi vendido, mas não em uma fatura que registre seu custo, por isso o valor devido não pode ser liquidado sem adivinhar.",
   "consignment.buy.recompute": "Apenas parte desta consignação está sendo comprada, e o seu desconto fixo ou valor de imposto não pode ser dividido entre a mercadoria mantida e a devolvida sem adivinhar. Defina o desconto como porcentagem e o imposto como alíquota na consignação e converta novamente.",

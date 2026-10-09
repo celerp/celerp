@@ -14,7 +14,6 @@ import uuid
 
 import pytest
 
-from celerp.models.projections import Projection
 from test_consignment_in_sale import (
     AP,
     COGS,
@@ -125,15 +124,11 @@ async def test_one_invoice_of_two_consignors_goods_owes_each_their_own(client, s
     await _settled(client, session, auth)
 
 
-async def test_a_lot_received_before_lots_recorded_their_consignor_is_owed_to_its_consignment(
-        client, session, auth):
-    """A lot from before lots recorded their consignor is owed to the contact of the
-    consignment that received it, and so is a lot split from it on a sale."""
+async def test_a_lot_and_a_part_split_off_it_are_owed_to_its_consignment(client, session, auth):
+    """A lot not yet sold is owed to the contact of the consignment that received it, and
+    so is a lot split from it on a sale."""
     a, b = await _consignor(client, auth, "Consignor A"), await _consignor(client, auth, "Consignor B")
     con_a, lot_a = await _consign(client, session, auth, qty=2, cost_price=4.0, contact_id=a)
-    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot_a})
-    row.state = {k: v for k, v in row.state.items() if k != CONSIGNOR_FIELD}
-    await session.commit()
 
     await _sell(client, session, auth, lot_a, 1)
     assert await _owed_each(client, auth, a, b) == (4.0, 0.0, 0.0)

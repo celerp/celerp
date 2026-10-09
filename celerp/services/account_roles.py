@@ -321,10 +321,10 @@ async def lineage(session: AsyncSession, company_id, roots) -> list[tuple[Projec
 
 async def consignor_of(session: AsyncSession, company_id, lot_id: str, state: dict) -> str | None:
     """The consignor the consigned lot ``lot_id`` (projection ``state``) belongs to: the
-    contact of the consignment it was received on. A lot records it at receipt and every
-    lot made from it keeps it; a lot from before lots recorded it is traced back through
-    the lots it came from to the consignment that received it. None when that consignment
-    cannot be found."""
+    contact of the consignment it was received on. A lot records it at its first sale and
+    every lot made from it keeps it; until then it is traced back through the lots it came
+    from to the consignment that received it, whose consignor is fixed from that sale on.
+    None when that consignment cannot be found."""
     seen: set[str] = set()
     while not state.get(CONSIGNOR_FIELD):
         parent = next((str(state[k]) for k in _LOT_PARENT_KEYS if state.get(k)), None)

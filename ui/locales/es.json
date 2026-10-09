@@ -4323,6 +4323,7 @@
   "consignment.no_consignor": "El stock {sku} está en una consignación sin consignador, por lo que no hay a quién deberle cuando se venda. Abra la consignación y elija primero el consignador.",
   "consignment.unvoid.returned": "Esta factura no se puede restaurar: los bienes que vendía volvieron al consignador en {consignments} mientras estaba anulada. Cree una factura nueva para los bienes que aún se tienen.",
   "consignment.receive.no_consignor": "Esta consignación no tiene consignador, así que no hay a quién deber sus mercancías cuando se vendan. Abra la consignación y elija primero el consignador.",
+  "consignment.consignor_fixed": "El consignador es fijo: se han vendido o facturado mercancías de esta consignación, y esas ventas se le deben a él.",
   "consignment.buy.changed": "El stock {sku} recibido en esta consignación ha cambiado de una forma que la factura del proveedor no puede seguir (fusionado, transformado o con costes de importación), por lo que su compra no se puede registrar sin suponer.",
   "consignment.buy.untraced": "El stock {sku} de esta consignación está vendido, pero no en una factura que registre su coste, por lo que lo que se debe por él no se puede liquidar sin suponer.",
   "consignment.buy.recompute": "Solo se compra una parte de esta consignación, y su descuento fijo o importe de impuesto no se puede repartir entre la mercancía conservada y la devuelta sin suponer. Indique el descuento como porcentaje y el impuesto como tasa en la consignación y vuelva a convertir.",

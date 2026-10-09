@@ -4323,6 +4323,7 @@
   "consignment.no_consignor": "Hàng tồn {sku} thuộc lô ký gửi chưa có bên ký gửi, nên khi bán không có ai để ghi nợ. Hãy mở lô ký gửi và chọn bên ký gửi trước.",
   "consignment.unvoid.returned": "Không thể khôi phục hóa đơn này: hàng hóa đang bán trong hóa đơn đã được trả lại bên ký gửi theo {consignments} trong khi hóa đơn bị hủy. Hãy tạo hóa đơn mới cho số hàng còn giữ.",
   "consignment.receive.no_consignor": "Lô ký gửi này chưa có bên ký gửi, nên không có ai để ghi nợ khi hàng được bán. Hãy mở lô ký gửi và chọn bên ký gửi trước.",
+  "consignment.consignor_fixed": "Bên ký gửi đã cố định: hàng trong lô ký gửi này đã được bán hoặc lập hóa đơn, và các khoản bán đó được nợ cho bên ký gửi này.",
   "consignment.buy.changed": "Hàng tồn {sku} nhận theo đợt ký gửi này đã thay đổi theo cách mà hóa đơn nhà cung cấp không thể theo dõi (đã gộp, đã chuyển đổi hoặc có chi phí nhập hàng), nên không thể ghi sổ việc mua mà không phỏng đoán.",
   "consignment.buy.untraced": "Hàng tồn {sku} của đợt ký gửi này đã bán, nhưng không nằm trên hóa đơn có ghi nhận giá vốn, nên không thể quyết toán khoản phải trả mà không phỏng đoán.",
   "consignment.buy.recompute": "Chỉ một phần của đợt ký gửi này được mua, và khoản chiết khấu cố định hoặc số tiền thuế không thể chia giữa hàng giữ lại và hàng trả lại mà không phỏng đoán. Hãy đặt chiết khấu theo phần trăm và thuế theo thuế suất trên đợt ký gửi, rồi chuyển đổi lại.",

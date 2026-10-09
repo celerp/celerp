@@ -1726,6 +1726,23 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     return result
 
 
+async def _refuse_fixed_consignor(session: AsyncSession, company_id, entity_id: str, state: dict) -> None:
+    """A consignment's consignor is who its goods are owed to from their first sale (the
+    lot records it then) and who its bill is owed to, so once any goods sold or the
+    consignment was billed neither the consignment's nor its bill's contact can change."""
+    consignment_id = entity_id if state.get("doc_type") == "consignment_in" else state.get("source_consignment_id")
+    if not consignment_id:
+        return
+    consignment = state if consignment_id == entity_id else (
+        (await session.get(Projection, {"company_id": company_id, "entity_id": consignment_id})).state or {})
+    lots = await lineage(session, company_id, consignment.get("received_item_ids") or [])
+    if consignment.get("status") == "converted" or any((row.state or {}).get(CONSIGNOR_FIELD) for row, _, _ in lots):
+        raise HTTPException(status_code=409, detail=refusal(
+            "consignment.consignor_fixed",
+            "The consignor is fixed: goods on this consignment have been sold or billed, and those sales are "
+            "owed to them."))
+
+
 async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch) -> dict:
     """Apply a document edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
@@ -1756,6 +1773,8 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         return done
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail="This document was changed by someone else; reload to get the latest before saving")
+    if selecting and new_contact_id != (row.state.get("contact_id") or ""):
+        await _refuse_fixed_consignor(session, company_id, entity_id, row.state)
     if selecting:
         client_values = {k: (v or {}).get("new") for k, v in fields_changed.items()}
         selection = await _contact_selection_values(
@@ -4094,9 +4113,6 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 item_data[LOT_ACCOUNT_FIELD] = purchased_account
             if is_consignment:
                 item_data["consignment_flag"] = "in"
-                # The consignor the goods belong to and are owed for when they sell.
-                if row.state.get("contact_id"):
-                    item_data[CONSIGNOR_FIELD] = row.state["contact_id"]
                 # Pair the new parcel with the consignment doc: inventory renders the
                 # number in the status cell and q-search matches it.
                 item_data["status_doc_id"] = entity_id
