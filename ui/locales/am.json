@@ -2435,6 +2435,7 @@
   "documents.page_subscription_po_templates": "የደንበኝነት ምዝገባ PO አብነቶች",
   "documents.page_subscription_templates": "የደንበኝነት ምዝገባዎች አብነቶች",
   "documents.paid_in_full": "ሙሉ በሙሉ ተከፍሏል",
+  "documents.returned_nothing_owed": "ተመልሷል፣ ቀሪ {amount}",
   "documents.party_bill_to": "ደረሰኝ ተቀባይ",
   "documents.party_issued_to": "የተሰጠ ለ",
   "documents.party_quote_to": "ጥቅስ ለ",

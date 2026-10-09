@@ -2328,6 +2328,7 @@
   "documents.page_subscription_po_templates": "Template PO Berlangganan",
   "documents.page_subscription_templates": "Template Berlangganan",
   "documents.paid_in_full": "Telah Dibayar Penuh",
+  "documents.returned_nothing_owed": "Dikembalikan, {amount} terutang",
   "documents.party_bill_to": "Ditagih ke",
   "documents.party_issued_to": "Diterbitkan ke",
   "documents.party_quote_to": "Penawaran kepada",

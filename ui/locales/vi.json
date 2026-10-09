@@ -2328,6 +2328,7 @@
   "documents.page_subscription_po_templates": "Mẫu đơn đặt hàng định kỳ",
   "documents.page_subscription_templates": "Mẫu đăng ký",
   "documents.paid_in_full": "Đã thanh toán đầy đủ",
+  "documents.returned_nothing_owed": "Đã trả hàng, chưa thanh toán {amount}",
   "documents.party_bill_to": "Gửi hóa đơn cho",
   "documents.party_issued_to": "Đã phát hành cho",
   "documents.party_quote_to": "Báo giá cho",

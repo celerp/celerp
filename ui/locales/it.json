@@ -2329,6 +2329,7 @@
   "documents.page_subscription_po_templates": "Modelli di ordini di acquisto in abbonamento",
   "documents.page_subscription_templates": "Modelli di abbonamento",
   "documents.paid_in_full": "Pagato per intero",
+  "documents.returned_nothing_owed": "Reso, {amount} in sospeso",
   "documents.party_bill_to": "Fatturare a",
   "documents.party_issued_to": "Emesso a",
   "documents.party_quote_to": "Preventivo a",

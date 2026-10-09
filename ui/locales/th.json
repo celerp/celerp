@@ -2328,6 +2328,7 @@
   "documents.page_subscription_po_templates": "แม่แบบใบสั่งซื้อการสมัครสมาชิก",
   "documents.page_subscription_templates": "แม่แบบการสมัครสมาชิก",
   "documents.paid_in_full": "ชำระครบแล้ว",
+  "documents.returned_nothing_owed": "คืนแล้ว ค้างชำระ {amount}",
   "documents.party_bill_to": "เรียกเก็บเงินจาก",
   "documents.party_issued_to": "ออกให้แก่",
   "documents.party_quote_to": "เสนอราคาถึง",

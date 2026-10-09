@@ -2328,6 +2328,7 @@
   "documents.page_subscription_po_templates": "قوالب أوامر الشراء الخاصة بالاشتراك",
   "documents.page_subscription_templates": "قوالب الاشتراك",
   "documents.paid_in_full": "مدفوع بالكامل",
+  "documents.returned_nothing_owed": "مُرتجع، المستحق {amount}",
   "documents.party_bill_to": "الفاتورة إلى",
   "documents.party_issued_to": "صادرة إلى",
   "documents.party_quote_to": "عرض الأسعار إلى",

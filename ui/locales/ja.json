@@ -2328,6 +2328,7 @@
   "documents.page_subscription_po_templates": "定期購入発注テンプレート",
   "documents.page_subscription_templates": "定期購入テンプレート",
   "documents.paid_in_full": "全額支払い済み",
+  "documents.returned_nothing_owed": "返品済み、未決済 {amount}",
   "documents.party_bill_to": "請求先",
   "documents.party_issued_to": "発行先",
   "documents.party_quote_to": "見積先",

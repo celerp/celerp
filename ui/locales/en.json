@@ -2454,6 +2454,7 @@
   "documents.page_subscription_po_templates": "Subscription PO Templates",
   "documents.page_subscription_templates": "Subscription Templates",
   "documents.paid_in_full": "Paid in Full",
+  "documents.returned_nothing_owed": "Returned, {amount} outstanding",
   "documents.party_bill_to": "Bill to",
   "documents.party_issued_to": "Issued to",
   "documents.party_quote_to": "Quote to",

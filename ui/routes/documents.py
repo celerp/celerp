@@ -5703,7 +5703,13 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         )
     else:
         paid_label = t("documents.total_paid", paid=fmt_money(amount_paid, currency), total=fmt_money(total_val, currency))
-        outstanding_label = t("documents.paid_in_full") if outstanding_d == 0 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
+        # A bill whose goods all went back owes nothing because of the return, not a payment.
+        if outstanding_d == 0 and status == "returned":
+            outstanding_label = t("documents.returned_nothing_owed", amount=fmt_money(outstanding, currency))
+        elif outstanding_d == 0:
+            outstanding_label = t("documents.paid_in_full")
+        else:
+            outstanding_label = t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
         outstanding_cls = "total-value--success" if outstanding_d == 0 else "total-value--alert"
         summary_line = Div(
             Span(paid_label, cls="total-label"),

@@ -2328,6 +2328,7 @@
   "documents.page_subscription_po_templates": "Modelos de pedidos de assinatura",
   "documents.page_subscription_templates": "Modelos de assinatura",
   "documents.paid_in_full": "Pago integralmente",
+  "documents.returned_nothing_owed": "Devolvido, {amount} pendente",
   "documents.party_bill_to": "Faturar para",
   "documents.party_issued_to": "Emitido para",
   "documents.party_quote_to": "Orçamento para",

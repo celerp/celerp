@@ -198,6 +198,27 @@ async def test_return_form_says_where_goods_split_off_the_parcel_are(client, ses
     assert "no longer in stock" not in html
 
 
+async def test_fully_returned_bill_reads_returned_not_paid(client, session, auth):
+    """An unpaid bill whose goods all went back owes nothing because of the return, not a
+    payment: its status, its list row and its payment summary read Returned, never Paid in Full."""
+    from ui.routes import documents
+
+    bill, [line_id] = await _issued(client, session, auth, "bill", _stock_lines(1, qty=4))
+    r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 4})
+    assert r.status_code == 200, r.text
+    r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": 4})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{bill}", headers=auth["headers"])).json()
+    assert doc["status"] == "returned"
+    assert float(doc.get("amount_paid") or 0) == 0
+    assert to_xml(documents.format_value(doc["status"], "badge", domain="doc_status")).count("Returned") == 1
+    html = to_xml(documents._payment_section(doc))
+    assert "Paid in Full" not in html
+    money = documents.fmt_money(0, doc.get("currency") or "USD")
+    assert f"Returned, {money} outstanding" in html
+
+
 async def test_return_refuses_reserved_lot(client, session, auth):
     bill, [line_id] = await _issued(client, session, auth, "bill", _stock_lines(1, qty=4))
     r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 4})
@@ -400,7 +421,7 @@ async def test_return_goods_form_sends_the_measures_given(monkeypatch):
     "docs.return_line_not_on_hand", "docs.return_line_shared", "docs.return_line_unknown",
     "docs.return_line_untraced", "docs.return_not_on_hand", "documents.confirm_return_selected",
     "documents.nothing_to_return", "documents.return_nothing_selected", "documents.return_measure_blank_hint",
-    "documents.return_held_split_off",
+    "documents.return_held_split_off", "documents.returned_nothing_owed",
 ])
 def test_return_copy_in_every_locale(key):
     from ui import i18n

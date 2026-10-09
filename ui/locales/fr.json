@@ -2329,6 +2329,7 @@
   "documents.page_subscription_po_templates": "Modèles de bons de commande d'abonnement",
   "documents.page_subscription_templates": "Modèles d'abonnement",
   "documents.paid_in_full": "Entièrement payé",
+  "documents.returned_nothing_owed": "Retourné, {amount} en attente",
   "documents.party_bill_to": "Facturer à",
   "documents.party_issued_to": "Émis à",
   "documents.party_quote_to": "Devis à",

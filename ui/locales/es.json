@@ -2328,6 +2328,7 @@
   "documents.page_subscription_po_templates": "Plantillas de pedidos de suscripción",
   "documents.page_subscription_templates": "Plantillas de suscripción",
   "documents.paid_in_full": "Pagado en su totalidad",
+  "documents.returned_nothing_owed": "Devuelto, {amount} pendiente",
   "documents.party_bill_to": "Facturar a",
   "documents.party_issued_to": "Emitido a",
   "documents.party_quote_to": "Presupuesto a",
