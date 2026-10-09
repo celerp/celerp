@@ -327,10 +327,40 @@ async def test_return_goods_form_posts_selected_lines(client, session, auth, mon
     assert "Select at least one line" in resp.headers["HX-Trigger"]
 
 
+async def test_return_goods_form_sends_the_measures_given(monkeypatch):
+    """A weight or pieces typed on a return row goes with its line; a blank one is not sent,
+    so the server keeps it unknown; one that is not a number is refused before anything is sent."""
+    from ui.routes import documents
+
+    sent: list[dict] = []
+
+    async def return_goods(_tok, entity_id, data):
+        sent.append(data)
+        return {}
+
+    monkeypatch.setattr(documents, "_token", lambda request: "tok")
+    monkeypatch.setattr(api_client, "return_goods", return_goods)
+    routes = _Routes()
+    documents.setup_routes(routes)
+    handler = routes.routes[("post", "/docs/{entity_id}/return-goods")]
+
+    resp = await handler(_Request([("qty_0", "2"), ("line_id_0", "L0"), ("weight_0", "6.5"), ("pieces_0", ""),
+                                   ("qty_1", "1"), ("line_id_1", "L1"), ("weight_1", " "), ("pieces_1", "3")]), "doc:1")
+    assert resp.status_code == 204, resp.body
+    assert sent[0]["lines"] == [{"line_id": "L0", "quantity_returned": 2.0, "weight": 6.5},
+                                {"line_id": "L1", "quantity_returned": 1.0, "pieces": 3.0}]
+
+    for field, bad, message in (("weight_0", "abc", "Weight must be greater than 0."),
+                                ("pieces_0", "inf", "Pieces must be a whole number greater than 0.")):
+        resp = await handler(_Request([("qty_0", "2"), ("line_id_0", "L0"), (field, bad)]), "doc:1")
+        assert json.loads(resp.headers["HX-Trigger"])["celerpToast"]["message"] == message
+    assert len(sent) == 1
+
+
 @pytest.mark.parametrize("key", [
     "docs.return_line_not_on_hand", "docs.return_line_shared", "docs.return_line_unknown",
     "docs.return_line_untraced", "docs.return_not_on_hand", "documents.confirm_return_selected",
-    "documents.nothing_to_return", "documents.return_nothing_selected",
+    "documents.nothing_to_return", "documents.return_nothing_selected", "documents.return_measure_blank_hint",
 ])
 def test_return_copy_in_every_locale(key):
     from ui import i18n
