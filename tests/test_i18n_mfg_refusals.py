@@ -169,7 +169,7 @@ def test_the_complete_action_is_a_verb_not_the_completed_status(lang):
 
 @pytest.mark.asyncio
 async def test_a_document_action_refused_by_a_run_says_why_in_the_users_language(ui_client):
-    """Converting a memo whose goods a run has not finished costing: the toast is in Thai."""
+    """A document action refused because a run has not finished costing its goods: the toast is in Thai."""
     th = _catalog("th")["mfg.output_memo_conversion"]
     english = _catalog("en")["mfg.output_memo_conversion"]
     refused = APIError(409, english, {"message": english, "message_key": "mfg.output_memo_conversion",

@@ -938,10 +938,10 @@ async def guard_output_lineage(*, session: AsyncSession, entry: LedgerEntry, tra
         return
     sku = after.get("sku") or entry.entity_id
     if (str(before.get("status") or ""), str(after.get("status") or "")) == ("memo_out", "sold"):
-        # Billed from out on memo, the sale has no invoice line a later cost can adjust.
+        # Billed from out on memo by an invoice whose sale no later cost can adjust.
         raise refuse(409, "output_memo_conversion",
-                     "Complete this production run before converting this memo to an invoice. Its "
-                     "finished-goods cost is not final yet.", sku=sku, order=order)
+                     "Complete this production run before finalizing the invoice for goods billed from a "
+                     "memo. Their finished-goods cost is not final yet.", sku=sku, order=order)
     raise refuse(409, "output_in_production",
                  f"{sku} came from production run {order}, which is still open, and its cost is final only when "
                  "the run is completed. Complete the run before splitting, transforming, using, counting down "

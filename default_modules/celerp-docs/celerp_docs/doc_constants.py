@@ -87,7 +87,7 @@ LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
     "fulfilled_items", "fulfillment_status", "fulfilled_at", "fulfilled_by", "fulfill_cycle",
     "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "source_memo_id", "linked",
     "result", "close_reason", "void_reason", "revert_count", "files",
-    "pre_close_status", "pre_void_status", "pre_void_fulfillment", "pre_receipt_status",
+    "pre_close_status", "pre_void_status", "pre_void_fulfillment", "pre_receipt_status", "pre_convert_status",
     "entity_type", "company_id", "doc_number",
 })
 

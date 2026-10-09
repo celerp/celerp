@@ -45,10 +45,13 @@ async def _memo(client, h, item_ids: list[str]) -> str:
 
 
 async def _sell_from_memo(client, h, memo: str, item_ids: list[str]) -> str:
-    """The customer keeps the consigned items: converting the memo sells what is out on it."""
+    """The customer keeps the consigned items: the memo converts to an invoice, and finalizing
+    that invoice sells what is out on the memo."""
     r = await client.post(f"/docs/{memo}/convert", headers=h)
     assert r.status_code == 200, r.text
     invoice = r.json()["target_doc_id"]
+    r = await client.post(f"/docs/{invoice}/finalize", headers=h)
+    assert r.status_code == 200, r.text
     for item_id in item_ids:
         assert (await client.get(f"/items/{item_id}", headers=h)).json()["status"] == "sold"
     return invoice

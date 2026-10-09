@@ -225,9 +225,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("reason"):
             current["close_reason"] = data["reason"]
     elif event_type == "doc.reopened":
+        # Reopens a closed memo, or a converted memo whose invoice went void or was deleted.
         current["status"] = data.get("restored_status") or "final"
-        current.pop("pre_close_status", None)
-        current.pop("close_reason", None)
+        for key in ("pre_close_status", "close_reason", "converted_to", "converted_to_type", "pre_convert_status"):
+            current.pop(key, None)
     elif event_type == "doc.payment.received":
         paid, outstanding = _payment_balances(
             current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
@@ -345,6 +346,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]
         current["converted_to_type"] = data.get("target_doc_type")
+        if data.get("pre_convert_status"):
+            current["pre_convert_status"] = data["pre_convert_status"]
     elif event_type == "doc.received":
         current.setdefault("pre_receipt_status", current.get("status"))
         received = data.get("received_items", [])

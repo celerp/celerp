@@ -1655,7 +1655,11 @@ def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: 
 
 
 async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot_id: str, lot_state: dict) -> int | None:
-    """line_of_lot for one lot, reading its latest fulfillment for this doc from the ledger."""
+    """line_of_lot for one lot, reading its latest fulfillment for this doc from the ledger.
+
+    An invoice converted from a memo bills goods the memo sent, so with no shipment of its
+    own a lot's latest shipment on that memo names its line. Line ids carry across the
+    conversion; positions do not, so only the line id is read from the memo's shipment."""
     from celerp.models.ledger import LedgerEntry
 
     rows = (await session.execute(
@@ -1667,6 +1671,10 @@ async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot
     )).scalars().all()
     latest = next((e for e in rows if (e.data or {}).get("source_doc_id") == doc_id), None)
     line_id, recorded = recorded_line(latest) if latest is not None else (None, None)
+    memo_id = doc_state.get("source_memo_id")
+    if latest is None and memo_id:
+        sent = next((e for e in rows if (e.data or {}).get("source_doc_id") == memo_id), None)
+        line_id = recorded_line(sent)[0] if sent is not None else None
     return line_of_lot(doc_state.get("line_items", []), lot_id, lot_state, recorded, line_id)
 
 
