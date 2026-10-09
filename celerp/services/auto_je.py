@@ -2075,11 +2075,11 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                 left -= qty
                 key = await _allocated_lot_key(session, company_id, lot, books.payable_codes)
                 taken.append((lot["lot_entity_id"], qty, key, qty * float(lot.get("unit_cost") or 0), float(value)))
-            for key, amount in by_key.items():
+            # A lot set aside at no cost still holds its claim: the goods move with it
+            # when another invoice ships them, at a cost of nothing.
+            for key in dict.fromkeys(t[2] for t in taken):
                 mine = [t for t in taken if t[2] == key]
-                if not mine:
-                    continue
-                shares = _shares({t[0]: t[3] for t in mine}, amount)
+                shares = _shares({t[0]: t[3] for t in mine}, by_key.get(key, 0.0))
                 claims += [UnshippedClaim(doc_id=doc_id, line=idx, lot_id=lot_id, qty=qty, key=key,
                                           amount=shares.get(lot_id, 0.0), on_hand=on_hand)
                            for lot_id, qty, _key, _weight, on_hand in mine]

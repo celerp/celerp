@@ -86,43 +86,43 @@ async def _cost_moves(session, auth) -> list[dict]:
     return [r.state for r in rows if (r.state or {}).get("status") == "posted"]
 
 
-@pytest.mark.parametrize("k,l,m", [(10.0, 20.0, 30.0), (10.0, 10.0, 10.0), (10.0, 30.0, 10.0)])
+@pytest.mark.parametrize("cost_k,cost_l,cost_m", [(10.0, 20.0, 30.0), (10.0, 10.0, 10.0), (10.0, 30.0, 10.0)])
 @pytest.mark.parametrize("then", ["ship_A", "never", "void_A", "revert_A"])
-async def test_goods_one_invoice_set_aside_and_another_shipped_move_their_cost(client, session, auth, k, l, m, then):
+async def test_goods_one_invoice_set_aside_and_another_shipped_move_their_cost(client, session, auth, cost_k, cost_l, cost_m, then):
     """A (bound to K, 2 units) sets aside K and L; B (bound to L) sets aside the free M.
     B ships L: L's cost moves from A to B, B's M is released, A keeps only K."""
-    sku, (K, L, M) = await _lots(client, auth, k, l, m)
-    received = k + l + m
+    sku, (K, L, M) = await _lots(client, auth, cost_k, cost_l, cost_m)
+    received = cost_k + cost_l + cost_m
     a = await _invoice(client, auth, [(K, sku, 2)])
     b = await _invoice(client, auth, [(L, sku, 1)])
-    await _expect(client, session, auth, shipped=0, set_aside=k + l + m, received=received)
+    await _expect(client, session, auth, shipped=0, set_aside=cost_k + cost_l + cost_m, received=received)
 
     shipped = await _ship(client, auth, b, L)
     assert shipped["cost_moved"] == [{"sku": sku, "lot_id": L, "doc_id": a,
                                       "doc_number": await _doc_number(session, auth, a)}]
     [move] = await _cost_moves(session, auth)
     assert sorted((e["account"], e["debit"], e["credit"]) for e in move["entries"]) == [
-        (COGS, 0.0, l), (COGS, l, 0.0)]
-    await _expect(client, session, auth, shipped=l, set_aside=k, received=received)
+        (COGS, 0.0, cost_l), (COGS, cost_l, 0.0)]
+    await _expect(client, session, auth, shipped=cost_l, set_aside=cost_k, received=received)
 
     if then == "ship_A":
         await _ship(client, auth, a, K)
         await _expect(client, session, auth, shipped=received, set_aside=0, received=received)
     elif then == "void_A":
         await _ok(client, auth, f"/docs/{a}/void")
-        await _expect(client, session, auth, shipped=l, set_aside=0, received=received)
+        await _expect(client, session, auth, shipped=cost_l, set_aside=0, received=received)
         await _ok(client, auth, f"/docs/{a}/unvoid")
-        await _expect(client, session, auth, shipped=l, set_aside=k, received=received)
+        await _expect(client, session, auth, shipped=cost_l, set_aside=cost_k, received=received)
         await _ok(client, auth, f"/docs/{a}/void")
         await _ok(client, auth, f"/docs/{a}/unvoid")
-        await _expect(client, session, auth, shipped=l, set_aside=k, received=received)
+        await _expect(client, session, auth, shipped=cost_l, set_aside=cost_k, received=received)
         await _ship(client, auth, a, K)
         await _expect(client, session, auth, shipped=received, set_aside=0, received=received)
     elif then == "revert_A":
         await _ok(client, auth, f"/docs/{a}/revert-to-draft")
-        await _expect(client, session, auth, shipped=l, set_aside=0, received=received)
+        await _expect(client, session, auth, shipped=cost_l, set_aside=0, received=received)
         await _ok(client, auth, f"/docs/{a}/finalize")
-        await _expect(client, session, auth, shipped=l, set_aside=k + m, received=received)
+        await _expect(client, session, auth, shipped=cost_l, set_aside=cost_k + cost_m, received=received)
         await _ship(client, auth, a, K)
         await _expect(client, session, auth, shipped=received, set_aside=0, received=received)
     assert len(await _cost_moves(session, auth)) == 1
@@ -158,20 +158,20 @@ async def test_an_invoice_left_short_is_costed_when_new_stock_ships(client, sess
     await _expect(client, session, auth, shipped=70.0, set_aside=0, received=70.0)
 
 
-@pytest.mark.parametrize("k,l,m", [(10.0, 20.0, 30.0), (10.0, 10.0, 10.0)])
-async def test_restoring_a_voided_invoice_sets_aside_only_free_goods(client, session, auth, k, l, m):
+@pytest.mark.parametrize("cost_k,cost_l,cost_m", [(10.0, 20.0, 30.0), (10.0, 10.0, 10.0)])
+async def test_restoring_a_voided_invoice_sets_aside_only_free_goods(client, session, auth, cost_k, cost_l, cost_m):
     """A sets aside K and L and is voided; B (bound to L) sets L aside. Restoring A sets
     aside K only: L is B's, and M was never A's."""
-    sku, (K, L, M) = await _lots(client, auth, k, l, m)
-    received = k + l + m
+    sku, (K, L, M) = await _lots(client, auth, cost_k, cost_l, cost_m)
+    received = cost_k + cost_l + cost_m
     a = await _invoice(client, auth, [(K, sku, 2)])
     await _ok(client, auth, f"/docs/{a}/void")
     b = await _invoice(client, auth, [(L, sku, 1)])
-    await _expect(client, session, auth, shipped=0, set_aside=l, received=received)
+    await _expect(client, session, auth, shipped=0, set_aside=cost_l, received=received)
     await _ok(client, auth, f"/docs/{a}/unvoid")
-    await _expect(client, session, auth, shipped=0, set_aside=l + k, received=received)
+    await _expect(client, session, auth, shipped=0, set_aside=cost_l + cost_k, received=received)
     await _ship(client, auth, b, L)
-    await _expect(client, session, auth, shipped=l, set_aside=k, received=received)
+    await _expect(client, session, auth, shipped=cost_l, set_aside=cost_k, received=received)
     assert await _cost_moves(session, auth) == []
     await _ship(client, auth, a, K)
     await _expect(client, session, auth, shipped=received, set_aside=0, received=received)

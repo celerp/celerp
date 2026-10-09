@@ -469,3 +469,41 @@ def test_draft_quotation_bulk_reserve(page, ui_server, api):
     # The handler reloads on success; the status column then reads Reserved with
     # the quotation as the reserving document.
     page.wait_for_selector(".col-item-status .badge--reserved", timeout=10000)
+
+
+def test_shipping_goods_another_invoice_set_aside_shows_a_lasting_notice(page, ui_server, api):
+    """Shipping a lot another invoice had set aside says so after the page reloads, and
+    the notice stays until it is closed."""
+    sku = f"MOVE-{uuid.uuid4().hex[:6]}"
+    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": 1,
+                                 "sell_by": "piece", "cost_total": 40.0})
+    assert r.status_code in {200, 201}, r.text
+    item_id = r.json()["id"]
+    docs = []
+    for _ in range(2):
+        r = api.post("/docs", json={
+            "doc_type": "invoice", "ref_id": f"MOVE-{uuid.uuid4().hex[:6]}", "status": "draft",
+            "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
+                            "line_total": 100.0, "entity_id": item_id}],
+            "total": 100.0,
+        })
+        assert r.status_code in {200, 201}, r.text
+        docs.append(r.json()["id"])
+        assert api.post(f"/docs/{docs[-1]}/finalize").status_code in {200, 201}
+    first, second = docs
+    first_number = api.get(f"/docs/{first}").json().get("doc_number")
+
+    page.on("dialog", lambda d: d.accept())
+    page.goto(f"{ui_server}/docs/{second}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "second invoice")
+    page.locator(".li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-fulfill")
+    page.locator("#li-bulk-fulfill-btn button").click()
+
+    page.wait_for_selector(".toast-container .toast--info", timeout=8000)
+    toast = page.locator(".toast-container .toast--info").first.inner_text()
+    assert f"Lot {sku} was set aside for invoice {first_number}." in toast, toast
+    assert f"Invoice {first_number} will be costed when it ships." in toast, toast
+    page.wait_for_timeout(7000)  # longer than a passing notice stays
+    assert page.locator(".toast-container .toast--info").count() == 1
+    assert api.get(f"/items/{item_id}").json()["status"] == "sold"
