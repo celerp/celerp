@@ -10,12 +10,13 @@ import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.lot_origin import RECORDED
 from stock_books import assert_settled
 from test_consignment_in_sale import _consign
 from test_cost_follows_goods import _doc_number, _invoice, _ship
@@ -61,7 +62,11 @@ async def _strip_snapshot(session, auth, doc: str) -> None:
 
 
 async def _unrecorded(session, auth, lot: str) -> None:
-    """A lot created before lots recorded their inventory account."""
+    """A lot created before lots recorded their inventory account: no record of one, in
+    its state or its history."""
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == lot,
+        LedgerEntry.event_type == RECORDED))
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot})
     st = dict(row.state)
     st.pop("inventory_account_code", None)

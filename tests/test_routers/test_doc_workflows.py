@@ -386,14 +386,18 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
     )
     assert (await client.post(f"/docs/{expired.json()['id']}/convert", headers=_h(token))).status_code == 409
 
-    # credit note adjusts source invoice outstanding
+    # an issued credit note adjusts source invoice outstanding; a draft one does not
     inv = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(token))).status_code == 200
     cn = await client.post(
         "/docs",
         headers=_h(token),
-        json={"doc_type": "credit_note", "original_doc_id": inv, "reason": "return", "line_items": [], "subtotal": 0, "tax": 0, "total": 30},
+        json={"doc_type": "credit_note", "original_doc_id": inv, "reason": "return", "line_items": [{"name": "Refund", "quantity": 1, "unit_price": 30, "line_total": 30}], "subtotal": 30, "tax": 0, "total": 30},
     )
     assert cn.status_code == 200
+    assert (await client.get(f"/docs/{inv}", headers=_h(token))).json()["amount_outstanding"] == 100
+    f = await client.post(f"/docs/{cn.json()['id']}/finalize", headers=_h(token))
+    assert f.status_code == 200, f.text
     assert (await client.get(f"/docs/{inv}", headers=_h(token))).json()["amount_outstanding"] == 70
 
 
@@ -1141,12 +1145,8 @@ async def test_doc_return_received_projection(client, session):
 
 @pytest.mark.asyncio
 async def test_receive_return_no_sold_inventory(client, session):
-    """receive-return must succeed even when no sold inventory records exist for the SKU.
-
-    Real-world case: CN created manually against an invoice whose items were never
-    run through item.fulfilled, or items sold before fulfillment tracking existed.
-    Backend falls back to CN/invoice line item data.
-    """
+    """receive-return refuses goods its invoice never shipped: a credit note against an
+    invoice whose goods never left stock has nothing to take back, and says so in numbers."""
     token = await _register(client)
     h = _h(token)
 
@@ -1170,11 +1170,9 @@ async def test_receive_return_no_sold_inventory(client, session):
     cn_id = cn.json()["id"]
     await client.post(f"/docs/{cn_id}/finalize", headers=h)
 
-    # receive-return must succeed using invoice line item data as fallback
     r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-NOSOLD", "quantity": 1}]})
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert len(data["received_items"]) == 1
+    assert r.status_code == 422, r.text
+    assert "shipped 0" in r.json()["detail"], r.text
 
 
 @pytest.mark.asyncio

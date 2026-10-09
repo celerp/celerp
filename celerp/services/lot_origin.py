@@ -711,6 +711,15 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
     return True
 
 
+async def opening_lot_account(session: AsyncSession, company_id) -> str:
+    """The inventory account a lot with no purchase behind it is booked to: the opening
+    inventory account in use now, checked as any new entry's is (account_roles.resolve_many).
+    The one source for opening stock, a lot made available, and an older lot that records
+    no account when its value first changes."""
+    opening = AccountRole.INVENTORY_OPENING.value
+    return (await resolve_many(session, company_id, [opening]))[opening]
+
+
 @dataclass(frozen=True)
 class DraftBoundary:
     """A lot moving between draft and stock: the value it brings onto the books (made
@@ -751,7 +760,7 @@ async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     opening = AccountRole.INVENTORY_OPENING.value
     code = before.get(LOT_ACCOUNT_FIELD) if made_available else lot_account(before)
     if not code:
-        code = (await resolve_many(session, entry.company_id, [opening]))[opening]
+        code = await opening_lot_account(session, entry.company_id)
     elif made_available:
         code = await continue_role(session, entry.company_id, opening, code)
     return DraftBoundary(made_available=made_available, value=value, code=code,
@@ -835,6 +844,7 @@ class ValueChange:
     delta: Decimal
     code: str
     day: str
+    record: bool = False  # an older lot records ``code`` as its value first changes
 
 
 async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: Transition) -> ValueChange | None:
@@ -845,15 +855,21 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     is booked in the same transaction; writers that book or move the value themselves
     (self_booked) are left to their own entries. While the lot holds booked stock,
     nothing may change whether it is the company's own (its inventory type, a
-    consignment): that is refused, never booked. With Accounting off, nothing is booked."""
+    consignment): that is refused, never booked. An older lot that records no account
+    and stays the company's own stock is booked on the account it would have been
+    booked to (opening_lot_account), which it records from then on. With Accounting
+    off, nothing is booked."""
     from celerp.services.auto_je import entry_day
 
     before, after = transition.before, transition.after
     code = (before or {}).get(LOT_ACCOUNT_FIELD)
-    if not code or not in_stock(before) or not in_stock(after):
+    if before is None or not in_stock(before) or not in_stock(after):
         return None
-    if _owned_stock(SimpleNamespace(state=before, consignment_flag=None)) != _owned_stock(
-            SimpleNamespace(state=after, consignment_flag=None)):
+    owned_before = _owned_stock(SimpleNamespace(state=before, consignment_flag=None))
+    owned_after = _owned_stock(SimpleNamespace(state=after, consignment_flag=None))
+    if not code and not (owned_before and owned_after):
+        return None
+    if owned_before != owned_after:
         raise HTTPException(
             status_code=422,
             detail=f"This item holds stock booked to inventory account {code}, so its inventory type and "
@@ -870,13 +886,17 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     delta = round_money(ha, currency) - round_money(hb, currency)
     if not delta:
         return None
-    return ValueChange(delta=delta, code=code,
-                       day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")))
+    return ValueChange(delta=delta, code=code or await opening_lot_account(session, entry.company_id),
+                       day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")),
+                       record=not code)
 
 
 async def book_value_change(session: AsyncSession, entry: LedgerEntry, change: ValueChange) -> None:
     """Book a lot's change in value (value_boundary) on its inventory account, keyed by
-    the event so a retry books nothing more (book_lot_value)."""
+    the event so a retry books nothing more (book_lot_value). An older lot records the
+    account first."""
+    if change.record:
+        await _record(session, entry.company_id, entry.entity_id, change.code, "value changed", entry.actor_id)
     await book_lot_value(
         session, entry.company_id, entry.actor_id, change.code, change.delta,
         je_id=f"je:auto:{entry.entity_id}:value-changed:{entry.id}", idem=f"lot-value:{entry.id}",
@@ -944,15 +964,15 @@ async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, ac
     if not lots:
         return
     value = sum((booked_value(r, settings.get("currency", "USD")) for r in lots), Decimal("0"))
-    opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
-    accounts = await resolve_many(session, company_id, [opening, retained])
+    code = await opening_lot_account(session, company_id)
+    await resolve_many(session, company_id, [AccountRole.RETAINED_EARNINGS.value])
     day = await entry_day(session, company_id, at)
     for lot in lots:
-        await _record(session, company_id, lot.entity_id, accounts[opening], "opening stock", actor_id)
+        await _record(session, company_id, lot.entity_id, code, "opening stock", actor_id)
     digest = hashlib.sha256("\n".join(lot.entity_id for lot in lots).encode()).hexdigest()[:16]
     key = f"opening-stock:{operation_id}:{digest}"
     await post_opening_stock_delta(
-        session, company_id, {accounts[opening]: value}, onto_books=True, je_id=f"je:auto:{key}", idem=key,
+        session, company_id, {code: value}, onto_books=True, je_id=f"je:auto:{key}", idem=key,
         memo="Opening stock brought in", metadata={"trigger": "item.opening-stock", "operation": operation_id},
         actor_id=actor_id, day=day)
 

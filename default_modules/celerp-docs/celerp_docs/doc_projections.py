@@ -56,11 +56,13 @@ def _recalc_list_totals(state: dict) -> dict:
 
 
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
-    """Return document-currency paid and outstanding balances."""
+    """Return document-currency paid and outstanding balances. What an issued credit note
+    settled between a document and the invoice it credits (``credited``) is owed by neither."""
     currency = str(state.get("currency") or "USD")
     total = round_money(state.get("total", 0) or 0, currency)
     paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
-    outstanding = round_money(max(Decimal(0), total - paid_d), currency)
+    credited = round_money(to_decimal(state.get("credited", 0) or 0), currency)
+    outstanding = round_money(max(Decimal(0), total - paid_d - credited), currency)
     return paid_d, outstanding
 
 
@@ -104,11 +106,12 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                 continue  # conversion_rate is immutable after finalization
             current[field] = change.get("new")
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
-        # based on how much has already been paid - never let outstanding go negative.
+        # based on how much has already been paid or credited - never let outstanding go negative.
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
             paid = to_decimal(current.get("amount_paid", 0))
             total = to_decimal(current.get("total", 0))
-            current["amount_outstanding"] = to_stored_float(max(Decimal(0), total - paid))
+            credited = to_decimal(current.get("credited", 0) or 0)
+            current["amount_outstanding"] = to_stored_float(max(Decimal(0), total - paid - credited))
     elif event_type == "doc.renumbered":
         # Narrow alias of doc.updated: only ref_id / doc_number may be changed.
         for field, change in data["fields_changed"].items():

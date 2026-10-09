@@ -266,7 +266,7 @@ async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_typ
     return (replay.metadata_ or {}).get("result") or {"event_id": replay.id}
 
 
-_PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id"})
+_PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id", "credited"})
 
 
 def _refuse_protected_fields(fields_changed: dict) -> None:
@@ -1556,7 +1556,7 @@ async def create_doc(
     company = await locked_company(session, company_id)
 
     if payload.doc_type == "credit_note" and payload.original_doc_id:
-        # Locked, so the balance reduced below is the one the invoice's last writer left.
+        # Locked, so the total checked is the one the invoice's last writer left.
         inv = await _get_doc(session, company_id, payload.original_doc_id, for_update=True)
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
@@ -1698,23 +1698,6 @@ async def create_doc(
     if getattr(entry, "was_deduped", False):
         return {"event_id": entry.id, "id": entry.entity_id}
 
-    if payload.doc_type == "credit_note" and payload.original_doc_id:
-        inv = await _get_doc(session, company_id, payload.original_doc_id)
-        outstanding = to_stored_float(max(Decimal(0), _payable_balance(inv.state) - round_money(
-            payload.total, str(inv.state.get("currency") or "USD").upper())))
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=payload.original_doc_id,
-            entity_type="doc",
-            event_type="doc.updated",
-            data={"fields_changed": {"amount_outstanding": {"old": inv.state.get("amount_outstanding"), "new": outstanding}}},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=f"{idem_key}:credit-note-original",
-            metadata_={"source_credit_note": entry.entity_id},
-        )
     await session.commit()
     return {"event_id": entry.id, "id": entry.entity_id}
 
@@ -2268,9 +2251,11 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
     A credit note issued, voided, sent back to draft or restored changes how many goods
     its invoice holds (auto_je.credited_quantities), so the invoice is settled instead.
     A credit note can stop standing only while the invoice still holds the goods it gave
-    up: goods that left stock since cannot be set aside again."""
+    up: goods that left stock since cannot be set aside again. What the invoice is owed
+    follows the credit note too (_credit_note_owed)."""
     state = state or {}
     if state.get("doc_type") == "credit_note" and state.get("original_doc_id"):
+        cn_id, cn_state = doc_id, state
         doc_id = str(state["original_doc_id"])
         invoice = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id},
                                     populate_existing=True)
@@ -2284,6 +2269,7 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
                 f"This credit note cannot be undone: goods it released from invoice {number} have "
                 f"left stock since, so the invoice cannot hold them again. Bring the goods back "
                 f"into stock first, or issue a new invoice for them."))
+        await _credit_note_owed(session, company_id, user_id, cn_id, cn_state, invoice, tag, trigger)
     if state.get("doc_type") != "invoice":
         return
     try:
@@ -2291,6 +2277,67 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
                                          cycle_tag=tag, ts=None, trigger=trigger)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _credit_note_owed(session, company_id, user_id, cn_id: str, cn_state: dict, invoice: Projection,
+                            tag: str, trigger: str) -> None:
+    """Only an issued credit note reduces what its invoice is owed: issued (or restored
+    from void to an issued status) it settles what the invoice still owes, up to what the
+    credit note is worth, and that amount is ``credited`` on both: owed by neither, so a
+    later payment or refund recomputes around it and the credit note cannot spend it
+    again. What is left of the credit note stays its balance, to apply or refund. Voided
+    or sent back to draft it puts back what it settled. A draft has no accounting effect.
+    Each effect is a doc.updated on the invoice naming the credit note, and the last one
+    says whether the reduction stands, so a retried or repeated step changes nothing more.
+    An older credit note reduced the balance when it was made; that reduction stands
+    until it is undone."""
+    from celerp.models.ledger import LedgerEntry
+
+    if trigger == "doc.unvoided" and cn_state.get("pre_void_status") in (None, "draft"):
+        return
+    taking = trigger in ("doc.finalized", "doc.unvoided")
+    effects = [e for e in (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == invoice.entity_id,
+        LedgerEntry.event_type == "doc.updated").order_by(LedgerEntry.id))).scalars()
+        if (e.metadata_ or {}).get("source_credit_note") == cn_id]
+    last = effects[-1] if effects else None
+    reduced = last is not None and (last.metadata_ or {}).get("credit_note_effect", "reduced") == "reduced"
+    if taking == reduced:
+        return
+    cn = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id}, populate_existing=True)
+    cn_now = (cn.state if cn is not None else None) or {}
+    inv = invoice.state or {}
+    currency = str(inv.get("currency") or "USD").upper()
+    if taking:
+        amount = min(_payable_balance(inv), _payable_balance(cn_now),
+                     round_money(cn_now.get("total") or 0, currency))
+    elif "credit_amount" in (last.metadata_ or {}):
+        amount = round_money(to_decimal(last.metadata_["credit_amount"]), currency)
+    else:
+        # Made before credit notes recorded what they settled: what the balance fell by.
+        change = ((last.data or {}).get("fields_changed") or {}).get("amount_outstanding") or {}
+        before = change.get("old")
+        amount = max(Decimal(0), round_money(to_decimal(inv.get("total") or 0 if before in (None, "") else before),
+                                             currency) - round_money(to_decimal(change.get("new") or 0), currency))
+    sign = 1 if taking else -1
+    for doc, state, step in ((invoice.entity_id, inv, tag), (cn_id, cn_now, f"{tag}:credit-note")):
+        credited = round_money(to_decimal(state.get("credited") or 0), currency)
+        # An older credit note settled nothing on itself, so undoing it gives itself nothing back.
+        moved = amount if taking or doc == invoice.entity_id else min(amount, credited)
+        if doc == cn_id and not moved:
+            continue
+        balance = _payable_balance(state)
+        await emit_event(
+            session, company_id=company_id, entity_id=doc, entity_type="doc", event_type="doc.updated",
+            data={"fields_changed": {
+                "amount_outstanding": {"old": state.get("amount_outstanding"),
+                                       "new": to_stored_float(max(Decimal(0), balance - sign * moved))},
+                "credited": {"old": state.get("credited"),
+                             "new": to_stored_float(max(Decimal(0), credited + sign * moved))}}},
+            actor_id=user_id, location_id=None, source="api", idempotency_key=f"credit-note-owed:{cn_id}:{step}",
+            metadata_={"source_credit_note": cn_id, "credit_note_effect": "reduced" if taking else "restored",
+                       "credit_amount": to_stored_float(amount)})
+    await session.refresh(invoice)
 
 
 @router.post("/{entity_id}/close")
@@ -7019,6 +7066,13 @@ async def _apply_split_plan(
     return remap
 
 
+def _less_credited_line(line: dict, share: float) -> dict:
+    """An invoice line cut to the ``share`` of it a credit note left to ship: its quantity
+    and any weight or pieces it states, in proportion."""
+    return {**line, **{k: float(line[k]) * share for k in ("quantity", "weight", "pieces")
+                       if line.get(k) is not None}}
+
+
 async def _fulfill_lines_impl(
     entity_id: str,
     body: FulfillLinesRequest,
@@ -7076,6 +7130,10 @@ async def _fulfill_lines_impl(
     # Lines are drawn in document order and a lot bound to another line is never a
     # spanning sibling (doc_bound_lots), matching the allocation finalize recognized.
     _bound_lots = doc_bound_lots(state.get("line_items", []))
+    # An invoice ships what it invoiced less what issued credit notes credited; a line
+    # ships whole once, so nothing of it has shipped yet when it gets here.
+    _credited = ((await auto_je.credited_quantities(session, company_id, [entity_id])).get(entity_id, {})
+                 if doc_type == "invoice" else {})
     for item_eid in sorted(body.line_entity_ids, key=lambda e: line_index_by_eid.get(e, len(line_index_by_eid))):
         item_proj = _locked_lots.get(item_eid)
         if item_proj is None:
@@ -7103,6 +7161,14 @@ async def _fulfill_lines_impl(
         # and a partial draw is only allowed when the item permits splitting.
         sku = item_proj.state.get("sku", "")
         line_qty = line_qty_by_eid.get(item_eid, 0.0)
+        credited = _credited.get(line_index_by_eid.get(item_eid, -1), 0.0)
+        if credited > 1e-9:
+            shippable = line_qty - credited
+            if shippable <= 1e-9:
+                raise HTTPException(status_code=422, detail=(
+                    f"{sku}: nothing left to ship: invoiced {line_qty:g}, credited {credited:g}, shipped 0"))
+            line_by_eid[item_eid] = _less_credited_line(line_by_eid.get(item_eid, {}), shippable / line_qty)
+            line_qty = shippable
         available = float(item_proj.state.get("quantity", 0))
         if line_qty > available + 1e-9:
             # Cross-lot spanning: a splittable product can draw the shortfall from other
@@ -7800,6 +7866,57 @@ def _returned_lot_origin(ref: dict, quantity: float) -> dict:
             **({CONSIGNOR_FIELD: ref[CONSIGNOR_FIELD]} if ref.get(CONSIGNOR_FIELD) else {})}
 
 
+def _shipped_unit_cost(lot: dict) -> float:
+    """What one unit of a sold lot cost as it shipped (auto_je.lot_cost_of_sale): the
+    cost a return of it comes back at, never what its stock left behind costs now."""
+    quantity = float(lot.get("quantity") or 0)
+    return auto_je.lot_cost_of_sale(lot) / quantity if quantity > 0 else float(lot.get("cost_price") or 0)
+
+
+async def _return_parts(session, company_id, invoice_id: str, items: list[ReturnReceivedItem],
+                        item_rows: list[Projection], item_by_id: dict[str, dict],
+                        ) -> list[tuple[ReturnReceivedItem, dict, float]]:
+    """Split a return on a credit note raised on invoice ``invoice_id`` over the lots the
+    invoice shipped: the lot the item names when the invoice shipped it, else the shipped
+    lots of its SKU, most recent first. Each takes at most what it shipped less what came
+    back already on any credit note raised on the invoice (fulfill.returned_lots); a
+    return beyond that is refused with the numbers."""
+    from celerp.services.fulfill import returned_lots
+
+    shipped = {r.entity_id: item_by_id[r.entity_id] for r in item_rows if _sent_out_by(r.state or {}, invoice_id)}
+    sent = {lot: float(flat.get("quantity") or 0) for lot, flat in shipped.items()}
+    left = dict(sent)
+
+    def of_sku(sku: str) -> list[str]:
+        sku = (sku or "").strip()
+        return sorted((lot for lot, flat in shipped.items() if str(flat.get("sku") or "").strip() == sku),
+                      key=lambda lot: shipped[lot].get("created_at") or "", reverse=True)
+
+    def take(lots: list[str], qty: float) -> list[tuple[str, float]]:
+        out = []
+        for lot in lots:
+            got = min(qty, left[lot])
+            if got > 1e-9:
+                out.append((lot, got))
+                left[lot] -= got
+                qty -= got
+        return out
+
+    for sold_from, sku, qty in (await returned_lots(session, company_id, [invoice_id])).get(invoice_id, []):
+        take([sold_from] if sold_from in left else of_sku(sku), qty)
+    parts: list[tuple[ReturnReceivedItem, dict, float]] = []
+    for it in items:
+        lots = [it.item_id] if it.item_id in left else of_sku(it.sku)
+        room = sum(left[lot] for lot in lots)
+        if it.quantity > room + 1e-9:
+            went = sum(sent[lot] for lot in lots)
+            raise HTTPException(status_code=422, detail=(
+                f"{it.sku}: {it.quantity:g} cannot come back on this credit note: the invoice shipped "
+                f"{went:g}, returned {went - room:g}, so {max(room, 0.0):g} can come back"))
+        parts += [(it, shipped[lot], got) for lot, got in take(lots, it.quantity)]
+    return parts
+
+
 @router.post("/{entity_id}/receive-return")
 async def receive_return(
     entity_id: str,
@@ -7812,7 +7929,9 @@ async def receive_return(
     """Receive returned goods on a credit note.
 
     Item values are resolved server-side (not trusted from the UI):
-    - Case 1: CN has original_doc_id -> fetch original invoice, match by SKU, use its values.
+    - Case 1: CN has original_doc_id -> the goods come back from the lots the invoice
+      shipped, no more than it shipped less what came back already, at the cost they
+      shipped at (_return_parts).
     - Case 2: No original_doc_id -> query sold inventory by SKU (LIFO), use those values.
     Creates new inventory items (status=available) and a reversing COGS JE.
     """
@@ -7848,9 +7967,11 @@ async def receive_return(
     # Fallback for descriptive fields only: original invoice line items.
     original_doc_id = state.get("original_doc_id")
     original_line_map: dict[str, dict] = {}
+    invoice_found = False
     if original_doc_id:
         try:
             orig_row = await _get_doc(session, company_id, original_doc_id)
+            invoice_found = True
             for li in (orig_row.state.get("line_items") or []):
                 sku = li.get("sku") or ""
                 if sku and sku not in original_line_map:
@@ -7877,19 +7998,31 @@ async def receive_return(
     for sku in sold_map:
         sold_map[sku].sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
-    # --- Validate quantities before touching anything ---
     for it in payload.items:
         if it.quantity <= 0:
             raise HTTPException(status_code=422, detail=f"Quantity must be positive for SKU '{it.sku}'")
-        # Sold inventory is best-effort enrichment; no hard gate on its existence.
-        # If sold records exist, validate available quantity.
-        if it.sku in sold_map:
-            available = sum(float(s.get("quantity") or 0) for s in sold_map[it.sku])
-            if available < it.quantity:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found in inventory; {it.quantity:g} requested.",
-                )
+    # Each part of the return: the item, the sold lot it comes back from, and how many.
+    parts: list[tuple[ReturnReceivedItem, dict, float]] = []
+    if invoice_found:
+        parts = await _return_parts(session, company_id, original_doc_id, payload.items, item_rows, item_by_id)
+    else:
+        # No invoice to read what shipped from: the sold lot is the one the line names,
+        # else the most recent sold lot of the SKU, at most what those sold lots hold.
+        for it in payload.items:
+            if it.sku in sold_map:
+                available = sum(float(s.get("quantity") or 0) for s in sold_map[it.sku])
+                if available < it.quantity:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found in inventory; {it.quantity:g} requested.",
+                    )
+            if it.item_id and it.item_id in item_by_id:
+                ref = item_by_id[it.item_id]
+            elif it.sku in sold_map:
+                ref = sold_map[it.sku][0]
+            else:
+                ref = {}
+            parts.append((it, ref, it.quantity))
 
     # --- Allocate a fresh barcode per returned parcel ---
     # A returned item is a NEW physical lot and must never inherit the sold lot's or
@@ -7898,7 +8031,7 @@ async def receive_return(
     # after validation and before any item.created event, so concurrent returns mint
     # distinct barcodes; the lock is held until this request commits.
     from celerp_inventory.services import allocate_internal_codes
-    _return_barcodes = await allocate_internal_codes(session, company_id, len(payload.items))
+    _return_barcodes = await allocate_internal_codes(session, company_id, len(parts))
 
     # --- Create returned inventory items ---
     now = datetime.now(timezone.utc).isoformat()
@@ -7911,17 +8044,7 @@ async def receive_return(
         "location_id", "location_name", "source_doc_id",
     })
 
-    for _ridx, it in enumerate(payload.items):
-        # Prefer the exact physical lot when the credit-note line carries an item_id
-        # (SKUs can repeat across lots, so item_id/barcode is the authoritative bind).
-        # Else fall back to the documented LIFO-by-sku tiebreak (most-recent sold lot),
-        # then to the invoice line item data when no sold record exists.
-        if it.item_id and it.item_id in item_by_id:
-            ref = item_by_id[it.item_id]
-        elif it.sku in sold_map:
-            ref = sold_map[it.sku][0]
-        else:
-            ref = {}
+    for _ridx, (it, ref, quantity) in enumerate(parts):
         li_fallback = original_line_map.get(it.sku, {})
 
         # Collect any extra dynamic price keys from ref (e.g. wholesale_price, retail_price, vip_price, ...)
@@ -7951,9 +8074,9 @@ async def receive_return(
         item_data = {
             "sku": it.sku,
             "name": resolved_name,
-            "quantity": it.quantity,
+            "quantity": quantity,
             "sell_by": resolved_sell_by,
-            "cost_price": float(ref.get("cost_price") or 0),
+            "cost_price": _shipped_unit_cost(ref),
             "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
             "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
             "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,
@@ -7965,7 +8088,7 @@ async def receive_return(
             "description": ref.get("description") or li_fallback.get("description") or "",
             # Returned goods go back onto the account the sold lot was valued in, and
             # consigned goods go back on consignment, owed to no one again.
-            **(_returned_lot_origin(ref, it.quantity) if ref else {}),
+            **(_returned_lot_origin(ref, quantity) if ref else {}),
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
             **extra_prices,
@@ -8000,13 +8123,13 @@ async def receive_return(
                        **({VALUED_FROM_KEY: ref["id"]} if ref.get("id") else {})},
         )
         cost_price = item_data["cost_price"]
-        total_cogs += cost_price * it.quantity
-        lot_costs[item_id] = cost_price * it.quantity
+        total_cogs += cost_price * quantity
+        lot_costs[item_id] = cost_price * quantity
         received_items.append({
             "item_id": item_id,
             "sku": it.sku,
             "name": item_data["name"],
-            "quantity": it.quantity,
+            "quantity": quantity,
             "cost_price": cost_price,
             "received_at": now,
         })

@@ -426,9 +426,9 @@ def _may_take_set_aside(event_type: str, data: dict) -> bool:
     """Whether an item event is held to the goods finalized invoices have set aside
     (auto_je.refuse_stranding_set_aside): every event but a shipment to a customer, the
     one way set-aside goods are meant to leave. A shipment that takes goods another
-    invoice set aside moves that invoice's cost with them (auto_je.moved_costs) when the
-    shipping invoice has a cost snapshot (_item_applied). Goods sent out on memo are not
-    shipped and are held to it."""
+    invoice set aside moves that invoice's cost with them (auto_je.moved_costs) when both
+    invoices have a cost snapshot, and is held to them otherwise (_item_applied). Goods
+    sent out on memo are not shipped and are held to it."""
     return event_type != "item.fulfilled" or (data or {}).get("doc_type") == "memo"
 
 
@@ -468,13 +468,16 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
         if _may_take_set_aside(entry.event_type, entry.data):
             await refuse_stranding_set_aside(
                 session, entry.company_id, entry.entity_id, transition.before, transition.after)
-        elif shipper is None or await recognized_cogs(session, entry.company_id, shipper) is None:
-            # A shipment moves another invoice's cost only through its own cost snapshot
-            # (auto_je.moved_costs). One with none (an invoice finalized before snapshots
-            # existed) is held to the goods other invoices set aside like any other exit.
+        else:
+            # A shipping invoice takes the goods it holds itself. Goods another invoice
+            # holds move to it with their cost only when both have a cost snapshot
+            # (auto_je.moved_costs); goods held by an invoice finalized before snapshots
+            # existed, or taken by a shipment with no snapshot, are held to it like any
+            # other exit.
             await refuse_stranding_set_aside(
                 session, entry.company_id, entry.entity_id, transition.before, transition.after,
-                exclude=shipper)
+                exclude=shipper,
+                moves_cost=shipper is not None and await recognized_cogs(session, entry.company_id, shipper) is not None)
     draft_move = await draft_boundary(session, entry, transition)
     if draft_move is not None:
         await book_draft_boundary(session, entry, draft_move)

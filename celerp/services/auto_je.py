@@ -49,6 +49,7 @@ from celerp.services.account_roles import (
 )
 from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import lock_company
+from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
@@ -2280,9 +2281,11 @@ class _Books:
 
 async def credited_quantities(session, company_id, doc_ids) -> dict[str, dict[int, float]]:
     """Per invoice of ``doc_ids``, per line, the quantity the issued credit notes on it
-    credit (not drafts, not voided). A credit note line counts on the invoice line that
-    names the same lot, the first with quantity left to credit; a line naming no lot of
-    the invoice credits no goods."""
+    credit (not drafts, not voided). A credit note line counts on the invoice line it
+    credits: the one linked to the same item (line_item_id), else one of the same SKU (a
+    line raised with no lot, or before the line's goods were carved off to ship), the
+    first with quantity left to credit. A line with neither (a service or a free-text
+    charge) credits no goods."""
     ids = sorted(set(doc_ids))
     if not ids:
         return {}
@@ -2298,12 +2301,15 @@ async def credited_quantities(session, company_id, doc_ids) -> dict[str, dict[in
         lines = ((invoices[invoice_id].state or {}) if invoice_id in invoices else {}).get("line_items") or []
         per = out.setdefault(invoice_id, {})
         for li in note.state.get("line_items") or []:
-            lot_id, qty = li.get("item_id") or li.get("entity_id"), float(li.get("quantity") or 0)
-            for idx, line in enumerate(lines):
-                if not lot_id or qty <= 1e-9:
+            lot_id, qty = line_item_id(li), float(li.get("quantity") or 0)
+            sku = str(li.get("sku") or "").strip()
+            matched = [i for i, line in enumerate(lines) if lot_id and line_item_id(line) == lot_id]
+            matched += [i for i, line in enumerate(lines)
+                        if sku and i not in matched and str(line.get("sku") or "").strip() == sku]
+            for idx in matched:
+                if qty <= 1e-9:
                     break
-                if (line.get("entity_id") or line.get("item_id")) != lot_id:
-                    continue
+                line = lines[idx]
                 take = min(qty, float(line.get("quantity") or 0) - per.get(idx, 0.0))
                 if take > 1e-9:
                     per[idx] = per.get(idx, 0.0) + take
@@ -2608,7 +2614,7 @@ async def _doc_number_of(session, company_id, doc_id: str) -> str:
 
 
 async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: dict, after: dict,
-                                     *, exclude: str | None = None) -> None:
+                                     *, exclude: str | None = None, moves_cost: bool = False) -> None:
     """Goods a finalized invoice has costed and not shipped stay for that invoice: it
     already gave up their cost, so any other way out of stock (an adjustment, an edit or
     import of the quantity, a write-off, a count, a return to the supplier, an undone
@@ -2627,6 +2633,10 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     Only stock-type lots hold goods (lot_origin.ready_to_ship), so changing a lot to a
     service or another type that holds no stock takes its goods out of stock. Invoice
     ``exclude`` is left out of both sides: it is the invoice the change ships goods for.
+    When that shipment ``moves_cost`` (it has a cost snapshot, so the cost of goods it
+    takes from another invoice's set-aside moves with them, moved_costs), the claims of
+    invoices with a cost snapshot are left out too; an invoice with none has no cost to
+    move, so the goods it holds stay refused to every other shipment.
 
     Takes the company lock first, as finalize does, so a finalize in flight is either
     seen or waits for this transaction (emit_event takes it before the row lock)."""
@@ -2637,6 +2647,9 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     await lock_company(session, company_id)
     was = await unshipped_claims(session, company_id, exclude=exclude, states={lot_id: before},
                                  costed=False, lots={lot_id})
+    if moves_cost:
+        costed = {d for d in {c.doc_id for c in was} if await recognized_cogs(session, company_id, d) is not None}
+        was = [c for c in was if c.doc_id not in costed]
     held_here: dict[str, float] = {}
     for claim in was:
         if claim.lot_id == lot_id:
@@ -2652,8 +2665,9 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
                 out[(claim.doc_id, claim.line)] = out.get((claim.doc_id, claim.line), 0.0) + claim.qty
             return out
 
-        held, now = cover(was), cover(await unshipped_claims(session, company_id, exclude=exclude,
-                                                             costed=False, lots={lot_id}))
+        held, now = cover(was), cover(c for c in await unshipped_claims(session, company_id, exclude=exclude,
+                                                                        costed=False, lots={lot_id})
+                                      if not moves_cost or c.doc_id not in costed)
         lost = sum(max(0.0, qty - now.get(key, 0.0)) for key, qty in held.items())
         if lost <= 1e-9:
             return
