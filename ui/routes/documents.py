@@ -7164,6 +7164,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # reservation state reads back. Inbound drafts (bill, consignment in) have no
         # received items yet and stay without it.
         _draft_show_item_status = doc_type in _FULFILLABLE_DOC_TYPES or is_list
+        # After a line save, status-column drafts put each reserved row's stored badge back.
+        _held_refresh_call = ("        _celerpRefreshHeldBadges().catch(function() {});\n"
+                              if _draft_show_item_status else "")
         # Whether this draft holds any stock: a hold stamped with one of its lines, or a
         # line's own item reserved by it.
         _draft_holds = bool(_holds) or any(
@@ -8862,10 +8865,10 @@ async function _celerpInstallLineBody(html, version) {{
     if (version != null) _celerpEntityVersion = version;
     return true;
 }}
-/* A reserved line's badge says how much it holds against its quantity, so a saved quantity
+""" + (f"""/* A reserved line's badge says how much it holds against its quantity, so a saved quantity
    can change it. After a save, put each reserved row's stored status cell in place, leaving
    the rest of the rows (and any field being edited) alone. Only the latest save's refresh
-   lands. */
+   lands. (Status-column pages only.) */
 let _celerpHeldRefresh = 0;
 async function _celerpRefreshHeldBadges() {{
     const tbody = document.getElementById('{line_body_id}');
@@ -8886,7 +8889,7 @@ async function _celerpRefreshHeldBadges() {{
         if (cell && now) cell.replaceWith(document.importNode(now, true));
     }});
 }}
-async function _celerpPersistOnce() {{
+""" if _draft_show_item_status else "") + f"""async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
     const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
@@ -8929,8 +8932,7 @@ async function _celerpPersistOnce() {{
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
         _CELERP_ORIGINAL_COUNT = lines.length;
-        _celerpRefreshHeldBadges().catch(function() {{}});
-        statusEl.textContent = '✓';
+{_held_refresh_call}        statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
         return true;
