@@ -8480,8 +8480,11 @@ function celerpUpdateTotals() {{
             const code = _celerpTaxCode(row);
             const key = code || ('custom_' + rate);
             const customLabel = row.querySelector('[data-name="tax_label"]')?.value || '';
+            const sel = row.querySelector('[data-name="tax_select"]');
+            // A line's stored taxes are already labelled with their rates.
             const label = code
                 ? ((_CELERP_TAXES.find(t => t.name === code) || {{}}).name || code) + ' (' + rate + '%)'
+                : sel.value === '|stored' ? sel.selectedOptions[0].text
                 : (customLabel || 'Custom') + ' (' + rate + '%)';
             if (!taxByCode[key]) taxByCode[key] = {{label, amount: 0, isCustom: !code, rate}};
             taxByCode[key].amount += lineTot * rate / 100;
