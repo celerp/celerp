@@ -4322,6 +4322,7 @@
   "consignment.buy.untraced": "Lo stock {sku} di questo conto deposito è venduto, ma non su una fattura che ne registri il costo, quindi quanto dovuto non può essere saldato senza tirare a indovinare.",
   "consignment.buy.recompute": "Viene acquistata solo una parte di questo conto deposito, e il suo sconto fisso o importo d'imposta non può essere ripartito tra la merce trattenuta e quella restituita senza tirare a indovinare. Imposta lo sconto in percentuale e l'imposta come aliquota sul conto deposito, poi converti di nuovo.",
   "consignment.buy.nothing_kept": "Nulla di quanto ricevuto su questo conto deposito è ancora in giacenza o venduto, quindi non c'è nulla da acquistare. Ricevi prima la merce.",
+  "consignment.return.sold": "Lo stock {sku} di questo conto deposito è stato venduto o è su una vendita, quindi non può tornare al committente. Si può restituire solo la merce ancora in giacenza.",
   "posting.older_stock.no_item": "Articolo non trovato.",
   "posting.older_stock.already_recorded": "Questa giacenza registra già il suo conto di magazzino.",
   "posting.older_stock.not_waiting": "Questo articolo non ha giacenza a libro, quindi non c'è nulla da assegnare.",

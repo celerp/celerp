@@ -4322,6 +4322,7 @@
   "consignment.buy.untraced": "Der Bestand {sku} aus dieser Kommission ist verkauft, aber nicht auf einer Rechnung, die seine Kosten erfasst, daher kann der dafür geschuldete Betrag nicht ohne Raten ausgeglichen werden.",
   "consignment.buy.recompute": "Von dieser Kommission wird nur ein Teil gekauft, und ihr fester Rabatt oder Steuerbetrag kann nicht ohne Raten zwischen behaltener und zurückgegebener Ware aufgeteilt werden. Legen Sie den Rabatt als Prozentsatz und die Steuer als Satz auf der Kommission fest und wandeln Sie dann erneut um.",
   "consignment.buy.nothing_kept": "Nichts, was auf dieser Kommission eingegangen ist, ist noch vorhanden oder verkauft, daher gibt es nichts zu kaufen. Nehmen Sie zuerst die Ware an.",
+  "consignment.return.sold": "Der Bestand {sku} aus dieser Kommission ist verkauft oder einem Verkauf zugeordnet und kann daher nicht an den Kommittenten zurückgehen. Nur noch vorhandene Ware kann zurückgegeben werden.",
   "posting.older_stock.no_item": "Artikel nicht gefunden.",
   "posting.older_stock.already_recorded": "Für diesen Bestand ist das Lagerkonto bereits erfasst.",
   "posting.older_stock.not_waiting": "Dieser Artikel hält keinen Bestand in den Büchern, daher gibt es nichts zuzuordnen.",

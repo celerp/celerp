@@ -4322,6 +4322,7 @@
   "consignment.buy.untraced": "O estoque {sku} desta consignação foi vendido, mas não em uma fatura que registre seu custo, por isso o valor devido não pode ser liquidado sem adivinhar.",
   "consignment.buy.recompute": "Apenas parte desta consignação está sendo comprada, e o seu desconto fixo ou valor de imposto não pode ser dividido entre a mercadoria mantida e a devolvida sem adivinhar. Defina o desconto como porcentagem e o imposto como alíquota na consignação e converta novamente.",
   "consignment.buy.nothing_kept": "Nada do que foi recebido nesta consignação ainda está em estoque ou vendido, então não há nada a comprar. Receba a mercadoria primeiro.",
+  "consignment.return.sold": "O estoque {sku} desta consignação foi vendido ou está em uma venda, por isso não pode voltar ao consignante. Só a mercadoria ainda em estoque pode ser devolvida.",
   "posting.older_stock.no_item": "Item não encontrado.",
   "posting.older_stock.already_recorded": "Este estoque já registra a sua conta de estoque.",
   "posting.older_stock.not_waiting": "Este item não tem estoque nos livros, portanto não há nada a atribuir.",

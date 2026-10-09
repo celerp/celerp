@@ -4385,6 +4385,16 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         # is at a customer's site and anything sold has left; shrinking those here would
         # quietly write off stock that is still owed back to us.
         _item_status = str(item.state.get("status") or "").lower()
+        # Consigned goods sold, or held for a sale, are owed to the consignor as money, not
+        # as goods: what the sale booked against the consignor stays settled once.
+        if not owned and (_item_status in ("sold", "memo_out") or it.quantity_returned > (
+                float(item.state.get("quantity", 0) or 0) + 1e-9
+                - sum((await auto_je.allocations_naming_lot(session, company_id, it.item_id)).values()))):
+            raise HTTPException(status_code=409, detail=refusal(
+                "consignment.return.sold",
+                f"Stock {item.state.get('sku', it.item_id)} from this consignment has been sold or is on a "
+                "sale, so it cannot go back to the consignor. Only goods still held can be returned.",
+                sku=item.state.get("sku", it.item_id)))
         if _item_status in _NOT_ON_HAND_STATUSES:
             raise HTTPException(
                 status_code=409,

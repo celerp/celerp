@@ -298,6 +298,22 @@ async def test_converting_with_goods_invoiced_but_not_shipped_reprices_that_sale
     await _settled(client, session, auth)
 
 
+async def test_sold_consigned_goods_cannot_go_back_to_the_consignor(client, session, auth):
+    consignment, lot = await _consign(client, session, auth)
+    doc = await _sell(client, session, auth, lot, ship=False)
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "consignment.return.sold", r.text
+    r = await client.post(f"/docs/{doc}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 409, r.text
+    assert await _books(session, auth, PAYABLE, COGS) == {PAYABLE: -10.0, COGS: 10.0}
+    assert (await _state(session, auth, lot))["consignment_flag"] == "in"
+
+
 async def test_goods_still_held_go_back_to_the_consignor(client, session, auth):
     consignment, lot = await _consign(client, session, auth)
     r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],

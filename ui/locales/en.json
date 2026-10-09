@@ -4320,6 +4320,7 @@
   "consignment.buy.untraced": "Stock {sku} from this consignment is sold, but not on an invoice that records its cost, so what is owed for it cannot be settled without guessing.",
   "consignment.buy.recompute": "Only part of this consignment is being bought, and its flat discount or tax amount cannot be split between the goods kept and the goods returned without guessing. Set the discount as a percentage and the tax as a rate on the consignment, then convert again.",
   "consignment.buy.nothing_kept": "Nothing received on this consignment is still held or sold, so there is nothing to buy. Receive the goods first.",
+  "consignment.return.sold": "Stock {sku} from this consignment has been sold or is on a sale, so it cannot go back to the consignor. Only goods still held can be returned.",
   "posting.older_stock.no_item": "Item not found.",
   "posting.older_stock.already_recorded": "This stock already records its inventory account.",
   "posting.older_stock.not_waiting": "This item holds no stock on the books, so there is nothing to place.",

@@ -4322,6 +4322,7 @@
   "consignment.buy.untraced": "El stock {sku} de esta consignación está vendido, pero no en una factura que registre su coste, por lo que lo que se debe por él no se puede liquidar sin suponer.",
   "consignment.buy.recompute": "Solo se compra una parte de esta consignación, y su descuento fijo o importe de impuesto no se puede repartir entre la mercancía conservada y la devuelta sin suponer. Indique el descuento como porcentaje y el impuesto como tasa en la consignación y vuelva a convertir.",
   "consignment.buy.nothing_kept": "Nada de lo recibido en esta consignación sigue en existencia o vendido, así que no hay nada que comprar. Reciba primero la mercancía.",
+  "consignment.return.sold": "El stock {sku} de esta consignación se ha vendido o está en una venta, por lo que no puede volver al consignador. Solo se puede devolver la mercancía que sigue en existencia.",
   "posting.older_stock.no_item": "Artículo no encontrado.",
   "posting.older_stock.already_recorded": "Este stock ya registra su cuenta de inventario.",
   "posting.older_stock.not_waiting": "Este artículo no tiene stock en los libros, así que no hay nada que asignar.",
