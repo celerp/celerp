@@ -9976,7 +9976,8 @@ async def write_off_stock(
         written_off += 1
         remaining[item.entity_id] = round(rem - qty_out, 10)
     total_value = to_stored_float(sum(debits.values(), Decimal(0)))
-    entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items()]
+    # Goods that carried no cost leave no value to move: no line, and no entry when none is left.
+    entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items() if val]
     if entries:
         entries += await auto_je.stock_relief_lines(
             session, company_id, {code: to_stored_float(v) for code, v in credits.items()})
