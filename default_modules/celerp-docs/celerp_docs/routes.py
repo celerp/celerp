@@ -2394,6 +2394,15 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
         raise HTTPException(
             status_code=409,
             detail="Cannot void a document with received items; return the goods first")
+    # Voiding takes away the receipt the bill was imported with; a return of those goods is
+    # booked against that receipt, so it would be left standing alone. Going back to the
+    # order keeps both.
+    if on_bill is not None and on_bill.returned:
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.void_imported_returned",
+            "This bill cannot be voided: goods it already held when it was imported went back to the supplier "
+            "from the purchase order, and that return stays with the order's receipt. "
+            f"{_IMPORTED_NEXT_STEP['cancel']}", next_step=on_bill.next_step("cancel")))
 
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
@@ -2401,7 +2410,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     # batch restore: leaving them posted would double-count once unvoid re-posts.
     # Voiding first also surfaces a locked-period refusal before anything else
     # mutates, mirroring the revert-to-draft ordering.
-    await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+                                      imported_receipt=on_bill is not None and on_bill.settles)
     await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     await _return_to_source_memo(session, company_id=company_id, uid=user.id, owner=row)
     entry = await emit_event(
@@ -2670,8 +2680,11 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
     )
-    # Restore the JEs the void reversed (idempotent - uses doc-scoped keys)
-    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    # Restore the JEs the void reversed (idempotent - uses doc-scoped keys), with the receipt a
+    # bill holding imported goods was voided with.
+    on_bill = await _imported_on_bill(session, company_id, entity_id, state) if state.get("received_items") else None
+    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+                                          imported_receipt=on_bill is not None and on_bill.settles)
     if state.get("doc_type") == "invoice":
         # Cost corrections made while the invoice was void apply once it stands again.
         try:
@@ -4658,6 +4671,8 @@ _IMPORTED_NEXT_STEP = {
               "and return them from the purchase order.",
     "void": "To cancel the bill, void it. The goods stay in stock.",
     "none": "They stay in stock on this bill.",
+    "cancel": "To cancel the bill, revert it to draft. The purchase order keeps its receipt and what went "
+              "back from it.",
 }
 
 
@@ -4668,10 +4683,13 @@ class _ImportedOnBill(NamedTuple):
     holds_own: bool         # whether anything its own receipts brought in is still on it
     way: str                # what settles the imported goods: "revert", "void" or "none"
     from_order: bool        # whether the bill was made from a purchase order
+    returned: bool          # whether any of the imported goods went back to the supplier
 
-    def next_step(self) -> dict:
-        """The sentence naming what settles the imported goods."""
-        return refusal(f"docs.imported_on_bill_next.{self.way}", _IMPORTED_NEXT_STEP[self.way])
+    def next_step(self, way: str | None = None) -> dict:
+        """The sentence naming what settles the imported goods (or ``way``, a key of
+        _IMPORTED_NEXT_STEP)."""
+        way = way or self.way
+        return refusal(f"docs.imported_on_bill_next.{way}", _IMPORTED_NEXT_STEP[way])
 
     @property
     def settles(self) -> bool:
@@ -4719,7 +4737,12 @@ async def _imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc:
         way = "none" if own else "void"
     else:
         way = "revert" if from_order else "none"
-    return _ImportedOnBill(left, holds_own, way, from_order is not None)
+    # A return takes what the document's own receipts added to a lot first (lot_quantity_taken);
+    # anything beyond that from a lot the imported receipts went into was imported stock.
+    imported_lots = {x["item_id"] for x in imported if _stock_receipt(x) and x.get("item_id")} | set(imported_made)
+    returned = any(x.get("item_id") in imported_lots and float(x.get("quantity_returned") or 0)
+                   - float(x.get("lot_quantity_taken") or 0) > 1e-9 for x in doc.get("returned_items") or [])
+    return _ImportedOnBill(left, holds_own, way, from_order is not None, returned)
 
 
 def _imported_refusal(on_bill: _ImportedOnBill, qty: float, sku: str, allowed: float) -> HTTPException:
