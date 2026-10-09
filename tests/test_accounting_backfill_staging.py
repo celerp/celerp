@@ -323,6 +323,45 @@ async def _delivered_lot_linked(s, company_id) -> bool:
     return bool(rows) and all(state.get("catalog_item_id") for state in rows)
 
 
+async def _bill_imported_by_earlier_release(s, company_id) -> None:
+    """An imported bill as an earlier release left it: its import booked it again on top of
+    the opening balances. The two accounts it posted to are removed again afterwards when the
+    company did not hold them, so the company's chart is as it was."""
+    from celerp.events.engine import emit_event
+    from celerp.services import auto_je
+    from celerp.services.journal_accounts import add_account, lock_accounts
+
+    accounts = {"5100": ("Cost of goods sold", "expense"), "2110": ("Accounts payable", "liability")}
+    added = sorted(set(accounts) - set(await lock_accounts(s, company_id, set(accounts)) or {}))
+    for code in added:
+        await add_account(s, company_id, code, *accounts[code])
+    bill = f"doc:{uuid.uuid4().hex}"
+    await emit_event(s, company_id=company_id, entity_id=bill, entity_type="doc", event_type="doc.created",
+                     data={"doc_type": "bill", "status": "awaiting_payment", "total": 10.0, "line_items": [
+                         {"description": "Service", "quantity": 1, "unit_price": 10.0}]},
+                     actor_id=None, location_id=None, source="test", idempotency_key=f"test:doc.created:{bill}",
+                     metadata_={auto_je.IMPORTED_SNAPSHOT: True})
+    await auto_je._emit_auto_posted_je(
+        s, company_id=company_id, user_id=None, je_id=f"je:auto:{bill}:bill",
+        idem_create=auto_je.je_idempotency_key(bill, "po.converted_to_bill:0", "c"),
+        idem_posted=auto_je.je_idempotency_key(bill, "po.converted_to_bill:0", "p"),
+        memo="Imported bill", ts="2026-01-01",
+        entries=[{"account": "5100", "debit": 10.0, "credit": 0.0}, {"account": "2110", "debit": 0.0, "credit": 10.0}],
+        metadata_={"trigger": "doc.converted_to_bill", "doc_id": bill})
+    if added:
+        await s.execute(text("DELETE FROM accounts WHERE company_id = :c AND code = ANY(:codes)"),
+                        {"c": str(company_id), "codes": added})
+
+
+async def _imported_bill_corrected(s, company_id) -> bool:
+    from celerp.models.projections import Projection
+
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.like("je:auto:doc:%:bill")))).scalars().all()
+    return bool(rows) and all(state.get("status") == "void" for state in rows)
+
+
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
@@ -332,6 +371,7 @@ LIFECYCLE_BACKFILLS = {
     "celerp_docs.legacy_receipts:record_legacy_receipts_hook": (_receipt_without_its_record, _receipt_recorded),
     "celerp_manufacturing.routes:settle_open_runs_hook": (_run_issued_by_older_release, _run_settled),
     "celerp_docs.historical_lots:link_historical_lots_hook": (_delivered_lot_without_its_product, _delivered_lot_linked),
+    "celerp_docs.imported_cutover:imported_cutover_hook": (_bill_imported_by_earlier_release, _imported_bill_corrected),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.
