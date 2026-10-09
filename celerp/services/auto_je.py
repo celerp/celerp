@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from decimal import Decimal as _Dec
 
 from celerp.accounting_roles import (
+    CONSIGNOR_FIELD,
     CONSIGNOR_PAYABLE_FIELD,
     INVENTORY_VALUE_ROLES,
     LANDED_ROLE_BY_KIND,
@@ -28,6 +29,7 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import (
     AmbiguousOriginError,
     ConsignmentNoCostError,
+    ConsignorUnknownError,
     consignor_of,
     current_settings,
     is_consigned,
@@ -267,15 +269,15 @@ class CogsResult:
     it ships), and the line's total amount. ``by_account``
     is the total split by those inventory accounts. ``ambiguous`` is True when at
     least one splittable line exceeds its bound lot, so bound-lot-only pricing is a
-    guess rather than an exact cost. ``payables`` names the consignor payable account
-    each consigned lot sold for the first time is costed against, which the poster
-    records on the lot (record_consignor_payables).
+    guess rather than an exact cost. ``payables`` names, for each consigned lot sold for
+    the first time, the consignor payable account it is costed against and the consignor
+    it is owed to, which the poster records on the lot (record_consignor_payables).
     """
     total: float = 0.0
     allocations: dict[str, dict] = field(default_factory=dict)
     by_account: dict[str, float] = field(default_factory=dict)
     ambiguous: bool = False
-    payables: dict[str, str] = field(default_factory=dict)
+    payables: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 
@@ -386,9 +388,12 @@ async def compute_doc_cogs(
     async def sold_account(lot_id: str, state: dict) -> str:
         if not is_consigned(state) or state.get(CONSIGNOR_PAYABLE_FIELD):
             return sold_lot_account(state)
+        consignor = await consignor_of(session, company_id, lot_id, state)
+        if not consignor:
+            raise ConsignorUnknownError(str(state.get("sku") or ""))
         if not payable:
             payable.append(await resolve(session, company_id, R.CONSIGNOR_PAYABLE))
-        result.payables[lot_id] = payable[0]
+        result.payables[lot_id] = {CONSIGNOR_PAYABLE_FIELD: payable[0], CONSIGNOR_FIELD: consignor}
         return payable[0]
 
     line_items = doc.get("line_items", [])
@@ -460,14 +465,14 @@ async def compute_doc_cogs(
     return result
 
 
-async def record_consignor_payables(session, company_id, user_id, payables: dict[str, str]) -> None:
+async def record_consignor_payables(session, company_id, user_id, payables: dict[str, dict[str, str]]) -> None:
     """Record on each consigned lot the consignor payable its first sale was costed
-    against (CogsResult.payables), where every later reversal or settlement of that
-    sale moves (account_roles.sold_lot_account)."""
-    for lot_id, code in sorted(payables.items()):
+    against and the consignor it is owed to (CogsResult.payables), where every later
+    reversal or settlement of that sale moves (account_roles.sold_lot_key)."""
+    for lot_id, data in sorted(payables.items()):
         await emit_event(
             session, company_id=company_id, entity_id=lot_id, entity_type="item",
-            event_type="item.consignor_payable.recorded", data={CONSIGNOR_PAYABLE_FIELD: code},
+            event_type="item.consignor_payable.recorded", data=data,
             actor_id=user_id, location_id=None, source="auto_je",
             idempotency_key=f"consignor-payable:{lot_id}", metadata_={})
 

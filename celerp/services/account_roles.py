@@ -242,6 +242,17 @@ class ConsignmentNoCostError(HTTPException):
             sku=sku or "item"))
 
 
+class ConsignorUnknownError(HTTPException):
+    """Consigned goods whose consignor is not known cannot be sold, since there is no one
+    to owe their cost to."""
+
+    def __init__(self, sku: str):
+        super().__init__(status_code=409, detail=refusal(
+            "consignment.no_consignor",
+            f"Stock {sku or 'item'} is held on a consignment with no consignor, so there is no one to owe "
+            "for it when it sells. Open the consignment and choose the consignor first.", sku=sku or "item"))
+
+
 def is_consigned(state: dict) -> bool:
     """Whether a lot holds goods on consignment from a supplier."""
     return state.get("consignment_flag") == "in"

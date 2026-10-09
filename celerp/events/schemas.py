@@ -340,8 +340,10 @@ class ItemInventoryAccountRecorded(BaseModel):
 
 class ItemConsignorPayableRecorded(BaseModel):
     # A consigned lot's first sale: the account what the company owes its consignor for
-    # the goods is recognized on. Only a lot with none recorded can take one.
+    # the goods is recognized on, and the consignor it is owed to. Only a lot with none
+    # recorded can take one.
     consignor_payable_code: str
+    consignor_id: str
 
 
 class ItemConsignmentBought(BaseModel):
