@@ -415,6 +415,46 @@ async def test_return_goods_form_sends_the_measures_given(monkeypatch):
     assert len(sent) == 1
 
 
+def _lot_rows(html: str) -> list[str]:
+    """Each lot row of the Return Goods form's lot list, as its own HTML."""
+    return [part.split("</div>")[0] for part in html.split('class="return-lot inline-form-row"')[1:]]
+
+
+@pytest.mark.parametrize("weighed", [1, 0])
+async def test_return_lot_offers_the_measures_that_lot_keeps(client, session, auth, weighed):
+    """Two receipts of the same article on one line, only one of them weighed: each lot on the
+    Return Goods form offers a weight field when that lot has a weight, whichever lot the line's
+    own item happens to be, so a weight can be given for the weighed lot and is never asked of
+    the other."""
+    from celerp_inventory.routes import flatten_item
+    from celerp.services.line_measures import item_measure_meta
+    from ui.routes import documents
+
+    bill, [line_id] = await _issued(client, session, auth, "bill", _stock_lines(1, qty=8))
+    for qty in (5, 3):
+        r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": qty})
+        assert r.status_code == 200, r.text
+    lots = (await _state(session, auth, bill))["received_item_ids"]
+    r = await client.patch(f"/items/{lots[weighed]}", headers=auth["headers"], json={"fields_changed": {
+        "weight": {"old": None, "new": 9}, "weight_unit": {"old": None, "new": "carat"}}})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{bill}", headers=auth["headers"])).json()
+    [line] = doc["line_items"]
+    assert [lot["item_id"] for lot in line["return_lots"]] == lots
+    eid = line.get("entity_id") or line.get("item_id")
+    meta = {eid: item_measure_meta(flatten_item(await _state(session, auth, eid), eid), {})}
+    html = to_xml(documents._li_bulk_toolbar(bill, False, show_fulfill=True, is_inbound=True,
+                                             inbound_line_items=doc["line_items"], locations=[],
+                                             item_meta_map=meta))
+    rows = _lot_rows(html)
+    assert len(rows) == 2
+    for j, row in enumerate(rows):
+        assert (f'name="weight_lot_0_{j}"' in row) is (j == weighed), (j, row)
+    assert "carat" in rows[weighed]
+    assert all('name="pieces_lot_0_' not in row for row in rows)
+
+
 @pytest.mark.parametrize("key", [
     "docs.return_line_not_on_hand", "docs.return_line_shared", "docs.return_line_unknown",
     "docs.return_line_untraced", "docs.return_not_on_hand", "docs.return_imported_on_bill",

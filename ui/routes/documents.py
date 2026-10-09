@@ -6190,7 +6190,8 @@ def _return_measure_inputs(meta: dict, key: str, disabled: bool = False,
 def _return_lot_picker(li: dict, i: int, unit_map: dict, meta: dict) -> FT | None:
     """A Return Goods row's lot list, closed until opened: each lot the line can send goods
     back from, with what of it is free to go back and its own measures, ticked with a
-    quantity of its own. While the list is open the line sends its ticked lots instead of its
+    quantity of its own. A lot offers weight and pieces fields for the measures it keeps
+    itself; whether the quantity is already one of them comes from the line's item (``meta``). While the list is open the line sends its ticked lots instead of its
     quantity (the page enables a lot's fields once it is ticked)."""
     lots = li.get("return_lots") or []
     if not lots:
@@ -6213,7 +6214,8 @@ def _return_lot_picker(li: dict, i: int, unit_map: dict, meta: dict) -> FT | Non
                   Span(lot.get("label") or "--", cls="receive-row__label")),
             _line_qty_input(f"lot_qty_{i}_{j}", qty, unit, qty, step=quantity_step(unit, unit_map), disabled=True,
                             cls="return-lot-qty"),
-            *_return_measure_inputs(meta, key, disabled=True, cls="return-lot-measure"),
+            *_return_measure_inputs({**meta, "weight": lot.get("weight"), "weight_unit": lot.get("weight_unit"),
+                                     "pieces": lot.get("pieces")}, key, disabled=True, cls="return-lot-measure"),
             Span(" · ".join(facts), cls="text-muted receive-row__note"),
             Span(t("documents.return_lot_whole_only"), cls="badge badge--amber") if lot.get("whole_only") else None,
             cls="return-lot inline-form-row",

@@ -75,3 +75,39 @@ def test_a_line_refused_by_line_goes_back_by_lot(page, ui_server, api, monkeypat
     returned = api.get(f"/docs/{bill}").json()["returned_items"]
     assert [(x["item_id"], x["quantity_returned"]) for x in returned] == [(first, 5), (second, 2)]
     assert api.get(f"/items/{second}").json()["quantity"] == 1
+
+
+def test_a_weighed_lot_goes_back_with_its_weight(page, ui_server, api):
+    """The line's first lot has no weight and its second weighs 9 carat. The second lot's row
+    offers a weight field of its own, so part of it goes back with a weight and the lot kept
+    holds the rest of it, never an unknown weight. The first lot asks for no weight."""
+    bill, first, second = _two_lots(api)
+    r = api.patch(f"/items/{second}", json={"fields_changed": {
+        "weight": {"old": None, "new": 9}, "weight_unit": {"old": None, "new": "carat"}}})
+    assert r.status_code == 200, r.text
+
+    page.on("dialog", lambda d: d.accept())
+    page.goto(f"{ui_server}/docs/{bill}", wait_until="domcontentloaded")
+    page.wait_for_selector("#li-select-all", timeout=8000)
+    page.check("#li-select-all")
+    page.select_option("#li-bulk-select", "li-revert")
+    row = page.locator("#li-bulk-revert-btn fieldset.receive-row:visible").first
+    row.wait_for(timeout=5000)
+    row.locator("details.return-lots summary").click()
+    page.wait_for_function("document.querySelector('#li-bulk-revert-btn details.return-lots').open", timeout=5000)
+    assert row.locator("input[name='weight_lot_0_0']").count() == 0
+    weight = row.locator("input[name='weight_lot_0_1']")
+    assert weight.is_disabled(), "a lot sends nothing until ticked"
+
+    row.locator("input[name='lot_0_1']").check()
+    row.locator("input[name='lot_qty_0_1']").fill("2")
+    weight.fill("6")
+    with page.expect_response(lambda r: r.url.endswith(f"/docs/{bill}/return-goods"), timeout=10000) as resp:
+        page.click("#li-bulk-revert-btn button[type=submit]")
+    assert resp.value.status == 204, resp.value.headers.get("hx-trigger")
+
+    returned = api.get(f"/docs/{bill}").json()["returned_items"]
+    assert [(x["item_id"], x["quantity_returned"]) for x in returned] == [(second, 2)]
+    kept = api.get(f"/items/{second}").json()
+    assert (kept["quantity"], kept["weight"], kept["weight_unit"]) == (1, 3, "carat")
+    assert api.get(f"/items/{first}").json()["quantity"] == 5
