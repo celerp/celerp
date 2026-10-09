@@ -2447,6 +2447,7 @@
   "documents.return_held_not_in_stock": "{qty} não está mais em estoque",
   "documents.return_held_some": "Não disponível para devolução: {held}",
   "documents.return_held_none": "Nada para devolver: {held}",
+  "documents.return_measure_blank_hint": "Em branco significa desconhecido, para o que é devolvido e para o que fica.",
   "documents.return_done_one": "1 linha devolvida ao fornecedor.",
   "documents.return_done_many": "{n} linhas devolvidas ao fornecedor.",
   "documents.lines_reserved_one": "1 linha definida como reservada.",

@@ -2573,6 +2573,7 @@
   "documents.return_held_not_in_stock": "{qty} no longer in stock",
   "documents.return_held_some": "Not free to return: {held}",
   "documents.return_held_none": "Nothing to return: {held}",
+  "documents.return_measure_blank_hint": "Blank means not known, for what goes back and for what stays.",
   "documents.return_done_one": "1 line returned to the supplier.",
   "documents.return_done_many": "{n} lines returned to the supplier.",
   "documents.lines_reserved_one": "1 line set as reserved.",

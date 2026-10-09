@@ -2448,6 +2448,7 @@
   "documents.return_held_not_in_stock": "{qty} nicht mehr auf Lager",
   "documents.return_held_some": "Nicht frei zur Rücksendung: {held}",
   "documents.return_held_none": "Nichts zurückzusenden: {held}",
+  "documents.return_measure_blank_hint": "Leer bedeutet unbekannt, für die zurückgehende und für die verbleibende Ware.",
   "documents.return_done_one": "1 Zeile an den Lieferanten zurückgesendet.",
   "documents.return_done_many": "{n} Zeilen an den Lieferanten zurückgesendet.",
   "documents.lines_reserved_one": "1 Zeile als reserviert markiert.",

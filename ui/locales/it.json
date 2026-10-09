@@ -2448,6 +2448,7 @@
   "documents.return_held_not_in_stock": "{qty} non più in magazzino",
   "documents.return_held_some": "Non disponibile per il reso: {held}",
   "documents.return_held_none": "Niente da restituire: {held}",
+  "documents.return_measure_blank_hint": "Vuoto significa sconosciuto, per ciò che viene reso e per ciò che resta.",
   "documents.return_done_one": "1 riga restituita al fornitore.",
   "documents.return_done_many": "{n} righe restituite al fornitore.",
   "documents.lines_reserved_one": "1 riga impostata come riservata.",

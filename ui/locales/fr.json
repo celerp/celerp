@@ -2448,6 +2448,7 @@
   "documents.return_held_not_in_stock": "{qty} plus en stock",
   "documents.return_held_some": "Non disponible pour le retour : {held}",
   "documents.return_held_none": "Rien à retourner : {held}",
+  "documents.return_measure_blank_hint": "Vide signifie inconnu, pour ce qui est renvoyé et pour ce qui reste.",
   "documents.return_done_one": "1 ligne retournée au fournisseur.",
   "documents.return_done_many": "{n} lignes retournées au fournisseur.",
   "documents.lines_reserved_one": "1 ligne marquée comme réservée.",

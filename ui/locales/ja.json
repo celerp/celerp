@@ -2447,6 +2447,7 @@
   "documents.return_held_not_in_stock": "{qty} 在庫なし",
   "documents.return_held_some": "返品できない数量: {held}",
   "documents.return_held_none": "返品できるものはありません: {held}",
+  "documents.return_measure_blank_hint": "空欄は不明を意味します。返品する分と残る分の両方が対象です。",
   "documents.return_done_one": "1 行を仕入先に返品しました。",
   "documents.return_done_many": "{n} 行を仕入先に返品しました。",
   "documents.lines_reserved_one": "1 行を「予約済み」に設定しました。",

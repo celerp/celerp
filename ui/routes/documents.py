@@ -1019,12 +1019,23 @@ def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float |
     the most the line allows and ``step`` the smallest quantity its unit allows (None when the
     unit sets none, any amount above 0); the page checks the entry against both before anything
     is sent, and the server proves it again. ESC leaves the field."""
+    return _line_number_field(
+        unit_label, name=name, min=f"{step:g}" if step else "0", step=f"{step:g}" if step else "any",
+        max=f"{max_qty:g}", value=f"{(max_qty if default is None else default):g}", data_max=f"{max_qty:g}",
+        cls="li-qty-input", style="width:6em;")
+
+
+def _line_measure_input(name: str, placeholder: str, unit_label: str, step: str) -> FT:
+    """An optional weight or pieces field for part of one line: blank unless the user knows
+    the measure, and a blank field is sent as not known. ESC leaves the field."""
+    return _line_number_field(unit_label, name=name, min="0", step=step, value="", placeholder=placeholder,
+                              cls="li-measure-input", style="width:9em;")
+
+
+def _line_number_field(unit_label: str, **attrs) -> FT:
+    """A number field of a line action row, with the unit it is counted in after it."""
     return Span(
-        Input(type="number", name=name, min=f"{step:g}" if step else "0", step=f"{step:g}" if step else "any",
-              max=f"{max_qty:g}",
-              value=f"{(max_qty if default is None else default):g}", data_max=f"{max_qty:g}",
-              cls="li-qty-input", style="width:6em;",
-              onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}"),
+        Input(type="number", onkeydown="if(event.key==='Escape'){this.blur();event.preventDefault();}", **attrs),
         Span(unit_label, cls="meta-value meta-value--muted unit-label") if unit_label else None,
         cls="li-qty-field",
     )
@@ -3389,7 +3400,21 @@ celerpUpdateBulkAlloc();
                 if qty is None:
                     return _action_error(t("documents.receive_pick_quantity"))
                 line_id = str(form.get(f"line_id_{idx}", "")).strip()
-                lines.append({**({"line_id": line_id} if line_id else {"line_index": idx}), "quantity_returned": qty})
+                # A weight or pieces left blank is not known, and is not sent.
+                measures = {}
+                for measure in ("weight", "pieces"):
+                    raw = str(form.get(f"{measure}_{idx}", "")).strip()
+                    if not raw:
+                        continue
+                    try:
+                        value = float(raw)
+                    except ValueError:
+                        value = math.nan
+                    if not math.isfinite(value):
+                        return _action_error(t(f"lines.{measure}_invalid"))
+                    measures[measure] = value
+                lines.append({**({"line_id": line_id} if line_id else {"line_index": idx}),
+                              "quantity_returned": qty, **measures})
             if not lines:
                 return _action_error(t("documents.return_nothing_selected"))
             await api.return_goods(token, entity_id, {"lines": lines, **submitted_operation_key(form)})
@@ -6050,13 +6075,15 @@ def _selected_line_quantities(form) -> list[tuple[int, float | None]]:
     return out
 
 
-def _line_action_rows(line_items: list, available, unit, none_left: str, unit_map: dict, note=None) -> list:
+def _line_action_rows(line_items: list, available, unit, none_left: str, unit_map: dict, note=None,
+                      extra=None) -> list:
     """One row per document line for a form acting on the selected lines, a fieldset the page
     script shows and enables only while its line is selected. A line with something to act on
     offers all of it, ``available(line)`` in ``unit(line)``, stepping by what that unit allows in
     ``unit_map``; any other line says ``none_left``
     and submits nothing. ``note(line, has_some)``, when given, may return a plain reason shown
-    in place of ``none_left`` or beside the field."""
+    in place of ``none_left`` or beside the field. ``extra(line, index)``, when given, returns
+    further fields shown after the quantity of a line that has something to act on."""
     rows = []
     for i, li in enumerate(line_items):
         qty = available(li)
@@ -6065,7 +6092,8 @@ def _line_action_rows(line_items: list, available, unit, none_left: str, unit_ma
         if qty <= 1e-9:
             body = [label, Span(why or none_left, cls="text-muted")]
         else:
-            body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty, step=quantity_step(unit(li), unit_map))]
+            body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty, step=quantity_step(unit(li), unit_map)),
+                    *(extra(li, i) if extra else [])]
             if li.get("line_id"):
                 body.append(Input(type="hidden", name=f"line_id_{i}", value=li["line_id"]))
             if why:
@@ -6097,9 +6125,27 @@ def _return_held_note(li: dict, has_some: bool) -> str:
     return t("documents.return_held_some" if has_some else "documents.return_held_none", held=", ".join(parts))
 
 
-def _return_rows(line_items: list, unit_map: dict) -> list:
+def _return_measure_fields(item_meta_map: dict):
+    """The optional weight and pieces fields of a Return Goods row, for the measures its item
+    keeps beside its quantity: weight when the item has one and is not sold by weight, pieces
+    likewise. Blank means the measure of what goes back, and so of what stays, is not known."""
+    def fields(li: dict, i: int) -> list:
+        meta = item_meta_map.get(li.get("entity_id") or li.get("item_id") or "") or {}
+        out = []
+        if not meta.get("qty_is_weight") and (meta.get("weight") is not None or meta.get("weight_unit")):
+            out.append(_line_measure_input(f"weight_{i}", t("inventory.ph_weight_optional"),
+                                           meta.get("weight_unit") or "", "any"))
+        if not meta.get("qty_is_pieces") and meta.get("pieces") is not None:
+            out.append(_line_measure_input(f"pieces_{i}", t("inventory.ph_pieces_optional"), "", "1"))
+        if out:
+            out.append(Span(t("documents.return_measure_blank_hint"), cls="text-muted receive-row__hint"))
+        return out
+    return fields
+
+
+def _return_rows(line_items: list, unit_map: dict, item_meta_map: dict) -> list:
     """Return Goods rows: a line offers what of its goods is on hand and free, in stock units,
-    and says what holds the rest."""
+    with optional fields for the weight and pieces going back, and says what holds the rest."""
     return _line_action_rows(
         line_items,
         lambda li: float(li.get("returnable_quantity") or 0),
@@ -6107,6 +6153,7 @@ def _return_rows(line_items: list, unit_map: dict) -> list:
         t("documents.nothing_to_return"),
         unit_map,
         _return_held_note,
+        _return_measure_fields(item_meta_map),
     )
 
 
@@ -6117,7 +6164,7 @@ def _line_action_submit(label: str, cls: str) -> FT:
     return Button(label, type="submit", cls=cls, onclick="if(event.detail>1)event.preventDefault()")
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True, unit_map: dict | None = None) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True, unit_map: dict | None = None, item_meta_map: dict | None = None) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     can_delete=False: the line structure is locked (a counting audit), so no Delete selected.
@@ -6127,6 +6174,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     (a draft cannot reserve, but gives back what it holds).
     is_inbound=True: show Receive Goods / Return Goods for the selected lines' quantities.
     unit_map: the company units, so each quantity field steps by what its unit allows.
+    item_meta_map: the lines' item measures, so a return row offers the weight and pieces its item keeps.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -6214,7 +6262,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     hx_disabled_elt="find button[type=submit]",
                 ),
                 Form(
-                    *_return_rows(inbound_line_items or [], unit_map or {}),
+                    *_return_rows(inbound_line_items or [], unit_map or {}, item_meta_map or {}),
                     operation_key_input(),
                     _line_action_submit(_revert_label, "btn btn--warning btn--sm"),
                     id="li-bulk-revert-btn",
@@ -9514,7 +9562,7 @@ async function celerpCsvImport(input, entityId) {{
         _fin_total = line_total if line_total is not None else len(line_items)
         _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
-            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations, unit_map=_unit_map) if _fin_show_bulk else None,
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations, unit_map=_unit_map, item_meta_map=item_meta_map) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li, line_offset + i) for i, li in enumerate(line_items)] if line_items else [

@@ -2447,6 +2447,7 @@
   "documents.return_held_not_in_stock": "{qty} لم يعد في المخزون",
   "documents.return_held_some": "غير متاح للإرجاع: {held}",
   "documents.return_held_none": "لا شيء للإرجاع: {held}",
+  "documents.return_measure_blank_hint": "الحقل الفارغ يعني غير معروف، لما يُرجَع ولما يبقى.",
   "documents.return_done_one": "تم إرجاع سطر واحد إلى المورد.",
   "documents.return_done_many": "تم إرجاع {n} أسطر إلى المورد.",
   "documents.lines_reserved_one": "تم تعيين سطر واحد كـ «محجوز».",
