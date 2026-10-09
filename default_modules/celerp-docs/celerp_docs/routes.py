@@ -34,8 +34,8 @@ from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
-from celerp.services.account_roles import current_settings, lot_account, new_lot_account, role_map
+from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
+from celerp.services.account_roles import current_settings, is_consigned, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.goods_cost import negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
@@ -7641,6 +7641,17 @@ class ReceiveReturnPayload(BaseModel):
     idempotency_key: str | None = None
 
 
+def _returned_lot_origin(ref: dict, quantity: float) -> dict:
+    """What a lot a customer returned keeps of the sold lot it came back from: the
+    inventory account its value goes back to, or for consigned goods the consignment
+    itself (still the consignor's, on the payable the sale was costed against, traced
+    back to the consignment through the sold lot)."""
+    if not is_consigned(ref):
+        return {LOT_ACCOUNT_FIELD: lot_account(ref)} if float(ref.get("cost_price") or 0) * quantity > 0 else {}
+    return {"consignment_flag": "in", CONSIGNOR_PAYABLE_FIELD: ref.get(CONSIGNOR_PAYABLE_FIELD),
+            "returned_from": ref.get("id")}
+
+
 @router.post("/{entity_id}/receive-return")
 async def receive_return(
     entity_id: str,
@@ -7804,9 +7815,9 @@ async def receive_return(
             # the barcode is freshly minted above.
             "gtin": ref.get("gtin") or li_fallback.get("gtin") or None,
             "description": ref.get("description") or li_fallback.get("description") or "",
-            # Returned goods go back onto the account the sold lot was valued in.
-            **({LOT_ACCOUNT_FIELD: lot_account(ref)}
-               if ref and float(ref.get("cost_price") or 0) * it.quantity > 0 else {}),
+            # Returned goods go back onto the account the sold lot was valued in, and
+            # consigned goods go back on consignment, owed to no one again.
+            **(_returned_lot_origin(ref, it.quantity) if ref else {}),
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
             **extra_prices,

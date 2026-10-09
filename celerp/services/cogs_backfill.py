@@ -238,6 +238,7 @@ async def run_cogs_backfill(session) -> dict:
                         by_account=cogs_result.by_account,
                         ts=ts,
                     )
+                    await auto_je.record_consignor_payables(session, doc.company_id, None, cogs_result.payables)
         except HTTPException as exc:
             if exc.status_code == 503:
                 # Backup in progress: run-level, nothing lands, next boot retries.

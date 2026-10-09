@@ -25,6 +25,7 @@ class EventType(StrEnum):
     ITEM_PRODUCED = "item.produced"
     ITEM_COST_ADJUSTED = "item.cost_adjusted"
     ITEM_INVENTORY_ACCOUNT_RECORDED = "item.inventory_account.recorded"
+    ITEM_CONSIGNOR_PAYABLE_RECORDED = "item.consignor_payable.recorded"
     ITEM_INVENTORY_ON_BOOKS_RECORDED = "item.inventory_on_books.recorded"
     ITEM_RECIPE_SET = "item.recipe.set"
     ITEM_WORKFLOW_SET = "item.workflow.set"

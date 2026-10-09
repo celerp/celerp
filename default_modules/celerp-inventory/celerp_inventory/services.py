@@ -36,7 +36,7 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import current_settings, lot_account
+from celerp.services.account_roles import current_settings, sold_lot_account
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
@@ -477,10 +477,10 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 elif sale.doc_id is None:
                     unposted.append(lot_label(before, lot_id))
                 elif not sale.allocated and change:
-                    by_account, account = resold.setdefault(sale.doc_id, {}), lot_account(before)
+                    by_account, account = resold.setdefault(sale.doc_id, {}), sold_lot_account(before)
                     by_account[account] = by_account.get(account, 0.0) + change
                 if sale.doc_id is not None and change:
-                    sold.append((lot_id, lot_account(before), change))
+                    sold.append((lot_id, sold_lot_account(before), change))
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
             allocations = await auto_je.allocations_naming_lot(session, company_id, lot_id)
             if sale.allocated:

@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    CONSIGNOR_PAYABLE_FIELD,
     LOT_ACCOUNT_FIELD,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
@@ -212,15 +213,61 @@ class AmbiguousOriginError(HTTPException):
         )
 
 
+class NotOwnedError(HTTPException):
+    """Goods held on consignment are the consignor's, not the company's stock, so they
+    have no inventory account and their cost cannot move as if they were owned."""
+
+    def __init__(self, sku: str):
+        super().__init__(
+            status_code=409,
+            detail=refusal(
+                "consignment.not_owned",
+                f"Stock {sku or 'item'} is held on consignment and is not the company's inventory, "
+                "so it cannot be used this way until it is bought from the consignor.", sku=sku or "item"),
+        )
+
+
+class ConsignmentNoCostError(HTTPException):
+    """Consigned goods whose cost is not known (a foreign consignment with no rate yet)
+    cannot be sold, since what is owed to the consignor would be a guess."""
+
+    def __init__(self, sku: str):
+        super().__init__(status_code=409, detail=refusal(
+            "consignment.no_cost",
+            f"Stock {sku or 'item'} is held on consignment with no known cost, so what is owed to the "
+            "consignor for it cannot be recorded. Set the consignment's exchange rate or the item's cost first.",
+            sku=sku or "item"))
+
+
+def is_consigned(state: dict) -> bool:
+    """Whether a lot holds goods on consignment from a supplier."""
+    return state.get("consignment_flag") == "in"
+
+
 def lot_account(state: dict) -> str:
     """The inventory account a lot's value sits in: the one it recorded when it first
     took on stock, or for a lot from before lots recorded it, the one the upgrade or the
     user placed it on (celerp.services.lot_origin). Never today's role target, never a
-    company-wide guess."""
+    company-wide guess. Consigned goods are not the company's stock and have none."""
+    if is_consigned(state):
+        raise NotOwnedError(str(state.get("sku") or ""))
     code = state.get(LOT_ACCOUNT_FIELD)
     if not code:
         raise LotOriginError(str(state.get("sku") or ""))
     return code
+
+
+def sold_lot_account(state: dict) -> str:
+    """The account a lot's cost leaves when it is sold and returns to when the sale is
+    undone: its inventory account, or for consigned goods the consignor payable it
+    recorded on its first sale, since what the company owes the consignor is the cost
+    of consigned goods it sells."""
+    if is_consigned(state):
+        code = state.get(CONSIGNOR_PAYABLE_FIELD)
+        if not code:
+            raise NotOwnedError(str(state.get("sku") or ""))
+        return code
+    return lot_account(state)
 
 
 async def new_lot_account(session: AsyncSession, company_id, role: AccountRole) -> str | None:

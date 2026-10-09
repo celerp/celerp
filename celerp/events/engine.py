@@ -370,6 +370,35 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
         )
 
 
+def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None:
+    """A consigned lot records the account its sale is owed to the consignor on when it is
+    first sold, and a lot born from it (a part of it, or goods a customer returns) keeps
+    it. No later event may change it: the payable recognized there is cleared there."""
+    from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD
+
+    if kwargs["event_type"] in ITEM_BIRTHS and previous_state is None:
+        return
+    current = (previous_state or {}).get(CONSIGNOR_PAYABLE_FIELD)
+    data = kwargs["data"]
+    if kwargs["event_type"] == "item.consignor_payable.recorded":
+        if current:
+            raise HTTPException(status_code=409, detail="This stock already records its consignor payable account.")
+        return
+    changed = data.get("fields_changed")
+    if CONSIGNOR_PAYABLE_FIELD in data:
+        written = data[CONSIGNOR_PAYABLE_FIELD]
+    elif isinstance(changed, dict) and CONSIGNOR_PAYABLE_FIELD in changed:
+        change = changed[CONSIGNOR_PAYABLE_FIELD]
+        written = change.get("new") if isinstance(change, dict) else change
+    else:
+        return
+    if written != current:
+        raise HTTPException(
+            status_code=422,
+            detail="The account a consigned item's sale is owed on is recorded when it is first sold and cannot be changed.",
+        )
+
+
 # Item events whose writer may say an archived or expired lot keeps its stock on the
 # books: Archive, Expire, and the upgrade that recognizes what older releases archived.
 _ON_BOOKS_WRITERS = frozenset({"item.status.set", "item.expired", "item.updated", "item.inventory_on_books.recorded"})
@@ -573,6 +602,7 @@ async def emit_event(
     if item:
         _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)
+        _record_consignor_payable(kwargs, previous_item_state)
 
     entry = LedgerEntry(**kwargs)
 

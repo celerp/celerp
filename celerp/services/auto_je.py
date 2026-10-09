@@ -13,18 +13,27 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
 
-from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, LOT_ACCOUNT_FIELD, AccountRole
+from celerp.accounting_roles import (
+    CONSIGNOR_PAYABLE_FIELD,
+    INVENTORY_VALUE_ROLES,
+    LANDED_ROLE_BY_KIND,
+    LOT_ACCOUNT_FIELD,
+    AccountRole,
+)
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.account_roles import (
     AmbiguousOriginError,
+    ConsignmentNoCostError,
     current_settings,
+    is_consigned,
     line_has_role,
     line_roles,
     lot_account,
     resolve,
     resolve_many,
     scope_codes,
+    sold_lot_account,
 )
 from celerp.services.business_time import business_date_of
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
@@ -54,9 +63,15 @@ def _origin_line(settings: dict, code: str, role, debit=0.0, credit=0.0) -> dict
 
 
 def _lot_line(settings: dict, code: str, debit=0.0, credit=0.0) -> dict:
-    """A line moving a lot's value on the inventory account the lot recorded: purchased
-    or opening inventory, whichever that account has served."""
-    role = R.INVENTORY_PURCHASED if code in scope_codes(settings, R.INVENTORY_PURCHASED) else R.INVENTORY_OPENING
+    """A line moving a lot's value on the account the lot recorded (account_roles.
+    sold_lot_account): purchased or opening inventory, whichever that account has served,
+    or for consigned goods the consignor payable."""
+    if code in scope_codes(settings, R.CONSIGNOR_PAYABLE):
+        role = R.CONSIGNOR_PAYABLE
+    elif code in scope_codes(settings, R.INVENTORY_PURCHASED):
+        role = R.INVENTORY_PURCHASED
+    else:
+        role = R.INVENTORY_OPENING
     return _origin_line(settings, code, role, debit, credit)
 
 
@@ -225,12 +240,16 @@ class CogsResult:
     lot's unit cost, on its account), and the line's total amount. ``by_account``
     is the total split by those inventory accounts. ``ambiguous`` is True when at
     least one splittable line exceeds its bound lot, so bound-lot-only pricing is a
-    guess rather than an exact cost.
+    guess rather than an exact cost. ``payables`` names the consignor payable account
+    each consigned lot sold for the first time is costed against, which the poster
+    records on the lot (record_consignor_payables).
     """
     total: float = 0.0
     allocations: dict[str, dict] = field(default_factory=dict)
     by_account: dict[str, float] = field(default_factory=dict)
     ambiguous: bool = False
+    payables: dict[str, str] = field(default_factory=dict)
+
 
 
 def lot_unit_cost(state: dict) -> float:
@@ -325,8 +344,22 @@ async def compute_doc_cogs(
     Non-stock lines (service, freight) hold no goods and contribute nothing.
     Per-line amounts are clamped at zero so one mis-costed lot cannot cancel
     correctly costed siblings.
+
+    Consigned goods are costed against the consignor payable: the one the lot recorded
+    on its first sale, else the role's account now (in ``payables``). Consigned goods
+    with no known cost are refused.
     """
     result = CogsResult()
+    payable: list[str] = []  # the consignor payable role's account, resolved once when needed
+
+    async def sold_account(lot_id: str, state: dict) -> str:
+        if not is_consigned(state) or state.get(CONSIGNOR_PAYABLE_FIELD):
+            return sold_lot_account(state)
+        if not payable:
+            payable.append(await resolve(session, company_id, R.CONSIGNOR_PAYABLE))
+        result.payables[lot_id] = payable[0]
+        return payable[0]
+
     line_items = doc.get("line_items", [])
     bound = doc_bound_lots(line_items)
     span_consumed: set[str] = set()
@@ -360,20 +393,35 @@ async def compute_doc_cogs(
         amount = max(0.0, amount)
         states = {lot["lot_entity_id"]: lot.pop("state") for lot in lots}
         states.setdefault(str(item_id), state)
+        for lot_id, lot_state in states.items():
+            if is_consigned(lot_state) and lot_state.get("cost_total") is None:
+                raise ConsignmentNoCostError(str(lot_state.get("sku") or ""))
         # A lot's cost can only move on the account it is valued in, so a costed line
         # names it, and refuses when the lot's account cannot be proven.
         for lot in lots:
-            lot["account"] = lot_account(states[lot["lot_entity_id"]]) if amount > 0 else None
+            lot["account"] = await sold_account(lot["lot_entity_id"], states[lot["lot_entity_id"]]) if amount > 0 else None
         if amount > 0:
             parts = {lot["lot_entity_id"]: lot["qty"] * lot["unit_cost"] for lot in lots}
             parts[str(item_id)] = parts.get(str(item_id), 0.0) + provisional_qty * unit_cost
             for lot_id, share in _shares(parts, amount).items():
-                code = lot_account(states[lot_id])
+                code = await sold_account(lot_id, states[lot_id])
                 result.by_account[code] = result.by_account.get(code, 0.0) + share
         result.allocations[str(index)] = {
             "lots": lots, "provisional_qty": provisional_qty, "amount": amount}
         result.total += amount
     return result
+
+
+async def record_consignor_payables(session, company_id, user_id, payables: dict[str, str]) -> None:
+    """Record on each consigned lot the consignor payable its first sale was costed
+    against (CogsResult.payables), where every later reversal or settlement of that
+    sale moves (account_roles.sold_lot_account)."""
+    for lot_id, code in sorted(payables.items()):
+        await emit_event(
+            session, company_id=company_id, entity_id=lot_id, entity_type="item",
+            event_type="item.consignor_payable.recorded", data={CONSIGNOR_PAYABLE_FIELD: code},
+            actor_id=user_id, location_id=None, source="auto_je",
+            idempotency_key=f"consignor-payable:{lot_id}", metadata_={})
 
 
 def _shares(parts: dict[str, float], amount: float) -> dict[str, float]:
@@ -431,6 +479,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     if cogs > 0:
         entries += _cogs_lines(await current_settings(session, company_id), acc[R.COGS],
                                cogs_result.by_account, await company_currency(session, company_id))
+    await record_consignor_payables(session, company_id, user_id, cogs_result.payables)
     metadata_ = _recognition_metadata("doc.finalized", doc_id, cogs_result.allocations)
     await _emit_auto_posted_je(
         session,
@@ -1424,13 +1473,14 @@ async def _cogs_entries(session, company_id, by_account: dict[str, float], *, ex
 
 
 async def lots_by_account(session, company_id, amounts: dict[str, float]) -> dict[str, float]:
-    """{lot entity id: amount} summed onto the inventory account each lot is valued in."""
+    """{lot entity id: amount} summed onto the account each lot is costed against
+    (sold_lot_account)."""
     out: dict[str, float] = {}
     for lot_id, amount in amounts.items():
         if not amount:
             continue
         row = await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
-        code = lot_account((row.state or {}) if row is not None else {})
+        code = sold_lot_account((row.state or {}) if row is not None else {})
         out[code] = out.get(code, 0.0) + amount
     return out
 
@@ -1783,7 +1833,7 @@ async def reconcile_doc_cogs(
             raise ValueError("cannot safely identify the invoice line of every shipped lot")
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
-            _add({lot_account(lot.state or {}): cost})
+            _add({sold_lot_account(lot.state or {}): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
     for lot, qty in back:
         idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
@@ -1809,7 +1859,8 @@ async def reconcile_doc_cogs(
         if (row.state or {}).get("status") != "posted":
             continue
         for e in (row.state or {}).get("entries", []):
-            if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING)):
+            if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING,
+                                                           R.CONSIGNOR_PAYABLE)):
                 booked[e["account"]] = booked.get(e["account"], 0.0) + float(e.get("credit") or 0) - float(
                     e.get("debit") or 0)
     # Booked amounts are already money, so the truth is compared once it is money too:
@@ -1825,18 +1876,21 @@ async def reconcile_doc_cogs(
 
 
 async def _allocation_by_account(session, company_id, alloc: dict, amount: float) -> dict[str, float]:
-    """``amount`` of a line's finalize allocation, split over the inventory accounts its
-    lots are valued in, by each lot's share of the allocated cost. The quantity no lot
-    covered is priced at the bound lot's cost, so it sits with the first lot."""
+    """``amount`` of a line's finalize allocation, split over the accounts its lots are
+    costed against (sold_lot_account), by each lot's share of the allocated cost. A lot
+    allocated while on consignment and bought since is costed against the inventory it
+    became. The quantity no lot covered is priced at the bound lot's cost, so it sits
+    with the first lot."""
     lots = alloc.get("lots") or []
     if not amount or not lots:
         return {}
+    payable_codes = scope_codes(await current_settings(session, company_id), R.CONSIGNOR_PAYABLE)
     parts: dict[str, float] = {}
     for position, lot in enumerate(lots):
         code = lot.get("account")
-        if not code:
+        if not code or code in payable_codes:
             row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
-            code = lot_account((row.state or {}) if row is not None else {})
+            code = sold_lot_account((row.state or {}) if row is not None else {})
         qty = float(lot.get("qty") or 0) + (float(alloc.get("provisional_qty") or 0) if position == 0 else 0.0)
         parts[code] = parts.get(code, 0.0) + qty * float(lot.get("unit_cost") or 0)
     return _shares(parts, amount)
