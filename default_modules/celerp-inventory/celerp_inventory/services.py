@@ -3554,25 +3554,6 @@ async def _merge_category_schemas(session: AsyncSession, company_id, incoming: d
     return added
 
 
-async def refuse_taking_set_aside_goods(session: AsyncSession, company_id, row: Projection, left: float) -> None:
-    """Goods a finalized invoice has costed and not shipped stay for that invoice: it
-    already gave up their cost, so taking them off stock by hand, or making them into
-    something else, would give it up a second time. Refuses leaving the lot ``row``
-    with less than ``left`` of such goods, naming the invoices that hold them."""
-    state = row.state or {}
-    sku = str(state.get("sku") or "").strip()
-    held = await auto_je.set_aside_on(session, company_id, row.entity_id, sku) if sku else {}
-    keep = min(sum(held.values()), float(state.get("quantity") or 0))
-    if left >= keep - 1e-9:
-        return
-    one = len(held) == 1
-    raise HTTPException(status_code=409, detail=(
-        f"{sku}: {'invoice' if one else 'invoices'} {', '.join(sorted(held))} "
-        f"{'has' if one else 'have'} costed {keep:g} of this lot for {'its customer' if one else 'their customers'} "
-        f"and not shipped them yet, so the lot cannot go below {keep:g}. Ship or void "
-        f"{'the invoice' if one else 'those invoices'}, or change {'its line' if one else 'their lines'}, first."))
-
-
 async def adjust_item_quantity(
     session: AsyncSession,
     company_id,
@@ -3583,14 +3564,16 @@ async def adjust_item_quantity(
     source: str,
     idempotency_key: str,
 ):
-    """Set an item's quantity on hand, checked against its selling unit's decimals. The caller commits."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    """Set an item's quantity on hand, checked against its selling unit's decimals and
+    against what finalized invoices hold of it, read under the lock. The caller commits."""
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row:
         current_sell_by = row.state.get("sell_by")
         unit_map = {u["name"]: u for u in await get_company_units(session, company_id)}
         if current_sell_by and current_sell_by in unit_map:
             validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
-        await refuse_taking_set_aside_goods(session, company_id, row, float(data["new_qty"]))
+        await auto_je.refuse_taking_set_aside(session, company_id, {
+            entity_id: float(row.state.get("quantity") or 0) - float(data["new_qty"])})
     return await emit_event(
         session,
         company_id=company_id,

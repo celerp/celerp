@@ -384,6 +384,8 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         befores[item_id] = op.round(held)
         if op.books and befores[item_id]:
             lot_account(s)  # stock whose inventory account is not known cannot move
+    await auto_je.refuse_taking_set_aside(op.session, op.company_id, {
+        line["item_id"]: line["quantity"] for line in wanted})
 
     wip_code = state.get("wip_account_code")
     if op.books and any(befores.values()):

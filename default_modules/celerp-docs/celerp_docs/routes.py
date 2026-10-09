@@ -4433,6 +4433,11 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     # Owned goods leave the books at what they carried; consigned goods were never on them.
     owned = doc_type != "consignment_in"
     lots = await lock_projections(session, company_id, [it.item_id for it in payload.items])
+    if owned:
+        leaving: dict[str, float] = {}
+        for it in payload.items:
+            leaving[it.item_id] = leaving.get(it.item_id, 0.0) + it.quantity_returned
+        await auto_je.refuse_taking_set_aside(session, company_id, leaving)
     added = _lot_additions(row.state)
     currency = await auto_je.company_currency(session, company_id)
     goods_role = auto_je.po_receipt_role(row.state)
@@ -4453,8 +4458,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         # sale shipped have already left the lot, and a voided invoice holds nothing.
         if not owned and (_item_status in ("sold", "memo_out") or it.quantity_returned > (
                 float(item.state.get("quantity", 0) or 0) + 1e-9
-                - sum((await auto_je.set_aside_on(
-                    session, company_id, it.item_id, str(item.state.get("sku") or ""))).values()))):
+                - sum(((await auto_je.set_aside(session, company_id, [item])).get(it.item_id) or {}).values()))):
             raise HTTPException(status_code=409, detail=refusal(
                 "consignment.return.sold",
                 f"Stock {item.state.get('sku', it.item_id)} from this consignment has been sold or is on a "
@@ -8079,6 +8083,8 @@ async def undo_receive_return(
                     "You may need to manually correct the inventory before reverting."
                 ),
             )
+        await auto_je.refuse_taking_set_aside(session, company_id, {
+            iid: float((item_rows.get(iid) or {}).get("quantity") or 0) for iid in item_ids})
 
     # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
     undo_suffix = str(uuid.uuid4())
@@ -8193,6 +8199,10 @@ async def undo_receive(
                 "You may need to manually correct the inventory before reverting."
             ),
         )
+
+    await auto_je.refuse_taking_set_aside(session, company_id, {
+        **{iid: float((item_rows.get(iid) or {}).get("quantity") or 0) for iid in received_item_ids},
+        **{lot: qty for lot, (qty, _cost) in added.items()}})
 
     undo_suffix = str(uuid.uuid4())
 
@@ -8885,6 +8895,7 @@ async def adjust_audit(
         cqf = float(cq)
         if abs(cqf - live) < 1e-9:
             continue
+        await auto_je.refuse_taking_set_aside(session, company_id, {item_id: live - cqf})
         unit_cost = auto_je.lot_unit_cost(item.state)
         value = abs(to_decimal(live) - to_decimal(cqf)) * to_decimal(unit_cost)
         if value:
@@ -8981,6 +8992,9 @@ async def undo_audit_adjust(
                 status_code=409,
                 detail=f"{l.get('sku') or item_id}: item cost changed after this audit; undo would misstate inventory value.",
             )
+    # Undoing a count that found more takes those units off stock again.
+    await auto_je.refuse_taking_set_aside(session, company_id, {
+        str(l["item_id"]): float(l["counted_qty"]) - float(l["prior_qty"]) for l in targets})
     for l in targets:
         item_id = str(l["item_id"])
         await emit_event(
@@ -9220,6 +9234,7 @@ async def write_off_stock(
                 status_code=422,
                 detail=f"{name}: total write-off quantity {total_out} exceeds stock {live}",
             )
+    await auto_je.refuse_taking_set_aside(session, company_id, agg)
     skipped = len(lines) - len(intended)  # untouched (no-qty) lines, reported alongside the write-off
     # Single step: a draft write-off is finalized inline here, after validation passes, so the manager
     # removes stock in one click. The writeoff behaviour has no finalize milestone (pure status

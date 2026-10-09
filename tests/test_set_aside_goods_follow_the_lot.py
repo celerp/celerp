@@ -171,3 +171,28 @@ async def test_making_set_aside_goods_into_something_else_is_refused(client, ses
     r = await client.post(f"/items/{lot}/transform", headers=auth["headers"], json=body)
     assert r.status_code == 200, r.text
     await assert_settled(client, session, auth)
+
+
+async def _two_invoices_then_split(client, auth, sku: str) -> str:
+    """A lot of 4 that two invoices each set 2 aside from, split in half; the part."""
+    lot = await _lot(client, auth, sku, 4, 40.0)
+    await _invoice(client, auth, [(lot, sku, 2)])
+    await _invoice(client, auth, [(lot, sku, 2)])
+    return await _split(client, auth, lot, 2)
+
+
+async def test_goods_two_invoices_set_aside_give_up_their_cost_once_after_a_split(client, session, auth):
+    sku = "SAF-TWO"
+    part = await _two_invoices_then_split(client, auth, sku)
+    c = await _invoice(client, auth, [(part, sku, 2)])
+    await _ship(client, auth, c, part)
+    cid = auth["company_id"]
+    assert (round(await _account_net(session, cid, COGS), 2), round(await _account_net(session, cid, OPENING), 2)) == (40.0, 0.0)
+    await assert_settled(client, session, auth)
+
+
+async def test_a_part_holding_goods_two_invoices_set_aside_is_not_taken_off_by_hand(client, session, auth):
+    part = await _two_invoices_then_split(client, auth, "SAF-TWO-ADJ")
+    r = await _adjust(client, auth, part, 0)
+    assert r.status_code == 409, r.text
+    await assert_settled(client, session, auth)

@@ -10,6 +10,7 @@ import pytest
 
 from test_consignment_in_sale import AP, COGS, PAYABLE, PURCHASED, _books, _consign, _invoice, _sell, _settled, _state
 from test_consignor_payable_per_consignor import _consignor, _owed_each
+from test_set_aside_goods_follow_the_lot import _split
 
 pytestmark = pytest.mark.asyncio
 
@@ -92,4 +93,19 @@ async def test_an_invoice_whose_goods_are_still_held_is_restored(client, session
     r = await _post(client, auth, f"/docs/{doc}/unvoid")
     assert r.status_code == 200, r.text
     assert await _owed_each(client, auth, a) == (8.0, 0.0)
+    await _settled(client, session, auth)
+
+
+async def test_a_part_split_off_goods_two_sales_hold_does_not_go_back(client, session, auth):
+    """Two invoices each hold 2 of 4 consigned units and the lot is split in half: every
+    unit is on a sale, so the part cannot go back to the consignor."""
+    a = await _consignor(client, auth, "Consignor A")
+    con, lot = await _consign(client, session, auth, qty=4, cost_price=4.0, contact_id=a)
+    for _ in range(2):
+        r, _doc = await _invoice(client, session, auth, lot, 2)
+        assert r.status_code == 200, r.text
+    part = await _split(client, auth, lot, 2)
+    r = await _back(client, auth, con, part, 2)
+    assert r.status_code == 409, r.text
+    assert (await _state(session, auth, part))["quantity"] == 2
     await _settled(client, session, auth)

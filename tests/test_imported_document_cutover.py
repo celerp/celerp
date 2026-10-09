@@ -440,3 +440,22 @@ async def test_repair_leaves_documents_imported_now_alone(client, session, auth)
     await _repair(session)
     assert await _ledger_size(session, auth) == size
     await _check(session, auth, [bill], "after the repair")
+
+
+async def test_an_imported_receipt_is_costed_from_the_line_naming_its_goods(client, session, auth):
+    """A receipt whose line index points at another item's line is costed from the line
+    that names the goods it received, as a receipt in Celerp is matched to its line."""
+    a = await _item(client, auth, 30.0, qty=3)
+    b = await _item(client, auth, 150.0, qty=3)
+    await _opening(client, auth, 180.0, 0.0)
+    doc = f"doc:{uuid.uuid4()}"
+    r = await client.post("/docs/import", headers=auth["headers"], json={
+        "entity_id": doc, "event_type": "doc.created", "source": "test", "idempotency_key": uuid.uuid4().hex,
+        "data": {"doc_type": "purchase_order", "contact_id": "supplier:1", "status": "received", "doc_number": "IMP-IDX",
+                 "issue_date": "2026-01-01", "subtotal": 180, "total": 180, "amount_outstanding": 180, "amount_paid": 0,
+                 "line_items": [{"item_id": a, "name": "A", "quantity": 3, "unit_price": 10},
+                                {"item_id": b, "name": "B", "quantity": 3, "unit_price": 50}],
+                 "received_items": [{"item_id": b, "po_line_index": 0, "quantity_received": 3.0, "receive_as": "stock"}]}})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, doc))["received_items"][0]["lot_cost_added"] == 150.0
+
