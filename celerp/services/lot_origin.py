@@ -110,11 +110,12 @@ def in_stock(state: dict | None) -> bool:
 
 
 def ready_to_ship(state: dict | None) -> bool:
-    """Whether a lot's goods are in stock and free to ship: on the books, and neither
-    archived, expired, nor out with a customer on memo."""
+    """Whether a lot's goods are in stock and free to ship: goods of a stock type
+    (is_stock_type), on the books, and neither archived, expired, nor out with a customer
+    on memo."""
     s = state or {}
     status = str(s.get("status") or "").lower()
-    return in_stock(s) and status not in RETIRED and status != "memo_out"
+    return is_stock_type(s) and in_stock(s) and status not in RETIRED and status != "memo_out"
 
 
 def units_leaving(before: dict | None, after: dict | None) -> float:

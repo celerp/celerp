@@ -3771,21 +3771,23 @@ async def write_import_batch(
             if existing_projection is not None:
                 outcome.add(entity_id, "rejected", _record_refused(entity_id, "exists", "entity already exists"))
                 continue
+        # A refused row names its SKU, from the stored item when the row does not carry one.
+        named = {**data, "sku": data.get("sku") or ((stored_proj.state or {}).get("sku") if stored_proj is not None else None)}
 
         # Imported price values modify the same protected business data as the
         # interactive pricing surfaces. Import/export authority does not imply
         # permission to set prices.
         price_keys = price_keys_in(data, price_lists)
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-            outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(price_keys, "set_inventory_prices")))
+            outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(price_keys, "set_inventory_prices")))
             continue
 
         sell_by = str(data.get("sell_by") or "").strip()
         if event_type != "item.patched" and not sell_by:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.sell_by_required", "sell_by is required")))
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.sell_by_required", "sell_by is required")))
             continue
         if sell_by and valid_units and sell_by not in valid_units:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
                 "import.row.unknown_unit", f"sell_by '{sell_by}' is not a valid unit", unit=sell_by)))
             continue
 
@@ -3796,7 +3798,7 @@ async def write_import_batch(
                 if sell_by and sell_by != stored_sell_by:
                     gated.add("sell_by")
                 if gated:
-                    outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(gated, "edit_inventory_amounts")))
+                    outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(gated, "edit_inventory_amounts")))
                     continue
 
         negative_amount = None
@@ -3811,12 +3813,12 @@ async def write_import_batch(
             except (TypeError, ValueError):
                 pass
         if negative_amount is not None:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
                 "import.row.negative", f"{negative_amount} cannot be negative", field=negative_amount)))
             continue
         cost_refusal = negative_cost_error(lot_label(data, entity_id), *event_goods_costs(event_type, data))
         if cost_refusal:
-            outcome.add(entity_id, "rejected", _row_refused(data, cost_refusal))
+            outcome.add(entity_id, "rejected", _row_refused(named, cost_refusal))
             continue
 
         # Creation follows the ordinary internal-code primitive, after replay
@@ -3839,7 +3841,7 @@ async def write_import_batch(
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
         except ValueError as exc:
-            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
 
         if event_type != "item.patched":
@@ -3851,7 +3853,7 @@ async def write_import_batch(
             try:
                 loc_id = uuid.UUID(str(raw_loc))
             except ValueError:
-                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.invalid_location", "invalid location_id")))
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.invalid_location", "invalid location_id")))
                 continue
 
         # A patched goods cost is restated like an edit on the item page (merge and
@@ -3863,7 +3865,7 @@ async def write_import_batch(
             try:
                 cost_change = _pop_cost_change(data)
             except (TypeError, ValueError):
-                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.cost_not_number", "cost must be a number")))
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.cost_not_number", "cost must be a number")))
                 continue
 
         try:
@@ -3889,17 +3891,17 @@ async def write_import_batch(
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
-            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
         except Exception as exc:
-            if isinstance(exc, HTTPException) and exc.status_code == 409:
-                # A conflict with the item's current use (goods an invoice has set aside) is
-                # the user's to resolve, so the row says what it is.
-                outcome.add(entity_id, "rejected", _row_refused(data, exc.detail))
+            if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:
+                # A refusal (goods an invoice has set aside, a change the item cannot take)
+                # is the user's to resolve, so the row says what it is.
+                outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
                 continue
             # The cause stays in the server log; the caller gets a plain row error.
             logger.exception("Item import could not write %s", entity_id)
-            outcome.add(entity_id, "failed", _row_refused(data, refusal("import.row.not_written", "the item could not be written")))
+            outcome.add(entity_id, "failed", _row_refused(named, refusal("import.row.not_written", "the item could not be written")))
             continue
 
         existing[idem_key] = entry

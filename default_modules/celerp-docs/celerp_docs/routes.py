@@ -2199,6 +2199,10 @@ async def finalize_document(
         # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
         _revert_count = int(_initial_doc_state.get("revert_count", 0))
         await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
+    elif doc_type == "credit_note":
+        await auto_je.create_for_credit_note_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
+        await _settle_moved_cost(session, company_id, _user_id, entity_id, _initial_doc_state,
+                                 f"cn-{entry.id}", "doc.finalized")
     if commit:
         await session.commit()
     return {"event_id": entry.id}
@@ -2259,8 +2263,28 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
     """Once an invoice stops standing (void, back to draft), settle any cost it still
     carries through cost moves (auto_je.reconcile_doc_cogs): goods another invoice
     shipped from its set-aside stay costed to that invoice, and goods it took the cost
-    of stay costed while they are out with the customer."""
-    if (state or {}).get("doc_type") != "invoice":
+    of stay costed while they are out with the customer.
+
+    A credit note issued, voided, sent back to draft or restored changes how many goods
+    its invoice holds (auto_je.credited_quantities), so the invoice is settled instead.
+    A credit note can stop standing only while the invoice still holds the goods it gave
+    up: goods that left stock since cannot be set aside again."""
+    state = state or {}
+    if state.get("doc_type") == "credit_note" and state.get("original_doc_id"):
+        doc_id = str(state["original_doc_id"])
+        invoice = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id},
+                                    populate_existing=True)
+        invoice_state = (invoice.state if invoice is not None else None) or {}
+        if invoice_state.get("status") in (None, "draft", "void"):
+            return
+        state = invoice_state
+        if trigger in ("doc.voided", "doc.reverted_to_draft") and await auto_je.held_short(session, company_id, doc_id, state):
+            number = state.get("doc_number") or state.get("ref_id") or doc_id
+            raise HTTPException(status_code=409, detail=(
+                f"This credit note cannot be undone: goods it released from invoice {number} have "
+                f"left stock since, so the invoice cannot hold them again. Bring the goods back "
+                f"into stock first, or issue a new invoice for them."))
+    if state.get("doc_type") != "invoice":
         return
     try:
         await auto_je.reconcile_doc_cogs(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
@@ -2523,6 +2547,9 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
             f"{', '.join(taken)} while it was void. Create a new invoice for the goods still held.",
             consignments=", ".join(taken)))
     await restore.commit()
+    if state.get("doc_type") == "credit_note":
+        await _settle_moved_cost(session, company_id, user.id, entity_id, state, f"unvoid-{entry.id}",
+                                 "doc.unvoided")
     if state.get("doc_type") == "invoice":
         # Cost corrections made while the invoice was void apply once it stands again.
         try:

@@ -341,15 +341,15 @@ async def test_a_credit_note_application_and_its_unapply_clear_on_the_invoices_o
     })
     assert r.status_code == 200, r.text
 
-    # Both legs land on the invoice's own account: the credit note, issued in Celerp
-    # with no recognition of its own, clears against the invoice's origin rather than
-    # the account the receivable role currently points at, so the net balance on 1120
-    # does not move and 1121 is never touched.
+    # The credit note credits the receivable the invoice was recognized on (1120), not
+    # the account the role points at now. Both legs of the application land on that same
+    # account, so the application nets to zero there and 1121 is never touched: 1120
+    # carries the 60.00 still owed.
     je = await _state(session, auth, f"je:auto:{inv}:cnapply:{cn}:0")
     assert {(e["account"], e["debit"], e["credit"]) for e in je["entries"]} == {
         ("1120", 0.0, 40.0), ("1120", 40.0, 0.0),
     }
-    assert await _account_net(session, cid, "1120") == 100.0
+    assert await _account_net(session, cid, "1120") == 60.0
     assert await _account_net(session, cid, "1121") == 0.0
     doc = (await client.get(f"/docs/{inv}", headers=auth["headers"])).json()
     assert doc["amount_paid"] == 40.0
@@ -363,7 +363,8 @@ async def test_a_credit_note_application_and_its_unapply_clear_on_the_invoices_o
     assert {(e["account"], e["debit"], e["credit"]) for e in je["entries"]} == {
         ("1120", 0.0, 40.0), ("1120", 40.0, 0.0),
     }
-    assert await _account_net(session, cid, "1120") == 100.0
+    # The credit note stays issued, unapplied: 1120 still carries the invoice less it.
+    assert await _account_net(session, cid, "1120") == 60.0
     assert await _account_net(session, cid, "1121") == 0.0
     doc = (await client.get(f"/docs/{inv}", headers=auth["headers"])).json()
     assert doc["amount_paid"] == 0.0
