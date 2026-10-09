@@ -113,8 +113,9 @@ jobs:
             echo "$state"
           }
           # The data a refused copy must leave alone: the config and the modules folder.
+          # A folder that is missing or unreadable holds nothing to compare.
           data_state() {
-            find "$HOME/.config" \( -name 'celerp-config.json' -o -path '*/modules/*' \) -type f -print0 2>/dev/null |
+            { find "$HOME/.config" \( -name 'celerp-config.json' -o -path '*/modules/*' \) -type f -print0 2>/dev/null || true; } |
               sort -z | xargs -0 -r sha256sum
           }
           # A copy's view of the records, without its version.
