@@ -4204,6 +4204,7 @@
   "posting.role.fx_loss": "Rugi selisih kurs",
   "posting.role.stock_shrinkage": "Penyusutan dan penghapusan persediaan",
   "posting.role.work_in_progress": "Pekerjaan dalam proses",
+  "posting.role.consignor_payable": "Utang kepada konsinyor",
   "mfg.reconciliation_required": "Nilai bahan dalam proses produksi ini belum dicatat di pembukuan atau tidak dapat dihitung dari riwayatnya. Rekonsiliasi dulu sebelum mengubah bahan atau hasilnya.",
   "mfg.insufficient_stock": "Hanya {available:g} {sku} yang ada di stok dan tidak dipesan; dibutuhkan {needed:g}.",
   "mfg.over_receipt": "Hanya {remaining:g} yang masih harus diterima dari proses produksi ini; {quantity:g} tidak dapat diterima.",

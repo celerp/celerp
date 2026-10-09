@@ -4204,6 +4204,7 @@
   "posting.role.fx_loss": "Kursverluste",
   "posting.role.stock_shrinkage": "Bestandsschwund und Abschreibungen",
   "posting.role.work_in_progress": "Unfertige Erzeugnisse",
+  "posting.role.consignor_payable": "Verbindlichkeiten gegenüber Kommittenten",
   "mfg.reconciliation_required": "Der Wert des Materials in diesem Produktionslauf ist noch nicht verbucht oder lässt sich aus seiner Historie nicht ermitteln. Stimmen Sie ihn ab, bevor Sie Material oder Ausbringung ändern.",
   "mfg.insufficient_stock": "Nur {available:g} von {sku} sind auf Lager und nicht reserviert; benötigt werden {needed:g}.",
   "mfg.over_receipt": "Aus diesem Produktionslauf sind nur noch {remaining:g} entgegenzunehmen; {quantity:g} können nicht entgegengenommen werden.",

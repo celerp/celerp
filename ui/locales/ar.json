@@ -4204,6 +4204,7 @@
   "posting.role.fx_loss": "خسائر فروق الصرف",
   "posting.role.stock_shrinkage": "عجز المخزون وشطبه",
   "posting.role.work_in_progress": "العمل قيد التنفيذ",
+  "posting.role.consignor_payable": "مستحقات المودِع",
   "mfg.reconciliation_required": "قيمة المواد في دورة الإنتاج هذه غير مسجلة في الدفاتر بعد، أو لا يمكن حسابها من سجلها. قم بتسويتها قبل تغيير موادها أو مخرجاتها.",
   "mfg.insufficient_stock": "المتوفر من {sku} في المخزون وغير المحجوز {available:g} فقط؛ والمطلوب {needed:g}.",
   "mfg.over_receipt": "المتبقي للاستلام من دورة الإنتاج هذه {remaining:g} فقط؛ لا يمكن استلام {quantity:g}.",

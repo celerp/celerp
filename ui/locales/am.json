@@ -4202,6 +4202,7 @@
   "posting.role.fx_loss": "የምንዛሪ ኪሳራ",
   "posting.role.stock_shrinkage": "የክምችት ጉድለት እና ስረዛ",
   "posting.role.work_in_progress": "በሂደት ላይ ያለ ሥራ",
+  "posting.role.consignor_payable": "ለአደራ ሰጪ የሚከፈል",
   "mfg.reconciliation_required": "የዚህ የምርት ዙር የዕቃዎች ዋጋ ገና በሂሳብ መዝገብ አልተመዘገበም ወይም ከታሪኩ ሊሰላ አይችልም። ዕቃዎቹን ወይም ምርቱን ከመቀየርዎ በፊት ያስታርቁት።",
   "mfg.insufficient_stock": "ከ{sku} በክምችት ያለው እና ያልተያዘው {available:g} ብቻ ነው፤ የሚያስፈልገው {needed:g} ነው።",
   "mfg.over_receipt": "ከዚህ የምርት ዙር ለመቀበል የቀረው {remaining:g} ብቻ ነው፤ {quantity:g} መቀበል አይቻልም።",

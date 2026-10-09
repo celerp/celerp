@@ -4204,6 +4204,7 @@
   "posting.role.fx_loss": "Perte de change",
   "posting.role.stock_shrinkage": "Démarque et dépréciations de stock",
   "posting.role.work_in_progress": "En-cours de production",
+  "posting.role.consignor_payable": "Dettes envers les consignateurs",
   "mfg.reconciliation_required": "La valeur des matières de ce cycle n'est pas encore comptabilisée ou ne peut pas être déterminée à partir de son historique. Rapprochez-la avant de modifier ses matières ou sa production.",
   "mfg.insufficient_stock": "Seulement {available:g} de {sku} en stock et non réservés ; {needed:g} sont nécessaires.",
   "mfg.over_receipt": "Il ne reste que {remaining:g} à réceptionner de ce cycle ; {quantity:g} ne peuvent pas être réceptionnés.",

@@ -4204,6 +4204,7 @@
   "posting.role.fx_loss": "Perdita su cambi",
   "posting.role.stock_shrinkage": "Cali e svalutazioni di magazzino",
   "posting.role.work_in_progress": "Lavori in corso",
+  "posting.role.consignor_payable": "Debiti verso committenti",
   "mfg.reconciliation_required": "Il valore dei materiali di questa produzione non è ancora registrato in contabilità o non può essere ricavato dalla sua cronologia. Riconcilialo prima di modificarne i materiali o la produzione.",
   "mfg.insufficient_stock": "Solo {available:g} di {sku} sono a magazzino e non riservati; ne servono {needed:g}.",
   "mfg.over_receipt": "Da questa produzione restano da ricevere solo {remaining:g}; non è possibile riceverne {quantity:g}.",

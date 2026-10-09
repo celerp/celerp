@@ -4204,6 +4204,7 @@
   "posting.role.fx_loss": "Lỗ chênh lệch tỷ giá",
   "posting.role.stock_shrinkage": "Hao hụt và xóa sổ hàng tồn kho",
   "posting.role.work_in_progress": "Chi phí sản xuất kinh doanh dở dang",
+  "posting.role.consignor_payable": "Phải trả bên ký gửi",
   "mfg.reconciliation_required": "Giá trị nguyên vật liệu của đợt sản xuất này chưa được ghi sổ hoặc không thể tính được từ lịch sử của nó. Hãy đối chiếu trước khi thay đổi nguyên vật liệu hoặc thành phẩm.",
   "mfg.insufficient_stock": "Chỉ có {available:g} {sku} trong kho và chưa được giữ chỗ; cần {needed:g}.",
   "mfg.over_receipt": "Chỉ còn {remaining:g} cần nhận từ đợt sản xuất này; không thể nhận {quantity:g}.",

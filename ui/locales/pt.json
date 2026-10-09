@@ -4204,6 +4204,7 @@
   "posting.role.fx_loss": "Perda cambial",
   "posting.role.stock_shrinkage": "Quebras e baixas de estoque",
   "posting.role.work_in_progress": "Produção em andamento",
+  "posting.role.consignor_payable": "Contas a pagar a consignantes",
   "mfg.reconciliation_required": "O valor dos materiais deste ciclo ainda não está registrado na contabilidade ou não pode ser apurado a partir do seu histórico. Concilie-o antes de alterar os seus materiais ou a sua produção.",
   "mfg.insufficient_stock": "Há apenas {available:g} de {sku} em estoque e não reservados; são necessários {needed:g}.",
   "mfg.over_receipt": "Restam apenas {remaining:g} a receber deste ciclo; não é possível receber {quantity:g}.",

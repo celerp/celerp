@@ -4202,6 +4202,7 @@
   "posting.role.fx_loss": "ขาดทุนจากอัตราแลกเปลี่ยน",
   "posting.role.stock_shrinkage": "สินค้าขาดหายและตัดจำหน่าย",
   "posting.role.work_in_progress": "งานระหว่างผลิต",
+  "posting.role.consignor_payable": "เจ้าหนี้ผู้ฝากขาย",
   "mfg.reconciliation_required": "มูลค่าวัตถุดิบในใบสั่งผลิตนี้ยังไม่ได้บันทึกในบัญชี หรือคำนวณจากประวัติไม่ได้ ให้กระทบยอดก่อนเปลี่ยนวัตถุดิบหรือผลผลิตของใบสั่งผลิตนี้",
   "mfg.insufficient_stock": "{sku} มีในสต๊อกที่ไม่ได้จองไว้เพียง {available:g} แต่ต้องใช้ {needed:g}",
   "mfg.over_receipt": "ใบสั่งผลิตนี้เหลือที่ต้องรับอีกเพียง {remaining:g} จึงรับ {quantity:g} ไม่ได้",

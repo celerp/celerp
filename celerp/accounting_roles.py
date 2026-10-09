@@ -25,7 +25,7 @@ from celerp.compat import StrEnum
 
 # Bumped when a release adds a role. Older companies and backups stay readable:
 # an unmapped role only fails the operation that needs it.
-POSTING_ROLES_SCHEMA = 2
+POSTING_ROLES_SCHEMA = 3
 
 # Company.settings keys. ``posting_roles`` is the current target per role;
 # ``posting_role_scopes`` is every account that has legitimately served the role,
@@ -39,6 +39,10 @@ SOURCE_CONTROLS_KEY = "posting_source_controls"
 
 # The item-state field holding the inventory account a lot's value sits in.
 LOT_ACCOUNT_FIELD = "inventory_account_code"
+# The item-state field holding the account a consigned lot's sale is owed to the
+# consignor on, recorded when the lot is first sold. A consigned lot is not the
+# company's stock, so it has no inventory account until the company buys it.
+CONSIGNOR_PAYABLE_FIELD = "consignor_payable_code"
 # The event-metadata key naming the lot a new lot takes its cost from (goods back on a
 # credit note come in at the cost of the lot that was sold).
 VALUED_FROM_KEY = "valued_from"
@@ -79,6 +83,7 @@ class AccountRole(StrEnum):
     FX_LOSS = "fx_loss"
     STOCK_SHRINKAGE = "stock_shrinkage"
     WORK_IN_PROGRESS = "work_in_progress"
+    CONSIGNOR_PAYABLE = "consignor_payable"
 
 
 R = AccountRole
@@ -107,6 +112,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.FX_LOSS: "Exchange loss",
     R.STOCK_SHRINKAGE: "Stock shrinkage and write-offs",
     R.WORK_IN_PROGRESS: "Work in progress",
+    R.CONSIGNOR_PAYABLE: "Consignor payable",
 }
 
 _ASSET = frozenset({"asset"})
@@ -137,6 +143,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.FX_LOSS: _EXPENSE,
     R.STOCK_SHRINKAGE: _EXPENSE,
     R.WORK_IN_PROGRESS: _ASSET,
+    R.CONSIGNOR_PAYABLE: frozenset({"liability"}),
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -171,6 +178,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.FX_LOSS: "6960",
     R.STOCK_SHRINKAGE: "6970",
     R.WORK_IN_PROGRESS: "1130-WIP",
+    R.CONSIGNOR_PAYABLE: "2115",
 }
 
 # Landed-cost clearing role per landed-cost kind, and back.
@@ -205,12 +213,13 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "fx": (R.FX_GAIN, R.FX_LOSS),
     "fixed_assets": (R.FIXED_ASSETS,),
     "manufacturing": (R.WORK_IN_PROGRESS,),
+    "consignment": (R.CONSIGNOR_PAYABLE,),
 }
 
 # Roles a company whose chart came from elsewhere (a migration or a restored backup)
 # never has mapped by default code: its chart predates the role, so an account that
 # happens to carry the default number proves nothing about what it holds.
-UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({R.WORK_IN_PROGRESS})
+UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE})
 
 
 def is_role(value: object) -> bool:

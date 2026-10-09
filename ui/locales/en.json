@@ -4202,6 +4202,7 @@
   "posting.role.fx_loss": "Exchange loss",
   "posting.role.stock_shrinkage": "Stock shrinkage and write-offs",
   "posting.role.work_in_progress": "Work in progress",
+  "posting.role.consignor_payable": "Consignor payable",
   "mfg.reconciliation_required": "The value of the materials in this run is not recorded in the books yet, or cannot be worked out from its history. Reconcile it before changing its materials or output.",
   "mfg.insufficient_stock": "Only {available:g} of {sku} is in stock and not reserved; {needed:g} is needed.",
   "mfg.over_receipt": "Only {remaining:g} is still to be received from this run; {quantity:g} cannot be received.",

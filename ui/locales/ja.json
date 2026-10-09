@@ -4202,6 +4202,7 @@
   "posting.role.fx_loss": "為替差損",
   "posting.role.stock_shrinkage": "棚卸減耗・評価損",
   "posting.role.work_in_progress": "仕掛品",
+  "posting.role.consignor_payable": "委託者未払金",
   "mfg.reconciliation_required": "この生産ロットの材料の価額はまだ帳簿に記録されていないか、履歴から算出できません。材料や生産品を変更する前に照合してください。",
   "mfg.insufficient_stock": "{sku} の在庫で引当されていないものは {available:g} しかありません。{needed:g} 必要です。",
   "mfg.over_receipt": "この生産ロットから受け入れられる残りは {remaining:g} のみです。{quantity:g} は受け入れられません。",
