@@ -4471,6 +4471,7 @@
   "docs.edit_void": "Este documento está anulado y no se puede editar. Para hacer cambios, revierta primero la anulación.",
   "docs.close_goods_out": "Este memo no se puede cerrar mientras {count} producto(s) sigan fuera o reservados en él. Véndalos o devuélvalos primero.",
   "docs.undo_receipt_after_return": "Parte de estos bienes ya se devolvió al proveedor, así que la recepción no se puede deshacer. La devolución queda registrada.",
+  "docs.undo_receipt_units_sold": "El SKU '{sku}' tiene {on_hand} en existencia y entraron {needed} con este documento. Los artículos vendidos desde entonces tomaron parte del costo de esta recepción, así que la recepción no se puede deshacer. Devuelva los artículos al proveedor o corrija el inventario con un ajuste.",
   "docs.return_line_not_on_hand": "{name}: como máximo {qty} de lo recibido en esta línea está en existencia y libre para devolver. Los bienes vendidos, en memo o reservados vuelven al proveedor solo cuando están de nuevo en stock y libres.",
   "docs.return_line_shared": "{name}: los bienes recibidos en esta línea entraron en el mismo stock que los de otra línea, así que no se pueden devolver por línea.",
   "docs.return_line_unknown": "Una línea seleccionada no está en este documento tal como se indicó. Recargue el documento y vuelva a seleccionar las líneas.",

@@ -4471,6 +4471,7 @@
   "docs.edit_void": "Ce document est annulé et ne peut pas être modifié. Pour le modifier, levez d'abord l'annulation.",
   "docs.close_goods_out": "Ce mémo ne peut pas être clôturé tant que {count} produit(s) sont encore sortis ou réservés dessus. Vendez-les ou reprenez-les d'abord.",
   "docs.undo_receipt_after_return": "Une partie de ces marchandises a déjà été renvoyée au fournisseur, la réception ne peut donc pas être annulée. Le retour reste enregistré.",
+  "docs.undo_receipt_units_sold": "Le SKU '{sku}' a {on_hand} en stock, {needed} sont entrés avec ce document. Les marchandises vendues depuis ont pris une part du coût de cette réception, la réception ne peut donc pas être annulée. Retournez les marchandises au fournisseur ou corrigez le stock par un ajustement.",
   "docs.return_line_not_on_hand": "{name} : au plus {qty} de ce qui a été reçu sur cette ligne est en stock et libre pour un retour. Les marchandises vendues, en dépôt ou réservées ne repartent chez le fournisseur qu'une fois revenues en stock et libres.",
   "docs.return_line_shared": "{name} : les marchandises reçues sur cette ligne sont entrées dans le même stock que celles d'une autre ligne, elles ne peuvent donc pas être renvoyées par ligne.",
   "docs.return_line_unknown": "Une ligne sélectionnée ne figure pas sur ce document telle qu'indiquée. Rechargez le document et sélectionnez à nouveau les lignes.",

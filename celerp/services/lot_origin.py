@@ -136,6 +136,16 @@ def recorded_value(state: dict) -> Decimal:
     return Decimal(str(cost)) * Decimal(str(s.get("quantity") or 0)) if cost is not None else Decimal("0")
 
 
+def value_moved(before: dict, after: dict | None, currency: str) -> Decimal:
+    """What a lot's account gives up when the lot goes from ``before`` to ``after`` (None when
+    the lot leaves whole): the value it recorded less what it records now, each rounded to the
+    cent as the books carry every lot. Removals that book their own entry (a write-off, an
+    audit count) post this, so the books still carry the lot to the cent; negative when the
+    lot gains value."""
+    left = recorded_value(after) if after is not None else Decimal("0")
+    return round_money(recorded_value(before), currency) - round_money(left, currency)
+
+
 async def _items(session: AsyncSession, company_id) -> list[Projection]:
     return list((await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars())

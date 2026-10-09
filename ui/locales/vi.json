@@ -4471,6 +4471,7 @@
   "docs.edit_void": "Chứng từ này đã bị hủy và không thể chỉnh sửa. Để thay đổi, hãy khôi phục chứng từ đã hủy trước.",
   "docs.close_goods_out": "Không thể đóng memo này khi còn {count} sản phẩm đang ở ngoài hoặc được giữ trên đó. Hãy bán hoặc nhận lại chúng trước.",
   "docs.undo_receipt_after_return": "Một phần hàng này đã được trả lại nhà cung cấp, nên không thể hoàn tác việc nhận hàng. Phiếu trả hàng vẫn được lưu.",
+  "docs.undo_receipt_units_sold": "SKU '{sku}' còn {on_hand} trong kho, {needed} đã nhập theo chứng từ này. Hàng bán ra từ đó đã nhận một phần chi phí của lần nhận hàng này, nên không thể hoàn tác việc nhận hàng. Hãy trả hàng cho nhà cung cấp, hoặc điều chỉnh tồn kho.",
   "docs.return_line_not_on_hand": "{name}: tối đa {qty} trong số hàng nhận trên dòng này còn trong kho và có thể trả lại. Hàng đã bán, đang gửi theo phiếu ký gửi hoặc đã giữ chỉ được trả lại nhà cung cấp khi đã về kho và không bị giữ.",
   "docs.return_line_shared": "{name}: hàng nhận trên dòng này đã vào cùng lô tồn kho với dòng khác, nên không thể trả lại theo dòng.",
   "docs.return_line_unknown": "Một dòng đã chọn không có trên chứng từ này như đã nêu. Tải lại chứng từ và chọn lại các dòng.",

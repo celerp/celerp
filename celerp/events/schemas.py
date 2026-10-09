@@ -177,6 +177,9 @@ class ItemQuantityAdjusted(BaseModel):
     reason: str | None = None
     source_list_id: str | None = None
     prior_qty: float | None = None
+    # The value the audit booked for the change, in the books' currency: what the lot recorded
+    # before less what it records after (lot_origin.value_moved), negative for stock counted up.
+    value: float | None = None
     # Set only when returning consigned goods to a supplier: None once nothing is left on
     # hand, "in" while a partial balance remains. Omitted by ordinary stock adjustments,
     # which must leave the item's consignment status untouched.

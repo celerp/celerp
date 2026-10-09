@@ -4469,6 +4469,7 @@
   "docs.edit_void": "This document is void and cannot be edited. To make changes, Unvoid it first.",
   "docs.close_goods_out": "This memo cannot be closed while {count} product(s) are still out or held on it. Sell or return them first.",
   "docs.undo_receipt_after_return": "Some of these goods were already returned to the supplier, so the receipt cannot be undone. The return stays on record.",
+  "docs.undo_receipt_units_sold": "SKU '{sku}' has {on_hand} on hand, {needed} came in on this document. Goods sold from it since took a share of this receipt's cost, so the receipt cannot be undone. Return the goods to the supplier, or correct the stock with an adjustment.",
   "docs.return_line_not_on_hand": "{name}: at most {qty} received on this line is on hand and free to return. Goods sold, out on memo or reserved go back to the supplier only once they are back in stock and free.",
   "docs.return_line_shared": "{name}: goods received on this line went into the same stock as another line's, so they cannot be returned by line.",
   "docs.return_line_unknown": "A selected line is not on this document as named. Reload the document and select the lines again.",

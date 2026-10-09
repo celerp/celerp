@@ -4471,6 +4471,7 @@
   "docs.edit_void": "Dieses Dokument ist storniert und kann nicht bearbeitet werden. Heben Sie zuerst die Stornierung auf, um Änderungen vorzunehmen.",
   "docs.close_goods_out": "Dieses Memo kann nicht geschlossen werden, solange {count} Produkt(e) noch draußen oder darauf reserviert sind. Verkaufen Sie sie zuerst oder nehmen Sie sie zurück.",
   "docs.undo_receipt_after_return": "Ein Teil dieser Waren wurde bereits an den Lieferanten zurückgegeben, daher kann der Wareneingang nicht rückgängig gemacht werden. Die Rücksendung bleibt erfasst.",
+  "docs.undo_receipt_units_sold": "Für SKU '{sku}' sind {on_hand} vorrätig, {needed} kamen mit diesem Beleg herein. Seitdem verkaufte Ware hat einen Teil der Kosten dieses Wareneingangs übernommen, daher kann der Wareneingang nicht rückgängig gemacht werden. Senden Sie die Ware an den Lieferanten zurück oder korrigieren Sie den Bestand mit einer Anpassung.",
   "docs.return_line_not_on_hand": "{name}: Von dem auf dieser Position Eingegangenen sind höchstens {qty} am Lager und frei für die Rücksendung. Verkaufte, auf Kommission ausgegebene oder reservierte Waren gehen erst an den Lieferanten zurück, wenn sie wieder am Lager und frei sind.",
   "docs.return_line_shared": "{name}: Die auf dieser Position eingegangenen Waren liegen im selben Bestand wie die einer anderen Position und können daher nicht positionsweise zurückgesendet werden.",
   "docs.return_line_unknown": "Eine ausgewählte Position ist so nicht auf diesem Beleg. Laden Sie den Beleg neu und wählen Sie die Positionen erneut aus.",

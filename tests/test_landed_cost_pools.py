@@ -249,8 +249,8 @@ async def test_seven_returns_release_freight_exactly(client, session, auth, from
 
 # A lot split by the user carries its freight into the parts to the cent, once: the parts add
 # back to what the lot cost, and the books still hold every part. What is left of the lot the
-# bill received then goes back with its own share. (A split part is a lot of its own, which the
-# bill did not receive, so it is not returned on the bill.)
+# bill received then goes back with its own share; the parts stay on hand until they go back
+# too (test_landed_cost_removals.test_split_then_return_each_child).
 @_ORDERS
 async def test_split_then_return_the_rest(client, session, auth, from_order):
     doc, [lot] = await _received(client, session, auth, [_goods(1.0, 3)], from_order=from_order, shipping=1.0)

@@ -1580,6 +1580,9 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
 
     revert_count: the current revert_count from doc state (before this revert
     increments it), scoping the void idempotency keys per revert cycle.
+
+    Landed cost goods used up before the bill's receipt was undone leaves cost of sales
+    with the bill (relieve_landed_used).
     """
     moved = await _doc_goods_movement_jes(session, company_id, doc_id) if goods_movements else []
     for suffix in dict.fromkeys([*await _doc_recognition_jes(session, company_id, doc_id), *moved]):
@@ -1595,6 +1598,7 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
             reason=f"Reversed: {doc_id} reverted to draft",
             trigger="doc.reverted_to_draft",
         )
+    await relieve_landed_used(session, company_id=company_id, user_id=user_id, doc_id=doc_id)
 
 
 async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
@@ -1616,6 +1620,9 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
     goods_movements: such a bill, imported as a bill, also received goods itself and sent
     every one of them back; the entries of those receipts and returns reverse with it, so
     the bill leaves nothing booked.
+
+    Landed cost goods used up before the bill's receipt was undone leaves cost of sales
+    with the bill (relieve_landed_used).
     """
     void_events = await _doc_void_events(session, company_id, doc_id)
     batch = 1 + max(
@@ -1640,6 +1647,7 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
             idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
             metadata_={"trigger": "doc.voided", "doc_id": doc_id, "void_batch": batch},
         )
+    await relieve_landed_used(session, company_id=company_id, user_id=user_id, doc_id=doc_id)
 
 
 def _cogs_lines(settings: dict, cogs_code: str, by_account: dict[str, float], currency: str) -> list[dict]:
@@ -2437,20 +2445,143 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
     )
 
 
-async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: str, undo_key: str) -> None:
-    """Return the landed cost a bill's receipts capitalised to the clearing accounts. A receipt
-    with goods returned to the supplier is never undone, so no return's share is left to net."""
-    rows = (await session.execute(_select(Projection).where(
+async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: str, undo_key: str,
+                                     held_by_kind: dict[str, float], held_by_account: dict[str, float]) -> None:
+    """Return to the clearing accounts the landed cost a bill's receipts capitalised that the
+    lots still hold (``held_by_kind``, on the inventory accounts in ``held_by_account``). Goods
+    sold or written off since took the rest with them, so it stays where they put it: the
+    capitalisations are voided and what was used up is posted again on its own entry
+    (landed_used reads it). A receipt with goods returned to the supplier is never undone, so
+    no return's share is left to net."""
+    rows = [row for row in (await session.execute(_select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
         Projection.entity_id.startswith(f"je:auto:{doc_id}:landed-cap:", autoescape=True),
-    ))).scalars().all()
+    ))).scalars().all() if row.state.get("status") == "posted"]
+    net: dict[tuple[str, tuple[str, ...]], _Dec] = {}
     for row in rows:
+        for e in row.state.get("entries") or []:
+            key = (e["account"], tuple(e.get("account_roles") or ()))
+            net[key] = net.get(key, _Dec(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
         await _void_je_if_posted(
             session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=row.entity_id,
             idem_key=f"{row.entity_id}:void:{undo_key}", reason="Goods received undone",
             trigger="doc.receive_undone",
         )
+    if not rows:
+        return
+    currency = await company_currency(session, company_id)
+    held = {kind: round_money(amount, currency) for kind, amount in held_by_kind.items()}
+    # What the lots hold comes off the lines that put it there: the clearing credits of each
+    # kind and the debits on the lots' accounts, in proportion where more than one line did.
+    for kind, amount in held.items():
+        role = LANDED_ROLE_BY_KIND[kind].value
+        keys = sorted(k for k in net if role in k[1] and net[k] < 0)
+        for k, share in zip(keys, allocate_pro_rata(amount, [-net[k] for k in keys], currency)):
+            net[k] += share
+    codes = sorted(code for code, v in held_by_account.items() if v > 0)
+    for code, share in zip(codes, allocate_pro_rata(sum(held.values(), _Dec(0)),
+                                                    [to_decimal(held_by_account[c]) for c in codes], currency)):
+        keys = sorted(k for k in net if k[0] == code and net[k] > 0)
+        for k, part in zip(keys, allocate_pro_rata(share, [net[k] for k in keys], currency)):
+            net[k] -= part
+    entries = [{"account": account, **({"account_roles": list(roles)} if roles else {}),
+                "debit": to_stored_float(v) if v > 0 else 0.0, "credit": to_stored_float(-v) if v < 0 else 0.0}
+               for (account, roles), v in sorted(net.items()) if v]
+    if not entries:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:landed-used:{undo_key}",
+        idem_create=je_idempotency_key(doc_id, f"landed.used:{undo_key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"landed.used:{undo_key}", "p"),
+        memo=f"Auto JE for {doc_id} landed cost used before its receipt was undone",
+        ts=await entry_day(session, company_id),
+        entries=entries,
+        metadata_={"trigger": "doc.receive_undone", "doc_id": doc_id},
+    )
+
+
+_LANDED_KIND_BY_ROLE = {role.value: kind for kind, role in LANDED_ROLE_BY_KIND.items()}
+
+
+async def landed_used(session, company_id, doc_id: str) -> dict[str, _Dec]:
+    """Kind -> landed cost a bill charged that goods sold or written off used up before its
+    receipt was undone (void_landed_capitalisation), less what taking the bill back has since
+    returned to cost of sales (relieve_landed_used). Receiving the goods again capitalises
+    only the rest."""
+    used: dict[str, _Dec] = {}
+    for prefix in ("landed-used:", "landed-used-back:"):
+        rows = (await session.execute(_select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+            Projection.entity_id.startswith(f"je:auto:{doc_id}:{prefix}", autoescape=True),
+        ))).scalars().all()
+        for row in rows:
+            if row.state.get("status") != "posted":
+                continue
+            for e in row.state.get("entries") or []:
+                for role in e.get("account_roles") or ():
+                    if (kind := _LANDED_KIND_BY_ROLE.get(role)) is not None:
+                        used[kind] = (used.get(kind, _Dec(0)) + to_decimal(e.get("credit") or 0)
+                                      - to_decimal(e.get("debit") or 0))
+    return {kind: amount for kind, amount in used.items() if amount}
+
+
+async def relieve_landed_used(session, *, company_id, user_id, doc_id: str) -> None:
+    """Taking a bill back (void or revert to draft) takes back the landed cost it charged. What
+    goods sold before its receipt was undone used of it (landed_used) leaves cost of sales and
+    the clearing accounts empty: Dr clearing / Cr cost of goods sold. Posts nothing once
+    relieved."""
+    used = await landed_used(session, company_id, doc_id)
+    if not used:
+        return
+    cycle = len((await session.execute(_select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_id.startswith(f"je:auto:{doc_id}:landed-used-back:", autoescape=True),
+    ))).scalars().all())
+    currency = await company_currency(session, company_id)
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_id.startswith(f"je:auto:{doc_id}:landed-used:", autoescape=True),
+    ))).scalars().all()
+    # Each kind back on the clearing accounts the used entries took it from.
+    took: dict[str, dict[str, _Dec]] = {}
+    for row in rows:
+        if row.state.get("status") != "posted":
+            continue
+        for e in row.state.get("entries") or []:
+            for role in e.get("account_roles") or ():
+                if (kind := _LANDED_KIND_BY_ROLE.get(role)) is not None:
+                    on = took.setdefault(kind, {})
+                    on[e["account"]] = on.get(e["account"], _Dec(0)) + to_decimal(e.get("credit") or 0)
+    entries = []
+    for kind, amount in sorted(used.items()):
+        if amount <= 0:
+            continue
+        codes = {c: v for c, v in took.get(kind, {}).items() if v > 0}
+        order = sorted(codes)
+        for code, share in zip(order, allocate_pro_rata(amount, [codes[c] for c in order], currency)):
+            if share:
+                entries.append(_line(code, LANDED_ROLE_BY_KIND[kind], debit=to_stored_float(share)))
+    if not entries:
+        return
+    entries.append(_line(await resolve(session, company_id, R.COGS), R.COGS,
+                         credit=to_stored_float(sum((to_decimal(e["debit"]) for e in entries), _Dec(0)))))
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:landed-used-back:{cycle}",
+        idem_create=je_idempotency_key(doc_id, f"landed.used.back:{cycle}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"landed.used.back:{cycle}", "p"),
+        memo=f"Auto JE for {doc_id} landed cost used, taken back with the bill",
+        ts=await entry_day(session, company_id),
+        entries=entries,
+        metadata_={"trigger": "doc.landed_used_relieved", "doc_id": doc_id},
+    )
 
 
 async def create_for_mfg_movement(
