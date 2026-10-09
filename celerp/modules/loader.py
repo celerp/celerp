@@ -1606,6 +1606,9 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool, declared: dict) -
     existing = sys.modules.get(pkg_name)
     if existing is not None and not _is_module_code(_module_location(existing), _module_homes(pkg_path)):
         raise ModuleLoadError(f"The package name {pkg_name!r} is already in use.")
+    # A module loaded again replaces its slot entries, so a hook never runs twice
+    # per event, and a reload that fails leaves none of the old ones behind.
+    unregister_module_slots(pkg_name)
 
     try:
         with _activating(pkg_name, pkg_path, trusted=trusted):

@@ -21,6 +21,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _restore_labels_modules():
+    """Put back the celerp_labels modules the process had before the test.
+
+    These tests import fresh copies of the package. Left in sys.modules, a fresh
+    copy replaces the one the running app's routes were built from, so a later
+    test that patches celerp_labels.ui_routes by import path patches a copy the
+    app never calls. celerp_labels.models stays: its table is registered on the
+    shared metadata once per process."""
+    saved = {k: v for k, v in sys.modules.items() if k.startswith(("celerp_labels", "celerp-labels"))}
+    yield
+    for key in list(sys.modules):
+        if key.startswith(("celerp_labels", "celerp-labels")) and key != "celerp_labels.models":
+            sys.modules.pop(key)
+    sys.modules.update(saved)
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 LABELS_DIR = Path(__file__).parent.parent  # default_modules/celerp-labels

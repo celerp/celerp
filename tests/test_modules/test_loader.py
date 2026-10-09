@@ -120,6 +120,19 @@ class TestLoadAll:
         assert nav[0]["label"] == "Test"
         assert nav[0]["_module"] == "slot-mod"
 
+    def test_loading_a_module_again_registers_its_slots_once(self, tmp_path):
+        """A second load pass replaces a module's slot entries rather than adding a
+        second copy, so a lifecycle hook still runs once per event."""
+        manifest = (
+            '{"name": "again-mod", "version": "1.0", '
+            '"slots": {"nav": {"label": "Again", "href": "/again", "order": 50}}}'
+        )
+        _make_module(tmp_path, "again-mod", manifest)
+        slots.register("nav", {"label": "Again", "href": "/again", "_module": "again-mod"})
+        load_all(tmp_path, {"again-mod"})
+        load_all(tmp_path, {"again-mod"})
+        assert [e["href"] for e in slots.get("nav") if e["_module"] == "again-mod"] == ["/again"]
+
     def test_multiple_modules_all_loaded(self, tmp_path):
         for i in range(3):
             _make_module(tmp_path, f"mod-{i}", f'{{"name": "mod-{i}", "version": "1.0"}}')

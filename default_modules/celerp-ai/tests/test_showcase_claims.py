@@ -46,8 +46,10 @@ _RECONCILE_CLAIMS = [
 ]
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def surface():
+    # Function scope: the loader reset around each test tears down what load_all
+    # registers, which it cannot do for a fixture set up before that reset.
     app = real_agent_app()
     compiled = ai_tools.compile_agent_capabilities(app, {})
     return {
