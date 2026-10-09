@@ -568,7 +568,10 @@ async def test_rounded_and_large_costs(client, session, cost):
 async def test_sold_lot_also_allocated_on_another_open_invoice(client, session):
     steps = [make("a", None), invoice("a", doc="waiting"), sell("a")]
     auth, ctx, _ = await _oracle(client, session, steps, "a", 100.0, before=1)
-    assert await _doc_cogs(session, auth, ctx["waiting"]) == 100.0
+    # The lot's cost went with it to the invoice that shipped it; the one that had set
+    # it aside is costed when goods ship on it.
+    assert await _doc_cogs(session, auth, ctx["doc"]) == 100.0
+    assert await _doc_cogs(session, auth, ctx["waiting"]) == 0.0
 
 
 # -- 18: who may correct a cost --------------------------------------------
