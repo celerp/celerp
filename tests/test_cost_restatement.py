@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_helpers import TZ, merge_items
+from test_helpers import TZ, invoices_booking_one_lot_twice, merge_items
 
 
 async def _item(client, auth, cost_total: float | None, qty: float = 1, sku: str | None = None) -> str:
@@ -523,8 +523,9 @@ async def test_unit_cost_with_stock_sets_the_basis(client, session, auth, path):
 @pytest.mark.asyncio
 async def test_correction_reaches_every_invoice_that_recognized_a_sold_lot(client, session, auth):
     item = await _item(client, auth, 100.0)
-    shipped = await _invoice(client, session, auth, item)
-    waiting = await _invoice(client, session, auth, item)
+    with invoices_booking_one_lot_twice():
+        shipped = await _invoice(client, session, auth, item)
+        waiting = await _invoice(client, session, auth, item)
     assert await _doc_cogs(session, auth, waiting) == 100.0
     await _fulfil(client, shipped, auth, item)
     assert (await _set_cost(client, auth, item, 120.0)).status_code == 200

@@ -231,6 +231,15 @@ class ItemWrittenOff(BaseModel):
     source_list_id: str | None = None
 
 
+class ItemReturnedToSupplier(BaseModel):
+    # Goods sent back to the supplier they came from leave stock. The lot that goes back is
+    # the whole lot, or the part carved off for it; source_doc_id is the receiving document.
+    source_doc_id: str
+    qty: float
+    # Present on consigned goods only: they stop being held on consignment.
+    consignment_flag: str | None = None
+
+
 class ItemSplit(BaseModel):
     # Aggregate marker on the MOTHER. The projection consumes child_ids/child_skus;
     # children_detail drives the per-child history rows (one row per child).
@@ -1324,6 +1333,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
     "item.written_off": ItemWrittenOff,
+    "item.returned_to_supplier": ItemReturnedToSupplier,
     "item.split": ItemSplit,
     "item.split_from": ItemSplitFrom,
     "item.transform": ItemTransform,

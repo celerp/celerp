@@ -15,7 +15,7 @@ import base64
 import json
 import os
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -406,3 +406,16 @@ def real_agent_app() -> FastAPI:
     register_api_routes(app, loaded)
     app.openapi_schema = None
     return app
+
+
+@contextmanager
+def invoices_booking_one_lot_twice():
+    """Finalize invoices the way releases before the double booking check did, so a test can
+    build the data such a release left behind: two open invoices that both booked one lot."""
+    from unittest.mock import patch
+
+    async def _unchecked(*_args, **_kwargs) -> None:
+        return None
+
+    with patch("celerp_docs.routes._refuse_unfillable_invoice_lines", _unchecked):
+        yield

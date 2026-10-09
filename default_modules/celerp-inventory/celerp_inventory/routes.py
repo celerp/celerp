@@ -3603,27 +3603,39 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
 
 async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_proj: Projection,
-                          child_qty: float, child_weight: float | None = None,
-                          child_pieces: int | None = None) -> tuple[str, str]:
-    """Split one child of ``child_qty`` off ``parent_proj`` → ``(child_eid, child_sku)``.
+                          child_qty: float, action: str, child_weight: float | None = None,
+                          child_pieces: int | None = None, child_cost_base: float | None = None,
+                          unknown_measures: bool = False) -> tuple[str, str]:
+    """Split one child of ``child_qty`` off ``parent_proj`` -> ``(child_eid, child_sku)``.
 
     The child keeps the parent SKU (same product; a distinct lot by barcode / entity_id)
-    and is the split-off portion; the mother keeps the remainder. Cost splits
-    proportionally by quantity.
-    Weight and pieces come ONLY from the explicit args — no proportional fallback,
-    no auto-derivation; the mother keeps ``parent - child`` for each.
+    and is the split-off portion; the mother keeps the remainder. The goods cost splits
+    by quantity unless ``child_cost_base`` names the child's share; landed cost is per
+    unit and follows each side's quantity.
+
+    ``action`` names what the user is doing (a key of line_measures.splitting_off): a lot
+    whose Allow Splitting is off refuses any part smaller than the whole with HTTP 409,
+    before anything is written.
+
+    Weight and pieces come only from the explicit args; the mother keeps ``parent - child``
+    of each, and a part measuring more than its lot is refused. By default a tracked
+    measure is required. With ``unknown_measures`` an omitted one is unknown instead: the
+    child carries none and the mother's becomes unknown too, since what is left cannot be
+    worked out. Either way a lot sold by weight (or by pieces) measures its quantity.
 
     Invariants (raise ValueError if violated):
-      - child_qty must not exceed the locked parent quantity
-      - parcel has weight (weight-unit sell_by OR a weight attribute)
-            -> child_weight is required
-      - sell_by is a weight unit  -> child_weight must equal child_qty
-      - parcel has pieces (piece-unit sell_by OR a pieces attribute)
-            -> child_pieces is required
-      - sell_by is a pieces unit  -> child_pieces must equal child_qty
+      - child_qty must not exceed the locked parent quantity, nor be finer than its unit
+      - pieces are whole numbers
+      - sell_by is a weight unit  -> child_weight equals child_qty
+      - sell_by is a pieces unit  -> child_pieces equals child_qty
+      - without unknown_measures, a tracked weight or pieces is required
 
-    Does NOT commit — the caller owns the transaction.
+    Does NOT commit; the caller owns the transaction.
     """
+    from celerp.services.line_measures import splitting_off
+    from celerp.services.units import exceeds_precision
+    from celerp_inventory.services import goods_basis
+
     # Lock and re-read the live parent projection before carving: split_off_child emits
     # the mother's new quantity as an ABSOLUTE value, so two concurrent carves of one
     # parcel must each base their decrement on the current committed quantity, not on a
@@ -3642,6 +3654,8 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     # --- validate against the locked quantity (no floor, no silent clamp) ---
     if round(child_qty - parent_qty, 10) > 0:
         raise ValueError(f"cannot split {child_qty:g} of {parent_qty:g} available")
+    if not splitting_allowed(parent.state) and child_qty < parent_qty - 1e-9:
+        raise HTTPException(status_code=409, detail=splitting_off(parent_sku, action))
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -3650,31 +3664,59 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     pieces_type = is_pieces_unit(sell_by, unit_map)
     parent_weight = _read_float(parent.state, "weight")
     parent_pieces = _read_pieces(parent.state)
+    if sell_by in unit_map and exceeds_precision(child_qty, int(unit_map[sell_by].get("decimals") or 0)):
+        raise ValueError(f"{child_qty:g} is more precise than {sell_by} allows")
+
+    if unknown_measures:
+        # The quantity of a lot sold by a measure is that measure.
+        if weight_type and child_weight is None:
+            child_weight = child_qty
+        if pieces_type and child_pieces is None:
+            child_pieces = child_qty
 
     # --- validate (no omission, no fallback) ---
-    if (weight_type or parent_weight is not None) and child_weight is None:
+    if not unknown_measures and (weight_type or parent_weight is not None) and child_weight is None:
         raise ValueError("child_weight is required: this item is weight-tracked")
     if weight_type and child_weight is not None and abs(child_weight - child_qty) > 1e-9:
         raise ValueError("for weight-sold items child_weight must equal child_qty")
-    if (pieces_type or parent_pieces is not None) and child_pieces is None:
+    if not unknown_measures and (pieces_type or parent_pieces is not None) and child_pieces is None:
         raise ValueError("child_pieces is required: this item is piece-tracked")
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
+    if child_pieces is not None and float(child_pieces) != int(float(child_pieces)):
+        raise ValueError("pieces must be a whole number")
+    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
+
+    # What the mother keeps of each measure: the difference when both sides are known,
+    # unknown when the part's is not. A part measuring more than its lot is refused.
+    fields_changed: dict[str, dict] = {}
+    weight_after: float | None = None
+    if parent_weight is not None:
+        if child_weight is not None:
+            weight_after = round(parent_weight - child_weight, 10)
+            if weight_after < 0:
+                raise ValueError(f"weight {child_weight:g} is more than the {parent_weight:g} the lot has")
+        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": weight_after}
+    pieces_after: int | None = None
+    if parent_pieces is not None:
+        if ch_pieces is not None:
+            pieces_after = _to_int_pieces(parent_pieces) - ch_pieces
+            if pieces_after < 0:
+                raise ValueError(f"{ch_pieces} pieces is more than the {parent_pieces:g} the lot has")
+        fields_changed["pieces"] = {"old": parent_pieces, "new": pieces_after}
 
     # The split child is the same product as the parent: it KEEPS the parent SKU and is
     # distinguished only by its own unique barcode / entity_id (SKUs repeat across lots).
     child_sku = parent_sku
 
-    # Cost: proportional by quantity (unit-cost invariant).
-    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
-        float(parent.state.get("cost_price") or 0) * parent_qty
-    )
-    child_cost_total: float | None = None
-    if parent_cost_total and parent_qty:
-        unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
-        child_cost_total = float((unit_cost * Decimal(str(child_qty))).quantize(Decimal("0.0000000001")))
+    # Goods cost: the child's share (proportional unless named); the mother keeps the rest
+    # through her quantity change. Landed cost is re-added per unit on each side.
+    basis = goods_basis(parent.state)
+    child_base: float | None = None
+    if basis is not None:
+        child_base = round_basis(child_cost_base if child_cost_base is not None
+                                 else (basis * child_qty / parent_qty if parent_qty else 0.0))
 
-    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
     parent_prices = {
         k: parent.state[k] for k in parent.state
         if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"
@@ -3689,7 +3731,11 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
+    else:
+        child_attrs.pop("pieces", None)
     child_data = lot_fields(parent.state)
+    for key in ("cost_base", "cost_landed"):
+        child_data.pop(key, None)
     from celerp_inventory.services import (
         normalize_sku as _normalize_family_sku,
         resolve_catalog_anchor_for_item as _resolve_family_anchor,
@@ -3725,7 +3771,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                      event_type="item.created", data=child_data, actor_id=user_id,
                      location_id=_parse_uuid(parent.state.get("location_id")), source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={"parent_id": entity_id})
-    # Origin marker on the child: "Split from <mother>" — the child's first history entry.
+    # Origin marker on the child: "Split from <mother>" - the child's first history entry.
     origin = await emit_event(
         session, company_id=company_id, entity_id=child_eid, entity_type="item",
         event_type="item.split_from",
@@ -3739,33 +3785,21 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                          event_type="item.pricing.set", data={"price_type": price_type, "new_price": price_val},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
-    if child_cost_total is not None:
+    if child_base is not None:
         await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
-                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": child_cost_total},
+                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": child_base},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
 
     # --- reduce the mother ---
-    new_parent_qty = max(0.0, round(parent_qty - child_qty, 10))
+    new_parent_qty = round(parent_qty - child_qty, 10)
+    adjusted: dict = {"new_qty": new_parent_qty}
+    if basis is not None:
+        adjusted["cost_base"] = round_basis(basis - child_base)
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
-                     event_type="item.quantity.adjusted", data={"new_qty": new_parent_qty},
+                     event_type="item.quantity.adjusted", data=adjusted,
                      actor_id=user_id, location_id=None, source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
-    if child_cost_total is not None and parent_cost_total:
-        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
-                         event_type="item.pricing.set",
-                         data={"price_type": "cost_total", "new_price": max(0.0, round(parent_cost_total - child_cost_total, 10))},
-                         actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
-    # Secondary measures are NOT conserved: the child keeps its (uncapped) value and
-    # the mother floors at 0 (e.g. child weight 20 of a 15ct mother -> mother 0ct).
-    fields_changed: dict[str, dict] = {}
-    if child_weight is not None and parent_weight is not None:
-        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": max(0.0, round(parent_weight - child_weight, 10))}
-    if ch_pieces is not None and parent_pieces is not None:
-        new_attrs = dict(parent_attrs)
-        new_attrs["pieces"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
-        fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
     if fields_changed:
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.updated", data={"fields_changed": fields_changed},
@@ -3779,13 +3813,14 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     }
     if parent_pieces is not None and ch_pieces is not None:
         child_detail["pieces_before"] = _to_int_pieces(parent_pieces)
-        child_detail["pieces_after"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
+        child_detail["pieces_after"] = pieces_after
     if parent_weight is not None and child_weight is not None:
         child_detail["weight_before"] = parent_weight
-        child_detail["weight_after"] = max(0.0, round(parent_weight - child_weight, 10))
-    if child_cost_total is not None and parent_cost_total:
-        child_detail["cost_before"] = parent_cost_total
-        child_detail["cost_after"] = max(0.0, round(parent_cost_total - child_cost_total, 10))
+        child_detail["weight_after"] = weight_after
+    if basis is not None:
+        landed_unit = sum(float(v or 0) for v in (parent.state.get("landed_contributions") or {}).values())
+        child_detail["cost_before"] = float(parent.state.get("cost_total") or basis)
+        child_detail["cost_after"] = round_basis(adjusted["cost_base"] + landed_unit * new_parent_qty)
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.split",
                      data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty],
@@ -4211,8 +4246,9 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
 
     # Compute defaults.
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
+    # One source of unknown weight leaves the merged weight unknown, never short.
     weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
-    total_weight = sum(weights) if weights else None
+    total_weight = sum(weights) if len(weights) == len(source_projections) else None
     # The merged lot keeps the value its sources record, which is what the books carry
     # for them (lot_origin.recorded_value): a source with no cost adds nothing.
     merged_cost_total = float(sum(recorded_value(p.state) for p in source_projections))

@@ -26,7 +26,7 @@ from test_cost_restatement import (
     _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
 from stock_books import book_older_opening
-from test_helpers import TZ, company_auth
+from test_helpers import TZ, company_auth, invoices_booking_one_lot_twice
 
 # The accounts a finalize entry posts cost of goods sold to on a seeded chart.
 _COGS_ACCOUNTS = {SEEDED_TARGETS[R.COGS], *(SEEDED_TARGETS[r] for r in INVENTORY_VALUE_ROLES)}
@@ -560,7 +560,8 @@ async def test_rounded_and_large_costs(client, session, cost):
 @pytest.mark.asyncio
 async def test_sold_lot_also_allocated_on_another_open_invoice(client, session):
     steps = [make("a", None), invoice("a", doc="waiting"), sell("a")]
-    auth, ctx, _ = await _oracle(client, session, steps, "a", 100.0, before=1)
+    with invoices_booking_one_lot_twice():
+        auth, ctx, _ = await _oracle(client, session, steps, "a", 100.0, before=1)
     assert await _doc_cogs(session, auth, ctx["waiting"]) == 100.0
 
 

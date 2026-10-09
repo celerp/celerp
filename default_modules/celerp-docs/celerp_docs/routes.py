@@ -45,7 +45,7 @@ from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.payments import recorded_unmatched, return_unmatched
 from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import line_label, splitting_allowed
+from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
 from celerp.services.document_lines import (
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, strip_line_ids,
 )
@@ -2117,6 +2117,107 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
             sku=sku, status=status))
 
 
+async def _taken_back(session, company_id, doc_ids: set[str], lots: set[str],
+                      locked: dict[str, Projection]) -> set[tuple[str, str]]:
+    """(invoice, lot) pairs where the invoice shipped the lot and then took it back into stock
+    without holding it again: the line still names the lot, but its cost is no longer booked
+    (the same rule COGS reconciliation applies), so the lot is free to sell."""
+    if not doc_ids or not lots:
+        return set()
+    from celerp.models.ledger import LedgerEntry
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "item",
+            LedgerEntry.entity_id.in_(sorted(lots)),
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
+            LedgerEntry.data["source_doc_id"].as_string().in_(sorted(doc_ids)),
+        ).order_by(LedgerEntry.id)
+    )).all()
+    last: dict[tuple[str, str], str] = {}
+    for lot_id, event_type, data in rows:
+        last[(str((data or {}).get("source_doc_id")), lot_id)] = event_type
+    return {(doc_id, lot_id) for (doc_id, lot_id), event_type in last.items()
+            if event_type == "item.fulfillment_reversed"
+            and not (locked[lot_id].state.get("status") == "reserved"
+                     and locked[lot_id].state.get("status_doc_id") == doc_id)}
+
+
+async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[str, Projection]) -> dict[str, tuple[float, list[str]]]:
+    """Stock other invoices have already booked the cost of and not yet shipped, per lot:
+    ``{lot: (quantity, invoice numbers)}``. A finalized invoice's line names the lot it
+    sells until it ships (a shipped part is carved off and named instead), so a line of an
+    open finalized invoice that names a lot still in stock holds that much of it."""
+    in_stock = {eid for eid, p in locked.items()
+                if str(p.state.get("status") or "").lower() in ("available", "reserved")}
+    if not in_stock:
+        return {}
+    binds = _sa.text(
+        "EXISTS (SELECT 1 FROM json_array_elements(projections.state -> 'line_items') AS elem "
+        "WHERE COALESCE(elem ->> 'item_id', elem ->> 'entity_id') = ANY(:lots))"
+    ).bindparams(_sa.bindparam("lots", value=sorted(in_stock), type_=_sa.ARRAY(_sa.String)))
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.entity_id != entity_id,
+        Projection.state["doc_type"].as_string() == "invoice",
+        Projection.state["finalized"].as_boolean().is_(True),
+        Projection.state["status"].as_string() != "void",
+        binds,
+    ))).scalars().all()
+    released = await _taken_back(session, company_id, {doc.entity_id for doc in rows}, in_stock, locked)
+    out: dict[str, tuple[float, list[str]]] = {}
+    for doc in rows:
+        for li in doc.state.get("line_items") or []:
+            eid = str(line_item_id(li) or "")
+            if eid not in in_stock or (doc.entity_id, eid) in released:
+                continue
+            qty = min(float(li.get("quantity") or 0), float(locked[eid].state.get("quantity") or 0))
+            held, numbers = out.get(eid, (0.0, []))
+            number = str(doc.state.get("doc_number") or doc.state.get("ref_id") or doc.entity_id)
+            out[eid] = (held + qty, numbers if number in numbers else [*numbers, number])
+    return out
+
+
+async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, state: dict, company_settings: dict) -> None:
+    """Finalizing an invoice books the cost of the stock it sells, so it plans each stock line
+    the way shipping it will: a line that could be filled only by taking part of a lot that
+    may not be split is refused, and so is one whose stock another finalized invoice has
+    already booked and not yet shipped (its cost would be booked twice). Stock the customer
+    already has (out on the memo the invoice came from, or sold to it) is not drawn again.
+    A line no stock covers at all is a backorder and still finalizes."""
+    from celerp_inventory.projections import is_manufacturable
+    line_items = state.get("line_items") or []
+    sold_to = {entity_id, state.get("source_memo_id")} - {None, ""}
+    indices = [i for i, li in enumerate(line_items) if line_item_id(li)]
+    if not indices:
+        return
+    locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    claimed = await _invoiced_elsewhere(session, company_id, entity_id, locked)
+    remaining = {eid: float(locked[eid].state.get("quantity") or 0) - qty for eid, (qty, _n) in claimed.items()}
+    for i in indices:
+        bound = locked.get(str(line_item_id(line_items[i])))
+        if bound is None:
+            continue
+        lot = bound.state
+        status = str(lot.get("status") or "").lower()
+        if (is_non_stock_line(lot.get("inventory_type"), lot.get("sell_by")) or is_manufacturable(lot)
+                or status == "memo_out" or (status == "sold" and lot.get("status_doc_id") in sold_to)):
+            continue
+        sku = str(lot.get("sku") or bound.entity_id)
+        draws, short, _own, skipped = _line_plan(line_items, i, locked, by_line, entity_id, company_settings, remaining)
+        if short <= 1e-9:
+            continue
+        if skipped:
+            raise HTTPException(status_code=409, detail=splitting_off(str(skipped[0]["state"].get("sku") or sku), "invoice"))
+        taken = next((eid for eid in [bound.entity_id, *(lt["entity_id"] for lt, _t, _f in draws)] if eid in claimed), None)
+        if taken is not None:
+            numbers = ", ".join(claimed[taken][1])
+            raise HTTPException(status_code=409, detail=refusal(
+                "lines.lot_already_invoiced",
+                f"{sku} is already invoiced on {numbers} and not yet shipped, so it cannot be invoiced again. "
+                "Ship or void that invoice first, or invoice other stock.", sku=sku, docs=numbers))
+
+
 # Documents whose finalize posts the bill entry, each line to its own account when it names one.
 _BILL_POSTED = frozenset({"purchase_order", "bill"})
 
@@ -2148,6 +2249,8 @@ async def finalize_document(
         await require_line_destinations(session, company_id, row.state["line_items"])
     if row.state.get("doc_type") == "invoice":
         await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
+        await _refuse_unfillable_invoice_lines(session, company_id, entity_id, row.state,
+                                               (_company.settings or {}) if _company else {})
 
     # Snapshot scalar values early — avoids ORM lazy-load issues after multiple flush() calls.
     _initial_doc_state = dict(row.state)
@@ -4081,11 +4184,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # Fields to inherit from existing item; barcode and rfid_epc excluded (both are
             # per-physical-unit: a received parcel is a new unit, so it mints a fresh barcode
             # and carries no physical RFID/EPC tag). gtin is a product identifier and IS
-            # inherited from the catalog template.
+            # inherited from the catalog template. The weight and pieces are the parcel's own
+            # measures, so they are never copied from the template: unstated, they are unknown.
             _INHERIT = (
                 "category", "unit", "sell_by", "description",
                 "cost_price", "wholesale_price", "retail_price",
-                "tax_codes", "hs_code", "weight", "weight_unit",
+                "tax_codes", "hs_code", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
                 "allow_splitting", "pick_method", "gtin",
@@ -4094,8 +4198,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             if catalog_item_id:
                 item_data["catalog_item_id"] = catalog_item_id
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
-            if sku_ref.get("attributes"):
-                item_data["attributes"] = dict(sku_ref["attributes"])
+            if _template_attrs := {k: v for k, v in (sku_ref.get("attributes") or {}).items()
+                                   if k not in ("weight", "pieces")}:
+                item_data["attributes"] = _template_attrs
             # Bill line item fields override sku_ref (user explicitly set these on the bill)
             for _f in ("category", "attributes"):
                 _doc_val = doc_line.get(_f)
@@ -4106,7 +4211,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # Attributes from the bill line or the request are caller-authored, so a price
             # among them (other than one carried over unchanged from the item) takes the
             # same set_inventory_prices gate as every inventory writer.
-            _inherited = (sku_ref.get("attributes") or {}) | {k: sku_ref.get(k) for k in _INHERIT}
+            _inherited = _template_attrs | {k: sku_ref.get(k) for k in _INHERIT}
             _authored = {k: v for k, v in (item_data.get("attributes") or {}).items() if _inherited.get(k) != v}
             reject_system_item_fields({"attributes": _authored})
             reject_price_change(price_keys_in({"attributes": _authored}, _recv_price_lists), role, settings)
@@ -4495,12 +4600,28 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
     return _LineReturnLots(by_line, shared, kept, held)
 
 
-class ReturnItem(BaseModel):
+class _StatedMeasures(BaseModel):
+    """The weight and pieces of the goods going back, when the user gives them. Left out
+    they are unknown, and so is what the lot keeps."""
+    weight: FiniteFloat | None = None
+    pieces: FiniteFloat | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_measures(self, handler):
+        # A request that gives no measures serializes as it always has, so its retries still match.
+        data = handler(self)
+        for key in ("weight", "pieces"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+
+class ReturnItem(_StatedMeasures):
     item_id: str
     quantity_returned: FiniteFloat = Field(gt=0)
 
 
-class ReturnLine(BaseModel):
+class ReturnLine(_StatedMeasures):
     """A document line to send goods back from, by its id (or its position when it has none),
     and the stock units to send back. The server finds the lots."""
     line_id: str | None = None
@@ -4582,11 +4703,20 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc: dict,
                 "Goods sold, out on memo or reserved go back to the supplier only once they are back in stock "
                 "and free.", name=_line_label(line), qty=f"{free:g}"))
         left = float(ln.quantity_returned)
+        takes: list[tuple[str, float]] = []
         for lot, q in lots:
             take = min(q, left)
             if take > 1e-9:
-                out.append((ReturnItem(item_id=lot, quantity_returned=take), line.get("line_id")))
+                takes.append((lot, take))
                 left -= take
+        measures = {k: v for k, v in (("weight", ln.weight), ("pieces", ln.pieces)) if v is not None}
+        if measures and len(takes) > 1:
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.return_line_measure_lots",
+                f"{_line_label(line)}: the goods on this line are in more than one lot. Return them by lot "
+                "to give their weight or pieces.", name=_line_label(line)))
+        out.extend((ReturnItem(item_id=lot, quantity_returned=take, **measures), line.get("line_id"))
+                   for lot, take in takes)
     return out
 
 
@@ -4613,6 +4743,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             doc_status=status))
 
     from celerp_inventory.projections import is_item_available
+    from celerp_inventory.routes import split_off_child
     from celerp_inventory.services import goods_basis
 
     if payload.lines:
@@ -4627,6 +4758,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     for it in items:
         if it.quantity_returned <= 0:
             raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")
+        _stated_measures(it.weight, it.pieces)
         left = returnable.get(it.item_id)
         if left is None:
             raise HTTPException(status_code=422,
@@ -4670,12 +4802,11 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 "docs.return_more_than_free",
                 f"Cannot return {it.quantity_returned:g} of {sku}: {free:g} is on hand and not reserved.",
                 qty=f"{it.quantity_returned:g}", sku=sku, free=f"{free:g}"))
-        new_qty = max(0.0, current_qty - it.quantity_returned)
-        adjustment: dict = {"new_qty": new_qty}
+        new_qty = round(current_qty - it.quantity_returned, 10)
+        whole = new_qty <= 1e-9
+        share: float | None = None
         returned.append({**it.model_dump(), **({"source_line_id": source_line_id} if source_line_id else {})})
-        if not owned:
-            adjustment["consignment_flag"] = None if new_qty == 0 else "in"
-        else:
+        if owned:
             # Units this document added to a lot already on hand and that are still there go
             # back first, at what they were received for; any other units take their share of
             # the rest of the lot's cost. The last units out take whatever cost is left.
@@ -4686,9 +4817,8 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             others_qty = current_qty - qty_added
             others_cost = ((basis - cost_added) * (it.quantity_returned - taken) / others_qty
                            if others_qty > 1e-9 else 0.0)
-            share = basis if new_qty == 0 else min(
+            share = basis if whole else min(
                 basis, to_stored_float(round_money(taken_cost + others_cost, currency)))
-            adjustment["cost_base"] = round_basis(basis - share)
             origin = lot_account(item.state)
             target = origin if goods_role == AccountRole.INVENTORY_PURCHASED else goods_role
             goods[target] = goods.get(target, 0.0) + share
@@ -4699,9 +4829,30 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 kind = contribution.rsplit("::", 1)[-1]
                 landed_by_kind[kind] = landed_by_kind.get(kind, 0.0) + float(unit or 0) * it.quantity_returned
                 landed_by_account[origin] = landed_by_account.get(origin, 0.0) + float(unit or 0) * it.quantity_returned
+        # The goods going back become their own lot, which leaves stock; the lot keeps the rest
+        # with the rest of its cost. Goods that are the whole lot leave as that lot.
+        gone = it.item_id
+        if not whole:
+            try:
+                gone, _sku = await split_off_child(
+                    session, company_id=uuid.UUID(str(company_id)), user_id=user.id, parent_proj=item,
+                    child_qty=it.quantity_returned, child_cost_base=share, child_weight=it.weight,
+                    child_pieces=it.pieces, unknown_measures=True, action="return")
+            except (ValueError, HTTPException) as exc:
+                # A part that cannot be carved (a lot that may not be split, a weight above the
+                # lot's) refuses the whole return: roll back so no earlier line has left either.
+                await session.rollback()
+                if isinstance(exc, HTTPException):
+                    raise
+                raise HTTPException(status_code=409, detail=refusal(
+                    "lines.cannot_split", f"Cannot split {sku}: {exc}", sku=sku, reason=str(exc)))
+            returned[-1]["returned_lot_id"] = gone
+        returned_data: dict = {"source_doc_id": entity_id, "qty": it.quantity_returned}
+        if not owned:
+            returned_data["consignment_flag"] = None
         await emit_event(
-            session, company_id=company_id, entity_id=it.item_id, entity_type="item",
-            event_type="item.quantity.adjusted", data=adjustment,
+            session, company_id=company_id, entity_id=gone, entity_type="item",
+            event_type="item.returned_to_supplier", data=returned_data,
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=_step_key(key, "line", line_no), metadata_={"source_return": entity_id},
         )
@@ -5586,10 +5737,11 @@ async def list_lists(
     # individual lines. Push the count and weight sum into SQL and select the header columns alone, so
     # a list with thousands of lines never drags its whole line_items array back into Python here.
     item_count = _func.coalesce(_func.json_array_length(Projection.state["line_items"]), 0)
+    # One line of unknown weight leaves the list's weight unknown (NULL), never short.
     weight_sum = _sa.literal_column(
-        "(SELECT COALESCE(SUM(COALESCE("
-        "NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric, 0)), 0) "
-        "FROM json_array_elements(projections.state -> 'line_items') AS elem)"
+        "(SELECT CASE WHEN BOOL_OR(w IS NULL) THEN NULL ELSE COALESCE(SUM(w), 0) END FROM ("
+        "SELECT COALESCE(NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric) AS w "
+        "FROM json_array_elements(projections.state -> 'line_items') AS elem) AS lw)"
     )
     columns = _list_columns(sort_date)
     list_q = (
@@ -5610,7 +5762,7 @@ async def list_lists(
     out = [{
         **{name: getattr(r, name) for name in columns},
         "item_count": r.item_count,
-        "total_weight": float(r.total_weight or 0),
+        "total_weight": None if r.total_weight is None else float(r.total_weight),
     } for r in rows]
     return {"items": out, "total": total}
 
@@ -7081,12 +7233,15 @@ def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection
 def _line_plan(
     line_items: list[dict], index: int, locked: dict[str, Projection], by_line: dict[int, list[str]],
     owner_id: str, company_settings: dict, remaining: dict[str, float],
-) -> tuple[list[tuple[dict, float, bool]], float, list[dict]]:
-    """Plan line ``index`` against the locked lots: ``(draws, shortfall, own holds)``.
+) -> tuple[list[tuple[dict, float, bool]], float, list[dict], list[dict]]:
+    """Plan line ``index`` against the locked lots: ``(draws, shortfall, own holds,
+    passed-over lots)``.
 
     The line takes its own holds first, then its free bound lot, then (when the product may
     be split across lots) free lots of the same product in pick order. ``remaining`` is
-    shared by every line of one operation, so two lines never take the same stock."""
+    shared by every line of one operation, so two lines never take the same stock. A lot
+    that may not be split is never taken in part; the lots passed over for that are the
+    last element, so a shortfall they caused can say so."""
     from celerp.services.pick import as_lot, line_draw_sources, plan_line_draws, resolve_pick_method
     from celerp_inventory.projections import demand_claim
     bound = locked[str(line_item_id(line_items[index]))]
@@ -7094,9 +7249,10 @@ def _line_plan(
     method = resolve_pick_method(bound.state, company_settings)
     own, primary, free = line_draw_sources(line_items, index, lots, by_line, method)
     needed = float(line_items[index].get("quantity") or 0)
+    skipped: list[dict] = []
     draws, short = plan_line_draws(needed, own=own, primary=primary, free=free, method=method,
-                                   remaining=remaining, span=splitting_allowed(bound.state))
-    return draws, short, own
+                                   remaining=remaining, span=splitting_allowed(bound.state), skipped=skipped)
+    return draws, short, own, skipped
 
 
 def _unavailable(bound: Projection, owner_id: str) -> dict | None:
@@ -7141,11 +7297,12 @@ def _carve_measures(line: dict, lot_state: dict, qty: float, unit_map: dict, *, 
 
 
 async def _apply_split_plan(
-    session, *, company_id, uid, owner: Projection, splits: list[dict], source: str,
+    session, *, company_id, uid, owner: Projection, splits: list[dict], source: str, action: str,
 ) -> list[str]:
     """Carve each planned part off its lot, in plan order, and point each line that named
     the lot at its part. Each split is ``{"lot": Projection, "line": index or None, and the
-    child measures}``; returns the part ids in the same order.
+    child measures}``; returns the part ids in the same order. ``action`` is the verb a
+    lot that may not be split refuses with.
 
     Emits no status or transition event: each caller applies its own afterwards (fulfil
     ships the parts, reserve holds or frees them). The row lock that keeps two carves of
@@ -7163,7 +7320,7 @@ async def _apply_split_plan(
             child_eid, child_sku = await split_off_child(
                 session, company_id=uuid.UUID(str(company_id)), user_id=uid, parent_proj=lot,
                 child_qty=split["child_qty"], child_weight=split.get("child_weight"),
-                child_pieces=split.get("child_pieces"),
+                child_pieces=split.get("child_pieces"), action=action,
             )
         except ValueError as exc:
             sku = str(lot.state.get("sku") or "")
@@ -7356,7 +7513,8 @@ async def _fulfill_lines_impl(
         line = line_items[idx]
         sku = bound.state.get("sku", "")
         line_qty = float(line.get("quantity") or 0)
-        draws, short, own = _line_plan(line_items, idx, locked, by_line, entity_id, company_settings, remaining)
+        draws, short, own, skipped = _line_plan(
+            line_items, idx, locked, by_line, entity_id, company_settings, remaining)
         held = sum(lot["quantity"] for lot in own)
         if held > line_qty + 1e-9:
             blocked.append(f"{sku}: holds {held:g} for a line of {line_qty:g}; reserve the line again first")
@@ -7364,16 +7522,14 @@ async def _fulfill_lines_impl(
         if short > 1e-9 or _stands_in(bound, entity_id, draws):
             if reason := _unavailable(bound, entity_id):
                 unavailable.append(reason)
+            elif skipped and short > 1e-9:
+                raise HTTPException(status_code=409, detail=splitting_off(
+                    str(skipped[0]["state"].get("sku") or sku), "ship"))
             else:
                 blocked.append(f"{sku}: insufficient stock - invoiced {line_qty:g}, available {line_qty - short:g}")
             continue
         for lot, take, full in draws:
             proj = locked[lot["entity_id"]]
-            if not full and not splitting_allowed(proj.state):
-                blocked.append(
-                    f"{sku}: invoiced {take:g} of {lot['quantity']:g} but 'Allow Splitting' is off - "
-                    f"enable splitting or invoice the full quantity")
-                continue
             if full and proj.entity_id == line_item_id(line) and abs(take - line_qty) <= 1e-9:
                 # Taking a whole lot as the whole line: the secondary measures the line
                 # states (not the sell-by one) must match the lot exactly.
@@ -7412,7 +7568,7 @@ async def _fulfill_lines_impl(
                                  and abs(take - float(line_items[idx].get("quantity") or 0)) <= 1e-9)}
               for idx, proj, take, full in shipments if not full]
     children = iter(await _apply_split_plan(
-        session, company_id=company_id, uid=uid, owner=row, splits=splits, source="fulfillment"))
+        session, company_id=company_id, uid=uid, owner=row, splits=splits, source="fulfillment", action="ship"))
 
     total_cogs = 0.0
     shipped: list[str] = []
@@ -7871,6 +8027,9 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                     f"{label}: only goods out on memo can be part-returned, this one is {status.replace('_', ' ')}",
                     name=label, status=status))
                 break
+            elif not splitting_allowed(proj.state):
+                raise HTTPException(status_code=409, detail=splitting_off(
+                    str(proj.state.get("sku") or ""), "take_back"))
             else:
                 partial_plan[proj.entity_id] = (remaining, key)
                 remaining = 0.0
@@ -7906,6 +8065,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                 child_eid, _child_sku = await split_off_child(
                     session, company_id=cid, user_id=uid, parent_proj=parent_proj,
                     child_qty=qty_back, child_weight=child_weight, child_pieces=child_pieces,
+                    action="take_back",
                 )
             except ValueError as exc:
                 raise HTTPException(
@@ -8033,10 +8193,14 @@ async def _reserve_lines_impl(
                 needs_status.append(sku)
             continue
         line_qty = float(line_items[idx].get("quantity") or 0)
-        draws, short, own = _line_plan(line_items, idx, locked, by_line, entity_id, company_settings, remaining)
+        draws, short, own, skipped = _line_plan(
+            line_items, idx, locked, by_line, entity_id, company_settings, remaining)
         if short > 1e-9 or _stands_in(bound, entity_id, draws):
             if reason := _unavailable(bound, entity_id):
                 unavailable.append(reason)
+            elif skipped and short > 1e-9:
+                raise HTTPException(status_code=409, detail=splitting_off(
+                    str(skipped[0]["state"].get("sku") or sku), "reserve"))
             else:
                 blocked.append(f"{sku}: needs {line_qty:g}, {line_qty - short:g} available")
             continue
@@ -8051,10 +8215,6 @@ async def _reserve_lines_impl(
             if full:
                 if not is_own:
                     changes.append(("take", idx, proj, take))
-                continue
-            if not splitting_allowed(proj.state):
-                blocked.append(f"{sku}: needs {take:g} of {whole:g} but 'Allow Splitting' is off; "
-                               "enable splitting or reserve the full quantity")
                 continue
             if not is_own:
                 changes.append(("carve_take", idx, proj, take))
@@ -8117,7 +8277,7 @@ async def _reserve_lines_impl(
                                  and abs(qty - float(line_items[idx].get("quantity") or 0)) <= 1e-9)}
               for kind, idx, proj, qty in carves]
     children = dict(zip(range(len(carves)), await _apply_split_plan(
-        session, company_id=company_id, uid=uid, owner=row, splits=splits, source="reservation")))
+        session, company_id=company_id, uid=uid, owner=row, splits=splits, source="reservation", action="reserve")))
 
     released: list[str] = []
     n = 0
@@ -9487,6 +9647,23 @@ async def undo_audit_adjust(
 # rather than counting. The terminal carves or disposes each line's stock and posts one balanced JE.
 
 
+def _stated_measures(weight: float | None, pieces: float | None) -> dict:
+    """The weight and pieces a user states for a part of a lot, validated: a weight above 0,
+    pieces a whole number above 0. A measure left out is not in the result."""
+    out: dict = {}
+    if weight is not None:
+        if weight <= 0:
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.weight_invalid", "Weight must be greater than 0."))
+        out["weight"] = float(weight)
+    if pieces is not None:
+        if pieces <= 0 or float(pieces) != int(pieces):
+            raise HTTPException(status_code=422, detail=refusal(
+                "lines.pieces_invalid", "Pieces must be a whole number greater than 0."))
+        out["pieces"] = int(pieces)
+    return out
+
+
 class WriteoffCreateBody(BaseModel):
     entity_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
@@ -9496,6 +9673,8 @@ class WriteoffLineBody(BaseModel):
     line_id: str | None = None
     item_id: str | None = None
     qty_out: FiniteFloat | None = None
+    weight: FiniteFloat | None = None
+    pieces: FiniteFloat | None = None
     account: str | None = None
     comment: str | None = None
 
@@ -9603,6 +9782,7 @@ async def set_writeoff_line(
         if q > on_hand:
             raise HTTPException(status_code=422, detail=f"qty_out {q} exceeds the on-hand quantity {on_hand}")
         line["qty_out"] = q
+    line.update(_stated_measures(payload.weight, payload.pieces))
     if payload.account is not None:
         await _validate_writeoff_account(session, company_id, payload.account)
         line["account"] = payload.account
@@ -9642,7 +9822,6 @@ async def write_off_stock(
     # it removes is then judged as the available stock it has become.
     await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     cycle = int(row.state.get("adjust_count") or 0)
-    unit_map = await _get_unit_map(session, company_id)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     # Pre-flight: an "intended" line is one the user entered a quantity on. Every intended line must be
     # fully valid BEFORE anything is disposed, so a line the user meant to write off but left incomplete
@@ -9732,20 +9911,19 @@ async def write_off_stock(
             if abs(qty_out - rem) < 1e-9:
                 disposed_eid = l["item_id"]  # the line consuming the item's remainder disposes the row in place, no split
             else:
-                # A piece-unit parcel's discarded pieces equal the discarded count, so the carve is
-                # fully determined by qty_out. A weight parcel's discarded weight is not (grams are not
-                # the count), and the write-off line has no weight input, so child_weight stays unset and
-                # split_off_child raises below -> a partial weight write-off is 409, not a guessed carve.
-                sell_by = item.state.get("sell_by") or ""
-                child_pieces = qty_out if is_pieces_unit(sell_by, unit_map) else None
+                # The part written off carries the weight and pieces the line states; one it does
+                # not state is unknown on both sides, never guessed.
                 disposed_eid, _sku = await split_off_child(
                     session, company_id=company_id, user_id=user.id, parent_proj=item,
-                    child_qty=qty_out, child_pieces=child_pieces,
+                    child_qty=qty_out, child_weight=l.get("weight"), child_pieces=l.get("pieces"),
+                    unknown_measures=True, action="write_off",
                 )
-        except ValueError as exc:
-            # A weight/piece-tracked parcel needs the discarded weight/pieces to carve; without them the
-            # split cannot proceed. Roll back the whole terminal so nothing is disposed and no JE posts.
+        except (ValueError, HTTPException) as exc:
+            # A part that cannot be carved (a lot that may not be split, a weight above the lot's)
+            # rejects the whole terminal: roll back so nothing is disposed and no JE posts.
             await session.rollback()
+            if isinstance(exc, HTTPException):
+                raise
             raise HTTPException(status_code=409, detail=f"Cannot write off {sku}: {exc}")
         await emit_event(
             session, company_id=company_id, entity_id=disposed_eid, entity_type="item",

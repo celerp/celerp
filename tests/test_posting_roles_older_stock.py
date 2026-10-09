@@ -827,6 +827,8 @@ async def test_an_unresolved_lot_moves_its_cost_once_an_account_that_holds_it_is
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
+    # A refused request writes nothing; the test client shares one session, so undo its writes here.
+    await session.rollback()
     detail = r.json()["detail"]
     assert "has no recorded inventory account" in detail["message"] and _REPAIR in detail["message"]
     german = in_language("de", detail)
