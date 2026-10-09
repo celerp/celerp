@@ -4262,7 +4262,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             measures = _receipt_measures(it, lot_before, unit_map, stock_qty_received)
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
             # The receipt adds what these goods cost to the lot's basis, so a delivery at a new
-            # price moves the lot's unit cost to the weighted average of old and new stock.
+            # price moves the lot's unit cost to the weighted average of old and new stock. The
+            # landed cost the lot carries stays as it is: the goods joining it bring none of it.
             adjustment: dict = {"new_qty": new_qty,
                                 "cost_base": round_basis((goods_basis(item.state) or 0.0) + received_cost)}
             await emit_event(
@@ -4271,20 +4272,6 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 actor_id=user.id, location_id=None, source="api",
                 idempotency_key=_step_key(key, "line", line_no), metadata_={"source_doc": entity_id},
             )
-            # Landed cost the lot already carries is a fixed amount over the stock it had: the
-            # goods joining it bring none of it, so it is spread over the larger quantity.
-            old_qty = float(lot_before.get("quantity", 0) or 0)
-            for contribution, unit in (lot_before.get("landed_contributions") or {}).items():
-                source_bill_id, kind = contribution.rsplit("::", 1)
-                await emit_event(
-                    session, company_id=company_id, entity_id=it.item_id, entity_type="item",
-                    event_type="item.landed_cost.applied",
-                    data={"source_bill_id": source_bill_id, "kind": kind,
-                          "unit_amount": float(unit or 0) * old_qty / new_qty if old_qty > 0 else 0.0},
-                    actor_id=user.id, location_id=None, source="api",
-                    idempotency_key=_step_key(key, "line", line_no, "landed", contribution),
-                    metadata_={"source_doc": entity_id},
-                )
             await restock_measures(
                 session, company_id=company_id, user_id=user.id, lot_id=it.item_id, lot_state=lot_before,
                 new_qty=new_qty, unit_map=unit_map, weight_delta=measures.get("weight"),
@@ -4388,17 +4375,17 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             _recv_barcode_idx += 1
             if received_cost is not None:
                 item_data["cost_total"] = received_cost
-            # Attach the landed cost allocated to this goods line, per stock unit: the projection
-            # derives cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed
-            # share. Like the goods, it takes the line's landed cost up to its last unit less what
-            # the parcels before it took, so a line's parcels draw its whole share to the cent.
-            _landed = {k: amount / stock_qty_received for k, amount in _received_landed(
+            # Attach the landed cost allocated to this goods line as the parcel's landed pools: the
+            # projection derives cost_total = cost_base + Σ pools. Like the goods, it takes the
+            # line's landed cost up to its last unit less what the parcels before it took, so a
+            # line's parcels draw its whole share to the cent.
+            _landed = _received_landed(
                 bill_alloc.get(it.po_line_index, {}), doc_line, ahead[line_no], float(it.quantity_received),
-                books_currency(settings)).items()}
+                books_currency(settings))
             if _landed:
-                item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
-                for _k, _u in _landed.items():
-                    landed_drawdown[_k] = round_basis(landed_drawdown.get(_k, 0.0) + _u * stock_qty_received)
+                item_data["landed_costs"] = {f"{entity_id}::{k}": amount for k, amount in _landed.items()}
+                for _k, _amount in _landed.items():
+                    landed_drawdown[_k] = round_basis(landed_drawdown.get(_k, 0.0) + _amount)
             if not is_consignment:
                 # Received goods are booked as purchased inventory, so the lot records that account.
                 item_data[LOT_ACCOUNT_FIELD] = purchased_account
@@ -4482,8 +4469,8 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
     """Landed cost a bill charged for goods that came in before it was finalized (a purchase
     order received, then made into the bill), through the entry goods received after the bill
     take it by (auto_je.create_for_landed_capitalisation). Each lot those receipts made or
-    added to takes the share of the goods it holds, spread per unit over the lot and the lots
-    split off it. Of the goods no longer there, the share of those sent back to the supplier
+    added to takes the share of the goods it holds, spread by quantity over the lot and the
+    lots split off it. Of the goods no longer there, the share of those sent back to the supplier
     goes to stock shrinkage and of the rest to cost of goods sold; a lot the goods were added
     to is taken to have sold its other stock first. A lot already carrying this bill's landed
     cost is left as it is, so a bill finalized again takes nothing twice."""
@@ -4539,7 +4526,7 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
     expensed: dict[AccountRole, float] = {}
     for lot_id, kinds in shares.items():
         lot, came = rows[lot_id], units.get(lot_id, 0.0)
-        if came <= 0 or any(f"{doc_id}::{k}" in (lot.state.get("landed_contributions") or {}) for k in kinds):
+        if came <= 0 or any(f"{doc_id}::{k}" in (lot.state.get("landed_costs") or {}) for k in kinds):
             continue
         family, queue, gone_back = [], [lot], 0.0
         while queue:
@@ -4563,8 +4550,8 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
             for kind, amount in kinds.items():
                 await emit_event(
                     session, company_id=company_id, entity_id=member.entity_id, entity_type="item",
-                    event_type="item.landed_cost.applied",
-                    data={"source_bill_id": doc_id, "kind": kind, "unit_amount": amount * held / came / on_hand},
+                    event_type="item.landed_cost.allocated",
+                    data={"source_bill_id": doc_id, "kind": kind, "amount": amount * held / came * qty / on_hand},
                     actor_id=user_id, location_id=None, source="api",
                     idempotency_key=f"{doc_id}:landed:{suffix}:{member.entity_id}:{kind}",
                     metadata_={"source_doc": doc_id},
@@ -5562,7 +5549,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
 
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.routes import split_off_child
-    from celerp_inventory.services import goods_basis
+    from celerp_inventory.services import carve_cost, goods_basis
 
     if payload.lines:
         picked = await _return_lines_as_lots(session, company_id, entity_id, row.state, payload.lines)
@@ -5696,13 +5683,14 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             if it.item_id in added:
                 taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
-            # The landed cost leaving is what the lot carried of it less what it keeps, each to
-            # the cent as the books carry the lot, so the units staying keep their share exactly.
-            landed_unit = to_decimal(sum(float(u or 0) for u in (item.state.get("landed_contributions") or {}).values()))
-            if landed_unit:
+            # The landed cost leaving is what the lot carried of it less what it keeps (carve_cost,
+            # the division the split below makes), each to the cent as the books carry the lot,
+            # so the units staying keep their share exactly.
+            pools = carve_cost(item.state, it.quantity_returned, currency)
+            if pools.part_landed:
                 landed_by_account[origin] = landed_by_account.get(origin, 0.0) + to_stored_float(
-                    round_money(landed_unit * to_decimal(current_qty), currency)
-                    - round_money(landed_unit * to_decimal(max(new_qty, 0.0)), currency))
+                    round_money(sum(pools.part_landed.values()) + sum(pools.rest_landed.values()), currency)
+                    - round_money(sum(pools.rest_landed.values()), currency))
         # The goods going back become their own lot, which leaves stock; the lot keeps the rest
         # with the rest of its cost. Goods that are the whole lot leave as that lot.
         gone = it.item_id
@@ -9856,7 +9844,12 @@ async def undo_receive(
         adjustment: dict = {"new_qty": new_qty}
         if new_qty > 0:
             # The receipt added its goods' cost to the lot, so undoing it takes that cost back.
+            # The landed cost other purchases put on the lot stays with it.
             adjustment["cost_base"] = round_basis(max(0.0, (goods_basis(lot_state) or 0.0) - cost))
+        pools = lot_state.get("landed_costs") or {}
+        if any(k.startswith(f"{entity_id}::") for k in pools):
+            # The landed cost this document put on the lot leaves with its voided capitalisation.
+            adjustment["landed_costs"] = {k: v for k, v in pools.items() if not k.startswith(f"{entity_id}::")}
         await emit_event(
             session, company_id=company_id, entity_id=lot, entity_type="item",
             event_type="item.quantity.adjusted", data=adjustment,

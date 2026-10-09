@@ -236,14 +236,13 @@ class CogsResult:
 def lot_unit_cost(state: dict) -> float:
     """A lot's per-unit cost: cost_total spread over its own quantity when that
     quantity is positive; otherwise the unit cost a zero-quantity lot keeps
-    (cost_price) plus its per-unit landed cost, which is what each unit that
-    arrives will be costed at."""
+    (cost_price, landed cost included), which is what each unit that arrives will be
+    costed at."""
     cost_total = state.get("cost_total")
     qty = float(state.get("quantity") or 0)
     if cost_total is not None and qty > 0:
         return float(cost_total) / qty
-    landed = sum(float(v or 0) for v in (state.get("landed_contributions") or {}).values())
-    return float(state.get("cost_price") or 0) + landed
+    return float(state.get("cost_price") or 0)
 
 
 async def doc_lot_pool(session, company_id, doc_id: str | None, line_items: list[dict]):
@@ -1041,11 +1040,15 @@ def _bill_debit_parts(doc: dict) -> list[tuple[int | AccountRole, _Dec]]:
     return parts
 
 
-def _base_debits(amounts: list[_Dec], base_total: float, rate, base_currency: str) -> list[_Dec]:
+def _base_debits(parts: list[tuple[object, _Dec]], base_total: float, rate, base_currency: str) -> list[_Dec]:
     """AP is the bill total in base; the debits are converted one by one, and the unit of
-    rounding that conversion can leave goes to the largest debit so the entry balances."""
-    debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for a in amounts]
-    largest = max(range(len(debits)), key=lambda i: debits[i])
+    rounding that conversion can leave goes to the largest goods line (a line index) so the
+    entry balances. Input VAT and freight are booked exactly as converted: VAT is reclaimed
+    at that figure and freight clearing must empty to the cent. Only a bill with no goods
+    line puts it on its largest debit."""
+    debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for _, a in parts]
+    goods = [i for i, (part, _) in enumerate(parts) if isinstance(part, int)] or range(len(debits))
+    largest = max(goods, key=lambda i: debits[i])
     debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
     return debits
 
@@ -1058,11 +1061,10 @@ def bill_line_base(doc: dict, base_currency: str) -> dict[int, _Dec]:
         return {}
     rate = require_doc_rate(doc, base_currency)
     total_d = round_money(doc.get("total", 0) or 0, doc.get("currency", "USD"))
-    amounts = [a for _, a in parts]
-    if sum(amounts, _Dec(0)) == total_d:
-        debits = _base_debits(amounts, to_base(to_stored_float(total_d), rate, base_currency), rate, base_currency)
+    if sum((a for _, a in parts), _Dec(0)) == total_d:
+        debits = _base_debits(parts, to_base(to_stored_float(total_d), rate, base_currency), rate, base_currency)
     else:  # a bill that does not add up is refused at finalize; each line converts on its own
-        debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for a in amounts]
+        debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for _, a in parts]
     return {part: d for (part, _), d in zip(parts, debits) if isinstance(part, int)}
 
 
@@ -1354,9 +1356,10 @@ async def create_for_bill_conversion(
     line_items = doc.get("line_items", [])
     # (account chosen on the line, the role to post to, or an account posted for a role;
     # amount in the document currency)
+    parts = _bill_debit_parts(doc)
     lines: list[tuple[str | AccountRole | tuple[str, AccountRole], _Dec]] = [
         (await _bill_line_target(session, company_id, line_items[part]) if isinstance(part, int) else part, amount)
-        for part, amount in _bill_debit_parts(doc)]
+        for part, amount in parts]
     if total_d <= 0:
         return
     # A bill total below its lines, tax and shipping is a discount on those lines: each line's
@@ -1364,6 +1367,7 @@ async def create_for_bill_conversion(
     # is owed. Any other gap between the parts and the total is refused rather than posted unbalanced.
     if not lines:
         lines.append((R.GENERAL_EXPENSE, total_d))
+        parts = [(R.GENERAL_EXPENSE, total_d)]
     if sum((a for _, a in lines), _Dec(0)) != total_d:
         raise UnbalancedJournalEntry(
             f"Bill {doc_id}: its lines, tax and shipping do not add up to its total of {total_d} {currency}"
@@ -1383,7 +1387,7 @@ async def create_for_bill_conversion(
     lines = [(drawn_home(target), a) for target, a in lines]
     acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE])
     base_total = to_base(to_stored_float(total_d), rate, base_currency)
-    debits = _base_debits([a for _, a in lines], base_total, rate, base_currency)
+    debits = _base_debits(parts, base_total, rate, base_currency)
     entries = [_bill_debit_line(acc, target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
     entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
     # What the document's purchase order receipts already booked is not booked again, so

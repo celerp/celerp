@@ -41,7 +41,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.money import round_basis
+from celerp.services.money import round_basis, round_money, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
@@ -89,6 +89,9 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     "pieces",
     "cost_total",
     "cost_price",
+    "cost_base",
+    "cost_landed",
+    "landed_costs",
     # Status - children start as available regardless of parent's terminal status, so
     # they never carry the parent's document or line pairing either
     "status",
@@ -173,6 +176,42 @@ def goods_basis(state: dict) -> float | None:
     if basis is None:
         basis = state.get("cost_total")
     return None if basis is None else round_basis(basis)
+
+
+@dataclass(frozen=True)
+class CostCarve:
+    """A lot's cost divided between a part leaving it and what the lot keeps: goods cost
+    (None when the lot has none) and each landed pool ("<source_bill_id>::<kind>")."""
+
+    part_goods: float | None
+    part_landed: dict[str, float]
+    rest_goods: float | None
+    rest_landed: dict[str, float]
+
+
+def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | None = None) -> CostCarve:
+    """The one division of a lot's cost when ``part_qty`` of it becomes a lot of its own (a
+    split, a return to the supplier). The lot keeps its quantity share of the goods cost
+    (unless ``part_goods`` names the part's) and of every landed pool, each to the cent in
+    ``currency``, and the part takes the difference. The books carry every lot to the cent,
+    so the part and the lot round back to exactly what the whole carried."""
+    qty = float(state.get("quantity") or 0)
+
+    def kept(amount: float) -> float:
+        share = to_decimal(amount) * to_decimal(qty - part_qty) / to_decimal(qty) if qty > 0 else 0
+        return to_stored_float(round_money(share, currency))
+
+    pools = {k: float(v or 0) for k, v in (state.get("landed_costs") or {}).items()}
+    rest_landed = {k: kept(v) for k, v in pools.items()}
+    part_landed = {k: round_basis(v - rest_landed[k]) for k, v in pools.items()}
+    basis = goods_basis(state)
+    if basis is None:
+        return CostCarve(None, part_landed, None, rest_landed)
+    if part_goods is not None:
+        part = round_basis(part_goods)
+        return CostCarve(part, part_landed, round_basis(basis - part), rest_landed)
+    rest = kept(basis)
+    return CostCarve(round_basis(basis - rest), part_landed, rest, rest_landed)
 
 
 def _basis_or_conflict(state: dict, label: str) -> float:

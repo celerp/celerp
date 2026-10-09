@@ -186,18 +186,22 @@ class ItemQuantityAdjusted(BaseModel):
     # stock position carries the source's value. Omitted by ordinary stock adjustments,
     # which leave the lot's cost alone.
     cost_base: float | None = None
+    # The lot's landed cost pools ("<source_bill_id>::<kind>" -> amount) after the adjustment,
+    # set only when part of the lot leaves as a lot of its own (a split, a return to the
+    # supplier) and keeps what carve_cost left it. Omitted, the pools stay put beside an
+    # explicit cost_base and otherwise follow the quantity.
+    landed_costs: dict[str, float] | None = None
     # Set only when stock consumed earlier is given back (materials returned from production):
     # the quantity no longer counts as used.
     quantity_returned: float | None = None
 
 
-class ItemLandedCostApplied(BaseModel):
-    # Absolute per-unit landed cost for one (source bill, kind); overwrite-safe so re-running the
-    # allocation with changed freight self-corrects. unit_amount=0 clears the contribution.
+class ItemLandedCostAllocated(BaseModel):
+    # The absolute landed amount one (source bill, kind) puts on a lot, in the books' currency;
+    # overwrite-safe so re-running the allocation self-corrects. amount=0 removes it.
     source_bill_id: str
     kind: str                       # freight | insurance | duty | import_vat
-    unit_amount: float
-    currency_rate: float | None = None   # bill conversion rate used (reproducibility)
+    amount: float
 
 
 class ItemFulfilled(BaseModel):
@@ -1329,7 +1333,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.status.set": ItemStatusSet,
     "item.transferred": ItemTransferred,
     "item.quantity.adjusted": ItemQuantityAdjusted,
-    "item.landed_cost.applied": ItemLandedCostApplied,
+    "item.landed_cost.allocated": ItemLandedCostAllocated,
     "item.fulfilled": ItemFulfilled,
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,

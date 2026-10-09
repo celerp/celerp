@@ -46,7 +46,7 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "quantity", "sell_by", "unit", "weight", "weight_unit", "gross_weight", "gross_weight_unit",
     "reserved_quantity", "quantity_fulfilled",
     # cost bases (per-list *_price fields are matched by suffix, not listed)
-    "cost_total", "cost_price", "cost_base", "cost_landed", "landed_contributions",
+    "cost_total", "cost_price", "cost_base", "cost_landed", "landed_costs",
     # reorder / planning
     "reorder_point", "reorder_qty",
     # flags / classification
@@ -231,20 +231,48 @@ def _migrate_sell_by(state: dict) -> dict:
     return state
 
 
+def _landed_pools_from_units(current: dict) -> None:
+    """Earlier releases recorded a lot's landed cost per unit (landed_contributions), worth
+    unit x quantity at any moment. Replaying their events turns each into the amount it was
+    worth at that moment, the pool this build carries."""
+    units = current.pop("landed_contributions", None)
+    if not units:
+        return
+    qty = float(current.get("quantity") or 0)
+    pools = dict(current.get("landed_costs") or {})
+    for key, unit in units.items():
+        if float(unit or 0) and qty > 0:
+            pools[key] = float(unit) * qty
+    if pools:
+        current["landed_costs"] = pools
+    else:
+        current.pop("landed_costs", None)
+
+
+def _set_landed_pools(current: dict, pools: dict) -> None:
+    kept = {k: float(v) for k, v in pools.items() if float(v or 0)}
+    if kept:
+        current["landed_costs"] = kept
+    else:
+        current.pop("landed_costs", None)
+
+
 def _recompute_cost(current: dict) -> None:
     """Derive the effective cost_total = cost_base + landed cost.
 
-    cost_base is the goods' purchase/manual cost (what the user edits). Landed cost is stored as
-    per-unit contributions keyed by "<source_bill_id>::<kind>"; the total landed = Σ unit × quantity,
-    so landed scales as quantity is received. cost_total stays authoritative for valuation/COGS.
+    cost_base is the goods' purchase/manual cost (what the user edits). Landed cost is held as
+    absolute amounts keyed by "<source_bill_id>::<kind>" (landed_costs): freight is a fixed cost
+    capitalised against the stock that bore it, so more goods arriving leave it alone and only
+    units leaving the lot take a share of it (_set_quantity). cost_total stays authoritative for
+    valuation/COGS.
 
-    A zero-quantity lot with no basis keeps its unit cost as cost_price, whatever landed cost
-    arrives meanwhile; the first positive quantity turns it into basis = unit × quantity.
+    A zero-quantity lot with no basis keeps its unit cost as cost_price until stock arrives;
+    the first positive quantity turns it into basis = unit × quantity.
 
     Idempotent. Bootstraps cost_base from a legacy cost_total when the split is absent, so existing
     items (cost_total only, no landed) are unaffected: cost_total == cost_base.
     """
-    contribs = current.get("landed_contributions") or {}
+    pools = current.get("landed_costs") or {}
     qty = float(current.get("quantity") or 0)
     if current.get("cost_base") is None:
         if current.get("cost_total") is not None:
@@ -253,13 +281,12 @@ def _recompute_cost(current: dict) -> None:
             if qty <= 0:
                 return  # the unit cost waits for stock
             current["cost_base"] = round_basis(float(current["cost_price"]) * qty)
-        elif not contribs:
+        elif not pools:
             return  # item has no cost set at all
         else:
             current["cost_base"] = 0.0
     base = float(current.get("cost_base") or 0)
-    landed_unit = sum(float(v or 0) for v in contribs.values())
-    current["cost_landed"] = round_basis(landed_unit * qty)
+    current["cost_landed"] = round_basis(sum(float(v or 0) for v in pools.values()))
     current["cost_total"] = round_basis(base + current["cost_landed"])
     current.pop("cost_price", None)  # always derived from cost_total at read time (flatten_item)
 
@@ -281,18 +308,22 @@ def _apply_goods_cost(current: dict, field: str, value) -> None:
     _recompute_cost(current)
 
 
-def _set_quantity(current: dict, new_qty, cost_base=None) -> None:
-    """Move a lot to new_qty with its goods cost following the units (perpetual costing).
+def _set_quantity(current: dict, new_qty, cost_base=None, landed_costs=None) -> None:
+    """Move a lot to new_qty with its cost following the units (perpetual costing).
 
-    An explicit cost_base (a receipt adding the received goods' cost, or a migrated stock
-    position carrying the source's value) is the new basis.
-    Otherwise the basis scales by new/old quantity, so unit cost stays put: units that leave
-    take their share, units that come back bring it. At zero quantity the unit cost is kept
-    as cost_price, so stock that returns later is costed at it. Landed cost is per-unit and
-    rescales in _recompute_cost.
+    An explicit cost_base (a receipt adding the received goods' cost, the undo of one, or a
+    migrated stock position carrying the source's value) is the new goods basis, and the
+    landed pools stay as they are: goods arriving or leaving with their own cost change no
+    freight. Explicit landed_costs (a split or a return carving the lot) are the new pools.
+    Otherwise goods basis and pools scale by new/old quantity, so unit cost stays put: units
+    that leave take their share, units that come back bring it. At zero quantity the whole
+    unit cost is kept as cost_price, so stock that returns later is costed at it.
     """
     old_qty = float(current.get("quantity") or 0)
     qty = float(new_qty or 0)
+    pools = {k: float(v or 0) for k, v in (current.get("landed_costs") or {}).items()}
+    if landed_costs is not None:
+        pools = {k: float(v or 0) for k, v in landed_costs.items()}
     if cost_base is not None:
         current["cost_base"] = float(cost_base)
         current.pop("cost_price", None)
@@ -300,15 +331,20 @@ def _set_quantity(current: dict, new_qty, cost_base=None) -> None:
         basis = current.get("cost_base")
         if basis is None:
             basis = current.get("cost_total")
-        if old_qty > 0 and basis is not None:
+        if old_qty > 0 and (basis is not None or pools):
             # Unrounded: a basis or unit cost cut to any fixed precision would not scale
             # back exactly when the units return.
             if qty > 0:
-                current["cost_base"] = float(basis) * qty / old_qty
+                if basis is not None:
+                    current["cost_base"] = float(basis) * qty / old_qty
+                if landed_costs is None:
+                    pools = {k: v * qty / old_qty for k, v in pools.items()}
             else:
                 for key in ("cost_base", "cost_total", "cost_landed"):
                     current.pop(key, None)
-                current["cost_price"] = float(basis) / old_qty
+                current["cost_price"] = (float(basis or 0) + sum(pools.values())) / old_qty
+                pools = {}
+    _set_landed_pools(current, pools)
     current["quantity"] = new_qty
     _recompute_cost(current)
 
@@ -365,8 +401,10 @@ def _keep_on_books(before: dict, after: dict, event_type: str, data: dict) -> No
 
 def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
+    _landed_pools_from_units(current)
     if event_type in {"item.created", "item.snapshot"}:
         current.update(data)
+        _landed_pools_from_units(current)
         # Category attributes (incl. `pieces`) are canonical under attributes["<key>"]. Some producers
         # put them TOP-LEVEL in the create payload — POST /items via extra="allow", CIF imports — so
         # relocate every non-core top-level field into `attributes`. This makes storage uniform across
@@ -467,28 +505,29 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # honour the key when present, so ordinary stock adjustments never touch the flag.
         if "consignment_flag" in data:
             current["consignment_flag"] = data["consignment_flag"]
-        _set_quantity(current, data["new_qty"], data.get("cost_base"))
+        _set_quantity(current, data["new_qty"], data.get("cost_base"), data.get("landed_costs"))
     elif event_type == "item.cost_adjusted":
         # Restate the goods cost of a lot after the fact: manufacturing re-costs a produced lot to the
         # run's actual input cost once completion knows the true received quantity. cost_total in the
-        # payload is the new absolute cost_base; landed contributions rescale from it.
+        # payload is the new absolute cost_base; the landed pools stay on top of it.
         current["cost_base"] = float(data["cost_total"])
         _recompute_cost(current)
     elif event_type == "item.inventory_account.recorded":
         current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
     elif event_type == "item.inventory_on_books.recorded":
         pass  # _keep_on_books
+    elif event_type == "item.landed_cost.allocated":
+        # The absolute landed amount one (source bill, kind) puts on this lot; amount=0 removes it.
+        pools = dict(current.get("landed_costs") or {})
+        pools[f"{data['source_bill_id']}::{data['kind']}"] = float(data.get("amount") or 0)
+        _set_landed_pools(current, pools)
+        _recompute_cost(current)
     elif event_type == "item.landed_cost.applied":
-        # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so
-        # re-running allocation with changed freight self-corrects. amount=0 clears the contribution.
-        contribs = dict(current.get("landed_contributions") or {})
-        key = f"{data['source_bill_id']}::{data['kind']}"
-        amount = float(data.get("unit_amount") or 0)
-        if amount:
-            contribs[key] = amount
-        else:
-            contribs.pop(key, None)
-        current["landed_contributions"] = contribs
+        # Earlier releases: a per-unit amount, worth unit x the quantity the lot held then.
+        pools = dict(current.get("landed_costs") or {})
+        pools[f"{data['source_bill_id']}::{data['kind']}"] = (
+            float(data.get("unit_amount") or 0) * float(current.get("quantity") or 0))
+        _set_landed_pools(current, pools)
         _recompute_cost(current)
     elif event_type in {"item.expired", "item.disposed"}:  # item.disposed is legacy; maps to archived
         current["is_expired"] = event_type == "item.expired"

@@ -98,7 +98,7 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             continue
         if entity_type == "item":
             groups.add("inventory")
-            if state.get("landed_contributions"):
+            if state.get("landed_costs"):
                 groups.add("landed_cost")
             continue
         if float(state.get("tax") or 0):

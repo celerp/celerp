@@ -519,9 +519,9 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
                           f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
             returned.append({**line, "value": str(value)})
             continue
-        landed = sum(float(v or 0) for v in (s.get("landed_contributions") or {}).values())
+        landed = sum(float(v or 0) for v in (s.get("landed_costs") or {}).values())
         target = befores[item_id] + value
-        await op.emit(item_id, "item", "item.quantity.adjusted", {**adjusted, "cost_base": float(target) - landed * qty},
+        await op.emit(item_id, "item", "item.quantity.adjusted", {**adjusted, "cost_base": float(target) - landed},
                       f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
                                      populate_existing=True)

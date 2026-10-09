@@ -3198,11 +3198,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_location_id = parent.state.get("location_id")
     parent_attrs = dict(parent.state.get("attributes") or {})
 
-    # Price fields to preserve on children via pricing events (cost is split proportionally)
+    # Price fields to preserve on children via pricing events (cost is carved below)
     parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
-    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
-        float(parent.state.get("cost_price") or 0) * parent_qty
-    )
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -3293,18 +3290,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         )
     )
 
-    # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
-    # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
-    # This is correct for partial splits; no remainder redistribution needed.
-    _child_cost_totals: list[float | None]
-    if parent_cost_total and parent_qty:
-        _D_unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
-        _child_cost_totals = [
-            float((_D_unit_cost * Decimal(str(c.quantity))).quantize(Decimal("0.0000000001")))
-            for c in children
-        ]
-    else:
-        _child_cost_totals = [None] * len(children)
+    # Each child is carved off what the mother holds after the children before it
+    # (carve_cost, the one division split_off_child uses): its goods and landed pools by
+    # quantity, the mother keeping the difference, so the parts add back to the lot.
+    from celerp.services.auto_je import company_currency
+    from celerp_inventory.services import carve_cost, goods_basis
+    currency = await company_currency(session, company_id)
+    remaining = {"quantity": parent_qty, "cost_base": goods_basis(parent.state),
+                 "landed_costs": dict(parent.state.get("landed_costs") or {})}
+    carves = []
+    for c in children:
+        carve = carve_cost(remaining, c.quantity, currency)
+        carves.append(carve)
+        remaining = {"quantity": round(parent_qty - sum(x.quantity for x in children[:len(carves)]), 10),
+                     "cost_base": carve.rest_goods, "landed_costs": carve.rest_landed}
 
     def _child_weight(c) -> float | None:
         if c.weight is not None:
@@ -3316,7 +3315,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     running_qty = parent_qty
     running_pieces = parent_pieces
     running_weight = parent_weight
-    running_cost = parent_cost_total
 
     for i, child in enumerate(children):
         child_eid = f"item:{uuid.uuid4()}"
@@ -3324,6 +3322,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         child_qty_list.append(child.quantity)
         # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
         child_data: dict = lot_fields(parent.state)
+        if carves[i].part_landed:
+            child_data["landed_costs"] = carves[i].part_landed
         # Pieces are never inherited from the mother: an explicit per-child count
         # (already merged into child.attributes) or, for a piece-unit item, the
         # child's own quantity. Otherwise the child carries no pieces.
@@ -3401,13 +3401,14 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             detail["weight_before"] = running_weight
             running_weight = round((running_weight or 0) - (ch_weight or 0), weight_decimals)
             detail["weight_after"] = running_weight
-        if parent_cost_total and _child_cost_totals[i] is not None:
-            detail["cost_before"] = running_cost
-            running_cost = round(running_cost - _child_cost_totals[i], 10)
-            detail["cost_after"] = running_cost
+        if carves[i].rest_goods is not None:
+            detail["cost_before"] = round_basis(
+                carves[i].rest_goods + carves[i].part_goods
+                + sum(carves[i].rest_landed.values()) + sum(carves[i].part_landed.values()))
+            detail["cost_after"] = round_basis(carves[i].rest_goods + sum(carves[i].rest_landed.values()))
         children_detail.append(detail)
 
-        # Preserve prices from parent via pricing events (excluding cost - set proportionally below)
+        # Preserve prices from parent via pricing events (excluding cost - carved below)
         for price_type, price_val in parent_prices.items():
             await emit_event(
                 session,
@@ -3422,15 +3423,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 idempotency_key=str(uuid.uuid4()),
                 metadata_={"reason": "from_split"},
             )
-        # Assign proportional cost_total to child (pre-computed with Decimal; remainder in last child)
-        if _child_cost_totals[i] is not None:
+        # The child's goods cost; its landed pools came with item.created
+        if carves[i].part_goods is not None:
             await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=child_eid,
                 entity_type="item",
                 event_type="item.pricing.set",
-                data={"price_type": "cost_total", "new_price": _child_cost_totals[i]},
+                data={"price_type": "cost_total", "new_price": carves[i].part_goods},
                 actor_id=user.id,
                 location_id=None,
                 source="api",
@@ -3462,37 +3463,23 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # only; a submitted negative override was rejected above, never silently zeroed).
     if payload.mother_qty is None and new_parent_qty < 0:
         new_parent_qty = 0.0
+    # The mother keeps what the last carve left her, whatever quantity a re-weigh sets.
+    mother: dict = {"new_qty": new_parent_qty, "landed_costs": remaining["landed_costs"]}
+    if remaining["cost_base"] is not None:
+        mother["cost_base"] = remaining["cost_base"]
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.quantity.adjusted",
-        data={"new_qty": new_parent_qty},
+        data=mother,
         actor_id=user.id,
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={"reason": "split_parent"},
     )
-
-    # Update parent cost_total (reduce by sum of child cost_totals; pre-computed values guarantee conservation)
-    if parent_cost_total and parent_qty:
-        total_child_cost = sum(c for c in _child_cost_totals if c is not None)
-        parent_remaining_cost = max(0.0, round(parent_cost_total - total_child_cost, 10))
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.pricing.set",
-            data={"price_type": "cost_total", "new_price": parent_remaining_cost},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"reason": "split_parent"},
-        )
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
@@ -3609,9 +3596,9 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     """Split one child of ``child_qty`` off ``parent_proj`` -> ``(child_eid, child_sku)``.
 
     The child keeps the parent SKU (same product; a distinct lot by barcode / entity_id)
-    and is the split-off portion; the mother keeps the remainder. The goods cost splits
-    by quantity unless ``child_cost_base`` names the child's share; landed cost is per
-    unit and follows each side's quantity.
+    and is the split-off portion; the mother keeps the remainder. The cost divides by
+    carve_cost: goods by quantity unless ``child_cost_base`` names the child's share, and
+    each landed pool by quantity, the two sides always adding back to the whole.
 
     ``action`` names what the user is doing (a key of line_measures.splitting_off): a lot
     whose Allow Splitting is off refuses any part smaller than the whole with HTTP 409,
@@ -3633,7 +3620,8 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     """
     from celerp.services.line_measures import splitting_off
     from celerp.services.units import exceeds_precision
-    from celerp_inventory.services import goods_basis
+    from celerp.services.auto_je import company_currency
+    from celerp_inventory.services import carve_cost
 
     # Lock and re-read the live parent projection before carving: split_off_child emits
     # the mother's new quantity as an ABSOLUTE value, so two concurrent carves of one
@@ -3705,13 +3693,8 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     # distinguished only by its own unique barcode / entity_id (SKUs repeat across lots).
     child_sku = parent_sku
 
-    # Goods cost: the child's share (proportional unless named); the mother keeps the rest
-    # through her quantity change. Landed cost is re-added per unit on each side.
-    basis = goods_basis(parent.state)
-    child_base: float | None = None
-    if basis is not None:
-        child_base = round_basis(child_cost_base if child_cost_base is not None
-                                 else (basis * child_qty / parent_qty if parent_qty else 0.0))
+    carve = carve_cost(parent.state, child_qty, await company_currency(session, company_id),
+                       child_cost_base)
 
     parent_prices = {
         k: parent.state[k] for k in parent.state
@@ -3730,8 +3713,8 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     else:
         child_attrs.pop("pieces", None)
     child_data = lot_fields(parent.state)
-    for key in ("cost_base", "cost_landed"):
-        child_data.pop(key, None)
+    if carve.part_landed:
+        child_data["landed_costs"] = carve.part_landed
     from celerp_inventory.services import (
         normalize_sku as _normalize_family_sku,
         resolve_catalog_anchor_for_item as _resolve_family_anchor,
@@ -3781,17 +3764,17 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                          event_type="item.pricing.set", data={"price_type": price_type, "new_price": price_val},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
-    if child_base is not None:
+    if carve.part_goods is not None:
         await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
-                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": child_base},
+                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": carve.part_goods},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
 
     # --- reduce the mother ---
     new_parent_qty = round(parent_qty - child_qty, 10)
-    adjusted: dict = {"new_qty": new_parent_qty}
-    if basis is not None:
-        adjusted["cost_base"] = round_basis(basis - child_base)
+    adjusted: dict = {"new_qty": new_parent_qty, "landed_costs": carve.rest_landed}
+    if carve.rest_goods is not None:
+        adjusted["cost_base"] = carve.rest_goods
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.quantity.adjusted", data=adjusted,
                      actor_id=user_id, location_id=None, source="fulfill_split",
@@ -3813,10 +3796,9 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     if parent_weight is not None and child_weight is not None:
         child_detail["weight_before"] = parent_weight
         child_detail["weight_after"] = weight_after
-    if basis is not None:
-        landed_unit = sum(float(v or 0) for v in (parent.state.get("landed_contributions") or {}).values())
-        child_detail["cost_before"] = float(parent.state.get("cost_total") or basis)
-        child_detail["cost_after"] = round_basis(adjusted["cost_base"] + landed_unit * new_parent_qty)
+    if carve.rest_goods is not None:
+        child_detail["cost_before"] = float(parent.state.get("cost_total") or 0)
+        child_detail["cost_after"] = round_basis(carve.rest_goods + sum(carve.rest_landed.values()))
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.split",
                      data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty],
@@ -3909,6 +3891,10 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     refusal = negative_cost_error(payload.child_sku, effective_cost)
     if refusal:
         raise HTTPException(status_code=422, detail=refusal)
+    # Kept at the parent's cost, the child carries the parent's landed pools beside its goods
+    # cost; a cost the user restates is the child's goods cost entire.
+    child_landed = dict(parent.state.get("landed_costs") or {}) if effective_cost == parent_cost_total else {}
+    child_goods = round_basis(effective_cost - sum(float(v or 0) for v in child_landed.values()))
     parent_location_id = parent.state.get("location_id")
 
     child_eid = f"item:{uuid.uuid4()}"
@@ -3928,6 +3914,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "attributes": {**parent_attrs},
         "barcode": child_barcode,
     })
+    if child_landed:
+        child_data["landed_costs"] = child_landed
     # A transform yields a DIFFERENT product, so no product-family identity carries.
     child_data.pop("gtin", None)
     child_data.pop("catalog_item_id", None)
@@ -3978,14 +3966,14 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     # 2. Sell prices are intentionally NOT copied — the child starts with no sell price (see the
     #    parent_price_keys note above). Only cost carries over.
 
-    # 2b. Set child cost via item.pricing.set (consistent with split/post_item flows)
+    # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=child_eid,
         entity_type="item",
         event_type="item.pricing.set",
-        data={"price_type": "cost_total", "new_price": effective_cost},
+        data={"price_type": "cost_total", "new_price": child_goods},
         actor_id=user.id,
         location_id=None,
         source="api",
