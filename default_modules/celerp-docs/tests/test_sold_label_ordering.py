@@ -44,15 +44,13 @@ async def _memo(client, h, item_ids: list[str]) -> str:
     return r.json()["id"]
 
 
-async def _invoice(client, h, item_id: str) -> str:
-    """The customer keeps a consigned item: an invoice for it, finalized, sells it."""
-    r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
-        {"entity_id": item_id, "sku": "S", "name": "S", "quantity": 1, "unit_price": 10, "sell_by": "piece"}]})
+async def _sell_from_memo(client, h, memo: str, item_ids: list[str]) -> str:
+    """The customer keeps the consigned items: converting the memo sells what is out on it."""
+    r = await client.post(f"/docs/{memo}/convert", headers=h)
     assert r.status_code == 200, r.text
-    invoice = r.json()["id"]
-    r = await client.post(f"/docs/{invoice}/finalize", headers=h)
-    assert r.status_code == 200, r.text
-    assert (await client.get(f"/items/{item_id}", headers=h)).json()["status"] == "sold"
+    invoice = r.json()["target_doc_id"]
+    for item_id in item_ids:
+        assert (await client.get(f"/items/{item_id}", headers=h)).json()["status"] == "sold"
     return invoice
 
 
@@ -68,10 +66,10 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     """A sold event that PRECEDES this memo's fulfillment reads "On Memo"; a genuine
     sold event AFTER this memo's fulfillment reads "Sold".
 
-    `stale` is sold (an earlier cycle), returned to stock, then fulfilled on THIS memo:
-    its sold ledger id is lower than this memo's fulfilled id, so the line is still out
-    on this memo and must read "On Memo". `fresh` is fulfilled on this memo and then sold:
-    its sold id is higher and it must read "Sold".
+    `stale` is sold (an earlier invoice), returned to stock, then fulfilled on
+    THIS memo: its sold ledger id is lower than this memo's fulfilled id, so the line is
+    still out on this memo and must read "On Memo". Converting this memo then sells
+    `fresh` after its fulfillment, so it must read "Sold".
 
     At merge-base the sold query has no ledger-id ordering vs the applicable fulfilled
     event, so ANY sold event on the item marks the line "Sold" -> `stale` wrongly reads
@@ -81,13 +79,16 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     stale = await _item(client, h, "SL-STALE")
     fresh = await _item(client, h, "SL-FRESH")
 
-    # `stale`: sold off an earlier memo, then returned to stock (available again) BEFORE
-    # this memo exists. The sold ledger event now predates this memo's fulfilled event.
-    earlier = await _memo(client, h, [stale])
-    assert (await client.post(f"/docs/{earlier}/finalize", headers=h)).status_code == 200
-    assert (await client.post(f"/docs/{earlier}/fulfill-lines", headers=h,
+    # `stale`: sold on an earlier invoice, then returned to stock (available again)
+    # BEFORE this memo exists. The sold ledger event now predates this memo's fulfilled event.
+    r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
+        {"entity_id": stale, "sku": "S", "name": "S", "quantity": 1, "unit_price": 10, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    sale = r.json()["id"]
+    assert (await client.post(f"/docs/{sale}/finalize", headers=h)).status_code == 200
+    assert (await client.post(f"/docs/{sale}/fulfill-lines", headers=h,
                               json={"line_entity_ids": [stale]})).status_code == 200
-    sale = await _invoice(client, h, stale)
+    assert (await client.get(f"/items/{stale}", headers=h)).json()["status"] == "sold"
     # The sale is taken back on the invoice that made it, not on the memo.
     r = await client.post(f"/docs/{sale}/revert-lines", headers=h, json={"line_entity_ids": [stale]})
     assert r.status_code == 200, r.text
@@ -100,12 +101,13 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h,
                               json={"line_entity_ids": [stale, fresh]})).status_code == 200
 
-    # A genuine post-consignment sale on `fresh` only (its sold id > its fulfilled id).
-    await _invoice(client, h, fresh)
-
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, stale) == "On Memo", (
         f"a sale predating this memo's fulfillment must read On Memo; got "
         f"{_label_for(doc, stale)!r}")
+
+    # A genuine post-consignment sale (its sold id > its fulfilled id).
+    await _sell_from_memo(client, h, memo, [stale, fresh])
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, fresh) == "Sold", (
         f"a genuine post-fulfillment sale must read Sold; got {_label_for(doc, fresh)!r}")

@@ -50,7 +50,7 @@ async def test_create_doc_rejects_inverted_dates(client):
         "due_date": "2024-06-01",  # earlier than issue_date
     })
     assert r.status_code == 422
-    assert "due_date" in r.json()["detail"].lower()
+    assert r.json()["detail"]["message_key"] == "documents.due_before_issue"
 
 
 @pytest.mark.asyncio
@@ -98,7 +98,7 @@ async def test_patch_doc_rejects_due_date_before_issue_date(client):
         "fields_changed": {"due_date": {"old": None, "new": "2024-06-01"}},
     })
     assert r2.status_code == 422
-    assert "due_date" in r2.json()["detail"].lower()
+    assert r2.json()["detail"]["message_key"] == "documents.due_before_issue"
 
 
 @pytest.mark.asyncio
@@ -120,7 +120,7 @@ async def test_patch_doc_rejects_issue_date_after_due_date(client):
         "fields_changed": {"issue_date": {"old": "2024-06-01", "new": "2024-07-01"}},
     })
     assert r2.status_code == 422
-    assert "due_date" in r2.json()["detail"].lower()
+    assert r2.json()["detail"]["message_key"] == "documents.due_before_issue"
 
 
 @pytest.mark.asyncio
