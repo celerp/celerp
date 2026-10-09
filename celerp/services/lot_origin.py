@@ -159,12 +159,15 @@ async def account_balances(session: AsyncSession, company_id, codes) -> dict[str
     return {code: _balance(entries, code) for code in codes}
 
 
-def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str) -> Decimal:
-    """What ``code`` holds beyond the value of the lots on hand that record it."""
+def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str,
+          sold: dict[str, float]) -> Decimal:
+    """What ``code`` holds beyond the value of the lots on hand that record it, less what
+    finalized invoices already recognized for the ones they have not shipped (``sold``,
+    from auto_je.recognized_unshipped)."""
     balance = _balance(entries, code)
     recorded = sum((booked_value(r, currency) for r in items if (r.state or {}).get(LOT_ACCOUNT_FIELD) == code),
                    Decimal("0"))
-    return balance - recorded
+    return balance - recorded + round_money(sold.get(code, 0), currency)
 
 
 async def account_room(session: AsyncSession, company_id, code: str) -> Decimal:
@@ -174,9 +177,12 @@ async def account_room(session: AsyncSession, company_id, code: str) -> Decimal:
 
 async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, Decimal]:
     """account_room for each of ``codes``, read once."""
+    from celerp.services.auto_je import recognized_unshipped
+
     currency = (await current_settings(session, company_id)).get("currency", "USD")
     entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
-    return {code: round_money(_room(entries, items, code, currency), currency) for code in codes}
+    sold = await recognized_unshipped(session, company_id)
+    return {code: round_money(_room(entries, items, code, currency, sold), currency) for code in codes}
 
 
 def awaits_account(row: Projection) -> bool:
@@ -195,15 +201,18 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     """What the books check reports about stock: each lot on hand holding value that
     records no inventory account, and each account lots are carried on whose balance differs from
     the stock on hand recorded on it. Read only; nothing is booked to close a gap."""
+    from celerp.services.auto_je import recognized_unshipped
+
     settings = await current_settings(session, company_id)
     if SCHEMA_KEY not in settings:
         return []
     currency = settings.get("currency", "USD")
     entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
+    sold = await recognized_unshipped(session, company_id)
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
     for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
-        room = round_money(_room(entries, items, code, currency), currency)
+        room = round_money(_room(entries, items, code, currency, sold), currency)
         if room:
             books = round_money(_balance(entries, code), currency)
             findings.append({"kind": "stock_gap", "account": code, "books": float(books),

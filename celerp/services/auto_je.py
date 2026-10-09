@@ -1800,6 +1800,80 @@ async def _lots_by_fulfillment_on_doc(session, company_id, doc_id: str) -> tuple
     return out, back
 
 
+async def _recognized_by_account(
+    session, company_id, doc_id: str, doc_state: dict, recognized,
+) -> tuple[dict[str, float], dict[int, dict[str, float]]]:
+    """What an invoice recognizes today, per inventory account, in two parts: the actual
+    cost of the lots it shipped, and, per line, its allocation's share (with every cost
+    correction since) for the goods it has not shipped. Raises ValueError when a shipped
+    or returned lot cannot be matched to one of the invoice's lines."""
+    shipped: dict[str, float] = {}
+    held: dict[int, dict[str, float]] = {}
+
+    def _add(into: dict[str, float], by_account: dict[str, float]) -> None:
+        for code, amount in by_account.items():
+            into[code] = into.get(code, 0.0) + amount
+
+    shipped_qty: dict[int, float] = {}
+    back_qty: dict[int, float] = {}
+    out, back = await _lots_by_fulfillment_on_doc(session, company_id, doc_id)
+    for lot in out:
+        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
+        if idx is None:
+            raise ValueError("cannot safely identify the invoice line of every shipped lot")
+        cost = lot_cost_of_sale(lot.state or {})
+        if cost:
+            _add(shipped, {sold_lot_account(lot.state or {}): cost})
+        shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
+    for lot, qty in back:
+        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
+        if idx is None:
+            raise ValueError("cannot safely identify the invoice line of every lot taken back")
+        back_qty[idx] = back_qty.get(idx, 0.0) + qty
+    repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
+    for idx, alloc in recognized.allocations.items():
+        amount = float(alloc.get("amount") or 0)
+        if int(idx) not in shipped_qty and int(idx) not in back_qty:
+            _add(held.setdefault(int(idx), {}), await _allocation_by_account(session, company_id, alloc,
+                                                    amount + repriced.get(int(idx), 0.0)))
+            continue
+        if int(idx) not in shipped_qty:
+            amount += repriced.get(int(idx), 0.0)
+        allocated = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])) + float(
+            alloc.get("provisional_qty") or 0)
+        unshipped = allocated - shipped_qty.get(int(idx), 0.0) - back_qty.get(int(idx), 0.0)
+        if allocated > 0 and unshipped > 1e-9:
+            _add(held.setdefault(int(idx), {}), await _allocation_by_account(
+                session, company_id, alloc, amount * unshipped / allocated))
+    return shipped, held
+
+
+async def recognized_unshipped(session, company_id) -> dict[str, float]:
+    """Per inventory account, the cost finalized invoices have recognized for goods they
+    have not shipped: relieved from the books at finalize while the lots are still on hand.
+    The books check and the stock oracles count it as stock the books already gave up."""
+    docs = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
+    total: dict[str, float] = {}
+    for doc in docs:
+        state = doc.state or {}
+        if state.get("doc_type") != "invoice" or state.get("fulfillment_status") == "fulfilled":
+            continue
+        recognized = await recognized_cogs(session, company_id, doc.entity_id)
+        if recognized is None:
+            continue
+        _shipped, held = await _recognized_by_account(session, company_id, doc.entity_id, state, recognized)
+        for idx, by_account in held.items():
+            lots = recognized.allocations[str(idx)].get("lots") or []
+            if not any(held_value(row) is not None for row in [
+                    await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
+                    for lot in lots] if row is not None):
+                continue  # its goods left stock some other way (a memo sold out on this invoice)
+            for code, amount in by_account.items():
+                total[code] = total.get(code, 0.0) + amount
+    return total
+
+
 async def reconcile_doc_cogs(
     session, *, company_id, user_id, doc_id: str, cycle_tag: str, ts: str | None,
     trigger: str, memo: str | None = None, context: dict | None = None,
@@ -1825,42 +1899,10 @@ async def reconcile_doc_cogs(
     settings = await current_settings(session, company_id)
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     doc_state = (doc.state or {}) if doc is not None else {}
-    truth: dict[str, float] = {}
-
-    def _add(by_account: dict[str, float]) -> None:
+    truth, held = await _recognized_by_account(session, company_id, doc_id, doc_state, recognized)
+    for by_account in held.values():
         for code, amount in by_account.items():
             truth[code] = truth.get(code, 0.0) + amount
-
-    shipped_qty: dict[int, float] = {}
-    back_qty: dict[int, float] = {}
-    out, back = await _lots_by_fulfillment_on_doc(session, company_id, doc_id)
-    for lot in out:
-        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
-        if idx is None:
-            raise ValueError("cannot safely identify the invoice line of every shipped lot")
-        cost = lot_cost_of_sale(lot.state or {})
-        if cost:
-            _add({sold_lot_account(lot.state or {}): cost})
-        shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
-    for lot, qty in back:
-        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
-        if idx is None:
-            raise ValueError("cannot safely identify the invoice line of every lot taken back")
-        back_qty[idx] = back_qty.get(idx, 0.0) + qty
-    repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
-    for idx, alloc in recognized.allocations.items():
-        amount = float(alloc.get("amount") or 0)
-        if int(idx) not in shipped_qty and int(idx) not in back_qty:
-            _add(await _allocation_by_account(session, company_id, alloc,
-                                              amount + repriced.get(int(idx), 0.0)))
-            continue
-        if int(idx) not in shipped_qty:
-            amount += repriced.get(int(idx), 0.0)
-        allocated = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])) + float(
-            alloc.get("provisional_qty") or 0)
-        unshipped = allocated - shipped_qty.get(int(idx), 0.0) - back_qty.get(int(idx), 0.0)
-        if allocated > 0 and unshipped > 1e-9:
-            _add(await _allocation_by_account(session, company_id, alloc, amount * unshipped / allocated))
     booked: dict[str, float] = {}
     for row in (await _doc_recognition_jes(session, company_id, doc_id)).values():
         if (row.state or {}).get("status") != "posted":

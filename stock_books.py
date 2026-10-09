@@ -98,6 +98,11 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=()) -> dict[
             continue
         held[code] += round_money(value, currency)  # each posting moves a lot's value to the cent
     assert not missing, f"lots on hand that record no lot inventory account: {missing}"
+    from celerp.services.auto_je import recognized_unshipped
+
+    for code, amount in (await recognized_unshipped(session, company_id)).items():
+        if code in held:
+            held[code] -= round_money(amount, currency)  # sold on a finalized invoice, not yet shipped
     held = {code: round_money(v, currency) for code, v in held.items()}
     assert books == held, f"books {books} != stock recorded on them {held}"
     return books
