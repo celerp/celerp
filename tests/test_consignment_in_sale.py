@@ -350,6 +350,21 @@ async def test_goods_still_held_go_back_to_the_consignor(client, session, auth):
     await _settled(client, session, auth)
 
 
+async def _customer_return(client, session, auth, doc: str, lot: str, qty: float) -> str:
+    """Credit ``qty`` of ``lot`` sold on ``doc`` and receive the goods back; return the lot they came back as."""
+    sku = (await _state(session, auth, lot))["sku"]
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "credit_note", "original_doc_id": doc, "ref_id": f"CN-{uuid.uuid4().hex[:6]}",
+        "line_items": [{"sku": sku, "name": "Lot", "quantity": qty, "unit_price": 40.0}], "total": 40.0 * qty})
+    assert r.status_code == 200, r.text
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=auth["headers"])).status_code == 200
+    r = await client.post(f"/docs/{cn}/receive-return", headers=auth["headers"], json={
+        "items": [{"sku": sku, "item_id": lot, "quantity": qty}], "idempotency_key": f"ret-{uuid.uuid4()}"})
+    assert r.status_code == 200, r.text
+    return r.json()["received_items"][0]["item_id"]
+
+
 async def test_after_a_return_to_the_consignor_what_was_kept_is_still_bought(client, session, auth):
     """4 received at a recorded 4 a unit and billed at 5: 1 on a sale, 2 sent back, 1 held.
     The bill buys the 2 kept and the consignor payable clears."""
@@ -382,6 +397,48 @@ async def test_a_consignment_returned_whole_has_nothing_to_buy(client, session, 
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["message_key"] == "consignment.buy.nothing_kept", r.text
     assert len(await _posted(session, auth)) == entries
+
+
+async def test_goods_a_customer_returned_can_go_back_to_the_consignor(client, session, auth):
+    """Sold, then returned by the customer: the sale was reversed on the consignor payable,
+    so sending the goods back to the consignor books nothing and nothing is left to buy."""
+    consignment, lot = await _consign(client, session, auth)
+    doc = await _sell(client, session, auth, lot)
+    returned = await _customer_return(client, session, auth, doc, lot, 2)
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 2}]})
+    assert r.status_code == 200, r.text
+    state = await _state(session, auth, returned)
+    assert (state["quantity"], state.get("consignment_flag")) == (0, None)
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 0.0, PURCHASED: 0.0, AP: 0.0}
+    await _settled(client, session, auth)
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code >= 400, r.text
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "consignment.buy.nothing_kept", r.text
+
+
+async def test_part_of_a_customer_return_back_to_the_consignor_buys_only_the_rest(client, session, auth):
+    """2 sold at a recorded 4, both returned by the customer, 1 sent back to the consignor:
+    the bill buys the 1 still held at 5, and nothing is left on the consignor payable."""
+    consignment, lot = await _consign(client, session, auth, cost_price=4.0)
+    doc = await _sell(client, session, auth, lot)
+    returned = await _customer_return(client, session, auth, doc, lot, 2)
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    bill = await _state(session, auth, r.json()["target_doc_id"])
+    assert [li["quantity"] for li in bill["line_items"]] == [1]
+    state = await _state(session, auth, returned)
+    assert (state.get("consignment_flag"), state[LOT_ACCOUNT_FIELD], state["cost_total"]) == (None, PURCHASED, 5.0)
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 0.0, PURCHASED: 5.0, AP: -5.0}
+    await _settled(client, session, auth)
 
 
 async def test_only_real_older_stock_is_told_to_choose_an_inventory_account():

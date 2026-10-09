@@ -30,7 +30,7 @@ from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
-from celerp_docs.consignment_buy import buy_consignment
+from celerp_docs.consignment_buy import buy_consignment, lineage as consignment_lineage
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
@@ -4354,6 +4354,12 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     # A document sends back only goods it brought in, and no more than it still holds of them.
     label = {**_RECEIVING_DOC_LABEL, "consignment_in": "consignment"}[doc_type]
     returnable = await _returnable_quantities(session, company_id, row.state)
+    if doc_type == "consignment_in":
+        # Consigned goods are the consignor's wherever they went since: the parts of a lot
+        # and goods a customer brought back can go back too, up to what each still holds.
+        for lot, _parent, link in await consignment_lineage(session, company_id, row.state.get("received_item_ids") or []):
+            if link in ("split_from", "returned_from") and is_consigned(lot.state or {}):
+                returnable[lot.entity_id] = float((lot.state or {}).get("quantity") or 0)
     for it in payload.items:
         if it.quantity_returned <= 0:
             raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")

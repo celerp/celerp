@@ -106,6 +106,33 @@ async def _sale_doc(session, company_id, lot_id: str) -> str | None:
     return (sale.data or {}).get("source_doc_id")
 
 
+async def lineage(session, company_id, roots) -> list[tuple[Projection, str | None, str | None]]:
+    """Every lot that came from ``roots``, roots first and each lot after the one it came
+    from: (lot, parent, link), where link names how it came from its parent (its parts
+    ``split_from``, ``transformed_from``, or goods a customer returned ``returned_from``),
+    and parent and link are None for a root."""
+    out: list[tuple[Projection, str | None, str | None]] = []
+    seen: set[str] = set()
+    frontier: dict[str, tuple[str | None, str | None]] = {root: (None, None) for root in roots}
+    while frontier:
+        seen |= set(frontier)
+        rows = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(sorted(frontier))))).scalars().all()
+        out += [(row, *frontier[row.entity_id]) for row in sorted(rows, key=lambda r: r.entity_id)]
+        children = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            or_(*(Projection.state[key].as_string().in_(sorted(frontier))
+                  for key in ("split_from", "transformed_from", "returned_from")))))).scalars().all()
+        frontier = {}
+        for child in sorted(children, key=lambda r: r.entity_id):
+            if child.entity_id in seen:
+                continue
+            cs = child.state or {}
+            link = next(key for key in ("transformed_from", "split_from", "returned_from") if cs.get(key) in seen)
+            frontier[child.entity_id] = (cs[link], link)
+    return out
+
+
 async def _plan(session, company_id, state: dict) -> _Plan:
     lines = state.get("line_items") or []
     receipts = [x for x in state.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
@@ -133,34 +160,16 @@ async def _plan(session, company_id, state: dict) -> _Plan:
         groups.append(group)
         of[root] = group
 
-    # Every lot that came from the received lots: their parts, and goods returned from them.
-    seen: set[str] = set()
-    frontier = set(of)
-    while frontier:
-        seen |= frontier
-        rows = (await session.execute(select(Projection).where(
-            Projection.company_id == company_id, Projection.entity_id.in_(sorted(frontier))))).scalars().all()
-        for row in rows:
-            of[row.entity_id].members.append(row)
-        children = (await session.execute(select(Projection).where(
-            Projection.company_id == company_id, Projection.entity_type == "item",
-            or_(*(Projection.state[key].as_string().in_(sorted(frontier))
-                  for key in ("split_from", "transformed_from", "returned_from")))))).scalars().all()
-        frontier = set()
-        for child in sorted(children, key=lambda r: r.entity_id):
-            if child.entity_id in seen:
-                continue
-            cs = child.state or {}
-            if cs.get("transformed_from") in seen:
-                raise _changed(_sku(cs))
-            if cs.get("split_from") in seen:
-                of[child.entity_id] = of[cs["split_from"]]
-            else:
-                parent = of[cs["returned_from"]]
-                of[child.entity_id] = _Group(line=parent.line, basis=parent.basis, received=parent.received,
-                                             returned=child.entity_id)
-                groups.append(of[child.entity_id])
-            frontier.add(child.entity_id)
+    for row, parent, link in await lineage(session, company_id, of):
+        if link == "transformed_from":
+            raise _changed(_sku(row.state or {}))
+        if link == "split_from":
+            of[row.entity_id] = of[parent]
+        elif link == "returned_from":
+            of[row.entity_id] = _Group(line=of[parent].line, basis=of[parent].basis,
+                                       received=of[parent].received, returned=row.entity_id)
+            groups.append(of[row.entity_id])
+        of[row.entity_id].members.append(row)
 
     kept: dict[int, Decimal] = {}
     allocations: dict[str, dict[tuple[str, str, int], float]] = {}
@@ -192,6 +201,14 @@ async def _plan(session, company_id, state: dict) -> _Plan:
             if held > group.received + _EPS:
                 raise _changed(line_sku(group.line))
             kept[group.line] = kept.get(group.line, Decimal(0)) + held * group.basis
+    # A received lot's sold units count as kept; any a customer brought back and that then
+    # went back to the consignor were not kept after all.
+    for x in state.get("returned_items") or []:
+        group = of.get(x.get("item_id"))
+        if group is not None and group.returned is not None:
+            kept[group.line] -= to_decimal(x.get("quantity_returned") or 0) * group.basis
+            if kept[group.line] < -_EPS:
+                raise _changed(line_sku(group.line))
     return _Plan(groups=groups, kept=kept, allocations=allocations, docs=docs)
 
 
