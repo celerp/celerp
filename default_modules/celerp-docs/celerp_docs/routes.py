@@ -4755,7 +4755,9 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
     if state.get("doc_type") == "consignment_in":
-        if state.get("status") not in ("final", "sent", "received", "partially_received"):
+        # Returned in part or whole, it still buys whatever was kept (buy_consignment refuses
+        # when nothing was).
+        if state.get("status") not in ("final", "sent", "received", "partially_received", "partial_returned", "returned"):
             raise HTTPException(status_code=409, detail="Consignment In must be issued before converting to vendor bill")
         await require_line_destinations(session, company_id, state.get("line_items"))
         new_doc_id = await buy_consignment(

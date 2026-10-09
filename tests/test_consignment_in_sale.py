@@ -350,6 +350,40 @@ async def test_goods_still_held_go_back_to_the_consignor(client, session, auth):
     await _settled(client, session, auth)
 
 
+async def test_after_a_return_to_the_consignor_what_was_kept_is_still_bought(client, session, auth):
+    """4 received at a recorded 4 a unit and billed at 5: 1 on a sale, 2 sent back, 1 held.
+    The bill buys the 2 kept and the consignor payable clears."""
+    consignment, lot = await _consign(client, session, auth, qty=4, cost_price=4.0)
+    doc = await _sell(client, session, auth, lot, 1, ship=False)
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{doc}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, PAYABLE, COGS) == {PAYABLE: -4.0, COGS: 4.0}
+
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    bill = await _state(session, auth, r.json()["target_doc_id"])
+    assert [li["quantity"] for li in bill["line_items"]] == [2]
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 5.0, PURCHASED: 5.0, AP: -10.0}
+    await _settled(client, session, auth)
+
+
+async def test_a_consignment_returned_whole_has_nothing_to_buy(client, session, auth):
+    consignment, lot = await _consign(client, session, auth)
+    r = await client.post(f"/docs/{consignment}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, consignment))["status"] == "returned"
+    entries = len(await _posted(session, auth))
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "consignment.buy.nothing_kept", r.text
+    assert len(await _posted(session, auth)) == entries
+
+
 async def test_only_real_older_stock_is_told_to_choose_an_inventory_account():
     from celerp.services.account_roles import lot_account
 
