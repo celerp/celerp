@@ -2572,6 +2572,7 @@
   "documents.return_held_sold": "{qty} sold",
   "documents.return_held_memo_out": "{qty} out on memo",
   "documents.return_held_not_in_stock": "{qty} no longer in stock",
+  "documents.return_held_split_off": "{qty} split off into {lots}",
   "documents.return_held_some": "Not free to return: {held}",
   "documents.return_held_none": "Nothing to return: {held}",
   "documents.return_measure_blank_hint": "Blank means not known, for what goes back and for what stays.",

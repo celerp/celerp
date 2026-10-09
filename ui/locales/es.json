@@ -2446,6 +2446,7 @@
   "documents.return_held_sold": "{qty} vendido",
   "documents.return_held_memo_out": "{qty} fuera en memo",
   "documents.return_held_not_in_stock": "{qty} ya no en existencias",
+  "documents.return_held_split_off": "{qty} separado en {lots}",
   "documents.return_held_some": "No disponible para devolver: {held}",
   "documents.return_held_none": "Nada que devolver: {held}",
   "documents.return_measure_blank_hint": "En blanco significa desconocido, para lo que se devuelve y para lo que se queda.",

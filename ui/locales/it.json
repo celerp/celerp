@@ -2447,6 +2447,7 @@
   "documents.return_held_sold": "{qty} venduto",
   "documents.return_held_memo_out": "{qty} fuori in conto visione",
   "documents.return_held_not_in_stock": "{qty} non più in magazzino",
+  "documents.return_held_split_off": "{qty} separato in {lots}",
   "documents.return_held_some": "Non disponibile per il reso: {held}",
   "documents.return_held_none": "Niente da restituire: {held}",
   "documents.return_measure_blank_hint": "Vuoto significa sconosciuto, per ciò che viene reso e per ciò che resta.",

@@ -16,6 +16,7 @@ import uuid
 
 import pytest
 from fasthtml.common import to_xml
+from sqlalchemy import select
 
 import ui.api_client as api_client
 from celerp.models.projections import Projection
@@ -157,6 +158,44 @@ async def test_return_form_says_why_a_line_is_capped(client, session, auth):
                                              inbound_line_items=doc["line_items"], locations=[]))
     assert "Not free to return: 2 reserved" in html
     assert "Nothing to return: 4 reserved" in html
+
+
+async def test_return_form_says_where_goods_split_off_the_parcel_are(client, session, auth):
+    """Goods sent out on memo from part of a received parcel and partly taken back sit in lots
+    split off the parcel. The form says how many are still out and which lot holds the ones
+    back in stock, never that they are no longer in stock."""
+    from ui.routes import documents
+
+    bill, [line_id] = await _issued(client, session, auth, "bill", _stock_lines(1, qty=4))
+    r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 4})
+    assert r.status_code == 200, r.text
+    [parcel] = (await _state(session, auth, bill))["received_item_ids"]
+    sku = (await _state(session, auth, parcel))["sku"]
+    memo = await _doc(client, auth, "memo", [{"entity_id": parcel, "sku": sku, "name": "Goods", "quantity": 3,
+                                              "unit_price": 5.0, "sell_by": "piece"}])
+    await _finalize(client, auth, memo)
+    [memo_line] = await _stamp_line_ids(session, auth, memo)
+    h = auth["headers"]
+    r = await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": [memo_line]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{memo}/set-available", headers=h,
+                          json={"line_ids": [memo_line], "quantities": {memo_line: 2}})
+    assert r.status_code == 200, r.text
+    lots = [r for r in (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "item"))).scalars()
+        if r.state.get("sku") == sku and r.state.get("status") == "available" and r.entity_id != parcel]
+    [back] = lots
+    label = back.state.get("barcode") or back.state.get("sku")
+
+    doc = (await client.get(f"/docs/{bill}", headers=h)).json()
+    [line] = doc["line_items"]
+    assert line["returnable_quantity"] == 1
+    assert line["return_held"] == {"memo_out": 1, "split_off": 2}
+    assert line["return_split_lots"] == [label]
+    html = to_xml(documents._li_bulk_toolbar(bill, False, show_fulfill=True, is_inbound=True,
+                                             inbound_line_items=doc["line_items"], locations=[]))
+    assert f"Not free to return: 1 out on memo, 2 split off into {label}" in html
+    assert "no longer in stock" not in html
 
 
 async def test_return_refuses_reserved_lot(client, session, auth):
@@ -361,6 +400,7 @@ async def test_return_goods_form_sends_the_measures_given(monkeypatch):
     "docs.return_line_not_on_hand", "docs.return_line_shared", "docs.return_line_unknown",
     "docs.return_line_untraced", "docs.return_not_on_hand", "documents.confirm_return_selected",
     "documents.nothing_to_return", "documents.return_nothing_selected", "documents.return_measure_blank_hint",
+    "documents.return_held_split_off",
 ])
 def test_return_copy_in_every_locale(key):
     from ui import i18n

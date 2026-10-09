@@ -2446,6 +2446,7 @@
   "documents.return_held_sold": "{qty} terjual",
   "documents.return_held_memo_out": "{qty} keluar dengan memo",
   "documents.return_held_not_in_stock": "{qty} tidak lagi di stok",
+  "documents.return_held_split_off": "{qty} dipisah ke {lots}",
   "documents.return_held_some": "Tidak bebas untuk dikembalikan: {held}",
   "documents.return_held_none": "Tidak ada yang bisa dikembalikan: {held}",
   "documents.return_measure_blank_hint": "Kosong berarti tidak diketahui, untuk yang dikembalikan dan yang tetap disimpan.",

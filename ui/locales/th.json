@@ -2446,6 +2446,7 @@
   "documents.return_held_sold": "{qty} ขายแล้ว",
   "documents.return_held_memo_out": "{qty} ออกไปตามใบยืม",
   "documents.return_held_not_in_stock": "{qty} ไม่อยู่ในสต็อกแล้ว",
+  "documents.return_held_split_off": "{qty} แยกไปเป็น {lots}",
   "documents.return_held_some": "ส่งคืนไม่ได้: {held}",
   "documents.return_held_none": "ไม่มีสินค้าให้ส่งคืน: {held}",
   "documents.return_measure_blank_hint": "เว้นว่างหมายถึงไม่ทราบ ทั้งส่วนที่ส่งคืนและส่วนที่เหลืออยู่",

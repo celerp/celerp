@@ -2553,6 +2553,7 @@
   "documents.return_held_sold": "{qty} የተሸጠ",
   "documents.return_held_memo_out": "{qty} በሜሞ ወጥቷል",
   "documents.return_held_not_in_stock": "{qty} በክምችት ውስጥ የለም",
+  "documents.return_held_split_off": "{qty} ወደ {lots} ተከፍሎ ወጥቷል",
   "documents.return_held_some": "ለመመለስ ነፃ ያልሆነ፦ {held}",
   "documents.return_held_none": "የሚመለስ የለም፦ {held}",
   "documents.return_measure_blank_hint": "ባዶ ማለት አይታወቅም ማለት ነው፣ ለሚመለሰውም ለሚቀረውም።",

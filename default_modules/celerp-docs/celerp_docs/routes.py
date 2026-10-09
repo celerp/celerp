@@ -1546,7 +1546,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
         # alone carry none of these and are not offered for return.
         traced = await _line_return_lots(session, company_id, row.state, lock=False)
         if traced is not None:
-            by_line, shared, kept, held = traced
+            by_line, shared, kept, held, split_lots = traced
             sent_back: dict[str, float] = {}
             for x in doc.get("returned_items") or []:
                 sent_back[x["item_id"]] = sent_back.get(x["item_id"], 0.0) + float(x.get("quantity_returned") or 0)
@@ -1559,6 +1559,8 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
                     line["returnable_quantity"] = sum(q for _, q in lots)
                     if held.get(i):
                         line["return_held"] = held[i]
+                    if split_lots.get(i):
+                        line["return_split_lots"] = split_lots[i]
                 if sum(sent_back.get(lot, 0.0) for lot, _ in lots) > 1e-9:
                     line["return_status"] = (
                         "returned" if sum(kept.get(lot, 0.0) for lot, _ in lots) <= 1e-9 else "partial_returned")
@@ -4597,6 +4599,60 @@ class _LineReturnLots(NamedTuple):
     shared: set[str]                               # lots more than one line fed
     kept: dict[str, float]                         # lot -> units brought in, not sent back
     held: dict[int, dict[str, float]]              # line -> reason -> units it cannot send back now
+    split_lots: dict[int, list[str]]               # line -> lots its goods were split off into
+
+
+async def _split_descendants(session: AsyncSession, company_id, roots: list[str],
+                             skip: set[str]) -> dict[str, list[dict]]:
+    """Root lot -> the states of the lots split off it, and off those in turn, nearest first.
+    Lots in ``skip`` and whatever was split off them are left out."""
+    out: dict[str, list[dict]] = {root: [] for root in roots}
+    root_of = {root: root for root in roots}
+    frontier = list(roots)
+    while frontier:
+        rows = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.state["split_from"].as_string().in_(frontier)))).scalars().all()
+        frontier = []
+        for r in sorted(rows, key=lambda r: r.entity_id):
+            if r.entity_id in skip or r.entity_id in root_of:
+                continue
+            root_of[r.entity_id] = root_of[str(r.state.get("split_from"))]
+            out[root_of[r.entity_id]].append(r.state)
+            frontier.append(r.entity_id)
+    return out
+
+
+def _split_off_holds(gone: float, children: list[dict]) -> tuple[dict[str, float], list[str]]:
+    """Where ``gone`` units no longer in a lot went among the lots split off it: reason -> units,
+    and the lots that hold them free on the shelf. Free goods in a split-off lot read
+    ``split_off``; goods held there read as what holds them; the rest stays ``not_in_stock``."""
+    from celerp_inventory.projections import is_item_available
+
+    held: dict[str, float] = {}
+    lots: list[str] = []
+    for child in children:
+        if gone <= 1e-9:
+            break
+        qty = float(child.get("quantity") or 0)
+        if is_item_available(child):
+            free = _free_on_hand(child)
+            parts = (("split_off", free), ("reserved", qty - free))
+        else:
+            status = str(child.get("status") or "").lower()
+            parts = ((status, qty),) if status in _RETURN_HOLDS else ()
+        for reason, units in parts:
+            take = min(gone, max(0.0, units))
+            if take <= 1e-9:
+                continue
+            held[reason] = held.get(reason, 0.0) + take
+            gone -= take
+            label = str(child.get("barcode") or child.get("sku") or child.get("entity_id") or "")
+            if reason == "split_off" and label and label not in lots:
+                lots.append(label)
+    if gone > 1e-9:
+        held["not_in_stock"] = gone
+    return held, lots
 
 
 async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, lock: bool
@@ -4604,7 +4660,9 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
     """Per line, the lots its stock receipts went into with the stock units of each it can send
     back now, in receipt order, and why the rest of what it brought in cannot go back; None when
     the receipts cannot be traced to their lines. A line sends back what it brought in and has
-    not sent back, while it is on hand and free."""
+    not sent back, while it is on hand and free. Goods no longer in a lot this document made are
+    looked for in the lots split off it, so the reason says where they are; those goods are
+    not offered for return here."""
     traced = _receipt_lots_by_line(doc)
     if traced is None:
         return None
@@ -4616,17 +4674,29 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
         states = {r.entity_id: r.state for r in (await session.execute(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_id.in_(ids)))).scalars()} if ids else {}
     kept = await _returnable_quantities(session, company_id, doc)
+    created = set(doc.get("received_item_ids") or [])
+    made = [lot for lot in ids if lot in created]
+    sent = {x["returned_lot_id"] for x in doc.get("returned_items") or [] if x.get("returned_lot_id")}
+    split_off = await _split_descendants(session, company_id, made, sent) if made else {}
     by_line: dict[int, list[tuple[str, float]]] = {}
     held: dict[int, dict[str, float]] = {}
+    split_lots: dict[int, list[str]] = {}
     for index, lots in lots_by_line.items():
         by_line[index] = []
         for lot in lots:
             k = max(0.0, kept.get(lot, 0.0))
             free = min(k, _free_on_hand(states.get(lot)))
             by_line[index].append((lot, free))
-            for reason, units in _held_back(states.get(lot), k, free).items():
+            reasons = _held_back(states.get(lot), k, free)
+            if reasons.get("not_in_stock") and split_off.get(lot):
+                found, labels = _split_off_holds(reasons.pop("not_in_stock"), split_off[lot])
+                for reason, units in found.items():
+                    reasons[reason] = reasons.get(reason, 0.0) + units
+                into = split_lots.setdefault(index, [])
+                into.extend(x for x in labels if x not in into)
+            for reason, units in reasons.items():
                 held.setdefault(index, {})[reason] = held.get(index, {}).get(reason, 0.0) + units
-    return _LineReturnLots(by_line, shared, kept, held)
+    return _LineReturnLots(by_line, shared, kept, held, split_lots)
 
 
 class ReturnItem(_StatedMeasures):

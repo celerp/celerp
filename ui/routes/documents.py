@@ -6107,9 +6107,11 @@ def _receive_rows(line_items: list, unit_map: dict) -> list:
 
 def _return_held_note(li: dict, has_some: bool) -> str:
     """Why part or all of what a line brought in cannot go back now, from the document's
-    ``return_held`` (reason -> stock units): "2 reserved, 1 sold"; empty when nothing is held."""
+    ``return_held`` (reason -> stock units): "2 reserved, 1 sold"; empty when nothing is held.
+    Goods split off into other lots name those lots (``return_split_lots``)."""
     held = li.get("return_held") or {}
-    parts = [t(f"documents.return_held_{reason}", qty=f"{units:g}")
+    lots = ", ".join(li.get("return_split_lots") or [])
+    parts = [t(f"documents.return_held_{reason}", qty=f"{units:g}", lots=lots)
              for reason, units in held.items() if units > 1e-9]
     if not parts:
         return ""

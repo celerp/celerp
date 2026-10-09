@@ -2447,6 +2447,7 @@
   "documents.return_held_sold": "{qty} vendu",
   "documents.return_held_memo_out": "{qty} sorti en mémo",
   "documents.return_held_not_in_stock": "{qty} plus en stock",
+  "documents.return_held_split_off": "{qty} séparé dans {lots}",
   "documents.return_held_some": "Non disponible pour le retour : {held}",
   "documents.return_held_none": "Rien à retourner : {held}",
   "documents.return_measure_blank_hint": "Vide signifie inconnu, pour ce qui est renvoyé et pour ce qui reste.",

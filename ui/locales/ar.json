@@ -2446,6 +2446,7 @@
   "documents.return_held_sold": "{qty} مُباع",
   "documents.return_held_memo_out": "{qty} خارج بمذكرة أمانة",
   "documents.return_held_not_in_stock": "{qty} لم يعد في المخزون",
+  "documents.return_held_split_off": "{qty} فُصل إلى {lots}",
   "documents.return_held_some": "غير متاح للإرجاع: {held}",
   "documents.return_held_none": "لا شيء للإرجاع: {held}",
   "documents.return_measure_blank_hint": "الحقل الفارغ يعني غير معروف، لما يُرجَع ولما يبقى.",

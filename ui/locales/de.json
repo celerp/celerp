@@ -2447,6 +2447,7 @@
   "documents.return_held_sold": "{qty} verkauft",
   "documents.return_held_memo_out": "{qty} auf Kommission draußen",
   "documents.return_held_not_in_stock": "{qty} nicht mehr auf Lager",
+  "documents.return_held_split_off": "{qty} abgeteilt in {lots}",
   "documents.return_held_some": "Nicht frei zur Rücksendung: {held}",
   "documents.return_held_none": "Nichts zurückzusenden: {held}",
   "documents.return_measure_blank_hint": "Leer bedeutet unbekannt, für die zurückgehende und für die verbleibende Ware.",

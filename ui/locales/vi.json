@@ -2446,6 +2446,7 @@
   "documents.return_held_sold": "{qty} đã bán",
   "documents.return_held_memo_out": "{qty} đang gửi theo biên bản",
   "documents.return_held_not_in_stock": "{qty} không còn trong kho",
+  "documents.return_held_split_off": "{qty} đã tách sang {lots}",
   "documents.return_held_some": "Không thể trả lại: {held}",
   "documents.return_held_none": "Không có gì để trả lại: {held}",
   "documents.return_measure_blank_hint": "Để trống nghĩa là không rõ, cho phần trả lại và phần còn lại.",

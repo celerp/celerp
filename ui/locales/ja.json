@@ -2446,6 +2446,7 @@
   "documents.return_held_sold": "{qty} 販売済み",
   "documents.return_held_memo_out": "{qty} 委託貸出中",
   "documents.return_held_not_in_stock": "{qty} 在庫なし",
+  "documents.return_held_split_off": "{qty} は {lots} に分割済み",
   "documents.return_held_some": "返品できない数量: {held}",
   "documents.return_held_none": "返品できるものはありません: {held}",
   "documents.return_measure_blank_hint": "空欄は不明を意味します。返品する分と残る分の両方が対象です。",
