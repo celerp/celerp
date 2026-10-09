@@ -54,14 +54,14 @@ async def test_adjust_racing_finalize_gives_up_cost_once(_db_engine, monkeypatch
             await s.commit()
         gate = asyncio.Event()
         if slow == "adjuster":
-            original = auto_je.refuse_taking_set_aside
+            original = auto_je.refuse_stranding_set_aside
 
             async def slow_guard(*args, **kwargs):
                 result = await original(*args, **kwargs)
                 gate.set()
                 await asyncio.sleep(1.5)
                 return result
-            monkeypatch.setattr(auto_je, "refuse_taking_set_aside", slow_guard)
+            monkeypatch.setattr(auto_je, "refuse_stranding_set_aside", slow_guard)
         else:
             original = auto_je.compute_doc_cogs
 

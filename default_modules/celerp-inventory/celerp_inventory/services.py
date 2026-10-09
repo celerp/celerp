@@ -972,6 +972,7 @@ async def upsert_external_product(
             )
             selected_by_identity = False
         if row is not None:
+            await lock_company(session, cid)  # before the row lock (company_lock lock order)
             row = await session.get(
                 Projection,
                 {"company_id": cid, "entity_id": row.entity_id},
@@ -1861,8 +1862,9 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
     False when nothing differs, or when the item was moved to Deleted: the sync leaves it
     there, and Restore is the one way back."""
     cid = uuid.UUID(str(company_id))
-    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
-                            with_for_update=True, populate_existing=True)
+    # The company lock comes before the item's row lock, as every stock writer takes them:
+    # a sync that lowers the quantity is judged against what invoices hold under it.
+    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
     state = row.state or {}
@@ -3572,8 +3574,6 @@ async def adjust_item_quantity(
         unit_map = {u["name"]: u for u in await get_company_units(session, company_id)}
         if current_sell_by and current_sell_by in unit_map:
             validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
-        await auto_je.refuse_taking_set_aside(session, company_id, {
-            entity_id: float(row.state.get("quantity") or 0) - float(data["new_qty"])})
     return await emit_event(
         session,
         company_id=company_id,
@@ -3891,7 +3891,12 @@ async def write_import_batch(
         except CostRestatementConflict as exc:
             outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
             continue
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, HTTPException) and exc.status_code == 409:
+                # A conflict with the item's current use (goods an invoice has set aside) is
+                # the user's to resolve, so the row says what it is.
+                outcome.add(entity_id, "rejected", _row_refused(data, exc.detail))
+                continue
             # The cause stays in the server log; the caller gets a plain row error.
             logger.exception("Item import could not write %s", entity_id)
             outcome.add(entity_id, "failed", _row_refused(data, refusal("import.row.not_written", "the item could not be written")))

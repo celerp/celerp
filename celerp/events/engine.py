@@ -422,6 +422,15 @@ def _guard_on_books(kwargs: dict) -> None:
         )
 
 
+def _may_take_set_aside(event_type: str, data: dict) -> bool:
+    """Whether an item event is held to the goods finalized invoices have set aside
+    (auto_je.refuse_stranding_set_aside): every event but a shipment to a customer, the
+    one way set-aside goods are meant to leave. A shipment that takes goods another
+    invoice set aside moves that invoice's cost with them (auto_je.moved_costs). Goods
+    sent out on memo are not shipped and are held to it."""
+    return event_type != "item.fulfilled" or (data or {}).get("doc_type") == "memo"
+
+
 async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     """Checks and effects of one live item event, on the state its row lock applied it to.
 
@@ -438,6 +447,7 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
         book_draft_boundary,
         book_value_change,
         draft_boundary,
+        units_leaving,
         value_boundary,
     )
 
@@ -450,6 +460,11 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
     for handler in sorted({c["handler"] for c in get_slot("item_lineage_guard")}):
         await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+    if _may_take_set_aside(entry.event_type, entry.data) and units_leaving(transition.before, transition.after) > 1e-9:
+        from celerp.services.auto_je import refuse_stranding_set_aside
+
+        await refuse_stranding_set_aside(
+            session, entry.company_id, entry.entity_id, transition.before, transition.after)
     draft_move = await draft_boundary(session, entry, transition)
     if draft_move is not None:
         await book_draft_boundary(session, entry, draft_move)
@@ -600,6 +615,18 @@ async def emit_event(
             )
 
     item = kwargs.get("entity_type") == "item"
+    if item and previous_item_state is not None and _may_take_set_aside(kwargs["event_type"], kwargs["data"]):
+        from copy import deepcopy
+
+        from celerp.services.company_lock import lock_company
+        from celerp.services.lot_origin import units_leaving
+
+        # A change that takes goods out of what is ready to ship is judged against the
+        # invoices holding them (_item_applied) under the company lock, which comes before
+        # the row lock the apply takes (company_lock.lock_company).
+        predicted = ProjectionEngine._apply(deepcopy(previous_item_state), kwargs["event_type"], kwargs["data"])
+        if units_leaving(previous_item_state, predicted) > 1e-9:
+            await lock_company(session, kwargs["company_id"])
     if item:
         _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)

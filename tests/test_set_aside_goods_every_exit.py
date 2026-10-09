@@ -23,11 +23,17 @@ from test_quantity_cost_invariant import _located_item
 pytestmark = pytest.mark.asyncio
 
 
-async def _refused(session, auth, r, invoice: str, keep: float) -> None:
+async def _refused(session, auth, r, invoice: str, keep: float | None) -> None:
+    """Refused naming the invoice: a lot that would hold less says how much it must keep,
+    goods that would leave stock altogether say so."""
     assert r.status_code == 409, r.text
+    # A refused request's session is never committed, so production discards anything the route
+    # wrote before the refusal. The test client shares one session across requests; roll it back
+    # the same way.
+    await session.rollback()
     detail = r.json()["detail"]
     assert await _doc_number(session, auth, invoice) in detail, detail
-    assert f"cannot go below {keep:g}" in detail, detail
+    assert (f"cannot go below {keep:g}" if keep is not None else "cannot leave stock") in detail, detail
 
 
 async def _qty(session, auth, lot: str) -> float:
@@ -46,7 +52,7 @@ async def _write_off(client, auth, lot: str, qty: float):
 async def test_a_write_off_cannot_take_set_aside_goods(client, session, auth):
     lot = await _lot(client, auth, "SAX-WO", 3, 30.0)
     inv = await _invoice(client, auth, [(lot, "SAX-WO", 2)])
-    await _refused(session, auth, await _write_off(client, auth, lot, 2), inv, 2)
+    await _refused(session, auth, await _write_off(client, auth, lot, 2), inv, None)
     assert (r := await _write_off(client, auth, lot, 1)).status_code == 200, r.text
     assert await _qty(session, auth, lot) == 2
     await assert_settled(client, session, auth)
@@ -118,7 +124,7 @@ async def test_undoing_a_receipt_cannot_take_set_aside_goods(client, session, au
     session.expire_all()
     got = (await _state(session, auth, bill))["received_item_ids"][-1]
     inv = await _invoice(client, auth, [(got, (await _state(session, auth, got))["sku"], 3)])
-    await _refused(session, auth, await client.delete(f"/docs/{bill}/receive", headers=auth["headers"]), inv, 3)
+    await _refused(session, auth, await client.delete(f"/docs/{bill}/receive", headers=auth["headers"]), inv, None)
     assert await _qty(session, auth, got) == 4
     await assert_settled(client, session, auth)
 
@@ -130,7 +136,7 @@ async def test_undoing_a_customer_return_cannot_take_set_aside_goods(client, ses
     back = await _customer_return(client, session, auth, sold, lot, 2)
     inv = await _invoice(client, auth, [(back, "SAX-CN", 2)])
     cn = await _credit_note_of(session, auth, sold)
-    await _refused(session, auth, await client.delete(f"/docs/{cn}/receive-return", headers=auth["headers"]), inv, 2)
+    await _refused(session, auth, await client.delete(f"/docs/{cn}/receive-return", headers=auth["headers"]), inv, None)
     assert await _qty(session, auth, back) == 2
     await assert_settled(client, session, auth)
 
@@ -148,7 +154,7 @@ async def test_a_split_that_re_weighs_the_lot_cannot_take_set_aside_goods(client
     inv = await _invoice(client, auth, [(lot, "SAX-SPL", 4)])
     r = await client.post(f"/items/{lot}/split", headers=auth["headers"],
                           json={"children": [{"quantity": 1}], "mother_qty": 2})
-    await _refused(session, auth, r, inv, 4)
+    await _refused(session, auth, r, inv, 3)  # the mother keeps 3, the part 1
     assert await _qty(session, auth, lot) == 4
     await assert_settled(client, session, auth)
 

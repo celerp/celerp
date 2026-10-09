@@ -109,6 +109,25 @@ def in_stock(state: dict | None) -> bool:
     return status not in OFF_BOOKS and (status not in RETIRED or s.get(ON_BOOKS_FIELD) is True)
 
 
+def ready_to_ship(state: dict | None) -> bool:
+    """Whether a lot's goods are in stock and free to ship: on the books, and neither
+    archived, expired, nor out with a customer on memo."""
+    s = state or {}
+    status = str(s.get("status") or "").lower()
+    return in_stock(s) and status not in RETIRED and status != "memo_out"
+
+
+def units_leaving(before: dict | None, after: dict | None) -> float:
+    """How many of a lot's units a change takes out of what is ready to ship (ready_to_ship):
+    all of them when the lot stops being ready, else what its quantity falls by."""
+    if not before or not ready_to_ship(before):
+        return 0.0
+    held = float(before.get("quantity") or 0)
+    if not ready_to_ship(after):
+        return held
+    return max(0.0, held - float((after or {}).get("quantity") or 0))
+
+
 def held_value(row: Projection) -> Decimal | None:
     """The value of the goods a lot holds on the books, or None when it holds none on
     them (not owned, not committed, retired with its value given up, consigned in, or not

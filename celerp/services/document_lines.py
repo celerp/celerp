@@ -36,18 +36,21 @@ DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
 
 def doc_line_index(lines: list[dict], po_line_index: int, item_id: str | None, sku: str | None) -> int | None:
     """The document line received goods are for: the line at po_line_index unless it names
-    another item or SKU, else the line naming their item or SKU."""
+    another item or SKU, else the line naming their item or SKU. A line names its item by
+    whichever key its writer used (line_item_id), so an entity_id line is matched like an
+    item_id line."""
     sku = (sku or "").strip() or None
 
     def names_other(line: dict) -> bool:
+        line_id = line_item_id(line)
         line_sku = str(line.get("sku") or "").strip()
-        return bool((item_id and line.get("item_id") and line.get("item_id") != item_id)
+        return bool((item_id and line_id and line_id != item_id)
                     or (sku and line_sku and line_sku != sku))
 
     if 0 <= po_line_index < len(lines) and not names_other(lines[po_line_index]):
         return po_line_index
     return next((i for i, li in enumerate(lines)
-                 if (item_id and li.get("item_id") == item_id)
+                 if (item_id and line_item_id(li) == item_id)
                  or (sku and str(li.get("sku") or "").strip() == sku)), None)
 
 

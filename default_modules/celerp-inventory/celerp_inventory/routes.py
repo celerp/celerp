@@ -52,7 +52,6 @@ from .services import (
     source_header_semantics,
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
-from celerp.services.auto_je import refuse_taking_set_aside
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
 from celerp.services.lot_origin import (
@@ -3226,12 +3225,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             status_code=422,
             detail=f"Child quantities ({total_child_qty}) exceed parent quantity ({parent_qty})",
         )
-    # A re-weighed mother holding less than what the children leave takes the difference
-    # off stock; the children carry their share of what invoices hold of the lot.
-    if payload.mother_qty is not None:
-        await refuse_taking_set_aside(session, company_id, {
-            entity_id: parent_qty - total_child_qty - payload.mother_qty})
-
     # Normalise: top-level pieces field → attributes so all downstream reads are uniform
     for child in children:
         if child.pieces is not None:
@@ -3786,7 +3779,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
-    await refuse_taking_set_aside(session, company_id, {entity_id: float(parent.state.get("quantity") or 0)})
 
     # Validate
     if payload.child_quantity <= 0:
@@ -3851,7 +3843,23 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_pieces is not None:
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
 
-    # 1. Create child
+    # 1. Mark parent archived (consumed by transform), first: goods an invoice holds
+    #    cannot be made into something else, and are refused before anything is written.
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "archived"},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"reason": "consumed_by_transform"},
+    )
+
+    # 2. Create child
     await emit_event(
         session,
         company_id=company_id,
@@ -3904,21 +3912,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={"reason": "from_transform"},
-    )
-
-    # 4. Mark parent archived (consumed by transform)
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.status.set",
-        data={"new_status": "archived"},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={"reason": "consumed_by_transform"},
     )
 
     # 5. Emit transform event
