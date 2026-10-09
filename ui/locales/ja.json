@@ -4295,6 +4295,8 @@
   "notice.starter_modules_on.body": "この会社の登録時に作成された初期品目と自社の連絡先は在庫と連絡先で管理されるため、両方をオンにしました。モジュールページに表示されます。",
   "notice.work_centers_moved.title": "1日あたりの作業時間を作業拠点に移しました",
   "notice.work_centers_moved.body": "会社の「1日あたりの作業時間」の設定は、設定 > 製造業 > 作業拠点 にある新しい作業拠点 Default に移りました。製造予定の見積もりは変わっていません。",
+  "notice.imported_doc_cutover.title": "インポートした発注書と請求書を修正しました",
+  "notice.imported_doc_cutover.body": "この更新より前にインポートした発注書と請求書は、すでにそれらを含む期首残高に加えて二重に計上されていました。それらの仕訳は取り消され、買掛金と在庫は期首残高にインポート後の各書類での処理を加えたものと一致しています。修正済み: {numbers}。",
   "item.app_owned_fields": "次の項目はアプリが設定するため入力できません: {fields}。削除してからもう一度お試しください。",
   "item.draft": "{sku} は下書きで、まだ在庫ではありません。先に利用可能にしてください。",
   "item.reserve_not_available": "{sku} は {status} です。予約できるのは利用可能な在庫だけです。",

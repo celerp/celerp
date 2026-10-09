@@ -1262,14 +1262,15 @@ async def create_for_bill_conversion(
     doc: dict,
     base_currency: str = "USD",
     revert_count: int = 0,
-    key_tag: str = "",
+    correction: bool = False,
 ) -> dict[int, tuple[str, _Dec]]:
     """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
     Debit per-line expense/inventory accounts, credit AP (_bill_entries), less what the
     document's purchase order receipts already booked and less what the opening balances
-    carry for a document imported into them (imported_carriage). ``key_tag`` sets this
-    posting apart from the cycle's own (the correction of earlier imports re-posts it).
+    carry for a document imported into them (imported_carriage). ``correction`` marks the
+    posting as the correction of an earlier import's (correct_earlier_import), apart from
+    the cycle's own.
     Returns what each line debits, in base currency, by line index: {index: (account,
     amount)}, before any netting against receipts.
     """
@@ -1313,17 +1314,18 @@ async def create_for_bill_conversion(
         if not entries:
             return by_line
 
+    tag = f":{_CORRECTION}" if correction else ""
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
         je_id=f"je:auto:{doc_id}:bill",
-        idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{key_tag}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{key_tag}", "p"),
+        idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{tag}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{tag}", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
         ts=await entry_day(session, company_id, doc.get("issue_date") or doc.get("finalized_at")),
         entries=entries,
-        metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
+        metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id, **({IMPORTED_CUTOVER: True} if correction else {})},
     )
     return by_line
 
@@ -1355,6 +1357,8 @@ class ImportedDocument:
 
 
 _IMPORTED_REVERSAL = "imported-rev"
+_CORRECTION = "imported-cutover"
+_CORRECTION_TRIGGER = "imported.cutover_repair"
 
 
 def _is_origin(event: LedgerEntry, doc_id: str, kind: str, origins: set[int], latest: dict[str, int]) -> bool:
@@ -1507,6 +1511,71 @@ async def take_back_imported_reversals(session, *, company_id, user_id, doc_id: 
             idem_key=je_idempotency_key(doc_id, f"unvoid:{event.entity_id.rsplit(':', 1)[-1]}:{_IMPORTED_REVERSAL}", "void"),
             reason=f"Reversed: {doc_id} unvoided", trigger="doc.unvoided",
         )
+
+
+async def correct_earlier_import(session, *, company_id, doc_id: str, doc: dict) -> bool:
+    """Bring a document an earlier release imported to where the books would be had it
+    been imported now (imported_document). Returns whether anything was posted.
+
+    That release booked the import itself on top of the opening balances (its origins).
+    Each origin still posted is voided, on its own date. A purchase order since converted
+    to a bill had that bill's entry netted against the origin, so a live bill's entry is
+    voided and booked again against what the opening balances hold. A document voided or
+    ever reverted to draft has the opening balances' value reversed, as a void or revert
+    does now, unless that reversal is already posted. Safe to run again: a second run
+    finds nothing posted to void and the reversal in place."""
+    imported = await imported_document(session, company_id, doc_id)
+    if imported is None or imported.in_opening:
+        return False
+    marker = {IMPORTED_CUTOVER: True}
+    latest = {e.entity_id: e.id for e in imported.je_events if e.event_type == "acc.journal_entry.created"}
+    changed = False
+
+    async def void(je_id: str) -> None:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+        if row is None or (row.state or {}).get("status") != "posted":
+            return
+        await emit_event(
+            session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data=je_void_data(f"Reversed: {doc_id} is held in the opening balances", row.state),
+            actor_id=None, location_id=None, source="auto_je",
+            idempotency_key=f"{_CORRECTION}:void:{je_id}:{latest.get(je_id)}",
+            metadata_={"trigger": _CORRECTION_TRIGGER, "doc_id": doc_id, **marker},
+        )
+
+    for je_id in imported.posted_origins:
+        await void(je_id)
+        changed = True
+    status = doc.get("status")
+    if changed and doc.get("doc_type") == "bill" and imported.snapshot.get("doc_type") == "purchase_order" \
+            and status not in ("draft", "void"):
+        for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items():
+            if _recognition_root(suffix) == "bill":
+                await void(row.entity_id)
+        await create_for_bill_conversion(
+            session, company_id=company_id, user_id=None, doc_id=doc_id, doc=doc,
+            base_currency=await company_currency(session, company_id),
+            revert_count=int(doc.get("revert_count", 0) or 0), correction=True,
+        )
+
+    from celerp.models.ledger import LedgerEntry
+
+    reverted = (await session.execute(_select(LedgerEntry.id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == doc_id,
+        LedgerEntry.event_type == "doc.reverted_to_draft",
+    ).limit(1))).first() is not None
+    if reverted or status == "void":
+        imported = await imported_document(session, company_id, doc_id)
+        if not imported.posted_reversals and not imported.posted_origins:
+            carriage = await _carriage_entries(session, company_id, imported)
+            await reverse_imported_carriage(
+                session, company_id=company_id, user_id=None, doc_id=doc_id,
+                trigger="doc.reverted_to_draft" if reverted else "doc.voided",
+                carriage=carriage, metadata_=marker,
+            )
+            changed = changed or bool(carriage)
+    return changed
 
 
 async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id: str, idem_key: str, reason: str, trigger: str) -> bool:

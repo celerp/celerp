@@ -4297,6 +4297,8 @@
   "notice.starter_modules_on.body": "Gli articoli iniziali di questa azienda e il suo contatto, creati al momento della registrazione, sono gestiti da Inventario e Contatti, per questo sono stati attivati entrambi. Sono elencati nella pagina Moduli.",
   "notice.work_centers_moved.title": "Le ore giornaliere sono passate ai centri di lavoro",
   "notice.work_centers_moved.body": "L’impostazione delle ore giornaliere della tua azienda si trova ora nel nuovo centro di lavoro Default, in Impostazioni > Produzione > Centri di lavoro. Le stime di produzione non sono cambiate.",
+  "notice.imported_doc_cutover.title": "Ordini di acquisto e fatture fornitore importati corretti",
+  "notice.imported_doc_cutover.body": "Gli ordini di acquisto e le fatture fornitore importati prima di questo aggiornamento sono stati registrati una seconda volta oltre ai saldi di apertura, che li contengono già. Quelle registrazioni sono state stornate, quindi debiti e magazzino ora corrispondono ai saldi di apertura più quanto avvenuto su ogni documento dopo l'importazione. Corretti: {numbers}.",
   "item.app_owned_fields": "Questi campi sono impostati dall'app e non possono essere inseriti: {fields}. Rimuovili e riprova.",
   "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile.",
   "item.reserve_not_available": "{sku} è {status}: si può riservare solo merce disponibile.",

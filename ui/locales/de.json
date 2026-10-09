@@ -4297,6 +4297,8 @@
   "notice.starter_modules_on.body": "Die Startartikel dieses Unternehmens und sein eigener Kontakt, die bei der Registrierung angelegt wurden, werden von Lager und Kontakte geführt, daher wurden beide eingeschaltet. Sie stehen auf der Seite Module.",
   "notice.work_centers_moved.title": "Stunden pro Tag jetzt bei den Arbeitsstellen",
   "notice.work_centers_moved.body": "Die Einstellung „Stunden pro Tag“ Ihres Unternehmens liegt jetzt bei der neuen Arbeitsstelle „Default“ unter Einstellungen > Fertigung > Arbeitsstellen. An Ihren Schätzungen für zu Fertigendes hat sich nichts geändert.",
+  "notice.imported_doc_cutover.title": "Importierte Bestellungen und Eingangsrechnungen korrigiert",
+  "notice.imported_doc_cutover.body": "Vor diesem Update importierte Bestellungen und Eingangsrechnungen wurden zusätzlich zu den Eröffnungssalden, die sie bereits enthalten, ein zweites Mal gebucht. Diese Buchungen wurden storniert, sodass Verbindlichkeiten und Bestand jetzt den Eröffnungssalden plus allem entsprechen, was nach dem Import mit jedem Beleg geschah. Korrigiert: {numbers}.",
   "item.app_owned_fields": "Diese Felder setzt die App selbst, sie können nicht eingegeben werden: {fields}. Entfernen Sie sie und versuchen Sie es erneut.",
   "item.draft": "{sku} ist ein Entwurf und noch kein Bestand: Machen Sie es zuerst verfügbar.",
   "item.reserve_not_available": "{sku} ist {status}: Nur verfügbarer Bestand kann reserviert werden.",

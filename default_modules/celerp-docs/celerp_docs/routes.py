@@ -5030,6 +5030,12 @@ async def imported_opening_snapshot(session: AsyncSession, company_id, data: dic
     already marked, is returned as it is."""
     if auto_je.imported_issue_kind(data) not in ("purchase_order", "bill"):
         return data
+    return await mark_received_goods(session, company_id, data)
+
+
+async def mark_received_goods(session: AsyncSession, company_id, data: dict) -> dict:
+    """The document with each stock line received on it that has no receipt record marked
+    with what it holds in the lot it names (imported_opening_snapshot)."""
     received = list(data.get("received_items") or [])
     marked = False
     for n, x in enumerate(received):

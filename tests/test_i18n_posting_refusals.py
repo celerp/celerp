@@ -32,7 +32,8 @@ KEYS = ["posting.problem.unset", "posting.problem.not_in_chart", "posting.proble
         "notice.mfg_wip_recorded.title", "notice.mfg_wip_recorded.body",
         "notice.historical_lots_no_product.title", "notice.historical_lots_no_product.body",
         "notice.starter_modules_on.title", "notice.starter_modules_on.body",
-        "notice.work_centers_moved.title", "notice.work_centers_moved.body"]
+        "notice.work_centers_moved.title", "notice.work_centers_moved.body",
+        "notice.imported_doc_cutover.title", "notice.imported_doc_cutover.body"]
 _ASSET = {"code": "1110", "account_type": "asset", "is_active": True, "has_children": False}
 
 

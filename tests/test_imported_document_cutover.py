@@ -292,6 +292,20 @@ async def _legacy(client, session, auth, lot, doc_type="purchase_order", qty=10,
     return doc
 
 
+async def _earlier_release(client, monkeypatch, auth, doc: str, *paths: str) -> None:
+    """Run operations on a document as the earlier release did, when nothing knew it was
+    imported: a void or revert reversed nothing the opening balances hold, and an unvoid
+    restored the import's own entry."""
+    async def unknown(*_a, **_k):
+        return None
+
+    with monkeypatch.context() as m:
+        m.setattr(auto_je, "imported_document", unknown)
+        for path in paths:
+            r = await client.post(path.format(d=doc), headers=auth["headers"], json={})
+            assert r.status_code == 200, f"{path}: {r.text}"
+
+
 async def _repair(session) -> dict:
     from celerp.migrations._data_reconcile import set_meta
     from celerp_docs.imported_cutover import CUTOVER_KEY, repair_imported_documents
@@ -329,11 +343,10 @@ async def test_repair_legacy_po_then_carry_on(client, session, auth):
     await _step(client, session, auth, [po], "finalize", "post", FIN)
 
 
-async def test_repair_legacy_po_already_converted_to_a_bill(client, session, auth):
+async def test_repair_legacy_po_already_converted_to_a_bill(client, session, auth, monkeypatch):
     lot = await _item(client, auth, _OPENING, qty=10)
     po = await _legacy(client, session, auth, lot)
-    r = await client.post(FIN.format(d=po), headers=auth["headers"])
-    assert r.status_code == 200, r.text
+    await _earlier_release(client, monkeypatch, auth, po, FIN)
     await _repaired(session, auth, [po])
     await _step(client, session, auth, [po], "receive 6", "post", RCV, **_receive(6, lot))
 
@@ -346,34 +359,38 @@ async def test_repair_legacy_bill_then_return(client, session, auth):
     assert await _lot(session, auth, lot) == (9.0, _OPENING - PRICE)
 
 
-async def test_repair_legacy_bill_voided_before_the_repair(client, session, auth):
+async def test_repair_legacy_bill_voided_before_the_repair(client, session, auth, monkeypatch):
     lot = await _item(client, auth, _OPENING, qty=10)
     bill = await _legacy(client, session, auth, lot, doc_type="bill", qty=5, received=0)
-    r = await client.post(VOID.format(d=bill), headers=auth["headers"], json={})
-    assert r.status_code == 200, r.text
+    await _earlier_release(client, monkeypatch, auth, bill, VOID)
     await _repaired(session, auth, [bill])
     await _step(client, session, auth, [bill], "unvoid", "post", UNVOID, json={})
     await _step(client, session, auth, [bill], "revert", "post", REV, json={})
     await _step(client, session, auth, [bill], "finalize", "post", FIN)
 
 
-async def test_repair_legacy_bill_reverted_and_refinalized_before_the_repair(client, session, auth):
+async def test_repair_legacy_bill_reverted_and_refinalized_before_the_repair(client, session, auth, monkeypatch):
     lot = await _item(client, auth, _OPENING, qty=10)
     bill = await _legacy(client, session, auth, lot, doc_type="bill", qty=5, received=0)
-    for path in (REV, FIN):
-        r = await client.post(path.format(d=bill), headers=auth["headers"], json={})
-        assert r.status_code == 200, r.text
+    await _earlier_release(client, monkeypatch, auth, bill, REV, FIN)
     await _repaired(session, auth, [bill])
     await _step(client, session, auth, [bill], "void", "post", VOID, json={})
     await _step(client, session, auth, [bill], "unvoid", "post", UNVOID, json={})
 
 
-async def test_repair_legacy_bill_voided_and_unvoided_before_the_repair(client, session, auth):
+async def test_repair_legacy_bill_reverted_before_the_repair(client, session, auth, monkeypatch):
     lot = await _item(client, auth, _OPENING, qty=10)
     bill = await _legacy(client, session, auth, lot, doc_type="bill", qty=5, received=0)
-    for path in (VOID, UNVOID):
-        r = await client.post(path.format(d=bill), headers=auth["headers"], json={})
-        assert r.status_code == 200, r.text
+    await _earlier_release(client, monkeypatch, auth, bill, REV)
+    await _repaired(session, auth, [bill])
+    await _step(client, session, auth, [bill], "finalize", "post", FIN)
+    await _step(client, session, auth, [bill], "receive 5", "post", RCV, **_receive(5, lot))
+
+
+async def test_repair_legacy_bill_voided_and_unvoided_before_the_repair(client, session, auth, monkeypatch):
+    lot = await _item(client, auth, _OPENING, qty=10)
+    bill = await _legacy(client, session, auth, lot, doc_type="bill", qty=5, received=0)
+    await _earlier_release(client, monkeypatch, auth, bill, VOID, UNVOID)
     await _repaired(session, auth, [bill])
     await _step(client, session, auth, [bill], "void", "post", VOID, json={})
 
@@ -389,8 +406,31 @@ async def test_repair_tells_the_owner_once(client, session, auth):
         Notification.company_id == auth["company_id"], Notification.category == "system",
         Notification.i18n["title"].as_string() == "notice.imported_doc_cutover.title"))).scalars().all()
     assert len(notices) == 1 and notices[0].priority == "high"
-    number = (await _state(session, auth, po))["doc_number"]
-    assert number in notices[0].body
+    body = notices[0].body
+    assert (await _state(session, auth, po))["doc_number"] in body
+    written = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"],
+        LedgerEntry.metadata_[auto_je.IMPORTED_CUTOVER].as_boolean().is_(True)))).scalars().all()
+    assert {(e.entity_id, e.event_type) for e in written} == {
+        (f"je:auto:{po}:rcv", "acc.journal_entry.voided"), (po, "doc.updated")}
+
+
+async def test_repair_waits_for_a_locked_period(client, session, auth):
+    from celerp.migrations._data_reconcile import get_meta
+    from celerp_docs.imported_cutover import CUTOVER_KEY
+
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po = await _legacy(client, session, auth, lot)
+    lock = "/accounting/period-lock"
+    assert (await client.post(lock, headers=auth["headers"], json={"lock_date": "2026-06-30"})).status_code == 200
+    size = await _ledger_size(session, auth)
+    assert (await _repair(session))["deferred"] == 1
+    assert await _ledger_size(session, auth) == size
+    conn = await session.connection()
+    assert not await conn.run_sync(lambda c: get_meta(c, CUTOVER_KEY))
+    assert (await client.post(lock, headers=auth["headers"], json={"lock_date": None})).status_code == 200
+    session.expire_all()
+    await _repaired(session, auth, [po])
 
 
 async def test_repair_leaves_documents_imported_now_alone(client, session, auth):

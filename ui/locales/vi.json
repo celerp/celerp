@@ -4297,6 +4297,8 @@
   "notice.starter_modules_on.body": "Các mặt hàng khởi đầu của công ty này và liên hệ của chính công ty, được tạo khi đăng ký, do Hàng tồn kho và Danh bạ quản lý, nên cả hai đã được bật. Chúng được liệt kê trên trang Mô-đun.",
   "notice.work_centers_moved.title": "Số giờ mỗi ngày đã chuyển sang trung tâm làm việc",
   "notice.work_centers_moved.body": "Thiết lập Số giờ mỗi ngày của công ty bạn hiện nằm ở trung tâm làm việc Default mới, trong Cài đặt > Chế tạo > Trung tâm làm việc. Các ước tính cần sản xuất của bạn không thay đổi.",
+  "notice.imported_doc_cutover.title": "Đã sửa đơn đặt hàng và hóa đơn mua được nhập",
+  "notice.imported_doc_cutover.body": "Đơn đặt hàng và hóa đơn mua được nhập trước bản cập nhật này đã bị ghi sổ lần thứ hai ngoài số dư đầu kỳ vốn đã bao gồm chúng. Các bút toán đó đã được đảo, nên công nợ phải trả và tồn kho giờ khớp với số dư đầu kỳ cộng những gì đã diễn ra trên từng chứng từ sau khi nhập. Đã sửa: {numbers}.",
   "item.app_owned_fields": "Các trường này do ứng dụng tự đặt và không thể nhập: {fields}. Hãy xóa chúng rồi thử lại.",
   "item.draft": "{sku} là bản nháp, chưa phải hàng tồn kho: hãy đặt thành có sẵn trước.",
   "item.reserve_not_available": "{sku} đang ở trạng thái {status}: chỉ có thể giữ chỗ hàng có sẵn.",
