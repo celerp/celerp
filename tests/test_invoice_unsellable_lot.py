@@ -40,7 +40,7 @@ async def test_invoicing_a_lot_that_is_not_available_is_refused(client, session,
     sku = f"UNS-{uuid.uuid4().hex[:6]}"
     lot = await _item(client, auth, 300.0, sku=sku)
     if status == "sold":
-        await _sold(client, auth, lot, sku)
+        sold_on = (await _state(client, auth, await _sold(client, auth, lot, sku), "docs"))["doc_number"]
     else:
         assert (await client.post(f"/items/{lot}/expire", headers=h)).status_code == 200
     await assert_settled(client, session, auth)
@@ -48,9 +48,15 @@ async def test_invoicing_a_lot_that_is_not_available_is_refused(client, session,
     r = await client.post(f"/docs/{doc}/finalize", headers=h)
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
-    assert detail["message_key"] == "item.invoice_not_available", detail
-    assert detail["params"] == {"sku": sku, "status": status}, detail
-    assert detail["message"] == f"{sku} is {status}: only available stock can be invoiced."
+    if status == "sold":
+        # A sold lot names the document it was sold on.
+        assert detail["message_key"] == "item.invoice_not_available_on", detail
+        assert detail["params"] == {"sku": sku, "lot_status": status, "doc": sold_on}, detail
+        assert detail["message"] == f"{sku} is sold on {sold_on}: only available stock can be invoiced."
+    else:
+        assert detail["message_key"] == "item.invoice_not_available", detail
+        assert detail["params"] == {"sku": sku, "lot_status": status}, detail
+        assert detail["message"] == f"{sku} is {status}: only available stock can be invoiced."
     assert not (await _state(client, auth, doc, "docs")).get("finalized")
     await assert_settled(client, session, auth)
 
@@ -74,14 +80,21 @@ async def test_an_invoice_converted_from_a_memo_sells_the_lot_out_on_that_memo(c
     await assert_settled(client, session, auth)
 
 
-def test_the_refusal_is_shown_in_the_users_language():
+def test_the_refusal_reads_the_status_in_the_users_language():
     from ui import i18n
 
-    i18n.set_lang("de")
     try:
+        i18n.set_lang("en")
+        text = i18n.refusal_text({"message": "x", "message_key": "item.invoice_not_available_on",
+                                  "params": {"sku": "LOT-1", "lot_status": "memo_out", "doc": "INV-7"}})
+        assert text == "LOT-1 is memo out on INV-7: only available stock can be invoiced.", text
         text = i18n.refusal_text({"message": "x", "message_key": "item.invoice_not_available",
-                                  "params": {"sku": "LOT-1", "status": "sold"}})
-        assert text.startswith("LOT-1 ist ") and "in Rechnung gestellt" in text, text
+                                  "params": {"sku": "LOT-1", "lot_status": "sold"}})
+        assert text == "LOT-1 is sold: only available stock can be invoiced.", text
+        i18n.set_lang("de")
+        text = i18n.refusal_text({"message": "x", "message_key": "item.invoice_not_available_on",
+                                  "params": {"sku": "LOT-1", "lot_status": "sold", "doc": "INV-7"}})
+        assert "LOT-1" in text and "Verkauft" in text and "INV-7" in text and "in Rechnung gestellt" in text, text
         assert " sold" not in text, text
     finally:
         i18n.set_lang("en")

@@ -2124,9 +2124,12 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
         if demand_claim(lot, entity_id) is not None or status == "memo_out" or (
                 status == "sold" and lot.get("status_doc_id") in sold_to):
             continue
+        said, doc = status.replace("_", " "), lot.get("status_doc_number")
         raise HTTPException(status_code=409, detail=refusal(
-            "item.invoice_not_available", f"{sku} is {status}: only available stock can be invoiced.",
-            sku=sku, status=status))
+            "item.invoice_not_available_on", f"{sku} is {said} on {doc}: only available stock can be invoiced.",
+            sku=sku, lot_status=status, doc=doc) if doc else refusal(
+            "item.invoice_not_available", f"{sku} is {said}: only available stock can be invoiced.",
+            sku=sku, lot_status=status))
 
 
 async def _taken_back(session, company_id, doc_ids: set[str], lots: set[str],
