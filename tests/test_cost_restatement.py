@@ -391,10 +391,8 @@ async def test_sale_with_no_document_saves_the_cost_and_posts_nothing(client, se
     assert await _count(session, auth, event_type="acc.journal_entry.created") == jes
 
 
-@pytest.mark.asyncio
-async def test_sale_without_an_exact_invoice_line_refuses_correction(client, session, auth):
-    # Sold by converting a memo to an invoice: no invoice line ever fulfilled it.
-    item = await _item(client, auth, 100.0)
+async def _memo_converted(client, session, auth, item: str) -> str:
+    """The lot out on a memo, then the memo converted to a draft invoice; returns the invoice."""
     sku = (await _state(session, auth, item))["sku"]
     r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
         {"entity_id": item, "sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
@@ -404,8 +402,41 @@ async def test_sale_without_an_exact_invoice_line_refuses_correction(client, ses
                        (f"/docs/{memo}/convert", {})):
         r = await client.post(path, headers=auth["headers"], json=body)
         assert r.status_code == 200, r.text
+    return r.json()["target_doc_id"]
+
+
+@pytest.mark.asyncio
+async def test_sale_without_an_exact_invoice_line_refuses_correction(client, session, auth):
+    # Converted the way an older release did it: the lot marked sold to the memo itself.
+    from celerp.events.engine import emit_event
+
+    item = await _item(client, auth, 100.0)
+    invoice = await _memo_converted(client, session, auth, item)
+    memo = (await _state(session, auth, invoice))["source_memo_id"]
+    await emit_event(session, company_id=auth["company_id"], entity_id=item, entity_type="item",
+                     event_type="item.status.set", data={"new_status": "sold", "source_doc_id": memo},
+                     actor_id=auth["user_id"], location_id=None, source="memo_convert",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
     assert (await _state(session, auth, item))["status"] == "sold"
     await _assert_refused(client, session, auth, item, [], fragment="invoice line")
+
+
+@pytest.mark.asyncio
+async def test_sale_billed_from_a_converted_memo_is_corrected_on_its_invoice(client, session, auth):
+    from gl_support import gl_totals
+
+    item = await _item(client, auth, 100.0)
+    invoice = await _memo_converted(client, session, auth, item)
+    r = await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, item))["status"] == "sold"
+    assert (await gl_totals(session, auth["company_id"], entry_id_part=f":{invoice}:"))["5100"] == 100.0
+
+    r = await _set_cost(client, auth, item, 120.0)
+    assert r.status_code == 200, r.text
+    assert await _cost(session, auth, item) == 120.0
+    assert (await gl_totals(session, auth["company_id"], entry_id_part=f":{invoice}:"))["5100"] == 120.0
 
 
 # -- Every cost writer goes through the same operation ----------------------

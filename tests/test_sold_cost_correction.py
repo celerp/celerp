@@ -401,12 +401,17 @@ async def test_legacy_revert_to_draft_books_cogs_once(client, session):
 async def test_legacy_void_reverses_cogs_booked_at_fulfilment(client, session):
     auth = await _new_company(session)
     ctx: dict = {}
-    for step in (make("a", 100.0), legacy_invoice("a"), legacy_fulfil("a"), revert_lines("a"),
-                 doc_action("void")):
+    for step in (make("a", 100.0), legacy_invoice("a"), legacy_fulfil("a"), revert_lines("a")):
         await step(client, session, auth, ctx)
+    # The goods came back, so the invoice gave back the cost its fulfilment booked.
+    assert await _doc_cogs(session, auth, ctx["doc"]) == 0.0
+    fulfilment = f"je:auto:{ctx['doc']}:fulfill"
+    await doc_action("void")(client, session, auth, ctx)
+    assert (await _state(session, auth, fulfilment))["status"] == "void"
     assert await _doc_cogs(session, auth, ctx["doc"]) == 0.0
     await doc_action("unvoid")(client, session, auth, ctx)
-    assert await _doc_cogs(session, auth, ctx["doc"]) == 100.0
+    assert (await _state(session, auth, f"{fulfilment}:unvoid:1"))["status"] == "posted"
+    assert await _doc_cogs(session, auth, ctx["doc"]) == 0.0
 
 
 # -- 9: several lines, one shipped -----------------------------------------

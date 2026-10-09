@@ -760,6 +760,7 @@ class DocPaymentDeleted(BaseModel):
 class DocConverted(BaseModel):
     target_doc_id: str
     target_doc_type: str
+    pre_convert_status: str | None = None
 
 
 class DocConvertedToBill(BaseModel):

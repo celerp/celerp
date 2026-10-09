@@ -2318,15 +2318,15 @@ async def finalize_document(
         # lot at the sibling lots that will actually be drawn; import/repair paths
         # stay on exact bound-lot pricing.
         await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, span_lots=True)
-        # Promote memo_out items to sold: a memo converted before conversion settled its lots
-        # leaves them in memo_out, and finalizing the invoice is the point at which the sale
-        # is confirmed. _refuse_unsellable_lots has refused any lot out on another memo, so
-        # only the source memo's lots reach here. They are sold on the invoice's own number.
+        # Finalizing is where the sale of goods out with the customer is confirmed: every
+        # lot the invoice holds out on memo (a converted memo's lots, cross-lot siblings
+        # included) and every memo_out lot a line binds is sold on the invoice's own number.
+        # _refuse_unsellable_lots has refused any lot out on another memo, so only this
+        # invoice's or its source memo's lots reach here.
         _cid = uuid.UUID(str(company_id))
-        for _li in _initial_doc_state.get("line_items", []):
-            _eid = _li.get("entity_id") or _li.get("item_id") or ""
-            if not _eid:
-                continue
+        _bound = [_li.get("entity_id") or _li.get("item_id") for _li in _initial_doc_state.get("line_items", [])]
+        _held = [p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)]
+        for _eid in dict.fromkeys(e for e in _bound + _held if e):
             _iproj = await session.get(Projection, {"company_id": company_id, "entity_id": _eid})
             if _iproj and _iproj.state.get("status") == "memo_out":
                 await emit_event(
@@ -2389,6 +2389,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     # mutates, mirroring the revert-to-draft ordering.
     await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
     await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
+    await _return_to_source_memo(session, company_id=company_id, uid=user.id, owner=row)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
@@ -2626,6 +2627,13 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     restored_status = state.get("pre_void_status")
     if not restored_status:
         raise HTTPException(status_code=409, detail="Cannot unvoid: document was voided before unvoid support was added (no pre_void_status)")
+    if (memo := await _source_memo(session, company_id, state)) is not None and \
+            memo.state.get("converted_to") != entity_id:
+        number = memo.state.get("doc_number") or memo.state.get("ref_id") or memo.entity_id
+        raise HTTPException(status_code=409, detail=refusal(
+            "documents.unvoid_conversion_undone",
+            f"The goods on this invoice went back to memo {number} when it was voided. "
+            f"Convert the memo again to bill them.", memo=number))
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -2644,7 +2652,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
                 cycle_tag=f"unvoid-{entry.id}", ts=None, trigger="doc.unvoided",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
     # For now, restore the fulfillment_status field so the UI reflects prior state.
@@ -2748,6 +2756,7 @@ async def bulk_delete_drafts(
     for row in drafts:
         eid = row.entity_id
         await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
+        await _return_to_source_memo(session, company_id=company_id, uid=user.id, owner=row)
         await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == eid))
         await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == eid))
         deleted.append(eid)
@@ -2770,6 +2779,7 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
     from celerp.models.ledger import LedgerEntry
     import sqlalchemy as _sa
     await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
+    await _return_to_source_memo(session, company_id=company_id, uid=user.id, owner=row)
     await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id))
     await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id))
     await session.commit()
@@ -4996,12 +5006,20 @@ async def create_shipment_from_docs(
     return {"event_id": entry.id, "id": new_entity_id}
 
 
+class DocConvertBody(BaseModel):
+    idempotency_key: str | None = None
+
+
 @router.post("/{entity_id}/convert")
-async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     named = await _lock_copied_contacts(session, company_id, [entity_id])
     # Company before the doc row: a conversion draws the next document number.
     company = await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("convert", entity_id, payload or DocConvertBody())
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.converted",
+                                   entity_id=entity_id, digest=digest, with_event_id=True)) is not None:
+        return done
     _assert_contacts_unchanged(named, [row])
     state = row.state
     if state.get("doc_type") == "quotation":
@@ -5022,16 +5040,16 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
             data={"target_doc_id": new_doc_id, "target_doc_type": "invoice"}, actor_id=user.id, location_id=None,
-            source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+            source="api", idempotency_key=key, metadata_={"request": digest, "result": {"target_doc_id": new_doc_id}},
         )
         await session.commit()
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
     if state.get("doc_type") == "memo":
         # An already-converted memo falls through to the allocation-set guard below,
-        # which refuses with the clearer "nothing On Memo" 422: convert settles every
-        # backing lot, so a converted memo has an empty allocation set and can never
-        # re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
+        # which refuses with the clearer "nothing On Memo" 422: convert hands every
+        # backing lot to the invoice, so a converted memo has an empty allocation set and
+        # can never re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
         if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
             raise HTTPException(status_code=409, detail="Memo must be issued before converting to invoice")
         ref = next_draft_ref(company, "invoice")
@@ -5042,8 +5060,8 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # its bound lot draws cross-lot siblings from other lots of the same SKU, and each
         # sibling carries the memo stamp but never appears in line_items. Bill each line
         # for the full still-out quantity of its SKU summed across the allocation set, at
-        # the line's own unit_price (revenue is per-SKU and identical across lots; lot cost
-        # is COGS, recognized per lot at fulfill and untouched here).
+        # the line's own unit_price (revenue is per-SKU and identical across lots; the cost
+        # of each lot is booked when the invoice is finalized).
         allocation_items = await _memo_allocation_items(session, company_id, entity_id)
         memo_out_backing: list[Projection] = [
             item_proj for item_proj in allocation_items
@@ -5063,8 +5081,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # identity item_proj.entity_id == that key. A cross-lot sibling (drawn from another
         # same-SKU lot to cover a line whose quantity exceeded its bound lot) carries the
         # memo stamp but has no bound line, so it is billed once onto the first same-SKU
-        # original line at that line's unit_price - the sibling's revenue is per-SKU and
-        # its lot cost was already recognized at fulfill.
+        # original line at that line's unit_price - the sibling's revenue is per-SKU.
         _currency = state.get("currency")
         original_line_items = state.get("line_items", [])
         line_by_bound_eid: dict[str, dict] = {}
@@ -5154,23 +5171,22 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         )
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
-            data={"target_doc_id": new_doc_id, "target_doc_type": "invoice"}, actor_id=user.id, location_id=None,
-            source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+            data={"target_doc_id": new_doc_id, "target_doc_type": "invoice", "pre_convert_status": state.get("status")},
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=key, metadata_={"request": digest, "result": {"target_doc_id": new_doc_id}},
         )
-        # Settle every backing lot, not just the line_items rows: a cross-lot sibling is
-        # still out at the customer and must leave memo_out here or it would keep the memo
-        # un-closeable with no settlement path. The invoice bills its SKU at the parent
-        # line; the sibling's revenue is already carried there. Invoice-finalize's own
-        # promotion loop then skips these (they are no longer memo_out), so nothing is
-        # promoted twice.
-        _memo_number = state.get("doc_number") or state.get("ref_id") or ""
+        # The invoice owns every backing lot from here, cross-lot siblings included. The
+        # goods are still out with the customer and the draft cannot ship, so each stays
+        # memo_out, now under the invoice: finalizing it sells them, taking them back on it
+        # returns them to stock, and voiding or deleting the draft gives them back to this
+        # memo (_return_to_source_memo).
         for item_proj in memo_out_backing:
             await emit_event(
                 session, company_id=company_id, entity_id=item_proj.entity_id, entity_type="item",
                 event_type="item.status.set",
-                data={"new_status": "sold", "source_doc_id": entity_id, "doc_number": _memo_number},
+                data={"new_status": "memo_out", "source_doc_id": new_doc_id, "doc_number": ref},
                 actor_id=user.id, location_id=None, source="memo_convert",
-                idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
+                idempotency_key=_step_key(key, item_proj.entity_id), metadata_={"doc_id": entity_id},
             )
         await session.commit()
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
@@ -5202,7 +5218,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
             data={"target_doc_id": new_doc_id, "target_doc_type": "bill"}, actor_id=user.id, location_id=None,
-            source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+            source="api", idempotency_key=key, metadata_={"request": digest, "result": {"target_doc_id": new_doc_id}},
         )
         await session.commit()
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
@@ -7390,6 +7406,47 @@ async def _held_lots(session, company_id, owner_id: str) -> dict[str, Projection
             if p.state.get("status") == "reserved" and p.state.get("status_doc_id") == owner_id}
 
 
+async def _source_memo(session, company_id, state: dict, *, for_update: bool = False) -> Projection | None:
+    """The memo an invoice was converted from, or None when it was not converted from one."""
+    memo_id = state.get("source_memo_id")
+    if not memo_id or state.get("doc_type") != "invoice":
+        return None
+    if for_update:
+        return (await lock_projections(session, company_id, [memo_id])).get(memo_id)
+    return await session.get(Projection, {"company_id": company_id, "entity_id": memo_id})
+
+
+async def _return_to_source_memo(session, *, company_id, uid, owner: Projection) -> None:
+    """Give the goods of an invoice converted from a memo back to that memo, for void and
+    delete. Every lot the invoice holds out with the customer or sold goes back out on the
+    memo, and the memo is live again in the status it was converted from, so it can be
+    converted again. A memo converted to some other invoice since keeps that conversion.
+    Does not commit."""
+    memo = await _source_memo(session, company_id, owner.state, for_update=True)
+    if memo is None:
+        return
+    memo_number = memo.state.get("doc_number") or memo.state.get("ref_id") or ""
+    held = [p.entity_id for p in await _memo_allocation_items(session, company_id, owner.entity_id)]
+    for eid, lot in sorted((await lock_projections(session, company_id, held)).items()):
+        if lot.state.get("status_doc_id") != owner.entity_id or lot.state.get("status") not in ("memo_out", "sold"):
+            continue
+        await emit_event(
+            session, company_id=uuid.UUID(str(company_id)), entity_id=eid, entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "memo_out", "source_doc_id": memo.entity_id, "doc_number": memo_number},
+            actor_id=uid, location_id=None, source="memo_convert_undone",
+            idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": owner.entity_id},
+        )
+    restored = memo.state.get("pre_convert_status")
+    if memo.state.get("converted_to") == owner.entity_id and restored:
+        await emit_event(
+            session, company_id=company_id, entity_id=memo.entity_id, entity_type="doc",
+            event_type="doc.reopened", data={"restored_status": restored},
+            actor_id=uid, location_id=None, source="api",
+            idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": owner.entity_id},
+        )
+
+
 async def _release_holds(session, *, company_id, uid, owner: Projection) -> list[str]:
     """Give back every lot the owner holds, for the terminal actions that end a record
     (void, delete, write-off, audit adjustment). Does not commit: it is part of the
@@ -7611,7 +7668,7 @@ async def _fulfill_lines_impl(
                 ts=fulfillment_date, trigger="doc.fulfilled",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
@@ -7809,7 +7866,7 @@ async def _reverse_whole_lines(
                 ts=reversal_date, trigger="doc.fulfillment_reversed",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
 
     # Optimistically compute doc fulfillment_status
     newly_available = set(to_revert)

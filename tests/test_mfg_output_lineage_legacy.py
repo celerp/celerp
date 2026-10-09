@@ -16,6 +16,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from celerp.events.engine import emit_event
 from celerp.modules import slots
 from mfg_runs import PURCHASED, complete, issue, product, receive, refusal, role, run, snapshot
 from test_mfg_output_lineage import refused_unchanged
@@ -85,8 +86,10 @@ async def older_run(client, session, auth) -> tuple[str, str, str]:
     return raw, order, lot
 
 
-async def _memo_convert(client, auth, lot):
-    """Sent out whole on memo and billed by converting the memo to an invoice."""
+async def _older_memo_convert(client, session, auth, lot):
+    """Sent out whole on memo, then billed by converting the memo the way the older release
+    did it: the lot marked sold to the memo, its sale on no invoice line, and the invoice
+    finalized."""
     r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
         {"entity_id": lot, "sku": "OUT", "name": "Lot", "quantity": 2, "unit_price": 150.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
@@ -95,7 +98,13 @@ async def _memo_convert(client, auth, lot):
                        (f"/docs/{memo}/convert", {})):
         r = await client.post(path, headers=auth["headers"], json=body)
         assert r.status_code == 200, r.text
-    r = await client.post(f"/docs/{r.json()['target_doc_id']}/finalize", headers=auth["headers"])
+    invoice = r.json()["target_doc_id"]
+    await emit_event(session, company_id=auth["company_id"], entity_id=lot, entity_type="item",
+                     event_type="item.status.set", data={"new_status": "sold", "source_doc_id": memo},
+                     actor_id=auth["user_id"], location_id=None, source="memo_convert",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    r = await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])
     assert r.status_code == 200, r.text
 
 
@@ -118,7 +127,7 @@ _LINEAGES = {
     "transform": (True, lambda c, s, a, lot: _ok_(_transform(c, a, lot))),
     "consume": (True, _older_consume),
     "write_off": (False, lambda c, s, a, lot: _ok_(_write_off_one(c, a, lot))),
-    "memo_convert": (False, lambda c, s, a, lot: _memo_convert(c, a, lot)),
+    "memo_convert": (False, _older_memo_convert),
 }
 
 

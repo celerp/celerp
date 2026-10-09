@@ -83,8 +83,9 @@ async def test_goods_returned_from_memo_can_be_archived_and_restored(session, cl
 async def test_goods_a_memo_converts_into_a_sale_can_be_archived_off_the_books(session, client, auth):
     lot, memo = await _on_memo(session, client, auth)
     invoice = (await _ok(client, auth, "POST", f"/docs/{memo}/convert"))["target_doc_id"]
-    assert (await _state(session, auth, lot))["status"] == "sold"
+    assert (await _state(session, auth, lot))["status"] == "memo_out"
     await _ok(client, auth, "POST", f"/docs/{invoice}/finalize")
+    assert (await _state(session, auth, lot))["status"] == "sold"
     await assert_books_carry_stock(session, auth["company_id"])
     assert (await _ROUTES["bulk"](client, auth, lot, "archived")).status_code == 200
     state = await _state(session, auth, lot)
