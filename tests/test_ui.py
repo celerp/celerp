@@ -14336,16 +14336,20 @@ class TestProFormaLabel:
 
     def test_status_label_proforma_for_draft_invoice(self):
         """When doc_type='invoice' and status='draft', label is 'Pro Forma'."""
-        doc_type = "invoice"
-        status = "draft"
-        status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
-        assert status_label == "Pro Forma"
+        from ui.routes.documents import _doc_status_label
+        assert _doc_status_label("invoice", "draft") == "Pro Forma"
 
     def test_status_label_draft_for_non_invoice(self):
         """Other doc types still show 'Draft' for draft status."""
+        from ui.routes.documents import _doc_status_label
         for dt in ("credit_note", "memo", "receipt"):
-            status_label = "Pro Forma" if dt == "invoice" and "draft" == "draft" else "draft".replace("_", " ").title()
-            assert status_label == "Draft", f"{dt} should show Draft"
+            assert _doc_status_label(dt, "draft") == "Draft", f"{dt} should show Draft"
+
+    def test_status_label_is_the_catalog_label(self):
+        """Every other status reads from the doc_status catalog, not the raw slug."""
+        from ui.routes.documents import _doc_status_label
+        assert _doc_status_label("invoice", "partial") == "Partially Paid"
+        assert _doc_status_label("bill", "partially_received") == "Partially Received"
 
     def test_invoice_status_cards_include_proforma(self):
         """Invoice status cards show Pro Forma, All Issued, Awaiting Payment, Overdue, Paid, Void.

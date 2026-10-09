@@ -436,9 +436,21 @@ logger = logging.getLogger(__name__)
 # Lists constants
 # ---------------------------------------------------------------------------
 from celerp.services.list_behavior import (
-    behavior as _list_behavior, status_label as _list_status_label,
-    LIST_TYPES as _REG_LIST_TYPES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
+    behavior as _list_behavior, status_key as _list_status_key,
+    LIST_TYPES as _REG_LIST_TYPES, LIST_STATUSES as _LIST_STATUSES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
+
+
+def _list_status_label(state: dict) -> str:
+    """A list's type-aware status (Sent, In transit, Counting, ...) in the user's language."""
+    return display_enum(_list_status_key(state), "doc_status")
+
+
+def _doc_status_label(doc_type: str, status: str) -> str:
+    """A document's status in the user's language. A draft invoice is a pro forma."""
+    if doc_type == "invoice" and status == "draft":
+        return t("status.pro_forma")
+    return display_enum(status, "doc_status")
 # Selectable list types come straight from the behaviour registry (one source — adding a type
 # there surfaces it here automatically).
 _LIST_TYPES = list(_REG_LIST_TYPES)
@@ -1376,7 +1388,7 @@ def _send_to_option_list(items: list[dict], kind: str) -> FT:
                 Input(type="radio", name="target_id", value=eid, cls="send-to-radio"),
                 Span(label, cls="send-to-ref"),
                 Span(contact, cls="send-to-contact") if contact else None,
-                Span(status, cls=f"badge badge--{status}") if status else None,
+                format_value(status, "badge", domain="doc_status") if status else None,
                 cls="send-to-option",
             )
         )
@@ -2498,7 +2510,7 @@ celerpUpdateBulkAlloc();
                     _payments_on = await api.get_payments_enabled(token)
                 except Exception:
                     pass
-        status_label = t("status.pro_forma") if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
+        status_label = _doc_status_label(doc_type, status)
         type_label = _doc_singular_label(doc_type)
         section_label = _doc_section_label(doc_type)
         section_url = _doc_section_url(doc_type)
@@ -4624,9 +4636,8 @@ celerpUpdateBulkAlloc();
         elif field == "status":
             # Status is lifecycle-driven (finalize / terminal actions), not freely set; this branch
             # only survives for any legacy cell that still mounts it. Offer the uniform spine.
-            _list_statuses = ["draft", "finalized", "closed", "void"]
             input_el = Select(
-                *[Option(s.replace("_", " ").title(), value=s, selected=(s == value)) for s in _list_statuses],
+                *[Option(display_enum(s, "doc_status"), value=s, selected=(s == value)) for s in _LIST_STATUSES],
                 name="value",
                 cls="cell-input cell-input--select", autofocus=True,
                 onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)})",
@@ -5195,7 +5206,7 @@ def _doc_table(
             Td(format_value(issue_date, "date")),
             *([Td(format_value(d.get("_updated_at"), "date"))] if is_drafts_view else [Td(format_value(due_date, "date"))]),
             *money_tds,
-            Td(format_value(d.get("status"), "badge")),
+            Td(format_value(d.get("status"), "badge", domain="doc_status")),
             id=f"doc-{eid}",
             cls="data-row",
         )
@@ -5485,7 +5496,7 @@ def _doc_display_cell(entity_id: str, field: str, value, doc_type: str = "") -> 
     # Status is a state-machine field; transitions happen via lifecycle buttons only.
     if field == "status":
         return Div(
-            format_value(value, "badge"),
+            format_value(value, "badge", domain="doc_status"),
             cls="editable-cell",
         )
     return Div(
@@ -7946,12 +7957,15 @@ function _celerpPickerStatus(text) {{
             }}
             const data = await resp.json();
             if (data.description || data.sku) {{
-                const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
-                const row = tpl.querySelector('tr') || tpl.children[0];
+                const tbody2 = document.getElementById('{line_body_id}');
+                // The first scan into a new document fills its empty starter row; every other
+                // scan fills a fresh row that is appended below.
+                const starter = _celerpStarterRow(tbody2);
+                const tpl = starter ? null : document.getElementById('line-row-tpl').content.cloneNode(true);
+                const row = starter || tpl.querySelector('tr') || tpl.children[0];
                 const d = {{...data, sku: data.sku || code}};
-                // Fill the detached row first; a false return means the item is a
-                // non-splittable duplicate already on the doc, so do NOT append the
-                // row and do NOT autosave - just show the message.
+                // A false return means the item is a non-splittable duplicate already on
+                // the doc, so do NOT add the row and do NOT autosave - just show the message.
                 if (row && !celerpFillRow(row, d)) {{
                     scanStatus.textContent = '✗ ' + _L.dup_on_doc;
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
@@ -7960,10 +7974,11 @@ function _celerpPickerStatus(text) {{
                     _clearStatusSoon();
                     return;
                 }}
-                const tbody2 = document.getElementById('{line_body_id}');
-                tbody2.appendChild(tpl);
-                const newRow2 = tbody2.lastElementChild;
-                if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                if (!starter) {{
+                    tbody2.appendChild(tpl);
+                    const newRow2 = tbody2.lastElementChild;
+                    if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                }}
                 celerpUpdateTotals();
                 celerpAutoSave();
                 scanStatus.textContent = '✓ ' + (data.sku || code);
@@ -8699,6 +8714,20 @@ function _celerpRowLineId(row) {{
     if (!el.value) el.value = _celerpNewLineId();
     return el.value;
 }}
+function _celerpRowHasContent(row) {{
+    // A row is a line worth saving once it names something or carries a price.
+    const val = name => row.querySelector(`[data-name="${{name}}"]`)?.value;
+    return !!(val('description') || val('sku') || parseFloat(val('unit_price') || 0)
+              || val('entity_id') || val('barcode'));
+}}
+function _celerpStarterRow(tbody) {{
+    // The empty row a new document opens with, while it is still the only row and untouched.
+    const rows = tbody ? tbody.querySelectorAll('tr') : [];
+    if (rows.length !== 1) return null;
+    const row = rows[0];
+    if (row.querySelector('[data-name="line_id"]')?.value || _celerpRowHasContent(row)) return null;
+    return row;
+}}
 function _celerpCollectLines() {{
     // Returns the serialized lines, or null when a meaningful row carries an
     // invalid quantity - the caller aborts the whole save and sends nothing.
@@ -8728,7 +8757,7 @@ function _celerpCollectLines() {{
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
         const weightEl = row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
-        if (desc || sku || price || entityId || barcode) {{
+        if (_celerpRowHasContent(row)) {{
             // A meaningful row with no usable quantity fails the whole save closed:
             // surface the error on the save-status element and send nothing, rather
             // than coerce a blank/NaN quantity to 1 and persist corrupt data.
@@ -8775,6 +8804,9 @@ async function _celerpInstallLineBody(html, version) {{
     }}
     const tbody = document.getElementById('{line_body_id}');
     if (!tbody || !html) return false;
+    // Swapping the rows out removes a focused field, and its blur would save the rows being
+    // replaced. Leave the field first without saving: the installed rows are the stored ones.
+    if (tbody.contains(document.activeElement)) _celerpQuietBlur(document.activeElement);
     tbody.outerHTML = html;
     const swapped = document.getElementById('{line_body_id}');
     htmx.process(swapped);
@@ -8980,12 +9012,47 @@ function _celerpShowReservedConflicts(conflicts) {{
 /* Auto-save on blur away from any row cell */
 window._celerpSaveTimer = null;
 function celerpAutoSave() {{
+    if (window._celerpBlurQuietly) return;
     window._celerpLineRevision += 1;
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = setTimeout(() => {{
         _celerpSaveTimer = null;
         _celerpPersist();
     }}, 400);
+}}
+/* Leave a line field without the save its blur would start. */
+function _celerpQuietBlur(el) {{
+    window._celerpBlurQuietly = true;
+    try {{ el.blur(); }} finally {{ window._celerpBlurQuietly = false; }}
+}}
+/* Line fields follow the click-to-edit keys: Enter commits the field (its blur saves) and
+   Escape puts back the value it had when focused and leaves it without saving. Escape runs
+   in the capture phase so the document-wide Escape handler, which only blurs, never sees it. */
+if (!window._celerpLineKeysBound) {{
+    window._celerpLineKeysBound = true;
+    const lineField = (e) => (e.target instanceof HTMLInputElement
+        && e.target.closest('#{line_body_id}')
+        && !['hidden', 'checkbox'].includes(e.target.type)) ? e.target : null;
+    document.addEventListener('focusin', (e) => {{
+        const field = lineField(e);
+        if (field) field.dataset.committed = field.value;
+    }});
+    document.addEventListener('keydown', (e) => {{
+        const field = lineField(e);
+        if (!field || e.key !== 'Escape') return;
+        e.preventDefault();
+        if (field.dataset.committed != null && field.value !== field.dataset.committed) {{
+            field.value = field.dataset.committed;
+            celerpUpdateTotals();
+        }}
+        _celerpQuietBlur(field);
+    }}, true);
+    document.addEventListener('keydown', (e) => {{
+        const field = lineField(e);
+        if (!field || e.key !== 'Enter' || e.defaultPrevented) return;
+        e.preventDefault();
+        field.blur();
+    }});
 }}
 function _celerpRepriceWarningKey() {{
     return 'celerp_reprice_skipped:' + _CELERP_EID;
@@ -9827,7 +9894,7 @@ async function celerpCsvImport(input, entityId) {{
     if not is_list and not is_no_money:
         _contact_rows.append(Div(Div(t("doc.payment_terms"), cls="form-label"), _cell("payment_terms", doc.get("payment_terms")), cls="form-group"))
     # Lists show the friendly, type-aware lifecycle label (Sent / In transit / Counting / Converted /
-    # Adjusted / ...) — matching the page title — not the raw spine enum. Status is lifecycle-driven,
+    # Adjusted / ...), matching the page title, not the raw spine enum. Status is lifecycle-driven,
     # so it is read-only here for lists.
     _status_field = P(_list_status_label(doc), cls="meta-value") if is_list else _cell("status", status)
     _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _status_field, *_slot_badges, cls="form-group"))
@@ -10347,7 +10414,7 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
             Td(count_cell, cls="cell--number"),
             Td(f"{weight:.2f}" if weight else EMPTY, cls="cell--number"),
             Td(format_value(d.get("total"), "money"), cls="cell--number"),
-            Td(format_value(d.get("status"), "badge")),
+            Td(format_value(d.get("status"), "badge", domain="doc_status")),
             cls="data-row",
         )
 
