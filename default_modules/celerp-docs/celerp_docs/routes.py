@@ -1546,7 +1546,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
         # alone carry none of these and are not offered for return.
         traced = await _line_return_lots(session, company_id, entity_id, row.state, lock=False)
         if traced is not None:
-            by_line, shared, kept, held, split_lots, _whole_only = traced
+            by_line, shared, kept, held, split_lots = traced[:5]
             sent_back: dict[str, float] = {}
             for x in doc.get("returned_items") or []:
                 sent_back[x["item_id"]] = sent_back.get(x["item_id"], 0.0) + float(x.get("quantity_returned") or 0)
@@ -2289,7 +2289,7 @@ async def finalize_document(
     elif doc_type == "purchase_order":
         bill_ref = next_doc_ref(_company, "bill")
         finalize_data["ref_id"] = bill_ref
-        finalize_data["source_po_ref"] = _initial_doc_state.get("ref_id", "")
+        finalize_data["source_po_ref"] = _initial_doc_state.get("ref_id") or _initial_doc_state.get("doc_number") or ""
         finalize_data["doc_type"] = "bill"
         event_type = "doc.converted_to_bill"
         await session.flush()
@@ -2382,7 +2382,15 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
         raise HTTPException(
             status_code=409,
             detail="Cannot void a document with fulfilled items; revert fulfillment (receive the goods back) first")
-    if row.state.get("received_items"):
+    # A bill holding only goods it was imported with has no receipt of them to return:
+    # voiding it reverses its own entry and leaves the goods in stock.
+    on_bill = await _imported_on_bill(session, company_id, entity_id, row.state) if row.state.get("received_items") else None
+    if on_bill is not None and on_bill.way == "none" and not on_bill.holds_own:
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.void_imported_bill",
+            "This bill cannot be voided: goods it received itself were booked against it, beside goods it "
+            f"already held when it was imported. {_IMPORTED_NEXT_STEP[on_bill.way]}", next_step=on_bill.next_step()))
+    if row.state.get("received_items") and not (on_bill is not None and on_bill.settles):
         raise HTTPException(
             status_code=409,
             detail="Cannot void a document with received items; return the goods first")
@@ -2502,13 +2510,25 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         if _is_inbound
         else {"final", "sent", "awaiting_payment"}
     )
+    # A bill holding goods it was imported with has no receipt of them to return or undo. A
+    # bill made from a purchase order goes back to it, goods and all, once it holds nothing it
+    # received itself; one imported as a bill has no order to go back to, and is voided.
+    on_bill = await _imported_on_bill(session, company_id, entity_id, state) if state.get("received_items") else None
+    to_order = on_bill is not None and on_bill.way == "revert" and on_bill.settles
+    if to_order:
+        _REVERTABLE = _REVERTABLE | {"partial_returned", "returned"}
+    if on_bill is not None and not to_order and not on_bill.holds_own:
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.revert_imported_bill",
+            "This bill cannot go back to draft: it already held goods when it was imported, and a draft bill "
+            f"holds none. {_IMPORTED_NEXT_STEP[on_bill.way]}", next_step=on_bill.next_step()))
     if previous_status not in _REVERTABLE:
         raise HTTPException(status_code=409, detail="Can only revert documents in 'final', 'sent', or 'awaiting_payment' status")
     if float(state.get("amount_paid", 0) or 0) != 0:
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
     # Both blocks below name the button on the document's lines that clears them, so the
     # user is sent to the action rather than left to guess where goods are returned.
-    if state.get("received_items"):
+    if state.get("received_items") and not to_order:
         raise HTTPException(
             status_code=409,
             detail="Cannot revert to draft while goods received on this document are still in stock. "
@@ -2541,15 +2561,17 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     # PO->bill revert: restore doc_type and ref_id
     extra_data: dict = {}
     doc_type = state.get("doc_type")
-    if doc_type == "bill" and state.get("source_po_ref"):
+    if doc_type == "bill" and (state.get("source_po_ref") or to_order):
         extra_data["doc_type"] = "purchase_order"
-        extra_data["ref_id"] = state["source_po_ref"]
+        if state.get("source_po_ref"):
+            extra_data["ref_id"] = state["source_po_ref"]
 
     # Void the finalize JE first: it raises when the entry's date sits in a
     # locked period, and nothing may mutate before that check passes.
     # Pass current revert_count (before this revert increments it).
     current_revert_count = int(state.get("revert_count", 0))
-    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
+    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+                                         revert_count=current_revert_count, goods_movements=not to_order)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.reverted_to_draft",
@@ -4631,36 +4653,102 @@ async def _returnable_quantities(session: AsyncSession, company_id, doc_id: str,
     return got
 
 
-async def _refuse_imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc: dict,
-                                   items: list[ReturnItem], lots: dict) -> None:
-    """Refuse a return on a bill that reaches into goods its purchase order already held when
-    it was imported. The bill books those goods as not yet received while their lot already
-    carries them, so sending them back would leave the bill owing for them. Each lot gives
-    back at most what the document's own receipts brought into it, less what went back from
-    it already: a return takes a receipt's units first (``_lot_additions``)."""
+_IMPORTED_NEXT_STEP = {
+    "revert": "To send them back, return anything received here first, then revert the bill to draft "
+              "and return them from the purchase order.",
+    "void": "To cancel the bill, void it. The goods stay in stock.",
+    "none": "They stay in stock on this bill.",
+}
+
+
+class _ImportedOnBill(NamedTuple):
+    """A bill holding goods it already held when it was imported. The bill books those goods
+    as not yet received while their lot already carries them, so they cannot go back on it."""
+    left: dict[str, float]  # item id -> stock units the bill's own receipts brought in, not sent back
+    holds_own: bool         # whether anything its own receipts brought in is still on it
+    way: str                # what settles the imported goods: "revert", "void" or "none"
+    from_order: bool        # whether the bill was made from a purchase order
+
+    def next_step(self) -> dict:
+        """The sentence naming what settles the imported goods."""
+        return refusal(f"docs.imported_on_bill_next.{self.way}", _IMPORTED_NEXT_STEP[self.way])
+
+    @property
+    def settles(self) -> bool:
+        """Whether the bill can revert (or void) now, leaving the imported goods on the lot as
+        it found them: it holds nothing its own receipts brought in, and only the bill's own
+        entry is undone."""
+        return self.way != "none" and not self.holds_own
+
+
+async def _order_receipts_only(session: AsyncSession, company_id, doc_id: str) -> bool | None:
+    """For a bill made from a purchase order, whether every receipt it holds was made on the
+    order: no goods were received since the order last became a bill. A receipt on the bill
+    booked its goods against the bill, so it stands or falls with the bill. None for a bill
+    that never was an order."""
+    from celerp.models.ledger import LedgerEntry
+
+    events = (await session.execute(select(LedgerEntry.event_type).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == doc_id,
+        LedgerEntry.event_type.in_(("doc.converted_to_bill", "doc.received"))).order_by(LedgerEntry.id))).scalars().all()
+    if "doc.converted_to_bill" not in events:
+        return None
+    return "doc.received" not in events[len(events) - events[::-1].index("doc.converted_to_bill"):]
+
+
+async def _imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc: dict) -> _ImportedOnBill | None:
+    """What a bill holds of goods it already held when it was imported (receipt entries no
+    receive event recorded), and what settles them; None for any other document. A bill that
+    was a purchase order goes back to the order, receipts and all, while every receipt it
+    holds was made on the order; a bill imported as a bill can only be voided, and only while
+    it holds nothing it received itself."""
     if doc.get("doc_type") != "bill":
-        return
+        return None
     received = list(doc.get("received_items") or [])
     made = list(doc.get("received_item_ids") or [])
     recorded = await _recorded_receipts(session, company_id, doc_id, len(received))
     imported, imported_made = _imported_part(received, made, recorded)
     if not imported:
+        return None
+    own = received[len(imported):]
+    left = await _returnable_quantities(session, company_id, doc_id, {
+        **doc, "received_items": own, "received_item_ids": made[len(imported_made):]})
+    holds_own = any(not _stock_receipt(x) for x in own) or any(q > 1e-9 for q in left.values())
+    from_order = await _order_receipts_only(session, company_id, doc_id)
+    if from_order is None:
+        way = "none" if own else "void"
+    else:
+        way = "revert" if from_order else "none"
+    return _ImportedOnBill(left, holds_own, way, from_order is not None)
+
+
+def _imported_refusal(on_bill: _ImportedOnBill, qty: float, sku: str, allowed: float) -> HTTPException:
+    return HTTPException(status_code=409, detail=refusal(
+        "docs.return_imported_on_bill",
+        f"Cannot return {qty:g} of {sku} on this bill: at most {allowed:g} of it was received here. "
+        f"Goods this bill already held when it was imported cannot be returned on it. "
+        f"{_IMPORTED_NEXT_STEP[on_bill.way]}",
+        qty=f"{qty:g}", sku=sku, received=f"{allowed:g}", next_step=on_bill.next_step()))
+
+
+async def _refuse_imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc: dict,
+                                   items: list[ReturnItem], lots: dict) -> None:
+    """Refuse a return on a bill that reaches into goods it already held when it was imported
+    (``_imported_on_bill``). Each lot gives back at most what the bill's own receipts brought
+    into it, less what went back from it already: a return takes a receipt's units first
+    (``_lot_additions``)."""
+    on_bill = await _imported_on_bill(session, company_id, doc_id, doc)
+    if on_bill is None:
         return
-    own = await _returnable_quantities(session, company_id, doc_id, {
-        **doc, "received_items": received[len(imported):], "received_item_ids": made[len(imported_made):]})
     asked: dict[str, float] = {}
     for it in items:
         asked[it.item_id] = asked.get(it.item_id, 0.0) + float(it.quantity_returned)
     for item_id, qty in asked.items():
-        allowed = max(0.0, own.get(item_id, 0.0))
+        allowed = max(0.0, on_bill.left.get(item_id, 0.0))
         if qty > allowed + 1e-9:
             lot = lots.get(item_id)
-            sku = (lot.state.get("sku") if lot is not None else None) or item_id
-            raise HTTPException(status_code=409, detail=refusal(
-                "docs.return_imported_on_bill",
-                f"Cannot return {qty:g} of {sku} on this bill: at most {allowed:g} of it was received here. "
-                "Goods the purchase order already held when it was imported cannot be returned once it is a bill.",
-                qty=f"{qty:g}", sku=sku, received=f"{allowed:g}"))
+            raise _imported_refusal(on_bill, qty, (lot.state.get("sku") if lot is not None else None) or item_id,
+                                    allowed)
 
 
 def _receipt_lots_by_line(state: dict, lots: list[tuple[str, bool] | None]
@@ -4722,6 +4810,9 @@ class _LineReturnLots(NamedTuple):
     held: dict[int, dict[str, float]]              # line -> reason -> units it cannot send back now
     split_lots: dict[int, list[str]]               # line -> lots its goods were split off into
     whole_only: dict[str, float]                   # lot that may not be split -> its quantity
+    imported: _ImportedOnBill | None               # goods the bill already held when imported
+    imported_free: dict[int, tuple[float, str]]    # line -> units on hand it holds only as those,
+                                                   # and the sku of the lot holding them
 
 
 async def _split_descendants(session: AsyncSession, company_id, roots: list[str],
@@ -4797,6 +4888,10 @@ async def _line_return_lots(session: AsyncSession, company_id, doc_id: str, doc:
         states = {r.entity_id: r.state for r in (await session.execute(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_id.in_(ids)))).scalars()} if ids else {}
     kept = await _returnable_quantities(session, company_id, doc_id, doc)
+    # A bill sends back only what its own receipts brought in, never goods it was imported with.
+    imported = await _imported_on_bill(session, company_id, doc_id, doc)
+    own = imported.left if imported is not None else kept
+    imported_free: dict[int, tuple[float, str]] = {}
     created = set(doc.get("received_item_ids") or [])
     made = [lot for lot in ids if lot in created]
     sent = {x["returned_lot_id"] for x in doc.get("returned_items") or [] if x.get("returned_lot_id")}
@@ -4807,9 +4902,14 @@ async def _line_return_lots(session: AsyncSession, company_id, doc_id: str, doc:
     for index, lots in lots_by_line.items():
         by_line[index] = []
         for lot in lots:
-            k = max(0.0, kept.get(lot, 0.0))
+            k = max(0.0, own.get(lot, 0.0))
             free = min(k, _free_on_hand(states.get(lot)))
             by_line[index].append((lot, free))
+            if imported is not None:
+                beyond = min(max(0.0, kept.get(lot, 0.0)), _free_on_hand(states.get(lot))) - free
+                if beyond > 1e-9:
+                    units, sku = imported_free.get(index, (0.0, (states.get(lot) or {}).get("sku") or lot))
+                    imported_free[index] = (units + beyond, sku)
             reasons = _held_back(states.get(lot), k, free)
             if reasons.get("not_in_stock") and split_off.get(lot):
                 found, labels = _split_off_holds(reasons.pop("not_in_stock"), split_off[lot])
@@ -4821,7 +4921,7 @@ async def _line_return_lots(session: AsyncSession, company_id, doc_id: str, doc:
                 held.setdefault(index, {})[reason] = held.get(index, {}).get(reason, 0.0) + units
     whole_only = {lot: float(st.get("quantity") or 0) for lot, st in states.items()
                   if st is not None and not splitting_allowed(st)}
-    return _LineReturnLots(by_line, shared, kept, held, split_lots, whole_only)
+    return _LineReturnLots(by_line, shared, kept, held, split_lots, whole_only, imported, imported_free)
 
 
 class ReturnItem(_StatedMeasures):
@@ -4953,6 +5053,9 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
                 f"{_line_label(line)}: goods received on this line went into the same stock as another line's, "
                 "so they cannot be returned by line.", name=_line_label(line)))
         free = sum(q for _, q in lots)
+        beyond, sku = traced.imported_free.get(index, (0.0, ""))
+        if free + 1e-9 < ln.quantity_returned <= free + beyond + 1e-9:
+            raise _imported_refusal(traced.imported, float(ln.quantity_returned), sku, free)
         if ln.quantity_returned > free + 1e-9:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_not_on_hand",
@@ -9150,6 +9253,11 @@ async def undo_receive(
         if await _receipt_already_undone(session, company_id, entity_id):
             return {"undone": True, "item_ids": [], "already_undone": True}
         raise HTTPException(status_code=409, detail="No received goods to revert")
+    if (on_bill := await _imported_on_bill(session, company_id, entity_id, state)) is not None:
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.undo_receipt_imported",
+            f"Goods this bill already held when it was imported have no receipt on it to undo. "
+            f"{_IMPORTED_NEXT_STEP[on_bill.way]}", next_step=on_bill.next_step()))
     if state.get("returned_items"):
         raise HTTPException(status_code=409, detail=refusal(
             "docs.undo_receipt_after_return",

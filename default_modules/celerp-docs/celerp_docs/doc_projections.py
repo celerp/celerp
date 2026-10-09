@@ -71,6 +71,33 @@ def _payment_status(paid: Decimal, outstanding: Decimal) -> str:
     return "paid" if outstanding == 0 else ("partial" if paid > 0 else "final")
 
 
+def _receipt_status(current: dict) -> str:
+    """The status a document holding receipts reads as, writing each line's received quantity
+    onto it: received once every line has all it ordered, partly received otherwise."""
+    line_items = current.get("line_items", [])
+    received_on: dict[int, float] = {}
+    for x in current.get("received_items") or []:
+        idx = received_line_index(line_items, x)
+        if idx is not None:
+            received_on[idx] = received_on.get(idx, 0.0) + float(x.get("quantity_received", 0) or 0)
+    all_received = True
+    any_received = False
+    for idx, line in enumerate(line_items):
+        ordered = float(line.get("quantity", 0) or 0)
+        rec_qty = received_on.get(idx, 0.0)
+        # Update per-line received tracking
+        line["quantity_received"] = rec_qty
+        if rec_qty > 0:
+            any_received = True
+        if rec_qty + 1e-9 < ordered:
+            all_received = False
+    if line_items and all_received:
+        return "received"
+    if any_received:
+        return "partially_received"
+    return _status_without_receipts(current)
+
+
 def _status_without_receipts(state: dict) -> str:
     """The status a document holds once nothing is received on it: still a draft when its
     goods came in before it was issued, otherwise what its payments make it. An unpaid bill
@@ -213,6 +240,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             for li in current.get("line_items", []):
                 li.pop("entity_id", None)
                 li.pop("quantity_received", None)
+        elif current.get("received_items"):
+            # A bill going back to its purchase order keeps the order's receipts: the order
+            # reads as received, or as partly returned once goods went back from it.
+            current["status"] = "partial_returned" if current.get("returned_items") else _receipt_status(current)
         # Fulfillment state is independent of doc status - do not clear it here.
         # Revert lines (revert-lines) reverts fulfillment explicitly.
     elif event_type == "doc.unvoided":
@@ -383,29 +414,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             idx = received_line_index(line_items, recv)
             if idx is not None:
                 line_items[idx].setdefault("entity_id", assigned_id)
-        received_on: dict[int, float] = {}
-        for x in current["received_items"]:
-            idx = received_line_index(line_items, x)
-            if idx is not None:
-                received_on[idx] = received_on.get(idx, 0.0) + float(x.get("quantity_received", 0) or 0)
-        all_received = True
-        any_received = False
-        for idx, line in enumerate(line_items):
-            ordered = float(line.get("quantity", 0) or 0)
-            rec_qty = received_on.get(idx, 0.0)
-            # Update per-line received tracking
-            line["quantity_received"] = rec_qty
-            if rec_qty > 0:
-                any_received = True
-            if rec_qty + 1e-9 < ordered:
-                all_received = False
-
-        if line_items and all_received:
-            current["status"] = "received"
-        elif any_received:
-            current["status"] = "partially_received"
-        else:
-            current["status"] = _status_without_receipts(current)
+        current["status"] = _receipt_status(current)
     elif event_type == "doc.items_returned":
         returned = data.get("items", [])
         current.setdefault("returned_items", [])

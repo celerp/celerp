@@ -1316,6 +1316,10 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
 # stock-movement JEs (payments, credit-note applications, receiving, landed
 # cost, returns) are not recognition: they reverse through their own flows.
 _RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj")
+# The receipt entry of a purchase order imported as already received (create_for_po_received):
+# the order's whole total, booked at import in place of the entry its conversion to a bill
+# would have made, so it reverses and restores with the document as that entry would.
+_IMPORTED_RECEIPT = "rcv"
 _FULFILLMENT_COGS = re.compile(r"fulfill(?:-\d+)?")
 
 
@@ -1325,11 +1329,11 @@ def _recognition_root(suffix: str) -> str | None:
     The root is the suffix with any unvoid-restore generations stripped, so a
     restore shares its original's root: fin, fin:2, fin:unvoid, fin:2:unvoid:1
     all root to their cycle id; cogs-adj:fulfill-0:l0:unvoid:1 roots to
-    cogs-adj:fulfill-0:l0, fulfill-1:unvoid to fulfill-1. A payment (pay:0) or
-    receipt (rcv:0) suffix returns None.
+    cogs-adj:fulfill-0:l0, fulfill-1:unvoid to fulfill-1, rcv:unvoid:1 (an imported
+    order's receipt entry) to rcv. A payment (pay:0) or receipt (rcv:0) suffix returns None.
     """
     root = re.sub(r"(?::unvoid(?::\d+)?)+$", "", suffix)
-    if _FULFILLMENT_COGS.fullmatch(root):
+    if _FULFILLMENT_COGS.fullmatch(root) or root == _IMPORTED_RECEIPT:
         return root
     for family in _RECOGNITION_FAMILIES:
         if root == family or root.startswith(f"{family}:"):
@@ -1382,7 +1386,8 @@ async def _doc_void_events(session, company_id, doc_id: str) -> list:
     return [r for r in rows if r.entity_id.startswith(prefix)]
 
 
-async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
+async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0,
+                                 goods_movements: bool = True) -> None:
     """Void every posted recognition-family auto-JE when a doc reverts to draft
     (invoice or bill).
 
@@ -1393,13 +1398,16 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
     void, so the sweep only ever reverses what is live.
 
     A document reverts only once no received goods remain on it, so the entries
-    that booked its receipts and its returns to the supplier reverse with it.
+    that booked its receipts and its returns to the supplier reverse with it. A
+    bill going back to the purchase order it was made from, still holding goods
+    received on that order, passes goods_movements=False: those receipts and
+    returns stay with the order, and only the bill's own entries reverse.
 
     revert_count: the current revert_count from doc state (before this revert
     increments it), scoping the void idempotency keys per revert cycle.
     """
-    for suffix in [*await _doc_recognition_jes(session, company_id, doc_id),
-                   *await _doc_goods_movement_jes(session, company_id, doc_id)]:
+    moved = await _doc_goods_movement_jes(session, company_id, doc_id) if goods_movements else []
+    for suffix in dict.fromkeys([*await _doc_recognition_jes(session, company_id, doc_id), *moved]):
         await _void_je_if_posted(
             session,
             company_id=company_id,
