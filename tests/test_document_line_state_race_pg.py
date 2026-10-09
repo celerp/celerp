@@ -25,6 +25,9 @@ from celerp.events import engine
 from celerp.events.engine import emit_event
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
+from celerp.models.projections import Projection
+from celerp.services.account_roles import reconcile_company
+from celerp_accounting.routes import seed_chart_of_accounts
 from celerp_docs import routes as docs
 from celerp_inventory import routes as inventory
 
@@ -225,19 +228,25 @@ async def test_a_document_created_while_another_reserves_the_item_is_refused(com
     assert (item["status"], item["status_doc_id"]) == ("reserved", holder)
 
 
-def _credit_note(s, company_id, user, original: str, amount: float):
-    payload = docs.DocCreatePayload(doc_type="credit_note", original_doc_id=original,
-                                    subtotal=amount, total=amount)
-    return docs.create_doc(payload, company_id=company_id, _=None, role="admin", settings={},
-                           user=user, session=s)
+async def _credit_note(factory, company_id, user, original: str, amount: float) -> str:
+    """A draft credit note on ``original`` for ``amount``."""
+    async with factory() as s:
+        payload = docs.DocCreatePayload(
+            doc_type="credit_note", original_doc_id=original, subtotal=amount, total=amount,
+            line_items=[docs.LineItem(name="Credit", quantity=1, unit_price=amount, line_total=amount)])
+        out = await docs.create_doc(payload, company_id=company_id, _=None, role="admin", settings={},
+                                    user=user, session=s)
+        return out["id"]
 
 
-async def test_two_credit_notes_at_once_both_reduce_what_the_invoice_owes(committed_engine, monkeypatch):
-    """A credit note reads its invoice's balance after the other one has reduced it, so
-    neither reduction is lost."""
+async def test_two_credit_notes_issued_at_once_both_reduce_what_the_invoice_owes(committed_engine, monkeypatch):
+    """A credit note reads its invoice's balance after the other one has reduced it, even
+    with an older copy of the invoice in hand, so neither reduction is lost."""
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
     async with factory() as s:
+        await seed_chart_of_accounts(s, company_id)
+        await reconcile_company(s, company_id)
         await emit_event(
             s, company_id=company_id, entity_id="doc:INV", entity_type="doc", event_type="doc.created",
             data={"doc_type": "invoice", "ref_id": "INV", "status": "final", "line_items": [],
@@ -245,12 +254,15 @@ async def test_two_credit_notes_at_once_both_reduce_what_the_invoice_owes(commit
             actor_id=user.id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
         )
         await s.commit()
+    late_cn = await _credit_note(factory, company_id, user, "doc:INV", 30)
+    early_cn = await _credit_note(factory, company_id, user, "doc:INV", 20)
 
     async with factory() as first, factory() as second:
-        reached, release = _pause(monkeypatch, docs, "_lock_selected_contact", first)
-        late = asyncio.create_task(_credit_note(first, company_id, user, "doc:INV", 30))
+        await first.get(Projection, {"company_id": company_id, "entity_id": "doc:INV"})
+        reached, release = _pause(monkeypatch, docs, "locked_company", first)
+        late = asyncio.create_task(docs.finalize_document(late_cn, company_id, user, first))
         await asyncio.wait_for(reached.wait(), timeout=30)
-        await _credit_note(second, company_id, user, "doc:INV", 20)
+        await docs.finalize_document(early_cn, company_id, user, second)
         release.set()
         await asyncio.wait_for(late, timeout=30)
 
