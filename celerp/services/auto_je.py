@@ -1427,7 +1427,8 @@ async def imported_document(session, company_id, doc_id: str) -> ImportedDocumen
 async def _carriage_entries(session, company_id, imported: ImportedDocument) -> list[dict]:
     """What the opening balances hold for an imported document, as the entry its bill
     would book: a bill's whole entry; for a purchase order, each line's share received
-    when it was imported (tax and shipping take the goods' overall share)."""
+    when it was imported. A purchase order's receipts book only the goods, so its tax and
+    shipping are not in the opening balances; its bill books them when it is converted."""
     snapshot = imported.snapshot
     base_currency = await company_currency(session, company_id)
     built = await _bill_entries(session, company_id, imported.doc_id, snapshot, base_currency)
@@ -1444,16 +1445,13 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
         index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), x.get("sku"))
         if index is not None:
             received[index] = received.get(index, _Dec(0)) + to_decimal(x.get("quantity_received"))
-    share: dict[int, _Dec] = {}
-    for index, li in enumerate(lines):
-        ordered = to_decimal(li.get("quantity"))
-        share[index] = min(received.get(index, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
-    goods = sum((d for d, s in zip(debits, sources) if s is not None), _Dec(0))
-    overall = (sum((d * share[s] for d, s in zip(debits, sources) if s is not None), _Dec(0)) / goods
-               if goods else _Dec(0))
     carried = []
     for e, s, d in zip(entries, sources, debits):
-        amount = round_money(d * (share[s] if s is not None else overall), base_currency)
+        if s is None:
+            continue
+        ordered = to_decimal(lines[s].get("quantity"))
+        share = min(received.get(s, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
+        amount = round_money(d * share, base_currency)
         if amount:
             carried.append({**e, "debit": to_stored_float(amount)})
     if not carried:
