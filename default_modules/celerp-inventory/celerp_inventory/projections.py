@@ -500,6 +500,13 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # are single-sourced (DRY); nothing about them is copied onto the item row.
         current["status"] = "disposed"
         _stamp_status_doc(current, {"source_doc_id": data.get("source_list_id")})
+    elif event_type == "item.returned_to_supplier":
+        # Back with the supplier: the lot leaves stock, its badge links to the document the
+        # goods came in on, and consigned goods stop being held on consignment.
+        current["status"] = "disposed"
+        _stamp_status_doc(current, {"source_doc_id": data.get("source_doc_id")})
+        if "consignment_flag" in data:
+            current["consignment_flag"] = data["consignment_flag"]
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])

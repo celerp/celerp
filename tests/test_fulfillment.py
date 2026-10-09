@@ -2138,9 +2138,9 @@ async def test_reserve_carve_concurrent_no_lost_update(client, session, auth, _s
         return _types.SimpleNamespace(entity_id=mother_id, company_id=cid, state=copy.deepcopy(stale))
 
     # Two carves, each from the same stale parent snapshot (concurrent readers).
-    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3)
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3, action="ship")
     await session.commit()
-    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3)
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3, action="ship")
     await session.commit()
 
     items = (await client.get("/items", headers=auth["headers"])).json()["items"]
@@ -2208,13 +2208,13 @@ async def test_split_off_child_concurrent_over_capacity_rejects_second(client, s
         return _types.SimpleNamespace(entity_id=mother_id, company_id=cid, state=copy.deepcopy(stale))
 
     # First carve: 6 of 10, succeeds, leaves the locked parent at 4.
-    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6)
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6, action="ship")
     await session.commit()
 
     # Second carve, from the same stale (quantity == 10) snapshot: 6 of the now-locked 4
     # must be rejected, not silently floored.
     with pytest.raises(ValueError, match="6 of 4"):
-        await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6)
+        await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6, action="ship")
     await session.rollback()
 
     items = (await client.get("/items", headers=auth["headers"])).json()["items"]

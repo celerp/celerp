@@ -102,11 +102,16 @@ def doc_bound_lots(line_items: list[dict]) -> set[str]:
     """
     return {str(line_item_id(li)) for li in line_items if line_item_id(li)}
 
-def _draw(lots: list[dict], needed: float, remaining: dict[str, float] | None):
+def _draw(lots: list[dict], needed: float, remaining: dict[str, float] | None,
+          skipped: list[dict] | None = None):
     """Take ``needed`` units from ``lots`` in the given order. ``remaining`` holds the
     quantity each lot still has after earlier draws planned in the same operation (a lot
     absent from it has its full quantity) and is updated in place, so lines planned one
-    after another never take the same stock twice."""
+    after another never take the same stock twice.
+
+    A lot whose Allow Splitting is off is taken whole or not at all: one that would be
+    only partly drawn is passed over (and added to ``skipped`` when given), so the draw
+    moves on to the next lot instead of cutting it."""
     draws: list[tuple[dict, float, bool]] = []
     left = float(needed)
     seen: set[str] = set()
@@ -122,6 +127,10 @@ def _draw(lots: list[dict], needed: float, remaining: dict[str, float] | None):
         if avail <= 1e-9:
             continue
         take = min(left, avail)
+        if take < whole - 1e-9 and not splitting_allowed(lot.get("state", lot)):
+            if skipped is not None:
+                skipped.append(lot)
+            continue
         draws.append((lot, take, abs(take - avail) <= 1e-9))
         if remaining is not None:
             remaining[eid] = avail - take
@@ -224,16 +233,18 @@ def line_draw_sources(
 
 def plan_line_draws(
     needed: float, *, own: list[dict], primary: dict | None, free: list[dict],
-    method: str, remaining: dict[str, float], span: bool = True,
+    method: str, remaining: dict[str, float], span: bool = True, skipped: list[dict] | None = None,
 ) -> tuple[list[tuple[dict, float, bool]], float]:
     """Allocate a line's ``needed`` quantity: its own holds in line_draw_sources order,
     then its free bound lot, then - when the product may span lots - free lots
     of the same product in pick order. ``remaining`` is shared by every line planned in
     one operation. Returns ``(draws, shortfall)`` as plan_lot_draws does; a hold left
-    out of the draws (or only partly drawn) is more than the line now needs."""
+    out of the draws (or only partly drawn) is more than the line now needs. A lot that
+    may not be split and would be only partly drawn is passed over (see _draw) and
+    recorded in ``skipped`` when given."""
     order = list(own)
     if primary is not None:
         order.append(primary)
     if span:
         order.extend(_sorted_inventory(free, method))
-    return _draw(order, needed, remaining)
+    return _draw(order, needed, remaining, skipped)

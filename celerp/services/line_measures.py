@@ -16,6 +16,7 @@ way, so the rules live here:
 
 from __future__ import annotations
 
+from celerp.accounting_roles import refusal
 from celerp.services.units import is_pieces_unit, is_weight_unit
 
 
@@ -26,6 +27,29 @@ def splitting_allowed(state: dict) -> bool:
     blocks. Single source of truth for the split default across every consumer.
     """
     return state.get("allow_splitting") is not False
+
+
+# What a user was doing when a lot that may not be split stood in the way, as the verb
+# the refusal names (each a translated phrase of its own).
+_SPLIT_ACTIONS = {
+    "return": refusal("lots.split_action.return", "return"),
+    "ship": refusal("lots.split_action.ship", "ship"),
+    "reserve": refusal("lots.split_action.reserve", "reserve"),
+    "take_back": refusal("lots.split_action.take_back", "take back"),
+    "write_off": refusal("lots.split_action.write_off", "write off"),
+    "invoice": refusal("lots.split_action.invoice", "invoice"),
+}
+
+
+def splitting_off(sku: str, action: str) -> dict:
+    """The one refusal for moving part of a lot whose Allow Splitting is off. ``action``
+    is a key of _SPLIT_ACTIONS; the whole parcel can always move."""
+    verb = _SPLIT_ACTIONS[action]
+    return refusal(
+        "lots.splitting_off",
+        f"Allow Splitting is off for {sku}. To {verb['message']} part of it, turn on Allow "
+        f"Splitting for the item, or {verb['message']} the whole parcel.",
+        sku=sku, action=verb)
 
 
 def _g(value) -> str:
