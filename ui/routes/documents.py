@@ -8775,6 +8775,9 @@ async function _celerpInstallLineBody(html, version) {{
     }}
     const tbody = document.getElementById('{line_body_id}');
     if (!tbody || !html) return false;
+    // Swapping the rows out removes a focused field, and its blur would save the rows being
+    // replaced. Leave the field first without saving: the installed rows are the stored ones.
+    if (tbody.contains(document.activeElement)) _celerpQuietBlur(document.activeElement);
     tbody.outerHTML = html;
     const swapped = document.getElementById('{line_body_id}');
     htmx.process(swapped);
@@ -8980,12 +8983,47 @@ function _celerpShowReservedConflicts(conflicts) {{
 /* Auto-save on blur away from any row cell */
 window._celerpSaveTimer = null;
 function celerpAutoSave() {{
+    if (window._celerpBlurQuietly) return;
     window._celerpLineRevision += 1;
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = setTimeout(() => {{
         _celerpSaveTimer = null;
         _celerpPersist();
     }}, 400);
+}}
+/* Leave a line field without the save its blur would start. */
+function _celerpQuietBlur(el) {{
+    window._celerpBlurQuietly = true;
+    try {{ el.blur(); }} finally {{ window._celerpBlurQuietly = false; }}
+}}
+/* Line fields follow the click-to-edit keys: Enter commits the field (its blur saves) and
+   Escape puts back the value it had when focused and leaves it without saving. Escape runs
+   in the capture phase so the document-wide Escape handler, which only blurs, never sees it. */
+if (!window._celerpLineKeysBound) {{
+    window._celerpLineKeysBound = true;
+    const lineField = (e) => (e.target instanceof HTMLInputElement
+        && e.target.closest('#{line_body_id}')
+        && !['hidden', 'checkbox'].includes(e.target.type)) ? e.target : null;
+    document.addEventListener('focusin', (e) => {{
+        const field = lineField(e);
+        if (field) field.dataset.committed = field.value;
+    }});
+    document.addEventListener('keydown', (e) => {{
+        const field = lineField(e);
+        if (!field || e.key !== 'Escape') return;
+        e.preventDefault();
+        if (field.dataset.committed != null && field.value !== field.dataset.committed) {{
+            field.value = field.dataset.committed;
+            celerpUpdateTotals();
+        }}
+        _celerpQuietBlur(field);
+    }}, true);
+    document.addEventListener('keydown', (e) => {{
+        const field = lineField(e);
+        if (!field || e.key !== 'Enter' || e.defaultPrevented) return;
+        e.preventDefault();
+        field.blur();
+    }});
 }}
 function _celerpRepriceWarningKey() {{
     return 'celerp_reprice_skipped:' + _CELERP_EID;
