@@ -1546,7 +1546,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
         # alone carry none of these and are not offered for return.
         traced = await _line_return_lots(session, company_id, entity_id, row.state, lock=False)
         if traced is not None:
-            by_line, shared, kept, held, split_lots = traced
+            by_line, shared, kept, held, split_lots, _whole_only = traced
             sent_back: dict[str, float] = {}
             for x in doc.get("returned_items") or []:
                 sent_back[x["item_id"]] = sent_back.get(x["item_id"], 0.0) + float(x.get("quantity_returned") or 0)
@@ -4668,6 +4668,7 @@ class _LineReturnLots(NamedTuple):
     kept: dict[str, float]                         # lot -> units brought in, not sent back
     held: dict[int, dict[str, float]]              # line -> reason -> units it cannot send back now
     split_lots: dict[int, list[str]]               # line -> lots its goods were split off into
+    whole_only: dict[str, float]                   # lot that may not be split -> its quantity
 
 
 async def _split_descendants(session: AsyncSession, company_id, roots: list[str],
@@ -4765,7 +4766,9 @@ async def _line_return_lots(session: AsyncSession, company_id, doc_id: str, doc:
                 into.extend(x for x in labels if x not in into)
             for reason, units in reasons.items():
                 held.setdefault(index, {})[reason] = held.get(index, {}).get(reason, 0.0) + units
-    return _LineReturnLots(by_line, shared, kept, held, split_lots)
+    whole_only = {lot: float(st.get("quantity") or 0) for lot, st in states.items()
+                  if st is not None and not splitting_allowed(st)}
+    return _LineReturnLots(by_line, shared, kept, held, split_lots, whole_only)
 
 
 class ReturnItem(_StatedMeasures):
@@ -4812,10 +4815,59 @@ def _line_label(line: dict) -> str:
     return str(line.get("sku") or line.get("name") or line.get("description") or "--")
 
 
+def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
+                qty: float) -> list[tuple[str, float]]:
+    """How ``qty`` comes off a line's lots ([(lot, units it can send back)], in receipt order):
+    each lot in turn gives the most it can while the rest can still be made up from the lots
+    after it. A lot in ``whole_only`` (lot -> its quantity) may not be split, so it gives all
+    of itself or nothing. When no way to make up ``qty`` exists, the lots give in receipt order
+    and the part of a lot that may not be split is refused where every carve is."""
+    eps = 1e-9
+    # What the lots from each position on can make up together: closed ranges of units.
+    after: list[list[tuple[float, float]]] = [[(0.0, 0.0)]]
+    for lot, q in reversed(lots):
+        whole = whole_only.get(lot)
+        if whole is None:
+            spans = [(lo, hi + q) for lo, hi in after[0]]
+        elif q >= whole - eps:
+            spans = after[0] + [(lo + whole, hi + whole) for lo, hi in after[0]]
+        else:
+            spans = list(after[0])
+        merged: list[tuple[float, float]] = []
+        for lo, hi in sorted(spans):
+            if merged and lo <= merged[-1][1] + eps:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            else:
+                merged.append((lo, hi))
+        after.insert(0, merged)
+    feasible = any(lo - eps <= qty <= hi + eps for lo, hi in after[0])
+    left = qty
+    takes: list[tuple[str, float]] = []
+    for i, (lot, q) in enumerate(lots):
+        if feasible:
+            rest = after[i + 1]
+            whole = whole_only.get(lot)
+            if whole is not None:
+                options = [whole] if q >= whole - eps else []
+            else:
+                cap = min(q, left)
+                options = [min(cap, left - lo) for lo, hi in rest if left - hi <= cap + eps and left - lo >= -eps]
+            fits = [t for t in options if t <= left + eps
+                    and any(lo - eps <= left - t <= hi + eps for lo, hi in rest)]
+            take = max(fits, default=0.0)
+        else:
+            take = min(q, left)
+        if take > eps:
+            takes.append((lot, take))
+            left -= take
+    return takes
+
+
 async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, doc: dict,
                                 lines: list[ReturnLine]) -> list[tuple[ReturnItem, str | None]]:
     """The lots and quantities selected lines send back, each with its line's id: every line's
-    quantity is taken from its lots in receipt order, from goods on hand and free."""
+    quantity is taken from its lots in receipt order, from goods on hand and free, taking a
+    lot that may not be split only whole (``_line_takes``)."""
     doc_lines = doc.get("line_items") or []
     picked: list[int] = []
     for ln in lines:
@@ -4854,13 +4906,7 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
                 f"{_line_label(line)}: at most {free:g} received on this line is on hand and free to return. "
                 "Goods sold, out on memo or reserved go back to the supplier only once they are back in stock "
                 "and free.", name=_line_label(line), qty=f"{free:g}"))
-        left = float(ln.quantity_returned)
-        takes: list[tuple[str, float]] = []
-        for lot, q in lots:
-            take = min(q, left)
-            if take > 1e-9:
-                takes.append((lot, take))
-                left -= take
+        takes = _line_takes(lots, traced.whole_only, float(ln.quantity_returned))
         measures = {k: v for k, v in (("weight", ln.weight), ("pieces", ln.pieces)) if v is not None}
         if measures and len(takes) > 1:
             raise HTTPException(status_code=422, detail=refusal(
