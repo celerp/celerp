@@ -25,8 +25,6 @@ from test_receipt_accounting import _books, _doc, _finalize, _parcels
 from test_receive_goods_form import _Request, _Routes
 from test_receive_selected_lines import _issued, _post, _ReceiveRows, _stamp_line_ids, _stock_lines
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _return_lines(client, auth, doc_id: str, *lines: dict, **extra):
     return await client.post(f"/docs/{doc_id}/return-items", headers=auth["headers"],

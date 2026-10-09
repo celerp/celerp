@@ -17,8 +17,6 @@ from test_receipt_accounting import _doc, _finalize
 from test_receive_goods_form import _Request, _Routes
 from test_receive_selected_lines import _post, _stamp_line_ids
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _mixed_bill(client, session, auth) -> tuple[str, list[str]]:
     tag = uuid.uuid4().hex[:6]

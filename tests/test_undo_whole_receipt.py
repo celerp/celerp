@@ -21,8 +21,6 @@ from test_cost_restatement import _state
 from test_receipt_accounting import _books, _doc, _finalize, _receive, _return
 from test_receive_goods_form import _Request, _Routes
 
-pytestmark = pytest.mark.asyncio
-
 
 def _sku() -> str:
     return f"UW-{uuid.uuid4().hex[:6]}"

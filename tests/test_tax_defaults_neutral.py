@@ -8,11 +8,7 @@ import json
 import uuid
 from pathlib import Path
 
-import pytest
-
 from celerp.tax_regimes import TAX_REGIMES
-
-pytestmark = pytest.mark.asyncio
 
 _GENERIC = TAX_REGIMES["_default"]["taxes"]
 _CUSTOM_STANDARD = [{**_GENERIC[0], "rate": 12.0}, _GENERIC[1]]
