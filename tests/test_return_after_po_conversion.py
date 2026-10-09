@@ -158,17 +158,21 @@ async def test_legacy_po_receipt_returns_before_and_after_conversion(client, ses
     assert await _qty(session, auth, lot) == 10
 
 
-async def _imported_received_po(client, auth, lot: str) -> tuple[str, str]:
-    """A purchase order imported already received: its receipt onto ``lot`` is part of the
-    document as imported, with no receipt event of its own. -> (doc id, line id)."""
+async def _imported_received_po(client, auth, lot: str, qty: float = 5,
+                                received: float = 5) -> tuple[str, str]:
+    """A purchase order for ``qty`` imported with ``received`` of it already received: that
+    receipt onto ``lot`` is part of the document as imported, with no receipt event of its
+    own. -> (doc id, line id)."""
     doc_id, line_id = f"doc:{uuid.uuid4()}", str(uuid.uuid4())
     r = await client.post("/docs/import", headers=auth["headers"], json={
         "entity_id": doc_id, "event_type": "doc.created", "source": "test",
         "idempotency_key": uuid.uuid4().hex, "data": {
-            "doc_type": "purchase_order", "status": "received", "doc_number": f"PO-IMP-{uuid.uuid4().hex[:5]}",
-            "line_items": [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0, "line_id": line_id}],
-            "subtotal": 70.0, "total": 70.0, "amount_outstanding": 70.0,
-            "received_items": [{"item_id": lot, "po_line_index": 0, "quantity_received": 5.0, "receive_as": "stock"}],
+            "doc_type": "purchase_order", "status": "received" if received >= qty else "partially_received",
+            "doc_number": f"PO-IMP-{uuid.uuid4().hex[:5]}",
+            "line_items": [{"item_id": lot, "name": "Lot", "quantity": qty, "unit_price": 14.0, "line_id": line_id}],
+            "subtotal": 14.0 * qty, "total": 14.0 * qty, "amount_outstanding": 14.0 * qty,
+            "received_items": [{"item_id": lot, "po_line_index": 0, "quantity_received": float(received),
+                                "receive_as": "stock"}],
             "received_item_ids": []}})
     assert r.status_code == 200, r.text
     return doc_id, line_id
@@ -242,3 +246,78 @@ async def test_undoing_a_receipt_the_order_booked_then_receiving_and_returning_k
     assert (await _state(session, auth, lot))["cost_total"] == _OPENING
     assert await _stock_books(session, auth) == {"1130-OB": _OPENING, "1130-P": 28.0, "2110": -28.0}
     assert (await _state(session, auth, po))["amount_outstanding"] == 28.0
+
+
+_BOOKS = ("1130-OB", "1130-P", "2110")
+
+
+async def _held(session, auth, doc_id: str, lot: str) -> tuple:
+    """What a refused return must leave alone: the books, the lot and the document."""
+    session.expire_all()
+    lot_state, doc = await _state(session, auth, lot), await _state(session, auth, doc_id)
+    return (await _books(session, auth, *_BOOKS), lot_state.get("quantity"), lot_state.get("cost_base"),
+            doc.get("returned_items"), doc.get("amount_outstanding"), doc.get("status"))
+
+
+async def test_imported_po_receipt_cannot_be_returned_once_a_bill(client, session, auth):
+    """The bill books goods the order held when imported as not yet received, while the lot
+    already carries them, so returning them on the bill would leave the books unsettled."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po, line_id = await _imported_received_po(client, auth, lot)
+    await _converted(client, session, auth, po)
+    before = await _held(session, auth, po, lot)
+
+    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 2})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "docs.return_imported_on_bill"
+    sku = (await _state(session, auth, lot)).get("sku") or lot
+    assert detail["message"] == (f"Cannot return 2 of {sku} on this bill: at most 0 of it was received here. "
+                                 "Goods the purchase order already held when it was imported cannot be "
+                                 "returned once it is a bill.")
+    r = await client.post(f"/docs/{po}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_imported_on_bill"
+    assert await _held(session, auth, po, lot) == before
+
+
+async def test_bill_returns_what_it_received_but_not_what_it_was_imported_with(client, session, auth):
+    """An order imported with 4 of 10 received, then 3 more received on it, is a bill holding
+    7 in the lot: the 3 it received go back, a return reaching into the imported 4 is refused
+    whole, by line or by lot."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po, line_id = await _imported_received_po(client, auth, lot, qty=10, received=4)
+    r = await _post(client, auth, po, {"source_line_id": line_id, "item_id": lot, "quantity_received": 3,
+                                       "receive_as": "stock"})
+    assert r.status_code == 200, r.text
+    assert await _qty(session, auth, lot) == 13
+    await _converted(client, session, auth, po)
+    before = await _held(session, auth, po, lot)
+
+    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 4})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_imported_on_bill"
+    sku = (await _state(session, auth, lot)).get("sku") or lot
+    assert r.json()["detail"]["params"] == {"qty": "4", "sku": sku, "received": "3"}
+    r = await client.post(f"/docs/{po}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2},
+                                          {"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_imported_on_bill"
+    assert await _held(session, auth, po, lot) == before
+
+    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 2})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{po}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    assert await _qty(session, auth, lot) == 10
+    # The 3 went back at what the receipt booked them for, settling the bill's 42 owing on them.
+    books = await _books(session, auth, *_BOOKS)
+    assert books["1130-OB"] == before[0]["1130-OB"] - 42.0
+    assert books["2110"] == before[0]["2110"] + 42.0
+    r = await client.post(f"/docs/{po}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 1}]})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_imported_on_bill"

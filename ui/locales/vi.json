@@ -4472,6 +4472,7 @@
   "docs.return_line_untraced": "Một số hàng nhận trên chứng từ này không truy được về dòng của nó, nên không thể trả lại theo dòng.",
   "docs.return_not_on_hand": "Không thể trả lại {sku}: trạng thái là {status}, không có trong kho. Hàng đã bán, đang gửi theo phiếu ký gửi hoặc đã giữ chỉ được trả lại nhà cung cấp khi đã về kho và không bị giữ.",
   "docs.return_more_than_free": "Không thể trả lại {qty} của {sku}: có {free} trong kho và không bị giữ.",
+  "docs.return_imported_on_bill": "Không thể trả lại {qty} của {sku} trên hóa đơn này: tối đa {received} được nhận tại đây. Hàng mà đơn mua hàng đã có khi được nhập vào không thể trả lại sau khi nó thành hóa đơn.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Mỗi tài khoản được thêm cần có mã.",
   "posting.added_needs_name": "Mỗi tài khoản được thêm cần có tên.",

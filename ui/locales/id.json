@@ -4472,6 +4472,7 @@
   "docs.return_line_untraced": "Sebagian barang yang diterima pada dokumen ini tidak dapat ditelusuri ke barisnya, jadi tidak dapat dikembalikan per baris.",
   "docs.return_not_on_hand": "Tidak dapat mengembalikan {sku}: statusnya {status}, tidak ada di stok. Barang yang terjual, keluar dengan memo, atau dipesan kembali ke pemasok hanya setelah kembali ke stok dan bebas.",
   "docs.return_more_than_free": "Tidak dapat mengembalikan {qty} dari {sku}: {free} ada di stok dan tidak dipesan.",
+  "docs.return_imported_on_bill": "Tidak dapat mengembalikan {qty} dari {sku} pada tagihan ini: paling banyak {received} diterima di sini. Barang yang sudah dimiliki pesanan pembelian saat diimpor tidak dapat dikembalikan setelah menjadi tagihan.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Setiap akun yang ditambahkan memerlukan kode.",
   "posting.added_needs_name": "Setiap akun yang ditambahkan memerlukan nama.",

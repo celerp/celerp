@@ -4512,29 +4512,45 @@ def _stock_receipt(x: dict) -> bool:
     return (x.get("receive_as") or "stock") == "stock"
 
 
-async def _receipt_events(session: AsyncSession, company_id, doc_id: str, received: list[dict],
-                          made: list[str]) -> list[tuple[list[dict], list[str]]] | None:
-    """The document's receipts as their events recorded them, oldest first: (entries, parcels
-    made) per receipt, for the receipts the document still holds. Receipts the document
-    already held when it was imported have no event of their own and count as one receipt,
-    read from the document. None when the receipts do not add up to what the document holds."""
+async def _recorded_receipts(session: AsyncSession, company_id, doc_id: str,
+                             held: int) -> list[tuple[list[dict], list[str]]]:
+    """The receipts recorded by the document's own receive events, oldest first: (entries,
+    parcels made) per receipt, for the last ``held`` receipt entries the document holds."""
     from celerp.models.ledger import LedgerEntry
 
     rows = (await session.execute(select(LedgerEntry.data).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id == doc_id,
         LedgerEntry.event_type == "doc.received").order_by(LedgerEntry.id.desc()))).scalars().all()
     receipts: list[tuple[list[dict], list[str]]] = []
-    count = made_count = 0
+    count = 0
     for data in rows:
-        if count >= len(received):
+        if count >= held:
             break
         entries = list((data or {}).get("received_items") or [])
-        created = list((data or {}).get("created_item_ids") or [])
-        receipts.insert(0, (entries, created))
+        receipts.insert(0, (entries, list((data or {}).get("created_item_ids") or [])))
         count += len(entries)
-        made_count += len(created)
-    if count < len(received):
-        receipts.insert(0, (received[:len(received) - count], made[:len(made) - made_count]))
+    return receipts
+
+
+def _imported_part(received: list[dict], made: list[str],
+                   recorded: list[tuple[list[dict], list[str]]]) -> tuple[list[dict], list[str]]:
+    """The receipt entries and parcels the document already held when it was imported: what
+    it holds ahead of what its receive events recorded."""
+    count = sum(len(entries) for entries, _ in recorded)
+    made_count = sum(len(created) for _, created in recorded)
+    return received[:max(0, len(received) - count)], made[:max(0, len(made) - made_count)]
+
+
+async def _receipt_events(session: AsyncSession, company_id, doc_id: str, received: list[dict],
+                          made: list[str]) -> list[tuple[list[dict], list[str]]] | None:
+    """The document's receipts as their events recorded them, oldest first: (entries, parcels
+    made) per receipt, for the receipts the document still holds. Receipts the document
+    already held when it was imported have no event of their own and count as one receipt,
+    read from the document. None when the receipts do not add up to what the document holds."""
+    receipts = await _recorded_receipts(session, company_id, doc_id, len(received))
+    imported, imported_made = _imported_part(received, made, receipts)
+    if imported:
+        receipts.insert(0, (imported, imported_made))
     if ([x for entries, _ in receipts for x in entries] != received
             or [i for _, created in receipts for i in created] != made):
         return None
@@ -4613,6 +4629,38 @@ async def _returnable_quantities(session: AsyncSession, company_id, doc_id: str,
         if x.get("item_id") in got:
             got[x["item_id"]] -= float(x.get("quantity_returned") or 0)
     return got
+
+
+async def _refuse_imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc: dict,
+                                   items: list[ReturnItem], lots: dict) -> None:
+    """Refuse a return on a bill that reaches into goods its purchase order already held when
+    it was imported. The bill books those goods as not yet received while their lot already
+    carries them, so sending them back would leave the bill owing for them. Each lot gives
+    back at most what the document's own receipts brought into it, less what went back from
+    it already: a return takes a receipt's units first (``_lot_additions``)."""
+    if doc.get("doc_type") != "bill":
+        return
+    received = list(doc.get("received_items") or [])
+    made = list(doc.get("received_item_ids") or [])
+    recorded = await _recorded_receipts(session, company_id, doc_id, len(received))
+    imported, imported_made = _imported_part(received, made, recorded)
+    if not imported:
+        return
+    own = await _returnable_quantities(session, company_id, doc_id, {
+        **doc, "received_items": received[len(imported):], "received_item_ids": made[len(imported_made):]})
+    asked: dict[str, float] = {}
+    for it in items:
+        asked[it.item_id] = asked.get(it.item_id, 0.0) + float(it.quantity_returned)
+    for item_id, qty in asked.items():
+        allowed = max(0.0, own.get(item_id, 0.0))
+        if qty > allowed + 1e-9:
+            lot = lots.get(item_id)
+            sku = (lot.state.get("sku") if lot is not None else None) or item_id
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.return_imported_on_bill",
+                f"Cannot return {qty:g} of {sku} on this bill: at most {allowed:g} of it was received here. "
+                "Goods the purchase order already held when it was imported cannot be returned once it is a bill.",
+                qty=f"{qty:g}", sku=sku, received=f"{allowed:g}"))
 
 
 def _receipt_lots_by_line(state: dict, lots: list[tuple[str, bool] | None]
@@ -4975,6 +5023,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     # Owned goods leave the books at what they carried; consigned goods were never on them.
     owned = doc_type != "consignment_in"
     lots = await lock_projections(session, company_id, [it.item_id for it in items])
+    await _refuse_imported_on_bill(session, company_id, entity_id, row.state, items, lots)
     added = _lot_additions(row.state)
     unit_map = await _get_unit_map(session, company_id)
     currency = await auto_je.company_currency(session, company_id)

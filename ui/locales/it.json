@@ -4472,6 +4472,7 @@
   "docs.return_line_untraced": "Parte della merce ricevuta su questo documento non è riconducibile alla sua riga, quindi non può essere resa per riga.",
   "docs.return_not_on_hand": "Impossibile rendere {sku}: è {status}, non a magazzino. La merce venduta, in conto visione o riservata torna al fornitore solo quando è di nuovo a magazzino e libera.",
   "docs.return_more_than_free": "Impossibile rendere {qty} di {sku}: {free} è a magazzino e non riservato.",
+  "docs.return_imported_on_bill": "Impossibile rendere {qty} di {sku} su questa fattura: al massimo {received} è stato ricevuto qui. La merce che l'ordine d'acquisto aveva già quando è stato importato non può essere resa una volta che è una fattura.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Ogni conto aggiunto deve avere un codice.",
   "posting.added_needs_name": "Ogni conto aggiunto deve avere un nome.",

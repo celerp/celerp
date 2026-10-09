@@ -4470,6 +4470,7 @@
   "docs.return_line_untraced": "この書類で入荷した商品の一部は明細までたどれないため、明細ごとに返品できません。",
   "docs.return_not_on_hand": "{sku} は返品できません。状態が {status} で在庫にありません。販売済み、メモ出し中、または予約済みの商品は、在庫に戻り空きになってから仕入先に返品できます。",
   "docs.return_more_than_free": "{sku} を {qty} 返品できません。在庫にあり予約されていないのは {free} です。",
+  "docs.return_imported_on_bill": "この請求書で {sku} を {qty} 返品できません。ここで入荷したのは最大 {received} です。発注書をインポートした時点ですでにあった商品は、請求書になった後は返品できません。",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "追加する勘定科目にはコードが必要です。",
   "posting.added_needs_name": "追加する勘定科目には名前が必要です。",

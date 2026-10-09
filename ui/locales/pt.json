@@ -4472,6 +4472,7 @@
   "docs.return_line_untraced": "Algumas mercadorias recebidas neste documento não podem ser ligadas à sua linha, por isso não podem ser devolvidas por linha.",
   "docs.return_not_on_hand": "Não é possível devolver {sku}: está {status}, fora do estoque. Mercadorias vendidas, em consignação ou reservadas voltam ao fornecedor só quando estiverem de novo em estoque e livres.",
   "docs.return_more_than_free": "Não é possível devolver {qty} de {sku}: {free} está em estoque e não reservado.",
+  "docs.return_imported_on_bill": "Não é possível devolver {qty} de {sku} nesta fatura: no máximo {received} foi recebido aqui. Mercadorias que a ordem de compra já tinha quando foi importada não podem ser devolvidas depois que ela vira uma fatura.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Cada conta adicionada precisa de um código.",
   "posting.added_needs_name": "Cada conta adicionada precisa de um nome.",

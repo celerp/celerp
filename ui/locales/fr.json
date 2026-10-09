@@ -4472,6 +4472,7 @@
   "docs.return_line_untraced": "Certaines marchandises reçues sur ce document ne peuvent pas être rattachées à leur ligne, elles ne peuvent donc pas être renvoyées par ligne.",
   "docs.return_not_on_hand": "Impossible de renvoyer {sku} : son statut est {status}, il n'est pas en stock. Les marchandises vendues, en dépôt ou réservées ne repartent chez le fournisseur qu'une fois revenues en stock et libres.",
   "docs.return_more_than_free": "Impossible de renvoyer {qty} de {sku} : {free} est en stock et non réservé.",
+  "docs.return_imported_on_bill": "Impossible de renvoyer {qty} de {sku} sur cette facture : au plus {received} a été reçu ici. Les marchandises que le bon de commande détenait déjà à son import ne peuvent plus être renvoyées une fois qu'il est devenu une facture.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Chaque compte ajouté doit avoir un numéro.",
   "posting.added_needs_name": "Chaque compte ajouté doit avoir un nom.",
