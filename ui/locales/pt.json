@@ -4426,5 +4426,6 @@
   "company_reset.outside_reference": "Esta empresa não pode ser redefinida porque a tabela {table}, criada fora do Celerp (por um módulo instalado ou uma alteração direta no banco de dados), faz referência a registros do Celerp. Nada foi excluído. Peça a quem instalou esse módulo ou alterou o banco de dados que remova essa referência.",
   "company_reset.partition_key": "Esta empresa não pode ser redefinida porque a tabela {table} foi alterada fora do Celerp (por um módulo instalado ou uma alteração direta no banco de dados) de um jeito que a redefinição não consegue tratar com segurança. Nada foi excluído. Peça a quem instalou esse módulo ou alterou o banco de dados que corrija isso.",
   "company_reset.reference_cycle": "As tabelas {tables} fazem referência umas às outras em ciclo, por isso esta empresa não pode ser redefinida. Nada foi excluído.",
-  "shell.unknown_error": "Erro desconhecido"
+  "shell.unknown_error": "Erro desconhecido",
+  "documents.cost_moved_with_goods": "O lote {sku} estava reservado para a fatura {doc}. O custo da fatura {doc} será registrado quando ela for enviada."
 }

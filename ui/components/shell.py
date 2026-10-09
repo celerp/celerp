@@ -107,6 +107,12 @@ function celerpToast(message, type, persist, action) {
   // is clicked; the rest auto-dismiss after 6s.
   if (!persist) setTimeout(function() { _dismissToast(toast); }, 6000);
 }
+document.addEventListener('DOMContentLoaded', function() {
+  var kept = sessionStorage.getItem('celerpToast');
+  if (!kept) return;
+  sessionStorage.removeItem('celerpToast');
+  try { kept = JSON.parse(kept); celerpToast(kept.message, kept.type || 'error', kept.persist); } catch(ex) {}
+});
 function _dismissToast(toast) {
   toast.classList.remove('toast--visible');
   setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
@@ -116,7 +122,11 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!hdr) return;
   try {
     var obj = JSON.parse(hdr);
-    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
+    // A notice sent with a redirect would vanish with the page it was shown on: keep
+    // it for the next page instead.
+    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) {
+      sessionStorage.setItem('celerpToast', JSON.stringify(obj.celerpToast));
+    } else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;

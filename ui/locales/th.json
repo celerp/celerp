@@ -4426,5 +4426,6 @@
   "company_reset.reference_cycle": "ตาราง {tables} อ้างอิงถึงกันเป็นวง จึงรีเซ็ตบริษัทนี้ไม่ได้ ไม่มีการลบข้อมูลใด",
   "settings.type_reset_prefix": "พิมพ์ ",
   "settings.type_reset_suffix": " เพื่อยืนยัน การดำเนินการนี้ไม่สามารถย้อนกลับได้",
-  "shell.unknown_error": "ข้อผิดพลาดที่ไม่ทราบสาเหตุ"
+  "shell.unknown_error": "ข้อผิดพลาดที่ไม่ทราบสาเหตุ",
+  "documents.cost_moved_with_goods": "ล็อต {sku} ถูกกันไว้สำหรับใบแจ้งหนี้ {doc} ต้นทุนของใบแจ้งหนี้ {doc} จะถูกบันทึกเมื่อจัดส่ง"
 }

@@ -4426,5 +4426,6 @@
   "company_reset.outside_reference": "Perusahaan ini tidak dapat diatur ulang karena tabel {table}, yang ditambahkan di luar Celerp (oleh modul yang dipasang atau perubahan langsung pada basis data), merujuk ke catatan Celerp. Tidak ada yang dihapus. Minta orang yang memasang modul itu atau mengubah basis data untuk menghapus rujukan tersebut.",
   "company_reset.partition_key": "Perusahaan ini tidak dapat diatur ulang karena tabel {table} diubah di luar Celerp (oleh modul yang dipasang atau perubahan langsung pada basis data) dengan cara yang tidak dapat ditangani dengan aman saat pengaturan ulang. Tidak ada yang dihapus. Minta orang yang memasang modul itu atau mengubah basis data untuk memperbaikinya.",
   "company_reset.reference_cycle": "Tabel {tables} saling merujuk dalam satu lingkaran, jadi perusahaan ini tidak dapat diatur ulang. Tidak ada yang dihapus.",
-  "shell.unknown_error": "Kesalahan tidak diketahui"
+  "shell.unknown_error": "Kesalahan tidak diketahui",
+  "documents.cost_moved_with_goods": "Lot {sku} disisihkan untuk faktur {doc}. Biaya faktur {doc} akan dicatat saat dikirim."
 }

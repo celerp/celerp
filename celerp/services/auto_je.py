@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import SimpleNamespace
 from decimal import Decimal as _Dec
 
 from celerp.accounting_roles import (
@@ -43,7 +44,7 @@ from celerp.services.account_roles import (
 from celerp.services.business_time import business_date_of
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.lot_origin import held_value
+from celerp.services.lot_origin import held_value, in_stock, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
@@ -378,7 +379,13 @@ async def compute_doc_cogs(
     span_consumed: set[str] = set()
     claimed: dict[str, float] = {}
     if span_lots:
-        for claim in await unshipped_claims(session, company_id, exclude=doc_id):
+        skus = {str(li.get("sku") or "").strip() for li in line_items} - {""}
+        for li in line_items:
+            item_id = li.get("item_id") or li.get("entity_id")
+            row = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)}) if item_id else None
+            if row is not None and (row.state or {}).get("sku"):
+                skus.add(str(row.state["sku"]).strip())
+        for claim in await unshipped_claims(session, company_id, exclude=doc_id, skus=skus):
             claimed[claim.lot_id] = claimed.get(claim.lot_id, 0.0) + claim.qty
     for index, li in enumerate(line_items):
         line_qty = float(li.get("quantity") or 0)
@@ -1551,12 +1558,14 @@ class RecognizedCogs:
     """The per-line COGS a doc's live finalize-family JE recognized.
 
     cycle is the recognition root of that JE (fin, fin:2, ...), shared by its
-    unvoid restores; allocations is the snapshot keyed by line index; at is when that
-    JE was created, the order invoices took their goods in."""
+    unvoid restores; allocations is the snapshot keyed by line index, less the goods
+    other invoices shipped and took the cost of since (cost moves); je_id is that JE
+    and seq the ledger id of its creation, the order invoices took their goods in."""
 
     cycle: str
     allocations: dict
-    at: datetime | None = None
+    je_id: str = ""
+    seq: int = 0
 
 
 def _finalize_root(doc_id: str, je_id: str) -> str | None:
@@ -1568,43 +1577,101 @@ def _finalize_root(doc_id: str, je_id: str) -> str | None:
     return root if root is not None and (root == "fin" or root.startswith("fin:")) else None
 
 
+def _finalize_doc(je_id: str, doc_ids: set[str]) -> str | None:
+    """The doc of ``doc_ids`` whose finalize-family JE ``je_id`` is, or None."""
+    body = je_id[len("je:auto:"):] if je_id.startswith("je:auto:") else ""
+    at = body.find(":fin")
+    while at > 0:
+        if body[:at] in doc_ids and _finalize_root(body[:at], je_id) is not None:
+            return body[:at]
+        at = body.find(":fin", at + 1)
+    return None
+
+
+async def _created_metadata(session, company_id, je_ids) -> dict[str, tuple[int, dict]]:
+    """je id -> (ledger id, metadata) of the latest creation event of each JE."""
+    from celerp.models.ledger import LedgerEntry
+
+    if not je_ids:
+        return {}
+    rows = (await session.execute(
+        _select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+            LedgerEntry.entity_id.in_(sorted(je_ids)),
+        ).order_by(LedgerEntry.id)
+    )).all()
+    return {je_id: (seq, metadata_ or {}) for seq, je_id, metadata_ in rows}
+
+
+async def _recognitions(session, company_id, doc_ids) -> dict[str, RecognizedCogs]:
+    """recognized_cogs for each of ``doc_ids``, read in a fixed number of queries."""
+    docs = set(doc_ids)
+    if not docs:
+        return {}
+    query = _select(Projection.entity_id, Projection.created_at, Projection.state["status"].as_string()).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry")
+    if len(docs) == 1:
+        query = query.where(Projection.entity_id.startswith(f"je:auto:{next(iter(docs))}:", autoescape=True))
+    else:
+        query = query.where(Projection.entity_id.like("je:auto:%:fin%"))
+    live: dict[str, tuple[str, datetime | None]] = {}
+    for je_id, created_at, status in (await session.execute(query)).all():
+        doc_id = _finalize_doc(je_id, docs) if status == "posted" else None
+        if doc_id is None:
+            continue
+        current = live.get(doc_id)
+        if current is None or (created_at is not None and (current[1] is None or created_at > current[1])):
+            live[doc_id] = (je_id, created_at)
+    created = await _created_metadata(session, company_id, {je_id for je_id, _at in live.values()})
+    moved = await _cost_moves(session, company_id, from_jes={je_id for je_id, _at in live.values()})
+    out: dict[str, RecognizedCogs] = {}
+    for doc_id, (je_id, _at) in live.items():
+        seq, metadata_ = created.get(je_id, (0, {}))
+        allocations = metadata_.get("cogs_allocations")
+        if allocations:
+            out[doc_id] = RecognizedCogs(
+                cycle=_finalize_root(doc_id, je_id), je_id=je_id, seq=seq,
+                allocations=_less_moved(allocations, [m for e in moved if e["from_je"] == je_id
+                                                      for m in e["moves"]]))
+    return out
+
+
 async def recognized_cogs(session, company_id, doc_id: str) -> RecognizedCogs | None:
     """The COGS the doc's currently posted finalize-family JE recognized.
 
     Reads the allocation snapshot off the creation event of the currently posted
-    finalize-family JE (fin, a re-finalize cycle, or an unvoid restore of one).
+    finalize-family JE (fin, a re-finalize cycle, or an unvoid restore of one), less
+    the goods other invoices shipped and took the cost of from it (cost moves).
     None when no posted finalize-family JE carries a snapshot - which is every doc
     finalized before snapshots existed, where there is no recognized basis to
     true up against and no adjustment may be posted.
     """
-    from celerp.models.ledger import LedgerEntry
+    return (await _recognitions(session, company_id, [doc_id])).get(doc_id)
 
-    live = None
-    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items():
-        if _finalize_root(doc_id, row.entity_id) is None or (row.state or {}).get("status") != "posted":
+
+def _less_moved(allocations: dict, moves: list[dict]) -> dict:
+    """An allocation snapshot less the goods cost moves took from it: each moved
+    quantity leaves its lot and becomes provisional (costed when the line ships), and
+    the line's amount gives up the cost that moved."""
+    if not moves:
+        return allocations
+    out = {idx: {**alloc, "lots": [dict(lot) for lot in alloc.get("lots") or []]}
+           for idx, alloc in allocations.items()}
+    for move in moves:
+        alloc = out.get(str(move["line"]))
+        if alloc is None:
             continue
-        if live is None or (
-            row.created_at is not None
-            and (live.created_at is None or row.created_at > live.created_at)
-        ):
-            live = row
-    if live is None:
-        return None
-    created = (await session.execute(
-        _select(LedgerEntry)
-        .where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.entity_id == live.entity_id,
-            LedgerEntry.event_type == "acc.journal_entry.created",
-        )
-        .order_by(LedgerEntry.id.desc())
-        .limit(1)
-    )).scalars().first()
-    allocations = ((created.metadata_ or {}) if created is not None else {}).get("cogs_allocations")
-    if not allocations:
-        return None
-    return RecognizedCogs(cycle=_finalize_root(doc_id, live.entity_id), allocations=allocations,
-                          at=live.created_at)
+        left = float(move["qty"])
+        for lot in alloc["lots"]:
+            if lot.get("lot_entity_id") == move["lot_id"] and left > 1e-9:
+                take = min(float(lot.get("qty") or 0), left)
+                lot["qty"] = float(lot.get("qty") or 0) - take
+                left -= take
+        alloc["lots"] = [lot for lot in alloc["lots"] if float(lot.get("qty") or 0) > 1e-9]
+        alloc["provisional_qty"] = float(alloc.get("provisional_qty") or 0) + float(move["qty"]) - left
+        alloc["amount"] = max(0.0, float(alloc.get("amount") or 0) - float(move["amount"]))
+    return out
 
 
 def lot_cost_of_sale(state: dict) -> float:
@@ -1737,7 +1804,7 @@ async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot
 
 async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple[str, str, int], float]:
     """{(doc_id, finalize cycle, line index): quantity} for every current finalize
-    allocation that prices a line at this lot.
+    allocation that prices a line at this lot, less what cost moves took from it.
 
     Current means the doc's latest finalize cycle, whether that cycle's JE is
     posted or voided, so a correction reaches a voided invoice when it is restored.
@@ -1753,6 +1820,7 @@ async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple
             cast(LedgerEntry.metadata_, Text).like(f"%{lot_id}%"),
         )
     )).all()
+    moved = await _cost_moves(session, company_id, from_jes={je_id for je_id, _m in rows})
     found: dict[tuple[str, str, int], float] = {}
     for je_id, metadata_ in rows:
         doc_id = (metadata_ or {}).get("doc_id")
@@ -1766,6 +1834,7 @@ async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple
         revert_count = int((doc.state or {}).get("revert_count") or 0)
         if cycle != (f"fin:{revert_count}" if revert_count else "fin"):
             continue
+        allocations = _less_moved(allocations, [m for e in moved if e["from_je"] == je_id for m in e["moves"]])
         for idx, alloc in allocations.items():
             qty = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])
                       if lot.get("lot_entity_id") == lot_id)
@@ -1774,8 +1843,9 @@ async def allocations_naming_lot(session, company_id, lot_id: str) -> dict[tuple
     return found
 
 
-async def _recorded_repricings(session, company_id, doc_id: str, cycle: str) -> dict[int, float]:
-    """line index -> total cost correction recorded against the doc's finalize cycle."""
+async def _repricings(session, company_id) -> dict[tuple[str, str], dict[int, float]]:
+    """(doc id, finalize cycle) -> line index -> total cost correction recorded against
+    that cycle."""
     from sqlalchemy import Text, cast
 
     from celerp.models.ledger import LedgerEntry
@@ -1787,54 +1857,99 @@ async def _recorded_repricings(session, company_id, doc_id: str, cycle: str) -> 
             cast(LedgerEntry.metadata_, Text).like("%cogs_repriced%"),
         )
     )).scalars().all()
-    by_line: dict[int, float] = {}
+    out: dict[tuple[str, str], dict[int, float]] = {}
     for metadata_ in rows:
         for rec in (metadata_ or {}).get("cogs_repriced") or []:
-            if rec.get("doc_id") == doc_id and rec.get("cycle") == cycle:
-                line = int(rec["line"])
-                by_line[line] = by_line.get(line, 0.0) + float(rec["amount"])
-    return by_line
+            by_line = out.setdefault((rec.get("doc_id"), rec.get("cycle")), {})
+            by_line[int(rec["line"])] = by_line.get(int(rec["line"]), 0.0) + float(rec["amount"])
+    return out
 
 
-async def _lots_by_fulfillment_on_doc(session, company_id, doc_id: str) -> tuple[list[Projection], list[tuple[Projection, float]]]:
-    """The lots this doc ships (latest fulfillment event for the doc not reversed), and the
-    lots it took back into stock and no longer holds, each with the quantity that came back.
-    A lot reversed and then reserved to the doc again is still held for it, so it is in
-    neither list."""
+@dataclass
+class _Shipments:
+    """What invoices shipped, read once for many: per doc, the lots it ships (latest
+    fulfillment event for the doc not reversed) and the lots it took back into stock and
+    no longer holds, each with the quantity that came back (a lot reversed and then
+    reserved to the doc again is still held for it, so it is in neither), and per
+    (doc, lot) the line index its latest fulfillment for the doc recorded."""
+
+    out: dict[str, list[Projection]] = field(default_factory=dict)
+    back: dict[str, list[tuple[Projection, float]]] = field(default_factory=dict)
+    recorded: dict[tuple[str, str], int | None] = field(default_factory=dict)
+
+
+async def _load_rows(session, company_id, entity_ids) -> dict[str, Projection]:
+    """The projections of ``entity_ids``, in one query."""
+    if not entity_ids:
+        return {}
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(sorted(entity_ids))))).scalars().all()
+    return {r.entity_id: r for r in rows}
+
+
+async def _shipments(session, company_id, doc_ids) -> _Shipments:
     from celerp.models.ledger import LedgerEntry
 
+    result = _Shipments()
+    if not doc_ids:
+        return result
     rows = (await session.execute(
-        _select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+        _select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "item",
             LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
-            LedgerEntry.data["source_doc_id"].as_string() == doc_id,
+            LedgerEntry.data["source_doc_id"].as_string().in_(sorted(doc_ids)),
         ).order_by(LedgerEntry.id)
     )).all()
-    last: dict[str, tuple[str, dict]] = {}
-    for entity_id, event_type, data in rows:
-        last[entity_id] = (event_type, data or {})
-    out: list[Projection] = []
-    back: list[tuple[Projection, float]] = []
-    for entity_id, (event_type, data) in sorted(last.items()):
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    last: dict[tuple[str, str], tuple[str, dict]] = {}
+    for entity_id, event_type, data, metadata_ in rows:
+        key = (str((data or {}).get("source_doc_id")), entity_id)
+        last[key] = (event_type, data or {})
+        if event_type == "item.fulfilled":
+            result.recorded[key] = recorded_line_index(SimpleNamespace(metadata_=metadata_))
+    lots = await _load_rows(session, company_id, {lot_id for _doc, lot_id in last})
+    for (doc_id, lot_id), (event_type, data) in sorted(last.items()):
+        row = lots.get(lot_id)
         if row is None:
             continue
         if event_type == "item.fulfilled":
-            out.append(row)
+            result.out.setdefault(doc_id, []).append(row)
         elif not ((row.state or {}).get("status") == "reserved" and (row.state or {}).get("status_doc_id") == doc_id):
-            back.append((row, float(data.get("quantity_restored") or 0)))
-    return out, back
+            result.back.setdefault(doc_id, []).append((row, float(data.get("quantity_restored") or 0)))
+    return result
+
+
+@dataclass
+class _Books:
+    """What reading many invoices' recognized cost needs, read once (_read_books)."""
+
+    recognized: dict[str, RecognizedCogs]
+    shipments: _Shipments
+    repriced: dict[tuple[str, str], dict[int, float]]
+    payable_codes: frozenset
+
+
+async def _read_books(session, company_id, doc_ids) -> _Books:
+    """The recognitions, shipments and cost corrections of ``doc_ids``, with every lot
+    they name loaded into the session, in a fixed number of queries."""
+    recognized = await _recognitions(session, company_id, doc_ids)
+    shipments = await _shipments(session, company_id, set(recognized))
+    await _load_rows(session, company_id, {lot["lot_entity_id"] for r in recognized.values()
+                                           for alloc in r.allocations.values() for lot in alloc.get("lots") or []})
+    return _Books(recognized=recognized, shipments=shipments, repriced=await _repricings(session, company_id),
+                  payable_codes=frozenset(scope_codes(await current_settings(session, company_id),
+                                                      R.CONSIGNOR_PAYABLE)))
 
 
 async def _recognized_by_account(
-    session, company_id, doc_id: str, doc_state: dict, recognized,
+    session, company_id, doc_id: str, doc_state: dict, books: _Books,
 ) -> tuple[dict[str, float], dict[int, dict[str, float]], dict[int, float]]:
     """What an invoice recognizes today, per inventory account, in two parts: the actual
     cost of the lots it shipped, and, per line, its allocation's share (with every cost
     correction since) for the goods it has not shipped, with the quantity not shipped.
     Raises ValueError when a shipped or returned lot cannot be matched to one of the
     invoice's lines."""
+    recognized = books.recognized[doc_id]
     shipped: dict[str, float] = {}
     held: dict[int, dict[str, float]] = {}
     unshipped_qty: dict[int, float] = {}
@@ -1843,30 +1958,33 @@ async def _recognized_by_account(
         for code, amount in by_account.items():
             into[code] = into.get(code, 0.0) + amount
 
+    def _line(lot: Projection) -> int | None:
+        return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {},
+                           books.shipments.recorded.get((doc_id, lot.entity_id)))
+
     shipped_qty: dict[int, float] = {}
     back_qty: dict[int, float] = {}
-    out, back = await _lots_by_fulfillment_on_doc(session, company_id, doc_id)
-    for lot in out:
-        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
+    for lot in books.shipments.out.get(doc_id, []):
+        idx = _line(lot)
         if idx is None:
             raise ValueError("cannot safely identify the invoice line of every shipped lot")
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
             _add(shipped, {await sold_lot_key(session, company_id, lot.entity_id, lot.state or {}): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
-    for lot, qty in back:
-        idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
+    for lot, qty in books.shipments.back.get(doc_id, []):
+        idx = _line(lot)
         if idx is None:
             raise ValueError("cannot safely identify the invoice line of every lot taken back")
         back_qty[idx] = back_qty.get(idx, 0.0) + qty
-    repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
+    repriced = books.repriced.get((doc_id, recognized.cycle), {})
     for idx, alloc in recognized.allocations.items():
         amount = float(alloc.get("amount") or 0)
         allocated = sum(float(lot.get("qty") or 0) for lot in alloc.get("lots", [])) + float(
             alloc.get("provisional_qty") or 0)
         if int(idx) not in shipped_qty and int(idx) not in back_qty:
-            _add(held.setdefault(int(idx), {}), await _allocation_by_account(session, company_id, alloc,
-                                                    amount + repriced.get(int(idx), 0.0)))
+            _add(held.setdefault(int(idx), {}), await _allocation_by_account(
+                session, company_id, alloc, amount + repriced.get(int(idx), 0.0), books.payable_codes))
             unshipped_qty[int(idx)] = allocated
             continue
         if int(idx) not in shipped_qty:
@@ -1874,7 +1992,7 @@ async def _recognized_by_account(
         unshipped = allocated - shipped_qty.get(int(idx), 0.0) - back_qty.get(int(idx), 0.0)
         if allocated > 0 and unshipped > 1e-9:
             _add(held.setdefault(int(idx), {}), await _allocation_by_account(
-                session, company_id, alloc, amount * unshipped / allocated))
+                session, company_id, alloc, amount * unshipped / allocated, books.payable_codes))
             unshipped_qty[int(idx)] = unshipped
     return shipped, held, unshipped_qty
 
@@ -1882,10 +2000,11 @@ async def _recognized_by_account(
 @dataclass(frozen=True)
 class UnshippedClaim:
     """Goods on hand a finalized invoice costed and has not shipped: ``qty`` units of
-    lot ``lot_id``, ``amount`` of the invoice's recognized cost on ``key``, and the
-    value the lot holds on the books now (``on_hand``)."""
+    lot ``lot_id`` on line ``line``, ``amount`` of the invoice's recognized cost on
+    ``key``, and the value the lot holds now (``on_hand``)."""
 
     doc_id: str
+    line: int
     lot_id: str
     qty: float
     key: str
@@ -1893,49 +2012,75 @@ class UnshippedClaim:
     on_hand: float
 
 
-async def unshipped_claims(session, company_id, *, exclude: str | None = None) -> list[UnshippedClaim]:
+def _on_hand_value(row: Projection) -> _Dec | None:
+    """The value goods a lot holds in stock carry, or None when it holds none: owned
+    stock at its value on the books (held_value), consigned goods at their recorded
+    cost, owed to the consignor."""
+    value = held_value(row)
+    if value is None and is_consigned(row.state or {}) and in_stock(row.state):
+        value = recorded_value(row.state or {})
+    return value
+
+
+def _line_skus(state: dict) -> set[str] | None:
+    """The SKUs an invoice's lines name, or None when a stock line names none."""
+    skus: set[str] = set()
+    for li in state.get("line_items") or []:
+        sku = str(li.get("sku") or "").strip()
+        if not sku:
+            if li.get("item_id") or li.get("entity_id"):
+                return None
+            continue
+        skus.add(sku)
+    return skus
+
+
+async def unshipped_claims(session, company_id, *, exclude: str | None = None,
+                           skus: set[str] | None = None) -> list[UnshippedClaim]:
     """Every claim finalized invoices hold on goods still on hand (UnshippedClaim), in
-    the order the invoices were finalized, leaving out the invoice ``exclude``.
+    the order the invoices were finalized, leaving out the invoice ``exclude``, and, when
+    ``skus`` is given, invoices none of whose lines sell those SKUs.
 
     Only invoices that are final and not shipped in full count: not drafts, not voided.
     A line's unshipped quantity is taken from its allocated lots in allocation order,
-    each lot only while it is still on hand and only up to what was allocated from it;
+    each lot only while it is still in stock and only up to what was allocated from it;
     the line's recognized cost for its unshipped goods is shared over those lots by
-    their allocated cost. A lot no longer on hand claims nothing: its goods left stock
+    their allocated cost. A lot no longer in stock claims nothing: its goods left stock
     some other way."""
     docs = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
-    open_docs = []
+    open_docs: dict[str, dict] = {}
     for doc in docs:
         state = doc.state or {}
         if (doc.entity_id == exclude or state.get("doc_type") != "invoice"
                 or state.get("status") in ("draft", "void") or state.get("fulfillment_status") == "fulfilled"):
             continue
-        recognized = await recognized_cogs(session, company_id, doc.entity_id)
-        if recognized is not None:
-            open_docs.append((recognized.at, doc.entity_id, state, recognized))
-    payable_codes = scope_codes(await current_settings(session, company_id), R.CONSIGNOR_PAYABLE)
+        named = _line_skus(state) if skus is not None else None
+        if named is not None and not named & skus:
+            continue
+        open_docs[doc.entity_id] = state
+    books = await _read_books(session, company_id, open_docs)
     claims: list[UnshippedClaim] = []
-    for _at, doc_id, state, recognized in sorted(open_docs, key=lambda d: (d[0] is None, d[0], d[1])):
-        _shipped, held, unshipped = await _recognized_by_account(session, company_id, doc_id, state, recognized)
+    for doc_id, recognized in sorted(books.recognized.items(), key=lambda d: (d[1].seq, d[0])):
+        _shipped, held, unshipped = await _recognized_by_account(session, company_id, doc_id, open_docs[doc_id], books)
         for idx, by_key in sorted(held.items()):
             left = unshipped.get(idx, 0.0)
             taken: list[tuple[str, float, str, float, float]] = []  # lot, qty, key, weight, on hand
             for lot in recognized.allocations[str(idx)].get("lots") or []:
                 row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
-                value = held_value(row) if row is not None else None
+                value = _on_hand_value(row) if row is not None else None
                 qty = min(float(lot.get("qty") or 0), left)
                 if value is None or qty <= 1e-9:
                     continue
                 left -= qty
-                key = await _allocated_lot_key(session, company_id, lot, payable_codes)
+                key = await _allocated_lot_key(session, company_id, lot, books.payable_codes)
                 taken.append((lot["lot_entity_id"], qty, key, qty * float(lot.get("unit_cost") or 0), float(value)))
             for key, amount in by_key.items():
                 mine = [t for t in taken if t[2] == key]
                 if not mine:
                     continue
                 shares = _shares({t[0]: t[3] for t in mine}, amount)
-                claims += [UnshippedClaim(doc_id=doc_id, lot_id=lot_id, qty=qty, key=key,
+                claims += [UnshippedClaim(doc_id=doc_id, line=idx, lot_id=lot_id, qty=qty, key=key,
                                           amount=shares.get(lot_id, 0.0), on_hand=on_hand)
                            for lot_id, qty, _key, _weight, on_hand in mine]
     return claims
@@ -1961,6 +2106,102 @@ async def recognized_unshipped(session, company_id) -> dict[str, float]:
     return total
 
 
+_COST_MOVE_IDS = "je:auto:%:cost-move:%"
+
+
+async def _cost_moves(session, company_id, *, from_jes: set[str] | None = None,
+                      doc_id: str | None = None) -> list[dict]:
+    """The metadata of every cost move (create_for_cost_moves) taken from one of the
+    finalize JEs ``from_jes``, or into or out of invoice ``doc_id``."""
+    from celerp.models.ledger import LedgerEntry
+
+    if from_jes is not None and not from_jes:
+        return []
+    query = _select(LedgerEntry.metadata_).where(
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.event_type == "acc.journal_entry.created",
+        LedgerEntry.entity_id.like(_COST_MOVE_IDS),
+    )
+    if from_jes is not None:
+        query = query.where(LedgerEntry.metadata_["from_je"].as_string().in_(sorted(from_jes)))
+    if doc_id is not None:
+        query = query.where(or_(LedgerEntry.metadata_["doc_id"].as_string() == doc_id,
+                                LedgerEntry.metadata_["from_doc_id"].as_string() == doc_id))
+    return [m for m in (await session.execute(query)).scalars().all() if m]
+
+
+async def moved_costs(session, company_id, *, doc_id: str, cycle_tag: str,
+                      taken: dict[str, float]) -> dict[str, list[UnshippedClaim]]:
+    """The claims other open invoices hold on goods invoice ``doc_id`` is about to ship,
+    that shipping them leaves no goods for: ``taken`` is the quantity it ships from each
+    lot, read while the lots still hold it (after any split). A lot keeps what remains in
+    stock for the invoices that took it first; the claims the shipment leaves uncovered
+    are the latest ones. Returns {source doc id: [claim, with the quantity moving]}."""
+    if not taken:
+        return {}
+    rows = await _load_rows(session, company_id, set(taken))
+    skus = {str((r.state or {}).get("sku") or "").strip() for r in rows.values()}
+    claims = [c for c in await unshipped_claims(session, company_id, exclude=doc_id, skus=skus)
+              if c.lot_id in taken]
+    moving: dict[str, list[UnshippedClaim]] = {}
+    for lot_id, take in taken.items():
+        row = rows.get(lot_id)
+        on = [c for c in claims if c.lot_id == lot_id]
+        remaining = float((row.state or {}).get("quantity") or 0) - take if row is not None else 0.0
+        over = min(take, sum(c.qty for c in on) - max(remaining, 0.0))
+        for claim in reversed(on):
+            if over <= 1e-9:
+                break
+            qty = min(claim.qty, over)
+            over -= qty
+            moving.setdefault(claim.doc_id, []).append(
+                UnshippedClaim(doc_id=claim.doc_id, line=claim.line, lot_id=lot_id, qty=qty, key=claim.key,
+                               amount=claim.amount * qty / claim.qty if claim.qty else 0.0, on_hand=claim.on_hand))
+    return moving
+
+
+async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, doc_number: str, cycle_tag: str,
+                                moving: dict[str, list[UnshippedClaim]], ts: str | None) -> list[dict]:
+    """Move the cost of goods invoice ``doc_id`` ships from the open invoices that had set
+    them aside (moved_costs): one entry per invoice, Dr cost of goods sold for the shipper,
+    Cr cost of goods sold for the other, at the cost that invoice set them aside at.
+    Inventory is not touched: it gave the goods up once, when they were set aside. The
+    other invoice holds that many fewer units (recognized_cogs) and is costed for them
+    when it ships. Returns the moves for the notice: {sku, lot_id, doc_id, doc_number}."""
+    if not moving:
+        return []
+    cogs_code = await resolve(session, company_id, R.COGS)
+    currency = await company_currency(session, company_id)
+    sources = await _recognitions(session, company_id, list(moving))
+    rows = await _load_rows(session, company_id, set(moving) | {c.lot_id for cs in moving.values() for c in cs})
+    notice: list[dict] = []
+    for from_doc, claims in sorted(moving.items()):
+        source = sources.get(from_doc)
+        if source is None:
+            continue
+        from_state = (rows[from_doc].state or {}) if from_doc in rows else {}
+        from_number = from_state.get("doc_number") or from_state.get("ref_id") or from_doc
+        amount = to_stored_float(round_money(sum(c.amount for c in claims), currency))
+        skus = sorted({str((rows[c.lot_id].state or {}).get("sku") or "") for c in claims if c.lot_id in rows})
+        await _emit_auto_posted_je(
+            session, company_id=company_id, user_id=user_id,
+            je_id=f"je:auto:{doc_id}:cost-move:{cycle_tag}:{from_doc}",
+            idem_create=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "c"),
+            idem_posted=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "p"),
+            memo=f"Cost of {', '.join(skus)} moved from {from_number} to {doc_number}, which shipped them",
+            ts=ts, currency=currency,
+            entries=[_line(cogs_code, R.COGS, debit=amount), _line(cogs_code, R.COGS, credit=amount)],
+            metadata_={"trigger": "doc.cost_moved", "doc_id": doc_id, "from_doc_id": from_doc,
+                       "from_je": source.je_id,
+                       "moves": [{"line": c.line, "lot_id": c.lot_id, "qty": c.qty, "key": c.key,
+                                  "amount": c.amount} for c in claims]},
+        )
+        for lot_id in dict.fromkeys(c.lot_id for c in claims):
+            notice.append({"sku": (rows[lot_id].state or {}).get("sku") if lot_id in rows else lot_id,
+                           "lot_id": lot_id, "doc_id": from_doc, "doc_number": from_number})
+    return notice
+
+
 async def reconcile_doc_cogs(
     session, *, company_id, user_id, doc_id: str, cycle_tag: str, ts: str | None,
     trigger: str, memo: str | None = None, context: dict | None = None,
@@ -1970,29 +2211,44 @@ async def reconcile_doc_cogs(
     A shipped line recognizes the actual cost of the lots it shipped, plus its
     allocation's share for any quantity it has not shipped (an imported invoice can
     deliver part of a line). A line not shipped recognizes its finalize allocation plus
-    every cost correction since recorded against that allocation. Goods the invoice took
-    back into stock and no longer holds (Set as available after shipping) take their share
-    of the allocation with them, so a lot sold again elsewhere is costed once. The difference from
-    the cost of sales the invoice's live entries already book, measured as their net
-    relief of inventory, whichever account carries the expense, is taken once each
+    every cost correction since recorded against that allocation, less the goods other
+    invoices shipped and took the cost of. Goods the invoice took back into stock and no
+    longer holds (Set as available after shipping) take their share of the allocation
+    with them, so a lot sold again elsewhere is costed once. The difference from the
+    cost of sales the invoice already books - the net relief of inventory by its live
+    entries, whichever account carries the expense, plus the cost it took over from other
+    invoices less the cost they took over from it (cost moves) - is taken once each
     account's truth is rounded to the currency, for the whole invoice, and posted
-    through create_for_doc_cogs_adjustment. An invoice with no recognized
-    allocation on record posts nothing. Raises ValueError when a shipped lot
-    cannot be matched to one of the invoice's lines.
+    through create_for_doc_cogs_adjustment.
+
+    An invoice void or back in draft recognizes nothing: once its own entries are
+    reversed, any cost it still carries through moves is settled on a cost-settle entry,
+    which no void or restore touches. An invoice with no recognized allocation on record
+    posts nothing. Raises ValueError when a shipped lot cannot be matched to one of the
+    invoice's lines.
     """
-    recognized = await recognized_cogs(session, company_id, doc_id)
-    if recognized is None:
-        return
     settings = await current_settings(session, company_id)
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     doc_state = (doc.state or {}) if doc is not None else {}
-    truth, held, _unshipped = await _recognized_by_account(session, company_id, doc_id, doc_state, recognized)
-    for by_account in held.values():
-        for code, amount in by_account.items():
-            truth[code] = truth.get(code, 0.0) + amount
+    prefix = f"je:auto:{doc_id}:"
+    jes = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.startswith(prefix, autoescape=True)))).scalars().all()
+    live = [r for r in jes if (r.state or {}).get("status") == "posted"]
+    standing = any(_finalize_root(doc_id, r.entity_id) for r in live)
+    truth: dict[str, float] = {}
+    if standing:
+        books = await _read_books(session, company_id, [doc_id])
+        if doc_id not in books.recognized:
+            return
+        truth, held, _unshipped = await _recognized_by_account(session, company_id, doc_id, doc_state, books)
+        for by_account in held.values():
+            for code, amount in by_account.items():
+                truth[code] = truth.get(code, 0.0) + amount
     booked: dict[str, float] = {}
-    for row in (await _doc_recognition_jes(session, company_id, doc_id)).values():
-        if (row.state or {}).get("status") != "posted":
+    for row in live:
+        suffix = row.entity_id[len(prefix):]
+        if _recognition_root(suffix) is None and not suffix.startswith("cost-settle:"):
             continue
         for e in (row.state or {}).get("entries", []):
             if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING,
@@ -2001,6 +2257,10 @@ async def reconcile_doc_cogs(
                 key = party_key(e["account"], e.get("contact")) if line_has_role(
                     settings, e, R.CONSIGNOR_PAYABLE) else e["account"]
                 booked[key] = booked.get(key, 0.0) + float(e.get("credit") or 0) - float(e.get("debit") or 0)
+    for move in await _cost_moves(session, company_id, doc_id=doc_id):
+        sign = 1.0 if move.get("doc_id") == doc_id else -1.0
+        for m in move.get("moves") or []:
+            booked[m["key"]] = booked.get(m["key"], 0.0) + sign * float(m["amount"])
     # Booked amounts are already money, so the truth is compared once it is money too:
     # half a cent of cost recognized at finalize is not given back at fulfillment.
     currency = await company_currency(session, company_id)
@@ -2009,11 +2269,11 @@ async def reconcile_doc_cogs(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
         delta={code: truth.get(code, 0.0) - booked.get(code, 0.0) for code in truth.keys() | booked.keys()},
         cycle_tag=cycle_tag, doc_number=doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id,
-        ts=ts, trigger=trigger, memo=memo, context=context,
+        ts=ts, trigger=trigger, memo=memo, context=context, family="cogs-adj" if standing else "cost-settle",
     )
 
 
-async def _allocation_by_account(session, company_id, alloc: dict, amount: float) -> dict[str, float]:
+async def _allocation_by_account(session, company_id, alloc: dict, amount: float, payable_codes) -> dict[str, float]:
     """``amount`` of a line's finalize allocation, split over the accounts its lots are
     costed against (sold_lot_key), by each lot's share of the allocated cost. A lot
     allocated while on consignment and bought since is costed against the inventory it
@@ -2021,7 +2281,6 @@ async def _allocation_by_account(session, company_id, alloc: dict, amount: float
     lots = alloc.get("lots") or []
     if not amount or not lots:
         return {}
-    payable_codes = scope_codes(await current_settings(session, company_id), R.CONSIGNOR_PAYABLE)
     parts: dict[str, float] = {}
     for lot in lots:
         code = await _allocated_lot_key(session, company_id, lot, payable_codes)
@@ -2043,9 +2302,11 @@ async def _allocated_lot_key(session, company_id, lot: dict, payable_codes) -> s
 async def create_for_doc_cogs_adjustment(
     session, *, company_id, user_id, doc_id: str, delta: dict[str, float], cycle_tag: str, doc_number: str,
     ts: str | None = None, trigger: str = "doc.fulfilled", memo: str | None = None,
-    context: dict | None = None,
+    context: dict | None = None, family: str = "cogs-adj",
 ) -> None:
-    """Post one COGS true-up JE for a document (see reconcile_doc_cogs).
+    """Post one COGS true-up JE for a document (see reconcile_doc_cogs), on the family
+    ``family``: cogs-adj, a recognition entry void and restore carry with the invoice, or
+    cost-settle, which settles cost an invoice no longer standing carries and stays.
 
     delta is per inventory account: a positive amount debits COGS and relieves that
     account; a negative one reverses that. Each amount is rounded once to the
@@ -2064,9 +2325,9 @@ async def create_for_doc_cogs_adjustment(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:cogs-adj:{cycle_tag}",
-        idem_create=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "p"),
+        je_id=f"je:auto:{doc_id}:{family}:{cycle_tag}",
+        idem_create=je_idempotency_key(doc_id, f"{family}:{cycle_tag}" if family != "cogs-adj" else f"cogs_adjustment:{cycle_tag}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"{family}:{cycle_tag}" if family != "cogs-adj" else f"cogs_adjustment:{cycle_tag}", "p"),
         memo=memo or f"COGS adjustment for {doc_number}",
         ts=ts,
         entries=entries,
@@ -2075,6 +2336,38 @@ async def create_for_doc_cogs_adjustment(
             **(context or {}),
         },
     )
+
+
+async def _free_goods_only(session, company_id, doc_id: str, allocations: dict) -> dict:
+    """A restored invoice's finalize allocation, holding only goods still on hand that no
+    other open invoice has set aside (unshipped_claims), lines in document order. What it
+    can no longer hold becomes provisional, costed when the invoice ships, and the line's
+    amount keeps only the cost of what it still holds; the reconcile after the restore
+    brings the books to it."""
+    claimed: dict[str, float] = {}
+    for claim in await unshipped_claims(session, company_id, exclude=doc_id, skus=None):
+        claimed[claim.lot_id] = claimed.get(claim.lot_id, 0.0) + claim.qty
+    out: dict = {}
+    for idx in sorted(allocations, key=int):
+        alloc = allocations[idx]
+        lots, cut, cost, kept_cost = [], 0.0, 0.0, 0.0
+        for lot in alloc.get("lots") or []:
+            row = await session.get(Projection, {"company_id": company_id, "entity_id": lot["lot_entity_id"]})
+            free = 0.0
+            if row is not None and _on_hand_value(row) is not None:
+                free = max(0.0, float((row.state or {}).get("quantity") or 0) - claimed.get(lot["lot_entity_id"], 0.0))
+            qty = float(lot.get("qty") or 0)
+            keep = min(qty, free)
+            claimed[lot["lot_entity_id"]] = claimed.get(lot["lot_entity_id"], 0.0) + keep
+            cost += qty * float(lot.get("unit_cost") or 0)
+            kept_cost += keep * float(lot.get("unit_cost") or 0)
+            cut += qty - keep
+            if keep > 1e-9:
+                lots.append({**lot, "qty": keep})
+        amount = float(alloc.get("amount") or 0)
+        out[idx] = {**alloc, "lots": lots, "provisional_qty": float(alloc.get("provisional_qty") or 0) + cut,
+                    "amount": amount * kept_cost / cost if cut > 1e-9 and cost else (amount if not cut else 0.0)}
+    return out
 
 
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) -> None:
@@ -2141,9 +2434,11 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
         )).scalars().first()
         # The allocation snapshot rides along so fulfillment still trues up against
         # what the restored JE recognizes.
+        allocations = ((created.metadata_ or {}) if created else {}).get("cogs_allocations")
+        if allocations:
+            allocations = await _free_goods_only(session, company_id, doc_id, allocations)
         metadata_ = {
-            **_recognition_metadata("doc.unvoided", doc_id,
-                                    ((created.metadata_ or {}) if created else {}).get("cogs_allocations")),
+            **_recognition_metadata("doc.unvoided", doc_id, allocations),
             "restores": voided_je_id,
         }
         await _emit_auto_posted_je(

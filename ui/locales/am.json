@@ -4426,5 +4426,6 @@
   "company_reset.reference_cycle": "ሰንጠረዦቹ {tables} እርስ በርሳቸው በዙር ይጠቃቀሳሉ፣ ስለዚህ ይህ ኩባንያ ዳግም ሊጀመር አይችልም። ምንም አልተሰረዘም።",
   "settings.type_reset_prefix": "ይተይቡ ",
   "settings.type_reset_suffix": "። ይህ ሊቀለበስ አይችልም።",
-  "shell.unknown_error": "ያልታወቀ ስህተት"
+  "shell.unknown_error": "ያልታወቀ ስህተት",
+  "documents.cost_moved_with_goods": "ሎት {sku} ለደረሰኝ {doc} ተይዞ ነበር። የደረሰኝ {doc} ወጪ ሲላክ ይሰላል።"
 }

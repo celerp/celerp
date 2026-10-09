@@ -4426,5 +4426,6 @@
   "company_reset.reference_cycle": "テーブル {tables} が互いに循環して参照しているため、この会社はリセットできません。何も削除されていません。",
   "settings.type_reset_prefix": "確認するには",
   "settings.type_reset_suffix": "と入力してください。この操作は元に戻せません。",
-  "shell.unknown_error": "不明なエラー"
+  "shell.unknown_error": "不明なエラー",
+  "documents.cost_moved_with_goods": "ロット {sku} は請求書 {doc} 用に確保されていました。請求書 {doc} の原価は出荷時に計上されます。"
 }

@@ -111,39 +111,30 @@ async def test_a_second_invoice_for_units_already_invoiced_costs_them_when_they_
     await assert_settled(client, session, auth)
 
 
-async def test_the_books_check_reports_a_lot_an_unshipped_invoice_costed_and_another_shipped(client, session, auth):
+async def test_an_invoice_shipping_a_lot_another_costed_takes_its_cost(client, session, auth):
     """An invoice for 2 costs lot A (1 at 10) and lot B (1 at 30); B then ships on another
-    invoice. Only A is still on hand, so only A's 10 counts as given up: the books check
-    reports the 30 B was costed twice."""
+    invoice, which takes B's 30 over from the first. B is given up once: cost of goods sold
+    is A's 10 set aside plus B's 30 shipped, and the books check finds nothing."""
     sku = f"SIB-{uuid.uuid4().hex[:6]}"
     a = await _lot(client, auth, sku, 1, 10.0)
     b = await _lot(client, auth, sku, 1, 30.0)
     await _invoice(client, auth, a, sku, 2)
     await _invoice(client, auth, b, sku, 1, ship=True)
-    on_hand = 1 * 10.0  # lot A
-    given_up = 1 * 10.0  # lot A, costed on the first invoice and still on hand
-    books = (await _books(session, auth))[1]
-    assert books == 40.0 - 40.0 - 30.0
-    assert await _gaps(session, auth) == [
-        {"kind": "stock_gap", "account": "1130-OB", "books": books, "stock": on_hand - given_up}]
-    with pytest.raises(AssertionError):
-        await assert_settled(client, session, auth)
+    assert await _books(session, auth) == (40.0, 0.0)
+    assert await _gaps(session, auth) == []
+    await assert_settled(client, session, auth)
 
 
-async def test_the_books_check_counts_a_lot_two_invoices_costed_once(client, session, auth):
+async def test_restoring_an_invoice_whose_lot_another_costed_sets_aside_nothing(client, session, auth):
     """2 units at 10 each costed on an invoice, voided, costed on a second invoice, and the
-    first restored: the lot's 20 is given up once, so the books check reports the second 20."""
+    first restored: the lot is held by the second, so the first sets aside nothing and the
+    lot's 20 is given up once."""
     sku = f"DBL-{uuid.uuid4().hex[:6]}"
     lot = await _lot(client, auth, sku, 2, 20.0)
     one = await _invoice(client, auth, lot, sku, 2)
     await _ok(client, auth, f"/docs/{one}/void")
     await _invoice(client, auth, lot, sku, 2)
     await _ok(client, auth, f"/docs/{one}/unvoid")
-    on_hand = 2 * 10.0
-    given_up = 2 * 10.0  # at most what the lot holds, however many invoices costed it
-    books = (await _books(session, auth))[1]
-    assert books == 20.0 - 20.0 - 20.0
-    assert await _gaps(session, auth) == [
-        {"kind": "stock_gap", "account": "1130-OB", "books": books, "stock": on_hand - given_up}]
-    with pytest.raises(AssertionError):
-        await assert_settled(client, session, auth)
+    assert await _books(session, auth) == (20.0, 0.0)
+    assert await _gaps(session, auth) == []
+    await assert_settled(client, session, auth)

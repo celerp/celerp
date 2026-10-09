@@ -2224,8 +2224,23 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
         data=event_data, actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
     )
+    await _settle_moved_cost(session, company_id, user.id, entity_id, row.state, f"void-{entry.id}", "doc.voided")
     await session.commit()
     return {"event_id": entry.id}
+
+
+async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: dict, tag: str, trigger: str) -> None:
+    """Once an invoice stops standing (void, back to draft), settle any cost it still
+    carries through cost moves (auto_je.reconcile_doc_cogs): goods another invoice
+    shipped from its set-aside stay costed to that invoice, and goods it took the cost
+    of stay costed while they are out with the customer."""
+    if (state or {}).get("doc_type") != "invoice":
+        return
+    try:
+        await auto_je.reconcile_doc_cogs(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+                                         cycle_tag=tag, ts=None, trigger=trigger)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{entity_id}/close")
@@ -2380,6 +2395,8 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
     )
+    await _settle_moved_cost(session, company_id, user.id, entity_id, state, f"revert-{entry.id}",
+                             "doc.reverted_to_draft")
     await session.commit()
     return {"event_id": entry.id}
 
@@ -7067,6 +7084,21 @@ async def _fulfill_lines_impl(
         else now_dt.date().isoformat()
     )
 
+    # Goods another open invoice set aside take that invoice's cost with them: read
+    # while the lots still hold what this shipment takes, before any carve.
+    _fulfill_tag = f"fulfill-{int(state.get('fulfill_cycle') or 0)}:l" + "-".join(
+        str(i) for i in sorted({fulfillment_line_index[e] for e in to_fulfill if fulfillment_line_index.get(e) is not None}))
+    cost_moved: list[dict] = []
+    if doc_type == "invoice" and to_fulfill and await auto_je.recognized_cogs(session, cid, entity_id) is not None:
+        moving = await auto_je.moved_costs(
+            session, cid, doc_id=entity_id, cycle_tag=_fulfill_tag,
+            taken={e: float(split_plan[e]["child_qty"]) if e in split_plan
+                   else float(fetched[e].state.get("quantity") or 0) for e in to_fulfill})
+        cost_moved = await auto_je.create_for_cost_moves(
+            session, company_id=cid, user_id=uid, doc_id=entity_id,
+            doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
+            cycle_tag=_fulfill_tag, moving=moving, ts=fulfillment_date)
+
     # Split partial draws: carve the invoiced amount off each parcel as a child,
     # retarget fulfillment to the child, and rewrite the doc line to reference it.
     if split_plan:
@@ -7112,11 +7144,10 @@ async def _fulfill_lines_impl(
 
     # True up the invoice's recognized COGS to the actual cost of what it shipped.
     if doc_type == "invoice" and to_fulfill:
-        _lines = "-".join(str(i) for i in sorted(fulfilled_lines))
         try:
             await auto_je.reconcile_doc_cogs(
                 session, company_id=cid, user_id=uid, doc_id=entity_id,
-                cycle_tag=f"fulfill-{int(state.get('fulfill_cycle') or 0)}:l{_lines}",
+                cycle_tag=_fulfill_tag,
                 ts=fulfillment_date, trigger="doc.fulfilled",
             )
         except ValueError as exc:
@@ -7183,7 +7214,7 @@ async def _fulfill_lines_impl(
 
     if commit:
         await session.commit()
-    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
+    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill, "cost_moved": cost_moved}
 
 
 @router.post("/{entity_id}/fulfill-lines")

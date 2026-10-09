@@ -3692,13 +3692,19 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         line_entity_ids = list(form.getlist("selected"))
         try:
-            await api.fulfill_lines(token, entity_id, line_entity_ids)
+            shipped = await api.fulfill_lines(token, entity_id, line_entity_ids)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             detail = refusal_text(e.data) if e.data else e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
             return _action_error(detail)
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        # Goods another invoice had set aside: say whose, and that it is costed when it
+        # ships, in a notice that stays until it is closed.
+        moved = (shipped or {}).get("cost_moved") or []
+        notice = " ".join(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
+                            doc=m.get("doc_number") or m.get("doc_id")) for m in moved)
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
+                                                **(toast_header(notice, "info", persist=True) if moved else {})})
 
     @app.post("/docs/{entity_id}/revert-lines")
     async def doc_revert_lines(request: Request, entity_id: str):

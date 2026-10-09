@@ -4426,5 +4426,6 @@
   "company_reset.reference_cycle": "The tables {tables} refer to each other in a loop, so this company cannot be reset. Nothing was deleted.",
   "settings.type_reset_prefix": "Type ",
   "settings.type_reset_suffix": " to confirm. This cannot be undone.",
-  "shell.unknown_error": "Unknown error"
+  "shell.unknown_error": "Unknown error",
+  "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships."
 }

@@ -4426,5 +4426,6 @@
   "company_reset.outside_reference": "Cette entreprise ne peut pas être réinitialisée, car la table {table}, ajoutée en dehors de Celerp (par un module installé ou une modification directe de la base de données), fait référence à des enregistrements de Celerp. Rien n'a été supprimé. Demandez à la personne qui a installé ce module ou modifié la base de données de retirer cette référence.",
   "company_reset.partition_key": "Cette entreprise ne peut pas être réinitialisée, car la table {table} a été modifiée en dehors de Celerp (par un module installé ou une modification directe de la base de données) d'une manière que la réinitialisation ne peut pas gérer sans risque. Rien n'a été supprimé. Demandez à la personne qui a installé ce module ou modifié la base de données de corriger le problème.",
   "company_reset.reference_cycle": "Les tables {tables} se référencent mutuellement en boucle, cette entreprise ne peut donc pas être réinitialisée. Rien n'a été supprimé.",
-  "shell.unknown_error": "Erreur inconnue"
+  "shell.unknown_error": "Erreur inconnue",
+  "documents.cost_moved_with_goods": "Le lot {sku} était réservé à la facture {doc}. Le coût de la facture {doc} sera comptabilisé à son expédition."
 }

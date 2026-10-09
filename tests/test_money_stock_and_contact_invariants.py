@@ -82,8 +82,10 @@ async def test_kwd_fulfillment_true_up_keeps_fils(client, session):
                      "entity_id": f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"})
     assert adj is not None and adj.state.get("status") == "posted"
     by_account = {e["account"]: (e["debit"], e["credit"]) for e in adj.state["entries"]}
-    assert by_account["5100"] == (0.004, 0.0)
-    assert by_account["1130-OB"] == (0.0, 0.004)
+    # doc2 took lot B's 1.000 over from doc1 when it shipped B, so doc1 is costed for its
+    # second unit when it ships: lot C at 1.004, fils kept.
+    assert by_account["5100"] == (1.004, 0.0)
+    assert by_account["1130-OB"] == (0.0, 1.004)
 
 
 @pytest.mark.asyncio
@@ -548,7 +550,9 @@ async def test_true_ups_on_two_lines_round_once_for_the_invoice(client, session)
                           json={"line_entity_ids": [ln["entity_id"] for ln in lines]})
     assert r.status_code == 200, r.text
 
-    # Each line leaves at 2.004 against 2.00 recognized: 0.008 for the invoice rounds to 0.01.
+    # Each line's lot B left on another invoice, which took its 1.00 over, so each line
+    # leaves at 2.004 against the 1.00 it still holds: 2.008 for the invoice rounds once to
+    # 2.01 (each line rounded alone would give 2.00).
     session.expire_all()
     rows = (await session.execute(
         select(Projection).where(Projection.company_id == auth["company_id"],
@@ -556,7 +560,7 @@ async def test_true_ups_on_two_lines_round_once_for_the_invoice(client, session)
     )).scalars().all()
     amounts = [sum(float(e["debit"]) - float(e["credit"]) for e in p.state["entries"] if e["account"] == "5100")
                for p in rows if p.state.get("status") == "posted"]
-    assert amounts == [0.01]
+    assert amounts == [2.01]
 
 
 @pytest.mark.asyncio

@@ -4426,5 +4426,6 @@
   "company_reset.outside_reference": "Esta empresa no se puede restablecer porque la tabla {table}, creada fuera de Celerp (por un módulo instalado o un cambio directo en la base de datos), hace referencia a registros de Celerp. No se eliminó nada. Pida a quien instaló ese módulo o modificó la base de datos que quite esa referencia.",
   "company_reset.partition_key": "Esta empresa no se puede restablecer porque la tabla {table} se modificó fuera de Celerp (por un módulo instalado o un cambio directo en la base de datos) de una forma que el restablecimiento no puede manejar con seguridad. No se eliminó nada. Pida a quien instaló ese módulo o modificó la base de datos que lo corrija.",
   "company_reset.reference_cycle": "Las tablas {tables} se hacen referencia entre sí en un ciclo, por lo que esta empresa no se puede restablecer. No se eliminó nada.",
-  "shell.unknown_error": "Error desconocido"
+  "shell.unknown_error": "Error desconocido",
+  "documents.cost_moved_with_goods": "El lote {sku} estaba reservado para la factura {doc}. El costo de la factura {doc} se registrará cuando se envíe."
 }
