@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Hashable
 
-from celerp.services.money import round_money, to_stored_float
+from celerp.services.money import allocate_pro_rata, to_decimal, to_stored_float
 
 
 def allocate_landed_cost(
@@ -24,8 +24,9 @@ def allocate_landed_cost(
     components: [{"kind": str, "amount": float (base-currency, capitalisable only)}]
 
     Returns {goods_key: {kind: per_unit_landed}}. Per kind, the shares, rounded to the minor unit of
-    `currency` (the base currency), sum exactly to the component pool (residual assigned to the largest
-    line); falls back to a quantity basis when the total goods value is zero. Per-unit amounts are kept at full precision; callers round the final
+    `currency` (the base currency), sum exactly to the component pool (allocate_pro_rata, largest
+    remainder, so no line takes less than nothing); falls back to a quantity basis when the total
+    goods value is zero. Per-unit amounts are kept at full precision; callers round the final
     landed total (unit x quantity).
     """
     result: dict[Hashable, dict[str, float]] = {g["key"]: {} for g in goods}
@@ -48,16 +49,11 @@ def allocate_landed_cost(
     def _basis(g: dict) -> float:
         return float(g["value"]) if use_value else float(g["qty"])
 
-    basis_total = total_value if use_value else total_qty
-    largest = max(goods, key=_basis)
-
     for kind, pool in by_kind.items():
         if pool <= 0:
             continue
-        shares = {g["key"]: round_money(pool * _basis(g) / basis_total, currency) for g in goods}
-        residual = round_money(pool, currency) - sum(shares.values())
-        if residual:
-            shares[largest["key"]] += residual
+        shares = dict(zip((g["key"] for g in goods),
+                          allocate_pro_rata(to_decimal(pool), [to_decimal(_basis(g)) for g in goods], currency)))
         for g in goods:
             qty = float(g["qty"])
             if qty:

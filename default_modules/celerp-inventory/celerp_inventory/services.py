@@ -194,13 +194,15 @@ class CostCarve:
     rest_landed: dict[str, float]
 
 
-def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | None = None) -> CostCarve:
+def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | None = None,
+               landed_of: str | None = None) -> CostCarve:
     """The one division of a lot's cost when ``part_qty`` of it becomes a lot of its own (a
     split, a return to the supplier). The lot keeps its quantity share of the goods cost
     (unless ``part_goods`` names the part's) and of every landed pool, each to the cent in
     ``currency`` (allocate_pro_rata), and the part takes the difference. The books carry
     every lot to the cent, so the part and the lot round back to exactly what the whole
-    carried."""
+    carried. Goods going back to the supplier of bill ``landed_of`` take a share of that
+    bill's landed pools only: another bill's pool changes only with that bill."""
     qty = float(state.get("quantity") or 0)
 
     def kept(amount: float) -> float:
@@ -210,8 +212,9 @@ def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | 
         return to_stored_float(rest)
 
     pools = {k: float(v or 0) for k, v in (state.get("landed_costs") or {}).items()}
-    rest_landed = {k: kept(v) for k, v in pools.items()}
-    part_landed = {k: round_basis(v - rest_landed[k]) for k, v in pools.items()}
+    divided = {k for k in pools if landed_of is None or k.partition("::")[0] == landed_of}
+    rest_landed = {k: kept(v) if k in divided else v for k, v in pools.items()}
+    part_landed = {k: round_basis(v - rest_landed[k]) for k, v in pools.items() if k in divided}
     basis = goods_basis(state)
     if basis is None:
         return CostCarve(None, part_landed, None, rest_landed)

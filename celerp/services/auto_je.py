@@ -30,7 +30,7 @@ from celerp.services.business_time import business_date_of
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value
-from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, checked_exchange_rate, received_share, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
 from sqlalchemy import func
@@ -125,6 +125,16 @@ def _balanced_with_fx_difference(entries: list[dict], difference: dict | None) -
         return entries
     short_side = "credit" if gap > 0 else "debit"
     return entries + [{**(difference or {}), "debit": 0.0, "credit": 0.0, short_side: to_stored_float(abs(gap))}]
+
+
+async def _with_fx_difference(session, company_id, entries: list[dict]) -> list[dict]:
+    """``entries`` with the exchange gain or loss line that makes them balance, if any
+    (_balanced_with_fx_difference)."""
+    fx_role = _fx_difference_role(entries)
+    if fx_role is None:
+        return entries
+    acc = await resolve_many(session, company_id, [fx_role])
+    return _balanced_with_fx_difference(entries, _line(acc[fx_role], fx_role))
 
 
 class UnbalancedJournalEntry(ValueError):
@@ -1122,14 +1132,29 @@ async def lot_restatements(session, company_id, lot_id: str) -> tuple[_Dec, _Dec
 
 
 @dataclass(frozen=True)
+class BillOwed:
+    """What a bill owes, for taking returns off it: its total in its own currency and in the
+    company's (``base``, what it put on accounts payable), and what earlier returns already
+    took off it in its own currency."""
+
+    whole: _Dec
+    base: _Dec
+    credited: _Dec
+
+
+@dataclass(frozen=True)
 class ReturnCharges:
     """What a supplier return takes off a bill beyond the goods' own cost, in the company's
-    currency. ``tax`` is the tax the bill booked on the goods. ``settles`` is set on the return that
-    sends back the last of the bill's goods: what all its returns together take off accounts
-    payable and input tax."""
+    currency. ``rate`` and ``currency`` are the document's exchange rate and currency. ``tax`` is
+    the tax the bill booked on the goods. ``settles`` is set on the return that sends back the
+    last of the bill's goods: what all its returns together take off accounts payable and input
+    tax. ``owed`` is set for a bill (BillOwed)."""
 
+    rate: _Dec
+    currency: str
     tax: float = 0.0
     settles: dict | None = None
+    owed: BillOwed | None = None
 
 
 async def create_for_supplier_return(
@@ -1138,7 +1163,8 @@ async def create_for_supplier_return(
     landed_by_account: dict[str, _Dec],
 ) -> _Dec:
     """Goods sent back to the supplier come off accounts payable at what the document charged
-    for them. Returns the amount debited to accounts payable, in the company's currency.
+    for them. Returns what the return takes off what the document owes, in the document's
+    currency.
 
     ``goods`` is what the goods carried and ``billed`` what the document charged for them after
     its discount, both keyed by the inventory account of the lot the goods leave, or by the role
@@ -1154,7 +1180,14 @@ async def create_for_supplier_return(
     cost the goods carried (``landed_by_account``: what each inventory account's lots gave up
     beyond the goods cost, to the cent, either sign), the bill's shipping among it, is a cost of
     goods that are gone: it is expensed to stock shrinkage off the lots' inventory accounts.
-    The bill still owes it. All are dated today in the company's timezone (entry_day)."""
+    The bill still owes it. All are dated today in the company's timezone (entry_day).
+
+    A bill in another currency owes in that currency, so accounts payable must follow what
+    it still owes there. Each return takes off it what the goods charged in the bill's
+    currency, to the cent, and off accounts payable that part of what the bill put there
+    (received_share, so the parts add up to the whole); where that differs from the goods
+    and tax at the company's figures, the difference is an exchange difference. The return
+    of the last goods takes exactly what is left and reverses the earlier differences."""
     currency = await company_currency(session, company_id)
     settings = await current_settings(session, company_id)
     day = await entry_day(session, company_id)
@@ -1198,16 +1231,23 @@ async def create_for_supplier_return(
         # The last goods back take what the earlier returns left, so the bill's goods and
         # their tax come off accounts payable and input tax exactly.
         earlier = await _sum_lines(session, company_id, f"je:auto:{doc_id}:rtn:", settings,
-                                   {R.PAYABLE.value: "debit", R.TAX_INPUT.value: "credit"})
+                                   {R.PAYABLE.value: "debit", R.TAX_INPUT.value: "credit",
+                                    R.FX_GAIN.value: "credit", R.FX_LOSS.value: "debit"})
         payable = round_money(charges.settles["payable"], currency) - earlier[R.PAYABLE.value]
         tax_d = round_money(charges.settles["tax"], currency) - earlier[R.TAX_INPUT.value]
+        exchanged = earlier[R.FX_GAIN.value] - earlier[R.FX_LOSS.value]
         keys = sorted(credits, key=str)
         weights = [abs(credits[k]) or abs(rounded[k]) for k in keys]
         if sum(weights, _Dec(0)):
-            credits = dict(zip(keys, allocate_pro_rata(payable - tax_d, weights, currency)))
+            credits = dict(zip(keys, allocate_pro_rata(payable - tax_d + exchanged, weights, currency)))
     goods_d = sum(credits.values(), _Dec(0))
     payable_d = goods_d + tax_d
-    if payable_d:
+    taken = round_money(payable_d / charges.rate, charges.currency)
+    if charges.settles is not None:
+        payable_d = payable
+    elif (owed := charges.owed) is not None:
+        payable_d = received_share(owed.base, owed.credited, owed.credited + taken, owed.whole, currency)
+    if payable_d or goods_d or tax_d:
         ap = await party_origin(session, company_id, doc_id, R.PAYABLE, settings)
         roles = [k for k, amt in credits.items() if amt and isinstance(k, AccountRole)]
         acc = await resolve_many(session, company_id, [*roles, *([] if ap else [R.PAYABLE]),
@@ -1226,8 +1266,9 @@ async def create_for_supplier_return(
             idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} goods returned to supplier",
             ts=day,
-            entries=[ap_line, *goods_lines,
-                     *([_line(acc[R.TAX_INPUT], R.TAX_INPUT, credit=to_stored_float(tax_d))] if tax_d else [])],
+            entries=await _with_fx_difference(session, company_id, [
+                ap_line, *goods_lines,
+                *([_line(acc[R.TAX_INPUT], R.TAX_INPUT, credit=to_stored_float(tax_d))] if tax_d else [])]),
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
     landed = {code: round_money(v, currency) for code, v in sorted(landed_by_account.items())}
@@ -1250,7 +1291,7 @@ async def create_for_supplier_return(
             entries=entries,
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
-    return payable_d
+    return taken
 
 
 async def _bill_line_target(session, company_id, li: dict):
@@ -2442,8 +2483,9 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
 
 
 async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: str, undo_key: str,
-                                     held_by_account: dict[str, float]) -> None:
-    """Void the entries that capitalised a bill's landed cost when its receipt is undone, so
+                                     held_by_account: dict[str, float], trigger: str, reason: str) -> None:
+    """Void the entries that capitalised a bill's landed cost when its receipt is undone or
+    the bill goes back to its purchase order (``trigger``, with the void's ``reason``), so
     the cost goes back to the clearing accounts it came from. ``held_by_account`` is what the
     lots still hold of it on each inventory account, which is what leaves them. Where that
     differs from what was capitalised there, the difference goes to stock shrinkage, so the
@@ -2462,8 +2504,7 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
                                          - to_decimal(e.get("credit") or 0))
         await _void_je_if_posted(
             session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=row.entity_id,
-            idem_key=f"{row.entity_id}:void:{undo_key}", reason="Goods received undone",
-            trigger="doc.receive_undone",
+            idem_key=f"{row.entity_id}:void:{undo_key}", reason=reason, trigger=trigger,
         )
     currency = await company_currency(session, company_id)
     left = {code: round_money(on_lots.get(code, _Dec(0)) - to_decimal(held_by_account.get(code, 0.0)), currency)
@@ -2485,10 +2526,10 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
         je_id=f"je:auto:{doc_id}:landed-left:{undo_key}",
         idem_create=je_idempotency_key(doc_id, f"landed.left:{undo_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"landed.left:{undo_key}", "p"),
-        memo=f"Auto JE for {doc_id} landed cost the lots no longer hold when its receipt was undone",
+        memo=f"Auto JE for {doc_id} landed cost the lots no longer hold when its capitalisation was reversed",
         ts=await entry_day(session, company_id),
         entries=entries,
-        metadata_={"trigger": "doc.receive_undone", "doc_id": doc_id},
+        metadata_={"trigger": trigger, "doc_id": doc_id},
     )
 
 

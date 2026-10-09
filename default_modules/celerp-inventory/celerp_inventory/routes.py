@@ -3593,13 +3593,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_proj: Projection,
                           child_qty: float, action: str, child_weight: float | None = None,
                           child_pieces: int | None = None,
-                          child_cost_base: float | None = None) -> tuple[str, str]:
+                          child_cost_base: float | None = None,
+                          landed_of: str | None = None) -> tuple[str, str]:
     """Split one child of ``child_qty`` off ``parent_proj`` -> ``(child_eid, child_sku)``.
 
     The child keeps the parent SKU (same product; a distinct lot by barcode / entity_id)
     and is the split-off portion; the mother keeps the remainder. The cost divides by
     carve_cost: goods by quantity unless ``child_cost_base`` names the child's share, and
-    each landed pool by quantity, the two sides always adding back to the whole.
+    each landed pool by quantity (only bill ``landed_of``'s for goods going back to its
+    supplier), the two sides always adding back to the whole.
 
     ``action`` names what the user is doing (a key of line_measures.splitting_off): a lot
     whose Allow Splitting is off refuses any part smaller than the whole with HTTP 409,
@@ -3695,7 +3697,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     child_sku = parent_sku
 
     carve = carve_cost(parent.state, child_qty, await company_currency(session, company_id),
-                       child_cost_base)
+                       child_cost_base, landed_of)
 
     parent_prices = {
         k: parent.state[k] for k in parent.state
