@@ -4336,6 +4336,7 @@
   "posting.older_stock.fix_move": "انقل {amount} من {source} إلى {code} بقيد يومية، ثم اختر {code} مرة أخرى.",
   "posting.older_stock.fix_reconcile": "لا يحملها أي حساب مخزون، لذا يجب تسوية الدفاتر: سجّل قيد يومية مدين {code} {amount} / دائن {equity} {amount}، ثم اختر {code} مرة أخرى.",
   "docs.receive_draft_bill": "هذه الفاتورة لا تزال مسودة، لذا لم تسجل هذه البضائع. اعتمد الفاتورة أولًا، ثم استلمها.",
+  "docs.undo_imported_receipt": "كانت البضائع في هذه الفاتورة موجودة في المخزون بالفعل عند استيرادها، لذا لا يمكن التراجع عن استلامها هنا. صحّح هذه الكميات بتسوية مخزون.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "يحتاج كل حساب مضاف إلى رمز.",
   "posting.added_needs_name": "يحتاج كل حساب مضاف إلى اسم.",

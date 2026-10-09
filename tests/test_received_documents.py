@@ -854,9 +854,10 @@ async def test_doctor_voids_only_recognition_entries_with_no_finalize_or_receipt
         "doc_type": "purchase_order", "ref_id": "OLD-PO", "company_name": "Old Sender", "total": 40.0, "line_items": [],
     })
     false_sale = await _false_sales_entry(session, company_id, legacy_inv, 80.0)
-    await auto_je.create_for_po_received(
-        session, company_id=company_id, user_id=None, po_id=legacy_po, total=40.0,
-        doc={"doc_type": "purchase_order", "total": 40.0, "currency": "USD"}, receive_date="2026-01-05",
+    # The receipt entry an earlier release posted for a purchase order imported as received.
+    await auto_je._post_po_receipt(
+        session, company_id=company_id, user_id=None, po_id=legacy_po, receipt_key=None,
+        debits={auto_je.po_receipt_role({"doc_type": "purchase_order"}): 40.0}, receive_date="2026-01-05",
     )
     await session.commit()
     false_receipt = next(p.entity_id for p in (await session.execute(

@@ -34,6 +34,16 @@ from celerp.services.lot_origin import DELETED
 DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
 
 
+def doc_line_index(lines: list[dict], po_line_index: int, item_id: str | None, sku: str | None) -> int | None:
+    """The document line received goods are for: the line at po_line_index, else the line
+    naming their item or SKU."""
+    if 0 <= po_line_index < len(lines):
+        return po_line_index
+    return next((i for i, li in enumerate(lines)
+                 if (item_id and li.get("item_id") == item_id)
+                 or (sku and str(li.get("sku") or "").strip() == sku.strip())), None)
+
+
 def line_item_id(line: dict) -> str | None:
     """The single authoritative identity of a document line.
 

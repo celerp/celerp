@@ -4336,6 +4336,7 @@
   "posting.older_stock.fix_move": "Buchen Sie {amount} per Journalbuchung von {source} auf {code} um und wählen Sie dann erneut {code}.",
   "posting.older_stock.fix_reconcile": "Kein Lagerkonto hält ihn, daher müssen die Bücher abgestimmt werden: Buchen Sie eine Journalbuchung Soll {code} {amount} / Haben {equity} {amount} und wählen Sie dann erneut {code}.",
   "docs.receive_draft_bill": "Diese Rechnung ist noch ein Entwurf und hat diese Waren nicht gebucht. Schließen Sie die Rechnung zuerst ab und nehmen Sie die Waren dann an.",
+  "docs.undo_imported_receipt": "Die Waren auf dieser Rechnung waren beim Import bereits im Bestand, daher kann ihr Wareneingang hier nicht rückgängig gemacht werden. Korrigieren Sie diese Mengen mit einer Bestandskorrektur.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Jedes hinzugefügte Konto braucht eine Kontonummer.",
   "posting.added_needs_name": "Jedes hinzugefügte Konto braucht einen Namen.",

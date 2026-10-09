@@ -4336,6 +4336,7 @@
   "posting.older_stock.fix_move": "Transfira {amount} de {source} para {code} com um lançamento contábil e escolha {code} novamente.",
   "posting.older_stock.fix_reconcile": "Nenhuma conta de estoque o tem, então os livros precisam ser conciliados: faça um lançamento Débito {code} {amount} / Crédito {equity} {amount} e escolha {code} novamente.",
   "docs.receive_draft_bill": "Esta fatura ainda é um rascunho, então não registrou estas mercadorias. Finalize a fatura primeiro e depois receba-as.",
+  "docs.undo_imported_receipt": "Os itens desta fatura já estavam em estoque quando ela foi importada, por isso o seu recebimento não pode ser revertido aqui. Corrija essas quantidades com um ajuste de estoque.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Cada conta adicionada precisa de um código.",
   "posting.added_needs_name": "Cada conta adicionada precisa de um nome.",

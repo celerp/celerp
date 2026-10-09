@@ -518,8 +518,9 @@ async def test_doctor_subset_checks(client, session):
 # --- Doctor: PO missing JE (fix path) ---
 
 @pytest.mark.asyncio
-async def test_doctor_missing_je_po_no_missing_after_api(client, session):
-    """A PO imported as received triggers the auto-JE hook - doctor should find 0 missing."""
+async def test_doctor_finds_no_missing_entry_for_a_po_imported_as_received(client, session):
+    """A PO imported as received posts nothing (the opening balances hold its
+    value), and Doctor does not report an entry as missing for it."""
     import uuid as _uuid
     token = await _register(client)
     entity_id = f"doc:po-fix-{_uuid.uuid4().hex[:8]}"
@@ -535,14 +536,12 @@ async def test_doctor_missing_je_po_no_missing_after_api(client, session):
     })
     assert r.status_code == 200
 
-    # Auto-JE hook fires for received POs - no missing JEs
-    r2 = await client.post("/admin/doctor?checks=missing_jes", headers=_h(token))
+    r2 = await client.post("/admin/doctor?fix=true&checks=missing_jes", headers=_h(token))
     missing = next(c for c in r2.json()["results"] if c["check"] == "missing_jes")
-    assert missing["found"] == 0
+    assert missing["found"] == 0 and missing["fixed"] == 0
 
-    # Verify PO JE events created
     created = [e for e in await _document_jes(client, token) if e["event_type"] == "acc.journal_entry.created"]
-    assert len(created) == 1
+    assert created == []
 
 
 # --- Doctor fix: paid invoice missing payment JE ---

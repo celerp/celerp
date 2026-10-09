@@ -4336,6 +4336,7 @@
   "posting.older_stock.fix_move": "Chuyển {amount} từ {source} sang {code} bằng bút toán nhật ký, rồi chọn lại {code}.",
   "posting.older_stock.fix_reconcile": "Không tài khoản tồn kho nào giữ giá trị này, nên sổ sách cần được đối chiếu: ghi bút toán Nợ {code} {amount} / Có {equity} {amount}, rồi chọn lại {code}.",
   "docs.receive_draft_bill": "Hóa đơn này vẫn là bản nháp nên chưa ghi nhận số hàng này. Hãy hoàn thiện hóa đơn trước, rồi nhận hàng.",
+  "docs.undo_imported_receipt": "Hàng trên hóa đơn này đã có trong kho khi được nhập, nên không thể hoàn tác việc nhận hàng tại đây. Hãy điều chỉnh số lượng đó bằng một phiếu điều chỉnh kho.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Mỗi tài khoản được thêm cần có mã.",
   "posting.added_needs_name": "Mỗi tài khoản được thêm cần có tên.",

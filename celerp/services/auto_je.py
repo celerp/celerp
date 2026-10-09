@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from decimal import Decimal as _Dec
 
 from celerp.accounting_roles import (
@@ -51,6 +52,9 @@ from celerp.services.units import is_non_stock_line
 from sqlalchemy import or_
 from sqlalchemy import select as _select
 
+if TYPE_CHECKING:
+    from celerp.models.ledger import LedgerEntry
+
 R = AccountRole
 
 
@@ -86,16 +90,27 @@ def _lot_line(settings: dict, key: str, debit=0.0, credit=0.0) -> dict:
 
 
 # Ledger metadata key set on a doc.created written by a raw snapshot import. It is
-# the only doc.created that may carry an issued document and post its entry, so
-# the Doctor reads this record rather than the payload's status.
+# the only doc.created that may carry an issued document, so the Doctor reads this
+# record rather than the payload's status.
 IMPORTED_SNAPSHOT = "imported_snapshot"
 
+# Ledger metadata key set on the doc.created of a purchase order or bill imported into
+# books whose opening balances already hold it: the goods received on it are opening
+# stock and what is owed on it is an opening payable, so the import posts nothing and
+# only what happens on the document afterwards does.
+IMPORTED_OPENING = "in_opening_balances"
 
-def import_auto_je_kind(data: dict) -> str | None:
-    """Accounting operation an imported snapshot would post, or None.
+# Ledger metadata key on every event the one-time correction of earlier imports wrote.
+IMPORTED_CUTOVER = "imported_cutover"
 
-    Shared by the import endpoints (which post it) and the Doctor (which only
-    repairs an entry the document's own history says should exist)."""
+
+def imported_issue_kind(data: dict) -> str | None:
+    """What an imported snapshot was issued as, or None for one not issued.
+
+    An issued invoice posts its entry at import. An issued purchase order or bill
+    posts nothing: the opening balances hold it (IMPORTED_OPENING). Shared by the
+    import endpoints and the Doctor (which only repairs an entry the document's own
+    history says should exist)."""
     status = str(data.get("status") or "draft")
     total = float(data.get("total", 0) or 0)
     if status in ("void", "draft", "converted", "expired") or total <= 0:
@@ -893,26 +908,6 @@ async def create_for_imported_document(
     )
 
 
-async def create_for_po_received(
-    session,
-    *,
-    company_id,
-    user_id,
-    po_id: str,
-    total: float,
-    doc: dict | None = None,
-    base_currency: str = "USD",
-    receive_date: str | None = None,
-) -> None:
-    """Receipt entry for a purchase order imported as already received: its whole total."""
-    rate = require_doc_rate(doc or {}, base_currency)
-    await _post_po_receipt(
-        session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=None,
-        debits={po_receipt_role(doc or {}): to_base(float(total), rate, base_currency)},
-        receive_date=receive_date,
-    )
-
-
 async def create_for_po_receipt(
     session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole | str, float],
     receive_date: str | None = None,
@@ -1153,25 +1148,14 @@ async def create_for_supplier_return(
         )
 
 
-async def create_for_bill_conversion(
-    session,
-    *,
-    company_id,
-    user_id,
-    doc_id: str,
-    doc: dict,
-    base_currency: str = "USD",
-    revert_count: int = 0,
-) -> dict[int, tuple[str, _Dec]]:
-    """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
+async def _bill_entries(session, company_id, doc_id: str, doc: dict,
+                        base_currency: str) -> tuple[list[dict], list[int | None], list[_Dec]] | None:
+    """What a bill books, before any netting: its debit lines and then the AP line, the
+    line index each debit comes from (None for tax and shipping), and each debit in base
+    currency. None for a bill with nothing to book.
 
-    Debit per-line expense/inventory accounts, credit AP, less what the
-    document's purchase order receipts already booked.
     A line's own account_code takes priority; otherwise the line posts to the role
-    for what it brings in: inventory for stock, general expense for anything else.
-    Returns what each line debits, in base currency, by line index: {index: (account,
-    amount)}, before any netting against receipts.
-    """
+    for what it brings in: inventory for stock, general expense for anything else."""
     currency = doc.get("currency", "USD")
     rate = require_doc_rate(doc, base_currency)
     total_d = round_money(doc.get("total", 0) or 0, currency)
@@ -1216,7 +1200,7 @@ async def create_for_bill_conversion(
     # Doc-level shipping on a bill is inbound freight: debit the freight clearing account.
     shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
     if total_d <= 0:
-        return {}
+        return None
     # A bill total below its lines, tax and shipping is a discount on those lines: each line's
     # cost is reduced by its share, so the debits sum to what the bill says is owed. Any other
     # gap between the parts and the total is refused rather than posted unbalanced.
@@ -1265,14 +1249,46 @@ async def create_for_bill_conversion(
     largest = max(range(len(debits)), key=lambda i: debits[i])
     debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
     entries = [debit_line(target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
-    by_line = {index: (e["account"], d) for index, e, d in zip(sources, entries, debits) if index is not None}
     entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
+    return entries, sources, debits
+
+
+async def create_for_bill_conversion(
+    session,
+    *,
+    company_id,
+    user_id,
+    doc_id: str,
+    doc: dict,
+    base_currency: str = "USD",
+    revert_count: int = 0,
+    key_tag: str = "",
+) -> dict[int, tuple[str, _Dec]]:
+    """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
+
+    Debit per-line expense/inventory accounts, credit AP (_bill_entries), less what the
+    document's purchase order receipts already booked and less what the opening balances
+    carry for a document imported into them (imported_carriage). ``key_tag`` sets this
+    posting apart from the cycle's own (the correction of earlier imports re-posts it).
+    Returns what each line debits, in base currency, by line index: {index: (account,
+    amount)}, before any netting against receipts.
+    """
+    built = await _bill_entries(session, company_id, doc_id, doc, base_currency)
+    if built is None:
+        return {}
+    entries, sources, debits = built
+    by_line = {index: (e["account"], d) for index, e, d in zip(sources, entries, debits) if index is not None}
+    settings = await current_settings(session, company_id)
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
     # A line first takes up what the receipts booked for the same purpose, on the accounts
     # they booked it to (goods added to a lot on the lot's own account, AP recognized before
     # a remap); only what no receipt booked lands on the line's own account.
+    # The part of an imported document the opening balances hold is booked there already.
     booked = await _doc_receipt_booked(session, company_id, doc_id, settings)
+    for e in await imported_carriage(session, company_id, doc_id):
+        key = _net_key(settings, e)
+        booked[key] = booked.get(key, _Dec(0)) + to_decimal(e["debit"]) - to_decimal(e["credit"])
     if booked:
         unfilled = dict(booked)
         net: dict[tuple, _Dec] = {}
@@ -1302,14 +1318,195 @@ async def create_for_bill_conversion(
         company_id=company_id,
         user_id=user_id,
         je_id=f"je:auto:{doc_id}:bill",
-        idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "p"),
+        idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{key_tag}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{key_tag}", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
         ts=await entry_day(session, company_id, doc.get("issue_date") or doc.get("finalized_at")),
         entries=entries,
         metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
     )
     return by_line
+
+
+@dataclass
+class ImportedDocument:
+    """A purchase order or bill imported already issued, and what its history did with
+    the value the opening balances hold for it.
+
+    in_opening: imported now, into books whose opening balances hold it; nothing posted.
+    origins: ledger ids of the entries an earlier release posted for the import itself
+    (the order's receipt or the bill's own entry, booking the document a second time on
+    top of the opening balances), and of every unvoid restore of one.
+    """
+    doc_id: str
+    snapshot: dict
+    in_opening: bool
+    origins: set[int]
+    posted_origins: list[str]
+    reversals: list[LedgerEntry]
+    posted_reversals: list[str]
+    je_events: list[LedgerEntry]
+
+    @property
+    def carried(self) -> bool:
+        """The opening balances hold the document now: it stands as imported, neither
+        reversed with it (a void or revert) nor still carried by an earlier release's entry."""
+        return (self.in_opening or bool(self.origins)) and not self.posted_origins and not self.posted_reversals
+
+
+_IMPORTED_REVERSAL = "imported-rev"
+
+
+def _is_origin(event: LedgerEntry, doc_id: str, kind: str, origins: set[int], latest: dict[str, int]) -> bool:
+    """Whether a JE creation event is the entry an earlier release posted for the import."""
+    meta = event.metadata_ or {}
+    restores = meta.get("restores")
+    if restores:
+        return latest.get(restores) in origins
+    if kind == "purchase_order":
+        return (event.entity_id == f"je:auto:{doc_id}:rcv"
+                and event.idempotency_key == je_idempotency_key(doc_id, "po.received", "c"))
+    return (event.entity_id == f"je:auto:{doc_id}:bill"
+            and event.idempotency_key == je_idempotency_key(doc_id, "po.converted_to_bill:0", "c")
+            and meta.get("trigger") == "doc.converted_to_bill")
+
+
+async def imported_document(session, company_id, doc_id: str) -> ImportedDocument | None:
+    """The document's import, when it is a purchase order or bill imported issued into
+    books whose opening balances hold it (now, or under an earlier release that also
+    booked it on import); None for any other document."""
+    from celerp.models.ledger import LedgerEntry
+
+    created = (await session.execute(_select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == doc_id,
+        LedgerEntry.event_type == "doc.created",
+    ).order_by(LedgerEntry.id).limit(1))).scalars().first()
+    meta = (created.metadata_ or {}) if created is not None else {}
+    if not meta.get(IMPORTED_SNAPSHOT):
+        return None
+    kind = imported_issue_kind(created.data or {})
+    if kind not in ("purchase_order", "bill"):
+        return None
+    in_opening = bool(meta.get(IMPORTED_OPENING))
+    prefix = f"je:auto:{doc_id}:"
+    events = list((await session.execute(_select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "journal_entry",
+        LedgerEntry.entity_id.startswith(prefix, autoescape=True),
+    ).order_by(LedgerEntry.id))).scalars())
+    origins: set[int] = set()
+    latest: dict[str, int] = {}  # je id -> ledger id of its latest creation
+    reversals: list[LedgerEntry] = []
+    for event in events:
+        if event.event_type != "acc.journal_entry.created":
+            continue
+        if not in_opening and _is_origin(event, doc_id, kind, origins, latest):
+            origins.add(event.id)
+        if event.entity_id.startswith(f"{prefix}{_IMPORTED_REVERSAL}:"):
+            reversals.append(event)
+        latest[event.entity_id] = event.id
+    if not in_opening and not origins:
+        return None
+    ids = {*(je for je, seq in latest.items() if seq in origins), *(e.entity_id for e in reversals)}
+    posted = set((await session.execute(_select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(sorted(ids)),
+        Projection.state["status"].as_string() == "posted",
+    ))).scalars()) if ids else set()
+    return ImportedDocument(
+        doc_id=doc_id, snapshot=created.data or {}, in_opening=in_opening, origins=origins,
+        posted_origins=sorted(je for je, seq in latest.items() if seq in origins and je in posted),
+        reversals=reversals, posted_reversals=[e.entity_id for e in reversals if e.entity_id in posted],
+        je_events=events,
+    )
+
+
+async def _carriage_entries(session, company_id, imported: ImportedDocument) -> list[dict]:
+    """What the opening balances hold for an imported document, as the entry its bill
+    would book: a bill's whole entry; for a purchase order, each line's share received
+    when it was imported (tax and shipping take the goods' overall share)."""
+    snapshot = imported.snapshot
+    base_currency = await company_currency(session, company_id)
+    built = await _bill_entries(session, company_id, imported.doc_id, snapshot, base_currency)
+    if built is None:
+        return []
+    entries, sources, debits = built
+    if snapshot.get("doc_type") == "bill":
+        return entries
+    from celerp.services.document_lines import doc_line_index
+
+    lines = snapshot.get("line_items") or []
+    received: dict[int, _Dec] = {}
+    for x in snapshot.get("received_items") or []:
+        index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), x.get("sku"))
+        if index is not None:
+            received[index] = received.get(index, _Dec(0)) + to_decimal(x.get("quantity_received"))
+    share: dict[int, _Dec] = {}
+    for index, li in enumerate(lines):
+        ordered = to_decimal(li.get("quantity"))
+        share[index] = min(received.get(index, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
+    goods = sum((d for d, s in zip(debits, sources) if s is not None), _Dec(0))
+    overall = (sum((d * share[s] for d, s in zip(debits, sources) if s is not None), _Dec(0)) / goods
+               if goods else _Dec(0))
+    carried = []
+    for e, s, d in zip(entries, sources, debits):
+        amount = round_money(d * (share[s] if s is not None else overall), base_currency)
+        if amount:
+            carried.append({**e, "debit": to_stored_float(amount)})
+    if not carried:
+        return []
+    total = sum((to_decimal(e["debit"]) for e in carried), _Dec(0))
+    return [*carried, {**entries[-1], "credit": to_stored_float(total)}]
+
+
+async def imported_carriage(session, company_id, doc_id: str) -> list[dict]:
+    """The entry the opening balances hold for an imported document while they hold it
+    (ImportedDocument.carried), or [] when they do not."""
+    imported = await imported_document(session, company_id, doc_id)
+    if imported is None or not imported.carried:
+        return []
+    return await _carriage_entries(session, company_id, imported)
+
+
+async def reverse_imported_carriage(session, *, company_id, user_id, doc_id: str, trigger: str,
+                                    carriage: list[dict], metadata_: dict | None = None) -> None:
+    """Take out of the books what the opening balances hold for an imported document,
+    when it is voided or reverted to draft: the imported value stops being owed and the
+    goods billed with it stop being carried. ``trigger`` is the operation, so an unvoid
+    knows which reversal is its void's to take back."""
+    if not carriage:
+        return
+    prefix = f"je:auto:{doc_id}:{_IMPORTED_REVERSAL}:"
+    n = 1 + len((await session.execute(_select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.startswith(prefix, autoescape=True),
+    ))).scalars().all())
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"{prefix}{n}",
+        idem_create=je_idempotency_key(doc_id, f"{_IMPORTED_REVERSAL}:{n}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"{_IMPORTED_REVERSAL}:{n}", "p"),
+        memo=f"Reversed: {doc_id} as held in the opening balances",
+        ts=await entry_day(session, company_id),
+        entries=[{**e, "debit": e["credit"], "credit": e["debit"]} for e in carriage],
+        metadata_={"trigger": trigger, "doc_id": doc_id, **(metadata_ or {})},
+    )
+
+
+async def take_back_imported_reversals(session, *, company_id, user_id, doc_id: str) -> None:
+    """On an unvoid, void the reversals the document's voids posted, so the opening
+    balances hold it again (a revert's reversal stands: the document was booked anew)."""
+    imported = await imported_document(session, company_id, doc_id)
+    if imported is None:
+        return
+    for event in imported.reversals:
+        if (event.metadata_ or {}).get("trigger") != "doc.voided" or event.entity_id not in imported.posted_reversals:
+            continue
+        await _void_je_if_posted(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=event.entity_id,
+            idem_key=je_idempotency_key(doc_id, f"unvoid:{event.entity_id.rsplit(':', 1)[-1]}:{_IMPORTED_REVERSAL}", "void"),
+            reason=f"Reversed: {doc_id} unvoided", trigger="doc.unvoided",
+        )
 
 
 async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id: str, idem_key: str, reason: str, trigger: str) -> bool:
@@ -1423,7 +1620,9 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
     void, so the sweep only ever reverses what is live.
 
     A document reverts only once no received goods remain on it, so the entries
-    that booked its receipts and its returns to the supplier reverse with it.
+    that booked its receipts and its returns to the supplier reverse with it. What the
+    opening balances hold for an imported document is reversed with it too
+    (reverse_imported_carriage).
 
     revert_count: the current revert_count from doc state (before this revert
     increments it), scoping the void idempotency keys per revert cycle.
@@ -1442,6 +1641,9 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
             reason=f"Reversed: {doc_id} reverted to draft",
             trigger="doc.reverted_to_draft",
         )
+    await reverse_imported_carriage(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, trigger="doc.reverted_to_draft",
+        carriage=await imported_carriage(session, company_id, doc_id))
 
 
 async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str) -> None:
@@ -1454,7 +1656,9 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str) -> N
     adjustments), so nothing live is left behind and nothing settled (payments,
     fulfillment stock moves) is touched. The batch number in both the metadata
     and the idempotency key keeps every void/unvoid cycle's events distinct:
-    a second cycle's voids can never dedup against the first's.
+    a second cycle's voids can never dedup against the first's. What the opening
+    balances hold for an imported document is reversed with it too
+    (reverse_imported_carriage), and the unvoid takes that reversal back.
     """
     void_events = await _doc_void_events(session, company_id, doc_id)
     batch = 1 + max(
@@ -1478,6 +1682,9 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str) -> N
             idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
             metadata_={"trigger": "doc.voided", "doc_id": doc_id, "void_batch": batch},
         )
+    await reverse_imported_carriage(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, trigger="doc.voided",
+        carriage=await imported_carriage(session, company_id, doc_id))
 
 
 def _cogs_lines(settings: dict, cogs_code: str, by_account: dict[str, float], currency: str) -> list[dict]:
@@ -2383,6 +2590,10 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
     doc type and family: invoice finalize, bill conversion, COGS backfill, and
     COGS adjustments alike.
 
+    An imported document's own entry from an earlier release is never restored (the
+    opening balances hold the document), and the reversal its void posted of what they
+    hold is taken back (take_back_imported_reversals).
+
     Docs voided before batch stamping existed have per-JE void events with no
     batch number; for those, each recognition family whose latest void event
     came from a doc void (not a revert to draft) restores the JE that event
@@ -2393,6 +2604,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
     prefix = f"je:auto:{doc_id}:"
     jes = await _doc_recognition_jes(session, company_id, doc_id)
     void_events = await _doc_void_events(session, company_id, doc_id)
+    imported = await imported_document(session, company_id, doc_id)
 
     batched = [e for e in void_events if (e.metadata_ or {}).get("void_batch")]
     if batched:
@@ -2432,6 +2644,8 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
             .order_by(LedgerEntry.id.desc())
             .limit(1)
         )).scalars().first()
+        if imported is not None and created is not None and created.id in imported.origins:
+            continue  # an earlier release's entry for the import: the opening balances hold it
         # The allocation snapshot rides along so fulfillment still trues up against
         # what the restored JE recognizes.
         allocations = ((created.metadata_ or {}) if created else {}).get("cogs_allocations")
@@ -2453,6 +2667,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) 
             entries=entries,
             metadata_=metadata_,
         )
+    await take_back_imported_reversals(session, company_id=company_id, user_id=user_id, doc_id=doc_id)
 
 
 async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, lot_costs: dict[str, float], cycle: int = 0, ts: str | None = None) -> None:

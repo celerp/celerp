@@ -4336,6 +4336,7 @@
   "posting.older_stock.fix_move": "Sposta {amount} da {source} a {code} con una scrittura contabile, poi scegli di nuovo {code}.",
   "posting.older_stock.fix_reconcile": "Nessun conto di magazzino lo contiene, quindi i libri vanno riconciliati: registra una scrittura Dare {code} {amount} / Avere {equity} {amount}, poi scegli di nuovo {code}.",
   "docs.receive_draft_bill": "Questa fattura è ancora una bozza, quindi non ha registrato queste merci. Finalizza prima la fattura, poi ricevile.",
+  "docs.undo_imported_receipt": "La merce di questa fattura era già in magazzino quando è stata importata, quindi il suo ricevimento non può essere annullato qui. Correggi queste quantità con una rettifica di magazzino.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Ogni conto aggiunto deve avere un codice.",
   "posting.added_needs_name": "Ogni conto aggiunto deve avere un nome.",

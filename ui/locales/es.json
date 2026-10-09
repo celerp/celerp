@@ -4336,6 +4336,7 @@
   "posting.older_stock.fix_move": "Traspase {amount} de {source} a {code} con un asiento de diario y vuelva a elegir {code}.",
   "posting.older_stock.fix_reconcile": "Ninguna cuenta de inventario lo tiene, así que hay que conciliar los libros: registre un asiento de diario Debe {code} {amount} / Haber {equity} {amount} y vuelva a elegir {code}.",
   "docs.receive_draft_bill": "Esta factura aún es un borrador, así que no ha contabilizado estos bienes. Finalice primero la factura y luego recíbalos.",
+  "docs.undo_imported_receipt": "Los artículos de esta factura ya estaban en stock cuando se importó, por lo que su recepción no se puede revertir aquí. Corrija esas cantidades con un ajuste de stock.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Cada cuenta añadida necesita un código.",
   "posting.added_needs_name": "Cada cuenta añadida necesita un nombre.",

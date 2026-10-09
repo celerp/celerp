@@ -71,16 +71,18 @@ async def _documents_with_posting_event(
     """Documents whose own history holds the event that posts their entry.
 
     Keyed by posting kind: "invoice" for a finalize (or a snapshot import that
-    posts an invoice on create), "purchase_order" for a snapshot import that
-    posts a received purchase order on create, "receipt" for goods received on
-    the document (each receipt posts its own entry for what it brought in). Only
+    posts an invoice on create), "purchase_order" for a received purchase order
+    imported as a snapshot (an earlier release posted its receipt on import; the
+    one-time correction of those imports, not this check, owns that entry, and an
+    import now posts nothing), "receipt" for goods received on the document (each
+    receipt posts its own entry for what it brought in). Only
     a doc.created the import routes recorded as a snapshot import counts; the
     status in any other doc.created payload is not evidence.
 
     The second map holds documents created already issued with no such record:
     imports from before the record existed look exactly like this, so their
     entries are neither owed nor safe to void without review."""
-    from celerp.services.auto_je import IMPORTED_SNAPSHOT, import_auto_je_kind
+    from celerp.services.auto_je import IMPORTED_SNAPSHOT, imported_issue_kind
 
     posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set(), "receipt": set()}
     unrecorded: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
@@ -99,7 +101,7 @@ async def _documents_with_posting_event(
         elif event_type == "doc.received":
             posted_by["receipt"].add(entity_id)
         else:
-            kind = import_auto_je_kind(data or {})
+            kind = imported_issue_kind(data or {})
             if kind not in posted_by:
                 continue
             if (meta or {}).get(IMPORTED_SNAPSHOT):
@@ -115,9 +117,10 @@ async def _check_missing_jes(
     """Find documents whose expected accounting entry is missing.
 
     An entry is only expected when the document's own history holds the
-    operation that posts it: a finalize for an invoice, a receipt for a
-    purchase order, or an import that posts on create. Status alone is not
-    evidence (a sent draft is still a draft)."""
+    operation that posts it: a finalize for an invoice, or an import that posts
+    on create (an invoice; an imported purchase order or bill posts nothing, as
+    the opening balances hold it). Status alone is not evidence (a sent draft is
+    still a draft)."""
     docs = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
@@ -248,19 +251,6 @@ async def _check_missing_jes(
                         )
                         existing_keys.add(agg_key)
                         fixed += 1
-
-        elif doc_type == "purchase_order" and entity_id in posted_by["purchase_order"]:
-            rcv_key = je_idempotency_key(entity_id, "po.received", "c")
-            if rcv_key not in existing_keys:
-                problem = _rate_problem(state)
-                detail = {"doc_id": entity_id, "trigger": "po_received", "total": total}
-                if problem:
-                    detail["blocked_reason"] = problem
-                missing.append(detail)
-                if fix and not problem:
-                    await _emit_po_received_je(session, company_id, user_id, entity_id, state)
-                    existing_keys.add(rcv_key)
-                    fixed += 1
 
     return {
         "check": "missing_jes",
@@ -618,21 +608,6 @@ async def _emit_payment_je(
         base_currency=base_currency,
         doc_rate=float(document_rate),
         settlement_rate=float(settlement_rate),
-    )
-
-
-async def _emit_po_received_je(
-    session: AsyncSession, company_id, user_id, doc_id: str, state: dict,
-) -> None:
-    from celerp.models.company import Company
-    from celerp.services import auto_je as _auto_je
-
-    company = await session.get(Company, company_id)
-    base_currency = (company.settings.get("currency", "USD") if company else "USD")
-    await _auto_je.create_for_po_received(
-        session, company_id=company_id, user_id=user_id, po_id=doc_id,
-        doc=state, total=float(state.get("total", 0) or 0),
-        base_currency=base_currency, receive_date=state.get("issue_date") or state.get("created_at"),
     )
 
 

@@ -47,7 +47,7 @@ from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
-from celerp.services.document_lines import line_id_counts, line_item_id, linked_items
+from celerp.services.document_lines import doc_line_index, line_id_counts, line_item_id, linked_items
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
@@ -3724,16 +3724,6 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
     it.name = it.name or line.get("name") or line.get("description") or None
 
 
-def _doc_line_index(lines: list[dict], po_line_index: int, item_id: str | None, sku: str | None) -> int | None:
-    """The document line received goods are for: the line at po_line_index, else the line
-    naming their item or SKU."""
-    if 0 <= po_line_index < len(lines):
-        return po_line_index
-    return next((i for i, li in enumerate(lines)
-                 if (item_id and li.get("item_id") == item_id)
-                 or (sku and str(li.get("sku") or "").strip() == sku.strip())), None)
-
-
 async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
     """What the received goods cost in the books' currency, or None when no line prices them.
 
@@ -3743,7 +3733,7 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
     bill books the line.
     """
     lines = doc.get("line_items") or []
-    line_index = _doc_line_index(lines, it.po_line_index, it.item_id, it.sku)
+    line_index = doc_line_index(lines, it.po_line_index, it.item_id, it.sku)
     if line_index is None:
         return None
     line = lines[line_index]
@@ -3870,7 +3860,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         lines = row.state.get("line_items") or []
         held = _line_quantities_received(row.state)
         for it in payload.received_items:
-            line_index = _doc_line_index(lines, it.po_line_index, it.item_id, it.sku)
+            line_index = doc_line_index(lines, it.po_line_index, it.item_id, it.sku)
             if line_index is None:
                 continue
             before = held.get(line_index, 0.0)
@@ -4166,7 +4156,7 @@ def _line_quantities_received(doc: dict) -> dict[int, float]:
     lines = doc.get("line_items") or []
     received: dict[int, float] = {}
     for x in doc.get("received_items") or []:
-        line_index = _doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), x.get("sku"))
+        line_index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), x.get("sku"))
         if line_index is not None:
             received[line_index] = received.get(line_index, 0.0) + float(x.get("quantity_received") or 0)
     return received
@@ -4956,10 +4946,11 @@ async def import_doc(
     await _assert_import_number_free(session, company_id, "doc", body.data)
     _imp_company = await session.get(Company, company_id)
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
-    if auto_je.import_auto_je_kind(body.data) is not None:
+    if auto_je.imported_issue_kind(body.data) is not None:
         _require_doc_rate_http(body.data, _imp_base_currency)
-    if auto_je.import_auto_je_kind(body.data) == "bill":
+    if auto_je.imported_issue_kind(body.data) == "bill":
         await require_line_destinations(session, company_id, body.data.get("line_items"))
+    data = await imported_opening_snapshot(session, company_id, body.data)
 
     entry = await emit_event(
         session,
@@ -4967,17 +4958,17 @@ async def import_doc(
         entity_id=body.entity_id,
         entity_type="doc",
         event_type=body.event_type,
-        data=body.data,
+        data=data,
         actor_id=user.id,
         location_id=None,
         source=body.source,
         idempotency_key=body.idempotency_key,
-        metadata_=_import_metadata(body.source_ts),
+        metadata_=_import_metadata(body.source_ts, data, post_ledger=True),
     )
 
     # The event type is doc.created by the guard above. Drafts return immediately.
     await _import_auto_je(
-        session, company_id, user.id, body.entity_id, body.data,
+        session, company_id, user.id, body.entity_id, data,
         base_currency=_imp_base_currency,
     )
 
@@ -5020,38 +5011,53 @@ def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
     }
 
 
-def _import_metadata(source_ts: str | None) -> dict:
-    """Ledger metadata of a raw snapshot import, recording that it came through import."""
+def _import_metadata(source_ts: str | None, data: dict, *, post_ledger: bool) -> dict:
+    """Ledger metadata of a raw snapshot import, recording that it came through import and,
+    for a purchase order or bill imported into the books, that the opening balances hold it
+    (auto_je.IMPORTED_OPENING)."""
     meta: dict = {auto_je.IMPORTED_SNAPSHOT: True}
+    if post_ledger and auto_je.imported_issue_kind(data) in ("purchase_order", "bill"):
+        meta[auto_je.IMPORTED_OPENING] = True
     if source_ts:
         meta["source_ts"] = source_ts
     return meta
 
 
+async def imported_opening_snapshot(session: AsyncSession, company_id, data: dict) -> dict:
+    """An imported purchase order or bill as it enters the books, with each stock line it
+    received marked with what that line holds in the lot it names, as a receipt marks what
+    it added, so a return takes the goods back off that lot. Any other snapshot, and one
+    already marked, is returned as it is."""
+    if auto_je.imported_issue_kind(data) not in ("purchase_order", "bill"):
+        return data
+    received = list(data.get("received_items") or [])
+    marked = False
+    for n, x in enumerate(received):
+        quantity = float(x.get("quantity_received") or 0)
+        if (not x.get("item_id") or (x.get("receive_as") or "stock") != "stock"
+                or "lot_quantity_added" in x or quantity <= 0):
+            continue
+        lot = await session.get(Projection, {"company_id": company_id, "entity_id": x["item_id"]})
+        stock_qty = quantity * float(((lot.state if lot else None) or {}).get("purchase_conversion_factor") or 1)
+        it = ReceivedItem(po_line_index=int(x.get("po_line_index", -1)), item_id=x["item_id"], sku=x.get("sku"),
+                          quantity_received=quantity, receive_as="stock")
+        cost = await _received_goods_cost(session, company_id, data, it, stock_qty)
+        received[n] = {**x, "lot_quantity_added": stock_qty, "lot_cost_added": cost or 0.0}
+        marked = True
+    return {**data, "received_items": received} if marked else data
+
+
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
-    """Create the accounting entry implied by an imported non-draft snapshot.
+    """Create the accounting entry implied by an imported issued invoice.
 
-    Payment entries are never synthesized from snapshot totals because their bank
-    account and settlement date/rate are separate facts that the snapshot cannot supply.
+    An imported purchase order or bill posts nothing: the opening balances hold it, the
+    goods received on it as opening stock and what is owed on it as opening payables
+    (auto_je.IMPORTED_OPENING). Payment entries are never synthesized from snapshot
+    totals because their bank account and settlement date/rate are separate facts that
+    the snapshot cannot supply.
     """
-    kind = auto_je.import_auto_je_kind(data)
-    if kind is None:
-        return
-    total = float(data.get("total", 0) or 0)
-
-    if kind == "invoice":
+    if auto_je.imported_issue_kind(data) == "invoice":
         await auto_je.create_for_doc_finalized(
-            session, company_id=company_id, user_id=user_id, doc_id=entity_id,
-            doc=data, base_currency=base_currency,
-        )
-    elif kind == "purchase_order":
-        await auto_je.create_for_po_received(
-            session, company_id=company_id, user_id=user_id, po_id=entity_id,
-            doc=data, total=total, base_currency=base_currency,
-            receive_date=data.get("issue_date"),
-        )
-    elif kind == "bill":
-        await auto_je.create_for_bill_conversion(
             session, company_id=company_id, user_id=user_id, doc_id=entity_id,
             doc=data, base_currency=base_currency,
         )
@@ -8069,6 +8075,13 @@ async def undo_receive(
     state = row.state
     if state.get("doc_type") != "bill":
         raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
+    imported = await auto_je.imported_document(session, company_id, entity_id)
+    if imported is not None and imported.snapshot.get("received_items"):
+        # They are opening stock, not something a receipt here brought in.
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.undo_imported_receipt",
+            "Goods on this bill were already in stock when it was imported, so its receipt "
+            "cannot be reverted here. Correct those quantities with a stock adjustment."))
     received_item_ids = state.get("received_item_ids") or []
     added = _lot_additions(state)
     if not received_item_ids and not added:

@@ -4334,6 +4334,7 @@
   "posting.older_stock.fix_move": "Move {amount} from {source} to {code} with a journal entry, then choose {code} again.",
   "posting.older_stock.fix_reconcile": "No inventory account holds it, so the books need reconciling: post a journal entry Dr {code} {amount} / Cr {equity} {amount}, then choose {code} again.",
   "docs.receive_draft_bill": "This bill is still a draft, so it has not booked these goods. Finalize the bill first, then receive them.",
+  "docs.undo_imported_receipt": "Goods on this bill were already in stock when it was imported, so its receipt cannot be reverted here. Correct those quantities with a stock adjustment.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Each added account needs a code.",
   "posting.added_needs_name": "Each added account needs a name.",

@@ -4336,6 +4336,7 @@
   "posting.older_stock.fix_move": "Transférez {amount} de {source} vers {code} par une écriture de journal, puis choisissez de nouveau {code}.",
   "posting.older_stock.fix_reconcile": "Aucun compte de stock ne la porte, les comptes doivent donc être rapprochés : passez une écriture de journal Débit {code} {amount} / Crédit {equity} {amount}, puis choisissez de nouveau {code}.",
   "docs.receive_draft_bill": "Cette facture est encore un brouillon, elle n'a donc pas comptabilisé ces marchandises. Finalisez d'abord la facture, puis réceptionnez-les.",
+  "docs.undo_imported_receipt": "Les articles de cette facture étaient déjà en stock lors de son importation, sa réception ne peut donc pas être annulée ici. Corrigez ces quantités avec un ajustement de stock.",
   "posting.problems": "{problems}",
   "posting.added_needs_code": "Chaque compte ajouté doit avoir un numéro.",
   "posting.added_needs_name": "Chaque compte ajouté doit avoir un nom.",
