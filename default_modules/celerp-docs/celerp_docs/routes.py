@@ -517,7 +517,7 @@ class RevertLinesRequest(FulfillLinesRequest):
 
     ``weights`` / ``pieces`` carry the returned lot's measures for parcels tracked by a
     measure the quantity does not imply (a piece-sold parcel that also carries a weight).
-    The measure of a part-returned parcel cannot be inferred, so it must be stated.
+    A measure not stated for a part-returned parcel is unknown on both sides, never guessed.
     """
     quantities: dict[str, FiniteFloat] | None = None
     weights: dict[str, FiniteFloat] | None = None
@@ -4847,7 +4847,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 gone, _sku = await split_off_child(
                     session, company_id=uuid.UUID(str(company_id)), user_id=user.id, parent_proj=item,
                     child_qty=it.quantity_returned, child_cost_base=share, child_weight=it.weight,
-                    child_pieces=it.pieces, unknown_measures=True, action="return")
+                    child_pieces=it.pieces, action="return")
             except (ValueError, HTTPException) as exc:
                 # A part that cannot be carved (a lot that may not be split, a weight above the
                 # lot's) refuses the whole return: roll back so no earlier line has left either.
@@ -7303,7 +7303,7 @@ def _refuse_unavailable(reasons: list[dict]) -> None:
 def _carve_measures(line: dict, lot_state: dict, qty: float, unit_map: dict, *, whole_line: bool) -> dict:
     """The measures of a ``qty`` part carved off a lot. The part that is a line's whole
     quantity off its own bound lot takes the line's stated weight and pieces; any other
-    part only the measure the lot is sold by (split_off_child refuses what that leaves out)."""
+    part only the measure the lot is sold by; its other measure is unknown on both sides."""
     if whole_line:
         return _plan_line_carve({**line, "quantity": qty}, lot_state, unit_map)
     sell_by = lot_state.get("sell_by")
@@ -9973,7 +9973,7 @@ async def write_off_stock(
                 disposed_eid, _sku = await split_off_child(
                     session, company_id=company_id, user_id=user.id, parent_proj=item,
                     child_qty=qty_out, child_weight=l.get("weight"), child_pieces=l.get("pieces"),
-                    unknown_measures=True, action="write_off",
+                    action="write_off",
                 )
         except (ValueError, HTTPException) as exc:
             # A part that cannot be carved (a lot that may not be split, a weight above the lot's)

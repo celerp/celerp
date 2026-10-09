@@ -3604,8 +3604,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
 async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_proj: Projection,
                           child_qty: float, action: str, child_weight: float | None = None,
-                          child_pieces: int | None = None, child_cost_base: float | None = None,
-                          unknown_measures: bool = False) -> tuple[str, str]:
+                          child_pieces: int | None = None,
+                          child_cost_base: float | None = None) -> tuple[str, str]:
     """Split one child of ``child_qty`` off ``parent_proj`` -> ``(child_eid, child_sku)``.
 
     The child keeps the parent SKU (same product; a distinct lot by barcode / entity_id)
@@ -3618,17 +3618,16 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     before anything is written.
 
     Weight and pieces come only from the explicit args; the mother keeps ``parent - child``
-    of each, and a part measuring more than its lot is refused. By default a tracked
-    measure is required. With ``unknown_measures`` an omitted one is unknown instead: the
-    child carries none and the mother's becomes unknown too, since what is left cannot be
-    worked out. Either way a lot sold by weight (or by pieces) measures its quantity.
+    of each, and a part measuring more than its lot is refused. An omitted measure is
+    unknown: the child carries none and the mother's becomes unknown too, since what is
+    left cannot be worked out. A lot sold by weight (or by pieces) measures its quantity,
+    on both sides, whatever figure it had stored.
 
     Invariants (raise ValueError if violated):
       - child_qty must not exceed the locked parent quantity, nor be finer than its unit
       - pieces are whole numbers
       - sell_by is a weight unit  -> child_weight equals child_qty
       - sell_by is a pieces unit  -> child_pieces equals child_qty
-      - without unknown_measures, a tracked weight or pieces is required
 
     Does NOT commit; the caller owns the transaction.
     """
@@ -3662,25 +3661,22 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     sell_by = parent.state.get("sell_by") or ""
     weight_type = is_weight_unit(sell_by, unit_map)
     pieces_type = is_pieces_unit(sell_by, unit_map)
-    parent_weight = _read_float(parent.state, "weight")
-    parent_pieces = _read_pieces(parent.state)
+    stored_weight = _read_float(parent.state, "weight")
+    stored_pieces = _read_pieces(parent.state)
+    # The quantity of a lot sold by a measure is that measure, so a stored figure that has
+    # drifted from it (an import, an older receipt) is carved from the quantity instead.
+    parent_weight = parent_qty if weight_type and stored_weight is not None else stored_weight
+    parent_pieces = parent_qty if pieces_type and stored_pieces is not None else stored_pieces
     if sell_by in unit_map and exceeds_precision(child_qty, int(unit_map[sell_by].get("decimals") or 0)):
         raise ValueError(f"{child_qty:g} is more precise than {sell_by} allows")
 
-    if unknown_measures:
-        # The quantity of a lot sold by a measure is that measure.
-        if weight_type and child_weight is None:
-            child_weight = child_qty
-        if pieces_type and child_pieces is None:
-            child_pieces = child_qty
+    if weight_type and child_weight is None:
+        child_weight = child_qty
+    if pieces_type and child_pieces is None:
+        child_pieces = child_qty
 
-    # --- validate (no omission, no fallback) ---
-    if not unknown_measures and (weight_type or parent_weight is not None) and child_weight is None:
-        raise ValueError("child_weight is required: this item is weight-tracked")
     if weight_type and child_weight is not None and abs(child_weight - child_qty) > 1e-9:
         raise ValueError("for weight-sold items child_weight must equal child_qty")
-    if not unknown_measures and (pieces_type or parent_pieces is not None) and child_pieces is None:
-        raise ValueError("child_pieces is required: this item is piece-tracked")
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
     if child_pieces is not None and float(child_pieces) != int(float(child_pieces)):
@@ -3703,7 +3699,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
             pieces_after = _to_int_pieces(parent_pieces) - ch_pieces
             if pieces_after < 0:
                 raise ValueError(f"{ch_pieces} pieces is more than the {parent_pieces:g} the lot has")
-        fields_changed["pieces"] = {"old": parent_pieces, "new": pieces_after}
+        fields_changed["pieces"] = {"old": stored_pieces, "new": pieces_after}
 
     # The split child is the same product as the parent: it KEEPS the parent SKU and is
     # distinguished only by its own unique barcode / entity_id (SKUs repeat across lots).
