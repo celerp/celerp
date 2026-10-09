@@ -2325,6 +2325,7 @@
   "documents.clear_scanned": "አጽዳ ተቃኝቷል",
   "documents.click_to_edit": "ለማርትዕ ጠቅ ያድርጉ",
   "documents.click_to_edit_count": "ቆጠራን ለማርትዕ ጠቅ ያድርጉ",
+  "documents.cogs_share_unknown": "ይህ ደረሰኝ የመዘገበው የተሸጡ ዕቃዎች ወጪ ከዕቃዎቹ ወጪ ጋር አይዛመድም፣ ስለዚህ የተመለሱት ዕቃዎች ድርሻ ሊሰላ አይችልም። ምንም አልተቀየረም።",
   "documents.confirm_adjust_stock": "የተቆጠሩትን መጠኖች ወደ ክምችት ይተግብሩ? ይህ የጆርናል ግቤት ይመዘገባል።",
   "documents.confirm_delete_drafts": "የተመረጡ ረቂቆች ይሰረዙ? ይህ ሊቀለበስ አይችልም።",
   "documents.confirm_receive_selected": "የተመረጡትን መስመሮች በሚታዩት መጠኖች ይቀበሉ?",

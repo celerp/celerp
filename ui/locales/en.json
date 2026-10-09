@@ -2344,6 +2344,7 @@
   "documents.clear_scanned": "Clear scanned",
   "documents.click_to_edit": "Click to edit",
   "documents.click_to_edit_count": "Click to edit count",
+  "documents.cogs_share_unknown": "The cost of goods sold this invoice posted does not match the cost of its goods, so the share of the goods taken back cannot be worked out. Nothing was changed.",
   "documents.confirm_adjust_stock": "Apply the counted quantities to stock? This posts a journal entry.",
   "documents.confirm_delete_drafts": "Delete selected drafts? This cannot be undone.",
   "documents.confirm_receive_selected": "Receive the selected lines in the quantities shown?",

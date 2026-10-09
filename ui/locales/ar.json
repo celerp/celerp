@@ -2218,6 +2218,7 @@
   "documents.clear_scanned": "مسح الممسوح ضوئيًا",
   "documents.click_to_edit": "انقر للتحرير",
   "documents.click_to_edit_count": "انقر لتحرير العدد",
+  "documents.cogs_share_unknown": "تكلفة البضاعة المباعة التي سجّلتها هذه الفاتورة لا تطابق تكلفة بضاعتها، لذا لا يمكن حساب حصة البضاعة المستردة. لم يتم تغيير أي شيء.",
   "documents.confirm_adjust_stock": "تطبيق الكميات التي تم عدها على المخزون؟ يؤدي هذا إلى تسجيل قيد في دفتر اليومية.",
   "documents.confirm_delete_drafts": "حذف المسودات المحددة؟ لا يمكن التراجع عن هذه العملية.",
   "documents.confirm_receive_selected": "استلام البنود المحددة بالكميات المعروضة؟",

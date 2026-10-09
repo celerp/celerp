@@ -2219,6 +2219,7 @@
   "documents.clear_scanned": "Cancella scansioni",
   "documents.click_to_edit": "Clicca per modificare",
   "documents.click_to_edit_count": "Clicca per modificare il conteggio",
+  "documents.cogs_share_unknown": "Il costo del venduto registrato da questa fattura non corrisponde al costo della sua merce, quindi la quota della merce ripresa non può essere calcolata. Non è stato modificato nulla.",
   "documents.confirm_adjust_stock": "Applicare le quantità conteggiate alle scorte? Questa operazione registra una scrittura contabile.",
   "documents.confirm_delete_drafts": "Eliminare le bozze selezionate? Questa operazione non può essere annullata.",
   "documents.confirm_receive_selected": "Ricevere le righe selezionate nelle quantità indicate?",

@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal as _Dec
 
-from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, LOT_ACCOUNT_FIELD, AccountRole
+from celerp.accounting_roles import INVENTORY_VALUE_ROLES, LANDED_ROLE_BY_KIND, LOT_ACCOUNT_FIELD, AccountRole, refusal
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.account_roles import (
@@ -33,7 +33,7 @@ from celerp.services.lot_origin import held_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy import select as _select
 
 R = AccountRole
@@ -1486,8 +1486,8 @@ async def recognized_cogs(session, company_id, doc_id: str) -> RecognizedCogs | 
     Reads the allocation snapshot off the creation event of the currently posted
     finalize-family JE (fin, a re-finalize cycle, or an unvoid restore of one).
     None when no posted finalize-family JE carries a snapshot - which is every doc
-    finalized before snapshots existed, where there is no recognized basis to
-    true up against and no adjustment may be posted.
+    finalized before snapshots existed; those are trued up against the entries that
+    booked their cost instead (_legacy_cogs_truth).
     """
     from celerp.models.ledger import LedgerEntry
 
@@ -1770,6 +1770,18 @@ async def _lots_by_fulfillment_on_doc(session, company_id, doc_id: str) -> tuple
     return out, back
 
 
+class CogsShareUnknown(ValueError):
+    """An older invoice's cost of goods sold cannot be split by lot from what it posted,
+    so goods it takes back cannot give their share back. ``detail`` is the refusal."""
+
+    def __init__(self) -> None:
+        self.detail = refusal(
+            "documents.cogs_share_unknown",
+            "The cost of goods sold this invoice posted does not match the cost of its goods, "
+            "so the share of the goods taken back cannot be worked out. Nothing was changed.")
+        super().__init__(self.detail["message"])
+
+
 async def reconcile_doc_cogs(
     session, *, company_id, user_id, doc_id: str, cycle_tag: str, ts: str | None,
     trigger: str, memo: str | None = None, context: dict | None = None,
@@ -1781,20 +1793,60 @@ async def reconcile_doc_cogs(
     deliver part of a line). A line not shipped recognizes its finalize allocation plus
     every cost correction since recorded against that allocation. Goods the invoice took
     back into stock and no longer holds (Set as available after shipping) take their share
-    of the allocation with them, so a lot sold again elsewhere is costed once. The difference from
+    of the allocation with them, so a lot sold again elsewhere is costed once. An invoice
+    issued before invoices kept their allocation is trued up the same way against what its
+    own entries booked (_legacy_cogs_truth). The difference from
     the cost of sales the invoice's live entries already book, measured as their net
     relief of inventory, whichever account carries the expense, is taken once each
     account's truth is rounded to the currency, for the whole invoice, and posted
-    through create_for_doc_cogs_adjustment. An invoice with no recognized
-    allocation on record posts nothing. Raises ValueError when a shipped lot
-    cannot be matched to one of the invoice's lines.
+    through create_for_doc_cogs_adjustment. Raises ValueError when a shipped lot
+    cannot be matched to one of the invoice's lines, and CogsShareUnknown when an older
+    invoice's share of goods taken back cannot be worked out.
     """
-    recognized = await recognized_cogs(session, company_id, doc_id)
-    if recognized is None:
-        return
     settings = await current_settings(session, company_id)
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     doc_state = (doc.state or {}) if doc is not None else {}
+    jes = await _doc_recognition_jes(session, company_id, doc_id)
+    out, back = await _lots_by_fulfillment_on_doc(session, company_id, doc_id)
+    recognized = await recognized_cogs(session, company_id, doc_id)
+    if recognized is None:
+        truth = await _legacy_cogs_truth(session, company_id, doc_id, doc_state, settings, jes, out, back)
+        if truth is None:
+            return
+    else:
+        truth = await _cogs_truth(
+            session, company_id, doc_id, doc_state, recognized.allocations,
+            await _recorded_repricings(session, company_id, doc_id, recognized.cycle), out, back)
+    booked = _inventory_relief(settings, [row for row in jes.values() if (row.state or {}).get("status") == "posted"])
+    # Booked amounts are already money, so the truth is compared once it is money too:
+    # half a cent of cost recognized at finalize is not given back at fulfillment.
+    currency = await company_currency(session, company_id)
+    truth = {code: to_stored_float(round_money(amount, currency)) for code, amount in truth.items()}
+    await create_for_doc_cogs_adjustment(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+        delta={code: truth.get(code, 0.0) - booked.get(code, 0.0) for code in truth.keys() | booked.keys()},
+        cycle_tag=cycle_tag, doc_number=doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id,
+        ts=ts, trigger=trigger, memo=memo, context=context,
+    )
+
+
+def _inventory_relief(settings: dict, rows) -> dict[str, float]:
+    """Net credit to each inventory account over the given posted JE projections."""
+    relief: dict[str, float] = {}
+    for row in rows:
+        for e in (row.state or {}).get("entries", []):
+            if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING)):
+                relief[e["account"]] = relief.get(e["account"], 0.0) + float(e.get("credit") or 0) - float(
+                    e.get("debit") or 0)
+    return relief
+
+
+async def _cogs_truth(
+    session, company_id, doc_id: str, doc_state: dict, allocations: dict, repriced: dict[int, float],
+    out: list[Projection], back: list[tuple[Projection, float]],
+) -> dict[str, float]:
+    """What the invoice recognizes per inventory account: the actual cost of the lots it
+    shipped, plus each line's allocation share for quantity neither shipped nor taken back."""
     truth: dict[str, float] = {}
 
     def _add(by_account: dict[str, float]) -> None:
@@ -1803,7 +1855,6 @@ async def reconcile_doc_cogs(
 
     shipped_qty: dict[int, float] = {}
     back_qty: dict[int, float] = {}
-    out, back = await _lots_by_fulfillment_on_doc(session, company_id, doc_id)
     for lot in out:
         idx = await doc_line_of_lot(session, company_id, doc_id, doc_state, lot.entity_id, lot.state or {})
         if idx is None:
@@ -1817,8 +1868,7 @@ async def reconcile_doc_cogs(
         if idx is None:
             raise ValueError("cannot safely identify the invoice line of every lot taken back")
         back_qty[idx] = back_qty.get(idx, 0.0) + qty
-    repriced = await _recorded_repricings(session, company_id, doc_id, recognized.cycle)
-    for idx, alloc in recognized.allocations.items():
+    for idx, alloc in allocations.items():
         amount = float(alloc.get("amount") or 0)
         if int(idx) not in shipped_qty and int(idx) not in back_qty:
             _add(await _allocation_by_account(session, company_id, alloc,
@@ -1831,24 +1881,85 @@ async def reconcile_doc_cogs(
         unshipped = allocated - shipped_qty.get(int(idx), 0.0) - back_qty.get(int(idx), 0.0)
         if allocated > 0 and unshipped > 1e-9:
             _add(await _allocation_by_account(session, company_id, alloc, amount * unshipped / allocated))
-    booked: dict[str, float] = {}
-    for row in (await _doc_recognition_jes(session, company_id, doc_id)).values():
-        if (row.state or {}).get("status") != "posted":
-            continue
-        for e in (row.state or {}).get("entries", []):
-            if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING)):
-                booked[e["account"]] = booked.get(e["account"], 0.0) + float(e.get("credit") or 0) - float(
-                    e.get("debit") or 0)
-    # Booked amounts are already money, so the truth is compared once it is money too:
-    # half a cent of cost recognized at finalize is not given back at fulfillment.
+    return truth
+
+
+async def _legacy_cogs_truth(
+    session, company_id, doc_id: str, doc_state: dict, settings: dict, jes: dict[str, Projection],
+    out: list[Projection], back: list[tuple[Projection, float]],
+) -> dict[str, float] | None:
+    """What an invoice issued before invoices kept their allocation recognizes, or None
+    when there is nothing to true up: no goods taken back and no take-back booked yet, or
+    no cost of goods sold booked at all.
+
+    Its cost of goods sold sits in one kind of entry, plus any cost corrections posted
+    against it since (cogs-adj:restate-*). The backfill booked every line at its bound
+    lot's cost (compute_doc_cogs), so that computation is its allocation and the invoice
+    is trued up as one that kept it. A fulfilment entry booked the lots shipped before
+    it, each at its cost of sale; those lots are what it covers, and the invoice
+    recognizes the ones still out. Either way the basis must
+    reproduce what was posted, per account to the cent, or the share of a lot taken back
+    is unknown and CogsShareUnknown is raised. Lots shipped after a fulfilment entry were
+    never booked by it and are left as they are.
+    """
+    posted = {s: row for s, row in jes.items() if (row.state or {}).get("status") == "posted"}
+    roots = {s: _recognition_root(s) or "" for s in posted}
+    takebacks = {s for s, r in roots.items() if r.startswith("cogs-adj:") and not r.startswith("cogs-adj:restate-")}
+    backfilled = any(r == "cogs-backfill" for r in roots.values())
+    fulfilment = [s for s, r in roots.items() if _FULFILLMENT_COGS.fullmatch(r)]
+    if not back and not takebacks:
+        return None
+    if not backfilled and not fulfilment:
+        return None
+    if backfilled and fulfilment:
+        raise CogsShareUnknown()
     currency = await company_currency(session, company_id)
-    truth = {code: to_stored_float(round_money(amount, currency)) for code, amount in truth.items()}
-    await create_for_doc_cogs_adjustment(
-        session, company_id=company_id, user_id=user_id, doc_id=doc_id,
-        delta={code: truth.get(code, 0.0) - booked.get(code, 0.0) for code in truth.keys() | booked.keys()},
-        cycle_tag=cycle_tag, doc_number=doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id,
-        ts=ts, trigger=trigger, memo=memo, context=context,
-    )
+
+    def _money(by_account: dict[str, float]) -> dict[str, _Dec]:
+        rounded = {code: round_money(v, currency) for code, v in by_account.items()}
+        return {code: v for code, v in rounded.items() if v != 0}
+
+    basis = _money(_inventory_relief(settings, [row for s, row in posted.items() if s not in takebacks]))
+    if backfilled:
+        cogs = await compute_doc_cogs(session, company_id, doc_state)
+        if cogs.ambiguous or _money(cogs.by_account) != basis:
+            raise CogsShareUnknown()
+        return await _cogs_truth(session, company_id, doc_id, doc_state, cogs.allocations, {}, out, back)
+    covered = await _lots_booked_at_fulfilment(
+        session, company_id, doc_id, [posted[s].entity_id for s in fulfilment], [*out, *(lot for lot, _ in back)])
+    booked_lots: dict[str, float] = {}
+    truth: dict[str, float] = {}
+    out_ids = {lot.entity_id for lot in out}
+    for lot in covered:
+        code, cost = lot_account(lot.state or {}), lot_cost_of_sale(lot.state or {})
+        booked_lots[code] = booked_lots.get(code, 0.0) + cost
+        if lot.entity_id in out_ids:
+            truth[code] = truth.get(code, 0.0) + cost
+    if _money(booked_lots) != basis:
+        raise CogsShareUnknown()
+    return truth
+
+
+async def _lots_booked_at_fulfilment(
+    session, company_id, doc_id: str, je_ids: list[str], lots: list[Projection],
+) -> list[Projection]:
+    """The lots among ``lots`` whose cost the doc's fulfilment entries booked: those
+    shipped on the doc before the latest of the entries was created."""
+    from celerp.models.ledger import LedgerEntry
+
+    created = (await session.execute(_select(func.max(LedgerEntry.id)).where(
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.entity_id.in_(je_ids),
+        LedgerEntry.event_type == "acc.journal_entry.created",
+    ))).scalar()
+    shipped = set((await session.execute(_select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.entity_type == "item",
+        LedgerEntry.event_type == "item.fulfilled",
+        LedgerEntry.data["source_doc_id"].as_string() == doc_id,
+        LedgerEntry.id < (created or 0),
+    ))).scalars().all())
+    return [lot for lot in lots if lot.entity_id in shipped]
 
 
 async def _allocation_by_account(session, company_id, alloc: dict, amount: float) -> dict[str, float]:

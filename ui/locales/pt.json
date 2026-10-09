@@ -2218,6 +2218,7 @@
   "documents.clear_scanned": "Limpar digitalizados",
   "documents.click_to_edit": "Clique para editar",
   "documents.click_to_edit_count": "Clique para editar a contagem",
+  "documents.cogs_share_unknown": "O custo das mercadorias vendidas lançado por esta fatura não corresponde ao custo das suas mercadorias, por isso a parte das mercadorias recolhidas não pode ser calculada. Nada foi alterado.",
   "documents.confirm_adjust_stock": "Aplicar as quantidades contadas ao estoque? Isso lança um lançamento contábil.",
   "documents.confirm_delete_drafts": "Excluir rascunhos selecionados? Essa ação não pode ser desfeita.",
   "documents.confirm_receive_selected": "Receber as linhas selecionadas nas quantidades indicadas?",

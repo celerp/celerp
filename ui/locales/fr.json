@@ -2219,6 +2219,7 @@
   "documents.clear_scanned": "Effacer les documents numérisés",
   "documents.click_to_edit": "Cliquer pour modifier",
   "documents.click_to_edit_count": "Cliquer pour modifier le nombre",
+  "documents.cogs_share_unknown": "Le coût des marchandises vendues comptabilisé par cette facture ne correspond pas au coût de ses marchandises, la part des marchandises reprises ne peut donc pas être calculée. Rien n'a été modifié.",
   "documents.confirm_adjust_stock": "Appliquer les quantités comptées au stock ? Cela génère une écriture comptable.",
   "documents.confirm_delete_drafts": "Supprimer les brouillons sélectionnés ? Cette action est irréversible.",
   "documents.confirm_receive_selected": "Recevoir les lignes sélectionnées dans les quantités indiquées ?",

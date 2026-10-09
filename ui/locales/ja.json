@@ -2218,6 +2218,7 @@
   "documents.clear_scanned": "スキャン済みデータをクリア",
   "documents.click_to_edit": "クリックして編集",
   "documents.click_to_edit_count": "クリックして数量を編集",
+  "documents.cogs_share_unknown": "この請求書が計上した売上原価が商品の原価と一致しないため、引き取った商品の分を算出できません。何も変更されていません。",
   "documents.confirm_adjust_stock": "集計された数量を在庫に反映しますか？ これにより仕訳伝票が作成されます。",
   "documents.confirm_delete_drafts": "選択した下書きを削除しますか？ この操作は元に戻せません。",
   "documents.confirm_receive_selected": "選択した明細を表示の数量で入荷しますか?",

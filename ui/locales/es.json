@@ -2218,6 +2218,7 @@
   "documents.clear_scanned": "Borrar escaneados",
   "documents.click_to_edit": "Haz clic para editar",
   "documents.click_to_edit_count": "Haz clic para editar el recuento",
+  "documents.cogs_share_unknown": "El costo de ventas que registró esta factura no coincide con el costo de sus artículos, así que no se puede calcular la parte de los artículos devueltos. No se cambió nada.",
   "documents.confirm_adjust_stock": "¿Aplicar las cantidades contadas al stock? Esto contabiliza un asiento contable.",
   "documents.confirm_delete_drafts": "¿Eliminar los borradores seleccionados? Esta acción no se puede deshacer.",
   "documents.confirm_receive_selected": "¿Recibir las líneas seleccionadas en las cantidades indicadas?",

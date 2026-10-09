@@ -2219,6 +2219,7 @@
   "documents.clear_scanned": "Gescannte Belege löschen",
   "documents.click_to_edit": "Zum Bearbeiten anklicken",
   "documents.click_to_edit_count": "Zum Bearbeiten der Stückzahl hier klicken",
+  "documents.cogs_share_unknown": "Die von dieser Rechnung gebuchten Umsatzkosten stimmen nicht mit den Kosten ihrer Waren überein, daher lässt sich der Anteil der zurückgenommenen Waren nicht ermitteln. Es wurde nichts geändert.",
   "documents.confirm_adjust_stock": "Die gezählten Mengen dem Bestand zuweisen? Dadurch wird eine Journalbuchung erstellt.",
   "documents.confirm_delete_drafts": "Ausgewählte Entwürfe löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.",
   "documents.confirm_receive_selected": "Die ausgewählten Positionen in den angezeigten Mengen einbuchen?",

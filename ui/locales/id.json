@@ -2218,6 +2218,7 @@
   "documents.clear_scanned": "Hapus yang telah dipindai",
   "documents.click_to_edit": "Klik untuk mengedit",
   "documents.click_to_edit_count": "Klik untuk mengedit jumlah",
+  "documents.cogs_share_unknown": "Harga pokok penjualan yang dicatat faktur ini tidak sesuai dengan biaya barangnya, sehingga bagian barang yang diambil kembali tidak dapat dihitung. Tidak ada yang diubah.",
   "documents.confirm_adjust_stock": "Terapkan jumlah yang dihitung ke stok? Tindakan ini akan membuat entri jurnal.",
   "documents.confirm_delete_drafts": "Hapus draf yang dipilih? Tindakan ini tidak dapat dibatalkan.",
   "documents.confirm_receive_selected": "Terima baris yang dipilih sesuai jumlah yang ditampilkan?",
