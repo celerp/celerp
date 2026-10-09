@@ -156,3 +156,39 @@ async def test_legacy_po_receipt_returns_before_and_after_conversion(client, ses
                           json={"items": [{"item_id": lot, "quantity_returned": 2}]})
     assert r.status_code == 200, r.text
     assert await _qty(session, auth, lot) == 10
+
+
+async def _imported_received_po(client, auth, lot: str) -> tuple[str, str]:
+    """A purchase order imported already received: its receipt onto ``lot`` is part of the
+    document as imported, with no receipt event of its own. -> (doc id, line id)."""
+    doc_id, line_id = f"doc:{uuid.uuid4()}", str(uuid.uuid4())
+    r = await client.post("/docs/import", headers=auth["headers"], json={
+        "entity_id": doc_id, "event_type": "doc.created", "source": "test",
+        "idempotency_key": uuid.uuid4().hex, "data": {
+            "doc_type": "purchase_order", "status": "received", "doc_number": f"PO-IMP-{uuid.uuid4().hex[:5]}",
+            "line_items": [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0, "line_id": line_id}],
+            "subtotal": 70.0, "total": 70.0, "amount_outstanding": 70.0,
+            "received_items": [{"item_id": lot, "po_line_index": 0, "quantity_received": 5.0, "receive_as": "stock"}],
+            "received_item_ids": []}})
+    assert r.status_code == 200, r.text
+    return doc_id, line_id
+
+
+async def test_imported_po_receipt_returns_by_item_and_by_line(client, session, auth):
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po, line_id = await _imported_received_po(client, auth, lot)
+
+    doc = (await client.get(f"/docs/{po}", headers=auth["headers"])).json()
+    assert doc["line_items"][0]["returnable_quantity"] == 5
+    r = await client.post(f"/docs/{po}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 2}]})
+    assert r.status_code == 200, r.text
+    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 1})
+    assert r.status_code == 200, r.text
+    # The import carried the order's stock separately, so the returns take it off the lot's ten.
+    assert await _qty(session, auth, lot) == 7
+    returned = (await _state(session, auth, po))["returned_items"]
+    assert [(x["item_id"], x["quantity_returned"]) for x in returned] == [(lot, 2), (lot, 1)]
+    doc = (await client.get(f"/docs/{po}", headers=auth["headers"])).json()
+    assert doc["line_items"][0]["returnable_quantity"] == 2
+

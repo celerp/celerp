@@ -4515,21 +4515,26 @@ def _stock_receipt(x: dict) -> bool:
 async def _receipt_events(session: AsyncSession, company_id, doc_id: str, received: list[dict],
                           made: list[str]) -> list[tuple[list[dict], list[str]]] | None:
     """The document's receipts as their events recorded them, oldest first: (entries, parcels
-    made) per receipt, for the receipts the document still holds. None when those events do
-    not add up to what the document holds."""
+    made) per receipt, for the receipts the document still holds. Receipts the document
+    already held when it was imported have no event of their own and count as one receipt,
+    read from the document. None when the receipts do not add up to what the document holds."""
     from celerp.models.ledger import LedgerEntry
 
     rows = (await session.execute(select(LedgerEntry.data).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id == doc_id,
         LedgerEntry.event_type == "doc.received").order_by(LedgerEntry.id.desc()))).scalars().all()
     receipts: list[tuple[list[dict], list[str]]] = []
-    count = 0
+    count = made_count = 0
     for data in rows:
         if count >= len(received):
             break
         entries = list((data or {}).get("received_items") or [])
-        receipts.insert(0, (entries, list((data or {}).get("created_item_ids") or [])))
+        created = list((data or {}).get("created_item_ids") or [])
+        receipts.insert(0, (entries, created))
         count += len(entries)
+        made_count += len(created)
+    if count < len(received):
+        receipts.insert(0, (received[:len(received) - count], made[:len(made) - made_count]))
     if ([x for entries, _ in receipts for x in entries] != received
             or [i for _, created in receipts for i in created] != made):
         return None
