@@ -263,17 +263,27 @@ def to_base(amount: _MoneyInput, rate: _MoneyInput, base_currency: str) -> float
 
 
 def allocate_pro_rata(amount: _MoneyInput, weights: list[Decimal], currency: str) -> list[Decimal]:
-    """Split amount across weights in proportion, each share rounded to the currency.
+    """Split amount across weights in proportion, in whole units of the currency (cents).
 
-    The largest weight takes what rounding leaves, so the shares always sum to the
-    rounded amount exactly. Weights must be positive.
+    The one allocation of an amount over parts (lots, units, accounts, lines). Each part
+    takes its share rounded down to the cent, and the cents rounding leaves go one each to
+    the parts with the largest remainders, the earlier part first on a tie (largest
+    remainder): 1.00 over three equal parts is 0.34 / 0.33 / 0.33. The shares always sum to
+    the rounded amount exactly. A part of weight 0 takes nothing; a negative amount splits
+    as its opposite does, negated. Weights must not be negative and not all 0.
     """
     total = round_money(amount, currency)
+    if total < 0:
+        return [-share for share in allocate_pro_rata(-total, weights, currency)]
+    weights = [to_decimal(w) for w in weights]
     weight_sum = sum(weights, Decimal(0))
-    shares = [round_money(total * w / weight_sum, currency) for w in weights]
-    largest = max(range(len(weights)), key=lambda i: weights[i])
-    shares[largest] += total - sum(shares, Decimal(0))
-    return shares
+    quant = Decimal(10) ** -currency_dp(currency)
+    units = int(total / quant)
+    exact = [units * w / weight_sum for w in weights]
+    whole = [int(x) for x in exact]
+    for i in sorted(range(len(weights)), key=lambda i: (whole[i] - exact[i], i))[:units - sum(whole)]:
+        whole[i] += 1
+    return [n * quant for n in whole]
 
 
 def received_share(amount: _MoneyInput, before: _MoneyInput, after: _MoneyInput, whole: _MoneyInput,

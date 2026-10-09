@@ -50,15 +50,28 @@ async def _reserve_one(client, auth, lot) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("move, why", [
     (_split_one, "holds 3 of the 4 that came in"),
-    (_sell_one, "of the 4 that came in"),
     (_reserve_one, "has 1 reserved"),
-], ids=["split", "partly-sold", "reserved"])
+], ids=["split", "reserved"])
 async def test_a_receipt_whose_parcel_moved_on_cannot_be_undone(client, session, auth, move, why):
     bill, parcel = await _received_parcel(client, session, auth)
     await move(client, auth, parcel)
     r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
     assert r.status_code == 409, r.text
     assert "UNDO-G" in r.json()["detail"] and why in r.json()["detail"], r.json()["detail"]
+    assert (await _state(session, auth, bill))["received_item_ids"] == [parcel]
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_whose_parcel_was_partly_sold_cannot_be_undone(client, session, auth):
+    """A unit sold from the parcel took its cost with it, so the receipt cannot be taken
+    back as if it never happened: the one refusal for units gone, pointing to a return."""
+    bill, parcel = await _received_parcel(client, session, auth)
+    await _sell_one(client, auth, parcel)
+    r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "docs.undo_receipt_units_sold", detail
+    assert detail["params"] == {"sku": "UNDO-G", "gone": "1", "needed": "4"}, detail
     assert (await _state(session, auth, bill))["received_item_ids"] == [parcel]
 
 

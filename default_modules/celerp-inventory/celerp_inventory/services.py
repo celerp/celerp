@@ -41,7 +41,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.money import round_basis, round_money, to_decimal
+from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
@@ -101,9 +101,14 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     # Timestamps - set fresh
     "created_at",
     "updated_at",
-    # Relationship - set by split/transform logic
+    # Relationship - set by split/transform logic. A lot's lineage is its own: a part split
+    # off it records split_from, a transform's product records transformed_from, and neither
+    # inherits the lot's own.
     "parent_id",
     "parent_sku",
+    "split_from",
+    "transformed_from",
+    "transformed_into",
 })
 
 
@@ -193,13 +198,16 @@ def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | 
     """The one division of a lot's cost when ``part_qty`` of it becomes a lot of its own (a
     split, a return to the supplier). The lot keeps its quantity share of the goods cost
     (unless ``part_goods`` names the part's) and of every landed pool, each to the cent in
-    ``currency``, and the part takes the difference. The books carry every lot to the cent,
-    so the part and the lot round back to exactly what the whole carried."""
+    ``currency`` (allocate_pro_rata), and the part takes the difference. The books carry
+    every lot to the cent, so the part and the lot round back to exactly what the whole
+    carried."""
     qty = float(state.get("quantity") or 0)
 
     def kept(amount: float) -> float:
-        share = to_decimal(amount) * to_decimal(qty - part_qty) / to_decimal(qty) if qty > 0 else 0
-        return to_stored_float(round_money(share, currency))
+        if qty <= 0:
+            return 0.0
+        rest, _part = allocate_pro_rata(amount, [to_decimal(qty - part_qty), to_decimal(part_qty)], currency)
+        return to_stored_float(rest)
 
     pools = {k: float(v or 0) for k, v in (state.get("landed_costs") or {}).items()}
     rest_landed = {k: kept(v) for k, v in pools.items()}
@@ -212,6 +220,18 @@ def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | 
         return CostCarve(part, part_landed, round_basis(basis - part), rest_landed)
     rest = kept(basis)
     return CostCarve(round_basis(basis - rest), part_landed, rest, rest_landed)
+
+
+def pools_kept(state: dict, new_qty: float, currency: str) -> dict[str, dict[str, float]]:
+    """The landed pools a lot keeps when it falls to ``new_qty`` with no part becoming a lot
+    of its own (a count, a manual adjustment, a consumption), to the cent (carve_cost), as the
+    ``landed_costs`` of the event that moves it; empty when the lot rises, keeps its quantity,
+    empties or has no pools. A lot that rises keeps its pools as they are (units found bring
+    no freight), and an emptied lot keeps its whole unit cost for stock that comes back."""
+    old = float(state.get("quantity") or 0)
+    if not state.get("landed_costs") or old <= 0 or not 0 < float(new_qty) < old:
+        return {}
+    return {"landed_costs": carve_cost(state, old - float(new_qty), currency).rest_landed}
 
 
 def _basis_or_conflict(state: dict, label: str) -> float:
@@ -3604,13 +3624,17 @@ async def adjust_item_quantity(
     source: str,
     idempotency_key: str,
 ):
-    """Set an item's quantity on hand, checked against its selling unit's decimals. The caller commits."""
+    """Set an item's quantity on hand, checked against its selling unit's decimals. Units that
+    leave take their freight to the cent (pools_kept). The caller commits."""
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row:
         current_sell_by = row.state.get("sell_by")
         unit_map = {u["name"]: u for u in await get_company_units(session, company_id)}
         if current_sell_by and current_sell_by in unit_map:
             validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
+        if "landed_costs" not in data and "cost_base" not in data:
+            from celerp.services.auto_je import company_currency
+            data = {**data, **pools_kept(row.state, data["new_qty"], await company_currency(session, company_id))}
     return await emit_event(
         session,
         company_id=company_id,

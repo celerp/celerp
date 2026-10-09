@@ -55,7 +55,8 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
 from celerp.services.lot_origin import (
-    DELETED, RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type, recorded_value, refuse_draft,
+    DELETED, RECORDED, RETIRED, book_lot_value, booked_value, ever_became_stock, in_stock, is_authoring_event, is_stock_type,
+    recorded_value, refuse_draft,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -3896,6 +3897,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     child_landed = dict(parent.state.get("landed_costs") or {}) if effective_cost == parent_cost_total else {}
     child_goods = round_basis(effective_cost - sum(float(v or 0) for v in child_landed.values()))
     parent_location_id = parent.state.get("location_id")
+    currency = settings.get("currency", "USD")
+    parent_account = parent.state.get(LOT_ACCOUNT_FIELD)
+    parent_booked = booked_value(parent, currency)
 
     child_eid = f"item:{uuid.uuid4()}"
     # Lock the code namespace so a concurrent allocator cannot mint the same barcode.
@@ -4037,6 +4041,21 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         idempotency_key=idempotency_key,
         metadata_={},
     )
+
+    # A cost the user restates changes the value the stock holds, so the change is booked
+    # on the lot's inventory account against stock gains or shrinkage, as a cost edit is.
+    if parent_account:
+        from celerp.services.auto_je import entry_day
+
+        child = (await session.execute(
+            select(Projection).where(Projection.company_id == company_id, Projection.entity_id == child_eid)
+            .execution_options(populate_existing=True)
+        )).scalars().one()
+        await book_lot_value(
+            session, company_id, user.id, parent_account, booked_value(child, currency) - parent_booked,
+            je_id=f"je:auto:{child_eid}:cost-restated:transform", idem=f"transform-restate:{child_eid}",
+            day=await entry_day(session, company_id),
+            metadata={"trigger": "item.cost_restated", "item_id": child_eid, "transformed_from": entity_id})
 
     await session.commit()
     return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}

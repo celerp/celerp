@@ -334,6 +334,8 @@ class ItemUnmerged(BaseModel):
 
 class ItemConsumed(BaseModel):
     quantity_consumed: float
+    # The landed pools the lot keeps, each to the cent; absent, they follow the units.
+    landed_costs: dict[str, float] | None = None
 
 
 class ItemProduced(BaseModel):

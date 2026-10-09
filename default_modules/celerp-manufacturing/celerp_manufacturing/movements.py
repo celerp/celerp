@@ -68,6 +68,7 @@ from celerp.services.lot_origin import (
     is_stock_type,
     period_open,
     refuse_draft,
+    value_moved,
 )
 from celerp.services.money import allocate_pro_rata, round_money
 
@@ -359,6 +360,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         return {"issued": [], "value": "0"}
 
     from celerp_inventory.projections import is_item_available
+    from celerp_inventory.services import pools_kept
 
     rows = await lock_projections(op.session, op.company_id, [i["item_id"] for i in wanted])
     befores: dict[str, Decimal] = {}
@@ -395,12 +397,15 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
     issued = []
     for line in wanted:
         item_id = line["item_id"]
-        await op.emit(item_id, "item", "item.consumed", {"quantity_consumed": line["quantity"]},
+        s = rows[item_id].state or {}
+        left = max(0.0, float(s.get("quantity") or 0) - line["quantity"])
+        await op.emit(item_id, "item", "item.consumed",
+                      {"quantity_consumed": line["quantity"], **pools_kept(s, left, op.currency)},
                       f"mfg:{op.order_id}:issue:{rk}:{item_id}",
                       metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
                                      populate_existing=True)
-        moved = befores[item_id] - op.round(held_value(after) or 0)
+        moved = value_moved(s, after.state if held_value(after) is not None else None, op.currency)
         if moved and op.books:
             code = lot_account(after.state or {})
             credits[code] = credits.get(code, _ZERO) - moved

@@ -314,10 +314,12 @@ def _set_quantity(current: dict, new_qty, cost_base=None, landed_costs=None) -> 
     An explicit cost_base (a receipt adding the received goods' cost, the undo of one, or a
     migrated stock position carrying the source's value) is the new goods basis, and the
     landed pools stay as they are: goods arriving or leaving with their own cost change no
-    freight. Explicit landed_costs (a split or a return carving the lot) are the new pools.
-    Otherwise goods basis and pools scale by new/old quantity, so unit cost stays put: units
-    that leave take their share, units that come back bring it. At zero quantity the whole
-    unit cost is kept as cost_price, so stock that returns later is costed at it.
+    freight. Explicit landed_costs (a split, a return or a count carving the lot, each to the
+    cent) are the new pools. Otherwise the goods basis scales by new/old quantity, so units
+    that leave take their share of it and units found come in at the lot's average goods
+    cost. A pool is what a bill charged: units leaving take their share of it, units found
+    bring none. At zero quantity the whole unit cost is kept as cost_price, so stock that
+    returns later is costed at it.
     """
     old_qty = float(current.get("quantity") or 0)
     qty = float(new_qty or 0)
@@ -337,7 +339,7 @@ def _set_quantity(current: dict, new_qty, cost_base=None, landed_costs=None) -> 
             if qty > 0:
                 if basis is not None:
                     current["cost_base"] = float(basis) * qty / old_qty
-                if landed_costs is None:
+                if landed_costs is None and qty < old_qty:
                     pools = {k: v * qty / old_qty for k, v in pools.items()}
             else:
                 for key in ("cost_base", "cost_total", "cost_landed"):
@@ -580,7 +582,8 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.consumed":
         # What is drawn down carries its share of cost, exactly as a sale relieves COGS.
         qty = float(current.get("quantity") or 0)
-        _set_quantity(current, max(0.0, qty - float(data["quantity_consumed"])))
+        _set_quantity(current, max(0.0, qty - float(data["quantity_consumed"])),
+                      landed_costs=data.get("landed_costs"))
     elif event_type == "item.produced":
         current["quantity"] = float(current.get("quantity", 0)) + float(data["quantity_produced"])
     elif event_type == "item.recipe.set":

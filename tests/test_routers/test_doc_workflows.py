@@ -1406,7 +1406,7 @@ async def test_revert_goods_received_removes_items_from_inventory(client, sessio
 
 @pytest.mark.asyncio
 async def test_revert_goods_received_blocked_if_item_resold(client, session):
-    """Revert Goods Received must 409 if any created item has been sold."""
+    """Revert Goods Received is refused once any created item has been sold."""
     token = await _register(client)
     h = _h(token)
 
@@ -1435,9 +1435,10 @@ async def test_revert_goods_received_blocked_if_item_resold(client, session):
     await sell_item(client, h, item_ids[0])
 
     undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
-    assert undo_r.status_code == 409, undo_r.text
-    detail = undo_r.json().get("detail", "")
-    assert "sold" in detail.lower() or "RG-002" in detail, f"Error must identify the blocked item. Got: {detail}"
+    assert undo_r.status_code == 422, undo_r.text
+    detail = undo_r.json()["detail"]
+    assert detail["message_key"] == "docs.undo_receipt_units_sold", detail
+    assert detail["params"]["sku"] == "RG-002", f"Error must identify the blocked item. Got: {detail}"
 
 
 @pytest.mark.asyncio

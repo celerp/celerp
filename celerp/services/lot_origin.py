@@ -841,14 +841,12 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
                    "consignment cannot change. Sell, write off or return the stock to draft first.")
     if self_booked(entry):
         return None
-    hb, ha = _held(before), _held(after)
-    if hb is None or ha is None:
+    if _held(before) is None or _held(after) is None:
         return None
     settings = await current_settings(session, entry.company_id)
     if SCHEMA_KEY not in settings:
         return None
-    currency = settings.get("currency", "USD")
-    delta = round_money(ha, currency) - round_money(hb, currency)
+    delta = -value_moved(before, after, settings.get("currency", "USD"))
     if not delta:
         return None
     return ValueChange(delta=delta, code=code,

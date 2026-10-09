@@ -5,8 +5,8 @@
 A lot holds its goods and its landed cost pools rounded to the cent. Whatever removes part of
 it (a sale, a write-off, an audit count, a split, a return to the supplier, an undone receipt)
 must take exactly what the lot held before less what it holds after, so the books always carry
-the stock. Freight a receipt capitalised and that was then sold is used up: undoing the
-receipt returns only what is still held, and receiving again capitalises only the rest.
+the stock. Undoing a receipt means it never happened, so it is refused once any unit has left
+the lot since; a return to the supplier takes the goods back at cost instead.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import pytest
 
 from stock_books import assert_settled
 from test_cost_restatement import _item, _state
-from test_landed_cost_pools import _b, _cost, _inv, _on_hand, _po_into, _post, _received, _sell
+from test_landed_cost_pools import _b, _cost, _inv, _on_hand, _po_into, _received, _sell
 from test_receipt_accounting import _OPENING, _doc, _finalize, _receive, _return
 
 _VAT = {"doc_taxes": [{"code": "VAT", "rate": 7.0, "order": 1, "is_compound": False, "label": "VAT"}]}
@@ -142,112 +142,100 @@ async def test_audit_counts_down_by_one(client, session, auth, pooled):
         await assert_settled(client, session, auth)
     values = (await session.execute(select(LedgerEntry.data).where(
         LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == lot,
-        LedgerEntry.event_type == "item.quantity.adjusted"))).scalars().all()
+        LedgerEntry.event_type == "item.quantity.adjusted").order_by(LedgerEntry.id))).scalars().all()
     audited = [d["value"] for d in values if d.get("reason") == "audit"]
-    assert audited == [0.67, 0.66], audited
+    # Goods cost scales unrounded (2.00 -> 1.33 -> 0.67). A pool is carved to the cent by
+    # largest remainder, so 0.67 + 0.67 stay and the first count takes 0.66. Both sum to 1.33.
+    assert audited == ([0.66, 0.67] if pooled else [0.67, 0.66]), audited
 
 
-# ── Undo a receipt after part of its freight was sold ────────────────────────
+# ── Undo a receipt once any of its units left ────────────────────────────────
 
-async def _sold_from_received_lot(client, session, auth):
-    """Opening 10 units (100.00) + an order of 5 at 14.00 with 7.00 shipping (a freight pool
-    of 7.00 on 15 units); 3 units sold take 3/15 of the pool (1.40) out through cost of sales.
-    Undoing the order's receipt takes its 5 units and the 5.60 of its freight still held."""
+_BOOKS = ("1130-OB", "1130-P", "1130-FRT", "2110", "5100", "6970")
+
+
+async def _sold_from_received_lot(client, session, auth, sold: float = 3):
+    """Opening 10 units (100.00) + an order of 5 at 14.00 with 7.00 shipping into the same
+    lot, then ``sold`` units sold at the lot's average cost."""
     lot = await _item(client, auth, _OPENING, qty=10)
     doc = await _po_into(client, auth, lot, 5, 14.0, shipping=7.0)
-    cogs0 = (await _b(session, auth, "5100"))["5100"]
-    await _sell(client, auth, lot, 3)
+    await _sell(client, auth, lot, sold)
     await assert_settled(client, session, auth)
-    r = await client.delete(f"/docs/{doc}/receive", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-    return lot, doc, cogs0
+    return lot, doc
 
 
-async def test_undo_receipt_after_its_freight_was_partly_sold(client, session, auth):
-    lot, doc, cogs0 = await _sold_from_received_lot(client, session, auth)
-    held = await _held(session, auth, lot)
-    st = await _state(session, auth, held)
-    assert (float(st["quantity"]), round(float(st["cost_total"]), 2)) == (7.0, 66.0), st
-    assert not st.get("landed_costs"), st
-    books = await _b(session, auth, "1130-OB", "1130-P", "1130-FRT", "5100")
-    # The 1.40 sold is used up; the 5.60 still held waits on clearing for the goods to come again.
-    assert {k: books[k] for k in ("1130-OB", "1130-P", "1130-FRT")} == {
-        "1130-OB": 66.0, "1130-P": 70.0, "1130-FRT": 5.6}, books
-    assert round(books["5100"] - cogs0, 2) == 35.4, books
-    await _inv(client, session, auth, doc, step="undone", settle=False)
+def _refused_units_sold(r, gone: float, needed: float) -> None:
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "docs.undo_receipt_units_sold", detail
+    assert (detail["params"]["gone"], detail["params"]["needed"]) == (f"{gone:g}", f"{needed:g}"), detail
+    assert "Return to supplier" in detail["message"], detail
 
 
-# Receiving the goods again capitalises only the freight not used up: expensed + held = billed.
-async def test_undo_then_receive_again_capitalises_only_the_rest(client, session, auth):
-    lot, doc, cogs0 = await _sold_from_received_lot(client, session, auth)
-    r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "name": "Lot",
-                                           "quantity_received": 5})
+# Undoing a receipt means it never happened. Once a unit has left the lot since, its cost went
+# out at the lot's average, so the undo is refused and nothing moves; a return to the
+# supplier takes the goods back at cost instead.
+@pytest.mark.parametrize("sold", [1, 3, 14])
+async def test_undo_receipt_refused_once_any_unit_left(client, session, auth, sold):
+    lot, doc = await _sold_from_received_lot(client, session, auth, sold)
+    before = await _b(session, auth, *_BOOKS)
+    _refused_units_sold(await client.delete(f"/docs/{doc}/receive", headers=auth["headers"]), sold, 5)
+    assert await _b(session, auth, *_BOOKS) == before
+    assert float((await _state(session, auth, await _held(session, auth, lot)))["quantity"]) == 15 - sold
+    await assert_settled(client, session, auth)
+
+
+# A write-off takes units out as surely as a sale does.
+async def test_undo_receipt_refused_after_writeoff(client, session, auth):
+    await _seed(session, auth)
+    lot = await _item(client, auth, _OPENING, qty=10)
+    doc = await _po_into(client, auth, lot, 5, 14.0, shipping=7.0)
+    await _writeoff(client, auth, lot, 2)
+    before = await _b(session, auth, *_BOOKS)
+    _refused_units_sold(await client.delete(f"/docs/{doc}/receive", headers=auth["headers"]), 2, 5)
+    assert await _b(session, auth, *_BOOKS) == before
+    await assert_settled(client, session, auth)
+
+
+# The return to the supplier the refusal points to takes the 5 units back at cost and the
+# books still carry the stock, with nothing left on clearing.
+async def test_return_to_supplier_after_sale_settles(client, session, auth):
+    lot, doc = await _sold_from_received_lot(client, session, auth)
+    r = await _return(client, auth, doc, await _held(session, auth, lot), 5)
     assert r.status_code == 200, r.text
     await assert_settled(client, session, auth)
-    [parcel] = (await _state(session, auth, doc))["received_item_ids"]
-    pools = (await _state(session, auth, parcel)).get("landed_costs") or {}
-    assert round(sum(pools.values()), 2) == 5.6, pools
-    books = await _b(session, auth, "1130-FRT", "5100")
-    assert books["1130-FRT"] == 0.0, books
-    assert round(books["5100"] - cogs0, 2) == 35.4, books
-
-
-# Undoing the receipt and then taking the bill back: nothing is left on clearing, the freight
-# the sale expensed comes back off cost of sales, and the books carry the lot.
-async def test_undo_then_take_the_bill_back_clears_freight(client, session, auth):
-    lot, doc, cogs0 = await _sold_from_received_lot(client, session, auth)
-    r = await _post(client, auth, doc, "void", {"reason": "entered in error"})
-    if r.status_code != 200:
-        r = await _post(client, auth, doc, "revert-to-draft")
-    assert r.status_code == 200, r.text
-    await assert_settled(client, session, auth)
-    books = await _b(session, auth, "1130-FRT", "1130-P", "5100")
-    assert {k: books[k] for k in ("1130-FRT", "1130-P")} == {"1130-FRT": 0.0, "1130-P": 0.0}, books
-    assert round(books["5100"] - cogs0, 2) == 34.0, books
+    assert (await _b(session, auth, "1130-FRT"))["1130-FRT"] == 0.0
 
 
 # Bill A puts freight on the lot, order B adds goods with none, part is sold, then B's
-# receipt is undone: A's freight on the lot is what is left of it, and the books carry it.
+# receipt cannot be undone: units left the lot after B came in.
 async def test_sale_then_undo_other_bills_receipt(client, session, auth):
     lot = await _item(client, auth, _OPENING, qty=10)
     await _po_into(client, auth, lot, 5, 14.0, shipping=7.0)
     second = await _po_into(client, auth, lot, 5, 16.0)
     await _sell(client, auth, lot, 4)
     await assert_settled(client, session, auth)
+    before = await _b(session, auth, *_BOOKS)
+    _refused_units_sold(await client.delete(f"/docs/{second}/receive", headers=auth["headers"]), 4, 5)
+    assert await _b(session, auth, *_BOOKS) == before
+    await assert_settled(client, session, auth)
+
+
+# Units sold before the receipt do not count: undoing a receipt nothing has left since
+# takes its 5 units and its 7.00 of freight back off the lot and the books carry the rest.
+async def test_undo_receipt_after_earlier_sale(client, session, auth):
+    lot = await _item(client, auth, _OPENING, qty=10)
+    await _sell(client, auth, lot, 3)
     held = await _held(session, auth, lot)
-    r = await client.delete(f"/docs/{second}/receive", headers=auth["headers"])
+    doc = await _po_into(client, auth, held, 5, 14.0, shipping=7.0)
+    r = await client.delete(f"/docs/{doc}/receive", headers=auth["headers"])
     assert r.status_code == 200, r.text
     st = await _state(session, auth, held)
-    pools = st.get("landed_costs") or {}
-    assert round(sum(pools.values()), 2) == 5.6, pools
-    books = await _b(session, auth, "1130-OB", "1130-FRT")
-    assert books["1130-FRT"] == 0.0, books
-    assert round(books["1130-OB"], 2) == round(float(st["cost_total"]), 2), (books, st.get("cost_total"))
-
-
-# Once the lot holds no more of a receipt's units than came in (here 5 or 4 left of 20, the
-# rest sold at the lot's average cost), undoing the receipt is refused: what is left is not
-# what the receipt brought in, so the undo would leave value on an empty lot or take more
-# than the lot holds. Nothing moves.
-@pytest.mark.parametrize("sold", [15, 16])
-async def test_undo_receipt_refused_once_its_units_were_sold(client, session, auth, sold):
-    lot = await _item(client, auth, _OPENING, qty=10)
-    await _po_into(client, auth, lot, 5, 14.0, shipping=7.0)
-    second = await _po_into(client, auth, lot, 5, 16.0)
-    await _sell(client, auth, lot, sold)
-    await assert_settled(client, session, auth)
-    held = await _held(session, auth, lot)
-    before = await _b(session, auth, "1130-OB", "1130-P", "5100")
-    r = await client.delete(f"/docs/{second}/receive", headers=auth["headers"])
-    assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
-    assert detail["message_key"] == "docs.undo_receipt_units_sold", detail
-    assert (detail["params"]["on_hand"], detail["params"]["needed"]) == (f"{20 - sold:g}", "5"), detail
-    assert f"{20 - sold:g} on hand" in detail["message"] and "5 came in" in detail["message"], detail
-    assert float((await _state(session, auth, held))["quantity"]) == 20 - sold
-    assert await _b(session, auth, "1130-OB", "1130-P", "5100") == before
-    await assert_settled(client, session, auth)
-
+    assert float(st["quantity"]) == 7.0 and not st.get("landed_costs"), st
+    # The finalized bill waits for its goods: 70.00 on 1130-P and 7.00 on clearing.
+    books = await _b(session, auth, "1130-OB", "1130-P", "1130-FRT")
+    assert books == {"1130-OB": 70.0, "1130-P": 70.0, "1130-FRT": 7.0}, books
+    await _inv(client, session, auth, doc, step="undone", settle=False)
 
 # ── Split then sell both halves, split then return ───────────────────────────
 
