@@ -80,7 +80,8 @@ async def test_one_invalid_line_takes_nothing_back(client, h):
 
 async def test_a_lot_sold_by_another_record_is_never_taken_back(client, h):
     a = await lot(client, h, "RV-4", 1)
-    x = await doc(client, h, [line(a, 1, sku="RV-4")])
+    # A memo names the lot as well: only one invoice may book its cost.
+    x = await doc(client, h, [line(a, 1, sku="RV-4")], doc_type="memo")
     y = await doc(client, h, [line(a, 1, sku="RV-4")])
     (ly,) = await line_ids(client, h, y)
     await _fulfil(client, h, y, [ly])

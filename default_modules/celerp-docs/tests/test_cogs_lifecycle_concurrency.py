@@ -22,6 +22,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.lot_origin import recognize_opening_lots
+from test_helpers import invoices_booking_one_lot_twice
 from test_memo_lifecycle_concurrency import _barcode, _cleanup, _factory, _race, _seed_company
 
 
@@ -197,8 +198,9 @@ async def test_cost_correction_reaches_both_invoices_that_named_the_lot(_db_engi
     company_id, user_id, user = await _seed_company(factory)
     try:
         lot = await _lot(factory, company_id, user)
-        shipped = await _finalized_invoice(factory, company_id, user, lot)
-        waiting = await _finalized_invoice(factory, company_id, user, lot)
+        with invoices_booking_one_lot_twice():
+            shipped = await _finalized_invoice(factory, company_id, user, lot)
+            waiting = await _finalized_invoice(factory, company_id, user, lot)
         async with factory() as s:
             await fulfill_lines(shipped, FulfillLinesRequest(line_entity_ids=[lot]),
                                 company_id=company_id, _=None, user=user, session=s)

@@ -140,7 +140,8 @@ async def test_a_record_that_may_not_take_back_refuses_the_hold_too(client, sess
 
 async def test_a_sale_made_by_another_record_is_not_taken_back(client, h):
     a = await lot(client, h, "SA-7", 1)
-    x = await doc(client, h, [line(a, 1, sku="SA-7")])
+    # A memo names the lot as well: only one invoice may book its cost.
+    x = await doc(client, h, [line(a, 1, sku="SA-7")], doc_type="memo")
     y = await doc(client, h, [line(a, 1, sku="SA-7")])
     (lx,) = await line_ids(client, h, x)
     (ly,) = await line_ids(client, h, y)

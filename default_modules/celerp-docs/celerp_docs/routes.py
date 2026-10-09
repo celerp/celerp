@@ -2117,6 +2117,32 @@ async def _refuse_unsellable_lots(session, company_id, entity_id: str, state: di
             sku=sku, status=status))
 
 
+async def _taken_back(session, company_id, doc_ids: set[str], lots: set[str],
+                      locked: dict[str, Projection]) -> set[tuple[str, str]]:
+    """(invoice, lot) pairs where the invoice shipped the lot and then took it back into stock
+    without holding it again: the line still names the lot, but its cost is no longer booked
+    (the same rule COGS reconciliation applies), so the lot is free to sell."""
+    if not doc_ids or not lots:
+        return set()
+    from celerp.models.ledger import LedgerEntry
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "item",
+            LedgerEntry.entity_id.in_(sorted(lots)),
+            LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
+            LedgerEntry.data["source_doc_id"].as_string().in_(sorted(doc_ids)),
+        ).order_by(LedgerEntry.id)
+    )).all()
+    last: dict[tuple[str, str], str] = {}
+    for lot_id, event_type, data in rows:
+        last[(str((data or {}).get("source_doc_id")), lot_id)] = event_type
+    return {(doc_id, lot_id) for (doc_id, lot_id), event_type in last.items()
+            if event_type == "item.fulfillment_reversed"
+            and not (locked[lot_id].state.get("status") == "reserved"
+                     and locked[lot_id].state.get("status_doc_id") == doc_id)}
+
+
 async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[str, Projection]) -> dict[str, tuple[float, list[str]]]:
     """Stock other invoices have already booked the cost of and not yet shipped, per lot:
     ``{lot: (quantity, invoice numbers)}``. A finalized invoice's line names the lot it
@@ -2138,11 +2164,12 @@ async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[
         Projection.state["status"].as_string() != "void",
         binds,
     ))).scalars().all()
+    released = await _taken_back(session, company_id, {doc.entity_id for doc in rows}, in_stock, locked)
     out: dict[str, tuple[float, list[str]]] = {}
     for doc in rows:
         for li in doc.state.get("line_items") or []:
             eid = str(line_item_id(li) or "")
-            if eid not in in_stock:
+            if eid not in in_stock or (doc.entity_id, eid) in released:
                 continue
             qty = min(float(li.get("quantity") or 0), float(locked[eid].state.get("quantity") or 0))
             held, numbers = out.get(eid, (0.0, []))

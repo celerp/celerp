@@ -47,8 +47,12 @@ async def test_return_selected_line_from_its_parcels(client, session, auth):
     r = await _return_lines(client, auth, bill, {"line_id": ids[0], "quantity_returned": 3})
     assert r.status_code == 200, r.text
     # Earliest receipt first; the other line's goods stay put.
-    assert [await _qty(session, auth, i) for i in (first, second, other)] == [0, 1, 4]
+    # The whole first parcel leaves stock as it is; the returned part of the second is split off it.
+    assert [(await _state(session, auth, i))["status"] for i in (first, second, other)] == [
+        "disposed", "available", "available"]
+    assert [await _qty(session, auth, i) for i in (second, other)] == [1, 4]
     returned = (await _state(session, auth, bill))["returned_items"]
+    assert (await _state(session, auth, returned[1]["returned_lot_id"]))["status"] == "disposed"
     assert [(x["item_id"], x["quantity_returned"], x["source_line_id"]) for x in returned] == [
         (first, 2, ids[0]), (second, 1, ids[0])]
     after = await _books(session, auth, "1130-P", "2110")

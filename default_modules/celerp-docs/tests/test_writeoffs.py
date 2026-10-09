@@ -350,20 +350,27 @@ async def test_writeoff_create_and_setline_require_edit_documents(client, sessio
 # --- weight/piece-tracked partial guard ------------------------------------
 
 @pytest.mark.asyncio
-async def test_writeoff_weighttracked_missing_weight_rejected(client):
-    """A partial discard of a weight-tracked parcel with no discarded weight cannot be carved: the split
-    primitive raises and the terminal returns 409 (nothing disposed, no JE)."""
+async def test_writeoff_weighed_parcel_missing_weight_leaves_weight_unknown(client):
+    """A partial discard of a weighed parcel sold by the piece, with no discarded weight stated, still
+    writes off: how the weight splits is unknown, so neither part keeps a weight (never a guess, never 0)."""
     t = await _register(client)
     loc = await _location(client, t)
-    a = await _item(client, t, "WO-WT", loc=loc, qty=10, cost_total=100, sell_by="gram")
+    r = await client.post("/items", headers=_h(t), json={
+        "status": "available", "sku": "WO-WT", "name": "WO-WT", "quantity": 10, "sell_by": "piece",
+        "inventory_type": "stocked", "location_id": loc, "cost_total": 100, "weight": 25, "weight_unit": "carat"})
+    assert r.status_code == 200, r.text
+    a = r.json()["id"]
     wo = (await _writeoff(client, t, [a]))["id"]
     await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=3, account=EXP_A)
     await _finalize(client, t, wo)
     r = await _terminal(client, t, wo)
-    assert r.status_code == 409, r.text
-    # Nothing moved: no JE, item untouched.
-    assert await _je_for(client, t, wo) is None
-    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+    assert r.status_code == 200, r.text
+    assert r.json()["value"] == 30.0
+    parent = (await client.get(f"/items/{a}", headers=_h(t))).json()
+    assert float(parent["quantity"]) == 7.0 and parent.get("weight") is None
+    disposed = (await client.get("/items?status=disposed", headers=_h(t))).json()["items"]
+    assert len(disposed) == 1 and float(disposed[0]["quantity"]) == 3.0 and disposed[0].get("weight") is None
+    assert await _je_for(client, t, wo) is not None
 
 
 # --- seeding / empty selection ---------------------------------------------

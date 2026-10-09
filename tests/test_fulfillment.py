@@ -898,14 +898,14 @@ async def test_fulfill_lines_rejects_partial_when_splitting_off(client, auth):
     pr = await client.patch(f"/items/{item_id}", headers=auth["headers"],
                             json={"fields_changed": {"allow_splitting": {"old": True, "new": False}}})
     assert pr.status_code == 200, pr.text
-    doc_id = await _create_and_finalize_invoice(
+    doc_id = await _create_memo(
         client, auth,
         [{"sku": "NOSPLIT-A", "entity_id": item_id, "quantity": 3, "unit_price": 1.0}],
     )
     r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [item_id]})
     assert r.status_code == 409, r.text
-    assert "splitting" in r.json()["detail"]["message"].lower()
+    assert r.json()["detail"]["message_key"] == "lots.splitting_off"
     item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item["status"] == "available"
 
@@ -977,10 +977,10 @@ async def test_fulfill_split_piece_item_derives_pieces(client, auth):
 
 
 @pytest.mark.asyncio
-async def test_fulfill_split_secondary_overshoot_floors_mother(client, auth):
-    """Partial draw: the child's secondary measure is uncapped (may exceed the parcel)
-    and the mother floors at 0. sell_by=piece, mother 5pcs/15ct -> child 3pcs/20ct,
-    mother 2pcs/0ct."""
+async def test_fulfill_split_secondary_overshoot_is_refused(client, auth):
+    """Partial draw: a child weighing more than the whole parcel would leave the mother a
+    negative weight, so the shipment is refused and nothing moves. sell_by=piece, mother
+    5pcs/15ct, line 3pcs/20ct."""
     r = await client.post("/items", headers=auth["headers"], json={
         "status": "available", "sku": "SPLIT-SEC", "name": "SPLIT-SEC", "quantity": 5, "sell_by": "piece",
         "weight": 15, "weight_unit": "carat",
@@ -993,15 +993,13 @@ async def test_fulfill_split_secondary_overshoot_floors_mother(client, auth):
     )
     fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                            json={"line_entity_ids": [item_id]})
-    assert fr.status_code == 200, fr.text
+    assert fr.status_code == 409, fr.text
+    assert fr.json()["detail"]["message_key"] == "lines.cannot_split"
     mother = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
-    assert float(mother["quantity"]) == 2            # 5 - 3
-    assert float(mother.get("weight") or 0) == 0     # max(0, 15 - 20)
+    assert (float(mother["quantity"]), float(mother["weight"]), mother["status"]) == (5, 15, "available")
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     li = doc["line_items"][0]
-    child = (await client.get(f"/items/{li.get('entity_id') or li.get('item_id')}", headers=auth["headers"])).json()
-    assert float(child["quantity"]) == 3
-    assert float(child["weight"]) == 20              # uncapped
+    assert (li.get("entity_id") or li.get("item_id")) == item_id
 
 
 @pytest.mark.asyncio
@@ -1413,7 +1411,7 @@ async def test_set_as_shipped_rejects_foreign_reserved_line(client, session, aut
     doc_a = await _create_and_finalize_invoice(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
-    doc_b = await _create_and_finalize_invoice(client, auth, [
+    doc_b = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
 
@@ -1487,8 +1485,8 @@ async def test_reserve_lines_rejects_non_available_line(client, session, auth, _
         {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
     ])
 
-    # Another invoice reserves A first.
-    other = await _create_and_finalize_invoice(client, auth, [
+    # A memo reserves A first.
+    other = await _create_memo(client, auth, [
         {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
     ])
     r1 = await client.post(f"/docs/{other}/reserve-lines", headers=auth["headers"],
@@ -1510,7 +1508,7 @@ async def test_release_rejects_foreign_reserved_line(client, session, auth, _set
     doc_a = await _create_and_finalize_invoice(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
-    doc_b = await _create_and_finalize_invoice(client, auth, [
+    doc_b = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
 
@@ -1666,7 +1664,7 @@ async def test_reserve_lines_rejects_sold_line_from_another_doc(client, session,
     doc_a = await _create_and_finalize_invoice(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
-    doc_b = await _create_and_finalize_invoice(client, auth, [
+    doc_b = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
     ra = await client.post(f"/docs/{doc_a}/fulfill-lines", headers=auth["headers"],
@@ -2079,7 +2077,7 @@ async def test_reserve_partial_nonsplittable_blocked(client, session, auth, _set
     pr = await client.patch(f"/items/{mother_id}", headers=auth["headers"],
                             json={"fields_changed": {"allow_splitting": {"old": True, "new": False}}})
     assert pr.status_code == 200, pr.text
-    doc_id = await _create_and_finalize_invoice(client, auth, [
+    doc_id = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 3, "unit_price": 5.0, "entity_id": mother_id},
     ])
     r = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
@@ -2171,7 +2169,7 @@ async def test_split_off_child_rejects_over_capacity(client, session, auth, _set
     parent = await session.get(Projection, {"company_id": cid, "entity_id": mother_id})
     with pytest.raises(ValueError, match="6 of 4"):
         await split_off_child(session, company_id=cid, user_id=uid, parent_proj=parent,
-                              child_qty=6, child_pieces=6)
+                              child_qty=6, child_pieces=6, action="ship")
     await session.rollback()
 
     mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
