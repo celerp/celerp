@@ -2274,8 +2274,8 @@ async def test_a_credit_note_is_attributed_to_its_own_party_not_the_invoiced_one
     nobody rather than inheriting the invoice's party, which is what would put a
     credit somebody else's on a reader's statement.
 
-    The amounts are a transfer within receivables and net to nothing, so no
-    balance moves either way. It is the rows that are wrong, and a reader
+    The application is a transfer within receivables and nets to nothing, so no
+    party's balance moves either way. It is the rows that are wrong, and a reader
     querying a credit they never received is a conversation the books should
     never have started.
     """
@@ -2303,9 +2303,10 @@ async def test_a_credit_note_is_attributed_to_its_own_party_not_the_invoiced_one
         "and the transfer nets to nothing, so the balance is the invoice")
 
     unattributed = await _ledger(client, tok, "1120", contact_id="")
-    assert abs(unattributed["closing_balance"]) < 0.01, "the two legs cancel"
-    assert len(unattributed["lines"]) == 2, (
-        "but both are on the control account, where they can be found")
+    assert abs(unattributed["closing_balance"] + 40.0) < 0.01, (
+        "the note's own credit names nobody, and the application's two legs cancel")
+    assert len(unattributed["lines"]) == 3, (
+        "all three are on the control account, where they can be found")
 
 
 @pytest.mark.asyncio
