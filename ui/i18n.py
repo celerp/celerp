@@ -305,7 +305,8 @@ def _refusal_param(name: str, value):
     label without its icon), or a list of them (``steps`` and ``reasons`` joined by
     semicolons, others as sentences), in the user's language; a
     ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
-    ``status`` as an item status and ``doc_status`` as a document status; ``reason``
+    ``status`` as an item status, ``lot_status`` as one read mid-sentence and
+    ``doc_status`` as a document status; ``reason``
     as why a production run waits for reconciling."""
     from ui.components.table import display_enum
 
@@ -321,6 +322,10 @@ def _refusal_param(name: str, value):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
     if name == "status":
         return display_enum(value, "item_status")
+    if name == "lot_status":
+        # Read mid-sentence: lowercase, except in German, where the label is a noun.
+        label = display_enum(value, "item_status")
+        return label if current_lang() == "de" else label.lower()
     if name == "doc_status":
         return display_enum(value, "doc_status")
     if name == "reason":
