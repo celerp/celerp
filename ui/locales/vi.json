@@ -1219,6 +1219,7 @@
   "pay.deposit_hint": "Tài khoản dùng để ghi nhận từng khoản thanh toán trực tuyến trong sổ sách của bạn.",
   "pay.deposit_label": "Ghi nhận thanh toán trực tuyến vào",
   "pay.doc_hint": "Nhận tiền nhanh hơn: khách hàng có thể thanh toán hóa đơn này trực tuyến.",
+  "pay.not_awaiting_payment": "Chứng từ này không chờ thanh toán nên không thể thanh toán trực tuyến.",
   "pay.fee_note": "Bạn chỉ trả 1% cộng phí xử lý của Stripe khi hóa đơn được thanh toán.",
   "pay.disconnect_confirm": "Ngắt kết nối Stripe? Các khoản thanh toán trực tuyến mới sẽ dừng ngay. Khi Stripe đã ngắt kết nối, các khoản thanh toán bạn nhận qua Stripe không còn liên kết với Stripe: hãy ghi nhận mọi khoản hoàn tiền của chúng tại đây trong Celerp. Các khoản hoàn tiền thực hiện trong Stripe sau đó không xuất hiện trong Celerp.",
   "pay.pitch_fineprint": "Bạn chỉ trả 1% cộng phí xử lý của Stripe, và nhận tiền thẳng vào tài khoản Stripe của mình.",

@@ -1219,6 +1219,7 @@
   "pay.deposit_hint": "La cuenta en la que se registra cada pago en línea en tu contabilidad.",
   "pay.deposit_label": "Depositar los pagos en línea en",
   "pay.doc_hint": "Cobra más rápido: los clientes pueden pagar esta factura en línea.",
+  "pay.not_awaiting_payment": "Este documento no está pendiente de pago, por lo que no se puede pagar en línea.",
   "pay.fee_note": "Pagas un 1% más la comisión de procesamiento de Stripe solo cuando se cobra una factura.",
   "pay.disconnect_confirm": "¿Desconectar Stripe? Los nuevos pagos en línea se detienen ahora. Cuando Stripe se haya desconectado, los pagos que recibiste a través de él dejan de estar vinculados a Stripe: registra aquí en Celerp cualquier reembolso de ellos. Los reembolsos hechos en Stripe después no aparecen en Celerp.",
   "pay.pitch_fineprint": "Solo pagas un 1% más la comisión de procesamiento de Stripe, y recibes el dinero directamente en tu cuenta de Stripe.",

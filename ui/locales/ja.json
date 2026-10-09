@@ -1219,6 +1219,7 @@
   "pay.deposit_hint": "各オンライン決済を帳簿上で記帳する勘定科目です。",
   "pay.deposit_label": "オンライン決済の入金先",
   "pay.doc_hint": "より早く入金：顧客はこの請求書をオンラインで支払えます。",
+  "pay.not_awaiting_payment": "この書類は支払い待ちではないため、オンラインで支払うことはできません。",
   "pay.fee_note": "手数料の1%とStripeの決済処理手数料は、請求書が支払われたときにのみ発生します。",
   "pay.disconnect_confirm": "Stripeとの接続を解除しますか？新しいオンライン支払いはすぐに停止します。接続の解除が完了すると、Stripe経由で受け取った支払いはStripeと連携しなくなります。それらの返金はここCelerpで記録してください。その後Stripeで行った返金はCelerpに表示されません。",
   "pay.pitch_fineprint": "お支払いは1%とStripeの決済処理手数料のみ。売上はお客様のStripeアカウントに直接入金されます。",

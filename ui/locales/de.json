@@ -1219,6 +1219,7 @@
   "pay.deposit_hint": "Das Konto, auf dem jede Online-Zahlung in Ihrer Buchhaltung verbucht wird.",
   "pay.deposit_label": "Online-Zahlungen gutschreiben auf",
   "pay.doc_hint": "Schneller bezahlt werden: Kunden können diese Rechnung online bezahlen.",
+  "pay.not_awaiting_payment": "Dieses Dokument wartet nicht auf Zahlung und kann daher nicht online bezahlt werden.",
   "pay.fee_note": "Sie zahlen 1 % plus Stripe-Bearbeitungsgebühr nur dann, wenn eine Rechnung bezahlt wird.",
   "pay.disconnect_confirm": "Stripe trennen? Neue Online-Zahlungen werden sofort gestoppt. Sobald Stripe getrennt ist, sind über Stripe erhaltene Zahlungen nicht mehr mit Stripe verknüpft: Erfassen Sie Erstattungen dafür hier in Celerp. Danach in Stripe vorgenommene Erstattungen erscheinen nicht in Celerp.",
   "pay.pitch_fineprint": "Sie zahlen nur 1 % plus Stripe-Bearbeitungsgebühr und erhalten das Geld direkt auf Ihr Stripe-Konto.",

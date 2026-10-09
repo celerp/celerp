@@ -182,6 +182,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["doc_type"] = data["doc_type"]
     elif event_type == "doc.voided":
         current["status"] = "void"
+        current["amount_outstanding"] = 0.0  # a void document owes nothing
         if data.get("reason"):
             current["void_reason"] = data["reason"]
         if data.get("pre_void_status"):
@@ -215,6 +216,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "doc.unvoided":
         restored = data.get("restored_status", "final")
         current["status"] = restored
+        _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
+        current["amount_outstanding"] = to_stored_float(outstanding)
         current.pop("void_reason", None)
         current.pop("pre_void_status", None)
     elif event_type == "doc.closed":

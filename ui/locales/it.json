@@ -1219,6 +1219,7 @@
   "pay.deposit_hint": "Il conto su cui ogni pagamento online viene registrato nella tua contabilità.",
   "pay.deposit_label": "Accredita i pagamenti online su",
   "pay.doc_hint": "Farti pagare prima: i clienti possono pagare questa fattura online.",
+  "pay.not_awaiting_payment": "Questo documento non è in attesa di pagamento, quindi non può essere pagato online.",
   "pay.fee_note": "Paghi l'1% più la commissione di elaborazione di Stripe solo quando una fattura viene saldata.",
   "pay.disconnect_confirm": "Disconnettere Stripe? I nuovi pagamenti online si fermano subito. Una volta disconnesso Stripe, i pagamenti ricevuti tramite Stripe non sono più collegati a Stripe: registra qui in Celerp ogni loro rimborso. I rimborsi fatti in Stripe dopo non compaiono in Celerp.",
   "pay.pitch_fineprint": "Paghi solo l'1% più la commissione di elaborazione di Stripe, e ricevi il denaro direttamente sul tuo account Stripe.",

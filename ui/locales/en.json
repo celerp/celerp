@@ -1384,6 +1384,7 @@
   "pay.deposit_hint": "The account each online payment is recorded against in your books.",
   "pay.deposit_label": "Deposit online payments to",
   "pay.doc_hint": "Get paid faster: customers can pay this invoice online.",
+  "pay.not_awaiting_payment": "This document is not awaiting payment, so it cannot be paid online.",
   "pay.fee_note": "You pay 1% plus Stripe's processing fee only when an invoice gets paid.",
   "pay.disconnect_confirm": "Disconnect Stripe? New online payments stop now. Once Stripe has disconnected, payments you received through it are no longer linked to Stripe: record any refund of them here in Celerp. Refunds made in Stripe after that do not appear in Celerp.",
   "pay.pitch_fineprint": "You only pay 1% plus Stripe's processing fee, and receive the money straight to your Stripe account.",
