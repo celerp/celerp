@@ -114,3 +114,25 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, fresh) == "Sold", (
         f"a genuine post-fulfillment sale must read Sold; got {_label_for(doc, fresh)!r}")
+
+
+@pytest.mark.asyncio
+async def test_sale_taken_back_on_the_converted_invoice_reads_returned(client):
+    """A memo line sold through its converted invoice, then taken back on that invoice, is
+    back in stock: the memo row reads "Returned", not "Sold" beside an In Stock status."""
+    token = await _register(client)
+    h = _h(token)
+    kept = await _item(client, h, "SL-KEPT")
+    back = await _item(client, h, "SL-BACK")
+    memo = await _memo(client, h, [kept, back])
+    assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
+    assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h,
+                              json={"line_entity_ids": [kept, back]})).status_code == 200
+    invoice = await _sell_from_memo(client, h, memo, [kept, back])
+    r = await client.post(f"/docs/{invoice}/revert-lines", headers=h, json={"line_entity_ids": [back]})
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/items/{back}", headers=h)).json()["status"] == "available"
+
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
+    assert _label_for(doc, back) == "Returned"
+    assert _label_for(doc, kept) == "Sold"

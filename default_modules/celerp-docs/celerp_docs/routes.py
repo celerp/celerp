@@ -1384,6 +1384,8 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     (item status memo_out).
     "Sold" - shipped and not since reversed, item since invoiced/finalized (item
     status sold).
+    "Returned" also covers a sale that followed this memo and was later taken back
+    to stock (a fulfillment reversal on the invoice, after the sold event).
     "Not shipped" - no fulfillment event for this memo (item never left stock).
 
     The event log is the source of truth for the ship/reverse timeline; the item
@@ -1411,7 +1413,12 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     # Ledger id of the applicable item.fulfilled event for this memo, per eid: a "sold"
     # event only promotes a line to "Sold" when it FOLLOWS this memo's fulfillment (below).
     fulfilled_id: dict = {}
+    # Latest fulfillment reversal per eid on ANY document: a sale undone by taking the
+    # goods back on its invoice leaves the item in stock, so it no longer reads Sold.
+    reversed_id: dict = {}
     for ledger_id, item_eid, event_type, data in rows:
+        if event_type == "item.fulfillment_reversed":
+            reversed_id.setdefault(item_eid, ledger_id)
         if item_eid in last_event:
             continue  # id-desc order means the first row seen is the latest
         if (data or {}).get("source_doc_id") != entity_id:
@@ -1425,6 +1432,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     # ledger event that promoted it to sold is never erased by a later archive.
     fulfilled_eids = [eid for eid, ev in last_event.items() if ev != "item.fulfillment_reversed"]
     sold_eids: set[str] = set()
+    sale_undone: set[str] = set()
     if fulfilled_eids:
         sold_rows = (
             await session.execute(
@@ -1441,7 +1449,11 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
             # event that predates it belongs to an earlier cycle (sold, returned to stock,
             # then re-consigned on this memo) and must read "On Memo", not "Sold".
             if (_data or {}).get("new_status") == "sold" and _sold_id > fulfilled_id.get(_eid, 0):
-                sold_eids.add(_eid)
+                if reversed_id.get(_eid, 0) > _sold_id:
+                    sale_undone.add(_eid)
+                else:
+                    sold_eids.add(_eid)
+        sale_undone -= sold_eids
 
     # Per-SKU rollup over the memo's full allocation set (cross-lot siblings included):
     # a line whose bound lot was returned still reads "On Memo" when a sibling of the
@@ -1462,7 +1474,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
         ev = last_event.get(eid)
         if ev is None:
             return "Not shipped"
-        if ev == "item.fulfillment_reversed":
+        if ev == "item.fulfillment_reversed" or eid in sale_undone:
             return "Returned"
         return "Sold" if eid in sold_eids else "On Memo"
 
