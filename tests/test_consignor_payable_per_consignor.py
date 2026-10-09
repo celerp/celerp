@@ -16,7 +16,11 @@ import pytest
 
 from celerp.models.projections import Projection
 from test_consignment_in_sale import (
+    AP,
+    COGS,
     PAYABLE,
+    PURCHASED,
+    _books,
     _consign,
     _customer_return,
     _sell,
@@ -138,4 +142,26 @@ async def test_a_lot_received_before_lots_recorded_their_consignor_is_owed_to_it
     r = await client.post(f"/docs/{con_a}/convert", headers=auth["headers"])
     assert r.status_code == 200, r.text
     assert await _owed_each(client, auth, a, b) == (0.0, 0.0, 0.0)
+    await _settled(client, session, auth)
+
+
+@pytest.mark.parametrize("sold", [1, 2])
+async def test_goods_a_customer_returned_and_sent_back_to_the_consignor_are_not_owed(client, session, auth, sold):
+    """A consigns 2 recorded at 4 a unit, billed at 5. ``sold`` ship, the customer brings one
+    back and it goes back to A. The bill buys what was kept; A is owed nothing more, the one
+    unit still sold costs 5 and the unit still held (if any) is inventory at 5."""
+    a = await _consignor(client, auth, "Consignor A")
+    con_a, lot_a = await _consign(client, session, auth, qty=2, cost_price=4.0, contact_id=a)
+    doc = await _sell(client, session, auth, lot_a, sold)
+    returned = await _customer_return(client, session, auth, doc, lot_a, 1)
+    r = await client.post(f"/docs/{con_a}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    await _settled(client, session, auth)
+
+    r = await client.post(f"/docs/{con_a}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert await _owed_each(client, auth, a) == (0.0, 0.0)
+    assert await _books(session, auth, COGS, PURCHASED, AP) == {
+        COGS: 5.0 * (sold - 1), PURCHASED: 5.0 * (2 - sold), AP: -5.0}
     await _settled(client, session, auth)

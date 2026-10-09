@@ -2138,8 +2138,9 @@ async def create_for_consigned_return_bought(
     the consignor payable, while the invoice that sold them settles that payable once the
     goods are bought. The goods held are now the company's own at the bill's cost
     (``value``), so that cost goes onto ``account`` and the payable the return recognized
-    is cleared against cost of goods sold. Keyed by the bill and the returned lot, so it
-    posts once."""
+    is cleared against cost of goods sold. Returned goods that went back to the consignor
+    are not held, so they add nothing to ``value``. Keyed by the bill and the returned
+    lot, so it posts once."""
     entries = await _cogs_entries(session, company_id, {account: -value, payable: owed})
     if not entries:
         return

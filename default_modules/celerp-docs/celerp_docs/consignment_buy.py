@@ -17,7 +17,11 @@ so the inventory the bill booked is exactly what those lots hold:
   inventory and the difference goes to cost of goods sold;
 - goods a customer returned went back onto the consignor payable, so the cost they
   now carry moves into inventory against that payable
-  (``auto_je.create_for_consigned_return_bought``).
+  (``auto_je.create_for_consigned_return_bought``);
+- goods a customer returned that then went back to the consignor were never bought:
+  the lot they were sold from is costed only for the units the customer kept, and
+  what the return put back onto the payable goes to cost of goods sold, so the
+  payable ends at what is owed for the goods kept.
 
 Anything the bill cannot follow without guessing is refused before anything is written.
 """
@@ -69,6 +73,8 @@ class _Group:
     basis: Decimal  # bill units per stock unit of the received lot
     received: Decimal  # stock units the received lot came in with
     returned: str | None = None
+    source: str | None = None  # the lot the customer return named
+    gone: Decimal = Decimal(0)  # stock units of them that went back to the consignor
     members: list[Projection] = field(default_factory=list)
 
 
@@ -76,6 +82,7 @@ class _Group:
 class _Plan:
     groups: list[_Group]
     kept: dict[int, Decimal]  # line -> bill units kept
+    back: dict[str, Decimal]  # sold lot -> its stock units that went back to the consignor
     allocations: dict[str, dict[tuple[str, str, int], float]]  # lot -> current allocations
     docs: set[str]
 
@@ -167,7 +174,7 @@ async def _plan(session, company_id, state: dict) -> _Plan:
             of[row.entity_id] = of[parent]
         elif link == "returned_from":
             of[row.entity_id] = _Group(line=of[parent].line, basis=of[parent].basis,
-                                       received=of[parent].received, returned=row.entity_id)
+                                       received=of[parent].received, returned=row.entity_id, source=parent)
             groups.append(of[row.entity_id])
         of[row.entity_id].members.append(row)
 
@@ -206,10 +213,35 @@ async def _plan(session, company_id, state: dict) -> _Plan:
     for x in state.get("returned_items") or []:
         group = of.get(x.get("item_id"))
         if group is not None and group.returned is not None:
+            group.gone += to_decimal(x.get("quantity_returned") or 0)
             kept[group.line] -= to_decimal(x.get("quantity_returned") or 0) * group.basis
             if kept[group.line] < -_EPS:
                 raise _changed(line_sku(group.line))
-    return _Plan(groups=groups, kept=kept, allocations=allocations, docs=docs)
+    return _Plan(groups=groups, kept=kept, back=_back(groups, of, line_sku), allocations=allocations, docs=docs)
+
+
+def _back(groups: list[_Group], of: dict[str, _Group], line_sku) -> dict[str, Decimal]:
+    """The sold units each sold lot no longer stands for: goods a customer returned and
+    that went back to the consignor. A return names the lot on the invoice line, which
+    may be the part still held when the sold part was split off, so the units are taken
+    from the lot named if it was sold, then from the other sold parts of the same
+    received lot, in a fixed order. More units gone back than were sold is refused."""
+    back: dict[str, Decimal] = {}
+    for group in groups:
+        gone = group.gone
+        if gone <= 0 or group.source not in of:
+            continue
+        sold = [m for m in of[group.source].members
+                if str((m.state or {}).get("status") or "").lower() == "sold"]
+        sold.sort(key=lambda m: (m.entity_id != group.source, m.entity_id))
+        for row in sold:
+            take = min(gone, to_decimal(row.state.get("quantity") or 0) - back.get(row.entity_id, Decimal(0)))
+            if take > 0:
+                back[row.entity_id] = back.get(row.entity_id, Decimal(0)) + take
+                gone -= take
+        if gone > _EPS:
+            raise _changed(line_sku(group.line))
+    return back
 
 
 def _bill_lines(state: dict, kept: dict[int, Decimal], currency: str) -> tuple[list[dict], list[int], bool]:
@@ -295,7 +327,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
         for row in group.members:
             await _bought(session, company_id, user_id, row, costs[row.entity_id], account,
                           consignment_id, bill_id, plan.allocations.get(row.entity_id, {}))
-        if group.returned and group.members:
+        if group.returned and (group.members or group.gone > 0):
             await _rehome_returned(session, company_id, user_id, bill_id, group, costs, account, day)
     for doc_id in sorted(plan.docs):
         try:
@@ -318,8 +350,10 @@ def _cannot_recompute() -> HTTPException:
 
 
 def _lot_costs(plan: _Plan, by_line: dict[int, tuple[str, Decimal]], base_currency: str) -> dict[str, Decimal]:
-    """Each lot's cost at the bill's price per unit. The lots received on a line share
-    exactly what the bill debits for it, the rounding remainder going to the largest."""
+    """Each lot's cost at the bill's price per unit, for the units the company kept: a
+    sold lot's units that a customer returned and that went back to the consignor are
+    not. The lots received on a line share exactly what the bill debits for it, the
+    rounding remainder going to the largest."""
     costs: dict[str, Decimal] = {}
     on_line: dict[int, list[str]] = {}
     for group in plan.groups:
@@ -327,7 +361,8 @@ def _lot_costs(plan: _Plan, by_line: dict[int, tuple[str, Decimal]], base_curren
         kept = plan.kept.get(group.line, Decimal(0))
         unit = debit * group.basis / kept if kept > 0 else Decimal(0)
         for row in group.members:
-            costs[row.entity_id] = round_money(unit * to_decimal(row.state.get("quantity") or 0), base_currency)
+            qty = to_decimal(row.state.get("quantity") or 0) - plan.back.get(row.entity_id, Decimal(0))
+            costs[row.entity_id] = round_money(unit * max(qty, Decimal(0)), base_currency)
             if group.returned is None:
                 on_line.setdefault(group.line, []).append(row.entity_id)
     for line, lots in on_line.items():
