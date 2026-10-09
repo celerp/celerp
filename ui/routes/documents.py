@@ -6210,7 +6210,7 @@ def _return_lot_picker(li: dict, i: int, unit_map: dict, meta: dict) -> FT | Non
         rows.append(Div(
             Label(Input(type="checkbox", name=key, value=lot["item_id"], cls="return-lot-pick", disabled=True,
                         onkeydown=esc),
-                  Span(lot.get("barcode") or lot.get("sku") or lot.get("name") or "--", cls="receive-row__label")),
+                  Span(lot.get("label") or "--", cls="receive-row__label")),
             _line_qty_input(f"lot_qty_{i}_{j}", qty, unit, qty, step=quantity_step(unit, unit_map), disabled=True,
                             cls="return-lot-qty"),
             *_return_measure_inputs(meta, key, disabled=True, cls="return-lot-measure"),
@@ -6279,7 +6279,8 @@ _RETURN_LOTS_JS = """
     d.open=true;
     sync(d);
     var first=d.querySelector('.return-lot-pick');
-    if(first) first.focus();
+    // Once the page is done with the response, which would otherwise take the focus back.
+    if(first) setTimeout(function(){ first.focus(); },0);
   });
 })();
 """

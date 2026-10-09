@@ -4990,12 +4990,19 @@ async def _line_return_lots(session: AsyncSession, company_id, doc_id: str, doc:
     return _LineReturnLots(by_line, shared, kept, held, split_lots, whole_only, imported, imported_free, states)
 
 
+def _lot_label(state: dict) -> str:
+    """A lot as the user knows it: its own barcode, else its SKU or name."""
+    return str(state.get("barcode") or state.get("sku") or state.get("name") or "--")
+
+
 def _return_lot(lot: str, free: float, state: dict, whole_only: dict[str, float]) -> dict:
     """One lot a line can send goods back from, as its Return Goods row shows it: the units
     on hand and free to go back, the lot's own measures, and whether it goes back only whole."""
-    return {"item_id": lot, "sku": state.get("sku"), "barcode": state.get("barcode"), "name": state.get("name"),
-            "quantity": free, "weight": state.get("weight"), "weight_unit": state.get("weight_unit"),
-            "pieces": state.get("pieces"), "whole_only": lot in whole_only}
+    from celerp_inventory.routes import flatten_item
+
+    flat = flatten_item(state, lot)
+    return {"item_id": lot, "label": _lot_label(flat), "quantity": free, "weight": flat.get("weight"),
+            "weight_unit": flat.get("weight_unit"), "pieces": flat.get("pieces"), "whole_only": lot in whole_only}
 
 
 class ReturnItem(_StatedMeasures):
@@ -5058,6 +5065,12 @@ _LINE_TAKES_PLACES = 9
 _LineReach = tuple[Callable[[int, float], bool], Callable[[int, float, float], float | None]]
 
 
+def _line_eps(qty: float) -> float:
+    """How far apart two quantities of a line's lots may be and still count as the same: a
+    billionth of a unit, or for a line of millions of units the rounding of adding them up."""
+    return max(1e-9, 5e-14 * qty)
+
+
 def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
                 qty: float) -> list[tuple[str, float]] | None:
     """How ``qty`` comes off a line's lots ([(lot, units it can send back)], in receipt order):
@@ -5066,10 +5079,10 @@ def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
     of itself or nothing. When no way to make up ``qty`` exists, the lots give in receipt order
     and the part of a lot that may not be split is refused where every carve is. None when
     working it out would pass the bounds above."""
-    eps = 1e-9
+    eps = _line_eps(qty)
     if not any(lot in whole_only for lot, _ in lots):
         # Every lot may be split: each gives what it has, in receipt order.
-        return _in_receipt_order(lots, qty)
+        return _in_receipt_order(lots, qty, eps)
     gives = {lot: (whole_only[lot] if q >= whole_only[lot] - eps else 0.0) if lot in whole_only else q
              for lot, q in lots}
     if abs(qty - sum(gives[lot] for lot, _ in lots)) <= eps:
@@ -5081,12 +5094,12 @@ def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
                 takes.append((lot, take))
                 left -= take
         return takes
-    after = _line_reach_ranges(lots, whole_only, qty) or _line_reach_bits(lots, whole_only, qty)
+    after = _line_reach_ranges(lots, whole_only, qty, eps) or _line_reach_bits(lots, whole_only, qty, eps)
     if after is None:
         return None
     reach, lowest = after
     if not reach(0, qty):
-        return _in_receipt_order(lots, qty)
+        return _in_receipt_order(lots, qty, eps)
     left = qty
     takes: list[tuple[str, float]] = []
     for i, (lot, q) in enumerate(lots):
@@ -5105,10 +5118,9 @@ def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
 
 
 def _line_reach_ranges(lots: list[tuple[str, float]], whole_only: dict[str, float],
-                       qty: float) -> _LineReach | None:
+                       qty: float, eps: float) -> _LineReach | None:
     """What the lots from each position on can make up, as sorted ranges of units no more than
-    a billionth apart joined; None past ``_LINE_TAKES_RANGES`` ranges in all."""
-    eps = 1e-9
+    ``eps`` apart joined; None past ``_LINE_TAKES_RANGES`` ranges in all."""
     after: list[list[tuple[float, float]]] = [[(0.0, 0.0)]]
     kept = 1
     for lot, q in reversed(lots):
@@ -5144,12 +5156,11 @@ def _line_reach_ranges(lots: list[tuple[str, float]], whole_only: dict[str, floa
 
 
 def _line_reach_bits(lots: list[tuple[str, float]], whole_only: dict[str, float],
-                     qty: float) -> _LineReach | None:
+                     qty: float, eps: float) -> _LineReach | None:
     """What the lots from each position on can make up, as the multiples of the unit the lots
     that may not be split share that those lots make up (bit n set: n units), each widened by
     what the lots that may be split hold; None when those lots share no unit of at most
     ``_LINE_TAKES_PLACES`` decimals, or past ``_LINE_TAKES_BITS`` multiples in all."""
-    eps = 1e-9
     values = [whole_only[lot] for lot, q in lots
               if lot in whole_only and q >= whole_only[lot] - eps and whole_only[lot] > eps]
     scale = next((10 ** p for p in range(_LINE_TAKES_PLACES + 1)
@@ -5201,11 +5212,11 @@ def _line_reach_bits(lots: list[tuple[str, float]], whole_only: dict[str, float]
     return reach, lowest
 
 
-def _in_receipt_order(lots: list[tuple[str, float]], qty: float) -> list[tuple[str, float]]:
+def _in_receipt_order(lots: list[tuple[str, float]], qty: float, eps: float) -> list[tuple[str, float]]:
     left, takes = qty, []
     for lot, q in lots:
         take = min(q, left)
-        if take > 1e-9:
+        if take > eps:
             takes.append((lot, take))
             left -= take
     return takes
@@ -5258,7 +5269,9 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
                 "Goods sold, out on memo or reserved go back to the supplier only once they are back in stock "
                 "and free.", name=_line_label(line), qty=f"{free:g}"))
         takes = _line_takes(lots, traced.whole_only, float(ln.quantity_returned))
-        if takes is None:
+        # A line goes back in full or not at all: lots that fall short of it are refused too.
+        if takes is None or abs(sum(t for _, t in takes) - ln.quantity_returned) > _line_eps(
+                ln.quantity_returned):
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_by_lot",
                 f"{_line_label(line)}: which of this line's lots make up the quantity cannot be worked out, "
@@ -5308,20 +5321,21 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     items = [it for it, _ in picked]
 
     # A document sends back only goods it brought in, and no more than it still holds of them.
-    label = {**_RECEIVING_DOC_LABEL, "consignment_in": "consignment"}[doc_type]
     returnable = await _returnable_quantities(session, company_id, entity_id, row.state)
     for it in items:
-        if it.quantity_returned <= 0:
-            raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")
         _stated_measures(it.weight, it.pieces)
         left = returnable.get(it.item_id)
-        if left is None:
-            raise HTTPException(status_code=422,
-                                detail=f"{it.item_id} was not received on this {label}, so it cannot be returned on it.")
-        if it.quantity_returned > left + 1e-9:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{it.item_id}: at most {max(0.0, left):g} received on this {label} can still be returned.")
+        if left is None or it.quantity_returned > left + 1e-9:
+            found = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
+            name = _lot_label(found.state if found is not None and found.entity_type == "item" else {})
+            if left is None:
+                raise HTTPException(status_code=422, detail=refusal(
+                    "docs.return_lot_not_received",
+                    f"{name} was not received on this document, so it cannot be returned on it.", sku=name))
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.return_lot_more_than_received",
+                f"{name}: at most {max(0.0, left):g} received on this document can still be returned.",
+                sku=name, qty=f"{max(0.0, left):g}"))
         returnable[it.item_id] = left - it.quantity_returned
 
     # Owned goods leave the books at what they carried; consigned goods were never on them.

@@ -4475,6 +4475,8 @@
   "docs.return_line_untraced": "በዚህ ሰነድ ላይ የተቀበሉ አንዳንድ እቃዎች ወደ መስመራቸው ሊከታተሉ አይችሉም፣ ስለዚህ በመስመር ሊመለሱ አይችሉም።",
   "docs.return_not_on_hand": "{sku} ሊመለስ አይችልም፦ ሁኔታው {status} ነው፣ በእጅ የለም። የተሸጡ፣ በሜሞ የወጡ ወይም የተያዙ እቃዎች ለአቅራቢው የሚመለሱት ወደ ክምችት ተመልሰው ነፃ ሲሆኑ ብቻ ነው።",
   "docs.return_more_than_free": "ከ{sku} {qty} ሊመለስ አይችልም፦ በእጅ ያለውና ያልተያዘው {free} ነው።",
+  "docs.return_lot_not_received": "{sku} በዚህ ሰነድ ላይ አልተቀበለም፣ ስለዚህ በእሱ መመለስ አይቻልም።",
+  "docs.return_lot_more_than_received": "{sku}: በዚህ ሰነድ ላይ ከተቀበለው ውስጥ ቢበዛ {qty} ብቻ ሊመለስ ይችላል።",
   "docs.return_imported_on_bill": "በዚህ ሂሳብ ላይ ከ{sku} {qty} ሊመለስ አይችልም፦ እዚህ የተቀበለው ቢበዛ {received} ነው። ይህ ሂሳብ ሲገባ አስቀድሞ የያዛቸው እቃዎች በእሱ ላይ ሊመለሱ አይችሉም። {next_step}",
   "docs.imported_on_bill_next.revert": "እነሱን ለመመለስ መጀመሪያ እዚህ የተቀበሉትን ሁሉ ይመልሱ፣ ከዚያ ሂሳቡን ወደ ረቂቅ ይመልሱ እና ከግዢ ትዕዛዙ ይመልሷቸው።",
   "docs.imported_on_bill_next.void": "ሂሳቡን ለመሰረዝ ዋጋ ቢስ ያድርጉት። እቃዎቹ በክምችት ውስጥ ይቆያሉ።",

@@ -4477,6 +4477,8 @@
   "docs.return_line_untraced": "Certaines marchandises reçues sur ce document ne peuvent pas être rattachées à leur ligne, elles ne peuvent donc pas être renvoyées par ligne.",
   "docs.return_not_on_hand": "Impossible de renvoyer {sku} : son statut est {status}, il n'est pas en stock. Les marchandises vendues, en dépôt ou réservées ne repartent chez le fournisseur qu'une fois revenues en stock et libres.",
   "docs.return_more_than_free": "Impossible de renvoyer {qty} de {sku} : {free} est en stock et non réservé.",
+  "docs.return_lot_not_received": "{sku} n'a pas été reçu sur ce document, il ne peut donc pas être renvoyé avec celui-ci.",
+  "docs.return_lot_more_than_received": "{sku} : au plus {qty} reçu sur ce document peut encore être renvoyé.",
   "docs.return_imported_on_bill": "Impossible de renvoyer {qty} de {sku} sur cette facture : au plus {received} a été reçu ici. Les marchandises que cette facture détenait déjà à son import ne peuvent pas être renvoyées sur elle. {next_step}",
   "docs.imported_on_bill_next.revert": "Pour les renvoyer, renvoyez d'abord tout ce qui a été reçu ici, puis remettez la facture en brouillon et renvoyez-les depuis le bon de commande.",
   "docs.imported_on_bill_next.void": "Pour annuler la facture, annulez-la. Les marchandises restent en stock.",

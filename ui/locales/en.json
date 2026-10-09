@@ -4475,6 +4475,8 @@
   "docs.return_line_untraced": "Some goods received on this document cannot be traced to their line, so they cannot be returned by line.",
   "docs.return_not_on_hand": "Cannot return {sku}: it is {status}, not on hand. Goods sold, out on memo or reserved go back to the supplier only once they are back in stock and free.",
   "docs.return_more_than_free": "Cannot return {qty} of {sku}: {free} is on hand and not reserved.",
+  "docs.return_lot_not_received": "{sku} was not received on this document, so it cannot be returned on it.",
+  "docs.return_lot_more_than_received": "{sku}: at most {qty} received on this document can still be returned.",
   "docs.return_imported_on_bill": "Cannot return {qty} of {sku} on this bill: at most {received} of it was received here. Goods this bill already held when it was imported cannot be returned on it. {next_step}",
   "docs.imported_on_bill_next.revert": "To send them back, return anything received here first, then revert the bill to draft and return them from the purchase order.",
   "docs.imported_on_bill_next.void": "To cancel the bill, void it. The goods stay in stock.",

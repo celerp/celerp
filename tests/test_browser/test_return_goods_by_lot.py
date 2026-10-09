@@ -59,6 +59,8 @@ def test_a_line_refused_by_line_goes_back_by_lot(page, ui_server, api, monkeypat
     assert "Return the goods by lot instead." in page.locator(".toast-container .toast").first.inner_text()
     # The refusal opened the line's lots; the line's own quantity is not sent while they are open.
     page.wait_for_function("document.querySelector('#li-bulk-revert-btn details.return-lots').open", timeout=5000)
+    # The first lot's tick box takes the focus, so the keyboard carries on from the list.
+    page.wait_for_function("document.activeElement && document.activeElement.name === 'lot_0_0'", timeout=5000)
     assert row.locator("input[name='qty_0']").is_disabled()
     assert row.locator("input[name='lot_qty_0_0']").is_disabled(), "a lot sends nothing until ticked"
 

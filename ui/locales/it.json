@@ -4477,6 +4477,8 @@
   "docs.return_line_untraced": "Parte della merce ricevuta su questo documento non è riconducibile alla sua riga, quindi non può essere resa per riga.",
   "docs.return_not_on_hand": "Impossibile rendere {sku}: è {status}, non a magazzino. La merce venduta, in conto visione o riservata torna al fornitore solo quando è di nuovo a magazzino e libera.",
   "docs.return_more_than_free": "Impossibile rendere {qty} di {sku}: {free} è a magazzino e non riservato.",
+  "docs.return_lot_not_received": "{sku} non è stato ricevuto su questo documento, quindi non può essere reso con esso.",
+  "docs.return_lot_more_than_received": "{sku}: si possono ancora rendere al massimo {qty} di quanto ricevuto su questo documento.",
   "docs.return_imported_on_bill": "Impossibile rendere {qty} di {sku} su questa fattura: al massimo {received} è stato ricevuto qui. La merce che questa fattura aveva già quando è stata importata non può essere resa su di essa. {next_step}",
   "docs.imported_on_bill_next.revert": "Per renderla, rendi prima tutto ciò che è stato ricevuto qui, poi riporta la fattura a bozza e rendila dall'ordine d'acquisto.",
   "docs.imported_on_bill_next.void": "Per annullare la fattura, annullala. La merce resta in magazzino.",

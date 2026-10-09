@@ -18,13 +18,11 @@ from fasthtml.common import to_xml
 
 import ui.api_client as api_client
 from test_cost_restatement import _set_cost, _state
-from test_lot_split_invariants import _set_measures
+from test_lot_split_invariants import _return, _set_measures
 from test_receipt_accounting import _books
 from test_receive_goods_form import _Request, _Routes
 from test_receive_selected_lines import _issued, _post, _ReceiveRows, _stock_lines
 from test_return_selected_lines import _qty, _return_lines
-
-pytestmark = pytest.mark.asyncio
 
 
 async def _two_deliveries(client, session, auth):
@@ -311,6 +309,52 @@ def _no_search(monkeypatch) -> None:
     monkeypatch.setattr(routes, "_LINE_TAKES_BITS", 0, raising=False)
 
 
+# A line received in lots of millions of units, three of a few units that may not be split.
+_BIG_LOTS = [("s0", 107786.839742), ("s1", 8074103.925944), ("s2", 7784144.701043),
+             ("w5", 70.201563), ("w6", 40.977639), ("w7", 30.741306)]
+_BIG_QTY = 15966107.185674
+
+
+def test_line_takes_large_quantities_add_up():
+    """Rounding in quantities of millions of units does not hide a way to make them up."""
+    from celerp_docs.routes import _line_takes
+    takes = _line_takes(_BIG_LOTS, {lot: q for lot, q in _BIG_LOTS if lot.startswith("w")}, _BIG_QTY)
+    assert [lot for lot, _ in takes] == ["s0", "s1", "s2", "w6", "w7"]
+    assert sum(q for _, q in takes) == pytest.approx(_BIG_QTY, abs=1e-6)
+
+
+async def test_return_by_line_of_millions_sends_back_all_of_it(client, session, auth):
+    bill, [line_id] = await _issued(client, session, auth, "bill",
+                                    _stock_lines(1, qty=round(sum(q for _, q in _BIG_LOTS), 6)))
+    for _, q in _BIG_LOTS:
+        r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": q})
+        assert r.status_code == 200, r.text
+    lots = (await _state(session, auth, bill))["received_item_ids"]
+    for (name, _), lot in zip(_BIG_LOTS, lots):
+        if name.startswith("w"):
+            await _set_measures(client, auth, lot, allow_splitting=False)
+    r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": _BIG_QTY})
+    assert r.status_code == 200, r.text
+    returned = (await _state(session, auth, bill))["returned_items"]
+    assert sum(float(x["quantity_returned"]) for x in returned) == pytest.approx(_BIG_QTY, abs=1e-6)
+
+
+async def test_return_by_line_never_sends_back_less_than_asked(client, session, auth, monkeypatch):
+    """Should the lots worked out fall short of the quantity, the line is refused, to return
+    by lot, and nothing moves."""
+    from celerp_docs import routes
+
+    bill, line_id, first, second = await _two_deliveries(client, session, auth)
+    monkeypatch.setattr(routes, "_line_takes", lambda lots, whole_only, qty: [(second, qty - 1)])
+    before = await _snapshot(session, auth, first, second)
+    r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": 3})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_line_by_lot"
+    assert r.json()["detail"]["params"]["line"] == 0
+    assert await _snapshot(session, auth, first, second) == before
+    assert not (await _state(session, auth, bill)).get("returned_items")
+
+
 def test_line_takes_past_its_bounds_works_nothing_out(monkeypatch):
     from celerp_docs.routes import _line_takes
     lots, whole_only = [("a", 5), ("b", 3)], {"a": 5}
@@ -382,6 +426,33 @@ async def test_return_form_lists_each_lines_lots(client, session, auth):
     form.feed(html)
     assert form.qty_inputs == {"qty_0": {"value": "8", "max": "8"}}
     assert not [n for n, _ in form.fields if n.startswith("lot_")]
+
+
+async def test_return_lots_show_each_lots_own_measures_and_name(client, session, auth):
+    bill, line_id, first, second = await _two_deliveries(client, session, auth)
+    r = await client.patch(f"/items/{first}", headers=auth["headers"], json={"fields_changed": {
+        "pieces": {"old": None, "new": 4}, "weight": {"old": None, "new": 2.5}}})
+    assert r.status_code == 200, r.text
+    [line] = (await client.get(f"/docs/{bill}", headers=auth["headers"])).json()["line_items"]
+    lot = line["return_lots"][0]
+    assert (lot["pieces"], lot["weight"]) == (4, 2.5)
+    assert lot["label"] == (await _state(session, auth, first))["barcode"]
+
+
+async def test_lot_refusals_name_the_lot(client, session, auth):
+    """A lot refused on a return is named as its row on the form names it."""
+    from ui.i18n import refusal_text
+
+    bill, line_id, first, second = await _two_deliveries(client, session, auth)
+    other, _, _, elsewhere = await _two_deliveries(client, session, auth)
+    for lot, qty, key in ((second, 4, "docs.return_lot_more_than_received"),
+                          (elsewhere, 1, "docs.return_lot_not_received")):
+        r = await _return(client, auth, bill, lot, qty)
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        name = (await _state(session, auth, lot))["barcode"]
+        assert (detail["message_key"], detail["params"]["sku"]) == (key, name)
+        assert refusal_text(detail).startswith(name)
 
 
 async def test_return_form_sends_the_lots_ticked(client, session, auth, monkeypatch):
