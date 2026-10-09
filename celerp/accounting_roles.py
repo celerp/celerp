@@ -43,6 +43,9 @@ LOT_ACCOUNT_FIELD = "inventory_account_code"
 # consignor on, recorded when the lot is first sold. A consigned lot is not the
 # company's stock, so it has no inventory account until the company buys it.
 CONSIGNOR_PAYABLE_FIELD = "consignor_payable_code"
+# The item-state field holding the consignor a consigned lot belongs to: the contact of
+# the consignment it was received on. Every posting to the consignor payable names it.
+CONSIGNOR_FIELD = "consignor_id"
 # The event-metadata key naming the lot a new lot takes its cost from (goods back on a
 # credit note come in at the cost of the lot that was sold).
 VALUED_FROM_KEY = "valued_from"

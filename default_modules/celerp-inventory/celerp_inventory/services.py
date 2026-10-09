@@ -36,7 +36,7 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import current_settings, is_consigned, sold_lot_account
+from celerp.services.account_roles import current_settings, is_consigned, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
@@ -477,7 +477,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 elif sale.doc_id is None:
                     unposted.append(lot_label(before, lot_id))
                 elif not sale.allocated and change:
-                    by_account, account = resold.setdefault(sale.doc_id, {}), sold_lot_account(before)
+                    by_account, account = resold.setdefault(sale.doc_id, {}), await sold_lot_key(
+                        session, company_id, lot_id, before)
                     by_account[account] = by_account.get(account, 0.0) + change
                 # A consigned lot was never on the books: its cost is what is owed to the
                 # consignor, so the true-up alone moves cost of sales against that payable.

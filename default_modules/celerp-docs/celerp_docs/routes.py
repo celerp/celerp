@@ -35,7 +35,7 @@ from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
-from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.goods_cost import negative_cost_error
@@ -4056,6 +4056,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 item_data[LOT_ACCOUNT_FIELD] = purchased_account
             if is_consignment:
                 item_data["consignment_flag"] = "in"
+                # The consignor the goods belong to and are owed for when they sell.
+                if row.state.get("contact_id"):
+                    item_data[CONSIGNOR_FIELD] = row.state["contact_id"]
                 # Pair the new parcel with the consignment doc: inventory renders the
                 # number in the status cell and q-search matches it.
                 item_data["status_doc_id"] = entity_id
@@ -7653,7 +7656,8 @@ def _returned_lot_origin(ref: dict, quantity: float) -> dict:
     if not is_consigned(ref):
         return {LOT_ACCOUNT_FIELD: lot_account(ref)} if float(ref.get("cost_price") or 0) * quantity > 0 else {}
     return {"consignment_flag": "in", CONSIGNOR_PAYABLE_FIELD: ref.get(CONSIGNOR_PAYABLE_FIELD),
-            "returned_from": ref.get("id")}
+            "returned_from": ref.get("id"),
+            **({CONSIGNOR_FIELD: ref[CONSIGNOR_FIELD]} if ref.get(CONSIGNOR_FIELD) else {})}
 
 
 @router.post("/{entity_id}/receive-return")

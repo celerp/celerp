@@ -35,7 +35,7 @@ from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import is_consigned, new_lot_account
+from celerp.services.account_roles import consignor_of, is_consigned, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_money import UnratedTaxError, document_money
@@ -368,4 +368,5 @@ async def _rehome_returned(session, company_id, user_id, bill_id: str, group: _G
     await auto_je.create_for_consigned_return_bought(
         session, company_id=company_id, user_id=user_id, bill_id=bill_id, lot_id=group.returned,
         account=account, value=to_stored_float(sum((costs[m.entity_id] for m in group.members), Decimal(0))),
-        payable=payable, owed=to_stored_float(owed), ts=day)
+        payable=party_key(payable, await consignor_of(session, company_id, group.returned, created)),
+        owed=to_stored_float(owed), ts=day)

@@ -3,7 +3,7 @@
 
 from copy import deepcopy
 
-from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.money import round_basis
 
 # Maps old weight_unit abbreviations to new unit names
@@ -52,9 +52,9 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # flags / classification
     "allow_splitting", "inventory_type", "pick_method", "consignment_flag", "item_type",
     "is_expired", "expires_at", "landed_cost_kind", "recoverable",
-    # the inventory account the lot's value sits in, and the account a consigned lot's
-    # sale is owed to its consignor on (celerp.accounting_roles)
-    LOT_ACCOUNT_FIELD, CONSIGNOR_PAYABLE_FIELD,
+    # the inventory account the lot's value sits in, and for a consigned lot the account
+    # its sale is owed to its consignor on and that consignor (celerp.accounting_roles)
+    LOT_ACCOUNT_FIELD, CONSIGNOR_PAYABLE_FIELD, CONSIGNOR_FIELD,
     # whether an archived or expired lot still holds its stock (celerp.services.lot_origin)
     ON_BOOKS_FIELD,
     # purchase side
