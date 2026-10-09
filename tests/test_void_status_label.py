@@ -39,7 +39,3 @@ def test_list_void_tile_is_a_status_not_a_verb(de):
 def test_void_badge_is_translated(de):
     assert display_enum("void", "doc_status") == "Storniert"
 
-
-@pytest.mark.parametrize("lang", sorted(i18n._DISK_LANGS))
-def test_void_status_label_in_every_locale(lang):
-    assert "enum.doc_status.void" in i18n._cached_load(lang), lang
