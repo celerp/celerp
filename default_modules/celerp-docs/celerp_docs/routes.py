@@ -4081,11 +4081,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # Fields to inherit from existing item; barcode and rfid_epc excluded (both are
             # per-physical-unit: a received parcel is a new unit, so it mints a fresh barcode
             # and carries no physical RFID/EPC tag). gtin is a product identifier and IS
-            # inherited from the catalog template.
+            # inherited from the catalog template. The weight and pieces are the parcel's own
+            # measures, so they are never copied from the template: unstated, they are unknown.
             _INHERIT = (
                 "category", "unit", "sell_by", "description",
                 "cost_price", "wholesale_price", "retail_price",
-                "tax_codes", "hs_code", "weight", "weight_unit",
+                "tax_codes", "hs_code", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
                 "allow_splitting", "pick_method", "gtin",
@@ -4094,8 +4095,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             if catalog_item_id:
                 item_data["catalog_item_id"] = catalog_item_id
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
-            if sku_ref.get("attributes"):
-                item_data["attributes"] = dict(sku_ref["attributes"])
+            if _template_attrs := {k: v for k, v in (sku_ref.get("attributes") or {}).items()
+                                   if k not in ("weight", "pieces")}:
+                item_data["attributes"] = _template_attrs
             # Bill line item fields override sku_ref (user explicitly set these on the bill)
             for _f in ("category", "attributes"):
                 _doc_val = doc_line.get(_f)
@@ -4106,7 +4108,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # Attributes from the bill line or the request are caller-authored, so a price
             # among them (other than one carried over unchanged from the item) takes the
             # same set_inventory_prices gate as every inventory writer.
-            _inherited = (sku_ref.get("attributes") or {}) | {k: sku_ref.get(k) for k in _INHERIT}
+            _inherited = _template_attrs | {k: sku_ref.get(k) for k in _INHERIT}
             _authored = {k: v for k, v in (item_data.get("attributes") or {}).items() if _inherited.get(k) != v}
             reject_system_item_fields({"attributes": _authored})
             reject_price_change(price_keys_in({"attributes": _authored}, _recv_price_lists), role, settings)
@@ -5632,10 +5634,11 @@ async def list_lists(
     # individual lines. Push the count and weight sum into SQL and select the header columns alone, so
     # a list with thousands of lines never drags its whole line_items array back into Python here.
     item_count = _func.coalesce(_func.json_array_length(Projection.state["line_items"]), 0)
+    # One line of unknown weight leaves the list's weight unknown (NULL), never short.
     weight_sum = _sa.literal_column(
-        "(SELECT COALESCE(SUM(COALESCE("
-        "NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric, 0)), 0) "
-        "FROM json_array_elements(projections.state -> 'line_items') AS elem)"
+        "(SELECT CASE WHEN BOOL_OR(w IS NULL) THEN NULL ELSE COALESCE(SUM(w), 0) END FROM ("
+        "SELECT COALESCE(NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric) AS w "
+        "FROM json_array_elements(projections.state -> 'line_items') AS elem) AS lw)"
     )
     columns = _list_columns(sort_date)
     list_q = (
@@ -5656,7 +5659,7 @@ async def list_lists(
     out = [{
         **{name: getattr(r, name) for name in columns},
         "item_count": r.item_count,
-        "total_weight": float(r.total_weight or 0),
+        "total_weight": None if r.total_weight is None else float(r.total_weight),
     } for r in rows]
     return {"items": out, "total": total}
 

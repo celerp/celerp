@@ -4246,8 +4246,9 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
 
     # Compute defaults.
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
+    # One source of unknown weight leaves the merged weight unknown, never short.
     weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
-    total_weight = sum(weights) if weights else None
+    total_weight = sum(weights) if len(weights) == len(source_projections) else None
     # The merged lot keeps the value its sources record, which is what the books carry
     # for them (lot_origin.recorded_value): a source with no cost adds nothing.
     merged_cost_total = float(sum(recorded_value(p.state) for p in source_projections))
