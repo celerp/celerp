@@ -470,6 +470,16 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
     elif event_type == "item.consignor_payable.recorded":
         current[CONSIGNOR_PAYABLE_FIELD] = data[CONSIGNOR_PAYABLE_FIELD]
+    elif event_type == "item.consignment.bought":
+        # Bought from the consignor: the company's own stock at the bill's cost. The
+        # consignment no longer names the lot; a sale or memo that does is kept.
+        current["consignment_flag"] = None
+        if current.get("status_doc_id") == data["consignment_doc_id"]:
+            current.pop("status_doc_id", None)
+            current.pop("status_doc_number", None)
+        current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
+        current["cost_base"] = float(data["cost_total"])
+        _recompute_cost(current)
     elif event_type == "item.inventory_on_books.recorded":
         pass  # _keep_on_books
     elif event_type == "item.landed_cost.applied":

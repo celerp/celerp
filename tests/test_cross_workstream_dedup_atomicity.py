@@ -212,20 +212,22 @@ async def test_consignment_in_to_bill_duplicate_is_atomic(client, session):
     governed outbound customer-stock types (invoice, memo), so the uniqueness
     invariant does not apply.
 
-    Conversion copies the source line_items verbatim into the bill's doc.created.
-    An inbound bill legitimately carries the same physical item more than once, so
-    the guard must not fire. Red at the PR head, where emit_event enforces on every
-    entity_type=='doc' and 409s; after the fix the `bill` target is not governed and
-    the conversion succeeds, materializing the bill.
+    An inbound document legitimately carries the same item more than once, so the
+    guard must not fire on the consignment, on receiving both lines, or on the bill
+    the conversion materializes for the goods received.
     """
     t = await _register(client)
     cid = await _company_id(session)
     item = await _item(client, t, "CB-NS", allow_splitting=False)
     cons_id = f"doc:{_uuid.uuid4().hex[:12]}"
     await _seed_historical_doc(session, cid, cons_id, {
-        "doc_type": "consignment_in", "status": "received",
+        "doc_type": "consignment_in", "status": "final",
         "line_items": [_line(item, sku="CB-NS"), _line(item, sku="CB-NS")],
     })
+    r = await client.post(f"/docs/{cons_id}/receive", headers=_h(t), json={"location_id": "", "received_items": [
+        {"item_id": item, "sku": "CB-NS", "name": "CB-NS", "quantity_received": 1, "po_line_index": i,
+         "receive_as": "stock", "cost_price": 10} for i in (0, 1)]})
+    assert r.status_code == 200, r.text
     before_bills = await _target_doc_count(session, cid, "bill")
 
     r = await client.post(f"/docs/{cons_id}/convert", headers=_h(t))

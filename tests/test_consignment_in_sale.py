@@ -230,6 +230,72 @@ async def test_a_customer_return_puts_the_goods_back_on_consignment(client, sess
     assert r.status_code == 200, r.text
     assert await _books(session, auth, PAYABLE, COGS) == {PAYABLE: 0.0, COGS: 0.0}
 
+    # Bought afterwards, the returned goods are the company's own at the bill's cost.
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    state = await _state(session, auth, returned)
+    assert (state.get("consignment_flag"), state[LOT_ACCOUNT_FIELD], state["cost_total"]) == (None, PURCHASED, 10.0)
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 0.0, PURCHASED: 10.0, AP: -10.0}
+    await _settled(client, session, auth)
+
+
+@pytest.mark.parametrize("recorded_unit", [4.0, 5.0, 6.0])
+async def test_converting_after_a_partial_sale_settles_the_sold_and_buys_the_held(
+        client, session, auth, recorded_unit):
+    """The bill prices each unit at 5: the sold unit's payable moves to accounts payable with
+    the bill's difference from its recorded cost taken to cost of goods sold, and the unit
+    still held becomes inventory at the bill's cost and sells like any other stock."""
+    consignment, lot = await _consign(client, session, auth, cost_price=recorded_unit)
+    assert (await _state(session, auth, lot))["cost_total"] == 2 * recorded_unit
+    doc = await _sell(client, session, auth, lot, 1)
+    assert await _books(session, auth, PAYABLE, COGS) == {PAYABLE: -recorded_unit, COGS: recorded_unit}
+    await _settled(client, session, auth)
+
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    bill = r.json()["target_doc_id"]
+    assert all(not (li.get("item_id") and li.get("entity_id") and li["item_id"] != li["entity_id"])
+               for li in (await _state(session, auth, bill))["line_items"])
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 5.0, PURCHASED: 5.0, AP: -10.0}
+    adjustments = [je for je in await _posted(session, auth)
+                   if str(je.get("memo") or "").startswith("COGS adjustment")]
+    assert round(sum(float(e.get("debit") or 0) - float(e.get("credit") or 0)
+                     for je in adjustments for e in je["entries"] if e["account"] == COGS), 2) == 5.0 - recorded_unit
+    held = await _state(session, auth, lot)
+    assert (held.get("consignment_flag"), held[LOT_ACCOUNT_FIELD], held["cost_total"], held["quantity"]) == (
+        None, PURCHASED, 5.0, 1)
+    await _settled(client, session, auth)
+
+    # Converting twice is refused and books nothing more.
+    entries = len(await _posted(session, auth))
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code >= 400
+    assert len(await _posted(session, auth)) == entries
+
+    await _sell(client, session, auth, lot)
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 10.0, PURCHASED: 0.0, AP: -10.0}
+    await _settled(client, session, auth)
+    assert doc
+
+
+async def test_converting_with_goods_invoiced_but_not_shipped_reprices_that_sale(client, session, auth):
+    consignment, lot = await _consign(client, session, auth, cost_price=4.0)
+    doc = await _sell(client, session, auth, lot, ship=False)
+    assert await _books(session, auth, PAYABLE, COGS) == {PAYABLE: -8.0, COGS: 8.0}
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 10.0, PURCHASED: 0.0, AP: -10.0}
+    held = await _state(session, auth, lot)
+    assert (held.get("consignment_flag"), held[LOT_ACCOUNT_FIELD], held["cost_total"]) == (None, PURCHASED, 10.0)
+    r = await client.post(f"/docs/{doc}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 10.0, PURCHASED: 0.0, AP: -10.0}
+    await _settled(client, session, auth)
 
 
 async def test_goods_still_held_go_back_to_the_consignor(client, session, auth):

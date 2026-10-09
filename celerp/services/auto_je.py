@@ -1131,13 +1131,15 @@ async def create_for_bill_conversion(
     doc: dict,
     base_currency: str = "USD",
     revert_count: int = 0,
-) -> None:
+) -> dict[int, tuple[str, _Dec]]:
     """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
     Debit per-line expense/inventory accounts, credit AP, less what the
     document's purchase order receipts already booked.
     A line's own account_code takes priority; otherwise the line posts to the role
     for what it brings in: inventory for stock, general expense for anything else.
+    Returns what each line debits, in base currency, by line index: {index: (account,
+    amount)}, before any netting against receipts.
     """
     currency = doc.get("currency", "USD")
     rate = require_doc_rate(doc, base_currency)
@@ -1146,10 +1148,11 @@ async def create_for_bill_conversion(
     # (account chosen on the line, the role to post to, or an account posted for a role;
     # amount in the document currency)
     lines: list[tuple[str | AccountRole | tuple[str, AccountRole], _Dec]] = []
+    sources: list[int | None] = []  # the line index each debit comes from
     tax_total_d = _Dec(0)
 
     if line_items:
-        for li in line_items:
+        for index, li in enumerate(line_items):
             line_total = round_money(
                 to_decimal(li.get("line_total") or 0) or
                 to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
@@ -1174,6 +1177,7 @@ async def create_for_bill_conversion(
             else:
                 target = R.INVENTORY_PURCHASED if bill_line_kind(li) == "stock" else R.GENERAL_EXPENSE
             lines.append((target, line_total))
+            sources.append(index)
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
         # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
         tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
@@ -1181,7 +1185,7 @@ async def create_for_bill_conversion(
     # Doc-level shipping on a bill is inbound freight: debit the freight clearing account.
     shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
     if total_d <= 0:
-        return
+        return {}
     # A bill total below its lines, tax and shipping is a discount on those lines: each line's
     # cost is reduced by its share, so the debits sum to what the bill says is owed. Any other
     # gap between the parts and the total is refused rather than posted unbalanced.
@@ -1196,6 +1200,7 @@ async def create_for_bill_conversion(
         lines.append((R.LANDED_FREIGHT, shipping_d))
     if not lines:
         lines.append((R.GENERAL_EXPENSE, total_d))
+    sources += [None] * (len(lines) - len(sources))
     if sum((a for _, a in lines), _Dec(0)) != total_d:
         raise UnbalancedJournalEntry(
             f"Bill {doc_id}: its lines, tax and shipping do not add up to its total of {total_d} {currency}"
@@ -1229,6 +1234,7 @@ async def create_for_bill_conversion(
     largest = max(range(len(debits)), key=lambda i: debits[i])
     debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
     entries = [debit_line(target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
+    by_line = {index: (e["account"], d) for index, e, d in zip(sources, entries, debits) if index is not None}
     entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
@@ -1258,7 +1264,7 @@ async def create_for_bill_conversion(
                     "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0)))}
                    for (acct, roles), v in net.items() if v]
         if not entries:
-            return
+            return by_line
 
     await _emit_auto_posted_je(
         session,
@@ -1272,6 +1278,7 @@ async def create_for_bill_conversion(
         entries=entries,
         metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
     )
+    return by_line
 
 
 async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id: str, idem_key: str, reason: str, trigger: str) -> bool:
@@ -2066,6 +2073,36 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         entries=await _cogs_entries(session, company_id, await lots_by_account(session, company_id, lot_costs),
                                     expense=False),
         metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
+    )
+
+
+async def create_for_consigned_return_bought(
+    session, *, company_id, user_id, bill_id: str, lot_id: str, account: str, value: float,
+    payable: str, owed: float, ts: str,
+) -> None:
+    """Consigned goods a customer returned, bought on a bill: Dr inventory / Cr Consignor
+    payable, the difference to COGS.
+
+    The return took the goods' recorded cost (``owed``) back off cost of goods sold onto
+    the consignor payable, while the invoice that sold them settles that payable once the
+    goods are bought. The goods held are now the company's own at the bill's cost
+    (``value``), so that cost goes onto ``account`` and the payable the return recognized
+    is cleared against cost of goods sold. Keyed by the bill and the returned lot, so it
+    posts once."""
+    entries = await _cogs_entries(session, company_id, {account: -value, payable: owed})
+    if not entries:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{bill_id}:consigned-return:{lot_id}",
+        idem_create=je_idempotency_key(bill_id, f"consigned_return:{lot_id}", "c"),
+        idem_posted=je_idempotency_key(bill_id, f"consigned_return:{lot_id}", "p"),
+        memo=f"Consigned goods returned by a customer, bought on {bill_id}",
+        ts=ts,
+        entries=entries,
+        metadata_={"trigger": "doc.converted_to_bill", "doc_id": bill_id, "item_id": lot_id},
     )
 
 

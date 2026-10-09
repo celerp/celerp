@@ -344,6 +344,15 @@ class ItemConsignorPayableRecorded(BaseModel):
     consignor_payable_code: str
 
 
+class ItemConsignmentBought(BaseModel):
+    # Consigned goods bought on a vendor bill: the lot becomes the company's own, valued at
+    # the bill's cost on the inventory account the bill debited.
+    cost_total: float
+    inventory_account_code: str
+    consignment_doc_id: str
+    bill_doc_id: str
+
+
 class ItemInventoryOnBooksRecorded(BaseModel):
     # A lot an older release archived or expired at the user's request that the books
     # show still holds the company's stock, recognized once on upgrade
@@ -1338,6 +1347,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.cost_adjusted": ItemCostAdjusted,
     "item.inventory_account.recorded": ItemInventoryAccountRecorded,
     "item.consignor_payable.recorded": ItemConsignorPayableRecorded,
+    "item.consignment.bought": ItemConsignmentBought,
     "item.inventory_on_books.recorded": ItemInventoryOnBooksRecorded,
     "item.recipe.set": ItemRecipeSet,
     "item.workflow.set": ItemWorkflowSet,

@@ -30,6 +30,7 @@ from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
+from celerp_docs.consignment_buy import buy_consignment
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
@@ -4747,25 +4748,10 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         if state.get("status") not in ("final", "sent", "received", "partially_received"):
             raise HTTPException(status_code=409, detail="Consignment In must be issued before converting to vendor bill")
         await require_line_destinations(session, company_id, state.get("line_items"))
-        ref = next_doc_ref(company, "bill")
-        new_doc_id = f"doc:{ref}"
-        new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
-        new_data.update({"doc_type": "bill", "ref_id": ref, "source_consignment_id": entity_id, "status": "awaiting_payment"})
-        await emit_event(
-            session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
-            actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        # Create accounting JE for the bill
-        bill_total = float(state.get("total", 0) or 0)
-        if bill_total == 0:
-            bill_total = sum(
-                float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
-                for li in state.get("line_items", [])
-            )
-        _consign_base_currency = (company.settings.get("currency", "USD") if company else "USD")
-        await auto_je.create_for_bill_conversion(
-            session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc={**state, "total": bill_total},
-            base_currency=_consign_base_currency,
+        new_doc_id = await buy_consignment(
+            session, company_id=company_id, user_id=user.id, consignment_id=entity_id, state=state,
+            ref=next_doc_ref(company, "bill"),
+            base_currency=(company.settings.get("currency", "USD") if company else "USD"),
         )
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",

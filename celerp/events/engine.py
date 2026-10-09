@@ -350,8 +350,9 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
                 data[LOT_ACCOUNT_FIELD] = code
         return
     current = (previous_state or {}).get(LOT_ACCOUNT_FIELD)
-    if kwargs["event_type"] == "item.inventory_account.recorded":
-        # An older lot that recorded none takes the one the upgrade or the user places it on.
+    if kwargs["event_type"] in ("item.inventory_account.recorded", "item.consignment.bought"):
+        # An older lot that recorded none takes the one the upgrade or the user places it on,
+        # and consigned goods take the one the bill that buys them debits.
         if current:
             raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
         return
