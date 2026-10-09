@@ -120,7 +120,8 @@ def imported_issue_kind(data: dict) -> str | None:
         return "invoice"
     if doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
         return "purchase_order"
-    if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
+    if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final",
+                                         "received", "partially_received"):
         return "bill"
     return None
 

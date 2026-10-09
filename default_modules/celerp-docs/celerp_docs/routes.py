@@ -5024,11 +5024,16 @@ def _import_metadata(source_ts: str | None, data: dict, *, post_ledger: bool) ->
 
 
 async def imported_opening_snapshot(session: AsyncSession, company_id, data: dict) -> dict:
-    """An imported purchase order or bill as it enters the books, with each stock line it
-    received marked with what that line holds in the lot it names, as a receipt marks what
-    it added, so a return takes the goods back off that lot. Any other snapshot, and one
-    already marked, is returned as it is."""
-    if auto_je.imported_issue_kind(data) not in ("purchase_order", "bill"):
+    """An imported issued document as it enters the books. An invoice or bill is finalized,
+    since it was issued, so finalizing it again books nothing a second time (a purchase
+    order is finalized by converting it to a bill, which books only what the opening
+    balances do not hold). A purchase order or bill also has each stock line it received
+    marked with what that line holds in the lot it names, as a receipt marks what it added,
+    so a return takes the goods back off that lot. A snapshot not issued is returned as it is."""
+    kind = auto_je.imported_issue_kind(data)
+    if kind in ("invoice", "bill") and not data.get("finalized"):
+        data = {**data, "finalized": True}
+    if kind not in ("purchase_order", "bill"):
         return data
     return await mark_received_goods(session, company_id, data)
 
