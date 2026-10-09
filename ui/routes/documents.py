@@ -7957,12 +7957,15 @@ function _celerpPickerStatus(text) {{
             }}
             const data = await resp.json();
             if (data.description || data.sku) {{
-                const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
-                const row = tpl.querySelector('tr') || tpl.children[0];
+                const tbody2 = document.getElementById('{line_body_id}');
+                // The first scan into a new document fills its empty starter row; every other
+                // scan fills a fresh row that is appended below.
+                const starter = _celerpStarterRow(tbody2);
+                const tpl = starter ? null : document.getElementById('line-row-tpl').content.cloneNode(true);
+                const row = starter || tpl.querySelector('tr') || tpl.children[0];
                 const d = {{...data, sku: data.sku || code}};
-                // Fill the detached row first; a false return means the item is a
-                // non-splittable duplicate already on the doc, so do NOT append the
-                // row and do NOT autosave - just show the message.
+                // A false return means the item is a non-splittable duplicate already on
+                // the doc, so do NOT add the row and do NOT autosave - just show the message.
                 if (row && !celerpFillRow(row, d)) {{
                     scanStatus.textContent = '✗ ' + _L.dup_on_doc;
                     scanStatus.className = 'scan-bar-status scan-bar-status--err';
@@ -7971,10 +7974,11 @@ function _celerpPickerStatus(text) {{
                     _clearStatusSoon();
                     return;
                 }}
-                const tbody2 = document.getElementById('{line_body_id}');
-                tbody2.appendChild(tpl);
-                const newRow2 = tbody2.lastElementChild;
-                if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                if (!starter) {{
+                    tbody2.appendChild(tpl);
+                    const newRow2 = tbody2.lastElementChild;
+                    if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                }}
                 celerpUpdateTotals();
                 celerpAutoSave();
                 scanStatus.textContent = '✓ ' + (data.sku || code);
@@ -8710,6 +8714,20 @@ function _celerpRowLineId(row) {{
     if (!el.value) el.value = _celerpNewLineId();
     return el.value;
 }}
+function _celerpRowHasContent(row) {{
+    // A row is a line worth saving once it names something or carries a price.
+    const val = name => row.querySelector(`[data-name="${{name}}"]`)?.value;
+    return !!(val('description') || val('sku') || parseFloat(val('unit_price') || 0)
+              || val('entity_id') || val('barcode'));
+}}
+function _celerpStarterRow(tbody) {{
+    // The empty row a new document opens with, while it is still the only row and untouched.
+    const rows = tbody ? tbody.querySelectorAll('tr') : [];
+    if (rows.length !== 1) return null;
+    const row = rows[0];
+    if (row.querySelector('[data-name="line_id"]')?.value || _celerpRowHasContent(row)) return null;
+    return row;
+}}
 function _celerpCollectLines() {{
     // Returns the serialized lines, or null when a meaningful row carries an
     // invalid quantity - the caller aborts the whole save and sends nothing.
@@ -8739,7 +8757,7 @@ function _celerpCollectLines() {{
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
         const weightEl = row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
-        if (desc || sku || price || entityId || barcode) {{
+        if (_celerpRowHasContent(row)) {{
             // A meaningful row with no usable quantity fails the whole save closed:
             // surface the error on the save-status element and send nothing, rather
             // than coerce a blank/NaN quantity to 1 and persist corrupt data.
