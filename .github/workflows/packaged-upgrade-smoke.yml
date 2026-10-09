@@ -126,7 +126,13 @@ jobs:
           state=$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 candidate snapshot)
           [ "$state" = ready ] || { tail -100 "$RUNNER_TEMP/candidate.log"; cat "$RUNNER_TEMP/candidate.snapshot" 2>/dev/null || true; echo "::error::candidate did not open the previous release's data ($state)"; exit 1; }
           [ "$(version candidate)" != "$(version previous)" ] || { echo "::error::candidate reports the previous release's version $(version previous)"; exit 1; }
-          diff <(records previous) <(records candidate) || { echo "::error::the candidate does not serve the previous release's ledger and records"; exit 1; }
+          # The previous release may not serve every module page on fresh data (2.5.3
+          # answers 404 there), so the ledger must match exactly, every page it served
+          # must match, and the candidate must serve every page.
+          cmp_served='.served | to_entries | map(select(.value | type == "array")) | from_entries'
+          diff <(jq -S '.ledger' "$RUNNER_TEMP/previous.snapshot") <(jq -S '.ledger' "$RUNNER_TEMP/candidate.snapshot") || { echo "::error::the candidate does not serve the previous release's ledger"; exit 1; }
+          jq -e --argjson p "$(jq -S "$cmp_served" "$RUNNER_TEMP/previous.snapshot")" "($cmp_served) as \$c | [\$p | to_entries[] | \$c[.key] == .value] | all" "$RUNNER_TEMP/candidate.snapshot" >/dev/null || { records previous; records candidate; echo "::error::the candidate does not serve the previous release's records"; exit 1; }
+          jq -e '[.served[] | type == "array"] | all' "$RUNNER_TEMP/candidate.snapshot" >/dev/null || { records candidate; echo "::error::the candidate does not serve every module page"; exit 1; }
           echo "candidate $(version candidate): opened and migrated the previous release's data; ledger and records unchanged"
           before=$(data_state)
           state=$(open_data "$RUNNER_TEMP/previous/Celerp.AppImage" 90 downgrade)
