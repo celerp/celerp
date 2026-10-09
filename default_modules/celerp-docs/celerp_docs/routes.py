@@ -3816,6 +3816,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
         raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
     _refuse_receipt_on_a_draft_bill(row.state)
+    if doc_type == "consignment_in" and not row.state.get("contact_id"):
+        raise HTTPException(status_code=409, detail=refusal(
+            "consignment.receive.no_consignor",
+            "This consignment has no consignor, so there is no one to owe for its goods when they sell. "
+            "Open the consignment and choose the consignor first."))
 
     location_uuid = None
     if payload.location_id:
@@ -3957,9 +3962,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty)
             if cost is None:
                 raise _unpriced_receipt(it.sku or it.name or it.item_id, doc_label)
-        refusal = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
-        if refusal:
-            raise HTTPException(status_code=422, detail=refusal)
+        negative = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
+        if negative:
+            raise HTTPException(status_code=422, detail=negative)
         priced.append((conversion, stock_qty, cost))
 
     _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))

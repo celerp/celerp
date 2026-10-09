@@ -221,7 +221,7 @@ async def test_consignment_in_to_bill_duplicate_is_atomic(client, session):
     item = await _item(client, t, "CB-NS", allow_splitting=False)
     cons_id = f"doc:{_uuid.uuid4().hex[:12]}"
     await _seed_historical_doc(session, cid, cons_id, {
-        "doc_type": "consignment_in", "status": "final",
+        "doc_type": "consignment_in", "status": "final", "contact_id": "supplier:1",
         "line_items": [_line(item, sku="CB-NS"), _line(item, sku="CB-NS")],
     })
     r = await client.post(f"/docs/{cons_id}/receive", headers=_h(t), json={"location_id": "", "received_items": [

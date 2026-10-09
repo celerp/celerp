@@ -2129,7 +2129,7 @@ async def _finalized_bill(client, ctx, sku: str, line: dict | None = None, doc_t
         "location_id": ctx["location_id"], "retail_price": 10,
     })).json()["id"]
     bill = (await client.post("/docs", headers=ctx["admin_h"], json={
-        "doc_type": doc_type,
+        "doc_type": doc_type, "contact_id": "supplier:1",
         "line_items": [{"item_id": template, "sku": sku, "name": sku, "quantity": 2,
                         "unit_price": 5, "line_total": 10, **(line or {})}],
         "total": 10,
@@ -2211,7 +2211,7 @@ async def test_consignment_receive_without_rate(client, session, role_h):
         "location_id": ctx["location_id"], "retail_price": 10,
     })).json()["id"]
     doc = (await client.post("/docs", headers=ctx["admin_h"], json={
-        "doc_type": "consignment_in", "currency": "EUR",
+        "doc_type": "consignment_in", "contact_id": "supplier:1", "currency": "EUR",
         "line_items": [{"item_id": template, "sku": "CSG-FX", "name": "CSG-FX", "quantity": 2,
                         "unit_price": 5, "line_total": 10}],
         "total": 10,

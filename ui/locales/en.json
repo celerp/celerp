@@ -4320,6 +4320,7 @@
   "consignment.no_cost": "Stock {sku} is held on consignment with no known cost, so what is owed to the consignor for it cannot be recorded. Set the consignment's exchange rate or the item's cost first.",
   "consignment.no_consignor": "Stock {sku} is held on a consignment with no consignor, so there is no one to owe for it when it sells. Open the consignment and choose the consignor first.",
   "consignment.unvoid.returned": "This invoice cannot be restored: goods it was selling went back to the consignor on {consignments} while it was void. Create a new invoice for the goods still held.",
+  "consignment.receive.no_consignor": "This consignment has no consignor, so there is no one to owe for its goods when they sell. Open the consignment and choose the consignor first.",
   "consignment.buy.changed": "Stock {sku} received on this consignment has changed in a way the vendor bill cannot follow (merged, transformed, or carrying landed cost), so buying it cannot be booked without guessing.",
   "consignment.buy.untraced": "Stock {sku} from this consignment is sold, but not on an invoice that records its cost, so what is owed for it cannot be settled without guessing.",
   "consignment.buy.recompute": "Only part of this consignment is being bought, and its flat discount or tax amount cannot be split between the goods kept and the goods returned without guessing. Set the discount as a percentage and the tax as a rate on the consignment, then convert again.",
