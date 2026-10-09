@@ -2481,6 +2481,9 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     if not restored_status:
         raise HTTPException(status_code=409, detail="Cannot unvoid: document was voided before unvoid support was added (no pre_void_status)")
 
+    # Restored in a savepoint, so a refusal that can only be read off the restored books
+    # leaves nothing behind.
+    restore = await session.begin_nested()
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.unvoided",
@@ -2490,6 +2493,17 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     )
     # Restore the JEs the void reversed (idempotent - uses doc-scoped keys)
     await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    # Consigned goods that went back to the consignor while the invoice was void are
+    # theirs again, so the invoice cannot stand on them.
+    if state.get("doc_type") == "invoice" and (
+            taken := await auto_je.taken_back_by_consignor(session, company_id, entity_id, state)):
+        await restore.rollback()
+        raise HTTPException(status_code=409, detail=refusal(
+            "consignment.unvoid.returned",
+            f"This invoice cannot be restored: goods it was selling went back to the consignor on "
+            f"{', '.join(taken)} while it was void. Create a new invoice for the goods still held.",
+            consignments=", ".join(taken)))
+    await restore.commit()
     if state.get("doc_type") == "invoice":
         # Cost corrections made while the invoice was void apply once it stands again.
         try:
@@ -4414,10 +4428,12 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         # quietly write off stock that is still owed back to us.
         _item_status = str(item.state.get("status") or "").lower()
         # Consigned goods sold, or held for a sale, are owed to the consignor as money, not
-        # as goods: what the sale booked against the consignor stays settled once.
+        # as goods: what the sale booked against the consignor stays settled once. Goods a
+        # sale shipped have already left the lot, and a voided invoice holds nothing.
         if not owned and (_item_status in ("sold", "memo_out") or it.quantity_returned > (
                 float(item.state.get("quantity", 0) or 0) + 1e-9
-                - sum((await auto_je.allocations_naming_lot(session, company_id, it.item_id)).values()))):
+                - sum((await auto_je.set_aside_on(
+                    session, company_id, it.item_id, str(item.state.get("sku") or ""))).values()))):
             raise HTTPException(status_code=409, detail=refusal(
                 "consignment.return.sold",
                 f"Stock {item.state.get('sku', it.item_id)} from this consignment has been sold or is on a "

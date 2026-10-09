@@ -4321,6 +4321,7 @@
   "consignment.not_owned": "Hàng {sku} đang được giữ ký gửi và không phải hàng tồn kho của công ty, nên không thể dùng theo cách này cho đến khi mua lại từ bên ký gửi.",
   "consignment.no_cost": "Hàng {sku} đang được giữ ký gửi mà không rõ giá vốn, nên không thể ghi nhận số tiền nợ bên ký gửi. Hãy đặt tỷ giá của lô ký gửi hoặc giá vốn của mặt hàng trước.",
   "consignment.no_consignor": "Hàng tồn {sku} thuộc lô ký gửi chưa có bên ký gửi, nên khi bán không có ai để ghi nợ. Hãy mở lô ký gửi và chọn bên ký gửi trước.",
+  "consignment.unvoid.returned": "Không thể khôi phục hóa đơn này: hàng hóa đang bán trong hóa đơn đã được trả lại bên ký gửi theo {consignments} trong khi hóa đơn bị hủy. Hãy tạo hóa đơn mới cho số hàng còn giữ.",
   "consignment.buy.changed": "Hàng tồn {sku} nhận theo đợt ký gửi này đã thay đổi theo cách mà hóa đơn nhà cung cấp không thể theo dõi (đã gộp, đã chuyển đổi hoặc có chi phí nhập hàng), nên không thể ghi sổ việc mua mà không phỏng đoán.",
   "consignment.buy.untraced": "Hàng tồn {sku} của đợt ký gửi này đã bán, nhưng không nằm trên hóa đơn có ghi nhận giá vốn, nên không thể quyết toán khoản phải trả mà không phỏng đoán.",
   "consignment.buy.recompute": "Chỉ một phần của đợt ký gửi này được mua, và khoản chiết khấu cố định hoặc số tiền thuế không thể chia giữa hàng giữ lại và hàng trả lại mà không phỏng đoán. Hãy đặt chiết khấu theo phần trăm và thuế theo thuế suất trên đợt ký gửi, rồi chuyển đổi lại.",

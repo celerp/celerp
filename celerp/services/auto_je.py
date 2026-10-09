@@ -2410,6 +2410,32 @@ async def set_aside_on(session, company_id, lot_id: str, sku: str) -> dict[str, 
     return out
 
 
+async def taken_back_by_consignor(session, company_id, doc_id: str, doc_state: dict) -> list[str]:
+    """The numbers of the consignments that took back goods invoice ``doc_id`` costed
+    and has not shipped, when what is still held of them falls short of what the invoice
+    set aside: those goods are the consignor's again and the invoice cannot hold them.
+    Empty when the invoice still holds every unit it set aside."""
+    books = await _read_books(session, company_id, [doc_id])
+    if doc_id not in books.recognized:
+        return []
+    _shipped, _held, unshipped = await _recognized_by_account(session, company_id, doc_id, doc_state, books)
+    claimed: dict[int, float] = {}
+    for claim in await unshipped_claims(session, company_id, skus=_line_skus(doc_state)):
+        if claim.doc_id == doc_id:
+            claimed[claim.line] = claimed.get(claim.line, 0.0) + claim.qty
+    short = {lot["lot_entity_id"] for idx, alloc in books.recognized[doc_id].allocations.items()
+             if unshipped.get(int(idx), 0.0) - claimed.get(int(idx), 0.0) > 1e-9
+             for lot in alloc.get("lots") or []}
+    if not short:
+        return []
+    members = {row.entity_id for rows in (await _held_where(session, company_id, short)).values() for row in rows}
+    consignments = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "consignment_in"))).scalars().all()
+    return sorted(str(c.state.get("doc_number") or c.state.get("ref_id") or c.entity_id) for c in consignments
+                  if any(r.get("item_id") in members for r in (c.state or {}).get("returned_items") or []))
+
+
 async def recognized_unshipped(session, company_id) -> dict[str, float]:
     """Per inventory account, the cost finalized invoices have recognized for goods they
     have not shipped: relieved from the books at finalize while the lots are still on hand.
