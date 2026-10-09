@@ -518,6 +518,23 @@ async def hold_missing_woocommerce_order(company_id: str, order_id: str) -> dict
     return entry
 
 
+async def _notify_cost_moved(session, company_id, moved: list[dict]) -> None:
+    """A store order shipped goods another invoice had set aside: say whose and that the
+    invoice is costed when it ships, in the words the Ship action shows, as a notice that
+    stays until read, since nobody is at the screen when a store order completes."""
+    from celerp.notifications import service as notif_service
+    from ui.i18n import t
+
+    title = "notice.store_order_shipped_set_aside.title"
+    for m in moved:
+        params = {"sku": m.get("sku") or m.get("lot_id"), "doc": m.get("doc_number") or m.get("doc_id")}
+        await notif_service.create(
+            session, company_id, "documents", t(title, "en"),
+            t("documents.cost_moved_with_goods", "en", **params),
+            action_url=f"/docs/{m['doc_id']}", priority="high",
+            i18n={"title": title, "body": "documents.cost_moved_with_goods", "params": params})
+
+
 async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     """Reconcile one WooCommerce order through Celerp's canonical sales lifecycle.
 
@@ -1074,10 +1091,11 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             )
             changed = True
         elif wc_status == "completed" and fulfill_ids:
-            await _fulfill_lines_impl(
+            shipped = await _fulfill_lines_impl(
                 entity_id, FulfillLinesRequest(line_entity_ids=fulfill_ids),
                 cid, actor, session, commit=False,
             )
+            await _notify_cost_moved(session, cid, shipped["cost_moved"])
             changed = True
 
         if wc_status in stock_release_statuses:

@@ -4299,6 +4299,7 @@
   "notice.work_centers_moved.body": "A configuração de horas por dia da sua empresa agora fica no novo centro de trabalho Default, em Configurações > Fabricação > Centros de trabalho. Nada mudou nas suas estimativas do que fabricar.",
   "notice.imported_doc_cutover.title": "Pedidos de compra e faturas de fornecedor importados corrigidos",
   "notice.imported_doc_cutover.body": "Pedidos de compra e faturas de fornecedor importados antes desta atualização foram lançados uma segunda vez além dos saldos de abertura, que já os incluem. Esses lançamentos foram estornados, então contas a pagar e estoque agora correspondem aos saldos de abertura mais o que aconteceu em cada documento após a importação. Corrigidos: {numbers}.",
+  "notice.store_order_shipped_set_aside.title": "Um pedido da loja enviou mercadorias reservadas para uma fatura",
   "item.app_owned_fields": "Estes campos são definidos pelo aplicativo e não podem ser informados: {fields}. Remova-os e tente novamente.",
   "item.draft": "{sku} é um rascunho, ainda não é estoque: torne-o disponível primeiro.",
   "item.reserve_not_available": "{sku} está {status}: só é possível reservar estoque disponível.",

@@ -4299,6 +4299,7 @@
   "notice.work_centers_moved.body": "La configuración de horas diarias de su empresa está ahora en el nuevo centro de trabajo Default, en Configuración > Fabricación > Centros de trabajo. Sus estimaciones de lo que hay que fabricar no cambiaron.",
   "notice.imported_doc_cutover.title": "Órdenes de compra y facturas de proveedor importadas corregidas",
   "notice.imported_doc_cutover.body": "Las órdenes de compra y facturas de proveedor importadas antes de esta actualización se registraron por segunda vez además de los saldos iniciales, que ya las incluyen. Esos asientos se revirtieron, así que las cuentas por pagar y el stock ahora coinciden con los saldos iniciales más lo ocurrido en cada documento después de importarlo. Corregidos: {numbers}.",
+  "notice.store_order_shipped_set_aside.title": "Un pedido de la tienda envió mercancía apartada para una factura",
   "item.app_owned_fields": "La aplicación establece estos campos y no se pueden introducir: {fields}. Quítelos e inténtelo de nuevo.",
   "item.draft": "{sku} es un borrador y aún no es existencia: primero póngalo disponible.",
   "item.reserve_not_available": "{sku} está {status}: solo se puede reservar existencia disponible.",

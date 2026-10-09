@@ -4299,6 +4299,7 @@
   "notice.work_centers_moved.body": "L’impostazione delle ore giornaliere della tua azienda si trova ora nel nuovo centro di lavoro Default, in Impostazioni > Produzione > Centri di lavoro. Le stime di produzione non sono cambiate.",
   "notice.imported_doc_cutover.title": "Ordini di acquisto e fatture fornitore importati corretti",
   "notice.imported_doc_cutover.body": "Gli ordini di acquisto e le fatture fornitore importati prima di questo aggiornamento sono stati registrati una seconda volta oltre ai saldi di apertura, che li contengono già. Quelle registrazioni sono state stornate, quindi debiti e magazzino ora corrispondono ai saldi di apertura più quanto avvenuto su ogni documento dopo l'importazione. Corretti: {numbers}.",
+  "notice.store_order_shipped_set_aside.title": "Un ordine del negozio ha spedito merce accantonata per una fattura",
   "item.app_owned_fields": "Questi campi sono impostati dall'app e non possono essere inseriti: {fields}. Rimuovili e riprova.",
   "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile.",
   "item.reserve_not_available": "{sku} è {status}: si può riservare solo merce disponibile.",

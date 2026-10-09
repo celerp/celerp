@@ -4297,6 +4297,7 @@
   "notice.work_centers_moved.body": "Your company Hours per day setting now lives on the new Default work center under Settings > Manufacturing > Work centers. Nothing changed in your To-Make estimates.",
   "notice.imported_doc_cutover.title": "Imported purchase orders and bills corrected",
   "notice.imported_doc_cutover.body": "Purchase orders and bills imported before this update were booked a second time on top of the opening balances, which already hold them. Those entries were reversed, so payables and stock now match the opening balances plus what happened on each document after it was imported. Corrected: {numbers}.",
+  "notice.store_order_shipped_set_aside.title": "A store order shipped goods set aside for an invoice",
   "item.app_owned_fields": "These fields are set by the app and cannot be entered: {fields}. Remove them and try again.",
   "item.draft": "{sku} is a draft, not stock yet: make it available first.",
   "item.reserve_not_available": "{sku} is {status}: only available stock can be reserved.",

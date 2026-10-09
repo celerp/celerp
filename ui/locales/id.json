@@ -4299,6 +4299,7 @@
   "notice.work_centers_moved.body": "Pengaturan Jam per hari perusahaan Anda kini berada di pusat kerja Default yang baru, di Pengaturan > Manufaktur > Pusat kerja. Perkiraan barang yang harus dibuat tidak berubah.",
   "notice.imported_doc_cutover.title": "Pesanan pembelian dan tagihan yang diimpor telah dikoreksi",
   "notice.imported_doc_cutover.body": "Pesanan pembelian dan tagihan yang diimpor sebelum pembaruan ini dicatat dua kali di atas saldo awal, yang sudah memuatnya. Jurnal tersebut telah dibalik, sehingga utang dan stok kini sesuai dengan saldo awal ditambah apa yang terjadi pada setiap dokumen setelah diimpor. Dikoreksi: {numbers}.",
+  "notice.store_order_shipped_set_aside.title": "Pesanan toko mengirim barang yang disisihkan untuk sebuah faktur",
   "item.app_owned_fields": "Kolom ini diisi oleh aplikasi dan tidak dapat dimasukkan: {fields}. Hapus kolom tersebut, lalu coba lagi.",
   "item.draft": "{sku} adalah draf, belum menjadi stok: jadikan tersedia terlebih dahulu.",
   "item.reserve_not_available": "{sku} berstatus {status}: hanya stok yang tersedia yang dapat dipesan.",
