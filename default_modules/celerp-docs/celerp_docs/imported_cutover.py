@@ -50,7 +50,8 @@ async def _correct(session: AsyncSession, company_id, doc_id: str) -> bool:
         return False
     state = dict(row.state or {})
     changed = await auto_je.correct_earlier_import(session, company_id=company_id, doc_id=doc_id, doc=state)
-    marked = await mark_received_goods(session, company_id, state)
+    # Goods no line prices stay unmarked, so they cannot be returned on the document.
+    marked, _unpriced = await mark_received_goods(session, company_id, state)
     if marked is not state:
         await emit_event(
             session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.updated",

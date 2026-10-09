@@ -3724,6 +3724,15 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
     it.name = it.name or line.get("name") or line.get("description") or None
 
 
+def _unpriced_receipt(goods: str, doc_label: str) -> HTTPException:
+    """The refusal of received goods no line of the document prices (_received_goods_cost)."""
+    return HTTPException(
+        status_code=422,
+        detail=(f"{goods}: no line on this {doc_label} prices it, so the received goods cannot be "
+                f"costed. Add it to the {doc_label} first."),
+    )
+
+
 async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
     """What the received goods cost in the books' currency, or None when no line prices them.
 
@@ -3926,11 +3935,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         elif doc_type == "purchase_order" or it.receive_as == "stock":
             cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty)
             if cost is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(f"{it.sku or it.name or it.item_id}: no line on this {doc_label} prices it, "
-                            f"so the received goods cannot be costed. Add it to the {doc_label} first."),
-                )
+                raise _unpriced_receipt(it.sku or it.name or it.item_id, doc_label)
         refusal = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
         if refusal:
             raise HTTPException(status_code=422, detail=refusal)
@@ -5035,27 +5040,37 @@ async def imported_opening_snapshot(session: AsyncSession, company_id, data: dic
         data = {**data, "finalized": True}
     if kind not in ("purchase_order", "bill"):
         return data
-    return await mark_received_goods(session, company_id, data)
+    marked, unpriced = await mark_received_goods(session, company_id, data)
+    if unpriced:
+        raise _unpriced_receipt(unpriced[0], _RECEIVING_DOC_LABEL.get(kind, "document"))
+    return marked
 
 
-async def mark_received_goods(session: AsyncSession, company_id, data: dict) -> dict:
+async def mark_received_goods(session: AsyncSession, company_id, data: dict) -> tuple[dict, list[str]]:
     """The document with each stock line received on it that has no receipt record marked
-    with what it holds in the lot it names (imported_opening_snapshot)."""
+    with what it holds in the lot it names (imported_opening_snapshot), and the goods no
+    line of the document prices. Those are left unmarked: what they cost is not known, so
+    no return can take them back off their lot."""
     received = list(data.get("received_items") or [])
     marked = False
+    unpriced: list[str] = []
     for n, x in enumerate(received):
         quantity = float(x.get("quantity_received") or 0)
         if (not x.get("item_id") or (x.get("receive_as") or "stock") != "stock"
                 or "lot_quantity_added" in x or quantity <= 0):
             continue
         lot = await session.get(Projection, {"company_id": company_id, "entity_id": x["item_id"]})
-        stock_qty = quantity * float(((lot.state if lot else None) or {}).get("purchase_conversion_factor") or 1)
+        lot_state = (lot.state if lot else None) or {}
+        stock_qty = quantity * float(lot_state.get("purchase_conversion_factor") or 1)
         it = ReceivedItem(po_line_index=int(x.get("po_line_index", -1)), item_id=x["item_id"], sku=x.get("sku"),
                           quantity_received=quantity, receive_as="stock")
         cost = await _received_goods_cost(session, company_id, data, it, stock_qty)
-        received[n] = {**x, "lot_quantity_added": stock_qty, "lot_cost_added": cost or 0.0}
+        if cost is None:
+            unpriced.append(str(x.get("sku") or lot_state.get("sku") or x["item_id"]))
+            continue
+        received[n] = {**x, "lot_quantity_added": stock_qty, "lot_cost_added": cost}
         marked = True
-    return {**data, "received_items": received} if marked else data
+    return ({**data, "received_items": received} if marked else data), unpriced
 
 
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
