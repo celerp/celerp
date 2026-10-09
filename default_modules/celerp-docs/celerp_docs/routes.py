@@ -1090,7 +1090,7 @@ def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) 
 
 # The statuses in which a document takes a payment (apply_doc_payment).
 PAYABLE_STATUSES = frozenset({"sent", "final", "partial", "paid", "received", "partially_received",
-                              "awaiting_payment"})
+                              "partial_returned", "returned", "awaiting_payment"})
 
 
 def _payable_balance(state: dict) -> Decimal:
@@ -4840,11 +4840,16 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             idempotency_key=_step_key(key, "line", line_no), metadata_={"source_return": entity_id},
         )
 
+    payable_credit = 0.0
     if owned:
-        await auto_je.create_for_supplier_return(
+        rate = _require_doc_rate_http(row.state, currency)
+        payable = await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
             goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account,
         )
+        # What the document owes falls by what the return took off accounts payable, in the
+        # document's currency, so the document and the ledger show the same balance.
+        payable_credit = to_stored_float(round_money(payable / rate, str(row.state.get("currency") or currency)))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.items_returned",
@@ -4852,6 +4857,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             "items": returned,
             "returned_by": str(user.id),
             "notes": payload.notes,
+            **({"payable_credit": payable_credit} if payable_credit else {}),
             # Whether the document now holds nothing to send back, judged in stock units here
             # because a line's received quantity may be in a purchase unit.
             "all_returned": all(left <= 1e-9 for left in returnable.values()) and not any(

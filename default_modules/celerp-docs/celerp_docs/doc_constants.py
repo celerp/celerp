@@ -83,7 +83,7 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
 LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
     "status", "finalized", "amount_paid", "amount_outstanding", "payments",
     "sent_to", "sent_via", "finalized_at", "sent_at", "issued_at", "accepted_at",
-    "received_items", "received_item_ids", "returned_items", "return_received_items",
+    "received_items", "received_item_ids", "returned_items", "returned_credit", "return_received_items",
     "fulfilled_items", "fulfillment_status", "fulfilled_at", "fulfilled_by", "fulfill_cycle",
     "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "source_memo_id", "linked",
     "result", "close_reason", "void_reason", "revert_count", "files",

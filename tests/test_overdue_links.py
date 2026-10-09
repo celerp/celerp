@@ -15,7 +15,7 @@ import pytest
 
 _OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
 _INVOICE_AWAITING = "awaiting_payment,final,partial,sent"
-_BILL_AWAITING = "awaiting_payment,final,partial,partially_received,received"
+_BILL_AWAITING = "awaiting_payment,final,partial,partial_returned,partially_received,received,returned"
 
 
 def _dashboard_hrefs() -> list[tuple[str, str]]:
