@@ -182,7 +182,8 @@ async def test_goods_added_to_stock_on_hand_can_be_sent_back_and_the_bill_revert
     assert (await _state(session, auth, parcel_id))["status"] == "archived"
     lot = await _state(session, auth, item_id)
     assert (lot["quantity"], lot["cost_base"]) == (10, 100.0)
-    assert await _books(session, auth, *booked) == booked
+    # The lot's account holds the lot again; the bill still owes for every good it booked.
+    assert await _books(session, auth, *booked) == {"1130-OB": _OPENING, "1130-P": 76.0, "2110": -76.0}
 
     r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text

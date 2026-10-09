@@ -192,3 +192,53 @@ async def test_imported_po_receipt_returns_by_item_and_by_line(client, session, 
     doc = (await client.get(f"/docs/{po}", headers=auth["headers"])).json()
     assert doc["line_items"][0]["returnable_quantity"] == 2
 
+
+
+async def _stock_books(session, auth) -> dict[str, float]:
+    return await _books(session, auth, "1130-OB", "1130-P", "2110")
+
+
+async def test_undoing_a_receipt_the_order_booked_then_receiving_and_returning_keeps_the_books(client, session, auth):
+    """A receipt onto a lot on hand is undone after the order becomes a bill, received again
+    on the bill and partly sent back: each stock account holds what its lots hold and
+    accounts payable what the bill owes, as on a bill that never was an order."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po = await _doc(client, auth, "purchase_order", [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0}])
+    [line_id] = await _stamp_line_ids(session, auth, po)
+
+    async def receive():
+        r = await _post(client, auth, po, {"source_line_id": line_id, "item_id": lot,
+                                           "quantity_received": 5, "receive_as": "stock"})
+        assert r.status_code == 200, r.text
+
+    await receive()
+    await _finalize(client, auth, po)
+    assert (await _state(session, auth, po))["doc_type"] == "bill"
+    assert await _stock_books(session, auth) == {"1130-OB": _OPENING + 70.0, "1130-P": 0.0, "2110": -70.0}
+
+    r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    lot_state = await _state(session, auth, lot)
+    assert (lot_state["quantity"], lot_state["cost_total"]) == (10, _OPENING)
+    # The lot's account holds the lot again; the bill still owes for goods it booked and has
+    # not received, as a bill finalized before its goods came in does.
+    undone = {"1130-OB": _OPENING, "1130-P": 70.0, "2110": -70.0}
+    assert await _stock_books(session, auth) == undone
+
+    r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
+    assert r.status_code == 200 and r.json().get("already_undone") is True, r.text
+    assert await _stock_books(session, auth) == undone
+
+    await receive()
+    [parcel] = (await _state(session, auth, po))["received_item_ids"]
+    assert (await _state(session, auth, parcel))["cost_total"] == 70.0
+    assert await _stock_books(session, auth) == {"1130-OB": _OPENING, "1130-P": 70.0, "2110": -70.0}
+
+    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 3})
+    assert r.status_code == 200, r.text
+    [entry] = (await _state(session, auth, po))["returned_items"]
+    assert entry["item_id"] == parcel
+    assert (await _state(session, auth, parcel))["cost_total"] == 28.0
+    assert (await _state(session, auth, lot))["cost_total"] == _OPENING
+    assert await _stock_books(session, auth) == {"1130-OB": _OPENING, "1130-P": 28.0, "2110": -28.0}
+    assert (await _state(session, auth, po))["amount_outstanding"] == 28.0

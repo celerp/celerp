@@ -9088,7 +9088,8 @@ async def undo_receive(
     A receipt exists when the bill has received anything, expense and asset lines
     included. Archives the parcels the receipts created, takes back off each lot already
     on hand what the receipts added to it, and returns the landed cost they capitalised.
-    The bill still stands, so what it booked stays booked. Goods already returned to the
+    The bill still stands, so what it booked stays booked; goods its purchase order's receipts
+    booked onto a lot move off the lot's account with them. Goods already returned to the
     supplier keep the receipt in place: undoing it would orphan the posted return. Undoing
     a receipt already undone reports that instead of failing.
     """
@@ -9206,6 +9207,14 @@ async def undo_receive(
 
     await auto_je.void_landed_capitalisation(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id, undo_key=undo_suffix,
+    )
+    # Goods the purchase order's receipts booked onto the lots leave the lots' accounts with them.
+    lines = state.get("line_items") or []
+    await auto_je.create_for_receipt_undone(
+        session, company_id=company_id, user_id=user.id, doc_id=entity_id, undo_key=undo_suffix,
+        lots=[(lot_account(item_rows[x["item_id"]]), lines[x["po_line_index"]], float(x["lot_cost_added"] or 0))
+              for x in state.get("received_items") or []
+              if "lot_quantity_added" in x and 0 <= x.get("po_line_index", -1) < len(lines)],
     )
 
     await session.commit()

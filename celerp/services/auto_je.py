@@ -1070,6 +1070,85 @@ async def create_for_supplier_return(
     return max(goods_d, _Dec(0))
 
 
+async def _bill_line_target(session, company_id, li: dict):
+    """What a bill line debits: the account chosen on the line, the role for what it brings
+    in (inventory for stock, general expense for anything else), or, for a landed charge on
+    an account of its own, that account posted for the charge's role."""
+    # receive_as overrides SKU-based account selection for bills.
+    receive_as = (li.get("receive_as") or "").strip().lower()
+    landed_role = await landed_role_for_line(session, company_id, li)
+    if li.get("account_code"):
+        # A landed charge posted to a clearing account of its own clears from there.
+        return ((li["account_code"], landed_role) if landed_role and landed_role.value in _LANDED_ROLES
+                else li["account_code"])
+    if receive_as == "expense":
+        return R.GENERAL_EXPENSE
+    if receive_as == "asset":
+        return R.FIXED_ASSETS
+    if landed_role:
+        # Landed-cost charge (freight/insurance/duty/import_vat): clearing or input tax.
+        return landed_role
+    return R.INVENTORY_PURCHASED if bill_line_kind(li) == "stock" else R.GENERAL_EXPENSE
+
+
+def _bill_debit_line(acc: dict, target, amount: float) -> dict:
+    """The debit line for a bill line's target (see _bill_line_target); ``acc`` resolves roles."""
+    if isinstance(target, AccountRole):
+        return _line(acc[target], target, debit=amount)
+    if isinstance(target, tuple):
+        return _line(*target, debit=amount)
+    return {"account": target, "debit": amount, "credit": 0.0}
+
+
+async def create_for_receipt_undone(
+    session, *, company_id, user_id, doc_id: str, undo_key: str, lots: list[tuple[str, dict, float]],
+) -> None:
+    """Undoing a bill's receipts takes goods its purchase order receipts added to lots on hand
+    off those lots. Their receipt entries booked them on the lots' inventory accounts, and the
+    bill booked only what those entries had not; the goods' value now moves to the account the
+    bill books their line on, as on a bill finalized before its goods came in. Accounts payable
+    is untouched: the bill still owes for them.
+
+    ``lots`` holds (the lot's inventory account, the bill line, the cost taken off the lot) per
+    receipt undone. No more moves off an account than the receipt entries left booked on it,
+    so receipts no entry booked move nothing and an undo already accounted for posts nothing.
+    """
+    settings = await current_settings(session, company_id)
+    booked: dict[str, _Dec] = {}
+    for (code, roles), amount in (await _doc_receipt_booked(session, company_id, doc_id, settings)).items():
+        if set(roles) <= set(_LOT_ROLES):
+            booked[code] = booked.get(code, _Dec(0)) + amount
+    currency = await company_currency(session, company_id)
+    credits: dict[str, _Dec] = {}
+    debits: dict = {}
+    for code, li, cost in lots:
+        target = await _bill_line_target(session, company_id, li)
+        account = (await resolve(session, company_id, target) if isinstance(target, AccountRole)
+                   else target[0] if isinstance(target, tuple) else target)
+        amount = min(round_money(cost, currency), max(booked.get(code, _Dec(0)), _Dec(0)))
+        if amount <= 0 or account == code:
+            continue
+        booked[code] -= amount
+        credits[code] = credits.get(code, _Dec(0)) + amount
+        debits[target] = debits.get(target, _Dec(0)) + amount
+    if not credits:
+        return
+    acc = await resolve_many(session, company_id, [t for t in debits if isinstance(t, AccountRole)])
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:rcv:undo:{undo_key}",
+        idem_create=je_idempotency_key(doc_id, f"receipt.undone:{undo_key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"receipt.undone:{undo_key}", "p"),
+        memo=f"Auto JE for {doc_id} goods received undone",
+        ts=await entry_day(session, company_id),
+        entries=[*(_bill_debit_line(acc, t, to_stored_float(a)) for t, a in debits.items()),
+                 *(_lot_line(settings, c, credit=to_stored_float(a)) for c, a in credits.items())],
+        metadata_={"trigger": "doc.receive_undone", "doc_id": doc_id},
+    )
+
+
 async def create_for_bill_conversion(
     session,
     *,
@@ -1105,23 +1184,7 @@ async def create_for_bill_conversion(
             )
             if line_total <= 0:
                 continue
-            # receive_as overrides SKU-based account selection for bills.
-            receive_as = (li.get("receive_as") or "").strip().lower()
-            landed_role = await landed_role_for_line(session, company_id, li)
-            if li.get("account_code"):
-                # A landed charge posted to a clearing account of its own clears from there.
-                target = ((li["account_code"], landed_role) if landed_role and landed_role.value in _LANDED_ROLES
-                          else li["account_code"])
-            elif receive_as == "expense":
-                target = R.GENERAL_EXPENSE
-            elif receive_as == "asset":
-                target = R.FIXED_ASSETS
-            elif landed_role:
-                # Landed-cost charge (freight/insurance/duty/import_vat): clearing or input tax.
-                target = landed_role
-            else:
-                target = R.INVENTORY_PURCHASED if bill_line_kind(li) == "stock" else R.GENERAL_EXPENSE
-            lines.append((target, line_total))
+            lines.append((await _bill_line_target(session, company_id, li), line_total))
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
         # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
         tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
@@ -1162,21 +1225,13 @@ async def create_for_bill_conversion(
 
     lines = [(drawn_home(target), a) for target, a in lines]
     acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE])
-
-    def debit_line(target, amount: float) -> dict:
-        if isinstance(target, AccountRole):
-            return _line(acc[target], target, debit=amount)
-        if isinstance(target, tuple):
-            return _line(*target, debit=amount)
-        return {"account": target, "debit": amount, "credit": 0.0}
-
     # AP is the bill total in base; the debits are converted line by line, and the unit
     # of rounding that conversion can leave goes to the largest debit so the entry balances.
     base_total = to_base(to_stored_float(total_d), rate, base_currency)
     debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for _, a in lines]
     largest = max(range(len(debits)), key=lambda i: debits[i])
     debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
-    entries = [debit_line(target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
+    entries = [_bill_debit_line(acc, target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
     entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
