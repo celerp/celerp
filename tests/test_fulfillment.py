@@ -2550,15 +2550,14 @@ async def test_cogs_finalize_oversell_costs_only_lots_on_hand(client, session, a
 @pytest.mark.asyncio
 async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup_ids):
     """Fulfillment compares the actual cost of the lots drawn with the COGS recognized
-    at finalize and posts one adjustment JE for the difference; a fulfill whose actual
-    cost equals the recognized amount posts no adjustment; re-running the adjustment
-    is idempotent.
+    at finalize and posts one adjustment JE for the difference; re-running the
+    adjustment is idempotent.
 
     Setup: lots A 2 at 10, B 3 at 30, C 3 at 50. doc1 line qty 5 bound to A
-    recognizes 2*10 + 3*30 = 110 at finalize. doc2 then sells lot B outright
-    (recognized 90, fulfilled at exactly 90: no adjustment). Fulfilling doc1
-    afterwards draws A and C (B is sold), actual 2*10 + 3*50 = 170, so doc1 gets one
-    adjustment JE of +60."""
+    recognizes 2*10 + 3*30 = 110 at finalize. doc2 then sells lot B outright: doc1
+    already costed B, so doc2 costs the free lot C at finalize (3*50 = 150) and its
+    fulfillment of B (90) gives back 60. Fulfilling doc1 afterwards draws A and C (B is sold), actual
+    2*10 + 3*50 = 170, so doc1 gets one adjustment JE of +60."""
     from celerp.models.projections import Projection
 
     cid = _setup_ids["company_id"]
@@ -2580,8 +2579,10 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
     session.expire_all()
     doc2_adj = await session.get(
         Projection, {"company_id": cid, "entity_id": f"je:auto:{doc2}:cogs-adj:fulfill-0:l0"})
-    assert doc2_adj is None, (
-        "a fulfill whose actual cost equals the recognized COGS must post no adjustment JE")
+    assert doc2_adj is not None and {
+        e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
+        for e in doc2_adj.state.get("entries", [])} == {"5100": (0.0, 60.0), "1130-OB": (60.0, 0.0)}, (
+        "a lot another invoice already costed is not costed twice: doc2 costs C, then ships B")
 
     r = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [lot_a]})
@@ -2600,7 +2601,7 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, (
-        f"total COGS must be 110 + 90 + 60 = 260, got {nets.get('5100')} (nets={nets})")
+        f"total COGS must be 110 + 150 - 60 + 60 = 260, got {nets.get('5100')} (nets={nets})")
 
     # Idempotency: replaying the same adjustment must not double-post.
     from sqlalchemy import func, select

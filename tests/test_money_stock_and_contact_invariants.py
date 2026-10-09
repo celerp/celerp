@@ -530,15 +530,16 @@ async def test_true_ups_on_two_lines_round_once_for_the_invoice(client, session)
         lot_a = await _api_item(client, auth, sku, 1, 1.00)
         lot_b = await _api_item(client, auth, sku, 1, 1.00)
         await _api_item(client, auth, sku, 1, 1.004)
-        other = await _invoice(client, auth, lot_b, sku, 1)
         lines.append({"entity_id": lot_a, "sku": sku, "name": sku,
                       "quantity": 2, "unit_price": 5.0, "sell_by": "piece"})
-        first_lots.append((lot_b, other))
+        first_lots.append((lot_b, sku))
     r = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "line_items": lines, "total": 20.0})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
     assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    # Each line costs lots A and B at finalize; B then leaves on another invoice.
+    first_lots = [(lot_b, await _invoice(client, auth, lot_b, sku, 1)) for lot_b, sku in first_lots]
     for lot_b, other in first_lots:
         r = await client.post(f"/docs/{other}/fulfill-lines", headers=auth["headers"],
                               json={"line_entity_ids": [lot_b]})

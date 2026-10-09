@@ -276,12 +276,15 @@ def lot_unit_cost(state: dict) -> float:
 
 async def _span_line_lots(
     session, company_id, primary_proj, needed: float, doc_id: str | None, exclude: set[str],
+    claimed: dict[str, float],
 ) -> tuple[list[dict], float, float]:
     """Resolve a spanning line's draws across the SKU's sibling lots.
 
     Eligible siblings: same company, item entity, same SKU, positive quantity,
     not in exclude (lots bound to or already drawn by the document's other lines),
-    and either available or reserved by doc_id (this document's own hold).
+    and either available or reserved by doc_id (this document's own hold). Every lot,
+    the bound one included, offers only the units other unshipped invoices have not
+    already costed (``claimed``).
     Draw order is the bound lot first, then the effective pick method. Returns
     (lots, provisional_qty, amount); the shortfall no lot covers costs nothing until
     goods for it ship, when fulfillment books their actual cost.
@@ -295,7 +298,7 @@ async def _span_line_lots(
     def _lot(entity_id: str, created_at, state: dict) -> dict:
         return {
             "entity_id": entity_id,
-            "quantity": float(state.get("quantity") or 0),
+            "quantity": max(0.0, float(state.get("quantity") or 0) - claimed.get(entity_id, 0.0)),
             "created_at": created_at.isoformat() if created_at else "",
             "expires_at": state.get("expires_at"),
             "unit_cost": lot_unit_cost(state),
@@ -311,7 +314,7 @@ async def _span_line_lots(
         s = r.state or {}
         if str(s.get("sku") or "").strip() != sku:
             continue
-        if float(s.get("quantity") or 0) <= 1e-9:
+        if float(s.get("quantity") or 0) - claimed.get(r.entity_id, 0.0) <= 1e-9:
             continue
         status = s.get("status") or "available"
         if not (status == "available"
@@ -339,10 +342,13 @@ async def compute_doc_cogs(
 
     span_lots=False prices the whole line at the bound lot's unit cost (the
     historical extrapolation) and leaves the ambiguity to the caller - the
-    backfill refuses to post a guess. span_lots=True (live finalize) resolves
-    the remainder across the SKU's other lots - available ones plus lots
-    reserved by doc_id - in the effective pick order; whatever no lot covers is
-    provisional_qty and costs nothing until it ships.
+    backfill refuses to post a guess. span_lots=True (live finalize) costs only
+    goods on hand that no other unshipped invoice has already costed
+    (unshipped_claims, in finalize order): a line within its bound lot's free
+    units prices there; a splittable line beyond them resolves the remainder
+    across the SKU's other lots - available ones plus lots reserved by doc_id -
+    in the effective pick order; whatever no lot covers is provisional_qty and
+    costs nothing until it ships, when fulfillment books its actual cost.
 
     Lines are allocated together in document order, the way fulfillment draws
     them: a lot bound to another line, or already drawn by an earlier line's span,
@@ -370,6 +376,10 @@ async def compute_doc_cogs(
     line_items = doc.get("line_items", [])
     bound = doc_bound_lots(line_items)
     span_consumed: set[str] = set()
+    claimed: dict[str, float] = {}
+    if span_lots:
+        for claim in await unshipped_claims(session, company_id, exclude=doc_id):
+            claimed[claim.lot_id] = claimed.get(claim.lot_id, 0.0) + claim.qty
     for index, li in enumerate(line_items):
         line_qty = float(li.get("quantity") or 0)
         if line_qty <= 0:
@@ -388,11 +398,17 @@ async def compute_doc_cogs(
         spans = line_qty > bound_qty + 1e-9 and splitting_allowed(state)
         if spans:
             result.ambiguous = True
-        if spans and span_lots:
+        free = max(0.0, bound_qty - claimed.get(str(item_id), 0.0))
+        if span_lots and line_qty > free + 1e-9 and splitting_allowed(state):
             lots, provisional_qty, amount = await _span_line_lots(
                 session, company_id, proj, line_qty, doc_id,
-                exclude=(bound - {str(item_id)}) | span_consumed)
+                exclude=(bound - {str(item_id)}) | span_consumed, claimed=claimed)
             span_consumed.update(lot["lot_entity_id"] for lot in lots)
+        elif span_lots and line_qty > free + 1e-9:
+            lots = [{"lot_entity_id": str(item_id), "qty": free, "unit_cost": unit_cost, "state": state}
+                    ] if free > 1e-9 else []
+            provisional_qty = line_qty - free
+            amount = unit_cost * free
         else:
             lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost, "state": state}]
             provisional_qty = 0.0

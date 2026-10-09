@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A finalized invoice recognizes its cost of sales before the goods ship. The books check
 counts that cost as given up while the goods wait on hand, through void, unvoid and
-shipping; and an invoice for more than is on hand costs only the units that exist. Goods on hand count as given up at most
+shipping; and an invoice for more than is on hand costs only the units that exist, units
+another unshipped invoice already took included. Goods on hand count as given up at most
 once, and only while they are still on hand, so the check never hides a real gap."""
 from __future__ import annotations
 
@@ -85,6 +86,29 @@ async def _books(session, auth) -> tuple[float, float]:
 async def _gaps(session, auth) -> list[dict]:
     session.expire_all()
     return [f for f in await stock_off_books(session, auth["company_id"]) if f["kind"] == "stock_gap"]
+
+
+@pytest.mark.parametrize("first", ["ship", "void"])
+async def test_a_second_invoice_for_units_already_invoiced_costs_them_when_they_ship(client, session, auth, first):
+    """2 units at 10 each, both on an unshipped invoice; a second invoice for the same 2 has
+    nothing left to cost at finalize. Whichever invoice ends up shipping them costs them once."""
+    sku = f"TWO-{uuid.uuid4().hex[:6]}"
+    lot = await _lot(client, auth, sku, 2, 20.0)
+    one = await _invoice(client, auth, lot, sku, 2)
+    two = await _invoice(client, auth, lot, sku, 2)
+    assert await _books(session, auth) == (20.0, 0.0)
+    await assert_settled(client, session, auth)
+    if first == "ship":
+        await _ok(client, auth, f"/docs/{one}/fulfill-lines", {"line_entity_ids": [lot]})
+        await assert_settled(client, session, auth)
+        await _ok(client, auth, f"/docs/{two}/void")
+    else:
+        await _ok(client, auth, f"/docs/{one}/void")
+        assert await _books(session, auth) == (0.0, 20.0)
+        await assert_settled(client, session, auth)
+        await _ok(client, auth, f"/docs/{two}/fulfill-lines", {"line_entity_ids": [lot]})
+    assert await _books(session, auth) == (20.0, 0.0)
+    await assert_settled(client, session, auth)
 
 
 async def test_the_books_check_reports_a_lot_an_unshipped_invoice_costed_and_another_shipped(client, session, auth):

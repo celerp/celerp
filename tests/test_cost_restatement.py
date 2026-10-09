@@ -523,10 +523,12 @@ async def test_unit_cost_with_stock_sets_the_basis(client, session, auth, path):
 @pytest.mark.asyncio
 async def test_correction_reaches_every_invoice_that_recognized_a_sold_lot(client, session, auth):
     item = await _item(client, auth, 100.0)
-    shipped = await _invoice(client, session, auth, item)
     waiting = await _invoice(client, session, auth, item)
+    shipped = await _invoice(client, session, auth, item)
     assert await _doc_cogs(session, auth, waiting) == 100.0
+    assert await _doc_cogs(session, auth, shipped) == 0.0  # the lot is already costed on waiting
     await _fulfil(client, shipped, auth, item)
+    assert await _doc_cogs(session, auth, shipped) == 100.0
     assert (await _set_cost(client, auth, item, 120.0)).status_code == 200
     assert await _doc_cogs(session, auth, shipped) == 120.0
     assert await _doc_cogs(session, auth, waiting) == 120.0
