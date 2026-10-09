@@ -42,7 +42,7 @@ from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
-from celerp.services.account_roles import current_settings, line_roles, resolve, resolve_many, role_map
+from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
@@ -1158,7 +1158,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     return refs
 
 
-def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
+def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[str, str]) -> str:
     """The party a journal entry line belongs to, or "" when none resolves.
 
     A line may name its own contact, which is how a manual posting to a control
@@ -1168,12 +1168,12 @@ def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
     statement, so a line can never sit in one party's bucket on one report and
     another's on the next. Lines that resolve to nothing are reported under the
     empty string, so a filtered view can never quietly drop them from the
-    account's total.
+    account's total. A party merged into another contact reads as the contact that
+    survives it (merge_survivors), so merged contacts are one party on every report.
     """
     named = entry.get("contact")
-    if isinstance(named, str) and named:
-        return named
-    return (refs.get(je_id) or {}).get("contact_id") or ""
+    party = named if isinstance(named, str) and named else (refs.get(je_id) or {}).get("contact_id") or ""
+    return survivors.get(party, party)
 
 
 def _statement_kind(ref: dict) -> str:
@@ -1904,6 +1904,7 @@ async def account_ledger(
         raise HTTPException(status_code=404, detail="Account not found")
 
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+    survivors = await merge_survivors(session, company_id)
 
     account_type = account.account_type if account else "unknown"
     debit_normal = _is_debit_normal(account_type)
@@ -1919,7 +1920,7 @@ async def account_ledger(
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
                 continue
-            line_contact = _line_party(refs, je_id, entry)
+            line_contact = _line_party(refs, je_id, entry, survivors)
             if contact_id is not None and line_contact != contact_id:
                 continue
             amounts = _line_amounts(entry)
@@ -2067,6 +2068,7 @@ async def general_ledger(
         await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
         if contact_id is not None else {}
     )
+    survivors = await merge_survivors(session, company_id) if contact_id is not None else {}
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id)
@@ -2085,7 +2087,7 @@ async def general_ledger(
             amounts = _line_amounts(entry)
             if not code or amounts is None:
                 continue
-            if contact_id is not None and _line_party(party_refs, je_id, entry) != contact_id:
+            if contact_id is not None and _line_party(party_refs, je_id, entry, survivors) != contact_id:
                 continue
             d, c = amounts
             if date_from and ts < date_from:
@@ -2320,18 +2322,10 @@ async def statement_of_account(
     contact_row = await _require_contact(session, company_id, contact_id)
     # Merge tombstones carry both deleted and merged_into, so the merge check
     # must come first or merged contacts would 404 instead of redirecting.
-    if contact_row.state.get("merged_into"):
-        # Follow the merge chain so bookmarked statements land on the surviving contact.
-        seen = {contact_id}
-        winner = contact_row.state["merged_into"]
-        while winner not in seen:
-            seen.add(winner)
-            row = await session.get(Projection, (company_id, winner))
-            nxt = row.state.get("merged_into") if row else None
-            if not nxt:
-                break
-            winner = nxt
-        return {"merged_into": winner}
+    survivors = await merge_survivors(session, company_id)
+    if contact_id in survivors:
+        # Bookmarked statements land on the surviving contact.
+        return {"merged_into": survivors[contact_id]}
     if contact_row.state.get("deleted"):
         raise HTTPException(status_code=404, detail="Contact not found")
 
@@ -2348,7 +2342,7 @@ async def statement_of_account(
         for seq, entry in enumerate(state.get("entries", [])):
             if not _CONTROL_ROLES.intersection(line_roles(settings, entry)):
                 continue
-            if _line_party(refs, je_id, entry) != contact_id:
+            if _line_party(refs, je_id, entry, survivors) != contact_id:
                 continue
             amounts = _line_amounts(entry)
             if amounts is None:

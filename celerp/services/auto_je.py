@@ -37,6 +37,7 @@ from celerp.services.account_roles import (
     line_has_role,
     line_roles,
     lot_account,
+    merge_survivors,
     resolve,
     resolve_many,
     party_key,
@@ -44,6 +45,7 @@ from celerp.services.account_roles import (
     sold_lot_account,
     sold_lot_key,
     split_party_key,
+    surviving_key,
 )
 from celerp.services.business_time import business_date_of
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
@@ -2595,6 +2597,9 @@ async def reconcile_doc_cogs(
         for by_account in held.values():
             for code, amount in by_account.items():
                 truth[code] = truth.get(code, 0.0) + amount
+    # Booked lines name the consignor they were posted for; one merged since is owed as
+    # the contact that survives it, which is who the truth names.
+    survivors = await merge_survivors(session, company_id)
     booked: dict[str, float] = {}
     for row in live:
         suffix = row.entity_id[len(prefix):]
@@ -2604,13 +2609,14 @@ async def reconcile_doc_cogs(
             if any(line_has_role(settings, e, r) for r in (R.INVENTORY_PURCHASED, R.INVENTORY_OPENING,
                                                            R.CONSIGNOR_PAYABLE)):
                 # The consignor payable is owed per consignor, so each is trued up apart.
-                key = party_key(e["account"], e.get("contact")) if line_has_role(
+                key = surviving_key(party_key(e["account"], e.get("contact")), survivors) if line_has_role(
                     settings, e, R.CONSIGNOR_PAYABLE) else e["account"]
                 booked[key] = booked.get(key, 0.0) + float(e.get("credit") or 0) - float(e.get("debit") or 0)
     for move in await _cost_moves(session, company_id, doc_id=doc_id):
         sign = 1.0 if move.get("doc_id") == doc_id else -1.0
         for m in move.get("moves") or []:
-            booked[m["key"]] = booked.get(m["key"], 0.0) + sign * float(m["amount"])
+            key = surviving_key(m["key"], survivors)
+            booked[key] = booked.get(key, 0.0) + sign * float(m["amount"])
     # Booked amounts are already money, so the truth is compared once it is money too:
     # half a cent of cost recognized at finalize is not given back at fulfillment.
     currency = await company_currency(session, company_id)

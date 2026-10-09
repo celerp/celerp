@@ -30,7 +30,7 @@ from celerp.importers.schema import (
 )
 from celerp.accounting_roles import AccountRole
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
-from celerp.services.account_roles import current_settings, record_source_control, source_controls
+from celerp.services.account_roles import current_settings, merge_survivors, record_source_control, source_controls
 from celerp.services.migration_core_sink import (
     deterministic_id,
     import_prepared,
@@ -110,12 +110,13 @@ class AccountingMigrationSink:
         party_totals: dict[tuple[str, str], Decimal] = {}
         if contacts:
             refs = await _je_doc_refs(context.session, context.company_id, [je_id for je_id, _, _ in posted])
+            survivors = await merge_survivors(context.session, context.company_id)
             for je_id, state, _ in posted:
                 for entry in state.get("entries", []):
                     amounts = _line_amounts(entry)
                     if amounts is None:
                         continue
-                    bucket = (entry.get("account") or "", _line_party(refs, je_id, entry))
+                    bucket = (entry.get("account") or "", _line_party(refs, je_id, entry, survivors))
                     party_totals[bucket] = party_totals.get(bucket, Decimal(0)) + amounts[0] - amounts[1]
 
         out: list[DestinationMeasurement] = []

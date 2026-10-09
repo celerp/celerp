@@ -368,6 +368,34 @@ def split_party_key(key: str) -> tuple[str, str | None]:
     return code, contact or None
 
 
+async def merge_survivors(session: AsyncSession, company_id) -> dict[str, str]:
+    """Each contact merged into another, mapped to the contact that survives it.
+
+    Merged contacts are one party. A merge re-points the records that name the contact
+    it retires, but a posted journal line keeps the contact it was posted for, so a
+    reader of posted parties resolves each one here. A merged contact's tombstone names
+    the contact it went into, which may itself have been merged since."""
+    rows = (await session.execute(select(
+        Projection.entity_id, Projection.state["merged_into"].as_string()).where(
+        Projection.company_id == company_id, Projection.entity_type == "contact",
+        Projection.state["merged_into"].as_string().isnot(None)))).all()
+    into = {str(contact): str(winner) for contact, winner in rows if winner}
+    survivors: dict[str, str] = {}
+    for contact, winner in into.items():
+        seen = {contact}
+        while winner in into and winner not in seen:
+            seen.add(winner)
+            winner = into[winner]
+        survivors[contact] = winner
+    return survivors
+
+
+def surviving_key(key: str, survivors: dict[str, str]) -> str:
+    """The posting key ``key`` (party_key) owed to the contact that survives its party's merges."""
+    code, contact = split_party_key(key)
+    return party_key(code, survivors.get(contact, contact) if contact else None)
+
+
 async def sold_lot_key(session: AsyncSession, company_id, lot_id: str, state: dict) -> str:
     """sold_lot_account of lot ``lot_id`` as a posting key: for consigned goods the
     consignor payable owed to the lot's consignor (consignor_of)."""
