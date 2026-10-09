@@ -2282,6 +2282,7 @@
   "documents.code_names_several_lots": "{code} ist mehr als einem Artikel zugeordnet. Korrigieren Sie den doppelten Code im Inventar oder wählen Sie den Artikel per SKU.",
   "documents.lot_reserved_elsewhere": "{code} ist für einen anderen Datensatz reserviert. Geben Sie ihn dort zuerst frei oder wählen Sie einen anderen Artikel.",
   "documents.lot_reserved_by": "{code} ist auf {doc} reserviert. Geben Sie ihn dort zuerst frei oder wählen Sie einen anderen Artikel.",
+  "documents.due_before_issue": "Das Fälligkeitsdatum darf nicht vor dem Ausstellungsdatum liegen.",
   "documents.lot_on_memo_by": "{code} ist auf Kommission {doc} draußen. Nehmen Sie es auf dieser Kommission mit Als verfügbar setzen zurück oder stellen Sie es aus dieser Kommission in Rechnung.",
   "documents.lot_on_memo_elsewhere": "{code} ist auf einer anderen Kommission draußen. Nehmen Sie es auf dieser Kommission mit Als verfügbar setzen zurück oder stellen Sie es aus dieser Kommission in Rechnung.",
   "documents.lot_held_by_other_line": "{code} ist für eine andere Zeile dieses Dokuments vorgemerkt. Verwenden Sie diese Zeile oder wählen Sie einen anderen Artikel.",

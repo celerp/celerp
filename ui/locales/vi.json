@@ -2281,6 +2281,7 @@
   "documents.code_names_several_lots": "{code} có trên nhiều mặt hàng. Hãy sửa mã trùng trong Kho hàng, hoặc chọn mặt hàng theo SKU.",
   "documents.lot_reserved_elsewhere": "{code} đã được giữ cho một hồ sơ khác. Hãy nhả ở đó trước hoặc chọn mặt hàng khác.",
   "documents.lot_reserved_by": "{code} đã được giữ trên {doc}. Hãy nhả ở đó trước hoặc chọn mặt hàng khác.",
+  "documents.due_before_issue": "Ngày đến hạn không thể sớm hơn ngày phát hành.",
   "documents.lot_on_memo_by": "{code} đang được gửi theo phiếu ký gửi {doc}. Dùng Đặt là có sẵn trên phiếu đó để lấy về, hoặc lập hóa đơn từ phiếu đó.",
   "documents.lot_on_memo_elsewhere": "{code} đang được gửi theo một phiếu ký gửi khác. Dùng Đặt là có sẵn trên phiếu đó để lấy về, hoặc lập hóa đơn từ phiếu đó.",
   "documents.lot_held_by_other_line": "{code} đang được giữ cho một dòng khác của chứng từ này. Hãy dùng dòng đó hoặc chọn mặt hàng khác.",

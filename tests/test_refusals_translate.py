@@ -118,3 +118,9 @@ async def test_each_take_back_reason_is_translated(client, h):
     assert _in_spanish(r, 422) == ("No se puede marcar como disponible: "
                                    "RT-TWO-B: no hay nada reservado ni fuera en esta línea; "
                                    "RT-TWO-A: la cantidad devuelta debe ser mayor que cero")
+
+
+async def test_a_due_date_before_the_issue_date_is_refused_in_plain_words(client, owner):
+    r = await client.post("/docs", headers=owner, json={
+        "doc_type": "invoice", "issue_date": "2026-07-10", "due_date": "2026-07-01", "line_items": []})
+    assert _in_spanish(r, 422) == "La fecha de vencimiento no puede ser anterior a la fecha de emisión."

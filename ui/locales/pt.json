@@ -2281,6 +2281,7 @@
   "documents.code_names_several_lots": "{code} está em mais de um item. Corrija o código duplicado em Inventário ou escolha o item pelo SKU.",
   "documents.lot_reserved_elsewhere": "{code} está reservado para outro registro. Libere-o lá primeiro ou escolha outro item.",
   "documents.lot_reserved_by": "{code} está reservado em {doc}. Libere-o lá primeiro ou escolha outro item.",
+  "documents.due_before_issue": "A data de vencimento não pode ser anterior à data de emissão.",
   "documents.lot_on_memo_by": "{code} está fora em consignação {doc}. Use Definir como disponível nessa consignação para recuperá-lo, ou fature a partir dessa consignação.",
   "documents.lot_on_memo_elsewhere": "{code} está fora em outra consignação. Use Definir como disponível nessa consignação para recuperá-lo, ou fature a partir dessa consignação.",
   "documents.lot_held_by_other_line": "{code} está retido para outra linha deste documento. Use essa linha ou escolha outro item.",

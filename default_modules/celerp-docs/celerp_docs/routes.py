@@ -547,7 +547,7 @@ def _assert_date_order(patch: dict, current: dict | None = None) -> None:
     if issue and due and due < issue:
         raise HTTPException(
             status_code=422,
-            detail="due_date cannot be earlier than issue_date",
+            detail=refusal("documents.due_before_issue", "The due date cannot be earlier than the issue date."),
         )
 
 

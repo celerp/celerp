@@ -2388,6 +2388,7 @@
   "documents.code_names_several_lots": "{code} ከአንድ በላይ እቃ ላይ አለ። የተደገመውን ኮድ በክምችት ውስጥ ያስተካክሉ፣ ወይም እቃውን በSKU ይምረጡ።",
   "documents.lot_reserved_elsewhere": "{code} ለሌላ መዝገብ ተይዟል። መጀመሪያ እዚያ ይልቀቁት ወይም ሌላ እቃ ይምረጡ።",
   "documents.lot_reserved_by": "{code} በ{doc} ላይ ተይዟል። መጀመሪያ እዚያ ይልቀቁት ወይም ሌላ እቃ ይምረጡ።",
+  "documents.due_before_issue": "የመክፈያ ቀኑ ከተሰጠበት ቀን ቀደም ሊሆን አይችልም።",
   "documents.lot_on_memo_by": "{code} በሜሞ {doc} ወጥቷል። ለመመለስ በዚያ ሜሞ ላይ እንደ ዝግጁ አድርግን ይጠቀሙ፣ ወይም ከዚያ ሜሞ ደረሰኝ ያውጡ።",
   "documents.lot_on_memo_elsewhere": "{code} በሌላ ሜሞ ወጥቷል። ለመመለስ በዚያ ሜሞ ላይ እንደ ዝግጁ አድርግን ይጠቀሙ፣ ወይም ከዚያ ሜሞ ደረሰኝ ያውጡ።",
   "documents.lot_held_by_other_line": "{code} ለዚህ ሰነድ ሌላ መስመር ተይዟል። ያንን መስመር ይጠቀሙ ወይም ሌላ እቃ ይምረጡ።",

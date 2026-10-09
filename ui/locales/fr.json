@@ -2282,6 +2282,7 @@
   "documents.code_names_several_lots": "{code} figure sur plusieurs articles. Corrigez le code en double dans Inventaire, ou choisissez l'article par SKU.",
   "documents.lot_reserved_elsewhere": "{code} est réservé pour un autre enregistrement. Libérez-le d'abord là-bas ou choisissez un autre article.",
   "documents.lot_reserved_by": "{code} est réservé sur {doc}. Libérez-le d'abord là-bas ou choisissez un autre article.",
+  "documents.due_before_issue": "La date d'échéance ne peut pas être antérieure à la date d'émission.",
   "documents.lot_on_memo_by": "{code} est sorti en dépôt {doc}. Utilisez Marquer comme disponible sur ce dépôt pour le reprendre, ou facturez-le à partir de ce dépôt.",
   "documents.lot_on_memo_elsewhere": "{code} est sorti sur un autre dépôt. Utilisez Marquer comme disponible sur ce dépôt pour le reprendre, ou facturez-le à partir de ce dépôt.",
   "documents.lot_held_by_other_line": "{code} est retenu pour une autre ligne de ce document. Utilisez cette ligne ou choisissez un autre article.",
