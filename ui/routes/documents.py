@@ -8869,13 +8869,13 @@ async function _celerpInstallLineBody(html, version) {{
    can change it. After a save, put each reserved row's stored status cell in place, leaving
    the rest of the rows (and any field being edited) alone. Only the latest save's refresh
    lands. (Status-column pages only.) */
-let _celerpHeldRefresh = 0;
+window._celerpHeldRefresh = window._celerpHeldRefresh || 0;
 async function _celerpRefreshHeldBadges() {{
     const tbody = document.getElementById('{line_body_id}');
     if (!tbody || !tbody.querySelector('.col-item-status .badge--reserved')) return;
-    const seq = ++_celerpHeldRefresh;
+    const seq = ++window._celerpHeldRefresh;
     const fresh = await _celerpFetchLineBody();
-    if (!fresh || seq !== _celerpHeldRefresh) return;
+    if (!fresh || seq !== window._celerpHeldRefresh) return;
     const stored = {{}};
     fresh.querySelectorAll('tr').forEach(function(row) {{
         const id = row.querySelector('[data-name="line_id"]');
