@@ -1106,8 +1106,9 @@ async def create_for_receipt_undone(
     """Undoing a bill's receipts takes goods its purchase order receipts added to lots on hand
     off those lots. Their receipt entries booked them on the lots' inventory accounts, and the
     bill booked only what those entries had not; the goods' value now moves to the account the
-    bill books their line on, as on a bill finalized before its goods came in. Accounts payable
-    is untouched: the bill still owes for them.
+    bill books their line on, as on a bill finalized before its goods came in. A line the bill
+    books outside the lots' accounts took them off when the bill netted its receipts, so it
+    moves nothing here. Accounts payable is untouched: the bill still owes for them.
 
     ``lots`` holds (the lot's inventory account, the bill line, the cost taken off the lot) per
     receipt undone. No more moves off an account than the receipt entries left booked on it,
@@ -1125,6 +1126,10 @@ async def create_for_receipt_undone(
         target = await _bill_line_target(session, company_id, li)
         account = (await resolve(session, company_id, target) if isinstance(target, AccountRole)
                    else target[0] if isinstance(target, tuple) else target)
+        # Only a line the bill books as lot value left the goods on the lot's account.
+        line = _bill_debit_line({target: account} if isinstance(target, AccountRole) else {}, target, 0.0)
+        if _net_group(_net_key(settings, line)[1]) != _LOT_ROLES:
+            continue
         amount = min(round_money(cost, currency), max(booked.get(code, _Dec(0)), _Dec(0)))
         if amount <= 0 or account == code:
             continue

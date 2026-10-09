@@ -193,6 +193,51 @@ async def test_goods_added_to_stock_on_hand_can_be_sent_back_and_the_bill_revert
 
 
 @pytest.mark.asyncio
+async def test_undoing_a_receipt_on_a_line_with_its_own_account_moves_nothing_twice(client, session, auth):
+    item_id = await _item(client, auth, _OPENING, qty=10)
+    po = await _doc(client, auth, "purchase_order", [
+        {"item_id": item_id, "name": "Lot", "quantity": 5, "unit_price": 14.0, "account_code": "6950"},
+    ])
+    r = await _receive(client, auth, po, {"po_line_index": 0, "item_id": item_id, "quantity_received": 5})
+    assert r.status_code == 200, r.text
+    await _finalize(client, auth, po)
+    # The bill books the line on its own account, taking the goods off the lot's account.
+    booked = {"1130-OB": _OPENING, "6950": 70.0, "2110": -70.0}
+    assert await _books(session, auth, *booked) == booked
+
+    r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    lot = await _state(session, auth, item_id)
+    assert (lot["quantity"], lot["cost_base"]) == (10, _OPENING)
+    assert await _books(session, auth, *booked) == booked
+
+
+@pytest.mark.asyncio
+async def test_undoing_a_receipt_onto_a_purchased_lot_moves_nothing(client, session, auth):
+    sku = f"PL-{uuid.uuid4().hex[:6]}"
+    bill = await _doc(client, auth, "bill", [{"sku": sku, "name": "Bought", "quantity": 10, "unit_price": 10.0}])
+    await _finalize(client, auth, bill)
+    r = await _receive(client, auth, bill, {"po_line_index": 0, "sku": sku, "name": "Bought", "quantity_received": 10})
+    assert r.status_code == 200, r.text
+    [item_id] = (await _state(session, auth, bill))["received_item_ids"]
+    assert await _books(session, auth, "1130-OB", "1130-P", "2110") == {"1130-OB": 0.0, "1130-P": 100.0, "2110": -100.0}
+
+    po = await _doc(client, auth, "purchase_order", [{"item_id": item_id, "name": "Bought", "quantity": 5, "unit_price": 14.0}])
+    r = await _receive(client, auth, po, {"po_line_index": 0, "item_id": item_id, "quantity_received": 5})
+    assert r.status_code == 200, r.text
+    await _finalize(client, auth, po)
+    # The lot's own account is where the bill books its goods, so the undo has nothing to move.
+    booked = {"1130-OB": 0.0, "1130-P": 170.0, "2110": -170.0}
+    assert await _books(session, auth, *booked) == booked
+
+    r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    lot = await _state(session, auth, item_id)
+    assert (lot["quantity"], lot["cost_base"]) == (10, 100.0)
+    assert await _books(session, auth, *booked) == booked
+
+
+@pytest.mark.asyncio
 async def test_a_receipt_with_goods_sent_back_cannot_be_undone(client, session, auth):
     item_id = await _item(client, auth, 100.0, qty=10)
     po = await _doc(client, auth, "purchase_order",
