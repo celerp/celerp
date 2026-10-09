@@ -48,15 +48,6 @@ def _line_amount(line: dict):
     )
 
 
-def refresh_line_taxes(lines: list, currency: str) -> None:
-    """Recompute every line's tax amounts from their rates on the line's own amount,
-    the base a document's line taxes are created on, so an edited line never keeps
-    the amounts of its old quantity or price."""
-    for line in lines:
-        if isinstance(line, dict) and isinstance(line.get("taxes"), list) and line["taxes"]:
-            line["taxes"], _amount = _recompute_tax_applications(line["taxes"], _line_amount(line), currency)
-
-
 def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool) -> dict:
     """Subtotal, discount, taxes and total of a document with these lines.
 

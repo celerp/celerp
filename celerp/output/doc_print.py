@@ -443,6 +443,9 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             totals_rows.append(Tr(Td(_dlabel, cls="label"), Td(f"-{_money(_disc_amt)}", cls="amount")))
         if float(tax_total or 0):
             totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
+        # Shipping is part of the stored total, so it is shown for the rows to add up.
+        if float(doc.get("shipping") or 0):
+            totals_rows.append(Tr(Td("Shipping", cls="label"), Td(_money(doc["shipping"]), cls="amount")))
         totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
         totals_section = Div(Table(*totals_rows), cls="dp-totals")
 

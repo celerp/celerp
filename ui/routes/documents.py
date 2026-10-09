@@ -3146,22 +3146,13 @@ celerpUpdateBulkAlloc();
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        lines = body.get("line_items", [])
-        subtotal = body.get("subtotal", 0)
-        tax = body.get("tax", 0)
-        total = body.get("total", subtotal + tax)
-        patch_data = {
-            "line_items": lines,
-            "subtotal": subtotal,
-            "tax": tax,
-            "total": total,
-        }
-        # Invoice-level (header) discount: persist the value + type + computed amount so the
-        # discounted tax/total above reconcile. Always sent (0 clears it) so removing a discount sticks.
+        # The lines and the header discount are inputs; the API computes the document's
+        # subtotal, discount amount, taxes and total from them.
+        patch_data = {"line_items": body.get("line_items", [])}
+        # Always sent (0 clears it) so removing a discount sticks.
         if "discount" in body:
             patch_data["discount"] = float(body.get("discount") or 0)
             patch_data["discount_type"] = body.get("discount_type") or "flat"
-            patch_data["discount_amount"] = float(body.get("discount_amount") or 0)
         try:
             result = await api.patch_doc(token, entity_id, patch_data)
         except APIError as e:
@@ -7663,6 +7654,8 @@ window._CELERP_TAXES = {_json.dumps(_taxes_list)};
 window._CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
 window._CELERP_CDP = {currency_dp(currency)};
+/* Shipping is part of the document total; the editor's live total adds it like the stored one. */
+window._CELERP_SHIPPING = {float(doc.get("shipping") or 0)!r};
 window._CELERP_RDP = {rate_dp(currency)};
 /* Derive a unit price from a target line amount at the FEWEST decimals that still reconciles
    (round(unit * qty) === target). Mirrors the backend money.unit_price_from_total so the stored
@@ -8582,10 +8575,10 @@ function celerpUpdateTotals() {{
             taxContainer.appendChild(row);
         }});
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + totalTax + _CELERP_SHIPPING);
     }} else {{
         const totEl = document.getElementById('doc-total');
-        if (totEl) totEl.textContent = _fmt(_hd.taxable);
+        if (totEl) totEl.textContent = _fmt(_hd.taxable + _CELERP_SHIPPING);
     }}
 }}
 // Header-discount helpers. State lives in hidden inputs (#doc-discount-value/#doc-discount-type),
@@ -8835,13 +8828,7 @@ async function _celerpPersistOnce() {{
         window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
         return true;
     }}
-    const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
-    const grossTax = lines.reduce((s, l) => s + l.line_total * (l.tax_rate / 100), 0);
-    // Apply the header discount to the taxable base; tax scales by the same ratio (see
-    // _celerpHeaderDiscount). subtotal stays gross; discount_amount + the reduced tax/total persist.
-    const hd = _celerpHeaderDiscount(subtotal);
-    const tax = grossTax * hd.ratio;
-    const total = hd.taxable + tax;
+    const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
     const statusEl = document.getElementById('save-status');
     // Send the current page's rows, the stored offset they occupy, and the length of the
     // stored window this page loaded. The server REPLACES positions [offset, offset+original_count)
@@ -8851,8 +8838,7 @@ async function _celerpPersistOnce() {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{line_items: lines, offset: _CELERP_LINE_OFFSET,
             original_count: _CELERP_ORIGINAL_COUNT,
-            subtotal, tax, total,
-            discount: hd.value, discount_type: hd.type, discount_amount: hd.amount,
+            discount: hd.value, discount_type: hd.type,
             expected_version: _celerpEntityVersion}})
     }});
     if (resp.ok) {{
@@ -9715,65 +9701,37 @@ async function celerpCsvImport(input, entityId) {{
     # line (never gross_subtotal - subtotal) keeps rounding residue on plain lines out of the figure.
     line_discount = sum(_li_gross(li) - _li_net(li) for li in line_items if float(li.get("discount_pct") or 0))
     gross_subtotal = subtotal + line_discount
+    # Every money figure below is the stored one the document calculation produced (header discount
+    # applied to the taxable base before tax, shipping in the total); the page only lays them out.
     tax_amount = float(tax_value or 0)
-    total_amount = float(total_value or 0) or (subtotal + tax_amount)
-    # Header (whole-document) discount: reduce the taxable base, then scale every tax line by the
-    # same ratio. A uniform discount lowers each line's taxable amount proportionally, so scaling by
-    # (taxable / subtotal) keeps any tax mix consistent without re-deriving per-line taxes.
+    shipping = float(doc.get("shipping") or 0)
     discount_raw = float(doc.get("discount") or 0)
     discount_type = doc.get("discount_type") or "flat"
-    if discount_type == "percentage":
-        # Always recompute a % discount from the CURRENT subtotal so it stays correct no matter how
-        # the lines changed (add / remove / edit / per-line discount), even if a stored
-        # discount_amount went stale. A flat discount is a fixed amount (capped at the subtotal).
-        discount = subtotal * discount_raw / 100
-    else:
-        discount = float(discount_value or 0) or discount_raw
-    discount = min(discount, subtotal) if discount > 0 else 0.0
-    taxable = subtotal - discount
-    _disc_ratio = (taxable / subtotal) if (subtotal > 0 and discount > 0.005) else 1.0
+    discount = float(discount_value or 0)
+    total_amount = (float(total_value) if total_value not in (None, "")
+                    else subtotal - discount + tax_amount + shipping)
 
-    # Build per-code tax rows: prefer `taxes` list on line items, fall back to tax_rate
-    doc_taxes = doc.get("doc_taxes") or []
-    code_totals: dict[str, dict] = {}  # key → {label, amount}
+    # Per-code tax rows from the stored tax amounts on the lines and the document.
+    code_totals: dict[str, dict] = {}  # key -> {label, amount}
 
-    if doc_taxes:
-        # doc_taxes already have computed amounts (server-side)
-        for dtax in doc_taxes:
-            code = dtax.get("code", "Tax")
-            amt = float(dtax.get("amount", 0) or 0)
-            if code not in code_totals:
-                code_totals[code] = {"label": code, "amount": 0.0}
-            code_totals[code]["amount"] += amt
-    elif line_items:
-        for li in line_items:
-            li_total = _li_net(li)
-            li_taxes = li.get("taxes") or []
-            if li_taxes:
-                for item in li_taxes:
-                    code = item.get("code") or ""
-                    rate = float(item.get("rate", 0) or 0)
-                    custom_label = item.get("label") or ""
-                    amt = float(item.get("amount", 0) or 0) or round(li_total * rate / 100, 2)
-                    key = code or f"custom_{rate}"
-                    label = f"{code} ({rate}%)" if code else f"{custom_label or t('documents.tax')} ({rate}%)"
-                    if key not in code_totals:
-                        code_totals[key] = {"label": label, "amount": 0.0}
-                    code_totals[key]["amount"] += amt
-            else:
-                rate = float(li.get("tax_rate", 0) or 0)
-                if rate != 0:
-                    amt = round(li_total * rate / 100, 2)
-                    key = f"rate_{rate}"
-                    label = f"{t('documents.tax')} ({rate}%)"
-                    if key not in code_totals:
-                        code_totals[key] = {"label": label, "amount": 0.0}
-                    code_totals[key]["amount"] += amt
+    def _add_tax(key: str, label: str, amount) -> None:
+        code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
 
-    # Scale each tax line to the discounted base so the rows, discount and total reconcile.
-    if _disc_ratio != 1.0:
-        for v in code_totals.values():
-            v["amount"] = to_stored_float(round_money(to_decimal(v["amount"]) * to_decimal(_disc_ratio), currency))
+    for li in line_items:
+        for item in li.get("taxes") or []:
+            code = item.get("code") or ""
+            rate = float(item.get("rate", 0) or 0)
+            label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
+            _add_tax(code or f"custom_{rate}", label, item.get("amount"))
+    for dtax in doc.get("doc_taxes") or []:
+        code = dtax.get("code") or t("documents.tax")
+        _add_tax(code, code, dtax.get("amount"))
+    if abs(sum(v["amount"] for v in code_totals.values()) - tax_amount) > 0.005:
+        # The stored breakdown does not account for the stored tax (a line or header rate with no
+        # per-line amounts): show the stored tax as one row, labelled with its rate when single.
+        rates = {float(li.get("tax_rate") or 0) for li in line_items if float(li.get("tax_rate") or 0)}
+        label = f"{t('documents.tax')} ({next(iter(rates)):g}%)" if len(rates) == 1 else t("documents.tax")
+        code_totals = {"tax": {"label": label, "amount": tax_amount}} if tax_amount else {}
 
     tax_rows = [
         Div(Span(f"{v['label']}:", cls="total-label"),
@@ -9781,14 +9739,6 @@ async function celerpCsvImport(input, entityId) {{
             cls="total-row")
         for v in code_totals.values()
     ]
-
-    if discount > 0.005:
-        tax_amount = (sum(v["amount"] for v in code_totals.values()) if code_totals
-                      else to_stored_float(round_money(to_decimal(tax_amount) * to_decimal(_disc_ratio), currency)))
-        total_amount = taxable + tax_amount
-    elif not tax_amount and code_totals:
-        tax_amount = sum(v["amount"] for v in code_totals.values())
-        total_amount = subtotal - discount + tax_amount
 
     # Header-discount affordance: a faint pencil by the Total opens a small editor. Only on a draft
     # of an eligible money doc (sales + supplier order/bill); the discount row itself shows whenever
@@ -9810,6 +9760,9 @@ async function celerpCsvImport(input, entityId) {{
             Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
             id="doc-header-discount-row", cls="total-row") if discount > 0.005 else "",
         Div(*tax_rows, id="doc-tax-rows"),
+        Div(Span(t("doc.shipping"), cls="total-label"),
+            Span(fmt_money(shipping, currency), id="doc-shipping", cls="total-value"),
+            cls="total-row") if shipping else "",
         Div(
             # The pencil sits just LEFT of the "Total:" label; the amount stays flush-right
             # (accounting format).
