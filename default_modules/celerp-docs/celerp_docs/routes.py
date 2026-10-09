@@ -1544,9 +1544,9 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
         # the rest of what it brought in (return_held, reason -> units), and whether the line
         # has sent goods back, all or part of it. Lines whose goods cannot be traced to them
         # alone carry none of these and are not offered for return.
-        traced = await _line_return_lots(session, company_id, row.state, lock=False)
+        traced = await _line_return_lots(session, company_id, entity_id, row.state, lock=False)
         if traced is not None:
-            by_line, shared, kept, held, split_lots = traced
+            by_line, shared, kept, held, split_lots, _whole_only = traced
             sent_back: dict[str, float] = {}
             for x in doc.get("returned_items") or []:
                 sent_back[x["item_id"]] = sent_back.get(x["item_id"], 0.0) + float(x.get("quantity_returned") or 0)
@@ -4508,18 +4508,90 @@ async def record_historical_delivery(session: AsyncSession, company_id, entity_i
     )
 
 
-async def _returnable_quantities(session: AsyncSession, company_id, doc: dict) -> dict[str, float]:
+def _stock_receipt(x: dict) -> bool:
+    return (x.get("receive_as") or "stock") == "stock"
+
+
+async def _receipt_events(session: AsyncSession, company_id, doc_id: str, received: list[dict],
+                          made: list[str]) -> list[tuple[list[dict], list[str]]] | None:
+    """The document's receipts as their events recorded them, oldest first: (entries, parcels
+    made) per receipt, for the receipts the document still holds. None when those events do
+    not add up to what the document holds."""
+    from celerp.models.ledger import LedgerEntry
+
+    rows = (await session.execute(select(LedgerEntry.data).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == doc_id,
+        LedgerEntry.event_type == "doc.received").order_by(LedgerEntry.id.desc()))).scalars().all()
+    receipts: list[tuple[list[dict], list[str]]] = []
+    count = 0
+    for data in rows:
+        if count >= len(received):
+            break
+        entries = list((data or {}).get("received_items") or [])
+        receipts.insert(0, (entries, list((data or {}).get("created_item_ids") or [])))
+        count += len(entries)
+    if ([x for entries, _ in receipts for x in entries] != received
+            or [i for _, created in receipts for i in created] != made):
+        return None
+    return receipts
+
+
+async def _receipt_lots(session: AsyncSession, company_id, doc_id: str,
+                        doc: dict) -> list[tuple[str, bool] | None] | None:
+    """Per receipt entry on the document, in order, the lot its stock went into and whether
+    the receipt made that lot (True) or added to a lot already on hand (False); None for an
+    entry received as an expense or an asset. None in place of the list when a receipt cannot
+    be paired with its lot.
+
+    Where goods went is a fact of the receipt, never of what the document is now: a purchase
+    order becomes a bill in place, and its receipts stay as they were. An entry recording what
+    it added to a lot added to that lot; every other stock entry made the next parcel its
+    receipt records, except on a purchase order receipt from before lots recorded what they
+    added, where an entry naming an item added to that item. Such a receipt made fewer
+    parcels than it has stock entries, which its own event shows."""
+    received = list(doc.get("received_items") or [])
+    made = list(doc.get("received_item_ids") or [])
+    unnamed = [x for x in received if _stock_receipt(x) and "lot_quantity_added" not in x]
+    if len(unnamed) == len(made):
+        receipts: list[tuple[list[dict], list[str]]] | None = [(received, made)]
+    else:
+        receipts = await _receipt_events(session, company_id, doc_id, received, made)
+        if receipts is None:
+            return None
+    out: list[tuple[str, bool] | None] = []
+    for entries, created in receipts:
+        rest = [x for x in entries if _stock_receipt(x) and "lot_quantity_added" not in x]
+        added_in_place = len(rest) != len(created)
+        if added_in_place and sum(1 for x in rest if not x.get("item_id")) != len(created):
+            return None
+        parcels = iter(created)
+        for x in entries:
+            if not _stock_receipt(x):
+                out.append(None)
+            elif "lot_quantity_added" in x or (added_in_place and x.get("item_id")):
+                if not x.get("item_id"):
+                    return None
+                out.append((x["item_id"], False))
+            elif (lot := next(parcels, None)) is not None:
+                out.append((lot, True))
+            else:
+                return None
+    return out
+
+
+async def _returnable_quantities(session: AsyncSession, company_id, doc_id: str, doc: dict) -> dict[str, float]:
     """Item id -> stock units the document's receipts brought in and it has not sent back."""
     from celerp.models.ledger import LedgerEntry
 
     got: dict[str, float] = {}
     legacy: dict[str, float] = {}  # purchase order receipts made before lots recorded what they added
-    for x in doc.get("received_items") or []:
+    received = doc.get("received_items") or []
+    lots = await _receipt_lots(session, company_id, doc_id, doc) or [None] * len(received)
+    for x, into in zip(received, lots):
         if "lot_quantity_added" in x:
             got[x["item_id"]] = got.get(x["item_id"], 0.0) + float(x["lot_quantity_added"] or 0)
-        elif (doc.get("doc_type") == "purchase_order" and x.get("item_id")
-              and (x.get("receive_as") or "stock") == "stock"):
-            legacy[x["item_id"]] = legacy.get(x["item_id"], 0.0) + float(x.get("quantity_received") or 0)
+        elif into is not None and not into[1]:
+            legacy[into[0]] = legacy.get(into[0], 0.0) + float(x.get("quantity_received") or 0)
     if legacy:
         rows = (await session.execute(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_id.in_(list(legacy))))).scalars().all()
@@ -4538,28 +4610,24 @@ async def _returnable_quantities(session: AsyncSession, company_id, doc: dict) -
     return got
 
 
-def _receipt_lots_by_line(state: dict) -> tuple[dict[int, list[str]], set[str]] | None:
-    """The lots each document line's stock receipts went into, in receipt order, and the lots
-    more than one line fed. A purchase order receipt names the lot it added to; every other
-    stock receipt made the next parcel the document records. None when a receipt cannot be
-    paired with its lot and its line, as then no line's goods can be told apart."""
+def _receipt_lots_by_line(state: dict, lots: list[tuple[str, bool] | None]
+                          ) -> tuple[dict[int, list[str]], set[str]] | None:
+    """The lots each document line's stock receipts went into (``lots``, per receipt entry),
+    in receipt order, and the lots more than one line fed. None when a receipt cannot be
+    paired with its line, as then no line's goods can be told apart."""
     lines = state.get("line_items") or []
-    created = iter(state.get("received_item_ids") or [])
-    inbound = state.get("doc_type") in INBOUND_DOC_TYPES
     by_line: dict[int, list[str]] = {}
     fed_by: dict[str, set[int]] = {}
-    for x in state.get("received_items") or []:
-        if (x.get("receive_as") or "stock") != "stock":
+    for x, into in zip(state.get("received_items") or [], lots):
+        if into is None:
             continue
-        lot = x["item_id"] if x.get("item_id") and not inbound else next(created, None)
+        lot = into[0]
         index = received_line_index(lines, x)
-        if lot is None or index is None:
+        if index is None:
             return None
         if lot not in by_line.setdefault(index, []):
             by_line[index].append(lot)
         fed_by.setdefault(lot, set()).add(index)
-    if next(created, None) is not None:
-        return None
     return by_line, {lot for lot, fed in fed_by.items() if len(fed) > 1}
 
 
@@ -4600,6 +4668,7 @@ class _LineReturnLots(NamedTuple):
     kept: dict[str, float]                         # lot -> units brought in, not sent back
     held: dict[int, dict[str, float]]              # line -> reason -> units it cannot send back now
     split_lots: dict[int, list[str]]               # line -> lots its goods were split off into
+    whole_only: dict[str, float]                   # lot that may not be split -> its quantity
 
 
 async def _split_descendants(session: AsyncSession, company_id, roots: list[str],
@@ -4655,7 +4724,7 @@ def _split_off_holds(gone: float, children: list[dict]) -> tuple[dict[str, float
     return held, lots
 
 
-async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, lock: bool
+async def _line_return_lots(session: AsyncSession, company_id, doc_id: str, doc: dict, *, lock: bool
                             ) -> _LineReturnLots | None:
     """Per line, the lots its stock receipts went into with the stock units of each it can send
     back now, in receipt order, and why the rest of what it brought in cannot go back; None when
@@ -4663,7 +4732,8 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
     not sent back, while it is on hand and free. Goods no longer in a lot this document made are
     looked for in the lots split off it, so the reason says where they are; those goods are
     not offered for return here."""
-    traced = _receipt_lots_by_line(doc)
+    lots = await _receipt_lots(session, company_id, doc_id, doc)
+    traced = _receipt_lots_by_line(doc, lots) if lots is not None else None
     if traced is None:
         return None
     lots_by_line, shared = traced
@@ -4673,7 +4743,7 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
     else:
         states = {r.entity_id: r.state for r in (await session.execute(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_id.in_(ids)))).scalars()} if ids else {}
-    kept = await _returnable_quantities(session, company_id, doc)
+    kept = await _returnable_quantities(session, company_id, doc_id, doc)
     created = set(doc.get("received_item_ids") or [])
     made = [lot for lot in ids if lot in created]
     sent = {x["returned_lot_id"] for x in doc.get("returned_items") or [] if x.get("returned_lot_id")}
@@ -4696,7 +4766,9 @@ async def _line_return_lots(session: AsyncSession, company_id, doc: dict, *, loc
                 into.extend(x for x in labels if x not in into)
             for reason, units in reasons.items():
                 held.setdefault(index, {})[reason] = held.get(index, {}).get(reason, 0.0) + units
-    return _LineReturnLots(by_line, shared, kept, held, split_lots)
+    whole_only = {lot: float(st.get("quantity") or 0) for lot, st in states.items()
+                  if st is not None and not splitting_allowed(st)}
+    return _LineReturnLots(by_line, shared, kept, held, split_lots, whole_only)
 
 
 class ReturnItem(_StatedMeasures):
@@ -4743,10 +4815,59 @@ def _line_label(line: dict) -> str:
     return str(line.get("sku") or line.get("name") or line.get("description") or "--")
 
 
-async def _return_lines_as_lots(session: AsyncSession, company_id, doc: dict,
+def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
+                qty: float) -> list[tuple[str, float]]:
+    """How ``qty`` comes off a line's lots ([(lot, units it can send back)], in receipt order):
+    each lot in turn gives the most it can while the rest can still be made up from the lots
+    after it. A lot in ``whole_only`` (lot -> its quantity) may not be split, so it gives all
+    of itself or nothing. When no way to make up ``qty`` exists, the lots give in receipt order
+    and the part of a lot that may not be split is refused where every carve is."""
+    eps = 1e-9
+    # What the lots from each position on can make up together: closed ranges of units.
+    after: list[list[tuple[float, float]]] = [[(0.0, 0.0)]]
+    for lot, q in reversed(lots):
+        whole = whole_only.get(lot)
+        if whole is None:
+            spans = [(lo, hi + q) for lo, hi in after[0]]
+        elif q >= whole - eps:
+            spans = after[0] + [(lo + whole, hi + whole) for lo, hi in after[0]]
+        else:
+            spans = list(after[0])
+        merged: list[tuple[float, float]] = []
+        for lo, hi in sorted(spans):
+            if merged and lo <= merged[-1][1] + eps:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            else:
+                merged.append((lo, hi))
+        after.insert(0, merged)
+    feasible = any(lo - eps <= qty <= hi + eps for lo, hi in after[0])
+    left = qty
+    takes: list[tuple[str, float]] = []
+    for i, (lot, q) in enumerate(lots):
+        if feasible:
+            rest = after[i + 1]
+            whole = whole_only.get(lot)
+            if whole is not None:
+                options = [whole] if q >= whole - eps else []
+            else:
+                cap = min(q, left)
+                options = [min(cap, left - lo) for lo, hi in rest if left - hi <= cap + eps and left - lo >= -eps]
+            fits = [t for t in options if t <= left + eps
+                    and any(lo - eps <= left - t <= hi + eps for lo, hi in rest)]
+            take = max(fits, default=0.0)
+        else:
+            take = min(q, left)
+        if take > eps:
+            takes.append((lot, take))
+            left -= take
+    return takes
+
+
+async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, doc: dict,
                                 lines: list[ReturnLine]) -> list[tuple[ReturnItem, str | None]]:
     """The lots and quantities selected lines send back, each with its line's id: every line's
-    quantity is taken from its lots in receipt order, from goods on hand and free."""
+    quantity is taken from its lots in receipt order, from goods on hand and free, taking a
+    lot that may not be split only whole (``_line_takes``)."""
     doc_lines = doc.get("line_items") or []
     picked: list[int] = []
     for ln in lines:
@@ -4763,7 +4884,7 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc: dict,
         if index in picked:
             raise HTTPException(status_code=422, detail="Each line can be selected once.")
         picked.append(index)
-    traced = await _line_return_lots(session, company_id, doc, lock=True)
+    traced = await _line_return_lots(session, company_id, doc_id, doc, lock=True)
     if traced is None:
         raise HTTPException(status_code=409, detail=refusal(
             "docs.return_line_untraced",
@@ -4785,13 +4906,7 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc: dict,
                 f"{_line_label(line)}: at most {free:g} received on this line is on hand and free to return. "
                 "Goods sold, out on memo or reserved go back to the supplier only once they are back in stock "
                 "and free.", name=_line_label(line), qty=f"{free:g}"))
-        left = float(ln.quantity_returned)
-        takes: list[tuple[str, float]] = []
-        for lot, q in lots:
-            take = min(q, left)
-            if take > 1e-9:
-                takes.append((lot, take))
-                left -= take
+        takes = _line_takes(lots, traced.whole_only, float(ln.quantity_returned))
         measures = {k: v for k, v in (("weight", ln.weight), ("pieces", ln.pieces)) if v is not None}
         if measures and len(takes) > 1:
             raise HTTPException(status_code=422, detail=refusal(
@@ -4830,14 +4945,14 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     from celerp_inventory.services import goods_basis
 
     if payload.lines:
-        picked = await _return_lines_as_lots(session, company_id, row.state, payload.lines)
+        picked = await _return_lines_as_lots(session, company_id, entity_id, row.state, payload.lines)
     else:
         picked = [(it, None) for it in payload.items]
     items = [it for it, _ in picked]
 
     # A document sends back only goods it brought in, and no more than it still holds of them.
     label = {**_RECEIVING_DOC_LABEL, "consignment_in": "consignment"}[doc_type]
-    returnable = await _returnable_quantities(session, company_id, row.state)
+    returnable = await _returnable_quantities(session, company_id, entity_id, row.state)
     for it in items:
         if it.quantity_returned <= 0:
             raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")
@@ -9008,7 +9123,7 @@ async def undo_receive(
                  (await lock_projections(session, company_id, [*received_item_ids, *added])).items()}
     # Read under the lots' locks, so no change to their measures can slip in before the undo.
     measures_added = await _receipt_measures_on_lots(session, company_id, entity_id, state)
-    came_in = await _returnable_quantities(session, company_id, state)
+    came_in = await _returnable_quantities(session, company_id, entity_id, state)
     blocked = [why for iid in received_item_ids
                if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in.get(iid, 0.0))) is not None]
     for lot, (qty, _) in added.items():

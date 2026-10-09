@@ -346,7 +346,7 @@ async def test_migration_lifecycle_uses_canonical_domain_code_only(real_engine, 
     bill = await _doc(books, "BILLG")
     assert _lot_additions(bill) == {wid: (10.0, 40.0)}
     async with maker(real_engine)() as s:
-        assert await _returnable_quantities(s, books.run.company_id, bill) == {wid: 10.0}
+        assert await _returnable_quantities(s, books.run.company_id, books.id("PurchaseInvoice", "BILLG"), bill) == {wid: 10.0}
         invoice_id = books.id("SalesInvoice", "INVE")
         lot = await _sold_lot(books, "INVE")
         items = await _projections(real_engine, books.run, "item")
