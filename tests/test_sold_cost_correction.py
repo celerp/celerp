@@ -26,6 +26,7 @@ from celerp.services import auto_je
 from test_cost_restatement import (
     _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
+from test_consignment_in_sale import _consign
 from test_helpers import TZ, company_auth
 
 # The accounts a finalize entry posts cost of goods sold to on a seeded chart.
@@ -92,16 +93,9 @@ async def _oracle(client, session, steps, lot: str, new_cost, *, before: int, la
 
 # -- History steps ---------------------------------------------------------
 
-def make(name: str, cost, qty: float = 1, consignment_flag: str | None = None, **extra):
+def make(name: str, cost, qty: float = 1, **extra):
     async def step(client, session, auth, ctx):
-        if consignment_flag:
-            await make(name, cost, qty, sell_by="piece", **extra)(client, session, auth, ctx)
-            # Consigned-in goods are received through a consignment document; the lot it leaves.
-            row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": ctx[name]})
-            row.consignment_flag = consignment_flag
-            row.state = {**row.state, "consignment_flag": consignment_flag}
-            await session.commit()
-        elif extra:
+        if extra:
             data = {"sku": f"SC-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": qty,
                     "sell_by": "piece", "status": "available", **extra}
             if cost is not None:
@@ -111,6 +105,13 @@ def make(name: str, cost, qty: float = 1, consignment_flag: str | None = None, *
             ctx[name] = r.json()["id"]
         else:
             ctx[name] = await _item(client, auth, cost, qty)
+    return step
+
+
+def consign(name: str, unit_cost: float):
+    """A lot of one unit received on a consignment at ``unit_cost``."""
+    async def step(client, session, auth, ctx):
+        _, ctx[name] = await _consign(client, session, auth, qty=1, cost_price=unit_cost)
     return step
 
 
@@ -331,8 +332,10 @@ async def test_correction_never_drives_a_merge_result_negative(client, session):
 # -- 5, 6: consignment-in and non-stock lots -------------------------------
 
 @pytest.mark.asyncio
-async def test_cost_added_to_a_sold_consignment_lot(client, session):
-    await _oracle(client, session, [make("a", None, consignment_flag="in"), sell("a")], "a", 70.0, before=1)
+async def test_cost_corrected_on_a_sold_consignment_lot(client, session):
+    # Consigned goods sell only at a known cost (what is owed to the consignor), so the
+    # correction here changes a recorded cost rather than adding a missing one.
+    await _oracle(client, session, [consign("a", 50.0), sell("a")], "a", 70.0, before=1)
 
 
 @pytest.mark.asyncio
