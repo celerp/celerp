@@ -533,8 +533,8 @@ async def _as_legacy_receipt(session, auth, doc_id: str) -> None:
 async def test_receipt_stored_the_earlier_way_stays_with_the_bill_through_void_and_revert(
         client, session, auth, legacy):
     """An order's real receipt stored at the bare receipt entry, as receipts once were, is
-    no bill entry: once the receipt is undone, voiding, unvoiding and reverting the bill
-    treat it exactly as they treat a receipt stored today."""
+    no bill entry: once the receipt is undone, voiding the bill is refused and reverting it
+    reverses the receipt and its undo together, exactly as for a receipt stored today."""
     lot = await _item(client, auth, _OPENING, qty=10)
     po, _ = await _ordered_and_received(
         client, session, auth, [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0}])
@@ -553,27 +553,82 @@ async def test_receipt_stored_the_earlier_way_stays_with_the_bill_through_void_a
     await _owes(session, auth, po)
     held = receipt(await _je_status(session, auth, po))
     assert held == ["posted", "posted"]
-    for step in ("void", "unvoid", "void", "unvoid"):
-        r = await client.post(f"/docs/{po}/{step}", headers=auth["headers"], json={})
-        assert r.status_code == 200, (step, r.text)
-        assert receipt(await _je_status(session, auth, po)) == held, step
+    r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.void_order_receipt"
+    assert receipt(await _je_status(session, auth, po)) == held
+    await _owes(session, auth, po)
     # Back to draft, the receipt and its undo reverse together, as the goods movements of a
     # document holding no goods do.
     r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
     assert receipt(await _je_status(session, auth, po)) == ["void", "void"]
+    assert (await _books(session, auth, "2110"))["2110"] == 0
+    await _settled(session, auth)
 
 
-async def _imported_bill(client, auth, lot: str) -> tuple[str, str]:
-    """A bill for 5 imported with all 5 already received onto ``lot``. -> (doc id, line id)."""
+@pytest.mark.parametrize("received", [5, 3])
+async def test_bill_whose_order_receipt_was_undone_goes_back_to_the_order_rather_than_void(
+        client, session, auth, received):
+    """Undoing the receipt leaves the order's receipt entry and its undo on accounts payable,
+    and voiding reverses only the bill's own entries, so a void would leave payables
+    standing against a bill that owes nothing. Voiding is refused; reverting to the order
+    reverses all of it."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po, _ = await _ordered_and_received(
+        client, session, auth, [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0}], received)
+    await _converted(client, session, auth, po)
+    await _owes(session, auth, po)
+    r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert await _qty(session, auth, lot) == 10
+    await _owes(session, auth, po)
+    before = await _books(session, auth, *_BOOKS)
+
+    r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "docs.void_order_receipt"
+    assert detail["message"] == ("This bill cannot be voided: the purchase order it was made from booked its "
+                                 "receipt, and voiding the bill would leave that entry standing. To cancel the "
+                                 "bill, revert it to draft.")
+    assert await _books(session, auth, *_BOOKS) == before
+    await _owes(session, auth, po)
+
+    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, po))["doc_type"] == "purchase_order"
+    assert await _books(session, auth, *_BOOKS) == {"1130-OB": _OPENING, "1130-P": 0.0, "2110": 0.0}
+    await _settled(session, auth)
+
+
+async def test_receipts_cannot_be_written_by_an_edit(client, session, auth):
+    """What a document received is written only by receiving and its undo, never by editing
+    the document, even while it is a draft."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po = await _doc(client, auth, "purchase_order", [{"item_id": lot, "name": "Lot", "quantity": 5,
+                                                      "unit_price": 14.0}])
+    forged = [{"item_id": lot, "po_line_index": 0, "quantity_received": 5.0, "receive_as": "stock"}]
+    for field, value in (("received_items", forged), ("received_item_ids", [lot])):
+        r = await client.patch(f"/docs/{po}", headers=auth["headers"],
+                               json={"fields_changed": {field: {"old": None, "new": value}}})
+        assert r.status_code == 422, (field, r.text)
+        assert field in r.json()["detail"]
+    doc = await _state(session, auth, po)
+    assert (doc["status"], doc.get("received_items"), doc.get("received_item_ids")) == ("draft", None, None)
+
+
+async def _imported_bill(client, auth, lot: str, qty: float = 5, received: float = 5) -> tuple[str, str]:
+    """A bill for ``qty`` imported with ``received`` of it already received onto ``lot``.
+    -> (doc id, line id)."""
     doc_id, line_id = f"doc:{uuid.uuid4()}", str(uuid.uuid4())
     r = await client.post("/docs/import", headers=auth["headers"], json={
         "entity_id": doc_id, "event_type": "doc.created", "source": "test",
         "idempotency_key": uuid.uuid4().hex, "data": {
             "doc_type": "bill", "status": "awaiting_payment", "doc_number": f"B-IMP-{uuid.uuid4().hex[:5]}",
-            "line_items": [{"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0, "line_id": line_id}],
-            "subtotal": 70.0, "total": 70.0, "amount_outstanding": 70.0,
-            "received_items": [{"item_id": lot, "po_line_index": 0, "quantity_received": 5.0,
+            "line_items": [{"item_id": lot, "name": "Lot", "quantity": qty, "unit_price": 14.0, "line_id": line_id}],
+            "subtotal": 14.0 * qty, "total": 14.0 * qty, "amount_outstanding": 14.0 * qty,
+            "received_items": [{"item_id": lot, "po_line_index": 0, "quantity_received": float(received),
                                 "receive_as": "stock"}],
             "received_item_ids": []}})
     assert r.status_code == 200, r.text
@@ -630,46 +685,187 @@ async def test_bill_holding_goods_it_received_still_reverts_and_voids_only_once_
     assert r.json()["detail"] == "Cannot void a document with received items; return the goods first"
 
 
-async def test_bill_that_received_goods_itself_beside_imported_ones_names_no_way_out(client, session, auth):
-    """Goods received while it is a bill were booked against the bill, so reverting it would
-    leave their receipt and return unsettled: the refusal says the imported goods stay."""
+_NEXT_RECEIVE = ("To receive more, return anything received here first, then revert the bill to draft, receive "
+                 "the goods on the purchase order and convert it to a bill again.")
+
+
+async def _receive_on(client, auth, doc_id: str, line_id: str, lot: str, qty: float):
+    return await _post(client, auth, doc_id, {"source_line_id": line_id, "item_id": lot,
+                                              "quantity_received": qty, "receive_as": "stock"})
+
+
+async def _receipts(session, auth, doc_id: str) -> tuple:
+    doc = await _state(session, auth, doc_id)
+    return doc.get("received_items"), doc.get("received_item_ids")
+
+
+async def test_bill_from_an_imported_order_receives_nothing_more_and_names_the_order(client, session, auth):
+    """The bill books the goods its order was imported with as not yet received while the lot
+    already carries them, so goods received beside them on the bill would leave it no
+    balanced way back. It refuses the receipt and names the way that works: receive on the
+    order and make it a bill again, after which accounts payable holds what the bill owes."""
     lot = await _item(client, auth, _OPENING, qty=10)
     po, line_id = await _imported_received_po(client, auth, lot, qty=10, received=4)
     await _converted(client, session, auth, po)
-    r = await _post(client, auth, po, {"source_line_id": line_id, "item_id": lot, "quantity_received": 3,
-                                       "receive_as": "stock"})
+    await _owes(session, auth, po)
+    before, receipts = await _held(session, auth, po, lot), await _receipts(session, auth, po)
+
+    r = await _receive_on(client, auth, po, line_id, lot, 3)
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "docs.receive_imported_bill"
+    assert detail["message"] == ("Nothing more can be received on this bill: it already held goods when it "
+                                 "was imported. " + _NEXT_RECEIVE)
+    assert detail["params"]["next_step"]["message_key"] == "docs.imported_on_bill_next.receive"
+    assert await _held(session, auth, po, lot) == before
+    assert await _receipts(session, auth, po) == receipts
+
+    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
-    # A bill receives into a parcel of its own: the 3 the line offers back are in that
-    # parcel, not in the lot the line names, so by lot nothing received here can go back,
-    # and by line or by parcel the 3 the line offers do.
-    [parcel] = (await _state(session, auth, po))["received_item_ids"]
-    assert await _qty(session, auth, parcel) == 3
-    doc = (await client.get(f"/docs/{po}", headers=auth["headers"])).json()
-    assert doc["line_items"][0]["returnable_quantity"] == 3
+    await _balanced(session, auth)
+    r = await _receive_on(client, auth, po, line_id, lot, 3)
+    assert r.status_code == 200, r.text
+    assert await _qty(session, auth, lot) == 13
+    await _balanced(session, auth)
+    await _converted(client, session, auth, po)
+    await _owes(session, auth, po)
+    assert (await _state(session, auth, po))["amount_outstanding"] == pytest.approx(140.0)
+
+    # What the order received goes back on the bill, which then reverts to the order. Voiding
+    # it would leave the order's receipt of them standing.
+    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 3})
+    assert r.status_code == 200, r.text
+    assert await _qty(session, auth, lot) == 10
+    await _owes(session, auth, po)
+    r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.void_order_receipt"
+    await _owes(session, auth, po)
+    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, po))["doc_type"] == "purchase_order"
+    await _balanced(session, auth)
+    await _converted(client, session, auth, po)
+    await _owes(session, auth, po)
+
+
+@pytest.mark.parametrize("historical", [False, True])
+async def test_imported_bill_receives_nothing_more(client, session, auth, historical):
+    """A bill imported as a bill holding goods has no order to receive on. Neither a receipt
+    nor a receipt recorded from the books it came from is taken on it."""
+    from fastapi import HTTPException
+
+    from celerp_docs.routes import record_historical_receipt
+
+    lot = await _item(client, auth, _OPENING, qty=10)
+    bill, line_id = await _imported_bill(client, auth, lot, received=3)
+    before, receipts = await _held(session, auth, bill, lot), await _receipts(session, auth, bill)
+    if historical:
+        with pytest.raises(HTTPException) as refused:
+            await record_historical_receipt(
+                session, auth["company_id"], bill, lines=[{"line": 0, "item_id": lot, "quantity": 2, "cost": 28}],
+                received_on="2025-01-02", actor_id=auth["user_id"], source="migration",
+                idempotency_key=f"m:{bill}:received")
+        await session.rollback()
+        status, detail = refused.value.status_code, refused.value.detail
+    else:
+        r = await _receive_on(client, auth, bill, line_id, lot, 2)
+        status, detail = r.status_code, r.json()["detail"]
+    assert status == 409, detail
+    assert detail["message_key"] == "docs.receive_imported_bill"
+    assert detail["message"] == ("Nothing more can be received on this bill: it already held goods when it "
+                                 "was imported. " + _NEXT_VOID)
+    assert await _held(session, auth, bill, lot) == before
+    assert await _receipts(session, auth, bill) == receipts
+    await _owes(session, auth, bill)
+
+
+async def _received_beside_imported(client, session, auth, monkeypatch, doc_id: str, line_id: str, lot: str,
+                                    qty: float) -> str:
+    """Receive ``qty`` on a bill holding imported goods, as could be done before such receipts
+    were refused. -> the parcel the receipt made."""
+    from celerp_docs import routes
+
+    async def _taken(*_args, **_kwargs):
+        return None
+
+    with monkeypatch.context() as m:
+        m.setattr(routes, "_refuse_receipt_on_imported_bill", _taken, raising=False)
+        r = await _receive_on(client, auth, doc_id, line_id, lot, qty)
+    assert r.status_code == 200, r.text
+    [parcel] = (await _state(session, auth, doc_id))["received_item_ids"]
+    assert await _qty(session, auth, parcel) == qty
+    return parcel
+
+
+async def test_bill_from_an_imported_order_that_received_goods_itself_goes_back_to_the_order(
+        client, session, auth, monkeypatch):
+    """A bill made from an imported order that already received goods of its own beside the
+    imported ones sends its own goods back, then reverts to the order, which keeps its
+    receipts and what went back. Voiding stays refused: it would take away the order's
+    receipt and leave the return of the bill's own goods standing."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po, line_id = await _imported_received_po(client, auth, lot, qty=10, received=4)
+    await _converted(client, session, auth, po)
+    parcel = await _received_beside_imported(client, session, auth, monkeypatch, po, line_id, lot, 3)
+    await _owes(session, auth, po)
+
+    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == ("Cannot revert to draft while goods received on this document are still "
+                                  "in stock. Select those lines and use Return Goods first, then revert.")
+    r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "Cannot void a document with received items; return the goods first"
+    # The bill's own goods go back from the parcel it received them into, never from the
+    # goods the order was imported with.
     r = await client.post(f"/docs/{po}/return-items", headers=auth["headers"],
                           json={"items": [{"item_id": lot, "quantity_returned": 3}]})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["params"]["received"] == "0"
-    r = await client.post(f"/docs/{po}/return-items", headers=auth["headers"],
-                          json={"items": [{"item_id": parcel, "quantity_returned": 1}]})
-    assert r.status_code == 200, r.text
-    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 2})
+    assert r.json()["detail"]["params"]["next_step"]["message_key"] == "docs.imported_on_bill_next.revert"
+    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 3})
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, parcel))["status"] == "disposed"
-    doc = (await client.get(f"/docs/{po}", headers=auth["headers"])).json()
-    assert doc["line_items"][0]["returnable_quantity"] == 0
-    r = await _return_lines(client, auth, po, {"line_id": line_id, "quantity_returned": 1})
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["params"]["next_step"] == {
-        "message": "They stay in stock on this bill.", "message_key": "docs.imported_on_bill_next.none",
-        "params": {}}
-    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message"] == (
-        "This bill cannot go back to draft: it already held goods when it was imported, and a draft bill "
-        "holds none. They stay in stock on this bill.")
+    await _owes(session, auth, po)
+    before = await _held(session, auth, po, lot)
+
     r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message"] == (
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "docs.void_imported_bill"
+    assert detail["message"] == (
         "This bill cannot be voided: goods it received itself were booked against it, beside goods it "
-        "already held when it was imported. They stay in stock on this bill.")
+        "already held when it was imported. " + _NEXT_CANCEL)
+    assert detail["params"]["next_step"]["message_key"] == "docs.imported_on_bill_next.cancel"
+    assert await _held(session, auth, po, lot) == before
+
+    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    doc = await _state(session, auth, po)
+    assert doc["doc_type"] == "purchase_order"
+    assert await _books(session, auth, *_BOOKS) == before[0]
+    await _balanced(session, auth)
+    # Made a bill again, it owes for what it kept.
+    await _converted(client, session, auth, po)
+    await _owes(session, auth, po)
+    assert (await _state(session, auth, po))["amount_outstanding"] == pytest.approx(98.0)
+
+
+async def test_imported_bill_that_received_goods_itself_stays_payable(client, session, auth, monkeypatch):
+    """A bill imported as a bill that already received goods of its own beside the imported
+    ones has no order to go back to, and voiding it would leave the return of its own goods
+    booked against nothing. Once those are back it stays as it is, owing what it owes."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    bill, line_id = await _imported_bill(client, auth, lot, received=3)
+    await _received_beside_imported(client, session, auth, monkeypatch, bill, line_id, lot, 2)
+    r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": 2})
+    assert r.status_code == 200, r.text
+    await _owes(session, auth, bill)
+    before = await _held(session, auth, bill, lot)
+    for step, key in (("void", "docs.void_imported_bill"), ("revert-to-draft", "docs.revert_imported_bill")):
+        r = await client.post(f"/docs/{bill}/{step}", headers=auth["headers"], json={})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["message_key"] == key
+        assert r.json()["detail"]["params"]["next_step"]["message_key"] == "docs.imported_on_bill_next.none"
+    assert await _held(session, auth, bill, lot) == before
+    await _owes(session, auth, bill)

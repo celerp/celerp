@@ -1345,6 +1345,15 @@ def _recognition_root(suffix: str, imported_receipt: bool = False) -> str | None
     return None
 
 
+async def receipts_void_leaves(session, company_id, doc_id: str, imported_receipt: bool = False) -> list[str]:
+    """The ids of a document's posted receipt entries that voiding it would leave standing:
+    every one but the imported receipt a void reverses (``imported_receipt``,
+    _recognition_root)."""
+    prefix = f"je:auto:{doc_id}:"
+    return [row.entity_id for row in await _doc_receipt_jes(session, company_id, doc_id)
+            if _recognition_root(row.entity_id[len(prefix):], imported_receipt) is None]
+
+
 async def _doc_recognition_jes(session, company_id, doc_id: str,
                                imported_receipt: bool = False) -> dict[str, Projection]:
     """suffix -> JE projection for every recognition-family auto-JE of the doc, with its
