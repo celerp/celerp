@@ -7936,16 +7936,14 @@ async def undo_receive_return(
 
     now = datetime.now(timezone.utc).isoformat()
     item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
-    lot_costs = {
-        r["item_id"]: float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
-        for r in received_items if r.get("item_id")
-    }
-    total_cogs = sum(lot_costs.values())
-
     # Pre-flight: every returned item is still as the return left it before archiving.
     # If an item was re-sold, split or already archived, we cannot silently remove it.
+    item_rows = {eid: r.state for eid, r in (await lock_projections(session, company_id, item_ids)).items()}
+    # Each lot leaves the books at what it carries now, which is what it was returned at
+    # unless its cost changed since (consigned goods bought on a vendor bill).
+    lot_costs = {iid: auto_je.lot_cost_of_sale(item_rows[iid]) for iid in item_ids if iid in item_rows}
+    total_cogs = sum(lot_costs.values())
     if item_ids:
-        item_rows = {eid: r.state for eid, r in (await lock_projections(session, company_id, item_ids)).items()}
         came_in = {r["item_id"]: float(r.get("quantity") or 0) for r in received_items if r.get("item_id")}
         blocked = [why for iid in item_ids
                    if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in[iid])) is not None]

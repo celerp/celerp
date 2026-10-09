@@ -240,6 +240,33 @@ async def test_a_customer_return_puts_the_goods_back_on_consignment(client, sess
     await _settled(client, session, auth)
 
 
+async def test_undoing_a_customer_return_after_buying_takes_the_goods_off_at_what_they_cost(client, session, auth):
+    """Recorded at 4 a unit, bought at 5: undoing the return takes the lot off inventory at
+    the 10 it carries, not the 8 it came back at, so no inventory is left that no lot holds."""
+    consignment, lot = await _consign(client, session, auth, cost_price=4.0)
+    doc = await _sell(client, session, auth, lot)
+    sku = (await _state(session, auth, lot))["sku"]
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "credit_note", "original_doc_id": doc, "ref_id": f"CN-{uuid.uuid4().hex[:6]}",
+        "line_items": [{"sku": sku, "name": "Lot", "quantity": 2, "unit_price": 40.0}], "total": 80.0})
+    assert r.status_code == 200, r.text
+    cn = r.json()["id"]
+    assert (await client.post(f"/docs/{cn}/finalize", headers=auth["headers"])).status_code == 200
+    r = await client.post(f"/docs/{cn}/receive-return", headers=auth["headers"], json={
+        "items": [{"sku": sku, "item_id": lot, "quantity": 2}], "idempotency_key": f"ret-{uuid.uuid4()}"})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{consignment}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 0.0, PURCHASED: 10.0, AP: -10.0}
+
+    r = await client.delete(f"/docs/{cn}/receive-return", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 10.0, PURCHASED: 0.0, AP: -10.0}
+    await _settled(client, session, auth)
+
+
 @pytest.mark.parametrize("recorded_unit", [4.0, 5.0, 6.0])
 async def test_converting_after_a_partial_sale_settles_the_sold_and_buys_the_held(
         client, session, auth, recorded_unit):
