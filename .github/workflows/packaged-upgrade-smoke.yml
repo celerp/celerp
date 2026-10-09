@@ -85,6 +85,9 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libfuse2 jq >/dev/null
           chmod +x "$RUNNER_TEMP"/previous/Celerp.AppImage "$RUNNER_TEMP"/candidate/Celerp.AppImage
+          # The runner image blocks unprivileged user namespaces, so Chromium's sandbox
+          # aborts inside an AppImage. Allow them, as a stock desktop install does.
+          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
           export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
           # Opens the data with one copy; prints "ready" or "not-ready" after $2 seconds at most.
           # Once ready, runs each smoke_records.py command in $4.. against it, output in $3.<command>.
@@ -170,7 +173,7 @@ jobs:
             $dir = InstallDir
             [ordered]@{
               exe      = (Get-FileHash (Join-Path $dir "Celerp.exe") -Algorithm SHA256).Hash
-              sentinel = (Get-FileHash (Join-Path $dir "celerp-ci-sentinel.txt") -Algorithm SHA256).Hash
+              sentinel = (Get-FileHash (Join-Path $dir "celerp-ci-sentinel.txt") -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
               entry    = (Get-ItemProperty (Entry).PSPath | Select-Object * -ExcludeProperty PS* | ConvertTo-Json -Compress)
             } | ConvertTo-Json -Compress
           }
