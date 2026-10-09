@@ -246,6 +246,9 @@ class _ReceiveRows(HTMLParser):
         elif self._inside and tag in ("input", "select") and a.get("name"):
             if self._row is not None and self._row not in self.selected:
                 return
+            # A disabled field, or a box left unticked, sends nothing.
+            if "disabled" in a or (a.get("type") == "checkbox" and "checked" not in a):
+                return
             if tag == "input":
                 self.fields.append((a["name"], a.get("value") or ""))
                 if a.get("type") == "number":

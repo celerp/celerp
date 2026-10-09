@@ -1014,22 +1014,23 @@ def _render_fulfillment_badge(doc: dict):
 
 
 def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float | None = None,
-                    step: float | None = None) -> FT:
+                    step: float | None = None, disabled: bool = False) -> FT:
     """A quantity field for part of one line, with the unit it is counted in. ``max_qty`` is
     the most the line allows and ``step`` the smallest quantity its unit allows (None when the
     unit sets none, any amount above 0); the page checks the entry against both before anything
-    is sent, and the server proves it again. ESC leaves the field."""
+    is sent, and the server proves it again. ESC leaves the field. A disabled field sends
+    nothing until the page enables it."""
     return _line_number_field(
         unit_label, name=name, min=f"{step:g}" if step else "0", step=f"{step:g}" if step else "any",
         max=f"{max_qty:g}", value=f"{(max_qty if default is None else default):g}", data_max=f"{max_qty:g}",
-        cls="li-qty-input", style="width:6em;")
+        cls="li-qty-input", style="width:6em;", disabled=disabled)
 
 
-def _line_measure_input(name: str, placeholder: str, unit_label: str, step: str) -> FT:
+def _line_measure_input(name: str, placeholder: str, unit_label: str, step: str, disabled: bool = False) -> FT:
     """An optional weight or pieces field for part of one line: blank unless the user knows
     the measure, and a blank field is sent as not known. ESC leaves the field."""
     return _line_number_field(unit_label, name=name, min="0", step=step, value="", placeholder=placeholder,
-                              cls="li-measure-input", style="width:9em;")
+                              cls="li-measure-input", style="width:9em;", disabled=disabled)
 
 
 def _line_number_field(unit_label: str, **attrs) -> FT:
@@ -1041,14 +1042,15 @@ def _line_number_field(unit_label: str, **attrs) -> FT:
     )
 
 
-def _action_error(msg: str):
-    """Fire a toast popup for action errors and restore any open editable cell to display mode."""
+def _action_error(msg: str, **triggers):
+    """Fire a toast popup for action errors and restore any open editable cell to display mode.
+    ``triggers`` are further client events fired with it."""
     from starlette.responses import HTMLResponse as _HR
     return _HR(
         "",
         status_code=200,
         headers={"HX-Reswap": "none",
-                 **toast_header(msg, "error", celerpRestoreCell=True)},
+                 **toast_header(msg, "error", celerpRestoreCell=True, **triggers)},
     )
 
 
@@ -3385,35 +3387,44 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             form = await request.form()
-            # Only the selected rows submit a quantity, in stock units. Each names its line.
-            lines = []
-            for idx, qty in _selected_line_quantities(form):
+            # Only the selected rows submit a quantity, in stock units. Each names its line,
+            # or, with its lot list open, the lots ticked there.
+            picked_lines = _selected_line_quantities(form)
+            picked_lots = _selected_lot_quantities(form)
+            if picked_lines and picked_lots:
+                return _action_error(t("documents.return_by_line_or_lot"))
+            lines, items = [], []
+            for idx, qty in picked_lines:
                 if qty is None:
                     return _action_error(t("documents.receive_pick_quantity"))
                 line_id = str(form.get(f"line_id_{idx}", "")).strip()
-                # A weight or pieces left blank is not known, and is not sent.
-                measures = {}
-                for measure in ("weight", "pieces"):
-                    raw = str(form.get(f"{measure}_{idx}", "")).strip()
-                    if not raw:
-                        continue
-                    try:
-                        value = float(raw)
-                    except ValueError:
-                        value = math.nan
-                    if not math.isfinite(value):
-                        return _action_error(t(f"lines.{measure}_invalid"))
-                    measures[measure] = value
+                measures = _return_measures(form, str(idx))
+                if isinstance(measures, str):
+                    return _action_error(measures)
                 lines.append({**({"line_id": line_id} if line_id else {"line_index": idx}),
                               "quantity_returned": qty, **measures})
-            if not lines:
+            for idx, key, qty in picked_lots:
+                if qty is None:
+                    return _action_error(t("documents.return_lot_pick_quantity"))
+                measures = _return_measures(form, key)
+                if isinstance(measures, str):
+                    return _action_error(measures)
+                items.append({"item_id": str(form.get(key, "")).strip(), "quantity_returned": qty, **measures})
+            if not lines and not items:
                 return _action_error(t("documents.return_nothing_selected"))
-            await api.return_goods(token, entity_id, {"lines": lines, **submitted_operation_key(form)})
+            await api.return_goods(token, entity_id, {**({"items": items} if items else {"lines": lines}),
+                                                      **submitted_operation_key(form)})
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            # A line whose lots the server cannot pick for it opens its lot list.
+            data = e.data if isinstance(e.data, dict) else {}
+            line = (data.get("params") or {}).get("line")
+            if data.get("message_key") in _RETURN_BY_LOT_KEYS and isinstance(line, int):
+                return _action_error(error_message(e), celerpOpenReturnLots={"line": line})
             return _action_error(error_message(e))
-        done = t(f"documents.return_done_{'one' if len(lines) == 1 else 'many'}", n=len(lines))
+        count = len({idx for idx, _, _ in picked_lots}) or len(lines)
+        done = t(f"documents.return_done_{'one' if count == 1 else 'many'}", n=count)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **toast_header(done, "info")})
 
@@ -6072,6 +6083,43 @@ def _selected_line_quantities(form) -> list[tuple[int, float | None]]:
     return out
 
 
+def _selected_lot_quantities(form) -> list[tuple[int, str, float | None]]:
+    """(line index, field name, quantity) for each lot ticked in a line's lot list
+    (``lot_<i>_<j>`` naming the lot, ``lot_qty_<i>_<j>`` its quantity), in line and lot order;
+    the quantity is None unless it is a positive number."""
+    out = []
+    keys = (k for k in form.keys() if re.fullmatch(r"lot_\d+_\d+", k))
+    for key in sorted(keys, key=lambda k: tuple(int(x) for x in k[4:].split("_"))):
+        try:
+            qty = float(str(form.get(f"lot_qty_{key[4:]}", "")).strip())
+        except ValueError:
+            qty = 0.0
+        out.append((int(key[4:].split("_")[0]), key, qty if math.isfinite(qty) and qty > 0 else None))
+    return out
+
+
+def _return_measures(form, key: str) -> dict | str:
+    """The weight and pieces a return row gave (``weight_<key>``, ``pieces_<key>``), or the
+    message refusing one that is not a number. A field left blank is not known, and is not sent."""
+    measures = {}
+    for measure in ("weight", "pieces"):
+        raw = str(form.get(f"{measure}_{key}", "")).strip()
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value):
+            return t(f"lines.{measure}_invalid")
+        measures[measure] = value
+    return measures
+
+
+# Refusals of a return by line that name the line to return by lot instead.
+_RETURN_BY_LOT_KEYS = ("docs.return_line_by_lot", "docs.return_line_measure_lots")
+
+
 def _line_action_rows(line_items: list, available, unit, none_left: str, unit_map: dict, note=None,
                       extra=None) -> list:
     """One row per document line for a form acting on the selected lines, a fieldset the page
@@ -6124,27 +6172,69 @@ def _return_held_note(li: dict, has_some: bool) -> str:
     return t("documents.return_held_some" if has_some else "documents.return_held_none", held=", ".join(parts))
 
 
-def _return_measure_fields(item_meta_map: dict):
-    """The optional weight and pieces fields of a Return Goods row, for the measures its item
-    keeps beside its quantity: weight when the item has one and is not sold by weight, pieces
-    likewise. Blank means the measure of what goes back, and so of what stays, is not known."""
-    def fields(li: dict, i: int) -> list:
+def _return_measure_inputs(meta: dict, key: str, disabled: bool = False) -> list:
+    """The optional weight and pieces fields of a Return Goods row (``weight_<key>``,
+    ``pieces_<key>``), for the measures its item keeps beside its quantity: weight when the
+    item has one and is not sold by weight, pieces likewise."""
+    out = []
+    if not meta.get("qty_is_weight") and (meta.get("weight") is not None or meta.get("weight_unit")):
+        out.append(_line_measure_input(f"weight_{key}", t("inventory.ph_weight_optional"),
+                                       meta.get("weight_unit") or "", "any", disabled))
+    if not meta.get("qty_is_pieces") and meta.get("pieces") is not None:
+        out.append(_line_measure_input(f"pieces_{key}", t("inventory.ph_pieces_optional"), "", "1", disabled))
+    return out
+
+
+def _return_lot_picker(li: dict, i: int, unit_map: dict, meta: dict) -> FT | None:
+    """A Return Goods row's lot list, closed until opened: each lot the line can send goods
+    back from, with what of it is free to go back and its own measures, ticked with a
+    quantity of its own. While the list is open the line sends its ticked lots instead of its
+    quantity (the page enables a lot's fields once it is ticked)."""
+    lots = li.get("return_lots") or []
+    if not lots:
+        return None
+    unit = li.get("unit") or ""
+    esc = "if(event.key==='Escape'){this.blur();event.preventDefault();}"
+
+    def measure(value, unit_label: str = "") -> str:
+        return "--" if value is None else f"{float(value):g} {unit_label}".strip()
+
+    rows = []
+    for j, lot in enumerate(lots):
+        key, qty = f"lot_{i}_{j}", float(lot.get("quantity") or 0)
+        facts = [f"{t('documents.return_lot_free')}: {qty:g} {unit}".strip(),
+                 f"{t('th.weight')}: {measure(lot.get('weight'), lot.get('weight_unit') or '')}",
+                 f"{t('inventory.th_pieces')}: {measure(lot.get('pieces'))}"]
+        rows.append(Div(
+            Label(Input(type="checkbox", name=key, value=lot["item_id"], cls="return-lot-pick", disabled=True,
+                        onkeydown=esc),
+                  Span(lot.get("barcode") or lot.get("sku") or lot.get("name") or "--", cls="receive-row__label")),
+            _line_qty_input(f"lot_qty_{i}_{j}", qty, unit, qty, step=quantity_step(unit, unit_map), disabled=True),
+            *_return_measure_inputs(meta, key, disabled=True),
+            Span(" · ".join(facts), cls="text-muted receive-row__note"),
+            Span(t("documents.return_lot_whole_only"), cls="badge badge--amber") if lot.get("whole_only") else None,
+            cls="return-lot inline-form-row",
+        ))
+    return Details(Summary(t("documents.return_by_lot")), *rows, cls="return-lots", data_line_index=str(i))
+
+
+def _return_row_extras(item_meta_map: dict, unit_map: dict):
+    """What a Return Goods row offers after its quantity: optional weight and pieces fields
+    (blank means the measure of what goes back, and so of what stays, is not known), and the
+    line's lot list."""
+    def extras(li: dict, i: int) -> list:
         meta = item_meta_map.get(li.get("entity_id") or li.get("item_id") or "") or {}
-        out = []
-        if not meta.get("qty_is_weight") and (meta.get("weight") is not None or meta.get("weight_unit")):
-            out.append(_line_measure_input(f"weight_{i}", t("inventory.ph_weight_optional"),
-                                           meta.get("weight_unit") or "", "any"))
-        if not meta.get("qty_is_pieces") and meta.get("pieces") is not None:
-            out.append(_line_measure_input(f"pieces_{i}", t("inventory.ph_pieces_optional"), "", "1"))
+        out = _return_measure_inputs(meta, str(i))
         if out:
             out.append(Span(t("documents.return_measure_blank_hint"), cls="text-muted receive-row__hint"))
-        return out
-    return fields
+        return [*out, _return_lot_picker(li, i, unit_map, meta)]
+    return extras
 
 
 def _return_rows(line_items: list, unit_map: dict, item_meta_map: dict) -> list:
     """Return Goods rows: a line offers what of its goods is on hand and free, in stock units,
-    with optional fields for the weight and pieces going back, and says what holds the rest."""
+    with optional fields for the weight and pieces going back and a list of its lots to return
+    from instead, and says what holds the rest."""
     return _line_action_rows(
         line_items,
         lambda li: float(li.get("returnable_quantity") or 0),
@@ -6152,8 +6242,44 @@ def _return_rows(line_items: list, unit_map: dict, item_meta_map: dict) -> list:
         t("documents.nothing_to_return"),
         unit_map,
         _return_held_note,
-        _return_measure_fields(item_meta_map),
+        _return_row_extras(item_meta_map, unit_map),
     )
+
+
+# A Return Goods row's lot list: while it is open the row sends its ticked lots, each lot's
+# fields enabled once it is ticked, and not the line's own quantity. A refusal naming a line
+# to return by lot opens that line's list.
+_RETURN_LOTS_JS = """
+(function(){
+  if(window._celerpReturnLots) return;
+  window._celerpReturnLots=true;
+  function sync(d){
+    var row=d.closest('fieldset.receive-row');
+    if(!row) return;
+    row.querySelectorAll('input').forEach(function(inp){
+      if(inp.type==='hidden') return;
+      var lot=inp.closest('.return-lot');
+      if(!lot){ inp.disabled=d.open; return; }
+      if(inp.classList.contains('return-lot-pick')){ inp.disabled=!d.open; return; }
+      inp.disabled=!(d.open&&lot.querySelector('.return-lot-pick').checked);
+    });
+  }
+  document.addEventListener('toggle',function(e){
+    if(e.target.matches&&e.target.matches('details.return-lots')) sync(e.target);
+  },true);
+  document.addEventListener('change',function(e){
+    if(e.target.classList&&e.target.classList.contains('return-lot-pick')) sync(e.target.closest('details.return-lots'));
+  });
+  document.body.addEventListener('celerpOpenReturnLots',function(e){
+    var d=document.querySelector('#li-bulk-revert-btn details.return-lots[data-line-index="'+e.detail.line+'"]');
+    if(!d) return;
+    d.open=true;
+    sync(d);
+    var first=d.querySelector('.return-lot-pick');
+    if(first) first.focus();
+  });
+})();
+"""
 
 
 def _line_action_submit(label: str, cls: str) -> FT:
@@ -6271,6 +6397,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     hx_confirm=t("documents.confirm_return_selected"),
                     hx_disabled_elt="find button[type=submit]",
                 ),
+                Script(_RETURN_LOTS_JS),
             ]
         else:
             if show_fulfill:

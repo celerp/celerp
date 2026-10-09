@@ -1325,7 +1325,8 @@ _IMPORTED_RECEIPT = "rcv"
 _FULFILLMENT_COGS = re.compile(r"fulfill(?:-\d+)?")
 
 
-def _recognition_root(suffix: str, imported_receipt: bool = False) -> str | None:
+def _recognition_root(suffix: str, imported_receipt: bool = False,
+                      goods_movements: bool = False) -> str | None:
     """The recognition root of a JE id suffix, or None for non-recognition JEs.
 
     The root is the suffix with any unvoid-restore generations stripped, so a
@@ -1333,11 +1334,14 @@ def _recognition_root(suffix: str, imported_receipt: bool = False) -> str | None
     all root to their cycle id; cogs-adj:fulfill-0:l0:unvoid:1 roots to
     cogs-adj:fulfill-0:l0, fulfill-1:unvoid to fulfill-1. With imported_receipt,
     the bare receipt entry of an order imported as received and its restores
-    (rcv, rcv:unvoid:1) root to rcv. A payment (pay:0) or receipt (rcv:0) suffix
-    returns None.
+    (rcv, rcv:unvoid:1) root to rcv. With goods_movements, the entries of the bill's
+    own receipts and returns to the supplier (rcv:0, rtn:0 and their restores) root to
+    themselves. Otherwise a payment (pay:0) or receipt (rcv:0) suffix returns None.
     """
     root = re.sub(r"(?::unvoid(?::\d+)?)+$", "", suffix)
     if _FULFILLMENT_COGS.fullmatch(root) or (imported_receipt and root == _IMPORTED_RECEIPT):
+        return root
+    if goods_movements and root.split(":")[0] in ("rcv", "rtn"):
         return root
     for family in _RECOGNITION_FAMILIES:
         if root == family or root.startswith(f"{family}:"):
@@ -1354,10 +1358,11 @@ async def receipts_void_leaves(session, company_id, doc_id: str, imported_receip
             if _recognition_root(row.entity_id[len(prefix):], imported_receipt) is None]
 
 
-async def _doc_recognition_jes(session, company_id, doc_id: str,
-                               imported_receipt: bool = False) -> dict[str, Projection]:
+async def _doc_recognition_jes(session, company_id, doc_id: str, imported_receipt: bool = False,
+                               goods_movements: bool = False) -> dict[str, Projection]:
     """suffix -> JE projection for every recognition-family auto-JE of the doc, with its
-    imported receipt entry when ``imported_receipt`` (_recognition_root)."""
+    imported receipt entry when ``imported_receipt`` and its receipt and return entries
+    when ``goods_movements`` (_recognition_root)."""
     prefix = f"je:auto:{doc_id}:"
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id,
@@ -1368,7 +1373,7 @@ async def _doc_recognition_jes(session, company_id, doc_id: str,
         if not row.entity_id.startswith(prefix):
             continue
         suffix = row.entity_id[len(prefix):]
-        if _recognition_root(suffix, imported_receipt) is not None:
+        if _recognition_root(suffix, imported_receipt, goods_movements) is not None:
             jes[suffix] = row
     return jes
 
@@ -1438,7 +1443,7 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
 
 
 async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
-                              imported_receipt: bool = False) -> None:
+                              imported_receipt: bool = False, goods_movements: bool = False) -> None:
     """Reverse every posted recognition-family auto-JE when a finalized doc is
     voided, stamping each void event with this void's batch number.
 
@@ -1452,13 +1457,18 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
 
     imported_receipt: the doc is a bill still holding goods it was imported with,
     whose receipt entry stood in for the bill's own and reverses with it.
+
+    goods_movements: such a bill, imported as a bill, also received goods itself and sent
+    every one of them back; the entries of those receipts and returns reverse with it, so
+    the bill leaves nothing booked.
     """
     void_events = await _doc_void_events(session, company_id, doc_id)
     batch = 1 + max(
         (int((e.metadata_ or {}).get("void_batch") or 0) for e in void_events),
         default=0,
     )
-    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id, imported_receipt)).items():
+    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id, imported_receipt,
+                                                    goods_movements)).items():
         je_id = f"je:auto:{doc_id}:{suffix}"
         if (row.state or {}).get("status") != "posted":
             continue
@@ -2107,7 +2117,7 @@ async def create_for_doc_cogs_adjustment(
 
 
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
-                                  imported_receipt: bool = False) -> None:
+                                  imported_receipt: bool = False, goods_movements: bool = False) -> None:
     """Restore exactly what the immediately preceding void removed.
 
     Finds the recognition JEs the most recent void batch reversed and re-posts
@@ -2125,13 +2135,14 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
     came from a doc void (not a revert to draft) restores the JE that event
     reversed.
 
-    imported_receipt: as for void_for_doc_voided, so the imported receipt entry the
-    void reversed is restored with the bill's own.
+    imported_receipt, goods_movements: as for void_for_doc_voided, so the imported receipt
+    entry and the receipt and return entries the void reversed are restored with the
+    bill's own.
     """
     from celerp.models.ledger import LedgerEntry
 
     prefix = f"je:auto:{doc_id}:"
-    jes = await _doc_recognition_jes(session, company_id, doc_id, imported_receipt)
+    jes = await _doc_recognition_jes(session, company_id, doc_id, imported_receipt, goods_movements)
     void_events = await _doc_void_events(session, company_id, doc_id)
 
     batched = [e for e in void_events if (e.metadata_ or {}).get("void_batch")]
@@ -2142,7 +2153,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
     else:
         last_void_by_root: dict[str, object] = {}
         for event in void_events:  # oldest first, so the latest event wins
-            root = _recognition_root(event.entity_id[len(prefix):], imported_receipt)
+            root = _recognition_root(event.entity_id[len(prefix):], imported_receipt, goods_movements)
             if root is not None:
                 last_void_by_root[root] = event
         to_restore = [e.entity_id for e in last_void_by_root.values()
@@ -2150,11 +2161,11 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
 
     for voided_je_id in to_restore:
         suffix = voided_je_id[len(prefix):]
-        root = _recognition_root(suffix, imported_receipt)
+        root = _recognition_root(suffix, imported_receipt, goods_movements)
         source = jes.get(suffix)
         if root is None or source is None:
             continue
-        family = {s: r for s, r in jes.items() if _recognition_root(s, imported_receipt) == root}
+        family = {s: r for s, r in jes.items() if _recognition_root(s, imported_receipt, goods_movements) == root}
         if any((r.state or {}).get("status") == "posted" for r in family.values()):
             continue
         state = source.state or {}

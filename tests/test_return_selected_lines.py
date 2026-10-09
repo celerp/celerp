@@ -420,13 +420,15 @@ async def test_return_goods_form_sends_the_measures_given(monkeypatch):
 @pytest.mark.parametrize("key", [
     "docs.return_line_not_on_hand", "docs.return_line_shared", "docs.return_line_unknown",
     "docs.return_line_untraced", "docs.return_not_on_hand", "docs.return_imported_on_bill",
-    "docs.imported_on_bill_next.revert", "docs.imported_on_bill_next.void", "docs.imported_on_bill_next.none",
+    "docs.imported_on_bill_next.revert", "docs.imported_on_bill_next.void", "docs.imported_on_bill_next.return",
     "docs.undo_receipt_imported", "docs.revert_imported_bill", "docs.void_imported_bill",
     "docs.imported_on_bill_next.receive", "docs.receive_imported_bill", "docs.void_order_receipt",
     "docs.return_line_by_lot",
     "documents.confirm_return_selected",
     "documents.nothing_to_return", "documents.return_nothing_selected", "documents.return_measure_blank_hint",
     "documents.return_held_split_off", "documents.returned_nothing_owed",
+    "documents.return_by_lot", "documents.return_lot_free", "documents.return_lot_whole_only",
+    "documents.return_by_line_or_lot", "documents.return_lot_pick_quantity",
 ])
 def test_return_copy_in_every_locale(key):
     from ui import i18n

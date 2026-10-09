@@ -851,21 +851,53 @@ async def test_bill_from_an_imported_order_that_received_goods_itself_goes_back_
     assert (await _state(session, auth, po))["amount_outstanding"] == pytest.approx(98.0)
 
 
-async def test_imported_bill_that_received_goods_itself_stays_payable(client, session, auth, monkeypatch):
+_NEXT_RETURN = ("To cancel the bill, return the goods received on it first, then void it. The goods it was "
+                "imported with stay in stock.")
+
+
+async def test_imported_bill_that_received_goods_itself_voids_once_they_are_back(client, session, auth, monkeypatch):
     """A bill imported as a bill that already received goods of its own beside the imported
-    ones has no order to go back to, and voiding it would leave the return of its own goods
-    booked against nothing. Once those are back it stays as it is, owing what it owes."""
+    ones has no order to go back to. While it holds its own goods it says to return them
+    first; once they are back it voids, taking its own receipt and return with it, so nothing
+    stays booked and the imported goods stay on their lot. Unvoiding puts it all back."""
     lot = await _item(client, auth, _OPENING, qty=10)
     bill, line_id = await _imported_bill(client, auth, lot, received=3)
     await _received_beside_imported(client, session, auth, monkeypatch, bill, line_id, lot, 2)
+    await _owes(session, auth, bill)
+    before = await _held(session, auth, bill, lot)
+    r = await client.post(f"/docs/{bill}/void", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "docs.void_imported_bill"
+    assert detail["message"] == (
+        "This bill cannot be voided: goods it received itself were booked against it, beside goods it "
+        "already held when it was imported. " + _NEXT_RETURN)
+    assert detail["params"]["next_step"]["message_key"] == "docs.imported_on_bill_next.return"
+    assert await _held(session, auth, bill, lot) == before
+
     r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": 2})
     assert r.status_code == 200, r.text
     await _owes(session, auth, bill)
-    before = await _held(session, auth, bill, lot)
-    for step, key in (("void", "docs.void_imported_bill"), ("revert-to-draft", "docs.revert_imported_bill")):
-        r = await client.post(f"/docs/{bill}/{step}", headers=auth["headers"], json={})
-        assert r.status_code == 409, r.text
-        assert r.json()["detail"]["message_key"] == key
-        assert r.json()["detail"]["params"]["next_step"]["message_key"] == "docs.imported_on_bill_next.none"
-    assert await _held(session, auth, bill, lot) == before
+    standing = await _held(session, auth, bill, lot)
+    r = await client.post(f"/docs/{bill}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "docs.revert_imported_bill"
+    assert r.json()["detail"]["params"]["next_step"]["message_key"] == "docs.imported_on_bill_next.void"
+
+    r = await client.post(f"/docs/{bill}/void", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, bill))["status"] == "void"
+    assert await _books(session, auth, *_BOOKS) == {"1130-OB": _OPENING, "1130-P": 0.0, "2110": 0.0}
+    lot_state = await _state(session, auth, lot)
+    assert (lot_state["quantity"], lot_state["cost_total"]) == (10, _OPENING)
+    await _settled(session, auth)
+
+    r = await client.post(f"/docs/{bill}/unvoid", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert await _held(session, auth, bill, lot) == standing
     await _owes(session, auth, bill)
+    # And it voids again just the same.
+    r = await client.post(f"/docs/{bill}/void", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, *_BOOKS) == {"1130-OB": _OPENING, "1130-P": 0.0, "2110": 0.0}
+    await _settled(session, auth)

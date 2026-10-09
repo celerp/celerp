@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import hashlib
 import json
 import math
@@ -1541,10 +1542,11 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
     returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES
     if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
             returnable or doc.get("returned_items")):
-        # How much of each line can still go back to the supplier, in stock units, what holds
-        # the rest of what it brought in (return_held, reason -> units), and whether the line
-        # has sent goods back, all or part of it. Lines whose goods cannot be traced to them
-        # alone carry none of these and are not offered for return.
+        # How much of each line can still go back to the supplier, in stock units, and from
+        # which of its lots (return_lots), what holds the rest of what it brought in
+        # (return_held, reason -> units), and whether the line has sent goods back, all or
+        # part of it. Lines whose goods cannot be traced to them alone carry none of these and
+        # are not offered for return.
         traced = await _line_return_lots(session, company_id, entity_id, row.state, lock=False)
         if traced is not None:
             by_line, shared, kept, held, split_lots = traced[:5]
@@ -1558,6 +1560,8 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
                 line = {**lines[i]}
                 if returnable:
                     line["returnable_quantity"] = sum(q for _, q in lots)
+                    line["return_lots"] = [_return_lot(lot, q, traced.states.get(lot) or {}, traced.whole_only)
+                                           for lot, q in lots if q > 1e-9]
                     if held.get(i):
                         line["return_held"] = held[i]
                     if split_lots.get(i):
@@ -2384,15 +2388,20 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
             status_code=409,
             detail="Cannot void a document with fulfilled items; revert fulfillment (receive the goods back) first")
     # A bill holding only goods it was imported with has no receipt of them to return:
-    # voiding it reverses its own entry and leaves the goods in stock. Goods received on it
-    # while a bill were booked against it, so voiding would leave their return standing.
+    # voiding it reverses its own entry and leaves the goods in stock. Goods received on a
+    # bill made from an order while it was a bill were booked against it, so voiding would
+    # leave their return standing; it goes back to the order instead. A bill imported as a
+    # bill voids once every good it received itself went back, reversing those receipts and
+    # returns with it.
     on_bill = await _imported_on_bill(session, company_id, entity_id, row.state) if row.state.get("received_items") else None
-    if on_bill is not None and on_bill.billed and not on_bill.holds_own:
-        way = "cancel" if on_bill.way == "revert" else "none"
+    way = on_bill.way if on_bill is not None and on_bill.billed else None
+    if way == "return" or (way == "revert" and not on_bill.holds_own):
+        way = "cancel" if way == "revert" else way
         raise HTTPException(status_code=409, detail=refusal(
             "docs.void_imported_bill",
             "This bill cannot be voided: goods it received itself were booked against it, beside goods it "
             f"already held when it was imported. {_IMPORTED_NEXT_STEP[way]}", next_step=on_bill.next_step(way)))
+    moves = way == "void"
     if row.state.get("received_items") and not (on_bill is not None and on_bill.settles):
         raise HTTPException(
             status_code=409,
@@ -2409,7 +2418,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     # A bill made from a purchase order nets the order's receipt entries; voiding reverses
     # only the bill's own entries, so a receipt entry still posted (even one undone since)
     # would stay booked against a bill that owes nothing. Going back to the order settles it.
-    if row.state.get("doc_type") == "bill" and await auto_je.receipts_void_leaves(
+    if row.state.get("doc_type") == "bill" and not moves and await auto_je.receipts_void_leaves(
             session, company_id, entity_id, imported_receipt=on_bill is not None and on_bill.settles):
         raise HTTPException(status_code=409, detail=refusal(
             "docs.void_order_receipt",
@@ -2423,7 +2432,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     # Voiding first also surfaces a locked-period refusal before anything else
     # mutates, mirroring the revert-to-draft ordering.
     await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-                                      imported_receipt=on_bill is not None and on_bill.settles)
+                                      imported_receipt=on_bill is not None and on_bill.settles,
+                                      goods_movements=moves)
     await _release_holds(session, company_id=company_id, uid=user.id, owner=row)
     await _return_to_source_memo(session, company_id=company_id, uid=user.id, owner=row)
     entry = await emit_event(
@@ -2696,7 +2706,9 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     # bill holding imported goods was voided with.
     on_bill = await _imported_on_bill(session, company_id, entity_id, state) if state.get("received_items") else None
     await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-                                          imported_receipt=on_bill is not None and on_bill.settles)
+                                          imported_receipt=on_bill is not None and on_bill.settles,
+                                          goods_movements=on_bill is not None and on_bill.way == "void"
+                                          and on_bill.billed)
     if state.get("doc_type") == "invoice":
         # Cost corrections made while the invoice was void apply once it stands again.
         try:
@@ -4684,7 +4696,8 @@ _IMPORTED_NEXT_STEP = {
     "revert": "To send them back, return anything received here first, then revert the bill to draft "
               "and return them from the purchase order.",
     "void": "To cancel the bill, void it. The goods stay in stock.",
-    "none": "They stay in stock on this bill.",
+    "return": "To cancel the bill, return the goods received on it first, then void it. The goods it was "
+              "imported with stay in stock.",
     "cancel": "To cancel the bill, revert it to draft. The purchase order keeps its receipt and what went "
               "back from it.",
     "receive": "To receive more, return anything received here first, then revert the bill to draft, receive "
@@ -4697,7 +4710,7 @@ class _ImportedOnBill(NamedTuple):
     as not yet received while their lot already carries them, so they cannot go back on it."""
     left: dict[str, float]  # item id -> stock units the bill's own receipts brought in, not sent back
     holds_own: bool         # whether anything its own receipts brought in is still on it
-    way: str                # what settles the imported goods: "revert", "void" or "none"
+    way: str                # what settles the imported goods: "revert", "void" or "return"
     billed: bool            # whether goods were received on it while it was a bill
     returned: bool          # whether any of the imported goods went back to the supplier
 
@@ -4712,7 +4725,7 @@ class _ImportedOnBill(NamedTuple):
         """Whether the bill can revert (or void) now, leaving the imported goods on the lot as
         it found them: it holds nothing its own receipts brought in, and only the bill's own
         entry is undone."""
-        return self.way != "none" and not self.holds_own
+        return not self.holds_own
 
 
 async def _order_receipts_only(session: AsyncSession, company_id, doc_id: str) -> bool | None:
@@ -4734,8 +4747,8 @@ async def _imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc:
     """What a bill holds of goods it already held when it was imported (receipt entries no
     receive event recorded), and what settles them; None for any other document. A bill that
     was a purchase order goes back to the order, receipts and all, once it holds nothing it
-    received itself; a bill imported as a bill can only be voided, and only while nothing was
-    ever received on it."""
+    received itself; a bill imported as a bill is voided, once every good it received itself
+    went back."""
     if doc.get("doc_type") != "bill":
         return None
     received = list(doc.get("received_items") or [])
@@ -4750,7 +4763,7 @@ async def _imported_on_bill(session: AsyncSession, company_id, doc_id: str, doc:
     holds_own = any(not _stock_receipt(x) for x in own) or any(q > 1e-9 for q in left.values())
     on_order = await _order_receipts_only(session, company_id, doc_id)
     billed = bool(own) if on_order is None else not on_order
-    way = "revert" if on_order is not None else "none" if own else "void"
+    way = "revert" if on_order is not None else "return" if holds_own else "void"
     # A return takes what the document's own receipts added to a lot first (lot_quantity_taken);
     # anything beyond that from a lot the imported receipts went into was imported stock.
     imported_lots = {x["item_id"] for x in imported if _stock_receipt(x) and x.get("item_id")} | set(imported_made)
@@ -4865,6 +4878,7 @@ class _LineReturnLots(NamedTuple):
     imported: _ImportedOnBill | None               # goods the bill already held when imported
     imported_free: dict[int, tuple[float, str]]    # line -> units on hand it holds only as those,
                                                    # and the sku of the lot holding them
+    states: dict[str, dict]                        # lot -> its state as read
 
 
 async def _split_descendants(session: AsyncSession, company_id, roots: list[str],
@@ -4973,7 +4987,15 @@ async def _line_return_lots(session: AsyncSession, company_id, doc_id: str, doc:
                 held.setdefault(index, {})[reason] = held.get(index, {}).get(reason, 0.0) + units
     whole_only = {lot: float(st.get("quantity") or 0) for lot, st in states.items()
                   if st is not None and not splitting_allowed(st)}
-    return _LineReturnLots(by_line, shared, kept, held, split_lots, whole_only, imported, imported_free)
+    return _LineReturnLots(by_line, shared, kept, held, split_lots, whole_only, imported, imported_free, states)
+
+
+def _return_lot(lot: str, free: float, state: dict, whole_only: dict[str, float]) -> dict:
+    """One lot a line can send goods back from, as its Return Goods row shows it: the units
+    on hand and free to go back, the lot's own measures, and whether it goes back only whole."""
+    return {"item_id": lot, "sku": state.get("sku"), "barcode": state.get("barcode"), "name": state.get("name"),
+            "quantity": free, "weight": state.get("weight"), "weight_unit": state.get("weight_unit"),
+            "pieces": state.get("pieces"), "whole_only": lot in whole_only}
 
 
 class ReturnItem(_StatedMeasures):
@@ -5020,11 +5042,20 @@ def _line_label(line: dict) -> str:
     return str(line.get("sku") or line.get("name") or line.get("description") or "--")
 
 
-# The search for which lots make up a line's quantity is bounded: it works in the smallest
-# decimal unit the quantities share (at most millionths), over at most this many unit-steps
-# summed across the line's lots. Beyond either bound the line is refused, to return by lot.
-_LINE_TAKES_PLACES = 6
-_LINE_TAKES_WORK = 200_000_000
+# Which of a line's lots make up its quantity is worked out from what the lots from each
+# position on can make up together, up to the quantity asked for: first as ranges of units,
+# at most ``_LINE_TAKES_RANGES`` ranges in all; past that, as the multiples of the smallest
+# unit the lots that may not be split share (to at most ``_LINE_TAKES_PLACES`` decimals), at
+# most ``_LINE_TAKES_BITS`` multiples in all. Past both bounds the line is refused, to return
+# by lot.
+_LINE_TAKES_RANGES = 200_000
+_LINE_TAKES_BITS = 1 << 30
+_LINE_TAKES_PLACES = 9
+
+# What the lots from a position on can make up: reach(position, units) says whether they can
+# make up ``units``; lowest(position, left, cap) is the fewest units they can be left to make
+# up when the lot before them gives at most ``cap`` of ``left`` (None when none can).
+_LineReach = tuple[Callable[[int, float], bool], Callable[[int, float, float], float | None]]
 
 
 def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
@@ -5033,58 +5064,141 @@ def _line_takes(lots: list[tuple[str, float]], whole_only: dict[str, float],
     each lot in turn gives the most it can while the rest can still be made up from the lots
     after it. A lot in ``whole_only`` (lot -> its quantity) may not be split, so it gives all
     of itself or nothing. When no way to make up ``qty`` exists, the lots give in receipt order
-    and the part of a lot that may not be split is refused where every carve is. None when the
-    search would pass its bounds (``_LINE_TAKES_PLACES``, ``_LINE_TAKES_WORK``)."""
+    and the part of a lot that may not be split is refused where every carve is. None when
+    working it out would pass the bounds above."""
     eps = 1e-9
     if not any(lot in whole_only for lot, _ in lots):
         # Every lot may be split: each gives what it has, in receipt order.
         return _in_receipt_order(lots, qty)
-    values = [qty, *(q for _, q in lots), *(whole_only[lot] for lot, _ in lots if lot in whole_only)]
-    scale = next((10 ** p for p in range(_LINE_TAKES_PLACES + 1)
-                  if all(abs(round(v * 10 ** p) - v * 10 ** p) <= eps * 10 ** p
-                         for v in values)), None)
-    if scale is None:
+    gives = {lot: (whole_only[lot] if q >= whole_only[lot] - eps else 0.0) if lot in whole_only else q
+             for lot, q in lots}
+    if abs(qty - sum(gives[lot] for lot, _ in lots)) <= eps:
+        # All of it: every lot gives what it can, a lot that may not be split all of itself.
+        left, takes = qty, []
+        for lot, q in lots:
+            take = gives[lot] if lot in whole_only else min(q, left)
+            if take > eps:
+                takes.append((lot, take))
+                left -= take
+        return takes
+    after = _line_reach_ranges(lots, whole_only, qty) or _line_reach_bits(lots, whole_only, qty)
+    if after is None:
         return None
-    want = round(qty * scale)
-    if (want + 1) * len(lots) > _LINE_TAKES_WORK:
-        return None
-    if want < 0:
-        return []
-    mask = (1 << (want + 1)) - 1
-    # What the lots from each position on can make up together, up to ``qty``: bit n set when
-    # n units (of 1/scale) can be made up.
-    after = [1]
-    for lot, q in reversed(lots):
-        reach, units, whole = after[0], round(q * scale), whole_only.get(lot)
-        if whole is None:
-            done = 1
-            while done <= min(units, want):
-                step = min(done, units + 1 - done)
-                reach |= (reach << step) & mask
-                done += step
-        elif q >= whole - eps:
-            reach |= (reach << round(whole * scale)) & mask
-        after.insert(0, reach)
-    if not after[0] >> want & 1:
+    reach, lowest = after
+    if not reach(0, qty):
         return _in_receipt_order(lots, qty)
-    left: int = want
+    left = qty
     takes: list[tuple[str, float]] = []
     for i, (lot, q) in enumerate(lots):
-        rest, whole = after[i + 1], whole_only.get(lot)
+        whole = whole_only.get(lot)
         if whole is not None:
-            units = round(whole * scale)
-            take = units if q >= whole - eps and units <= left and rest >> (left - units) & 1 else 0
-            given = whole
+            take = whole if q >= whole - eps and whole <= left + eps and reach(i + 1, left - whole) else 0.0
         else:
             # The fewest units the later lots can be left to make up gives the most here.
-            low = max(0, left - round(q * scale))
-            above = rest >> low
-            take = left - (low + (above & -above).bit_length() - 1)
-            given = q if take == round(q * scale) else take / scale
-        if take:
-            takes.append((lot, given))
+            cap = min(q, left)
+            low = lowest(i + 1, left, cap)
+            take = min(cap, left - low) if low is not None and left - low >= -eps else 0.0
+        if take > eps:
+            takes.append((lot, take))
             left -= take
     return takes
+
+
+def _line_reach_ranges(lots: list[tuple[str, float]], whole_only: dict[str, float],
+                       qty: float) -> _LineReach | None:
+    """What the lots from each position on can make up, as sorted ranges of units no more than
+    a billionth apart joined; None past ``_LINE_TAKES_RANGES`` ranges in all."""
+    eps = 1e-9
+    after: list[list[tuple[float, float]]] = [[(0.0, 0.0)]]
+    kept = 1
+    for lot, q in reversed(lots):
+        whole = whole_only.get(lot)
+        if whole is None:
+            spans = [(lo, hi + q) for lo, hi in after[0]]
+        elif q >= whole - eps:
+            spans = after[0] + [(lo + whole, hi + whole) for lo, hi in after[0] if lo + whole <= qty + eps]
+        else:
+            spans = after[0]
+        merged: list[tuple[float, float]] = []
+        for lo, hi in sorted(spans):
+            if merged and lo <= merged[-1][1] + eps:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            else:
+                merged.append((lo, hi))
+        kept += len(merged)
+        if kept > _LINE_TAKES_RANGES:
+            return None
+        after.insert(0, merged)
+
+    def reach(j: int, units: float) -> bool:
+        spans = after[j]
+        k = bisect.bisect_left(spans, True, key=lambda s: units <= s[1] + eps)
+        return k < len(spans) and spans[k][0] - eps <= units
+
+    def lowest(j: int, left: float, cap: float) -> float | None:
+        spans = after[j]
+        k = bisect.bisect_left(spans, True, key=lambda s: left - s[1] <= cap + eps)
+        return spans[k][0] if k < len(spans) else None
+
+    return reach, lowest
+
+
+def _line_reach_bits(lots: list[tuple[str, float]], whole_only: dict[str, float],
+                     qty: float) -> _LineReach | None:
+    """What the lots from each position on can make up, as the multiples of the unit the lots
+    that may not be split share that those lots make up (bit n set: n units), each widened by
+    what the lots that may be split hold; None when those lots share no unit of at most
+    ``_LINE_TAKES_PLACES`` decimals, or past ``_LINE_TAKES_BITS`` multiples in all."""
+    eps = 1e-9
+    values = [whole_only[lot] for lot, q in lots
+              if lot in whole_only and q >= whole_only[lot] - eps and whole_only[lot] > eps]
+    scale = next((10 ** p for p in range(_LINE_TAKES_PLACES + 1)
+                  if all(abs(round(w * 10 ** p) / 10 ** p - w) <= 1e-12 * max(1.0, w) for w in values)), None)
+    if scale is None:
+        return None
+    step = math.gcd(*(round(w * scale) for w in values)) or 1
+    unit = step / scale
+    top = math.floor((qty + eps) / unit)
+    if top < 0 or (len(values) + 1) * (top + 1) > _LINE_TAKES_BITS:
+        return None
+    mask = (1 << (top + 1)) - 1
+    after, split = [1], [0.0]
+    for lot, q in reversed(lots):
+        whole, made = whole_only.get(lot), after[0]
+        if whole is None:
+            split.insert(0, split[0] + q)
+        else:
+            split.insert(0, split[0])
+            if q >= whole - eps and whole > eps:
+                made |= (made << (round(whole * scale) // step)) & mask
+        after.insert(0, made)
+
+    def at_least(units: float) -> int:  # the fewest multiples n with n * unit >= units - eps
+        n = max(0, math.ceil((units - eps) / unit))
+        while n > 0 and (n - 1) * unit >= units - eps:
+            n -= 1
+        while n * unit < units - eps:
+            n += 1
+        return n
+
+    def at_most(units: float) -> int:  # the most multiples n with n * unit <= units + eps
+        n = math.floor((units + eps) / unit)
+        while (n + 1) * unit <= units + eps:
+            n += 1
+        while n >= 0 and n * unit > units + eps:
+            n -= 1
+        return min(n, top)
+
+    def reach(j: int, units: float) -> bool:
+        lo, hi = at_least(units - split[j]), at_most(units)
+        return lo <= hi and (after[j] >> lo) & ((1 << (hi - lo + 1)) - 1) != 0
+
+    def lowest(j: int, left: float, cap: float) -> float | None:
+        n = at_least(left - cap - split[j])
+        rest = after[j] >> n
+        return (n + (rest & -rest).bit_length() - 1) * unit if rest else None
+
+    return reach, lowest
 
 
 def _in_receipt_order(lots: list[tuple[str, float]], qty: float) -> list[tuple[str, float]]:
@@ -5148,13 +5262,14 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_by_lot",
                 f"{_line_label(line)}: which of this line's lots make up the quantity cannot be worked out, "
-                "as some of them may not be split. Return the goods by lot instead.", name=_line_label(line)))
+                "as some of them may not be split. Return the goods by lot instead.", name=_line_label(line),
+                line=index, line_id=line.get("line_id")))
         measures = {k: v for k, v in (("weight", ln.weight), ("pieces", ln.pieces)) if v is not None}
         if measures and len(takes) > 1:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_measure_lots",
                 f"{_line_label(line)}: the goods on this line are in more than one lot. Return them by lot "
-                "to give their weight or pieces.", name=_line_label(line)))
+                "to give their weight or pieces.", name=_line_label(line), line=index, line_id=line.get("line_id")))
         out.extend((ReturnItem(item_id=lot, quantity_returned=take, **measures), line.get("line_id"))
                    for lot, take in takes)
     return out
