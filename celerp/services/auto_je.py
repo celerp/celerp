@@ -978,10 +978,12 @@ async def _clearing_lines(session, company_id, doc_id: str, settings: dict, amou
 async def create_for_landed_capitalisation(
     session, *, company_id, user_id, doc_id: str, landed_by_kind: dict[str, float],
     landed_by_account: dict[str, float], receive_suffix: str,
+    expensed: dict[AccountRole, float] | None = None,
 ) -> None:
     """Capitalise received landed cost from the clearing accounts into goods inventory on receipt:
     Dr the receiving lots' inventory accounts (``landed_by_account``) / Cr the clearing account
-    the bill parked each kind in. Balances by construction.
+    the bill parked each kind in. Balances by construction. The share of goods already gone when
+    the bill is finalized after they came in is expensed instead, per role in ``expensed``.
 
     The bill posting (create_for_bill_conversion) parks freight/insurance/duty/non-recoverable-VAT in
     the clearing accounts; this draws the received portion down into inventory so that COGS, which
@@ -994,7 +996,17 @@ async def create_for_landed_capitalisation(
     if total <= 0:
         return
     settings = await current_settings(session, company_id)
-    entries = [*_inventory_lines(settings, total, landed_by_account, currency, debit=True),
+    spent = {role: round_money(amount, currency) for role, amount in (expensed or {}).items()}
+    spent = {role: amount for role, amount in spent.items() if amount}
+    held = total - sum(spent.values(), _Dec(0))
+    if spent and not any(v > 0 for v in landed_by_account.values()):
+        # Nothing left on hand: the unit of rounding goes with what was expensed.
+        largest = max(spent, key=lambda r: (spent[r], r.value))
+        spent[largest] += held
+        held = _Dec(0)
+    acc = await resolve_many(session, company_id, list(spent)) if spent else {}
+    entries = [*(_inventory_lines(settings, held, landed_by_account, currency, debit=True) if held else []),
+               *(_line(acc[role], role, debit=to_stored_float(amount)) for role, amount in sorted(spent.items())),
                *await _clearing_lines(session, company_id, doc_id, settings, credits, currency, debit=False)]
     await _emit_auto_posted_je(
         session,
@@ -1066,12 +1078,10 @@ async def lot_restatements(session, company_id, lot_id: str) -> tuple[_Dec, _Dec
 @dataclass(frozen=True)
 class ReturnCharges:
     """What a supplier return takes off a bill beyond the goods' own cost, in the company's
-    currency. ``charged`` is what the bill charged for the goods after its discount, keyed as
-    the goods are, and ``tax`` the tax it booked on them. ``settles`` is set on the return that
+    currency. ``tax`` is the tax the bill booked on the goods. ``settles`` is set on the return that
     sends back the last of the bill's goods: what all its returns together take off accounts
-    payable and input tax, and the shipping the bill charged, which no goods carry."""
+    payable and input tax."""
 
-    charged: dict
     tax: float = 0.0
     settles: dict | None = None
 
@@ -1084,10 +1094,10 @@ async def create_for_supplier_return(
     """Goods sent back to the supplier come off accounts payable at what the document charged
     for them. Returns the amount debited to accounts payable, in the company's currency.
 
-    ``goods`` is what the goods carried and ``billed`` what the document charged for them
-    before any discount, both keyed by the inventory account of the lot the goods leave, or by
-    the role goods not held in stock were received to. Dr AP / Cr goods at what the document
-    charged after its discount / Cr input tax for the tax it booked on them (``charges``), AP on
+    ``goods`` is what the goods carried and ``billed`` what the document charged for them after
+    its discount, both keyed by the inventory account of the lot the goods leave, or by the role
+    goods not held in stock were received to. Dr AP / Cr goods at what the document charged
+    / Cr input tax for the tax it booked on them (``charges``), AP on
     the account the document recognized its payable on. The return that sends back the last of
     the goods takes what the earlier returns left, so accounts payable and input tax hold
     nothing more for the goods once all of them have gone back. Goods whose cost was corrected
@@ -1095,10 +1105,9 @@ async def create_for_supplier_return(
     account back through the accounts the corrections were booked to (lot_origin.book_lot_value),
     ``gain`` of it off stock gains and the rest off stock shrinkage, in an entry of its own that
     a void or revert of the document leaves standing, as the goods it values are gone. Landed
-    cost the goods carried (``landed_by_account``) is a cost of goods that are gone: it is
-    expensed to stock shrinkage off the lots' inventory accounts, and so, once the last goods
-    go back, is the shipping the bill charged, off the clearing account it parked it in. The
-    bill still owes both. All are dated today in the company's timezone (entry_day)."""
+    cost the goods carried (``landed_by_account``), the bill's shipping among it, is a cost of
+    goods that are gone: it is expensed to stock shrinkage off the lots' inventory accounts.
+    The bill still owes it. All are dated today in the company's timezone (entry_day)."""
     currency = await company_currency(session, company_id)
     settings = await current_settings(session, company_id)
     day = await entry_day(session, company_id)
@@ -1136,7 +1145,7 @@ async def create_for_supplier_return(
             ],
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
-    credits = {key: round_money(charges.charged.get(key) or 0, currency) for key in goods}
+    credits = dict(rounded)
     tax_d = round_money(charges.tax, currency)
     if charges.settles is not None:
         # The last goods back take what the earlier returns left, so the bill's goods and
@@ -1175,15 +1184,10 @@ async def create_for_supplier_return(
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
     landed_total = round_money(sum((to_decimal(v or 0) for v in landed_by_account.values()), _Dec(0)), currency)
-    shipping = round_money((charges.settles or {}).get("shipping") or 0, currency)
-    if landed_total > 0 or shipping > 0:
+    if landed_total > 0:
         acc = await resolve_many(session, company_id, [R.STOCK_SHRINKAGE])
-        entries = [_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE,
-                         debit=to_stored_float(max(landed_total, _Dec(0)) + max(shipping, _Dec(0)))),
-                   *(_inventory_lines(settings, landed_total, landed_by_account, currency, debit=False)
-                     if landed_total > 0 else []),
-                   *(await _clearing_lines(session, company_id, doc_id, settings, {"freight": shipping}, currency,
-                                           debit=False) if shipping > 0 else [])]
+        entries = [_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE, debit=to_stored_float(landed_total)),
+                   *_inventory_lines(settings, landed_total, landed_by_account, currency, debit=False)]
         await _emit_auto_posted_je(
             session,
             company_id=company_id,

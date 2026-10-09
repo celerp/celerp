@@ -2353,6 +2353,8 @@ async def finalize_document(
         # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
         _revert_count = int(_initial_doc_state.get("revert_count", 0))
         await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
+        await _capitalise_landed_received(session, company_id, _user_id, entity_id, _initial_doc_state,
+                                          f"fin:{_revert_count}")
     if commit:
         await session.commit()
     return {"event_id": entry.id}
@@ -3996,8 +3998,9 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
     """What the received goods cost in the books' currency, or None when no line prices them.
 
     The document line the receipt was resolved to prices them per purchase unit in the
-    document's currency. A unit cost given on the receipt (per stock unit, in the books'
-    currency) must agree with that line, since the bill books the line.
+    document's currency, and they cost that less their share of the document's discount. A
+    unit cost given on the receipt (per stock unit, in the books' currency) must agree with
+    the line's price, since the bill books the line.
     """
     lines = doc.get("line_items") or []
     if not 0 <= it.po_line_index < len(lines):
@@ -4013,7 +4016,8 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
         rate = require_doc_rate(doc, base_currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    cost = to_base(unit * to_decimal(it.quantity_received), rate, base_currency)
+    amount = unit * to_decimal(it.quantity_received)
+    cost = to_base(amount, rate, base_currency)
     if it.cost_price is not None:
         given, priced = (round_money(v, base_currency) for v in (float(it.cost_price) * stock_qty, cost))
         if given != priced:
@@ -4024,6 +4028,11 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
                         f"from the {doc_label} line ({to_stored_float(priced)}). Receive the goods at the "
                         f"{doc_label} price, then add a landed cost or correct the item's cost."),
             )
+    # Goods are carried net of the document's discount: the received share of the line
+    # carries the same share of the discount the bill's entry takes off the line.
+    gross, discount, _tax = auto_je.bill_line_charges(doc)[it.po_line_index]
+    if discount and gross > 0:
+        cost = to_base(round_money(amount * (gross - discount) / gross, currency), rate, base_currency)
     return cost
 
 
@@ -4420,6 +4429,103 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # consignment_in: no JE (goods not owned).
     await session.commit()
     return {"event_id": entry.id, **result}
+
+
+async def _capitalise_landed_received(session: AsyncSession, company_id, user_id, doc_id: str,
+                                      state: dict, suffix: str) -> None:
+    """Landed cost a bill charged for goods that came in before it was finalized (a purchase
+    order received, then made into the bill), through the entry goods received after the bill
+    take it by (auto_je.create_for_landed_capitalisation). Each lot those receipts made or
+    added to takes the share of the goods it holds, spread per unit over the lot and the lots
+    split off it. Of the goods no longer there, the share of those sent back to the supplier
+    goes to stock shrinkage and of the rest to cost of goods sold; a lot the goods were added
+    to is taken to have sold its other stock first. A lot already carrying this bill's landed
+    cost is left as it is, so a bill finalized again takes nothing twice."""
+    from celerp.services.lot_origin import in_stock
+
+    received = state.get("received_items") or []
+    if not received:
+        return
+    allocation = await compute_bill_landed_allocation(session, company_id, state)
+    if not any(allocation.values()):
+        return
+    lots = await _receipt_lots(session, company_id, doc_id, state)
+    if lots is None:
+        return
+    made = await _parcels_made(session, company_id, state)
+    lines = state.get("line_items") or []
+    sent_back: dict[str, float] = {}
+    for x in state.get("returned_items") or []:
+        sent_back[x["item_id"]] = sent_back.get(x["item_id"], 0.0) + float(
+            x["lot_quantity_taken"] if "lot_quantity_taken" in x else x.get("quantity_returned") or 0)
+    # Per lot: the landed cost of the goods put into it, by kind, and their stock units.
+    shares: dict[str, dict[str, float]] = {}
+    units: dict[str, float] = {}
+    rows: dict[str, Projection] = {}
+    for x, into in zip(received, lots):
+        index = received_line_index(lines, x)
+        line_shares = allocation.get(index, {}) if into is not None and index is not None else {}
+        if not line_shares:
+            continue
+        lot_id, new = into
+        lot = rows.get(lot_id) or await session.get(Projection, {"company_id": company_id, "entity_id": lot_id})
+        if lot is None:
+            continue
+        rows[lot_id] = lot
+        purchase_units = float(x.get("quantity_received") or 0)
+        for kind, unit in line_shares.items():
+            shares.setdefault(lot_id, {})[kind] = shares.get(lot_id, {}).get(kind, 0.0) + unit * purchase_units
+        if new:
+            added = made.get(lot_id, (0.0, None))[0]
+        elif "lot_quantity_added" in x:
+            added = float(x["lot_quantity_added"] or 0)
+        else:
+            added = purchase_units * float(lot.state.get("purchase_conversion_factor") or 1)
+        units[lot_id] = units.get(lot_id, 0.0) + added
+    by_kind: dict[str, float] = {}
+    by_account: dict[str, float] = {}
+    expensed: dict[AccountRole, float] = {}
+    for lot_id, kinds in shares.items():
+        lot, came = rows[lot_id], units.get(lot_id, 0.0)
+        if came <= 0 or any(f"{doc_id}::{k}" in (lot.state.get("landed_contributions") or {}) for k in kinds):
+            continue
+        family, queue, gone_back = [], [lot], 0.0
+        while queue:
+            member = queue.pop()
+            family.append(member)
+            gone_back += sent_back.get(member.entity_id, 0.0)
+            for child in member.state.get("children") or []:
+                row = await session.get(Projection, {"company_id": company_id, "entity_id": child})
+                if row is not None and row.state.get("split_from") == member.entity_id:
+                    queue.append(row)
+        holding = [(m, float(m.state.get("quantity") or 0)) for m in family if in_stock(m.state)]
+        holding = [(m, qty) for m, qty in holding if qty > 0]
+        on_hand = sum(qty for _m, qty in holding)
+        returned = min(came, gone_back)
+        held = min(came - returned, on_hand)
+        total = sum(kinds.values())
+        for role, qty in ((AccountRole.STOCK_SHRINKAGE, returned), (AccountRole.COGS, came - returned - held)):
+            if qty > 1e-9:
+                expensed[role] = expensed.get(role, 0.0) + total * qty / came
+        for member, qty in holding:
+            for kind, amount in kinds.items():
+                await emit_event(
+                    session, company_id=company_id, entity_id=member.entity_id, entity_type="item",
+                    event_type="item.landed_cost.applied",
+                    data={"source_bill_id": doc_id, "kind": kind, "unit_amount": amount * held / came / on_hand},
+                    actor_id=user_id, location_id=None, source="api",
+                    idempotency_key=f"{doc_id}:landed:{suffix}:{member.entity_id}:{kind}",
+                    metadata_={"source_doc": doc_id},
+                )
+            code = lot_account(member.state)
+            by_account[code] = by_account.get(code, 0.0) + total * held / came * qty / on_hand
+        for kind, amount in kinds.items():
+            by_kind[kind] = by_kind.get(kind, 0.0) + amount
+    if by_kind:
+        await auto_je.create_for_landed_capitalisation(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, landed_by_kind=by_kind,
+            landed_by_account=by_account, receive_suffix=suffix, expensed=expensed,
+        )
 
 
 def _lot_additions(doc: dict) -> dict[str, tuple[float, float]]:
@@ -4870,17 +4976,14 @@ class _BillCharges:
     lines: dict[int, tuple[Decimal, Decimal, Decimal]]  # stock line -> (amount, discount, tax)
     lot_line: dict[str, int]  # lot -> the one stock line its goods came in on
 
-    def rates(self, lot: str) -> tuple[Decimal, Decimal]:
-        """(what the bill charged after its discount, its tax), each per unit of what the goods
-        were priced at, for goods from ``lot``: its line's, or all stock lines' together for a
-        lot more than one line fed."""
+    def tax_rate(self, lot: str) -> Decimal:
+        """The tax the bill charged per unit of what it charged after its discount, which is
+        what the goods cost, for goods from ``lot``: its line's, or all stock lines' together
+        for a lot more than one line fed."""
         line = self.lot_line.get(lot)
         picked = [self.lines[line]] if line in self.lines else list(self.lines.values())
-        amount = sum((a for a, _, _ in picked), Decimal(0))
-        if not amount:
-            return Decimal(1), Decimal(0)
-        return (sum((a - d for a, d, _ in picked), Decimal(0)) / amount,
-                sum((t for _, _, t in picked), Decimal(0)) / amount)
+        net = sum((a - d for a, d, _ in picked), Decimal(0))
+        return sum((t for _, _, t in picked), Decimal(0)) / net if net > 0 else Decimal(0)
 
     def settles(self, state: dict, rate, currency: str) -> tuple[Decimal, dict] | None:
         """Once every stock line came in whole and all of it went back: what the bill charged
@@ -4894,8 +4997,7 @@ class _BillCharges:
         goods = sum((a - d + t for a, d, t in self.lines.values()), Decimal(0))
         total = round_money(state.get("total", 0) or 0, doc_currency)
         return goods, {"payable": to_base(total, rate, currency) - to_base(total - goods, rate, currency),
-                       "tax": to_base(sum((t for _, _, t in self.lines.values()), Decimal(0)), rate, currency),
-                       "shipping": to_base(state.get("shipping", 0) or 0, rate, currency)}
+                       "tax": to_base(sum((t for _, _, t in self.lines.values()), Decimal(0)), rate, currency)}
 
 
 async def _bill_charge_rates(session: AsyncSession, company_id, doc_id: str, state: dict) -> _BillCharges | None:
@@ -5453,10 +5555,8 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             made_gone[x["item_id"]] = made_gone.get(x["item_id"], 0.0) + float(
                 x.get("quantity_returned") or 0) - float(x.get("lot_quantity_taken") or 0)
     landed_by_account: dict[str, float] = {}
-    # What a finalized bill charged for each line's goods, as a fraction of what the goods
-    # were priced at before its discount: what it charged after the discount, and its tax.
+    # The tax a finalized bill charged on each line's goods, per unit of what they cost.
     charging = await _bill_charge_rates(session, company_id, entity_id, row.state) if owned else None
-    charged: dict = {}  # what the bill charged for the goods after its discount, keyed as goods are
     tax = Decimal(0)
     # A lot whose cost was corrected while on hand goes back through the accounts the
     # corrections were booked to, in step with how much of the correction has gone back.
@@ -5539,9 +5639,8 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             restated_back[it.item_id] = (done_value + value, done_gain + back)
             if value or back:
                 returned[-1].update({"value_returned": to_stored_float(value), "gain_returned": to_stored_float(back)})
-            after_discount, taxed = charging.rates(it.item_id) if charging else (Decimal(1), Decimal(0))
-            charged[target] = charged.get(target, Decimal(0)) + to_decimal(billed_lot) * after_discount
-            tax += to_decimal(billed_lot) * taxed
+            if charging:
+                tax += to_decimal(billed_lot) * charging.tax_rate(it.item_id)
             if it.item_id in added:
                 taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
@@ -5587,7 +5686,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         payable = await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
             goods=goods, billed=billed, gain=to_stored_float(gain), landed_by_account=landed_by_account,
-            charges=auto_je.ReturnCharges(charged=charged, tax=to_stored_float(tax),
+            charges=auto_je.ReturnCharges(tax=to_stored_float(tax),
                                           settles=settles and settles[1]),
         )
         # What the document owes falls by what the return took off accounts payable, in the

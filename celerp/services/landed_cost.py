@@ -68,33 +68,39 @@ def allocate_landed_cost(
 
 
 async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -> dict[int, dict[str, float]]:
-    """Allocate a bill's capitalisable charge lines across the lines it brings in as stock.
+    """Allocate a bill's capitalisable charges across the lines it brings in as stock.
 
     Returns {line index: {kind: landed per unit of the line's quantity}}. Every stock line
-    takes its share, whether or not it names an item or SKU. Recoverable import VAT is excluded (it does not capitalise);
-    landed amounts are converted to base currency by the bill conversion rate. Reuses the same
-    account-routing logic as the bill JE so cost allocation and GL postings stay consistent.
+    takes its share, whether or not it names an item or SKU. The charges are its charge lines,
+    each at what the bill's entry books for it after its share of any discount
+    (bill_line_charges), and the shipping it charged, which is freight. Recoverable import VAT
+    is excluded (it does not capitalise); landed amounts are converted to base currency by the
+    bill conversion rate. Reuses the same account-routing logic as the bill JE so cost
+    allocation and GL postings stay consistent.
     """
     from celerp.models.company import Company
     from celerp.models.projections import Projection
     from celerp.accounting_roles import LANDED_KIND_BY_ROLE, AccountRole
-    from celerp.services.auto_je import bill_line_kind, landed_role_for_line
+    from celerp.services.auto_je import bill_line_charges, bill_line_kind, landed_role_for_line
     from celerp.services.money import require_doc_rate, to_base
     from celerp.services.units import is_non_stock_line
 
     company = await session.get(Company, company_id)
     base_currency = (company.settings.get("currency", "USD") if company else "USD")
     rate = require_doc_rate(doc_state, base_currency)
-    components: list[dict] = []
+    shipping = to_base(doc_state.get("shipping") or 0, rate, base_currency)
+    components: list[dict] = [{"kind": LANDED_KIND_BY_ROLE[AccountRole.LANDED_FREIGHT], "amount": shipping}]
     goods: list[dict] = []
-    for index, li in enumerate(doc_state.get("line_items", [])):
+    lines = doc_state.get("line_items", [])
+    for index, (li, (gross, discount, _tax)) in enumerate(zip(lines, bill_line_charges(doc_state))):
         line_total = float(li.get("line_total") or
                            (float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)))
         base_amt = to_base(line_total, rate, base_currency)
         role = await landed_role_for_line(session, company_id, li)
         if role in LANDED_KIND_BY_ROLE:
-            if base_amt:
-                components.append({"kind": LANDED_KIND_BY_ROLE[role], "amount": base_amt})
+            charged = to_base(gross - discount, rate, base_currency)
+            if charged:
+                components.append({"kind": LANDED_KIND_BY_ROLE[role], "amount": charged})
             continue
         if role == AccountRole.TAX_INPUT:
             continue  # recoverable import VAT: not capitalised

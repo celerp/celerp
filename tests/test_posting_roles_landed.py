@@ -71,16 +71,18 @@ async def test_goods_sent_back_after_a_remap_expense_their_landed_cost_without_t
 
 
 @pytest.mark.asyncio
-async def test_shipping_on_goods_all_sent_back_after_a_remap_clears_from_the_bills_clearing_account(
+async def test_shipping_on_goods_received_after_a_remap_clears_from_the_bills_clearing_account(
         session, client, auth):
     bill = await _doc(client, auth, "bill", [
         {"sku": "GOODS", "name": "Goods", "quantity": 2, "unit_price": 15.0}], shipping=5.0)
     await _finalize(client, auth, bill)
     assert await _books(session, auth, "1130-FRT") == {"1130-FRT": 5.0}
+    await _remap_freight(session, auth, await _clearing_account(client, auth))
     r = await _receive(client, auth, bill, _GOODS)
     assert r.status_code == 200, r.text
+    assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2") == {
+        "1130-P": 35.0, "1130-FRT": 0.0, "1130-FR2": 0.0}
     [parcel] = (await _state(session, auth, bill))["received_item_ids"]
-    await _remap_freight(session, auth, await _clearing_account(client, auth))
     r = await _return(client, auth, bill, parcel, 2)
     assert r.status_code == 200, r.text
     assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2", "6970") == {

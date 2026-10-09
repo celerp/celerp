@@ -4,8 +4,9 @@
 
 A return credits the bill for the goods at what the bill charged after its discount, plus
 the tax the bill booked on them, so once every good has gone back the bill owes nothing for
-them and accounts payable and input tax hold nothing for it. Freight the goods carried is a
-cost of goods that are gone: it is expensed, and the bill still owes it.
+them and accounts payable and input tax hold nothing for it. Freight the goods carried, the
+bill's shipping among it, is a cost of goods that are gone: it is expensed, and the bill still
+owes it.
 """
 from __future__ import annotations
 
@@ -135,7 +136,8 @@ async def test_freight_on_goods_sent_back_is_expensed_and_still_owed(client, ses
 
 async def test_shipping_on_a_bill_whose_goods_all_went_back_is_expensed_and_still_owed(client, session, auth):
     doc, [parcel] = await _bill(client, session, auth, [_goods()], shipping=5.0)
-    assert await _books(session, auth, "1130-FRT") == {"1130-FRT": 5.0}
+    # The goods carry the shipping, so nothing waits on the freight clearing account.
+    assert await _books(session, auth, "1130-FRT") == {"1130-FRT": 0.0}
     for q in (4, 6):
         assert (await _return(client, auth, doc, parcel, q)).status_code == 200
     st = await _state(session, auth, doc)
