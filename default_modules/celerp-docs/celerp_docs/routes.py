@@ -30,9 +30,9 @@ from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
-from celerp_docs.doc_money import document_money, refresh_line_taxes
+from celerp_docs.doc_money import document_money
 from celerp_docs.doc_projections import received_line_index
-from celerp_docs.taxes import TaxApplication, compute_tax_amounts
+from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
@@ -363,6 +363,10 @@ class DocCreatePayload(BaseModel):
     @classmethod
     def _rate_is_usable(cls, v: float | None) -> float | None:
         return _stored_conversion_rate(v)
+
+
+# Header and line inputs a document's money is computed from (see document_money).
+_DOC_MONEY_INPUTS = frozenset({"line_items", "discount", "discount_type", "shipping", "doc_taxes", "tax_rate", "currency"})
 
 
 class DocPatch(BaseModel):
@@ -1098,7 +1102,7 @@ def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) 
 
 # The statuses in which a document takes a payment (apply_doc_payment).
 PAYABLE_STATUSES = frozenset({"sent", "final", "partial", "paid", "received", "partially_received",
-                              "awaiting_payment"})
+                              "partial_returned", "returned", "awaiting_payment"})
 
 
 def _payable_balance(state: dict) -> Decimal:
@@ -1696,58 +1700,19 @@ async def create_doc(
     # Default issue_date to the company's today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", business_date_of(None, company.settings.get("timezone")))
 
-    # Auto-compute total from line items if not explicitly provided (or zero)
+    # Compute the money from the lines and header inputs when no total is given, by the same rule
+    # every later edit applies (header discount before tax, shipping in the total).
     if not payload.total and payload.line_items:
         currency = data.get("currency", "USD")
-        # If any line provides line_total, it is pre-computed (discount already applied).
-        # Header discount only applies when computing from quantity * unit_price.
-        has_explicit_line_totals = any(li.line_total is not None for li in payload.line_items)
-
-        # Round each line_total to currency precision at source
-        rounded_line_totals = [
-            round_money(
-                to_decimal(li.line_total) if li.line_total is not None
-                else to_decimal(li.quantity) * to_decimal(li.unit_price),
-                currency,
-            )
-            for li in payload.line_items
+        lines = [
+            {**li_data, "line_total": to_stored_float(round_money(
+                to_decimal(li_model.line_total) if li_model.line_total is not None
+                else to_decimal(li_model.quantity) * to_decimal(li_model.unit_price),
+                currency))}
+            for li_data, li_model in zip(data["line_items"], payload.line_items)
         ]
-
-        subtotal_d = sum(rounded_line_totals, to_decimal(0))
-        if not has_explicit_line_totals:
-            subtotal_d = subtotal_d - round_money(payload.discount, currency)
-
-        # Compute per-line tax amounts (compound-aware), update data with rounded values
-        from decimal import Decimal as _Dec
-        line_tax_total_d = _Dec(0)
-        if data.get("line_items"):
-            resolved_line_items = []
-            for li_data, li_model, lt_d in zip(data["line_items"], payload.line_items, rounded_line_totals):
-                li_data = {**li_data, "line_total": to_stored_float(lt_d)}
-                if li_model.taxes:
-                    resolved = compute_tax_amounts(li_model.taxes, to_stored_float(lt_d), currency)
-                    li_data["taxes"] = [item.model_dump() for item in resolved]
-                    line_tax_total_d += sum(to_decimal(item.amount) for item in resolved)
-                resolved_line_items.append(li_data)
-            data["line_items"] = resolved_line_items
-
-        # doc_taxes: compute compound-aware amounts against subtotal, take precedence over legacy tax
-        if payload.doc_taxes:
-            resolved_doc_taxes = compute_tax_amounts(payload.doc_taxes, to_stored_float(subtotal_d), currency)
-            data["doc_taxes"] = [item.model_dump() for item in resolved_doc_taxes]
-            effective_tax_d = sum(to_decimal(item.amount) for item in resolved_doc_taxes) + line_tax_total_d
-        else:
-            effective_tax_d = round_money(payload.tax, currency) + line_tax_total_d
-
-        shipping_d = round_money(payload.shipping, currency)
-        total_d = round_money(subtotal_d + effective_tax_d + shipping_d, currency)
-        data["total"] = to_stored_float(total_d)
-        data["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
-        # Persist the EFFECTIVE tax (doc-level + line-level) into `tax`. Previously this was computed
-        # for `total` but discarded, leaving `tax`=0 for line-level taxes — so the finalize JE booked
-        # the tax-inclusive total entirely to revenue and recorded zero output VAT,
-        # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
-        data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
+        data.update(document_money(data, lines, currency, keep_unrated_tax=True))
+        data["line_items"] = lines
 
     if contact is not None:
         data.update(await _contact_selection_values(
@@ -1910,9 +1875,17 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     # Stored values round at the stored currency, incoming ones at the currency this patch leaves.
     _old_currency = row.state.get("currency")
     _new_currency = (fields_changed.get("currency") or {}).get("new") or _old_currency
-    if is_draft and isinstance(new_line_items, list):
-        # Edited lines carry their old tax amounts; the summary reads them, so they follow the line.
-        refresh_line_taxes(new_line_items, _new_currency)
+    if is_draft and _DOC_MONEY_INPUTS & fields_changed.keys():
+        # The document's money is computed here from its lines and header inputs, never taken
+        # from the client: every line tax, document tax, discount and total follows the one rule
+        # in document_money, so the stored figures always reconcile (shipping included).
+        merged = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
+        money_lines = [dict(li) if isinstance(li, dict) else li for li in (merged.get("line_items") or [])]
+        money = document_money(merged, money_lines, _new_currency, keep_unrated_tax=True)
+        if "line_items" in fields_changed or money_lines != (row.state.get("line_items") or []):
+            fields_changed["line_items"] = {"new": money_lines}
+        for field, value in money.items():
+            fields_changed[field] = {"new": value}
     _MONEY_FIELDS = {"subtotal", "tax", "total", "discount_amount"}
     def _round_field(field: str, value, *, incoming: bool = False):
         if field in _MONEY_FIELDS and value is not None:
@@ -4881,11 +4854,16 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             idempotency_key=_step_key(key, "line", line_no), metadata_={"source_return": entity_id},
         )
 
+    payable_credit = 0.0
     if owned:
-        await auto_je.create_for_supplier_return(
+        rate = _require_doc_rate_http(row.state, currency)
+        payable = await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
             goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account,
         )
+        # What the document owes falls by what the return took off accounts payable, in the
+        # document's currency, so the document and the ledger show the same balance.
+        payable_credit = to_stored_float(round_money(payable / rate, str(row.state.get("currency") or currency)))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.items_returned",
@@ -4893,6 +4871,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             "items": returned,
             "returned_by": str(user.id),
             "notes": payload.notes,
+            **({"payable_credit": payable_credit} if payable_credit else {}),
             # Whether the document now holds nothing to send back, judged in stock units here
             # because a line's received quantity may be in a purchase unit.
             "all_returned": all(left <= 1e-9 for left in returnable.values()) and not any(
@@ -10038,7 +10017,8 @@ async def write_off_stock(
         written_off += 1
         remaining[item.entity_id] = round(rem - qty_out, 10)
     total_value = to_stored_float(sum(debits.values(), Decimal(0)))
-    entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items()]
+    # Goods that carried no cost leave no value to move: no line, and no entry when none is left.
+    entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items() if val]
     if entries:
         entries += await auto_je.stock_relief_lines(
             session, company_id, {code: to_stored_float(v) for code, v in credits.items()})

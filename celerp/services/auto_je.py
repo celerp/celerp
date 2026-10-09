@@ -1013,8 +1013,9 @@ async def create_for_landed_capitalisation(
 async def create_for_supplier_return(
     session, *, company_id, user_id, doc_id: str, return_key: str, goods: dict[AccountRole | str, float],
     landed_by_kind: dict[str, float], landed_by_account: dict[str, float],
-) -> None:
-    """Goods sent back to the supplier leave the books at what they carried.
+) -> _Dec:
+    """Goods sent back to the supplier leave the books at what they carried. Returns the
+    amount debited to accounts payable, in the company's currency.
 
     Dr AP / Cr goods for the goods, AP on the account the document recognized its
     payable on. ``goods`` is keyed by the inventory account of the lot the goods leave,
@@ -1066,6 +1067,7 @@ async def create_for_supplier_return(
             entries=entries,
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
+    return max(goods_d, _Dec(0))
 
 
 async def create_for_bill_conversion(

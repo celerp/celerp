@@ -56,11 +56,14 @@ def _recalc_list_totals(state: dict) -> dict:
 
 
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
-    """Return document-currency paid and outstanding balances."""
+    """Return document-currency paid and outstanding balances. Goods sent back to the supplier
+    owe nothing: what their return took off accounts payable (``returned_credit``) comes off
+    the total the same as a payment."""
     currency = str(state.get("currency") or "USD")
-    total = round_money(state.get("total", 0) or 0, currency)
+    owed = round_money(to_decimal(state.get("total", 0) or 0) - to_decimal(state.get("returned_credit", 0) or 0),
+                       currency)
     paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
-    outstanding = round_money(max(Decimal(0), total - paid_d), currency)
+    outstanding = round_money(max(Decimal(0), owed - paid_d), currency)
     return paid_d, outstanding
 
 
@@ -142,9 +145,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
         # based on how much has already been paid - never let outstanding go negative.
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
-            paid = to_decimal(current.get("amount_paid", 0))
-            total = to_decimal(current.get("total", 0))
-            current["amount_outstanding"] = to_stored_float(max(Decimal(0), total - paid))
+            _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
+            current["amount_outstanding"] = to_stored_float(outstanding)
     elif event_type == "doc.renumbered":
         # Narrow alias of doc.updated: only ref_id / doc_number may be changed.
         for field, change in data["fields_changed"].items():
@@ -408,6 +410,11 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         returned = data.get("items", [])
         current.setdefault("returned_items", [])
         current["returned_items"].extend(returned)
+        if data.get("payable_credit"):
+            current["returned_credit"] = to_stored_float(
+                to_decimal(current.get("returned_credit", 0) or 0) + to_decimal(data["payable_credit"]))
+            _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
+            current["amount_outstanding"] = to_stored_float(outstanding)
 
         if "all_returned" in data:
             current["status"] = "returned" if data["all_returned"] else "partial_returned"

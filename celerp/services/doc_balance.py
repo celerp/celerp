@@ -46,8 +46,10 @@ AWAITING_PAYMENT_STATUSES: dict[str, frozenset[str]] = {
     "invoice": _RECEIVABLE_AWAITING,
     "proforma": _RECEIVABLE_AWAITING,
     "memo": _RECEIVABLE_AWAITING,
-    "bill": frozenset({"final", "awaiting_payment", "partial", "received", "partially_received"}),
-    "purchase_order": frozenset({"sent", "final", "awaiting_payment", "partial", "received", "partially_received"}),
+    "bill": frozenset({"final", "awaiting_payment", "partial", "received", "partially_received",
+                       "partial_returned", "returned"}),
+    "purchase_order": frozenset({"sent", "final", "awaiting_payment", "partial", "received", "partially_received",
+                                 "partial_returned", "returned"}),
 }
 
 # Per-doc-type statuses in which a past due date means the document is overdue: an invoice
