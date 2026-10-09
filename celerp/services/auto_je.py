@@ -2279,13 +2279,14 @@ async def _recognized_by_account(
 class UnshippedClaim:
     """Goods on hand a finalized invoice costed and has not shipped: ``qty`` units of
     lot ``lot_id`` on line ``line``, ``amount`` of the invoice's recognized cost on
-    ``key``, and the value the lot holds now (``on_hand``)."""
+    ``key``, and the value the lot holds now (``on_hand``). A claim read for its quantity
+    only (unshipped_claims, not costed) has no key and no amount."""
 
     doc_id: str
     line: int
     lot_id: str
     qty: float
-    key: str
+    key: str | None
     amount: float
     on_hand: float
 
@@ -2321,11 +2322,13 @@ async def _held_where(session, company_id, lot_ids: set[str]) -> dict[str, list[
 
 
 async def unshipped_claims(session, company_id, *, exclude: str | None = None,
-                           states: dict[str, dict] | None = None) -> list[UnshippedClaim]:
+                           states: dict[str, dict] | None = None, costed: bool = True) -> list[UnshippedClaim]:
     """Every claim finalized invoices hold on goods still on hand (UnshippedClaim), in
     the order the invoices were finalized, leaving out the invoice ``exclude``. A lot in
     ``states`` ({lot id: state}) is read as holding that state instead of its own, which
-    is how a change is judged against the claims held before it.
+    is how a change is judged against the claims held before it. Not ``costed``, claims
+    carry quantities only (no account key, no amount), so goods whose inventory account
+    was never recorded are still counted where only how many are held matters.
 
     Claims follow the goods, never a label: an invoice holds the lots its lines were
     allocated and the lots their goods went to, whatever SKU any of them or the line names.
@@ -2375,7 +2378,8 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                     want -= qty
                     left -= qty
                     used[member.entity_id] = used.get(member.entity_id, 0.0) + qty
-                    key = key or await _allocated_lot_key(session, company_id, lot, books.payable_codes)
+                    if costed:
+                        key = key or await _allocated_lot_key(session, company_id, lot, books.payable_codes)
                     taken.append((member.entity_id, qty, key, qty * float(lot.get("unit_cost") or 0), float(value)))
             # A lot set aside at no cost still holds its claim: the goods move with it
             # when another invoice ships them, at a cost of nothing.
@@ -2431,7 +2435,7 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     from celerp.services.lot_origin import RETIRED, ready_to_ship
 
     await lock_company(session, company_id)
-    was = await unshipped_claims(session, company_id, states={lot_id: before})
+    was = await unshipped_claims(session, company_id, states={lot_id: before}, costed=False)
     held_here: dict[str, float] = {}
     for claim in was:
         if claim.lot_id == lot_id:
@@ -2447,7 +2451,7 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
                 out[(claim.doc_id, claim.line)] = out.get((claim.doc_id, claim.line), 0.0) + claim.qty
             return out
 
-        held, now = cover(was), cover(await unshipped_claims(session, company_id))
+        held, now = cover(was), cover(await unshipped_claims(session, company_id, costed=False))
         lost = sum(max(0.0, qty - now.get(key, 0.0)) for key, qty in held.items())
         if lost <= 1e-9:
             return

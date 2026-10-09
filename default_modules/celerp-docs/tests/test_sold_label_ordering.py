@@ -44,14 +44,16 @@ async def _memo(client, h, item_ids: list[str]) -> str:
     return r.json()["id"]
 
 
-async def _invoice(client, h, item_id: str) -> None:
+async def _invoice(client, h, item_id: str) -> str:
     """The customer keeps a consigned item: an invoice for it, finalized, sells it."""
     r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
         {"entity_id": item_id, "sku": "S", "name": "S", "quantity": 1, "unit_price": 10, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
-    r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)
+    doc = r.json()["id"]
+    r = await client.post(f"/docs/{doc}/finalize", headers=h)
     assert r.status_code == 200, r.text
     assert (await client.get(f"/items/{item_id}", headers=h)).json()["status"] == "sold"
+    return doc
 
 
 def _label_for(doc: dict, eid: str):
@@ -79,14 +81,17 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     stale = await _item(client, h, "SL-STALE")
     fresh = await _item(client, h, "SL-FRESH")
 
-    # `stale`: sold off an earlier memo, then returned to stock (available again) BEFORE
-    # this memo exists. The sold ledger event now predates this memo's fulfilled event.
+    # `stale`: sold off an earlier memo, then the sale is voided and the stone returned to
+    # stock (available again) BEFORE this memo exists. The sold ledger event now predates
+    # this memo's fulfilled event.
     earlier = await _memo(client, h, [stale])
     assert (await client.post(f"/docs/{earlier}/finalize", headers=h)).status_code == 200
     assert (await client.post(f"/docs/{earlier}/fulfill-lines", headers=h,
                               json={"line_entity_ids": [stale]})).status_code == 200
-    await _invoice(client, h, stale)
+    sale = await _invoice(client, h, stale)
     r = await client.post(f"/docs/{earlier}/revert-lines", headers=h, json={"line_entity_ids": [stale]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{sale}/void", headers=h, json={"reason": "returned"})
     assert r.status_code == 200, r.text
     assert (await client.get(f"/items/{stale}", headers=h)).json()["status"] == "available"
 
