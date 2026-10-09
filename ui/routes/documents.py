@@ -1014,23 +1014,24 @@ def _render_fulfillment_badge(doc: dict):
 
 
 def _line_qty_input(name: str, max_qty: float, unit_label: str, default: float | None = None,
-                    step: float | None = None, disabled: bool = False) -> FT:
+                    step: float | None = None, disabled: bool = False, cls: str = "li-qty-input") -> FT:
     """A quantity field for part of one line, with the unit it is counted in. ``max_qty`` is
     the most the line allows and ``step`` the smallest quantity its unit allows (None when the
     unit sets none, any amount above 0); the page checks the entry against both before anything
     is sent, and the server proves it again. ESC leaves the field. A disabled field sends
-    nothing until the page enables it."""
+    nothing until the page enables it. ``cls`` sets a field apart from the line's own."""
     return _line_number_field(
         unit_label, name=name, min=f"{step:g}" if step else "0", step=f"{step:g}" if step else "any",
         max=f"{max_qty:g}", value=f"{(max_qty if default is None else default):g}", data_max=f"{max_qty:g}",
-        cls="li-qty-input", style="width:6em;", disabled=disabled)
+        cls=cls, style="width:6em;", disabled=disabled)
 
 
-def _line_measure_input(name: str, placeholder: str, unit_label: str, step: str, disabled: bool = False) -> FT:
+def _line_measure_input(name: str, placeholder: str, unit_label: str, step: str, disabled: bool = False,
+                        cls: str = "li-measure-input") -> FT:
     """An optional weight or pieces field for part of one line: blank unless the user knows
     the measure, and a blank field is sent as not known. ESC leaves the field."""
     return _line_number_field(unit_label, name=name, min="0", step=step, value="", placeholder=placeholder,
-                              cls="li-measure-input", style="width:9em;", disabled=disabled)
+                              cls=cls, style="width:9em;", disabled=disabled)
 
 
 def _line_number_field(unit_label: str, **attrs) -> FT:
@@ -6172,16 +6173,17 @@ def _return_held_note(li: dict, has_some: bool) -> str:
     return t("documents.return_held_some" if has_some else "documents.return_held_none", held=", ".join(parts))
 
 
-def _return_measure_inputs(meta: dict, key: str, disabled: bool = False) -> list:
+def _return_measure_inputs(meta: dict, key: str, disabled: bool = False,
+                           cls: str = "li-measure-input") -> list:
     """The optional weight and pieces fields of a Return Goods row (``weight_<key>``,
     ``pieces_<key>``), for the measures its item keeps beside its quantity: weight when the
     item has one and is not sold by weight, pieces likewise."""
     out = []
     if not meta.get("qty_is_weight") and (meta.get("weight") is not None or meta.get("weight_unit")):
         out.append(_line_measure_input(f"weight_{key}", t("inventory.ph_weight_optional"),
-                                       meta.get("weight_unit") or "", "any", disabled))
+                                       meta.get("weight_unit") or "", "any", disabled, cls))
     if not meta.get("qty_is_pieces") and meta.get("pieces") is not None:
-        out.append(_line_measure_input(f"pieces_{key}", t("inventory.ph_pieces_optional"), "", "1", disabled))
+        out.append(_line_measure_input(f"pieces_{key}", t("inventory.ph_pieces_optional"), "", "1", disabled, cls))
     return out
 
 
@@ -6209,8 +6211,9 @@ def _return_lot_picker(li: dict, i: int, unit_map: dict, meta: dict) -> FT | Non
             Label(Input(type="checkbox", name=key, value=lot["item_id"], cls="return-lot-pick", disabled=True,
                         onkeydown=esc),
                   Span(lot.get("barcode") or lot.get("sku") or lot.get("name") or "--", cls="receive-row__label")),
-            _line_qty_input(f"lot_qty_{i}_{j}", qty, unit, qty, step=quantity_step(unit, unit_map), disabled=True),
-            *_return_measure_inputs(meta, key, disabled=True),
+            _line_qty_input(f"lot_qty_{i}_{j}", qty, unit, qty, step=quantity_step(unit, unit_map), disabled=True,
+                            cls="return-lot-qty"),
+            *_return_measure_inputs(meta, key, disabled=True, cls="return-lot-measure"),
             Span(" · ".join(facts), cls="text-muted receive-row__note"),
             Span(t("documents.return_lot_whole_only"), cls="badge badge--amber") if lot.get("whole_only") else None,
             cls="return-lot inline-form-row",
