@@ -4661,10 +4661,27 @@ async def _receipt_lots(session: AsyncSession, company_id, doc_id: str,
     return out
 
 
-async def _returnable_quantities(session: AsyncSession, company_id, doc_id: str, doc: dict) -> dict[str, float]:
-    """Item id -> stock units the document's receipts brought in and it has not sent back."""
+async def _parcels_made(session: AsyncSession, company_id, doc: dict) -> dict[str, tuple[float, float | None]]:
+    """Lot id -> (stock units, cost in the books' currency or None when no line priced them) of
+    each lot the document's receipts created, as received: what the document charged for them."""
     from celerp.models.ledger import LedgerEntry
 
+    created = doc.get("received_item_ids") or []
+    made: dict[str, tuple[float, float | None]] = {}
+    if created:
+        for entry in (await session.execute(select(LedgerEntry).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(created),
+                LedgerEntry.event_type == "item.created"))).scalars():
+            data = entry.data or {}
+            qty, cost = made.get(entry.entity_id, (0.0, 0.0))
+            made[entry.entity_id] = (qty + float(data.get("quantity") or 0),
+                                     None if cost is None or data.get("cost_total") is None
+                                     else cost + float(data["cost_total"]))
+    return made
+
+
+async def _returnable_quantities(session: AsyncSession, company_id, doc_id: str, doc: dict) -> dict[str, float]:
+    """Item id -> stock units the document's receipts brought in and it has not sent back."""
     got: dict[str, float] = {}
     legacy: dict[str, float] = {}  # purchase order receipts made before lots recorded what they added
     received = doc.get("received_items") or []
@@ -4680,12 +4697,8 @@ async def _returnable_quantities(session: AsyncSession, company_id, doc_id: str,
         conversion = {r.entity_id: float(r.state.get("purchase_conversion_factor") or 1) for r in rows}
         for item_id, qty in legacy.items():
             got[item_id] = got.get(item_id, 0.0) + qty * conversion.get(item_id, 1)
-    created = doc.get("received_item_ids") or []
-    if created:
-        for entry in (await session.execute(select(LedgerEntry).where(
-                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(created),
-                LedgerEntry.event_type == "item.created"))).scalars():
-            got[entry.entity_id] = got.get(entry.entity_id, 0.0) + float((entry.data or {}).get("quantity") or 0)
+    for item_id, (qty, _cost) in (await _parcels_made(session, company_id, doc)).items():
+        got[item_id] = got.get(item_id, 0.0) + qty
     for x in doc.get("returned_items") or []:
         if x.get("item_id") in got:
             got[x["item_id"]] -= float(x.get("quantity_returned") or 0)
@@ -5347,6 +5360,15 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     currency = await auto_je.company_currency(session, company_id)
     goods_role = auto_je.po_receipt_role(row.state)
     goods: dict = {}  # cost leaving, per lot inventory account (or role, for goods not held as stock)
+    billed: dict = {}  # what the document charged for those goods, keyed the same way
+    # Lots this document's receipts created go back at what it charged for them, whatever their
+    # cost was corrected to since: units already sent back from them are counted off first.
+    made = await _parcels_made(session, company_id, row.state) if owned else {}
+    made_gone: dict[str, float] = {}
+    for x in row.state.get("returned_items") or []:
+        if x.get("item_id") in made:
+            made_gone[x["item_id"]] = made_gone.get(x["item_id"], 0.0) + float(
+                x.get("quantity_returned") or 0) - float(x.get("lot_quantity_taken") or 0)
     landed_by_kind: dict[str, float] = {}
     landed_by_account: dict[str, float] = {}
     returned: list[dict] = []
@@ -5385,13 +5407,29 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             taken = min(it.quantity_returned, qty_added)
             taken_cost = cost_added if taken == qty_added else cost_added * taken / qty_added if qty_added else 0.0
             others_qty = current_qty - qty_added
-            others_cost = ((basis - cost_added) * (it.quantity_returned - taken) / others_qty
-                           if others_qty > 1e-9 else 0.0)
-            share = basis if whole else min(
-                basis, to_stored_float(round_money(taken_cost + others_cost, currency)))
+            rest = it.quantity_returned - taken
+            others_cost = (basis - cost_added) * rest / others_qty if others_qty > 1e-9 else 0.0
+            made_qty, made_cost = made.get(it.item_id, (0.0, None))
             origin = lot_account(item.state)
             target = origin if goods_role == AccountRole.INVENTORY_PURCHASED else goods_role
+            billed_rest: float | None = None
+            if rest > 1e-9 and made_cost is not None and made_qty > 1e-9 and target == origin:
+                before = made_gone.get(it.item_id, 0.0)
+
+                def _charged(units: float) -> float:
+                    return to_stored_float(round_money(made_cost * min(units, made_qty) / made_qty, currency))
+
+                billed_rest = _charged(before + rest) - _charged(before)
+                made_gone[it.item_id] = before + rest
+                if others_qty > 1e-9 and abs(others_qty - (made_qty - before)) <= 1e-9:
+                    # The lot holds only what this document made it with: its units go at what
+                    # they were charged plus their share of any correction to the lot's cost.
+                    others_cost = billed_rest + (basis - cost_added - made_cost + _charged(before)) * rest / others_qty
+            share = basis if whole else min(
+                basis, to_stored_float(round_money(taken_cost + others_cost, currency)))
             goods[target] = goods.get(target, 0.0) + share
+            billed[target] = billed.get(target, 0.0) + (share if billed_rest is None else to_stored_float(
+                round_money(taken_cost, currency)) + billed_rest)
             if it.item_id in added:
                 taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
@@ -5432,7 +5470,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         rate = _require_doc_rate_http(row.state, currency)
         payable = await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods=goods, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account,
+            goods=goods, billed=billed, landed_by_kind=landed_by_kind, landed_by_account=landed_by_account,
         )
         # What the document owes falls by what the return took off accounts payable, in the
         # document's currency, so the document and the ledger show the same balance.

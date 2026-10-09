@@ -19,6 +19,7 @@ from fasthtml.common import to_xml
 import ui.api_client as api_client
 from test_cost_restatement import _set_cost, _state
 from test_lot_split_invariants import _return, _set_measures
+from test_lot_value_boundary import GAIN, _role
 from test_receipt_accounting import _books
 from test_receive_goods_form import _Request, _Routes
 from test_receive_selected_lines import _issued, _post, _ReceiveRows, _stock_lines
@@ -46,17 +47,20 @@ async def _snapshot(session, auth, *lots: str):
 
 async def test_part_return_comes_from_the_lot_that_may_be_split(client, session, auth):
     bill, line_id, first, second = await _two_deliveries(client, session, auth)
-    books = await _books(session, auth, "1130-P", "2110")
+    gain = await _role(session, auth, GAIN)
+    books = await _books(session, auth, "1130-P", "2110", gain)
 
     r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": 2})
     assert r.status_code == 200, r.text
     assert await _snapshot(session, auth, first, second) == [(5, "available", 10.0), (1, "available", 3.0)]
     [entry] = (await _state(session, auth, bill))["returned_items"]
     assert (entry["item_id"], entry["quantity_returned"], entry["source_line_id"]) == (second, 2, line_id)
-    # Two units of the second lot, at its 3.0 a unit, leave the books.
-    after = await _books(session, auth, "1130-P", "2110")
+    # Two units of the second lot leave stock at its corrected 3.0 a unit and come off the bill at
+    # the 2.0 a unit it charged; the rest goes back off the stock gain the correction booked.
+    after = await _books(session, auth, "1130-P", "2110", gain)
     assert after["1130-P"] == pytest.approx(books["1130-P"] - 6.0)
-    assert after["2110"] == pytest.approx(books["2110"] + 6.0)
+    assert after["2110"] == pytest.approx(books["2110"] + 4.0)
+    assert after[gain] == pytest.approx(books[gain] + 2.0)
 
 
 async def test_whole_lot_that_may_not_be_split_goes_back_first(client, session, auth):
@@ -74,16 +78,20 @@ async def test_whole_lot_that_may_not_be_split_goes_back_first(client, session, 
 
 async def test_return_spanning_both_lots_takes_the_first_whole(client, session, auth):
     bill, line_id, first, second = await _two_deliveries(client, session, auth)
-    books = await _books(session, auth, "1130-P", "2110")
+    gain = await _role(session, auth, GAIN)
+    books = await _books(session, auth, "1130-P", "2110", gain)
 
     r = await _return_lines(client, auth, bill, {"line_id": line_id, "quantity_returned": 7})
     assert r.status_code == 200, r.text
     returned = (await _state(session, auth, bill))["returned_items"]
     assert [(x["item_id"], x["quantity_returned"]) for x in returned] == [(first, 5), (second, 2)]
     assert await _qty(session, auth, second) == 1
-    after = await _books(session, auth, "1130-P", "2110")
+    # The whole first lot and two units of the second go back at the 2.0 a unit the bill
+    # charged; the second lot's correction to 3.0 a unit comes back off the stock gain.
+    after = await _books(session, auth, "1130-P", "2110", gain)
     assert after["1130-P"] == pytest.approx(books["1130-P"] - 16.0)
-    assert after["2110"] == pytest.approx(books["2110"] + 16.0)
+    assert after["2110"] == pytest.approx(books["2110"] + 14.0)
+    assert after[gain] == pytest.approx(books[gain] + 2.0)
 
 
 async def test_quantity_no_lots_can_make_up_is_refused_once(client, session, auth):

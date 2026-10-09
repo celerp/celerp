@@ -1012,22 +1012,59 @@ async def create_for_landed_capitalisation(
 
 async def create_for_supplier_return(
     session, *, company_id, user_id, doc_id: str, return_key: str, goods: dict[AccountRole | str, float],
-    landed_by_kind: dict[str, float], landed_by_account: dict[str, float],
+    billed: dict[AccountRole | str, float], landed_by_kind: dict[str, float], landed_by_account: dict[str, float],
 ) -> _Dec:
-    """Goods sent back to the supplier leave the books at what they carried. Returns the
-    amount debited to accounts payable, in the company's currency.
+    """Goods sent back to the supplier come off accounts payable at what the document charged
+    for them. Returns the amount debited to accounts payable, in the company's currency.
 
-    Dr AP / Cr goods for the goods, AP on the account the document recognized its
-    payable on. ``goods`` is keyed by the inventory account of the lot the goods leave,
-    or by the role goods not held in stock were received to. Each kind of landed cost they
-    carried goes back to the clearing account the bill parked it in (Dr clearing / Cr the lots' inventory
-    accounts, ``landed_by_account``) in an entry of its own, the reverse of the receipt's
-    capitalisation, so undoing the receipt returns only the landed cost still on the shelf.
-    Both are dated today in the company's timezone (entry_day)."""
+    ``goods`` is what the goods carried and ``billed`` what the document charged for them,
+    both keyed by the inventory account of the lot the goods leave, or by the role goods not
+    held in stock were received to. Dr AP / Cr goods for what was charged, AP on the account
+    the document recognized its payable on. Goods whose cost was corrected after they came in
+    carry more or less than that: the difference leaves the inventory account through the
+    account the correction was booked to (lot_origin.book_lot_value), a raised cost back off
+    stock gains and a lowered one back off stock shrinkage, in an entry of its own that a void
+    or revert of the document leaves standing, as the goods it values are gone. Each kind of
+    landed cost they carried goes back to the clearing account the bill parked it in (Dr
+    clearing / Cr the lots' inventory accounts, ``landed_by_account``) in an entry of its own,
+    the reverse of the receipt's capitalisation, so undoing the receipt returns only the
+    landed cost still on the shelf. All are dated today in the company's timezone (entry_day)."""
     currency = await company_currency(session, company_id)
     settings = await current_settings(session, company_id)
     day = await entry_day(session, company_id)
-    rounded = {key: round_money(amount or 0, currency) for key, amount in goods.items()}
+    rounded = {key: round_money(billed[key] or 0, currency) for key in goods}
+    revalued = {key: round_money(amount or 0, currency) - rounded[key] for key, amount in goods.items()}
+    revalued = {key: change for key, change in revalued.items() if change}
+    if revalued:
+        gain = sum((c for c in revalued.values() if c > 0), _Dec(0))
+        shrinkage = -sum((c for c in revalued.values() if c < 0), _Dec(0))
+        acc = await resolve_many(session, company_id, [*([R.STOCK_GAIN] if gain else []),
+                                                       *([R.STOCK_SHRINKAGE] if shrinkage else [])])
+
+        def _goods_line(key, debit=0.0, credit=0.0) -> dict:
+            return (_line(acc[key], key, debit=debit, credit=credit) if isinstance(key, AccountRole)
+                    else _lot_line(settings, key, debit=debit, credit=credit))
+
+        if any(isinstance(key, AccountRole) for key in revalued):
+            acc.update(await resolve_many(session, company_id, [k for k in revalued if isinstance(k, AccountRole)]))
+        await _emit_auto_posted_je(
+            session,
+            company_id=company_id,
+            user_id=user_id,
+            je_id=f"je:auto:{doc_id}:rtn-value:{return_key}",
+            idem_create=je_idempotency_key(doc_id, f"items.returned.value:{return_key}", "c"),
+            idem_posted=je_idempotency_key(doc_id, f"items.returned.value:{return_key}", "p"),
+            memo=f"Auto JE for {doc_id} corrected cost of goods returned to supplier",
+            ts=day,
+            entries=[
+                *([_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, debit=to_stored_float(gain))] if gain else []),
+                *([_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE, credit=to_stored_float(shrinkage))]
+                  if shrinkage else []),
+                *(_goods_line(key, credit=to_stored_float(max(c, _Dec(0))), debit=to_stored_float(max(-c, _Dec(0))))
+                  for key, c in revalued.items()),
+            ],
+            metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
+        )
     goods_d = sum(rounded.values(), _Dec(0))
     if goods_d > 0:
         ap = await party_origin(session, company_id, doc_id, R.PAYABLE, settings)
