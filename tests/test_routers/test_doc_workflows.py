@@ -24,6 +24,15 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _company_today(client, token: str) -> str:
+    """Today in the company's own timezone, the day a new document is dated, which is not
+    always the day on the machine running the tests."""
+    from celerp.services.business_time import business_date_of
+    r = await client.get("/companies/me", headers=_h(token))
+    assert r.status_code == 200
+    return business_date_of(None, (r.json()["settings"] or {}).get("timezone"))
+
+
 async def _create_invoice(client, token: str, *, subtotal: float = 100, tax: float = 7, total: float = 107) -> str:
     r = await client.post(
         "/docs",
@@ -530,16 +539,16 @@ async def test_new_doc_uses_configured_pattern(client, session):
 
 @pytest.mark.asyncio
 async def test_new_doc_gets_issue_date_today(client, session):
-    """Creating a new doc sets issue_date to today (ISO format)."""
-    from datetime import date
+    """Creating a new doc sets issue_date to the company's today (ISO format)."""
     token = await _register(client)
     r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice"})
     assert r.status_code == 200
     doc_id = r.json()["id"]
     doc = await client.get(f"/docs/{doc_id}", headers=_h(token))
     assert doc.status_code == 200
-    assert doc.json().get("issue_date") == date.today().isoformat(), (
-        f"Expected issue_date={date.today().isoformat()!r}, got {doc.json().get('issue_date')!r}"
+    today = await _company_today(client, token)
+    assert doc.json().get("issue_date") == today, (
+        f"Expected issue_date={today!r}, got {doc.json().get('issue_date')!r}"
     )
 
 
@@ -580,12 +589,11 @@ async def test_non_editable_field_rejected_on_issued_doc(client, session):
 @pytest.mark.asyncio
 async def test_list_docs_date_filter_uses_issue_date(client, session):
     """list_docs date filter includes docs whose issue_date falls in range."""
-    from datetime import date
     token = await _register(client)
-    # Create a doc (issue_date = today)
+    # Create a doc (issue_date = the company's today)
     r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice"})
     assert r.status_code == 200
-    today = date.today().isoformat()
+    today = await _company_today(client, token)
     # List with date_from=today - doc must appear
     r = await client.get(f"/docs?doc_type=invoice&date_from={today}", headers=_h(token))
     assert r.status_code == 200
