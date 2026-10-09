@@ -58,7 +58,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, validate_line_quantity
-from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
+from celerp.services.money import books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
@@ -3994,13 +3994,15 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
     it.name = it.name or line.get("name") or line.get("description") or None
 
 
-async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
+async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float,
+                               before: float) -> float | None:
     """What the received goods cost in the books' currency, or None when no line prices them.
 
     The document line the receipt was resolved to prices them per purchase unit in the
     document's currency, and they cost that less their share of the document's discount. A
     unit cost given on the receipt (per stock unit, in the books' currency) must agree with
-    the line's price, since the bill books the line.
+    the line's price, since the bill books the line. ``before`` is the purchase units of the
+    line received ahead of these goods.
     """
     lines = doc.get("line_items") or []
     if not 0 <= it.po_line_index < len(lines):
@@ -4028,12 +4030,32 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
                         f"from the {doc_label} line ({to_stored_float(priced)}). Receive the goods at the "
                         f"{doc_label} price, then add a landed cost or correct the item's cost."),
             )
-    # Goods are carried net of the document's discount: the received share of the line
-    # carries the same share of the discount the bill's entry takes off the line.
-    gross, discount, _tax = auto_je.bill_line_charges(doc)[it.po_line_index]
-    if discount and gross > 0:
-        cost = to_base(round_money(amount * (gross - discount) / gross, currency), rate, base_currency)
+    # Goods are carried at what the bill's entry books for their line: net of its share of
+    # the discount, converted as the entry converts it. A receipt takes the line's amount up
+    # to its last unit less what the receipts before it took, so the receipts of a whole
+    # line carry to the cent what the bill booked for it.
+    booked = auto_je.bill_line_base(doc, base_currency).get(it.po_line_index)
+    ordered = float(line.get("quantity") or 0)
+    if booked is not None and ordered > 0:
+        cost = to_stored_float(received_share(booked, before, before + float(it.quantity_received),
+                                              ordered, base_currency))
     return cost
+
+
+def _received_landed(per_unit: dict[str, float], line: dict, before: float, quantity: float,
+                     currency: str) -> dict[str, float]:
+    """Kind -> the landed cost ``quantity`` purchase units of a line take, the line holding
+    ``per_unit`` of each kind per purchase unit (compute_bill_landed_allocation) and ``before``
+    of its units received ahead of them. Each receipt takes the line's landed cost up to its
+    last unit less what the receipts before it took, so a line's receipts take its whole
+    landed cost to the cent."""
+    ordered = float(line.get("quantity") or 0)
+    if ordered <= 0:
+        return {}
+    shares = {kind: to_stored_float(received_share(round_money(to_decimal(unit) * to_decimal(ordered), currency),
+                                                   before, before + quantity, ordered, currency))
+              for kind, unit in per_unit.items()}
+    return {kind: amount for kind, amount in shares.items() if amount}
 
 
 def _refuse_receipt_when_not_open(state: dict) -> None:
@@ -4171,7 +4193,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # One pricing for the whole receipt: what each received line cost is both what it adds
     # to its lot and what a purchase order receipt books, so the two cannot disagree.
     priced: list[tuple[float, float, float | None]] = []  # (conversion, stock quantity, cost)
+    so_far = _line_quantities_received(row.state)  # purchase units of each line received ahead
+    ahead: list[float] = []  # per received item, the purchase units of its line received before it
     for it in payload.received_items:
+        before = so_far.get(it.po_line_index, 0.0)
+        ahead.append(before)
+        so_far[it.po_line_index] = before + float(it.quantity_received)
         if it.item_id and not is_inbound:
             conversion = item_conversion_map.get(it.item_id, 1)
         elif it.receive_as == "stock":
@@ -4197,14 +4224,15 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             if rate_known:
-                cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty)
+                cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty,
+                                                  before)
             if it.cost_price is not None:
                 given = float(it.cost_price) * stock_qty
                 if cost is None or round_money(given, base_currency) != round_money(cost, base_currency):
                     reject_price_change({"cost_price"}, role, settings)
                     cost = given
         elif doc_type == "purchase_order" or it.receive_as == "stock":
-            cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty)
+            cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty, before)
             if cost is None:
                 raise HTTPException(
                     status_code=422,
@@ -4243,6 +4271,20 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 actor_id=user.id, location_id=None, source="api",
                 idempotency_key=_step_key(key, "line", line_no), metadata_={"source_doc": entity_id},
             )
+            # Landed cost the lot already carries is a fixed amount over the stock it had: the
+            # goods joining it bring none of it, so it is spread over the larger quantity.
+            old_qty = float(lot_before.get("quantity", 0) or 0)
+            for contribution, unit in (lot_before.get("landed_contributions") or {}).items():
+                source_bill_id, kind = contribution.rsplit("::", 1)
+                await emit_event(
+                    session, company_id=company_id, entity_id=it.item_id, entity_type="item",
+                    event_type="item.landed_cost.applied",
+                    data={"source_bill_id": source_bill_id, "kind": kind,
+                          "unit_amount": float(unit or 0) * old_qty / new_qty if old_qty > 0 else 0.0},
+                    actor_id=user.id, location_id=None, source="api",
+                    idempotency_key=_step_key(key, "line", line_no, "landed", contribution),
+                    metadata_={"source_doc": entity_id},
+                )
             await restock_measures(
                 session, company_id=company_id, user_id=user.id, lot_id=it.item_id, lot_state=lot_before,
                 new_qty=new_qty, unit_map=unit_map, weight_delta=measures.get("weight"),
@@ -4347,8 +4389,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             if received_cost is not None:
                 item_data["cost_total"] = received_cost
             # Attach the landed cost allocated to this goods line, per stock unit: the projection
-            # derives cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed share.
-            _landed = {k: u / conversion for k, u in bill_alloc.get(it.po_line_index, {}).items()}
+            # derives cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed
+            # share. Like the goods, it takes the line's landed cost up to its last unit less what
+            # the parcels before it took, so a line's parcels draw its whole share to the cent.
+            _landed = {k: amount / stock_qty_received for k, amount in _received_landed(
+                bill_alloc.get(it.po_line_index, {}), doc_line, ahead[line_no], float(it.quantity_received),
+                books_currency(settings)).items()}
             if _landed:
                 item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
                 for _k, _u in _landed.items():
@@ -4462,9 +4508,16 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
     shares: dict[str, dict[str, float]] = {}
     units: dict[str, float] = {}
     rows: dict[str, Projection] = {}
+    ahead: dict[int, float] = {}  # line index -> its purchase units received so far
+    currency = await auto_je.company_currency(session, company_id)
     for x, into in zip(received, lots):
         index = received_line_index(lines, x)
-        line_shares = allocation.get(index, {}) if into is not None and index is not None else {}
+        purchase_units = float(x.get("quantity_received") or 0)
+        before = ahead.get(index, 0.0)
+        if index is not None:
+            ahead[index] = before + purchase_units
+        line_shares = (_received_landed(allocation.get(index, {}), lines[index], before, purchase_units, currency)
+                       if into is not None and index is not None else {})
         if not line_shares:
             continue
         lot_id, new = into
@@ -4472,9 +4525,8 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
         if lot is None:
             continue
         rows[lot_id] = lot
-        purchase_units = float(x.get("quantity_received") or 0)
-        for kind, unit in line_shares.items():
-            shares.setdefault(lot_id, {})[kind] = shares.get(lot_id, {}).get(kind, 0.0) + unit * purchase_units
+        for kind, amount in line_shares.items():
+            shares.setdefault(lot_id, {})[kind] = shares.get(lot_id, {}).get(kind, 0.0) + amount
         if new:
             added = made.get(lot_id, (0.0, None))[0]
         elif "lot_quantity_added" in x:
@@ -5644,8 +5696,13 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             if it.item_id in added:
                 taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
-            for unit in (item.state.get("landed_contributions") or {}).values():
-                landed_by_account[origin] = landed_by_account.get(origin, 0.0) + float(unit or 0) * it.quantity_returned
+            # The landed cost leaving is what the lot carried of it less what it keeps, each to
+            # the cent as the books carry the lot, so the units staying keep their share exactly.
+            landed_unit = to_decimal(sum(float(u or 0) for u in (item.state.get("landed_contributions") or {}).values()))
+            if landed_unit:
+                landed_by_account[origin] = landed_by_account.get(origin, 0.0) + to_stored_float(
+                    round_money(landed_unit * to_decimal(current_qty), currency)
+                    - round_money(landed_unit * to_decimal(max(new_qty, 0.0)), currency))
         # The goods going back become their own lot, which leaves stock; the lot keeps the rest
         # with the rest of its cost. Goods that are the whole lot leave as that lot.
         gone = it.item_id

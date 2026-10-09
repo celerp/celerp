@@ -1022,6 +1022,50 @@ async def create_for_landed_capitalisation(
     )
 
 
+def _bill_debit_parts(doc: dict) -> list[tuple[int | AccountRole, _Dec]]:
+    """What a bill's entry debits, in the document's currency: each line it charges for (by
+    line index) at its amount less its share of the discount, the tax, and the shipping."""
+    currency = doc.get("currency", "USD")
+    parts: list[tuple[int | AccountRole, _Dec]] = [
+        (index, line_total - discount)
+        for index, (line_total, discount, _tax) in enumerate(bill_line_charges(doc)) if line_total > 0]
+    # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
+    # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
+    tax_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency) if doc.get("line_items") else _Dec(0)
+    if tax_d > 0:
+        parts.append((R.TAX_INPUT, tax_d))
+    # Doc-level shipping on a bill is inbound freight: debit the freight clearing account.
+    shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
+    if shipping_d > 0:
+        parts.append((R.LANDED_FREIGHT, shipping_d))
+    return parts
+
+
+def _base_debits(amounts: list[_Dec], base_total: float, rate, base_currency: str) -> list[_Dec]:
+    """AP is the bill total in base; the debits are converted one by one, and the unit of
+    rounding that conversion can leave goes to the largest debit so the entry balances."""
+    debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for a in amounts]
+    largest = max(range(len(debits)), key=lambda i: debits[i])
+    debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
+    return debits
+
+
+def bill_line_base(doc: dict, base_currency: str) -> dict[int, _Dec]:
+    """Line index -> what the bill's entry debits for the line in the books' currency: its
+    amount less its share of the discount, converted as the entry converts it."""
+    parts = _bill_debit_parts(doc)
+    if not parts:
+        return {}
+    rate = require_doc_rate(doc, base_currency)
+    total_d = round_money(doc.get("total", 0) or 0, doc.get("currency", "USD"))
+    amounts = [a for _, a in parts]
+    if sum(amounts, _Dec(0)) == total_d:
+        debits = _base_debits(amounts, to_base(to_stored_float(total_d), rate, base_currency), rate, base_currency)
+    else:  # a bill that does not add up is refused at finalize; each line converts on its own
+        debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for a in amounts]
+    return {part: d for (part, _), d in zip(parts, debits) if isinstance(part, int)}
+
+
 def bill_line_charges(doc: dict) -> list[tuple[_Dec, _Dec, _Dec]]:
     """Per document line, what a bill charged for it in the document's currency: the line's
     amount, its share of the bill's discount and the tax on it. The discount is shared over
@@ -1310,29 +1354,14 @@ async def create_for_bill_conversion(
     line_items = doc.get("line_items", [])
     # (account chosen on the line, the role to post to, or an account posted for a role;
     # amount in the document currency)
-    lines: list[tuple[str | AccountRole | tuple[str, AccountRole], _Dec]] = []
-    tax_total_d = _Dec(0)
-
-    if line_items:
-        for li, (line_total, discount, _tax) in zip(line_items, bill_line_charges(doc)):
-            if line_total <= 0:
-                continue
-            lines.append((await _bill_line_target(session, company_id, li), line_total - discount))
-        # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
-        # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
-        tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
-
-    # Doc-level shipping on a bill is inbound freight: debit the freight clearing account.
-    shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
+    lines: list[tuple[str | AccountRole | tuple[str, AccountRole], _Dec]] = [
+        (await _bill_line_target(session, company_id, line_items[part]) if isinstance(part, int) else part, amount)
+        for part, amount in _bill_debit_parts(doc)]
     if total_d <= 0:
         return
     # A bill total below its lines, tax and shipping is a discount on those lines: each line's
     # cost is reduced by its share (bill_line_charges), so the debits sum to what the bill says
     # is owed. Any other gap between the parts and the total is refused rather than posted unbalanced.
-    if tax_total_d > 0:
-        lines.append((R.TAX_INPUT, tax_total_d))
-    if shipping_d > 0:
-        lines.append((R.LANDED_FREIGHT, shipping_d))
     if not lines:
         lines.append((R.GENERAL_EXPENSE, total_d))
     if sum((a for _, a in lines), _Dec(0)) != total_d:
@@ -1353,12 +1382,8 @@ async def create_for_bill_conversion(
 
     lines = [(drawn_home(target), a) for target, a in lines]
     acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE])
-    # AP is the bill total in base; the debits are converted line by line, and the unit
-    # of rounding that conversion can leave goes to the largest debit so the entry balances.
     base_total = to_base(to_stored_float(total_d), rate, base_currency)
-    debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for _, a in lines]
-    largest = max(range(len(debits)), key=lambda i: debits[i])
-    debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
+    debits = _base_debits([a for _, a in lines], base_total, rate, base_currency)
     entries = [_bill_debit_line(acc, target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
     entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
     # What the document's purchase order receipts already booked is not booked again, so

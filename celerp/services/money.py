@@ -276,6 +276,19 @@ def allocate_pro_rata(amount: _MoneyInput, weights: list[Decimal], currency: str
     return shares
 
 
+def received_share(amount: _MoneyInput, before: _MoneyInput, after: _MoneyInput, whole: _MoneyInput,
+                   currency: str) -> Decimal:
+    """The share of amount that units ``before`` to ``after`` of ``whole`` take.
+
+    Each part takes the rounded share of everything up to it less the rounded share of what
+    came before it, so the parts of a whole that arrives in pieces always sum to the rounded
+    amount exactly: the last piece takes what rounding left. ``whole`` must be positive.
+    """
+    total, w = to_decimal(amount), to_decimal(whole)
+    return (round_money(total * to_decimal(after) / w, currency)
+            - round_money(total * to_decimal(before) / w, currency))
+
+
 def unit_price_from_total(total: _MoneyInput, qty: _MoneyInput, currency: str) -> Decimal:
     """Derive the unit price from a target line/lot total at the FEWEST decimals (currency_dp..rate_dp)
     such that ``round_money(unit * qty) == round_money(total)``.
