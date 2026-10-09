@@ -2170,7 +2170,8 @@ async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, 
     """Finalizing an invoice books the cost of the stock it sells, so it plans each stock line
     the way shipping it will: a line that could be filled only by taking part of a lot that
     may not be split is refused, and so is one whose stock another finalized invoice has
-    already booked and not yet shipped (its cost would be booked twice). Stock the customer
+    already booked and not yet shipped (its cost would be booked twice). Each line gets one
+    refusal, the most specific true one: its own lot's reason before a sibling's. Stock the customer
     already has (out on the memo the invoice came from, or sold to it) is not drawn again.
     A line no stock covers at all is a backorder and still finalizes."""
     from celerp_inventory.projections import is_manufacturable
@@ -2195,7 +2196,10 @@ async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, 
         draws, short, _own, skipped = _line_plan(line_items, i, locked, by_line, entity_id, company_settings, remaining)
         if short <= 1e-9:
             continue
-        if skipped:
+        # The line's own lot decides the reason first: a lot already invoiced elsewhere says so,
+        # rather than blaming Allow Splitting on a sibling lot the plan fell back to.
+        own_split = any(lt["entity_id"] == bound.entity_id for lt in skipped)
+        if skipped and (own_split or bound.entity_id not in claimed):
             raise HTTPException(status_code=409, detail=splitting_off(str(skipped[0]["state"].get("sku") or sku), "invoice"))
         taken = next((eid for eid in [bound.entity_id, *(lt["entity_id"] for lt, _t, _f in draws)] if eid in claimed), None)
         if taken is not None:

@@ -488,3 +488,20 @@ async def test_invoices_sharing_a_lot_within_its_quantity_both_finalize(client, 
     r = await client.post(f"/docs/{third}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
     assert await _account_net(session, auth["company_id"], "5100") == 50.0
+
+
+async def test_a_line_whose_lot_is_already_invoiced_says_so_before_allow_splitting(client, session, auth):
+    """The line's own lot is booked on another invoice; the only other stock of the product
+    may not be split. The refusal names the invoice holding the lot, the reason the line
+    cannot have its own stock, not Allow Splitting on the stock it might have taken instead."""
+    sku = f"LSG-{uuid.uuid4().hex[:6]}"
+    lot = await _new_item(client, auth, sku, quantity=1, cost_total=10, allow_splitting=True)
+    await _new_item(client, auth, sku, quantity=8, cost_total=80, allow_splitting=False)
+    first = await _doc(client, auth, [_line(lot, sku, 1)])
+    number = (await _st(session, auth, first)).get("doc_number")
+    second = await _doc(client, auth, [_line(lot, sku, 1)], finalize=False)
+    r = await client.post(f"/docs/{second}/finalize", headers=auth["headers"])
+    assert r.status_code == 409, r.text
+    assert _key(r) == "lines.lot_already_invoiced", r.text
+    assert number in r.json()["detail"]["message"]
+    assert not (await _st(session, auth, second)).get("finalized")
