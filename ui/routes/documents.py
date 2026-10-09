@@ -8841,13 +8841,16 @@ function _celerpCollectLines() {{
    optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
    true iff the rows were installed - callers hold position when it returns false rather than let
    a submission run against stale rows. */
+async function _celerpFetchLineBody() {{
+    // The page being viewed, not location.href: in-place paging never changes the URL.
+    const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
+        + '&limit=' + _CELERP_LINE_LIMIT);
+    const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+    return doc.getElementById('{line_body_id}');
+}}
 async function _celerpInstallLineBody(html, version) {{
     if (!html) {{
-        // The page being viewed, not location.href: in-place paging never changes the URL.
-        const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
-            + '&limit=' + _CELERP_LINE_LIMIT);
-        const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
-        const fresh = doc.getElementById('{line_body_id}');
+        const fresh = await _celerpFetchLineBody();
         html = fresh ? fresh.outerHTML : '';
     }}
     const tbody = document.getElementById('{line_body_id}');
@@ -8865,6 +8868,30 @@ async function _celerpInstallLineBody(html, version) {{
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
     return true;
+}}
+/* A reserved line's badge says how much it holds against its quantity, so a saved quantity
+   can change it. After a save, put each reserved row's stored status cell in place, leaving
+   the rest of the rows (and any field being edited) alone. Only the latest save's refresh
+   lands. */
+let _celerpHeldRefresh = 0;
+async function _celerpRefreshHeldBadges() {{
+    const tbody = document.getElementById('{line_body_id}');
+    if (!tbody || !tbody.querySelector('.col-item-status .badge--reserved')) return;
+    const seq = ++_celerpHeldRefresh;
+    const fresh = await _celerpFetchLineBody();
+    if (!fresh || seq !== _celerpHeldRefresh) return;
+    const stored = {{}};
+    fresh.querySelectorAll('tr').forEach(function(row) {{
+        const id = row.querySelector('[data-name="line_id"]');
+        const cell = row.querySelector('.col-item-status');
+        if (id && id.value && cell) stored[id.value] = cell;
+    }});
+    tbody.querySelectorAll('tr').forEach(function(row) {{
+        const id = row.querySelector('[data-name="line_id"]');
+        const cell = row.querySelector('.col-item-status');
+        const now = id && stored[id.value];
+        if (cell && now) cell.replaceWith(document.importNode(now, true));
+    }});
 }}
 async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
@@ -8916,6 +8943,7 @@ async function _celerpPersistOnce() {{
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
         _CELERP_ORIGINAL_COUNT = lines.length;
+        _celerpRefreshHeldBadges().catch(function() {{}});
         statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
