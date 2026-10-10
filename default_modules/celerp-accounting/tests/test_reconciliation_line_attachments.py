@@ -177,3 +177,26 @@ async def test_a_file_type_the_store_does_not_take_is_refused_and_nothing_is_kep
     assert await _attachments(client, h, sid, line) == []
     d = company_attachment_dir(cid)
     assert not d.exists() or list(d.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_sent_as_generic_binary_is_stored_by_the_type_its_name_gives(client):
+    """The app's own client sends every file as generic binary; a PDF named so is a PDF."""
+    h, _ = await _company(client)
+    sid, (line, _) = await _line(client, h)
+
+    r = await _attach(client, h, sid, line, mime="application/octet-stream")
+    assert r.status_code == 200, r.text
+    assert len(await _attachments(client, h, sid, line)) == 1
+
+
+@pytest.mark.asyncio
+async def test_generic_binary_with_no_known_type_is_still_refused(client):
+    h, _ = await _company(client)
+    sid, (line, _) = await _line(client, h)
+
+    r = await _attach(client, h, sid, line, content=b"\x00\x01", name="blob.bin",
+                      mime="application/octet-stream")
+    assert r.status_code == 413, r.text
+    assert r.json()["detail"]["message_key"] == "accounting.statement_attachment_refused"
+    assert await _attachments(client, h, sid, line) == []

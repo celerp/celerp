@@ -482,11 +482,13 @@ async def store_upload(
 
 
 def upload_mime(file: UploadFile) -> str:
-    """The content type an upload is stored as: the one it was sent with, else the one its
-    name implies, else the generic binary type the allowlist refuses."""
-    return file.content_type or (
-        mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
-    )
+    """The content type an upload is stored as: the one it was sent with, else (nothing
+    sent, or only the generic binary type) the one its name implies, else the generic
+    binary type the allowlist refuses."""
+    sent = file.content_type
+    if sent and sent != "application/octet-stream":
+        return sent
+    return mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
 
 
 async def store_file(
