@@ -85,6 +85,7 @@ class _Plan:
     back: dict[str, Decimal]  # sold lot -> its stock units that went back to the consignor
     allocations: dict[str, dict[tuple[str, str, int], float]]  # lot -> current allocations
     docs: set[str]
+    units: list[tuple[Decimal, Decimal]]  # per stock receipt: (bill units, stock units) kept
 
     @property
     def lots(self) -> set[str]:
@@ -217,7 +218,13 @@ async def _plan(session, company_id, state: dict) -> _Plan:
             kept[group.line] -= to_decimal(x.get("quantity_returned") or 0) * group.basis
             if kept[group.line] < -_EPS:
                 raise _changed(line_sku(group.line))
-    return _Plan(groups=groups, kept=kept, back=_back(groups, of, line_sku), allocations=allocations, docs=docs)
+    back = _back(groups, of, line_sku)
+    units = []
+    for group in groups[:len(receipts)]:
+        stock = sum((to_decimal(m.state.get("quantity") or 0) - back.get(m.entity_id, Decimal(0))
+                     for m in group.members), Decimal(0))
+        units.append((stock * group.basis, stock))
+    return _Plan(groups=groups, kept=kept, back=back, allocations=allocations, docs=docs, units=units)
 
 
 def _back(groups: list[_Group], of: dict[str, _Group], line_sku) -> dict[str, Decimal]:
@@ -263,11 +270,61 @@ def _bill_lines(state: dict, kept: dict[int, Decimal], currency: str) -> tuple[l
                     continue
                 total = to_decimal(li.get("line_total") or 0) or ordered * to_decimal(li.get("unit_price") or 0)
                 line["quantity"] = to_stored_float(qty)
+                if "quantity_received" in line:  # received and kept, never what the consignment received
+                    line["quantity_received"] = line["quantity"]
                 line["line_total"] = to_stored_float(round_money(total * qty / ordered, currency)
                                                      if ordered > 0 else Decimal(0))
         out.append(line)
         source.append(idx)
     return out, source, changed
+
+
+def _bill_receipts(state: dict, plan: _Plan, source: list[int]) -> tuple[list[dict], list[str]]:
+    """The bill's receipts and the lots they brought in: each of the consignment's receipts,
+    on the bill line it now sits on, for what the bill took over of it (_Plan.units), so a
+    line's receipts never come to more than it bills. A receipt whose goods all went back, or
+    whose line the bill left out, is left off with its lot."""
+    at = {idx: j for j, idx in enumerate(source)}
+    roots = iter(state.get("received_item_ids") or [])
+    units = iter(plan.units)
+    items: list[dict] = []
+    lots: list[str] = []
+    for x in state.get("received_items") or []:
+        idx = int(x.get("po_line_index", -1))
+        if (x.get("receive_as") or "stock") != "stock":
+            if idx in at:
+                items.append({**x, "po_line_index": at[idx]})
+            continue
+        lot, (bill_units, stock_units) = next(roots), next(units)
+        if idx in at and stock_units > _EPS:
+            items.append({**x, "po_line_index": at[idx], "quantity_received": to_stored_float(bill_units),
+                          "lot_quantity_bought": to_stored_float(stock_units)})
+            lots.append(lot)
+    return items, lots
+
+
+async def bought_parcels(session, company_id, bill: dict) -> dict[str, tuple[float, float | None]]:
+    """Lot -> (stock units, cost in the books' currency) a bill bought from a consignment took
+    over of each lot the consignment's receipts made: the units kept, held or sold
+    (``lot_quantity_bought``), at what the bill booked on that lot and the parts split off it
+    (``item.consignment.bought``). A supplier return from the bill goes back against these,
+    never against what the consignment recorded when the goods came in."""
+    roots = list(bill.get("received_item_ids") or [])
+    receipts = [x for x in bill.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
+    family: dict[str, str] = {}
+    for row, parent, link in await lineage(session, company_id, roots):
+        if link is None:
+            family[row.entity_id] = row.entity_id
+        elif link == "split_from" and parent in family:
+            family[row.entity_id] = family[parent]
+    cost: dict[str, float] = {}
+    if family:
+        for entity_id, data in (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.data).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(family)),
+                LedgerEntry.event_type == "item.consignment.bought"))).all():
+            if (data or {}).get("consignment_doc_id") == bill.get("source_consignment_id"):
+                cost[family[entity_id]] = cost.get(family[entity_id], 0.0) + float(data.get("cost_total") or 0)
+    return {lot: (float(x.get("lot_quantity_bought") or 0), cost.get(lot, 0.0)) for x, lot in zip(receipts, roots)}
 
 
 async def buy_consignment(session, *, company_id, user_id, consignment_id: str, state: dict, ref: str,
@@ -290,8 +347,11 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "Nothing received on this consignment is still held or sold, so there is nothing to buy. "
             "Receive the goods first."))
     bill_id = f"doc:{ref}"
-    data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "amount_paid", "amount_outstanding"}}
+    # What went back to the consignor was returned on the consignment, never on the bill.
+    data = {k: v for k, v in state.items() if k not in {
+        "status", "entity_type", "amount_paid", "amount_outstanding", "returned_items", "returned_credit"}}
     data["line_items"] = lines
+    data["received_items"], data["received_item_ids"] = _bill_receipts(state, plan, source)
     if changed:
         if to_decimal(state.get("discount") or 0) > 0 and state.get("discount_type") != "percentage":
             raise _cannot_recompute()

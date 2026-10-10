@@ -31,7 +31,7 @@ from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
-from celerp_docs.consignment_buy import buy_consignment
+from celerp_docs.consignment_buy import bought_parcels, buy_consignment
 from celerp_docs.doc_money import document_money
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
@@ -5732,9 +5732,12 @@ async def _receipt_lots(session: AsyncSession, company_id, doc_id: str,
 
 async def _parcels_made(session: AsyncSession, company_id, doc: dict) -> dict[str, tuple[float, float | None]]:
     """Lot id -> (stock units, cost in the books' currency or None when no line priced them) of
-    each lot the document's receipts created, as received: what the document charged for them."""
+    each lot the document's receipts created, as received: what the document charged for them.
+    A bill bought from a consignment charged for what it took over (bought_parcels)."""
     from celerp.models.ledger import LedgerEntry
 
+    if doc.get("source_consignment_id"):
+        return await bought_parcels(session, company_id, doc)
     created = doc.get("received_item_ids") or []
     made: dict[str, tuple[float, float | None]] = {}
     if created:
