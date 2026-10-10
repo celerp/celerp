@@ -782,6 +782,7 @@
   "label.files": "Dateien",
   "label.fiscal_year_end_date": "Enddatum des Geschäftsjahres",
   "label.fiscal_year_start": "Beginn des Geschäftsjahres",
+  "label.opening_balance_date": "Eröffnungssalden zum",
   "label.format_mm": "Format (mm)",
   "label.go_to_subscriptions": "Zu Abonnements",
   "label.height_mm": "Höhe (mm)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} ist keine Währung, die Celerp kennt. Wählen Sie eine Währung aus der Liste.",
   "company.currency_has_postings": "Die Bücher werden in {currency} geführt und es sind bereits Buchungen darin erfasst, daher kann die Währung nicht geändert werden. Legen Sie ein neues Unternehmen an, um die Bücher in einer anderen Währung zu führen.",
   "company.fiscal_year_start_invalid": "{value} ist kein Geschäftsjahresbeginn. Wählen Sie den ersten Tag eines Monats im Format MM-01.",
+  "company.opening_balance_date_invalid": "{value} ist kein Datum. Geben Sie das Datum der Eröffnungssalden im Format YYYY-MM-DD ein oder lassen Sie das Feld leer.",
   "company.import_vat_default_invalid": "Die Vorsteuer auf Einfuhren muss ein- oder ausgeschaltet sein. Senden Sie true oder false."
 }

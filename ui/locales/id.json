@@ -782,6 +782,7 @@
   "label.files": "Berkas",
   "label.fiscal_year_end_date": "Tanggal akhir tahun fiskal",
   "label.fiscal_year_start": "Awal tahun fiskal",
+  "label.opening_balance_date": "Saldo awal per tanggal",
   "label.format_mm": "Formatnya (mm)",
   "label.go_to_subscriptions": "Buka Langganan",
   "label.height_mm": "Tinggi (mm)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} bukan mata uang yang dikenal Celerp. Pilih mata uang dari daftar.",
   "company.currency_has_postings": "Pembukuan dicatat dalam {currency} dan jurnal sudah diposting dalam mata uang itu, jadi mata uang tidak dapat diubah. Buat perusahaan baru untuk mencatat pembukuan dalam mata uang lain.",
   "company.fiscal_year_start_invalid": "{value} bukan awal tahun fiskal. Pilih hari pertama suatu bulan, dalam format MM-01.",
+  "company.opening_balance_date_invalid": "{value} bukan tanggal. Masukkan tanggal saldo awal, dalam format YYYY-MM-DD, atau biarkan kosong.",
   "company.import_vat_default_invalid": "Pemulihan PPN impor harus aktif atau nonaktif. Kirim true atau false."
 }

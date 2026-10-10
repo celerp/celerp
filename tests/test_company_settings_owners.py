@@ -93,6 +93,7 @@ async def test_company_settings_patch_refuses_posting_accounts(client, session):
 @pytest.mark.parametrize("key,value", [
     ("currency", "EUR"), ("fiscal_year_start", "04-01"), ("import_vat_recoverable_default", True),
     ("stripe_deposit_account", "1010"), ("woocommerce_deposit_account", "1010"),
+    ("opening_balance_date", "2026-03-31"),
 ])
 async def test_company_settings_patch_refuses_the_books(client, session, key, value):
     h, cid = await _owner(client)
@@ -160,6 +161,24 @@ async def test_books_route_saves_and_records_who_changed_it(client, session):
         assert s[f"{key}_set_by"] and s[f"{key}_set_at"], key
 
 
+async def test_books_route_saves_the_opening_balance_date_and_records_who_set_it(client, session):
+    """Red statement: the books route had no opening balance date, so the date the opening
+    balances are stated at could not be recorded and a request carrying it saved nothing."""
+    h, cid = await _owner(client)
+    r = await client.patch("/companies/me/books", headers=h, json={"opening_balance_date": "2026-03-31"})
+    assert r.status_code == 200, r.text
+    assert r.json()["opening_balance_date"] == "2026-03-31"
+    s = await _settings(session, cid)
+    assert s["opening_balance_date"] == "2026-03-31"
+    assert s["opening_balance_date_set_by"] and s["opening_balance_date_set_at"]
+    # Clearing it is a change too, and is recorded.
+    r = await client.patch("/companies/me/books", headers=h, json={"opening_balance_date": ""})
+    assert r.status_code == 200, r.text
+    s2 = await _settings(session, cid)
+    assert s2["opening_balance_date"] is None
+    assert s2["opening_balance_date_set_at"] >= s["opening_balance_date_set_at"]
+
+
 async def test_books_route_needs_manage_accounting(client, session):
     h, cid = await _owner(client)
     operator = await _user_with_role(client, session, h, "operator")
@@ -198,6 +217,9 @@ async def test_books_currency_change_is_allowed_with_only_sample_stock(client, s
     ({"fiscal_year_start": "13-01"}, "company.fiscal_year_start_invalid"),
     ({"fiscal_year_start": "04-15"}, "company.fiscal_year_start_invalid"),
     ({"import_vat_recoverable_default": "yes"}, "company.import_vat_default_invalid"),
+    ({"opening_balance_date": "2026-02-30"}, "company.opening_balance_date_invalid"),
+    ({"opening_balance_date": "31/03/2026"}, "company.opening_balance_date_invalid"),
+    ({"opening_balance_date": 20260331}, "company.opening_balance_date_invalid"),
 ])
 async def test_books_route_refuses_invalid_values(client, session, payload, key):
     h, cid = await _owner(client)

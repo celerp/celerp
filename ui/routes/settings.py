@@ -933,7 +933,7 @@ def setup_routes(app):
 
         return Td(
             Input(
-                type="text", name="value", value=val,
+                type="date" if field == "opening_balance_date" else "text", name="value", value=val,
                 id=f"company-{field}-input",
                 cls="cell-input",
                 autofocus=True,
@@ -3024,15 +3024,16 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
 
 
 def _company_settings_card(company: dict, lang: str = "en", can_change_business_type: bool = False) -> FT:
-    """The company's regional settings (Currency / Timezone / Fiscal Year Start), plus Business Type for
-    roles allowed to change it, edited inline via the existing /settings/company/{field} routes. Sits to
-    the right of the Contact Info card on Company Details, mirroring the customer/vendor settings card.
+    """The company's regional settings (Currency / Timezone / Fiscal Year Start / Opening balances
+    as at), plus Business Type for roles allowed to change it, edited inline via the existing
+    /settings/company/{field} routes. Sits to the right of the Contact Info card on Company Details, mirroring the customer/vendor settings card.
     Language is omitted - it is set from the header language switcher, so duplicating it here would be
     cruft."""
     fields = [
         ("currency", t("label.currency", lang)),
         ("timezone", t("label.timezone", lang)),
         ("fiscal_year_start", t("label.fiscal_year_start", lang)),
+        ("opening_balance_date", t("label.opening_balance_date", lang)),
     ]
     if can_change_business_type:
         fields.append(("vertical", t("label.business_type", lang)))

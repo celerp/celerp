@@ -841,6 +841,7 @@
   "label.files": "ፋይሎች",
   "label.fiscal_year_end_date": "የበጀት ዓመት መጨረሻ ቀን",
   "label.fiscal_year_start": "የበጀት ዓመት መጀመሪያ",
+  "label.opening_balance_date": "የመክፈቻ ሂሳቦች ቀን",
   "label.format_mm": "ቅርጸት (ሚሜ)",
   "label.go_to_subscriptions": "ወደ ምዝገባዎች ሂድ",
   "label.height_mm": "ቁመት (ሚሜ)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} Celerp የሚያውቀው ምንዛሬ አይደለም። ከዝርዝሩ ምንዛሬ ይምረጡ።",
   "company.currency_has_postings": "መዛግብቱ በ {currency} የተያዙ ሲሆን መዝገቦች ቀድሞ በዚህ ተለጥፈዋል፣ ስለዚህ ምንዛሬው ሊቀየር አይችልም። በሌላ ምንዛሬ መዛግብትን ለመያዝ አዲስ ኩባንያ ይጀምሩ።",
   "company.fiscal_year_start_invalid": "{value} የበጀት ዓመት መጀመሪያ አይደለም። የወር የመጀመሪያ ቀንን በ MM-01 ቅርጸት ይምረጡ።",
+  "company.opening_balance_date_invalid": "{value} ቀን አይደለም። የመክፈቻ ሂሳቦቹ የተገለጹበትን ቀን በ YYYY-MM-DD ቅርጸት ያስገቡ፣ ወይም ባዶ ይተዉት።",
   "company.import_vat_default_invalid": "የገቢ ዕቃ ተ.እ.ታ ማስመለስ መብራት ወይም መጥፋት አለበት። true ወይም false ይላኩ።"
 }

@@ -47,6 +47,9 @@ OWNERS: dict[str, str] = {
     "import_vat_recoverable_default": BOOKS,
     "stripe_deposit_account": BOOKS,
     "woocommerce_deposit_account": BOOKS,
+    # The date the opening balances are stated at: documents dated on or before it are
+    # offered as already in them when imported.
+    "opening_balance_date": BOOKS,
     "lock_date": PERIOD_LOCK,
     "posting_roles": POSTING_ACCOUNTS,
     "posting_role_scopes": POSTING_ACCOUNTS,

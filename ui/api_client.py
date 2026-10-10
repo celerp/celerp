@@ -772,7 +772,7 @@ async def switch_company(token: str, company_id: str) -> tuple[str, str]:
 def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
-    for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email",
+    for k in ("currency", "timezone", "fiscal_year_start", "opening_balance_date", "tax_id", "phone", "address", "vertical", "email",
               "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
               "line_item_identifier"):
         if k not in data:

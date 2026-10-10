@@ -782,6 +782,7 @@
   "label.files": "ملفات",
   "label.fiscal_year_end_date": "تاريخ نهاية السنة المالية",
   "label.fiscal_year_start": "بداية السنة المالية",
+  "label.opening_balance_date": "الأرصدة الافتتاحية في تاريخ",
   "label.format_mm": "التنسيق (مم)",
   "label.go_to_subscriptions": "انتقل إلى الاشتراكات",
   "label.height_mm": "الارتفاع (مم)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} ليست عملة يعرفها Celerp. اختر عملة من القائمة.",
   "company.currency_has_postings": "تُمسك الدفاتر بعملة {currency} وقد رُحّلت بها قيود بالفعل، لذا لا يمكن تغيير العملة. أنشئ شركة جديدة لمسك الدفاتر بعملة أخرى.",
   "company.fiscal_year_start_invalid": "{value} ليس بداية سنة مالية. اختر اليوم الأول من شهر بالصيغة MM-01.",
+  "company.opening_balance_date_invalid": "{value} ليس تاريخًا. أدخل التاريخ الذي تُذكر فيه الأرصدة الافتتاحية بالصيغة YYYY-MM-DD، أو اتركه فارغًا.",
   "company.import_vat_default_invalid": "يجب أن يكون استرداد ضريبة القيمة المضافة على الواردات مفعّلًا أو معطّلًا. أرسل true أو false."
 }

@@ -782,6 +782,7 @@
   "label.files": "Tệp",
   "label.fiscal_year_end_date": "Ngày kết thúc năm tài chính",
   "label.fiscal_year_start": "Bắt đầu năm tài chính",
+  "label.opening_balance_date": "Số dư đầu kỳ tại ngày",
   "label.format_mm": "Định dạng (mm)",
   "label.go_to_subscriptions": "Đi đến Đăng ký",
   "label.height_mm": "Chiều cao (mm)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} không phải là loại tiền Celerp biết. Hãy chọn một loại tiền trong danh sách.",
   "company.currency_has_postings": "Sổ sách được ghi bằng {currency} và đã có bút toán ghi sổ bằng loại tiền này, nên không thể đổi loại tiền. Hãy tạo công ty mới để ghi sổ bằng loại tiền khác.",
   "company.fiscal_year_start_invalid": "{value} không phải là ngày bắt đầu năm tài chính. Hãy chọn ngày đầu tiên của một tháng, theo dạng MM-01.",
+  "company.opening_balance_date_invalid": "{value} không phải là ngày. Hãy nhập ngày của số dư đầu kỳ, theo dạng YYYY-MM-DD, hoặc để trống.",
   "company.import_vat_default_invalid": "Khấu trừ thuế VAT hàng nhập khẩu phải bật hoặc tắt. Hãy gửi true hoặc false."
 }

@@ -782,6 +782,7 @@
   "label.files": "ไฟล์",
   "label.fiscal_year_end_date": "วันที่สิ้นสุดปีบัญชี",
   "label.fiscal_year_start": "เริ่มปีบัญชี",
+  "label.opening_balance_date": "ยอดยกมา ณ วันที่",
   "label.format_mm": "รูปแบบ (มม.)",
   "label.go_to_subscriptions": "ไปที่การสมัครสมาชิก",
   "label.height_mm": "ความสูง (มม.)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} ไม่ใช่สกุลเงินที่ Celerp รู้จัก เลือกสกุลเงินจากรายการ",
   "company.currency_has_postings": "สมุดบัญชีบันทึกเป็น {currency} และมีรายการบันทึกในสกุลเงินนี้แล้ว จึงเปลี่ยนสกุลเงินไม่ได้ เริ่มบริษัทใหม่เพื่อทำบัญชีในสกุลเงินอื่น",
   "company.fiscal_year_start_invalid": "{value} ไม่ใช่วันเริ่มปีบัญชี เลือกวันแรกของเดือนในรูปแบบ MM-01",
+  "company.opening_balance_date_invalid": "{value} ไม่ใช่วันที่ ป้อนวันที่ของยอดยกมาในรูปแบบ YYYY-MM-DD หรือเว้นว่างไว้",
   "company.import_vat_default_invalid": "การขอคืนภาษีมูลค่าเพิ่มนำเข้าต้องเปิดหรือปิด ส่ง true หรือ false"
 }

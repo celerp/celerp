@@ -782,6 +782,7 @@
   "label.files": "Archivos",
   "label.fiscal_year_end_date": "Fecha de fin del año fiscal",
   "label.fiscal_year_start": "inicio del año fiscal",
+  "label.opening_balance_date": "Saldos de apertura a fecha de",
   "label.format_mm": "Formato (mm)",
   "label.go_to_subscriptions": "Ir a Suscripciones",
   "label.height_mm": "Altura (mm)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} no es una moneda que Celerp conozca. Elija una moneda de la lista.",
   "company.currency_has_postings": "Los libros se llevan en {currency} y ya hay asientos contabilizados en esa moneda, así que no se puede cambiar. Cree una empresa nueva para llevar los libros en otra moneda.",
   "company.fiscal_year_start_invalid": "{value} no es un inicio de ejercicio fiscal. Elija el primer día de un mes, como MM-01.",
+  "company.opening_balance_date_invalid": "{value} no es una fecha. Introduzca la fecha de los saldos de apertura, como YYYY-MM-DD, o déjela vacía.",
   "company.import_vat_default_invalid": "La recuperación del IVA de importación debe estar activada o desactivada. Envíe true o false."
 }

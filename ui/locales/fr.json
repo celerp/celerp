@@ -782,6 +782,7 @@
   "label.files": "Fichiers",
   "label.fiscal_year_end_date": "Date de fin d’exercice",
   "label.fiscal_year_start": "Début de l’exercice",
+  "label.opening_balance_date": "Soldes d'ouverture au",
   "label.format_mm": "Format (mm)",
   "label.go_to_subscriptions": "Allez dans Abonnements",
   "label.height_mm": "Hauteur (mm)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} n'est pas une devise connue de Celerp. Choisissez une devise dans la liste.",
   "company.currency_has_postings": "La comptabilité est tenue en {currency} et des écritures y sont déjà passées, la devise ne peut donc pas changer. Créez une nouvelle entreprise pour tenir la comptabilité dans une autre devise.",
   "company.fiscal_year_start_invalid": "{value} n'est pas un début d'exercice. Choisissez le premier jour d'un mois, au format MM-01.",
+  "company.opening_balance_date_invalid": "{value} n'est pas une date. Saisissez la date des soldes d'ouverture, au format YYYY-MM-DD, ou laissez le champ vide.",
   "company.import_vat_default_invalid": "La récupération de la TVA à l'importation doit être activée ou désactivée. Envoyez true ou false."
 }

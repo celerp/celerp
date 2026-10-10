@@ -7,6 +7,7 @@ import asyncio
 import copy
 import logging
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
@@ -345,6 +346,7 @@ class BooksPatch(BaseModel):
     import_vat_recoverable_default: object = None
     stripe_deposit_account: object = None
     woocommerce_deposit_account: object = None
+    opening_balance_date: object = None
 
 
 _FISCAL_YEAR_STARTS = frozenset(f"{m:02d}-01" for m in range(1, 13))
@@ -378,6 +380,18 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
                 f"{value} is not a fiscal year start. Pick the first day of a month, as MM-01.",
                 value=str(value)))
         return value
+    if key == "opening_balance_date":
+        if value is None or value == "":
+            return None
+        try:
+            if not isinstance(value, str) or len(value) != 10:
+                raise ValueError
+            return date.fromisoformat(value).isoformat()
+        except ValueError:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.opening_balance_date_invalid",
+                f"{value} is not a date. Enter the date the opening balances are stated at, "
+                "as YYYY-MM-DD, or leave it empty.", value=str(value))) from None
     if key == "import_vat_recoverable_default":
         if not isinstance(value, bool):
             raise HTTPException(status_code=422, detail=refusal(
@@ -407,8 +421,8 @@ async def patch_books(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Change the settings the books depend on: the currency (fixed once the company
-    has posted entries of its own), the fiscal year start, the import VAT default and the
-    online deposit accounts. Each change records who made it and when."""
+    has posted entries of its own), the fiscal year start, the opening balance date, the
+    import VAT default and the online deposit accounts. Each change records who made it and when."""
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")

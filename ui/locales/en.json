@@ -911,6 +911,7 @@
   "label.files": "Files",
   "label.fiscal_year_end_date": "Fiscal year end date",
   "label.fiscal_year_start": "Fiscal year start",
+  "label.opening_balance_date": "Opening balances as at",
   "label.format_mm": "Format (mm)",
   "label.go_to_subscriptions": "Go to Subscriptions",
   "label.height_mm": "Height (mm)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} is not a currency Celerp knows. Pick a currency from the list.",
   "company.currency_has_postings": "The books are kept in {currency} and entries are already posted in it, so the currency cannot change. Start a new company to keep books in another currency.",
   "company.fiscal_year_start_invalid": "{value} is not a fiscal year start. Pick the first day of a month, as MM-01.",
+  "company.opening_balance_date_invalid": "{value} is not a date. Enter the date the opening balances are stated at, as YYYY-MM-DD, or leave it empty.",
   "company.import_vat_default_invalid": "Import VAT recovery must be on or off. Send true or false."
 }

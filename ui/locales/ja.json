@@ -782,6 +782,7 @@
   "label.files": "ファイル",
   "label.fiscal_year_end_date": "決算日",
   "label.fiscal_year_start": "会計年度開始",
+  "label.opening_balance_date": "期首残高の基準日",
   "label.format_mm": "形式(mm)",
   "label.go_to_subscriptions": "サブスクリプションに移動",
   "label.height_mm": "高さ(mm)",
@@ -4635,5 +4636,6 @@
   "company.currency_unknown": "{currency} は Celerp が認識できる通貨ではありません。一覧から通貨を選んでください。",
   "company.currency_has_postings": "帳簿は {currency} で管理されており、すでに仕訳が計上されているため、通貨は変更できません。別の通貨で帳簿を管理するには、新しい会社を作成してください。",
   "company.fiscal_year_start_invalid": "{value} は会計年度の開始日ではありません。月の初日を MM-01 の形式で選んでください。",
+  "company.opening_balance_date_invalid": "{value} は日付ではありません。期首残高の基準日を YYYY-MM-DD の形式で入力するか、空欄のままにしてください。",
   "company.import_vat_default_invalid": "輸入消費税の控除はオンかオフのどちらかです。true か false を送ってください。"
 }

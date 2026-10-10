@@ -8326,6 +8326,40 @@ class TestNikolaiFixedBugs:
         assert b"error" in r.content.lower() or b"Invalid" in r.content
         mock_patch.assert_not_called()
 
+    # ── Opening balance date ──────────────────────────────────────────────────
+
+    def test_company_tab_shows_the_opening_balance_date_or_dashes(self):
+        """The date the opening balances are stated at is a click-to-edit row; unset shows --."""
+        from ui.routes.settings import _company_settings_card
+        from fasthtml.common import to_xml
+        html = to_xml(_company_settings_card({"settings": {"opening_balance_date": "2026-03-31"}}))
+        assert "Opening balances as at" in html and "2026-03-31" in html
+        assert "/settings/company/opening_balance_date/edit" in html
+        empty = to_xml(_company_settings_card({"settings": {}}))
+        assert "/settings/company/opening_balance_date/edit" in empty and "--" in empty
+
+    @pytest.mark.asyncio
+    async def test_company_tab_opening_balance_date_edit_is_a_date_input(self, ui_client):
+        with patch("ui.api_client.get_company",
+                   new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})):
+            r = await ui_client.get("/settings/company/opening_balance_date/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b'type="date"' in r.content and b'value="2026-03-31"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_company_tab_opening_balance_date_saves_through_the_books(self, ui_client):
+        with (
+            patch("ui.api_client.get_company",
+                  new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})),
+            patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
+        ):
+            r = await ui_client.patch("/settings/company/opening_balance_date",
+                                      data={"value": "2026-03-31"}, cookies=_authed())
+        assert r.status_code == 200
+        mock_patch.assert_awaited_once()
+        assert mock_patch.await_args.args[1] == {"opening_balance_date": "2026-03-31"}
+        assert b"2026-03-31" in r.content
+
     # ── Timezone display ──────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
