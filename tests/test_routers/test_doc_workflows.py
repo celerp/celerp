@@ -1320,10 +1320,11 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     # Revert Return Stock must fail with 409 and name the blocked item
     undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
     assert undo_r.status_code == 409, undo_r.text
-    detail = undo_r.json().get("detail", "")
-    assert "sold" in detail.lower() or "RR-002" in detail, (
-        f"Error message must name the blocked item or status. Got: {detail}"
-    )
+    detail = undo_r.json()["detail"]
+    assert detail["message_key"] == "docs.undo_return_blocked", detail
+    [reason] = detail["params"]["reasons"]
+    assert reason["message_key"] == "docs.undo_lot_sold" and reason["params"] == {"sku": "RR-002"}, reason
+    assert "RR-002" in detail["message"] and "sold" in detail["message"], detail["message"]
 
 
 @pytest.mark.asyncio
