@@ -4,8 +4,8 @@
 is applied, so no route, import or connector can take them. Each way out of stock is
 refused naming the invoice and leaves the lot as it was: an edited quantity, a CSV or batch
 update, a store re-import, expiring or archiving the lot (alone or in bulk), reverting it to
-draft, sending it out on memo, undoing the production receipt that made it, or a write-off
-after a merge or transfer. The hold follows the goods, not the SKU: a split part with its
+draft, sending it out on memo, merging it into another lot, undoing the production receipt
+that made it, or a write-off after a transfer. The hold follows the goods, not the SKU: a split part with its
 own SKU, a lot renamed after the invoice, and an invoice line whose SKU differs from the lot
 it took all keep it. Shipping or voiding the invoice releases the goods."""
 from __future__ import annotations
@@ -140,36 +140,27 @@ async def test_undoing_the_production_receipt_of_invoiced_output_is_refused(clie
     await assert_settled(client, session, auth)
 
 
-async def test_a_merged_lot_keeps_the_hold(client, session, auth):
+async def test_a_held_lot_cannot_be_merged_until_the_invoice_lets_it_go(client, session, auth):
+    """The invoice's line names the lot, so merging it into another lot would strand the
+    goods the invoice holds: refused like expiring or archiving it. Once the invoice is
+    voided the merge goes through and can be undone."""
     sku = f"G1-MRG-{uuid.uuid4().hex[:4]}"
     a, b = await _lot(client, auth, sku, 2, 20.0), await _lot(client, auth, sku, 2, 20.0)
     inv = await _invoice(client, auth, [(a, sku, 2)])
     h = auth["headers"]
     body = {"source_entity_ids": [a, b], "target_sku_from": a}
-    p = await client.post("/items/merge/preview", headers=h, json=body)
-    assert p.status_code == 200, p.text
-    m = await client.post("/items/merge", headers=h, json={**body, "plan_fingerprint": p.json().get("plan_fingerprint")})
-    assert m.status_code == 200, m.text
-    merged = m.json()["id"]
-    await _refused(session, auth, await _write_off(client, auth, merged, 4), inv, None)
-    assert (await _write_off(client, auth, merged, 2)).status_code == 200
-    await assert_settled(client, session, auth)
 
+    async def merge():
+        p = await client.post("/items/merge/preview", headers=h, json=body)
+        assert p.status_code == 200, p.text
+        return await client.post("/items/merge", headers=h, json={**body, "plan_fingerprint": p.json().get("plan_fingerprint")})
 
-async def test_undoing_a_merge_returns_the_hold_to_the_lot(client, session, auth):
-    sku = f"G1-UM-{uuid.uuid4().hex[:4]}"
-    a, b = await _lot(client, auth, sku, 2, 20.0), await _lot(client, auth, sku, 2, 20.0)
-    inv = await _invoice(client, auth, [(a, sku, 2)])
-    h = auth["headers"]
-    body = {"source_entity_ids": [a, b], "target_sku_from": a}
-    p = await client.post("/items/merge/preview", headers=h, json=body)
-    m = await client.post("/items/merge", headers=h, json={**body, "plan_fingerprint": p.json().get("plan_fingerprint")})
+    await _refused(session, auth, await merge(), inv, None)
+    assert (await client.post(f"/docs/{inv}/void", headers=h, json={})).status_code == 200
+    m = await merge()
     assert m.status_code == 200, m.text
     r = await client.post(f"/items/{m.json()['id']}/undo-merge", headers=h, json={})
     assert r.status_code == 200, r.text
-    await assert_settled(client, session, auth)
-    await _refused(session, auth, await _adjust(client, auth, a, 0), inv, 2)
-    await _ship(client, auth, inv, a)
     await assert_settled(client, session, auth)
 
 

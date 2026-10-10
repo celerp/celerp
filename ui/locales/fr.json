@@ -4299,6 +4299,8 @@
   "notice.work_centers_moved.body": "Le réglage Heures par jour de votre entreprise se trouve désormais sur le nouveau poste de travail Default, sous Paramètres > Fabrication > Postes de travail. Vos estimations de fabrication n’ont pas changé.",
   "notice.imported_doc_cutover.title": "Bons de commande et factures fournisseurs importés corrigés",
   "notice.imported_doc_cutover.body": "Les bons de commande et factures fournisseurs importés avant cette mise à jour ont été comptabilisés une seconde fois en plus des soldes d'ouverture, qui les contiennent déjà. Ces écritures ont été annulées : les dettes fournisseurs et le stock correspondent maintenant aux soldes d'ouverture plus ce qui s'est passé sur chaque document après son importation. Corrigés : {numbers}.",
+  "notice.legacy_credit_notes.title": "Avoirs antérieurs réglés",
+  "notice.legacy_credit_notes.body": "Les avoirs émis avant cette mise à jour ont réduit leurs factures sans enregistrer le crédit sur l'avoir ni le comptabiliser. Chacun est désormais réglé comme le serait un avoir émis aujourd'hui, avec son écriture passée à sa date d'émission (ou au premier jour ouvert après une période verrouillée). Réglés : {numbers}.",
   "notice.store_order_shipped_set_aside.title": "Une commande de la boutique a expédié des marchandises réservées à une facture",
   "item.app_owned_fields": "Ces champs sont définis par l'application et ne peuvent pas être saisis : {fields}. Retirez-les, puis réessayez.",
   "item.draft": "{sku} est un brouillon, pas encore du stock : rendez-le d'abord disponible.",

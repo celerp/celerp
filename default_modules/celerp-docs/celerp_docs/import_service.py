@@ -34,6 +34,8 @@ from celerp_docs.routes import (
     _lock_imported_contact,
     _require_doc_rate_http,
     imported_opening_snapshot,
+    imported_settlement_free,
+    settle_imported_credit,
     write_doc_patch,
 )
 
@@ -151,7 +153,7 @@ async def _create_doc(
     await _assert_import_number_free(session, company_id, "doc", rec.data)
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
-    data = rec.data
+    data = imported_settlement_free(rec.data)
     if post_ledger:
         if auto_je.imported_issue_kind(data) == "bill":
             await require_line_destinations(session, company_id, data.get("line_items"))
@@ -171,6 +173,7 @@ async def _create_doc(
     )
     if getattr(entry, "was_deduped", False):
         return "skipped"
+    await settle_imported_credit(session, company_id, user.id, entry.entity_id, data)
     if post_ledger:
         await _import_auto_je(
             session, company_id, user.id, entry.entity_id, data,

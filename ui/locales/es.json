@@ -4299,6 +4299,8 @@
   "notice.work_centers_moved.body": "La configuración de horas diarias de su empresa está ahora en el nuevo centro de trabajo Default, en Configuración > Fabricación > Centros de trabajo. Sus estimaciones de lo que hay que fabricar no cambiaron.",
   "notice.imported_doc_cutover.title": "Órdenes de compra y facturas de proveedor importadas corregidas",
   "notice.imported_doc_cutover.body": "Las órdenes de compra y facturas de proveedor importadas antes de esta actualización se registraron por segunda vez además de los saldos iniciales, que ya las incluyen. Esos asientos se revirtieron, así que las cuentas por pagar y el stock ahora coinciden con los saldos iniciales más lo ocurrido en cada documento después de importarlo. Corregidos: {numbers}.",
+  "notice.legacy_credit_notes.title": "Notas de crédito anteriores liquidadas",
+  "notice.legacy_credit_notes.body": "Las notas de crédito emitidas antes de esta actualización redujeron sus facturas sin registrar el crédito en la nota ni contabilizarlo. Cada una se liquida ahora como se liquidaría una nota emitida hoy, con su asiento contabilizado en su fecha de emisión (o el primer día abierto después de un período bloqueado). Liquidadas: {numbers}.",
   "notice.store_order_shipped_set_aside.title": "Un pedido de la tienda envió mercancía apartada para una factura",
   "item.app_owned_fields": "La aplicación establece estos campos y no se pueden introducir: {fields}. Quítelos e inténtelo de nuevo.",
   "item.draft": "{sku} es un borrador y aún no es existencia: primero póngalo disponible.",

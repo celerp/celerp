@@ -4299,6 +4299,8 @@
   "notice.work_centers_moved.body": "L’impostazione delle ore giornaliere della tua azienda si trova ora nel nuovo centro di lavoro Default, in Impostazioni > Produzione > Centri di lavoro. Le stime di produzione non sono cambiate.",
   "notice.imported_doc_cutover.title": "Ordini di acquisto e fatture fornitore importati corretti",
   "notice.imported_doc_cutover.body": "Gli ordini di acquisto e le fatture fornitore importati prima di questo aggiornamento sono stati registrati una seconda volta oltre ai saldi di apertura, che li contengono già. Quelle registrazioni sono state stornate, quindi debiti e magazzino ora corrispondono ai saldi di apertura più quanto avvenuto su ogni documento dopo l'importazione. Corretti: {numbers}.",
+  "notice.legacy_credit_notes.title": "Note di credito precedenti saldate",
+  "notice.legacy_credit_notes.body": "Le note di credito emesse prima di questo aggiornamento hanno ridotto le loro fatture senza registrare il credito sulla nota né contabilizzarlo. Ciascuna è ora saldata come lo sarebbe una nota emessa oggi, con la sua scrittura registrata nel giorno di emissione (o nel primo giorno aperto dopo un periodo bloccato). Saldate: {numbers}.",
   "notice.store_order_shipped_set_aside.title": "Un ordine del negozio ha spedito merce accantonata per una fattura",
   "item.app_owned_fields": "Questi campi sono impostati dall'app e non possono essere inseriti: {fields}. Rimuovili e riprova.",
   "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile.",

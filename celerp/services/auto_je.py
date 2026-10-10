@@ -563,12 +563,15 @@ async def _recognized_account(session, company_id, doc_id: str, role, settings: 
 
 
 async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_id: str, doc: dict,
-                                           base_currency: str = "USD") -> None:
+                                           base_currency: str = "USD", ts: str | None = None,
+                                           memo: str | None = None) -> None:
     """Post a credit note issued against an invoice: Dr the revenue the invoice recognized
     the credited lines on and Dr the output tax credited, Cr the receivable on the account
     the invoice recognized it on (party_origin). Cost of goods is not touched here: goods
     still held for the invoice are released by the invoice's own reconcile
-    (credited_quantities), and goods that come back are booked by the return."""
+    (credited_quantities), and goods that come back are booked by the return. Dated when
+    the credit note was issued unless ``ts`` says otherwise, with ``memo`` replacing the
+    standard one."""
     total, tax, revenue = _sale_totals(doc, base_currency)
     if not total:
         return
@@ -591,8 +594,8 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
         je_id=f"je:auto:{doc_id}:{cycle_suffix}",
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
-        memo=f"Auto JE for credit note {doc_id} finalized",
-        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        memo=memo or f"Auto JE for credit note {doc_id} finalized",
+        ts=ts or doc.get("finalized_at") or doc.get("issue_date"),
         entries=entries,
         metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
     )
@@ -2626,9 +2629,10 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     claims held before the change (unshipped_claims, with the lot read as ``before``) are
     compared with those held after it, line by line: a change that leaves a line holding
     fewer of its goods is refused, naming the invoices. Goods that move to a part split
-    off the lot or to the lot it is merged into are still held, so those changes pass;
-    units no invoice holds leave as before. A lot an invoice holds cannot be archived,
-    expired or sent out on memo while it holds any of it.
+    off the lot are still held, so that change passes; units no invoice holds leave as
+    before. A lot an invoice holds cannot be archived, expired, merged into another lot or
+    sent out on memo while it holds any of it: the invoice's line names this lot, so it
+    could no longer ship them.
 
     Only stock-type lots hold goods (lot_origin.ready_to_ship), so changing a lot to a
     service or another type that holds no stock takes its goods out of stock. Invoice
@@ -2658,7 +2662,7 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
         return
     status = str(after.get("status") or "").lower()
     leaves = not ready_to_ship(after)
-    if not (leaves and (status in RETIRED or status == "memo_out")):
+    if not (leaves and (status in RETIRED or status in ("memo_out", "merged"))):
         def cover(claims) -> dict[tuple[str, int], float]:
             out: dict[tuple[str, int], float] = {}
             for claim in claims:
@@ -2671,8 +2675,8 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
         lost = sum(max(0.0, qty - now.get(key, 0.0)) for key, qty in held.items())
         if lost <= 1e-9:
             return
-    # Archived, expired and memo stock stays on the books and so keeps its claims, but it
-    # is no longer free to ship: an invoice holding any of it is refused outright.
+    # Archived, expired, merged and memo stock is no longer free to ship from this lot: an
+    # invoice holding any of it is refused outright.
     numbers = sorted({await _doc_number_of(session, company_id, d) for d in held_here})
     one = len(numbers) == 1
     outcome = ("the lot cannot leave stock" if leaves

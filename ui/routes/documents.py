@@ -6263,7 +6263,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="void-section",
             )
         )
-    # "Revert to Draft" button - only from final/sent (and "fulfilled" for inbound docs) with no payments and no received items
+    # "Revert to Draft" button - only from final/sent (and "fulfilled" for inbound docs) with no payments and no received items,
+    # or from paid/partial when an issued credit note alone settled it (the API's settled_by_credit_only)
     amount_paid_for_revert = float(doc.get("amount_paid") or 0)
     has_received_items = bool(doc.get("received_items"))
     _is_inbound_doc = doc_type in ("bill", "consignment_in")
@@ -6274,7 +6275,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _is_inbound_doc
         else {"final", "sent"}
     )
-    if status in _revertable_statuses and amount_paid_for_revert == 0 and _can_finalize and not suppress_doc_actions:
+    _settled_by_credit_only = not is_list and status in ("partial", "paid") and float(doc.get("credited") or 0) > 0
+    if ((status in _revertable_statuses or _settled_by_credit_only) and amount_paid_for_revert == 0
+            and _can_finalize and not suppress_doc_actions):
         action_btns_right.insert(0,
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary",

@@ -1,10 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Goods a finalized invoice has costed and not shipped are wherever the lot they came
-from went while still in stock: the parts split off it and the lot it was merged into.
-Another invoice that ships them takes their cost from the invoice that set them aside,
-so inventory gives up their cost once. Taking them off stock by hand while an invoice
-holds them is refused, naming the invoice."""
+from went while still in stock: the parts split off it. Another invoice that ships them takes
+their cost from the invoice that set them aside, so inventory gives up their cost once.
+Taking them off stock by hand, or merging their lot into another, while an invoice holds
+them is refused, naming the invoice."""
 from __future__ import annotations
 
 import pytest
@@ -52,14 +52,12 @@ async def _split(client, auth, lot: str, qty: float) -> str:
     return child["id"] if isinstance(child, dict) else child
 
 
-async def _merge(client, auth, *lots: str) -> str:
+async def _merge(client, auth, *lots: str):
     body = {"source_entity_ids": list(lots), "target_sku_from": lots[0]}
     r = await client.post("/items/merge/preview", headers=auth["headers"], json=body)
     assert r.status_code == 200, r.text
-    r = await client.post("/items/merge", headers=auth["headers"],
-                          json={**body, "plan_fingerprint": r.json().get("plan_fingerprint")})
-    assert r.status_code == 200, r.text
-    return r.json()["id"]
+    return await client.post("/items/merge", headers=auth["headers"],
+                             json={**body, "plan_fingerprint": r.json().get("plan_fingerprint")})
 
 
 async def _adjust(client, auth, lot: str, qty: float):
@@ -93,11 +91,21 @@ async def test_the_lot_left_after_a_split_stays_set_aside(client, session, auth)
 
 
 @pytest.mark.parametrize("ship_qty", [1, 2])
-async def test_a_set_aside_lot_merged_and_shipped_elsewhere_is_given_up_once(client, session, auth, ship_qty):
+async def test_a_set_aside_lot_is_merged_only_after_its_invoice_lets_it_go(client, session, auth, ship_qty):
+    """Merging the lot an invoice holds would strand the invoice's goods in another lot, so
+    it is refused naming the invoice and the books stay as they were. Once the invoice is
+    voided the merge goes through, and shipping from the merged lot gives up its cost once."""
     sku, (k, m) = await _lots(client, auth, 10.0, 30.0)
     a = await _invoice(client, auth, [(k, sku, 1)])
-    merged = await _merge(client, auth, k, m)
-    await assert_settled(client, session, auth)
+    r = await _merge(client, auth, k, m)
+    assert r.status_code == 409, r.text
+    await session.rollback()
+    assert await _doc_number(session, auth, a) in r.text
+    await _expect(client, session, auth, shipped=0.0, set_aside=10.0, received=40.0)
+    assert (await client.post(f"/docs/{a}/void", headers=auth["headers"], json={})).status_code == 200
+    r = await _merge(client, auth, k, m)
+    assert r.status_code == 200, r.text
+    merged = r.json()["id"]
     b = await _invoice(client, auth, [(merged, sku, ship_qty)])
     await _ship(client, auth, b, merged)
     await assert_settled(client, session, auth)

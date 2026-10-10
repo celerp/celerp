@@ -32,6 +32,7 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import buy_consignment
 from celerp_docs.doc_money import document_money
+from celerp_docs.doc_projections import payment_status
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
@@ -177,6 +178,11 @@ def _reject_lifecycle_fields(data):
     """Creation owns no lifecycle or settlement state. Status is checked on its
     own (it may say draft); anything else lifecycle-owned is refused by name."""
     if isinstance(data, dict):
+        if "credited" in data:
+            raise ValueError(
+                "credited cannot be set when creating. The credited amount is set by issuing "
+                "a credit note against the invoice."
+            )
         forged = sorted(k for k in data if k in LIFECYCLE_OWNED_FIELDS and k != "status")
         if forged:
             raise ValueError(
@@ -1606,6 +1612,8 @@ async def create_doc(
     if payload.doc_type == "credit_note" and payload.original_doc_id:
         # A credit note refunds its invoice's amounts, which the contact's prices do not change.
         chosen |= {"currency", "price_list"}
+        data.update(credit_note_currency(inv.state, company.settings.get("currency", "USD"),
+                                         data.get("currency"), data.get("conversion_rate")))
     # Canonicalize the historical `terms` alias at the API boundary so every
     # newly-created document stores one customer-facing terms field.
     data.pop("terms", None)
@@ -2183,6 +2191,10 @@ async def finalize_document(
         _revert_count = int(_initial_doc_state.get("revert_count", 0))
         await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
     elif doc_type == "credit_note":
+        if _initial_doc_state.get("original_doc_id"):
+            invoice = await _get_doc(session, company_id, str(_initial_doc_state["original_doc_id"]), for_update=True)
+            credit_note_currency(invoice.state, _base_currency, _initial_doc_state.get("currency"),
+                                 _initial_doc_state.get("conversion_rate"))
         await auto_je.create_for_credit_note_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
         await _settle_moved_cost(session, company_id, _user_id, entity_id, _initial_doc_state,
                                  f"cn-{entry.id}", "doc.finalized")
@@ -2210,8 +2222,9 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
     _reject_if_closed(row.state, "void it")
+    await _refuse_undo_under_credit_note(session, company_id, row.state, entity_id, "void")
     current_status = row.state.get("status")
-    if current_status in ("paid", "partial"):
+    if current_status in ("paid", "partial") and not settled_by_credit_only(row.state):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
     # Goods must be back before the paper can go void, or the stock records point
     # at a dead document with no UI path to bring the items home (the fulfillment
@@ -2314,11 +2327,7 @@ async def _credit_note_owed(session, company_id, user_id, cn_id: str, cn_state: 
     elif "credit_amount" in (last.metadata_ or {}):
         amount = round_money(to_decimal(last.metadata_["credit_amount"]), currency)
     else:
-        # Made before credit notes recorded what they settled: what the balance fell by.
-        change = ((last.data or {}).get("fields_changed") or {}).get("amount_outstanding") or {}
-        before = change.get("old")
-        amount = max(Decimal(0), round_money(to_decimal(inv.get("total") or 0 if before in (None, "") else before),
-                                             currency) - round_money(to_decimal(change.get("new") or 0), currency))
+        amount = legacy_credit_reduction(last, inv)
     sign = 1 if taking else -1
     for doc, state, step in ((invoice.entity_id, inv, tag), (cn_id, cn_now, f"{tag}:credit-note")):
         credited = round_money(to_decimal(state.get("credited") or 0), currency)
@@ -2326,18 +2335,157 @@ async def _credit_note_owed(session, company_id, user_id, cn_id: str, cn_state: 
         moved = amount if taking or doc == invoice.entity_id else min(amount, credited)
         if doc == cn_id and not moved:
             continue
-        balance = _payable_balance(state)
-        await emit_event(
-            session, company_id=company_id, entity_id=doc, entity_type="doc", event_type="doc.updated",
-            data={"fields_changed": {
-                "amount_outstanding": {"old": state.get("amount_outstanding"),
-                                       "new": to_stored_float(max(Decimal(0), balance - sign * moved))},
-                "credited": {"old": state.get("credited"),
-                             "new": to_stored_float(max(Decimal(0), credited + sign * moved))}}},
-            actor_id=user_id, location_id=None, source="api", idempotency_key=f"credit-note-owed:{cn_id}:{step}",
-            metadata_={"source_credit_note": cn_id, "credit_note_effect": "reduced" if taking else "restored",
-                       "credit_amount": to_stored_float(amount)})
+        await emit_credit_settlement(
+            session, company_id, user_id, doc, state,
+            outstanding=_payable_balance(state) - sign * moved, credited=credited + sign * moved,
+            idempotency_key=f"credit-note-owed:{cn_id}:{step}",
+            metadata={"source_credit_note": cn_id, "credit_note_effect": "reduced" if taking else "restored",
+                      "credit_amount": to_stored_float(amount)})
     await session.refresh(invoice)
+
+
+def credit_note_currency(invoice_state: dict, base_currency: str, currency, rate) -> dict:
+    """A credit note reverses its invoice's sale, so it carries the invoice's currency and
+    rate: they are its defaults, and a different currency or rate is refused (422) naming
+    the invoice's."""
+    inv_currency = str(invoice_state.get("currency") or base_currency).upper()
+    inv_rate = invoice_state.get("conversion_rate")
+    if inv_rate in (None, "") and inv_currency == str(base_currency).upper():
+        inv_rate = 1
+    differs = currency not in (None, "") and str(currency).upper() != inv_currency
+    if not differs and rate not in (None, "") and inv_rate not in (None, ""):
+        differs = to_decimal(rate) != to_decimal(inv_rate)
+    if differs:
+        number = invoice_state.get("doc_number") or invoice_state.get("ref_id") or "its invoice"
+        at = f" at rate {float(inv_rate):g}" if inv_rate not in (None, "") else ""
+        raise HTTPException(status_code=422, detail=(
+            f"A credit note reverses its invoice's sale in the invoice's currency and rate: "
+            f"invoice {number} is in {inv_currency}{at}. Leave the currency and rate as the invoice's."))
+    out = {"currency": inv_currency}
+    if invoice_state.get("conversion_rate") not in (None, ""):
+        out["conversion_rate"] = invoice_state["conversion_rate"]
+    return out
+
+
+def legacy_credit_reduction(effect, invoice_state: dict) -> Decimal:
+    """What a credit note made before credit notes recorded what they settled took off its
+    invoice's balance: the fall in amount_outstanding its doc.updated ``effect`` recorded."""
+    currency = str(invoice_state.get("currency") or "USD").upper()
+    change = ((effect.data or {}).get("fields_changed") or {}).get("amount_outstanding") or {}
+    before = change.get("old")
+    before = invoice_state.get("total") or 0 if before in (None, "") else before
+    return max(Decimal(0), round_money(to_decimal(before), currency) - round_money(to_decimal(change.get("new") or 0), currency))
+
+
+_SETTLEMENT_STATUSES = frozenset({"final", "sent", "awaiting_payment", "partial", "paid"})
+
+
+async def emit_credit_settlement(session, company_id, user_id, doc_id: str, state: dict, *, outstanding: Decimal,
+                                 credited: Decimal, idempotency_key: str, metadata: dict):
+    """Record what an issued credit note settles on one document: its balance, its
+    ``credited`` and, while the document stands, the status those make it (paid once
+    nothing is owed, partial while part is settled). A document issued and sent stays sent
+    until something is settled on it. The only writer of ``credited``."""
+    outstanding, credited = max(Decimal(0), outstanding), max(Decimal(0), credited)
+    fields = {
+        "amount_outstanding": {"old": state.get("amount_outstanding"), "new": to_stored_float(outstanding)},
+        "credited": {"old": state.get("credited"), "new": to_stored_float(credited)},
+    }
+    current = state.get("status")
+    if current in _SETTLEMENT_STATUSES:
+        status = payment_status({"credited": credited}, to_decimal(state.get("amount_paid") or 0), outstanding)
+        if status != current and not (status == "final" and current not in ("partial", "paid")):
+            fields["status"] = {"old": current, "new": status}
+    return await emit_event(
+        session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": fields}, actor_id=user_id, location_id=None, source="api",
+        idempotency_key=idempotency_key, metadata_=metadata)
+
+
+def settled_by_credit_only(state: dict) -> bool:
+    """Paid or partial through an issued credit note alone, with no payment on it: undoing
+    it needs no payment voided first."""
+    return (state.get("status") in ("partial", "paid") and not float(state.get("amount_paid") or 0)
+            and float(state.get("credited") or 0) > 0)
+
+
+async def _issued_credit_note_rows(session, company_id, invoice_id: str) -> list[Projection]:
+    """The issued (not draft, not void) credit notes against an invoice."""
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "credit_note",
+        Projection.state["original_doc_id"].as_string() == invoice_id,
+    ).order_by(Projection.entity_id))).scalars().all()
+    return [r for r in rows if (r.state or {}).get("status") not in (None, "draft", "void")]
+
+
+async def issued_credit_notes(session, company_id, invoice_id: str) -> list[str]:
+    """The numbers of the issued credit notes against an invoice."""
+    return sorted(str(r.state.get("doc_number") or r.state.get("ref_id") or r.entity_id)
+                  for r in await _issued_credit_note_rows(session, company_id, invoice_id))
+
+
+def imported_settlement_free(data: dict) -> dict:
+    """An imported snapshot without ``credited``: what a credit note settled is recomputed
+    from the imported credit notes (settle_imported_credit), never taken from the file, so
+    a file exported from Celerp imports as it is."""
+    return {k: v for k, v in data.items() if k != "credited"} if "credited" in data else data
+
+
+async def settle_imported_credit(session, company_id, user_id, entity_id: str, data: dict) -> None:
+    """Record what each issued credit note settled between an imported invoice and the
+    credit notes against it, once both are in, in either order. Both snapshots already
+    carry their balances; the credit note's total, less what was paid out of it and what it
+    still has open, is what it settled, up to what the invoice's balance does not explain
+    (total less paid, outstanding and what other credit notes settled). That amount is
+    ``credited`` on both, through the same settlement step an issued credit note takes, so
+    voiding it later puts it back."""
+    if data.get("doc_type") == "credit_note" and data.get("original_doc_id"):
+        pairs = [(str(data["original_doc_id"]), entity_id)]
+    elif data.get("doc_type") == "invoice":
+        pairs = [(entity_id, r.entity_id) for r in await _issued_credit_note_rows(session, company_id, entity_id)]
+    else:
+        return
+    for invoice_id, cn_id in pairs:
+        invoice = await session.get(Projection, {"company_id": company_id, "entity_id": invoice_id}, populate_existing=True)
+        cn = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id}, populate_existing=True)
+        inv, note = (invoice.state if invoice else None) or {}, (cn.state if cn else None) or {}
+        if inv.get("status") in (None, "draft", "void") or note.get("status") in (None, "draft", "void"):
+            continue
+        if float(note.get("credited") or 0):
+            continue
+        currency = str(inv.get("currency") or "USD").upper()
+
+        def money(state, key):
+            return round_money(to_decimal(state.get(key) or 0), currency)
+
+        settled = min(
+            max(Decimal(0), money(note, "total") - money(note, "amount_paid") - money(note, "amount_outstanding")),
+            max(Decimal(0), money(inv, "total") - money(inv, "amount_paid") - money(inv, "amount_outstanding")
+                - money(inv, "credited")))
+        if settled <= 0:
+            continue
+        metadata = {"source_credit_note": cn_id, "credit_note_effect": "reduced",
+                    "credit_amount": to_stored_float(settled), "imported": True}
+        await emit_credit_settlement(session, company_id, user_id, invoice_id, inv,
+                                     outstanding=money(inv, "amount_outstanding"),
+                                     credited=money(inv, "credited") + settled,
+                                     idempotency_key=f"credit-note-import:{cn_id}", metadata=metadata)
+        await emit_credit_settlement(session, company_id, user_id, cn_id, note,
+                                     outstanding=money(note, "amount_outstanding"), credited=settled,
+                                     idempotency_key=f"credit-note-import:{cn_id}:credit-note", metadata=metadata)
+
+
+async def _refuse_undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str) -> None:
+    """An invoice is undone only after the credit notes issued against it, as its payments are."""
+    if state.get("doc_type") != "invoice":
+        return
+    numbers = await issued_credit_notes(session, company_id, invoice_id)
+    if numbers:
+        one = len(numbers) == 1
+        raise HTTPException(status_code=409, detail=(
+            f"Cannot {action} this invoice: credit note{'' if one else 's'} {', '.join(numbers)} "
+            f"{'is' if one else 'are'} issued against it. Void the credit note first."))
 
 
 @router.post("/{entity_id}/close")
@@ -2437,7 +2585,8 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         if _is_inbound
         else {"final", "sent", "awaiting_payment"}
     )
-    if previous_status not in _REVERTABLE:
+    await _refuse_undo_under_credit_note(session, company_id, state, entity_id, "revert")
+    if previous_status not in _REVERTABLE and not settled_by_credit_only(state):
         raise HTTPException(status_code=409, detail="Can only revert documents in 'final', 'sent', or 'awaiting_payment' status")
     if float(state.get("amount_paid", 0) or 0) != 0:
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
@@ -5072,7 +5221,7 @@ async def import_doc(
         _require_doc_rate_http(body.data, _imp_base_currency)
     if auto_je.imported_issue_kind(body.data) == "bill":
         await require_line_destinations(session, company_id, body.data.get("line_items"))
-    data = await imported_opening_snapshot(session, company_id, body.data)
+    data = await imported_opening_snapshot(session, company_id, imported_settlement_free(body.data))
 
     entry = await emit_event(
         session,
@@ -5087,6 +5236,7 @@ async def import_doc(
         idempotency_key=body.idempotency_key,
         metadata_=_import_metadata(body.source_ts, data, post_ledger=True),
     )
+    await settle_imported_credit(session, company_id, user.id, body.entity_id, data)
 
     # The event type is doc.created by the guard above. Drafts return immediately.
     await _import_auto_je(

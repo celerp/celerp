@@ -4297,6 +4297,8 @@
   "notice.work_centers_moved.body": "Your company Hours per day setting now lives on the new Default work center under Settings > Manufacturing > Work centers. Nothing changed in your To-Make estimates.",
   "notice.imported_doc_cutover.title": "Imported purchase orders and bills corrected",
   "notice.imported_doc_cutover.body": "Purchase orders and bills imported before this update were booked a second time on top of the opening balances, which already hold them. Those entries were reversed, so payables and stock now match the opening balances plus what happened on each document after it was imported. Corrected: {numbers}.",
+  "notice.legacy_credit_notes.title": "Earlier credit notes settled",
+  "notice.legacy_credit_notes.body": "Credit notes issued before this update reduced their invoices without recording the credit on the credit note or posting it. Each is now settled as a credit note issued today would be, with its entry posted on the day it was issued (or the first open day after a locked period). Settled: {numbers}.",
   "notice.store_order_shipped_set_aside.title": "A store order shipped goods set aside for an invoice",
   "item.app_owned_fields": "These fields are set by the app and cannot be entered: {fields}. Remove them and try again.",
   "item.draft": "{sku} is a draft, not stock yet: make it available first.",
