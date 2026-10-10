@@ -116,3 +116,28 @@ async def test_an_older_import_with_no_recorded_digest_still_replays(client, ses
     await session.commit()
     r = await client.post("/docs/import", headers=auth["headers"], json={**rec, "data": {**rec["data"], "total": 1.0}})
     assert r.status_code == 200 and r.json()["idempotency_hit"] is True, r.text
+
+
+# A single import naming an entity_id another import already created, under a different
+# key (so it is not a replay), is refused as a translatable key, not a raw English sentence.
+
+
+@pytest.mark.parametrize("kind", ["doc", "list"])
+async def test_a_single_import_for_an_existing_entity_id_is_refused_with_a_key(client, session, auth, kind):
+    data = _doc() if kind == "doc" else _list()
+    rec = _rec(kind, data)
+    assert (await client.post(_path(kind), headers=auth["headers"], json=rec)).status_code == 200
+    other_key = _rec(kind, data, eid=rec["entity_id"])
+    r = await client.post(_path(kind), headers=auth["headers"], json=other_key)
+    assert r.status_code == 409, r.text
+    expected_key = "doc_import.entity_exists" if kind == "doc" else "doc_import.list_entity_exists"
+    assert r.json()["detail"]["message_key"] == expected_key, r.text
+
+
+@pytest.mark.parametrize("kind", ["doc", "list"])
+async def test_a_single_import_with_the_wrong_event_type_is_refused_with_a_key(client, session, auth, kind):
+    rec = _rec(kind, _doc() if kind == "doc" else _list())
+    bad = {**rec, "event_type": f"{kind}.updated"}
+    r = await client.post(_path(kind), headers=auth["headers"], json=bad)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "doc_import.event_type_unsafe", r.text
