@@ -250,19 +250,15 @@ def sha256(data: bytes) -> str:
 
 @pytest.fixture
 def migration_env(tmp_path, monkeypatch):
-    """Mount the migrations router, point the data dir at tmp, register the fake
-    source and Manager adapter, register only the fake sink, and record scheduled
-    runner tasks instead of starting them."""
+    """Point the data dir at tmp, register the fake source and Manager adapter,
+    register only the fake sink, and record scheduled runner tasks instead of starting
+    them. The app already serves the migrations routes (celerp.main)."""
     from celerp.config import settings
     from celerp.importers import sinks
     from celerp.importers.adapters import registry
     from celerp.importers.adapters.manager_io.adapter import ManagerIOAdapter
-    from celerp.main import app
-    from celerp.routers.migrations import router
     from celerp.services import migrations
 
-    if not any(getattr(r, "path", "").startswith("/migrations") for r in app.routes):
-        app.include_router(router)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     adapter = FakeAdapter()
     monkeypatch.setattr(registry, "_ADAPTERS", (adapter, ManagerIOAdapter()))

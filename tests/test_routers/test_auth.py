@@ -788,6 +788,7 @@ async def test_permission_only_route_rejects_invalid_token(client):
     async def _probe() -> dict:
         return {"ok": True}
 
+    before = list(app.router.routes)
     app.include_router(probe)
     try:
         # No Authorization header at all.
@@ -797,9 +798,7 @@ async def test_permission_only_route_rejects_invalid_token(client):
         r_bad = await client.get("/__perm_probe__", headers={"Authorization": "Bearer not.a.token"})
         assert r_bad.status_code == 401
     finally:
-        app.router.routes = [
-            rt for rt in app.router.routes if getattr(rt, "path", None) != "/__perm_probe__"
-        ]
+        app.router.routes[:] = before
 
 
 @pytest.mark.asyncio
