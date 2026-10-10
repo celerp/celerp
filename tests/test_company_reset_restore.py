@@ -37,6 +37,7 @@ START = "/setup/start-company"
 BASE = "/setup/start-company/restore-backup"
 NAME = "Harbor Goods Ltd"
 HAS_COMPANY = t("auth.has_company", "en")
+RESTORE_RUNNING = t(RESTORE_RUNNING, "en")
 
 
 async def _reset_last_company(client, engine):
