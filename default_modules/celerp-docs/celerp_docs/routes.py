@@ -49,7 +49,7 @@ from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
 from celerp.services.document_lines import (
-    line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, strip_line_ids,
+    doc_line_index, line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -7323,22 +7323,33 @@ async def mark_received_goods(session: AsyncSession, company_id, data: dict) -> 
     line of the document prices. Those are left unmarked: what they cost is not known, so
     no return can take them back off their lot."""
     received = list(data.get("received_items") or [])
+    lines = data.get("line_items") or []
     marked = False
     unpriced: list[str] = []
+    so_far: dict[int, float] = {}  # purchase units of each line received ahead of an entry
     for n, x in enumerate(received):
         quantity = float(x.get("quantity_received") or 0)
-        if (not x.get("item_id") or (x.get("receive_as") or "stock") != "stock"
-                or "lot_quantity_added" in x or quantity <= 0):
-            continue
-        lot = await session.get(Projection, {"company_id": company_id, "entity_id": x["item_id"]})
-        lot_state = (lot.state if lot else None) or {}
-        stock_qty = quantity * float(lot_state.get("purchase_conversion_factor") or 1)
+        lot_state: dict = {}
+        if x.get("item_id"):
+            lot = await session.get(Projection, {"company_id": company_id, "entity_id": x["item_id"]})
+            lot_state = (lot.state if lot else None) or {}
         # The record keeps the received lot's SKU, so a line keyed by SKU alone is matched to it
         # wherever the record is read later.
         sku = x.get("sku") or lot_state.get("sku")
-        it = ReceivedItem(po_line_index=int(x.get("po_line_index", -1)), item_id=x["item_id"], sku=sku,
+        line_index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), sku)
+        before = so_far.get(line_index, 0.0) if line_index is not None else 0.0
+        if line_index is not None:
+            so_far[line_index] = before + quantity
+        if (not x.get("item_id") or (x.get("receive_as") or "stock") != "stock"
+                or "lot_quantity_added" in x or quantity <= 0):
+            continue
+        if line_index is None:
+            unpriced.append(str(sku or x["item_id"]))
+            continue
+        stock_qty = quantity * float(lot_state.get("purchase_conversion_factor") or 1)
+        it = ReceivedItem(po_line_index=line_index, item_id=x["item_id"], sku=sku,
                           quantity_received=quantity, receive_as="stock")
-        cost = await _received_goods_cost(session, company_id, data, it, stock_qty)
+        cost = await _received_goods_cost(session, company_id, data, it, stock_qty, before)
         if cost is None:
             unpriced.append(str(sku or x["item_id"]))
             continue
