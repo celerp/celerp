@@ -479,7 +479,7 @@ _FULFILL_NON_FAMILY_PROSE = {
 
 def _fulfillment_family_keys(en: dict) -> list[str]:
     explicit = {
-        "btn.fulfill_deduct_inventory", "doc.fulfilled",
+        "doc.fulfilled",
         "doc.partially_fulfilled", "status.unfulfilled", "event.item.fulfilled",
         "event.item.fulfillment_reversed", "event.doc.fulfilled",
         "event.doc.partially_fulfilled", "event.doc.fulfillment_reversed",
@@ -526,7 +526,6 @@ def test_line_item_false_friends_absent():
 # carry the order-processing sense.
 _FULFILL_EXPECTED = {
     "am": {
-        "btn.fulfill_deduct_inventory": "ትዕዛዝ ፈጽም / ክምችት ቀንስ",
         "doc.fulfilled": "ተፈጽሟል",
         "doc.partially_fulfilled": "በከፊል ተፈጽሟል",
         "status.unfulfilled": "ያልተፈጸመ",
@@ -541,7 +540,6 @@ _FULFILL_EXPECTED = {
         "lines.shipped_elsewhere": "{went} መጀመሪያ የትዕዛዝ አፈጻጸምን ይቀልብሱ፦ በ{docs} ላይ ዕቃዎቹን እንዳለ አዘጋጅን ይጠቀሙ።",
     },
     "ar": {
-        "btn.fulfill_deduct_inventory": "تنفيذ الطلب / خصم المخزون",
         "doc.fulfilled": "تم تنفيذه",
         "doc.partially_fulfilled": "تم تنفيذه جزئيًا",
         "status.unfulfilled": "لم يُنفَّذ",
@@ -556,7 +554,6 @@ _FULFILL_EXPECTED = {
         "lines.shipped_elsewhere": "{went} تراجع عن تنفيذ الطلب أولًا: عيّن البضاعة كـ «متاح» في {docs}.",
     },
     "es": {
-        "btn.fulfill_deduct_inventory": "Procesar pedido / Descontar inventario",
         "doc.fulfilled": "Procesado",
         "doc.partially_fulfilled": "Procesado parcialmente",
         "status.unfulfilled": "Sin procesar",
@@ -571,7 +568,6 @@ _FULFILL_EXPECTED = {
         "lines.shipped_elsewhere": "{went} Revierta primero el procesamiento: marque la mercancía como disponible en {docs}.",
     },
     "id": {
-        "btn.fulfill_deduct_inventory": "Proses pesanan / Kurangi inventori",
         "doc.fulfilled": "Diproses",
         "doc.partially_fulfilled": "Diproses sebagian",
         "status.unfulfilled": "Belum diproses",
@@ -586,7 +582,6 @@ _FULFILL_EXPECTED = {
         "lines.shipped_elsewhere": "{went} Batalkan pemrosesan pesanan terlebih dahulu: tetapkan barang sebagai tersedia di {docs}.",
     },
     "pt": {
-        "btn.fulfill_deduct_inventory": "Processar pedido / Deduzir estoque",
         "doc.fulfilled": "Processado",
         "doc.partially_fulfilled": "Processado parcialmente",
         "status.unfulfilled": "Não processado",

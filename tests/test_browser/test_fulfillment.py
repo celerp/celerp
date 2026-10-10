@@ -136,10 +136,8 @@ def test_no_fulfill_button_on_draft(page, ui_server, draft_doc_id):
 def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
     """FULFILL-02: A finalized invoice exposes the per-line 'Set as shipped' action.
 
-    Fulfillment moved from a doc-level "Fulfill / Deduct Inventory" button to a
-    line-item bulk action: an option (value=li-fulfill) in the #li-bulk-select
-    dropdown above the line items. The internal option value stays li-fulfill;
-    only the display label is the customer-facing "Set as shipped".
+    Shipping is a line action: an option (value=li-fulfill) in the #li-bulk-select
+    dropdown above the line items, labelled "Set as shipped".
     """
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "final doc detail")
