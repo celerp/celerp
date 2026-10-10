@@ -220,7 +220,8 @@ async def test_import_same_idempotency_key_returns_existing(client, session):
 
 @pytest.mark.asyncio
 async def test_import_paid_invoice_creates_jes(client, session):
-    """Import a paid invoice - should auto-create finalization + payment JEs."""
+    """Import a paid invoice: its finalization entry, and what it says was paid before the
+    import off the receivable against retained earnings. No synthetic payment entry."""
     token = await _register(client)
     entity_id = f"doc:test-paid-{uuid.uuid4().hex[:8]}"
 
@@ -236,10 +237,9 @@ async def test_import_paid_invoice_creates_jes(client, session):
 
     # Check JE projections were created
     jes = await _document_jes(client, token)
-    # Only finalization JE is created on import (no synthetic payment JE)
-    je_types = [e["event_type"] for e in jes]
-    assert je_types.count("acc.journal_entry.created") == 1
-    assert je_types.count("acc.journal_entry.posted") == 1
+    created = sorted(e["entity_id"] for e in jes if e["event_type"] == "acc.journal_entry.created")
+    assert created == [f"je:auto:{entity_id}:fin", f"je:auto:{entity_id}:opening-paid"]
+    assert [e["event_type"] for e in jes].count("acc.journal_entry.posted") == 2
 
     # Trial balance should show data
     r = await client.get("/accounting/trial-balance", headers=_h(token))
@@ -358,10 +358,10 @@ async def test_batch_import_paid_invoices_create_jes(client, session):
     assert r.status_code == 200
     assert r.json()["created"] == 3
 
-    # Should have 6 JE created events (3 finalization + 3 payment) = 12 total events
+    # Per invoice its finalization entry and its paid-before-import entry; no payment entries.
     jes = await _document_jes(client, token)
-    created = [e for e in jes if e["event_type"] == "acc.journal_entry.created"]
-    assert len(created) == 3  # 3 finalization only; no synthetic payment JEs on import
+    created = sorted(e["entity_id"] for e in jes if e["event_type"] == "acc.journal_entry.created")
+    assert created == sorted(f"je:auto:{r['entity_id']}:{kind}" for r in records for kind in ("fin", "opening-paid"))
 
 
 # --- Doctor fix mode ---
