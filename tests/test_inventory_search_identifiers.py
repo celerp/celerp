@@ -340,3 +340,32 @@ def test_matched_group_bare_identifier_still_sets_exact_tier():
     assert _matched(dict(ring), "all: ABC & qty: 7")[0]["q_exact"] == "sku"
     ranged = {"id": "r2", "name": "Bolt", "sku": "5-10", "quantity": 7, "status": "available"}
     assert _matched(ranged, "5-10")[0]["q_exact"] is None
+
+
+def test_exact_tier_from_every_matching_group_in_any_order():
+    """Red statement: only the first matching group set q_exact, so `ring, R-100` on the
+    Gold ring with SKU R-100 matched `ring` by name first and lost its exact SKU rank,
+    while `R-100, ring` kept it. Every group that matched counts, in either order, and
+    the exact row leads a newer partial match."""
+    ring = {"id": "r1", "name": "Gold ring", "sku": "R-100", "quantity": 1, "status": "available"}
+    for q in ("R-100, ring", "ring, R-100"):
+        hit = _matched(dict(ring), q)[0]
+        assert hit["q_exact"] == "sku", q
+    # q_match still names the first group that matched.
+    assert _matched(dict(ring), "ring, R-100")[0]["q_match"] == [{"field": "name", "match": "ring"}]
+    from celerp_inventory.search import apply_query_match, parse_item_query
+
+    exact = {"id": "exact", "name": "Gold ring", "sku": "R-100", "status": "available",
+             "updated_at": "2030-01-01"}
+    newer = {"id": "newer", "name": "Gold ring", "sku": "R-1000", "status": "available",
+             "updated_at": "2030-06-01"}
+    rows = apply_query_match([exact, newer], parse_item_query("ring, R-100", [exact, newer], {}), {})
+    assert _ordered(rows) == ["exact", "newer"]
+
+
+def test_best_tier_wins_across_matching_groups():
+    """Neighbour guard: when two matching groups hit different identifier fields, the
+    best tier wins whatever order the groups are typed in."""
+    item = {"id": "i1", "name": "Chain", "sku": "C-7", "barcode": "7001", "status": "available"}
+    assert _matched(dict(item), "C-7, 7001")[0]["q_exact"] == "barcode"
+    assert _matched(dict(item), "7001, C-7")[0]["q_exact"] == "barcode"

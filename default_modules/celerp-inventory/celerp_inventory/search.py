@@ -38,7 +38,7 @@ from .routes import (
     flatten_item,
     identifier_tier,
     match_reasons,
-    matched_group,
+    matched_groups,
     parse_query,
     searchable_field_sets,
 )
@@ -177,23 +177,24 @@ def apply_query_match(
 
     Grammar: comma = OR groups (a named field carries to the groups after it), & = AND
     terms, lo-hi = numeric range, scoped identifier = whole value, bare number =
-    numeric-exact OR text, else text substring (matched_group). Each item is
+    numeric-exact OR text, else text substring (matched_groups). Each item is
     matched against its own category's numeric/text field sets, so a number-typed
     category field resolves and a text-typed one is not coerced. Reasons are computed
     over the visibility-stripped dict, so every cited field is one the role may see.
-    q_exact names the identifier field of the item's best exact hit by a bare term of
-    the group that matched (best_exact_identifier over the same evaluation), or None;
-    apply_item_order ranks by it.
+    q_match cites the first group that matched; q_exact names the identifier field of
+    the item's best exact hit by a bare term of any group that matched
+    (best_exact_identifier over the same evaluation), or None; apply_item_order ranks
+    by it.
     """
     matched: list[dict] = []
     for r in result:
         num, txt = item_field_sets.get(
             r.get("id"), (_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS)
         )
-        pairs = matched_group(r, groups, num, txt)
-        if pairs is not None:
-            r["q_match"] = [{"field": f, "match": m} for f, m in match_reasons(pairs)]
-            r["q_exact"] = best_exact_identifier(r, pairs)
+        hit_groups = list(matched_groups(r, groups, num, txt))
+        if hit_groups:
+            r["q_match"] = [{"field": f, "match": m} for f, m in match_reasons(hit_groups[0])]
+            r["q_exact"] = best_exact_identifier(r, hit_groups)
             matched.append(r)
     return matched
 

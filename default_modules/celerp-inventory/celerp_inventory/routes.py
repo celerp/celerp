@@ -8,6 +8,7 @@ import hmac
 import json
 import re
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
@@ -951,23 +952,24 @@ def query_match_reasons(
         record, parse_query(q, numeric_fields, text_fields, [record]), numeric_fields, text_fields)
 
 
-def matched_group(
+def matched_groups(
     record: dict, groups: list[list[QueryTerm]],
     numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
     text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
-) -> list[tuple[QueryTerm, tuple[str, str]]] | None:
-    """The first group whose AND-terms all match the record, as (term, (field, matched
-    text)) pairs in term order, or None when no group matches. The groups OR together.
-    This is the one match evaluation; the reasons and the exact-hit rank both read it."""
+) -> Iterator[list[tuple[QueryTerm, tuple[str, str]]]]:
+    """Yield, in query order, every group whose AND-terms all match the record, as
+    (term, (field, matched text)) pairs in term order. The groups OR together, so the
+    record matches when anything is yielded. This is the one match evaluation: the
+    reasons read the first matched group and the exact-hit rank reads every matched
+    group. Lazy, so a caller that needs only the first match stops there."""
     for terms in groups:
         reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
         if all(r is not None for r in reasons):
-            return list(zip(terms, reasons))
-    return None
+            yield list(zip(terms, reasons))
 
 
 def match_reasons(pairs: list[tuple[QueryTerm, tuple[str, str]]]) -> list[tuple[str, str]]:
-    """The (field, matched text) reasons of a matched group (matched_group), deduped,
+    """The (field, matched text) reasons of a matched group (matched_groups), deduped,
     order preserved."""
     deduped: list[tuple[str, str]] = []
     for _term, r in pairs:
@@ -988,20 +990,21 @@ def parsed_match_reasons(
 
     numeric_fields / text_fields are the effective per-category searchable field sets
     threaded to _term_match_reason; they default to the module-level sets."""
-    pairs = matched_group(record, groups, numeric_fields, text_fields)
-    return match_reasons(pairs) if pairs is not None else None
+    first = next(matched_groups(record, groups, numeric_fields, text_fields), None)
+    return match_reasons(first) if first is not None else None
 
 
 def best_exact_identifier(
-    record: dict, pairs: list[tuple[QueryTerm, tuple[str, str]]],
+    record: dict, matched: list[list[tuple[QueryTerm, tuple[str, str]]]],
 ) -> str | None:
-    """The identifier field of the record's best exact hit by an unscoped term of the
-    group that matched (matched_group), at its highest IDENTIFIER_TIERS tier, or None.
-    Only a term whose match was that identifier counts, so a term of a failed group or
-    a term read as a numeric range never ranks. A scoped term is already a filter on its
-    one field, so it does not rank."""
+    """The identifier field of the record's best exact hit (its highest IDENTIFIER_TIERS
+    tier) by an unscoped term of any group that matched (matched_groups), or None. Only
+    a term whose match was that identifier counts, so a term of a failed group or a term
+    read as a numeric range never ranks, and the result does not depend on the order
+    the groups were typed in. A scoped term is already a filter on its one field, so it
+    does not rank."""
     hits = [
-        field for t, (field, _m) in pairs
+        field for pairs in matched for t, (field, _m) in pairs
         if t.field is None and field in _IDENTIFIER_KEYS
         and exact_identifier_field(record, t.value) == field
     ]
