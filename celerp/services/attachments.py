@@ -478,10 +478,17 @@ async def store_upload(
     Callers pass attachment_type="view_360" for 360 images uploaded as image/jpeg.
     """
     content = await file.read()
-    mime = file.content_type or (
-        mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
-    )
-    return await store_file(company_id, content, file.filename, mime, attachment_type)
+    return await store_file(company_id, content, file.filename, upload_mime(file), attachment_type)
+
+
+def upload_mime(file: UploadFile) -> str:
+    """The content type an upload is stored as: the one it was sent with, else (nothing
+    sent, or only the generic binary type) the one its name implies, else the generic
+    binary type the allowlist refuses."""
+    sent = file.content_type
+    if sent and sent != "application/octet-stream":
+        return sent
+    return mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
 
 
 async def store_file(
@@ -543,9 +550,9 @@ class CompanyFiles:
         self._stored: dict[str, str] = {}
 
     async def file(self, content: bytes, filename: str | None, mime: str,
-                   attachment_type: AttachmentType | None = None) -> dict:
+                   attachment_type: AttachmentType | None = None, *, att_id: str | None = None) -> dict:
         """Store file content as ``store_file`` does; returns its attachment metadata."""
-        meta = await store_file(self.company_id, content, filename, mime, attachment_type)
+        meta = await store_file(self.company_id, content, filename, mime, attachment_type, att_id=att_id)
         self._stored[meta["id"]] = meta["mime"]
         return meta
 
