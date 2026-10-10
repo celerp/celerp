@@ -129,7 +129,8 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
     payments, is judged when the payment is recorded, under the document's lock
     (apply_doc_payment)."""
     if not (isinstance(books, dict) and all(isinstance(books.get(k), str) and books[k] for k in _BOOKS)):
-        raise HTTPException(status_code=422, detail="The payment carries no books to record it on")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_no_books", "The payment carries no books to record it on."))
     try:
         timezone, rate = business_timezone(books["timezone"]).key, checked_exchange_rate(books["rate"])
     except ValueError as exc:
@@ -174,7 +175,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         paid_at = paid_at or datetime.datetime.now(datetime.timezone.utc)
     account, timezone, base, rate = await _checked_books(session, company_id, context)
     if paid_at is None:
-        raise HTTPException(status_code=422, detail="The payment carries no time it was paid")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_no_paid_time", "The payment carries no time it was paid."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
@@ -273,21 +275,27 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
         return None
     account, timezone, base, rate = await _checked_books(session, company_id, context)
     if occurred_at is None:
-        raise HTTPException(status_code=422, detail="The refund carries no time it happened")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_refund_no_time", "The refund carries no time it happened."))
     doc_currency = str(row.state.get("currency") or "USD").upper()
     if currency.upper() != doc_currency:
-        raise HTTPException(status_code=422, detail=f"Refund currency {currency.upper()} does not match "
-                                                    f"document currency {doc_currency}")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_refund_currency_mismatch",
+            f"Refund currency {currency.upper()} does not match document currency {doc_currency}.",
+            refund_currency=currency.upper(), doc_currency=doc_currency))
     payment = next((p for p in row.state.get("payments", [])
                     if p.get("reference") == reference and p.get("status") == "active"), None)
     if payment is None or payment.get("method") != "stripe":
-        raise HTTPException(status_code=409, detail="The refunded payment is not on this document")
+        raise HTTPException(status_code=409, detail=refusal(
+            "pay.err_refund_not_on_document", "The refunded payment is not on this document."))
     released_at = payment.get("stripe_released_at")
     if (reference not in await stripe_receipt_references(session, company_id, entity_id, managed=True)
             or (released_at and occurred_at >= datetime.datetime.fromisoformat(released_at))):
         raise HTTPException(status_code=409, detail=NOT_LINKED_TO_STRIPE)
     if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
-        raise HTTPException(status_code=422, detail="The refund carries other books than its payment was recorded on")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_refund_books_mismatch",
+            "The refund carries other books than its payment was recorded on."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
@@ -303,10 +311,12 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
             actor_id=actor, source="stripe", idempotency_key=key)
     applied = await find_event_by_idempotency(session, company_id, stripe_refund_key(refund_id, cycle, "applied"))
     if applied is None:
-        raise HTTPException(status_code=409, detail="The refund being reversed was never applied")
+        raise HTTPException(status_code=409, detail=refusal(
+            "pay.err_reversal_not_applied", "The refund being reversed was never applied."))
     refund = dict(applied.data or {})
     if refund.get("reference") != reference or Decimal(str(refund.get("amount"))) != amount:
-        raise HTTPException(status_code=422, detail="The reversal does not match the refund it reverses")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_reversal_mismatch", "The reversal does not match the refund it reverses."))
     return await reverse_payment_refund(session, company_id, entity_id, row, payment, refund,
                                         reversal_date=day, books=books, actor_id=actor, source="stripe",
                                         idempotency_key=key)

@@ -3794,7 +3794,8 @@ async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = 
         )
     payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
     if payment is None or payment.get("status") != "active":
-        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
+        raise HTTPException(status_code=422, detail=refusal(
+            "docs.refund_choose_payment", "Choose a payment on this document to refund."))
     entry = await apply_payment_refund(
         session, company_id, entity_id, row, payment, amount=payload.amount, refund_date=payload.payment_date,
         books=await posted_books(session, company_id, entity_id, row, payment),
@@ -6340,7 +6341,8 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
                 "docs.return_line_unknown",
                 "A selected line is not on this document as named. Reload the document and select the lines again."))
         if index in picked:
-            raise HTTPException(status_code=422, detail="Each line can be selected once.")
+            raise HTTPException(status_code=422, detail=refusal(
+                "docs.return_line_once", "Each line can be selected once."))
         picked.append(index)
     traced = await _line_return_lots(session, company_id, doc_id, doc, lock=True)
     if traced is None:
@@ -10071,7 +10073,9 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     if unknown:
         raise HTTPException(
             status_code=422,
-            detail=f"quantities names items that are not in line_entity_ids: {', '.join(sorted(unknown))}",
+            detail=refusal("docs.undo_delivery_unknown_items",
+                           f"quantities names items that are not in line_entity_ids: {', '.join(sorted(unknown))}",
+                           items=", ".join(sorted(unknown))),
         )
 
     named = set(body.line_entity_ids)
@@ -10213,7 +10217,9 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             except ValueError as exc:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Cannot return part of {_sku_p}: {exc}",
+                    detail=refusal("docs.return_partial_failed",
+                                   f"Cannot return part of {_sku_p}: {exc}",
+                                   sku=_sku_p, reason=str(exc)),
                 )
             returned_brief.append({"item_id": child_eid, "sku": _sku_p, "quantity": qty_back})
 
@@ -10514,7 +10520,9 @@ async def set_lines_available(
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type", "")
     if doc_type not in RESERVABLE_DOC_STATUSES:
-        raise HTTPException(status_code=422, detail=f"set-available is not supported for doc type: {doc_type}")
+        raise HTTPException(status_code=422, detail=refusal(
+            "docs.set_available_unsupported_doc_type",
+            f"set-available is not supported for doc type: {doc_type}.", doc_type=doc_type))
     return await _line_action(
         session, company_id, user, row, "set-available", body,
         lambda indices: _set_available_impl(row, body, indices, user, session))

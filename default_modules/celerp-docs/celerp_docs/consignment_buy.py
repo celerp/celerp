@@ -369,7 +369,9 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
     await lock_projections(session, company_id, plan.lots)
     locked = await _plan(session, company_id, state)
     if locked.docs != plan.docs or locked.lots != plan.lots:
-        raise HTTPException(status_code=409, detail="The consignment's goods changed while it was being converted; try again")
+        raise HTTPException(status_code=409, detail=refusal(
+            "consignment.buy.changed_while_converting",
+            "The consignment's goods changed while it was being converted; try again."))
     plan = locked
 
     currency = state.get("currency") or base_currency
