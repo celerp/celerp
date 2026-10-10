@@ -305,7 +305,7 @@ async def test_shipping_tells_the_user_whose_goods_it_took():
     answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "cost_moved": moved}
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
-            r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"]},
+            r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"], "idempotency_key": "page-key-1"},
                               cookies=authed_cookies())
     assert r.status_code == 204, r.text
     assert r.headers["HX-Redirect"] == "/docs/doc:B"

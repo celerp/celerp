@@ -34,17 +34,17 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, AccountRole, refusal
+from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, AccountRole, refusal
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.account_roles import consignor_of, is_consigned, lineage, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.lot_origin import RETIRED
+from celerp.services.money import allocate_pro_rata, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_money import UnratedTaxError, document_money
 
-_RETIRED = frozenset({"archived", "expired"})
 _EPS = Decimal("1e-9")
 
 
@@ -113,6 +113,27 @@ async def _sale_doc(session, company_id, lot_id: str) -> str | None:
     return (sale.data or {}).get("source_doc_id")
 
 
+async def _sent_back(session, company_id, lot_ids) -> set[str]:
+    """Of these disposed lots, the ones a return to the supplier disposed: the movement that
+    last took them off the books is ``item.returned_to_supplier``, not a write-off. A lot
+    keeps its quantity when it goes back, as the record of what left, so the quantity alone
+    cannot tell goods returned to the consignor from goods lost while held."""
+    if not lot_ids:
+        return set()
+    rows = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.event_type).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(lot_ids)),
+        LedgerEntry.event_type.in_(("item.returned_to_supplier", "item.written_off")),
+    ).order_by(LedgerEntry.id))).all()
+    last = {entity_id: event_type for entity_id, event_type in rows}
+    return {lot for lot, event_type in last.items() if event_type == "item.returned_to_supplier"}
+
+
+def _gave_up_value(state: dict) -> bool:
+    """A lot retired from the catalog (RETIRED) that a split, transform, merge or undone
+    receipt left behind holds no goods; one the user archived or expired keeps them on hand."""
+    return str(state.get("status") or "").lower() in RETIRED and state.get(ON_BOOKS_FIELD) is not True
+
+
 async def _plan(session, company_id, state: dict) -> _Plan:
     lines = state.get("line_items") or []
     receipts = [x for x in state.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
@@ -154,6 +175,12 @@ async def _plan(session, company_id, state: dict) -> _Plan:
     kept: dict[int, Decimal] = {}
     allocations: dict[str, dict[tuple[str, str, int], float]] = {}
     docs: set[str] = set()
+    # What the bill buys is told apart by the movement that moved the units: goods on hand
+    # and goods sold (historical sales, still owed to the consignor) are kept; goods a
+    # return sent back to the consignor or the supplier are not.
+    sent_back = await _sent_back(session, company_id, {
+        m.entity_id for g in groups for m in g.members
+        if str((m.state or {}).get("status") or "").lower() == "disposed"})
     for group in groups:
         members = []
         for row in group.members:
@@ -162,7 +189,7 @@ async def _plan(session, company_id, state: dict) -> _Plan:
             qty = to_decimal(ls.get("quantity") or 0)
             if status == "merged":
                 raise _changed(_sku(ls))
-            if status in _RETIRED or qty <= 0:
+            if qty <= 0 or _gave_up_value(ls) or row.entity_id in sent_back:
                 continue
             if not is_consigned(ls) or ls.get("landed_costs"):
                 raise _changed(_sku(ls))
@@ -325,23 +352,25 @@ def _cannot_recompute() -> HTTPException:
 def _lot_costs(plan: _Plan, by_line: dict[int, tuple[str, Decimal]], base_currency: str) -> dict[str, Decimal]:
     """Each lot's cost at the bill's price per unit, for the units the company kept: a
     sold lot's units that a customer returned and that went back to the consignor are
-    not. The lots received on a line share exactly what the bill debits for it, the
-    rounding remainder going to the largest."""
+    not. The lots received on a line share exactly what the bill debits for it, spread by
+    the allocator (money.allocate_pro_rata) over the bill units each lot kept."""
     costs: dict[str, Decimal] = {}
-    on_line: dict[int, list[str]] = {}
+    on_line: dict[int, list[tuple[str, Decimal]]] = {}
     for group in plan.groups:
         debit = by_line[group.line][1] if group.line in by_line else Decimal(0)
         kept = plan.kept.get(group.line, Decimal(0))
-        unit = debit * group.basis / kept if kept > 0 else Decimal(0)
         for row in group.members:
-            qty = to_decimal(row.state.get("quantity") or 0) - plan.back.get(row.entity_id, Decimal(0))
-            costs[row.entity_id] = round_money(unit * max(qty, Decimal(0)), base_currency)
+            qty = max(to_decimal(row.state.get("quantity") or 0) - plan.back.get(row.entity_id, Decimal(0)), Decimal(0))
             if group.returned is None:
-                on_line.setdefault(group.line, []).append(row.entity_id)
+                on_line.setdefault(group.line, []).append((row.entity_id, qty * group.basis))
+            else:
+                # Goods a customer brought back: one lot at the line's price per unit, not a share.
+                costs[row.entity_id] = round_money(debit * group.basis * qty / kept if kept > 0 else 0, base_currency)
     for line, lots in on_line.items():
         debit = by_line[line][1] if line in by_line else Decimal(0)
-        largest = max(lots, key=lambda lot: (costs[lot], lot))
-        costs[largest] += debit - sum((costs[lot] for lot in lots), Decimal(0))
+        weights = [w for _lot, w in lots]
+        shares = allocate_pro_rata(debit, weights, base_currency) if any(weights) else [Decimal(0)] * len(lots)
+        costs.update({lot: share for (lot, _w), share in zip(lots, shares)})
     return costs
 
 

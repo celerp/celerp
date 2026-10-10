@@ -33,7 +33,7 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import buy_consignment
 from celerp_docs.doc_money import document_money
-from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status, received_line_index
+from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
@@ -49,7 +49,8 @@ from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
 from celerp.services.document_lines import (
-    doc_line_index, line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, strip_line_ids,
+    line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
+    strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -2191,10 +2192,14 @@ async def _taken_back(session, company_id, doc_ids: set[str], lots: set[str],
 
 
 async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[str, Projection]) -> dict[str, tuple[float, list[str]]]:
-    """Stock other invoices have already booked the cost of and not yet shipped, per lot:
-    ``{lot: (quantity, invoice numbers)}``. A finalized invoice's line names the lot it
-    sells until it ships (a shipped part is carved off and named instead), so a line of an
-    open finalized invoice that names a lot still in stock holds that much of it."""
+    """Stock other invoices finalized with no cost record (before cost snapshots existed)
+    hold and have not yet shipped, per lot: ``{lot: (quantity, invoice numbers)}``. A
+    finalized invoice's line names the lot it sells until it ships (a shipped part is carved
+    off and named instead), so a line of such an invoice that names a lot still in stock
+    holds that much of it. Goods an invoice holds at a recorded cost are not counted: the
+    invoice that ships them takes that cost with them (auto_je.reconcile_doc_cogs), so
+    another invoice may name them, and its finalize costs only the units still free
+    (auto_je.doc_lot_pool). Cost never recorded cannot move, so those goods stay refused."""
     in_stock = {eid for eid, p in locked.items()
                 if str(p.state.get("status") or "").lower() in ("available", "reserved")}
     if not in_stock:
@@ -2211,6 +2216,7 @@ async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[
         Projection.state["status"].as_string() != "void",
         binds,
     ))).scalars().all()
+    rows = [doc for doc in rows if await auto_je.recognized_cogs(session, company_id, doc.entity_id) is None]
     released = await _taken_back(session, company_id, {doc.entity_id for doc in rows}, in_stock, locked)
     out: dict[str, tuple[float, list[str]]] = {}
     for doc in rows:
@@ -2228,8 +2234,8 @@ async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[
 async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, state: dict, company_settings: dict) -> None:
     """Finalizing an invoice books the cost of the stock it sells, so it plans each stock line
     the way shipping it will: a line that could be filled only by taking part of a lot that
-    may not be split is refused, and so is one whose stock another finalized invoice has
-    already booked and not yet shipped (its cost would be booked twice). Each line gets one
+    may not be split is refused, and so is one whose stock another finalized invoice with no
+    cost record holds and has not shipped (_invoiced_elsewhere). Each line gets one
     refusal, the most specific true one: its own lot's reason before a sibling's. Stock the customer
     already has (out on the memo the invoice came from, or sold to it) is not drawn again.
     A line no stock covers at all is a backorder and still finalizes."""
@@ -6508,7 +6514,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             done = restated_back.get(x["item_id"], (Decimal(0), Decimal(0)))
             restated_back[x["item_id"]] = (done[0] + to_decimal(x["value_returned"]),
                                            done[1] + to_decimal(x.get("gain_returned") or 0))
-    gain = Decimal(0)
+    gain = restated_loss = Decimal(0)
     returned: list[dict] = []
     freight_of: dict[str, _LotFreight] | None = None  # _bill_freight, read once when a return needs it
     for line_no, (it, source_line_id, line_index) in enumerate(picked):
@@ -6596,29 +6602,39 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             at_cost = to_stored_float(round_money(taken_cost + rest_cost, currency))
             share = basis if whole else min(at_cost, basis)
             # What the document charged for the goods comes off what it is owed: its own units at
-            # their price, any others at what they cost.
+            # their price, any others at what they cost. The lot giving up more or less than that
+            # is the difference auto_je.create_for_supplier_return classifies (R09).
             if billed_rest is not None:
                 billed_lot = to_stored_float(round_money(taken_cost, currency)) + billed_rest
             else:
-                billed_lot = at_cost if taken and not whole else share
+                billed_lot = at_cost if taken else share
             goods[target] = goods.get(target, 0.0) + share
             billed[target] = billed.get(target, 0.0) + billed_lot
             value = round_money(share, currency) - round_money(billed_lot, currency)
+            # The part of that difference a correction to the lot's cost made goes back through
+            # the accounts the correction was booked to, never past what it booked there.
             raised, lowered = await auto_je.lot_restatements(session, company_id, it.item_id)
             done_value, done_gain = restated_back.get(it.item_id, (Decimal(0), Decimal(0)))
-            if raised != lowered:
-                back = round_money(raised * (done_value + value) / (raised - lowered), currency) - done_gain
-            else:
-                back = raised - done_gain if whole else Decimal(0)
-            back = max(back, value, Decimal(0))
+            back = loss = Decimal(0)
+            if raised or lowered:
+                if raised != lowered:
+                    back = round_money(raised * (done_value + value) / (raised - lowered), currency) - done_gain
+                else:
+                    back = raised - done_gain if whole else Decimal(0)
+                back = min(max(back, value, Decimal(0)), max(raised - done_gain, Decimal(0)))
+                loss = min(max(back - value, Decimal(0)), max(lowered - (done_gain - done_value), Decimal(0)))
             gain += back
-            restated_back[it.item_id] = (done_value + value, done_gain + back)
-            if value or back:
-                returned[-1].update({"value_returned": to_stored_float(value), "gain_returned": to_stored_float(back)})
+            restated_loss += loss
+            restated = back - loss
+            restated_back[it.item_id] = (done_value + restated, done_gain + back)
+            if restated or back:
+                returned[-1].update({"value_returned": to_stored_float(restated), "gain_returned": to_stored_float(back)})
             if charging:
                 tax += to_decimal(billed_lot) * charging.tax_rate(root, line_index)
             if root in added:
-                taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
+                # What the document charged for the units it takes back, so its next return
+                # out of the lot is charged at its price too, whatever the lot carried.
+                taken_cost = to_stored_float(round_money(taken_cost, currency))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
                 # Later goods in this return count these off what the document added.
                 lot_qty, lot_cost = added[root]
@@ -6698,7 +6714,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         settles = charging.settles(row.state, rate, currency) if charging and all_returned else None
         payable = await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods=goods, billed=billed, gain=to_stored_float(gain),
+            goods=goods, billed=billed, gain=to_stored_float(gain), loss=to_stored_float(restated_loss),
             landed_by_account={code: value - round_money(goods_off.get(code, 0.0), currency)
                                for code, value in lot_moved.items()},
             charges=auto_je.ReturnCharges(rate=to_decimal(rate), currency=doc_currency,
@@ -7400,7 +7416,7 @@ async def mark_received_goods(session: AsyncSession, company_id, data: dict) -> 
         # The record keeps the received lot's SKU, so a line keyed by SKU alone is matched to it
         # wherever the record is read later.
         sku = x.get("sku") or lot_state.get("sku")
-        line_index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), sku)
+        line_index = received_line_index(lines, {**x, "sku": sku})
         before = so_far.get(line_index, 0.0) if line_index is not None else 0.0
         if line_index is not None:
             so_far[line_index] = before + quantity

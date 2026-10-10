@@ -57,6 +57,7 @@ async def test_goods_whose_consignor_is_not_known_are_not_sold(client, session, 
     detail = r.json()["detail"]
     assert detail["message_key"] == "consignment.no_consignor"
     assert "choose the consignor" in detail["message"]
+    await session.rollback()  # production never commits a refused request; the test client shares the session
     assert await _owed_each(client, auth, a) == (0.0, 0.0)
     await _rename_on_record(session, auth, con, a)
     await _sell(client, session, auth, lot)

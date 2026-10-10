@@ -6,6 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from celerp.services.document_lines import received_line_index
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
 
@@ -133,39 +134,6 @@ def _status_without_receipts(state: dict) -> str:
         return "draft"
     status = payment_status(state, *_payment_balances(state, to_decimal(state.get("amount_paid", 0))))
     return "awaiting_payment" if status == "final" and before == "awaiting_payment" else status
-
-
-def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:
-    """Whether ``line`` holds the goods a receipt entry names: its item or SKU. An entry naming
-    neither (an expense or asset line) is held by a line naming neither, the one ``in_place``
-    at its recorded position whatever it is called, any other only under the same name."""
-    item_id = entry.get("item_id")
-    sku = str(entry.get("sku") or "").strip()
-    if item_id or sku:
-        return bool((item_id and line.get("item_id") == item_id)
-                    or (sku and str(line.get("sku") or "").strip() == sku))
-    if line.get("item_id") or str(line.get("sku") or "").strip():
-        return False
-    name = str(entry.get("name") or "").strip()
-    return in_place or (bool(name) and str(line.get("name") or line.get("description") or "").strip() == name)
-
-
-def received_line_index(lines: list[dict], entry: dict) -> int | None:
-    """The document line a receipt (or return) entry is for, or None when it cannot be told.
-
-    An entry recorded with its line's id names that line wherever it now sits. An older entry
-    names its line by position, trusted only while the line there still holds the entry's
-    goods; otherwise the one line holding them. Two lines holding them leave it untold.
-    """
-    line_id = entry.get("source_line_id")
-    if line_id:
-        found = [i for i, li in enumerate(lines) if li.get("line_id") == line_id]
-        return found[0] if len(found) == 1 else None
-    index = int(entry.get("po_line_index", -1))
-    if 0 <= index < len(lines) and _holds_receipt(lines[index], entry, in_place=True):
-        return index
-    found = [i for i, li in enumerate(lines) if _holds_receipt(li, entry)]
-    return found[0] if len(found) == 1 else None
 
 
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:

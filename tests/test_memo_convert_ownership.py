@@ -97,6 +97,24 @@ async def test_finalize_sells_every_lot_billed_from_the_memo(client, session, au
     await assert_settled(client, session, auth)
 
 
+async def test_goods_out_on_another_memo_are_not_costed_by_an_invoice(client, session, auth):
+    """Neighbour (CI-c): lot A (1 at 100.00) is out on a memo that was not converted; an
+    invoice for 2 of the SKU bound to lot B (1 at 100.00, in stock) costs only B. The unit
+    with no free stock stays provisional, so the memo's goods are never priced by it."""
+    hd = auth["headers"]
+    sku = f"MC-{uuid.uuid4().hex[:6]}"
+    out_lot = await lot(client, hd, sku, 1, cost=100)
+    memo = await _memo_out(client, hd, [out_lot], sku, 1)
+    in_stock = await lot(client, hd, sku, 1, cost=100)
+    inv = (await _ok(await client.post("/docs", headers=hd, json={
+        "doc_type": "invoice", "line_items": [line(in_stock, 2, price=300.0, sku=sku)], "total": 600.0})))["id"]
+    await _ok(await client.post(f"/docs/{inv}/finalize", headers=hd))
+    gl = await gl_totals(session, auth["company_id"], entry_id_part=_tag(inv))
+    assert gl.get("5100") == 100.0, gl
+    assert await _owner(client, hd, out_lot) == ("memo_out", memo)
+    await assert_settled(client, session, auth)
+
+
 @pytest.mark.parametrize("action", ["revert-lines", "set-available"])
 @pytest.mark.parametrize("lots", [1, 2])
 async def test_taking_the_goods_back_on_the_invoice_reverses_the_cost(client, session, auth, action, lots):

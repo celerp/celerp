@@ -318,13 +318,20 @@ async def doc_lot_pool(session, company_id, doc_id: str | None, line_items: list
 
     ``lots`` maps entity id to a lot dict (pick.as_lot) carrying the document-level
     demand claim; ``attributed`` maps each line index to the holds of ``doc_id`` that
-    belong to it (pick.attribute_holds), so one line never draws another line's hold."""
-    from celerp_inventory.projections import demand_claim
+    belong to it (pick.attribute_holds), so one line never draws another line's hold.
+    Goods out with the customer on this document (a memo converted to it handed them
+    over) are its own, as its holds are; goods out on any other document are nobody's
+    to cost."""
+    from celerp_inventory.projections import OWN_RESERVED, demand_claim
+
+    def claim(state: dict) -> str | None:
+        if doc_id and state.get("status") == "memo_out" and state.get("status_doc_id") == doc_id:
+            return OWN_RESERVED
+        return demand_claim(state, doc_id)
 
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
-    lots = {r.entity_id: as_lot(r.entity_id, r.created_at, r.state or {}, demand_claim(r.state or {}, doc_id))
-            for r in rows}
+    lots = {r.entity_id: as_lot(r.entity_id, r.created_at, r.state or {}, claim(r.state or {})) for r in rows}
     held = {eid: lot["state"] for eid, lot in lots.items() if lot["claim"] == "reserved"}
     attributed, _orphans, _ambiguous = attribute_holds(line_items, held)
     return lots, attributed
@@ -392,6 +399,7 @@ async def compute_doc_cogs(
     """
     result = CogsResult()
     payable: list[str] = []  # the consignor payable role's account, resolved once when needed
+    currency = await company_currency(session, company_id)
 
     async def sold_account(lot_id: str, state: dict) -> str:
         if not is_consigned(state) or state.get(CONSIGNOR_PAYABLE_FIELD):
@@ -454,7 +462,9 @@ async def compute_doc_cogs(
             lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost, "state": state}]
             provisional_qty = 0.0
             amount = unit_cost * line_qty
-        amount = max(0.0, amount)
+        # The line's cost is money from here on: rounded once to the cent, and every
+        # posting, claim, release and reversal of it uses that figure (_shares).
+        amount = to_stored_float(round_money(max(0.0, amount), currency))
         states = {lot["lot_entity_id"]: lot.pop("state") for lot in lots}
         states.setdefault(str(item_id), state)
         for lot_id, lot_state in states.items():
@@ -466,7 +476,7 @@ async def compute_doc_cogs(
             lot["account"] = await sold_account(lot["lot_entity_id"], states[lot["lot_entity_id"]]) if amount > 0 else None
         if amount > 0:
             parts = {lot["lot_entity_id"]: lot["qty"] * lot["unit_cost"] for lot in lots}
-            for lot_id, share in _shares(parts, amount).items():
+            for lot_id, share in _shares(parts, amount, currency).items():
                 code = await sold_account(lot_id, states[lot_id])
                 if is_consigned(states[lot_id]):
                     code = party_key(code, await consignor_of(session, company_id, lot_id, states[lot_id]))
@@ -489,13 +499,15 @@ async def record_consignor_payables(session, company_id, user_id, payables: dict
             idempotency_key=f"consignor-payable:{lot_id}", metadata_={})
 
 
-def _shares(parts: dict[str, float], amount: float) -> dict[str, float]:
-    """``amount`` split in proportion to ``parts``, or all on the first part when no
-    part carries weight."""
-    weight = sum(v for v in parts.values() if v > 0)
-    if weight <= 0:
-        return {next(iter(parts)): amount}
-    return {k: amount * v / weight for k, v in parts.items() if v > 0}
+def _shares(parts: dict[str, float], amount: float, currency: str) -> dict[str, float]:
+    """``amount`` rounded to the cent and split in proportion to ``parts`` in whole cents
+    (allocate_pro_rata), or all on the first part when no part carries weight. The shares
+    always sum to the rounded amount, so a cost claim is never re-derived unrounded."""
+    weighted = {k: v for k, v in parts.items() if v > 0}
+    if not weighted:
+        return {next(iter(parts)): to_stored_float(round_money(amount, currency))}
+    return {k: to_stored_float(share) for k, share in zip(
+        weighted, allocate_pro_rata(amount, [to_decimal(v) for v in weighted.values()], currency))}
 
 
 def _recognition_metadata(trigger: str, doc_id: str, allocations: dict | None) -> dict:
@@ -1521,9 +1533,22 @@ class ReturnCharges:
     owed: BillOwed | None = None
 
 
+def _return_difference(gain: _Dec, difference: _Dec, shrinkage: _Dec = _Dec(0)) -> dict[AccountRole, _Dec]:
+    """Debits (negative: credits) to stock gains and stock shrinkage for goods sent back to a
+    supplier (R09). ``gain`` and ``shrinkage`` are set amounts on each; ``difference`` is what
+    the goods gave up beyond what the supplier credits for them: a shortfall (positive) is a
+    shrinkage loss, an excess credit (negative) a stock gain."""
+    return {R.STOCK_GAIN: gain + min(difference, _Dec(0)), R.STOCK_SHRINKAGE: shrinkage + max(difference, _Dec(0))}
+
+
+def _return_difference_lines(acc: dict, held: dict[AccountRole, _Dec]) -> list[dict]:
+    return [_line(acc[role], role, debit=to_stored_float(max(amt, _Dec(0))), credit=to_stored_float(max(-amt, _Dec(0))))
+            for role, amt in held.items() if amt]
+
+
 async def create_for_supplier_return(
     session, *, company_id, user_id, doc_id: str, return_key: str, goods: dict[AccountRole | str, float],
-    billed: dict[AccountRole | str, float], charges: ReturnCharges, gain: float,
+    billed: dict[AccountRole | str, float], charges: ReturnCharges, gain: float, loss: float,
     landed_by_account: dict[str, _Dec],
 ) -> _Dec:
     """Goods sent back to the supplier come off accounts payable at what the document charged
@@ -1536,11 +1561,15 @@ async def create_for_supplier_return(
     / Cr input tax for the tax it booked on them (``charges``), AP on
     the account the document recognized its payable on. The return that sends back the last of
     the goods takes what the earlier returns left, so accounts payable and input tax hold
-    nothing more for the goods once all of them have gone back. Goods whose cost was corrected
-    after they came in carry more or less than was charged: the difference leaves the inventory
-    account back through the accounts the corrections were booked to (lot_origin.book_lot_value),
-    ``gain`` of it off stock gains and the rest off stock shrinkage, in an entry of its own that
-    a void or revert of the document leaves standing, as the goods it values are gone. Landed
+    nothing more for the goods once all of them have gone back, and never moves what the goods
+    took off stock. Goods leave stock at what they carried, which may differ from what was
+    charged, in an entry of its own that a void or revert of the document leaves standing, as
+    the goods it values are gone. A difference that comes from corrections to the lot's cost
+    after the goods came in goes back through the accounts the corrections were booked to
+    (lot_origin.book_lot_value): ``gain`` off stock gains, ``loss`` back onto stock shrinkage.
+    Any other difference is classified (_return_difference_lines): a supplier credit beyond
+    what the goods carried is a stock gain, goods carrying more than the credit a shrinkage
+    loss; cost of sales already recognised never moves. Landed
     cost the goods carried (``landed_by_account``: what each inventory account's lots gave up
     beyond the goods cost, to the cent, either sign), the bill's shipping among it, is a cost of
     goods that are gone: it is expensed to stock shrinkage off the lots' inventory accounts.
@@ -1559,11 +1588,11 @@ async def create_for_supplier_return(
     revalued = {key: round_money(amount or 0, currency) - rounded[key] for key, amount in goods.items()}
     revalued = {key: change for key, change in revalued.items() if change}
     change = sum(revalued.values(), _Dec(0))
-    gain_d = max(round_money(gain, currency), change, _Dec(0))
-    shrinkage = gain_d - change
-    if revalued or gain_d:
-        acc = await resolve_many(session, company_id, [*([R.STOCK_GAIN] if gain_d else []),
-                                                       *([R.STOCK_SHRINKAGE] if shrinkage else [])])
+    gain_d, loss_d = round_money(gain, currency), round_money(loss, currency)
+    # Debits to stock gains and stock shrinkage that balance the goods leaving at what they carried.
+    held = _return_difference(gain_d, change - gain_d + loss_d, -loss_d)
+    if revalued or any(held.values()):
+        acc = await resolve_many(session, company_id, [role for role, amt in held.items() if amt])
 
         def _goods_line(key, debit=0.0, credit=0.0) -> dict:
             return (_line(acc[key], key, debit=debit, credit=credit) if isinstance(key, AccountRole)
@@ -1581,9 +1610,7 @@ async def create_for_supplier_return(
             memo=f"Auto JE for {doc_id} corrected cost of goods returned to supplier",
             ts=day,
             entries=[
-                *([_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, debit=to_stored_float(gain_d))] if gain_d else []),
-                *([_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE, credit=to_stored_float(shrinkage))]
-                  if shrinkage else []),
+                *_return_difference_lines(acc, held),
                 *(_goods_line(key, credit=to_stored_float(max(c, _Dec(0))), debit=to_stored_float(max(-c, _Dec(0))))
                   for key, c in revalued.items()),
             ],
@@ -1591,20 +1618,20 @@ async def create_for_supplier_return(
         )
     credits = dict(rounded)
     tax_d = round_money(charges.tax, currency)
+    settled: dict = {}
     if charges.settles is not None:
         # The last goods back take what the earlier returns left, so the bill's goods and
-        # their tax come off accounts payable and input tax exactly.
+        # their tax come off accounts payable and input tax exactly. The goods still leave
+        # stock at what was charged for them: what the bill's whole charge comes to beyond
+        # that is classified, never spread over the stock.
         earlier = await _sum_lines(session, company_id, f"je:auto:{doc_id}:rtn:", settings,
                                    {R.PAYABLE.value: "debit", R.TAX_INPUT.value: "credit",
                                     R.FX_GAIN.value: "credit", R.FX_LOSS.value: "debit"})
         payable = round_money(charges.settles["payable"], currency) - earlier[R.PAYABLE.value]
         tax_d = round_money(charges.settles["tax"], currency) - earlier[R.TAX_INPUT.value]
         exchanged = earlier[R.FX_GAIN.value] - earlier[R.FX_LOSS.value]
-        keys = sorted(credits, key=str)
-        weights = [abs(credits[k]) or abs(rounded[k]) for k in keys]
-        if sum(weights, _Dec(0)):
-            credits = dict(zip(keys, allocate_pro_rata(payable - tax_d + exchanged, weights, currency)))
-    goods_d = sum(credits.values(), _Dec(0))
+        settled = _return_difference(_Dec(0), sum(credits.values(), _Dec(0)) - (payable - tax_d + exchanged))
+    goods_d = sum(credits.values(), _Dec(0)) - sum(settled.values(), _Dec(0))
     payable_d = goods_d + tax_d
     taken = round_money(payable_d / charges.rate, charges.currency)
     if charges.settles is not None:
@@ -1615,7 +1642,8 @@ async def create_for_supplier_return(
         ap = await party_origin(session, company_id, doc_id, R.PAYABLE, settings)
         roles = [k for k, amt in credits.items() if amt and isinstance(k, AccountRole)]
         acc = await resolve_many(session, company_id, [*roles, *([] if ap else [R.PAYABLE]),
-                                                       *([R.TAX_INPUT] if tax_d else [])])
+                                                       *([R.TAX_INPUT] if tax_d else []),
+                                                       *(role for role, amt in settled.items() if amt)])
         ap_line = (_origin_line(settings, ap, R.PAYABLE, debit=to_stored_float(payable_d)) if ap
                    else _line(acc[R.PAYABLE], R.PAYABLE, debit=to_stored_float(payable_d)))
         goods_lines = [_line(acc[k], k, credit=to_stored_float(amt)) if isinstance(k, AccountRole)
@@ -1631,7 +1659,7 @@ async def create_for_supplier_return(
             memo=f"Auto JE for {doc_id} goods returned to supplier",
             ts=day,
             entries=await _with_fx_difference(session, company_id, [
-                ap_line, *goods_lines,
+                ap_line, *goods_lines, *_return_difference_lines(acc, settled),
                 *([_line(acc[R.TAX_INPUT], R.TAX_INPUT, credit=to_stored_float(tax_d))] if tax_d else [])]),
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )
@@ -2039,12 +2067,12 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
     entries, sources, debits = built
     if snapshot.get("doc_type") == "bill":
         return entries
-    from celerp.services.document_lines import doc_line_index
+    from celerp.services.document_lines import received_line_index
 
     lines = snapshot.get("line_items") or []
     received: dict[int, _Dec] = {}
     for x in snapshot.get("received_items") or []:
-        index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), x.get("sku"))
+        index = received_line_index(lines, x)
         if index is not None:
             received[index] = received.get(index, _Dec(0)) + to_decimal(x.get("quantity_received"))
     carried = []
@@ -3127,6 +3155,16 @@ async def _open_invoices(session, company_id, *, exclude: str | None, lots=None)
     return out
 
 
+def _hold_order(state: dict | None, doc_id: str) -> int:
+    """Where an invoice's claim looks first among the lots holding its goods: a part
+    reserved for this invoice holds its goods, a part reserved for another holds that
+    one's, and the rest come between, in lineage order (the sort is stable)."""
+    state = state or {}
+    if state.get("status") != "reserved" or not state.get("status_doc_id"):
+        return 1
+    return 0 if state.get("status_doc_id") == doc_id else 2
+
+
 async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                            states: dict[str, dict] | None = None, costed: bool = True,
                            lots=None) -> list[UnshippedClaim]:
@@ -3148,7 +3186,7 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
     to what was allocated from each. The goods of an allocated lot are wherever they went
     while still in stock: the lot itself, the parts split off it, and the lot it was
     merged into (_held_where), each up to what it still holds less what earlier claims
-    took from it. The line's recognized
+    took from it, a part reserved for the invoice first (_hold_order). The line's recognized
     cost for its unshipped goods is shared over those lots by their allocated cost. Goods
     no longer in stock claim nothing: they left stock some other way."""
     open_docs = await _open_invoices(session, company_id, exclude=exclude, lots=lots)
@@ -3157,6 +3195,7 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
         lot["lot_entity_id"] for recognized in books.recognized.values()
         for alloc in recognized.allocations.values() for lot in alloc.get("lots") or []})
     claims: list[UnshippedClaim] = []
+    currency = await company_currency(session, company_id)
     # What each lot still holds is shared by every claim on it, so one tally runs across
     # all invoices in finalize order: a later claim takes what an earlier one left, which
     # may be a part split off the lot it was allocated from.
@@ -3169,10 +3208,11 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
             for lot in recognized.allocations[str(idx)].get("lots") or []:
                 want = min(float(lot.get("qty") or 0), left)
                 key = None
-                for member in held_where.get(lot["lot_entity_id"], []):
-                    if states and member.entity_id in states:
-                        member = SimpleNamespace(entity_id=member.entity_id, state=states[member.entity_id],
-                                                 consignment_flag=member.consignment_flag)
+                members = [SimpleNamespace(entity_id=m.entity_id, state=states[m.entity_id],
+                                           consignment_flag=m.consignment_flag)
+                           if states and m.entity_id in states else m
+                           for m in held_where.get(lot["lot_entity_id"], [])]
+                for member in sorted(members, key=lambda m: _hold_order(m.state, doc_id)):
                     value = _on_hand_value(member)
                     qty = min(want, float((member.state or {}).get("quantity") or 0) - used.get(member.entity_id, 0.0))
                     if value is None or qty <= 1e-9:
@@ -3187,7 +3227,7 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
             # when another invoice ships them, at a cost of nothing.
             for key in dict.fromkeys(t[2] for t in taken):
                 mine = [t for t in taken if t[2] == key]
-                shares = _shares({t[0]: t[3] for t in mine}, by_key.get(key, 0.0))
+                shares = _shares({t[0]: t[3] for t in mine}, by_key.get(key, 0.0), currency)
                 claims += [UnshippedClaim(doc_id=doc_id, line=idx, lot_id=lot_id, qty=qty, key=key,
                                           amount=shares.get(lot_id, 0.0), on_hand=on_hand)
                            for lot_id, qty, _key, _weight, on_hand in mine]
@@ -3241,6 +3281,13 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     invoices with a cost snapshot are left out too; an invoice with none has no cost to
     move, so the goods it holds stay refused to every other shipment.
 
+    A caller may judge a change before writing it, as split_off_child does for goods
+    leaving stock through a part carved off the lot: ``after`` is read as the lot's state.
+
+    Refused with lots.held_for_invoice_floor or lots.held_for_invoice_leave, naming the
+    invoices and the next step (ship the invoice, or release the goods by voiding it or
+    changing its line).
+
     Takes the company lock first, as finalize does, so a finalize in flight is either
     seen or waits for this transaction (emit_event takes it before the row lock)."""
     from fastapi import HTTPException
@@ -3269,6 +3316,7 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
             return out
 
         held, now = cover(was), cover(c for c in await unshipped_claims(session, company_id, exclude=exclude,
+                                                                        states={lot_id: after},
                                                                         costed=False, lots={lot_id})
                                       if not moves_cost or c.doc_id not in costed)
         lost = sum(max(0.0, qty - now.get(key, 0.0)) for key, qty in held.items())
@@ -3277,14 +3325,19 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     # Archived, expired, merged and memo stock is no longer free to ship from this lot: an
     # invoice holding any of it is refused outright.
     numbers = sorted({await _doc_number_of(session, company_id, d) for d in held_here})
-    one = len(numbers) == 1
-    outcome = ("the lot cannot leave stock" if leaves
-               else f"the lot cannot go below {float(after.get('quantity') or 0) + lost:g}")
-    raise HTTPException(status_code=409, detail=(
-        f"{after.get('sku') or before.get('sku') or lot_id}: {'invoice' if one else 'invoices'} "
-        f"{', '.join(numbers)} {'has' if one else 'have'} costed {sum(held_here.values()):g} of this lot for "
-        f"{'its customer' if one else 'their customers'} and not shipped them yet, so {outcome}. Ship or void "
-        f"{'the invoice' if one else 'those invoices'}, or change {'its line' if one else 'their lines'}, first."))
+    params = {"sku": after.get("sku") or before.get("sku") or lot_id, "qty": f"{sum(held_here.values()):g}",
+              "docs": ", ".join(numbers)}
+    next_step = ("Ship that invoice, or release the goods by voiding it or changing its line, "
+                 "then try again.")
+    lead = (f"{params['sku']}: {params['qty']} of this lot are set aside for invoice {params['docs']}, "
+            "which has not shipped them, so the lot")
+    if leaves:
+        detail = refusal("lots.held_for_invoice_leave", f"{lead} cannot leave stock. {next_step}", **params)
+    else:
+        floor = f"{float(after.get('quantity') or 0) + lost:g}"
+        detail = refusal("lots.held_for_invoice_floor", f"{lead} cannot go below {floor}. {next_step}",
+                         **params, floor=floor)
+    raise HTTPException(status_code=409, detail=detail)
 
 
 async def held_short(session, company_id, doc_id: str, doc_state: dict) -> set[str]:
@@ -3553,13 +3606,15 @@ async def _legacy_cogs_truth(
     session, company_id, doc_id: str, doc_state: dict, settings: dict,
 ) -> dict[str, float] | None:
     """What an invoice issued before invoices kept their allocation recognizes, or None
-    when there is nothing to true up: no goods taken back and no take-back booked yet, or
-    no cost of goods sold booked at all.
+    when there is nothing to true up: no goods taken back, no take-back booked yet and no
+    goods credited by a credit note, or no cost of goods sold booked at all.
 
     Its cost of goods sold sits in one kind of entry, plus any cost corrections posted
     against it since (cogs-adj:restate-*). The backfill booked every line at its bound
-    lot's cost (compute_doc_cogs), so that computation is its allocation and the invoice
-    is trued up as one that kept it. A fulfilment entry booked the lots shipped before
+    lot's cost (compute_doc_cogs), so that computation is its allocation, less the goods
+    credit notes credited (_less_credited, as _read_books does for a kept allocation),
+    and the invoice is trued up as one that kept it: a credited unit not yet shipped
+    never left, while a shipped one keeps its cost until it is received back. A fulfilment entry booked the lots shipped before
     it, each at its cost of sale; those lots are what it covers, and the invoice
     recognizes the ones still out. Either way the basis must
     reproduce what was posted, per account to the cent, or the share of a lot taken back
@@ -3574,7 +3629,8 @@ async def _legacy_cogs_truth(
     takebacks = {s for s, r in roots.items() if r.startswith("cogs-adj:") and not r.startswith("cogs-adj:restate-")}
     backfilled = any(r == "cogs-backfill" for r in roots.values())
     fulfilment = [s for s, r in roots.items() if _FULFILLMENT_COGS.fullmatch(r)]
-    if not back and not takebacks:
+    credited = (await credited_quantities(session, company_id, [doc_id])).get(doc_id, {})
+    if not back and not takebacks and not credited:
         return None
     if not backfilled and not fulfilment:
         return None
@@ -3589,9 +3645,13 @@ async def _legacy_cogs_truth(
     basis = _money(_inventory_relief(settings, [row for s, row in posted.items() if s not in takebacks]))
     if backfilled:
         cogs = await compute_doc_cogs(session, company_id, doc_state)
-        if cogs.ambiguous or _money(cogs.by_account) != basis:
+        # The backfill refused a line its bound lot could not cost, so a line that spans
+        # its lot now does so because goods left the lot since; the amounts still have to
+        # reproduce what was posted.
+        if _money(cogs.by_account) != basis:
             raise CogsShareUnknown()
-        books = _Books(recognized={doc_id: RecognizedCogs(cycle="", allocations=cogs.allocations)},
+        allocations = _less_credited(cogs.allocations, credited)
+        books = _Books(recognized={doc_id: RecognizedCogs(cycle="", allocations=allocations)},
                        shipments=shipments, repriced={},
                        payable_codes=frozenset(scope_codes(settings, R.CONSIGNOR_PAYABLE)))
         return await _recognized_total(session, company_id, doc_id, doc_state, books)
@@ -3644,7 +3704,7 @@ async def _allocation_by_account(session, company_id, alloc: dict, amount: float
     for lot in lots:
         code = await _allocated_lot_key(session, company_id, lot, payable_codes)
         parts[code] = parts.get(code, 0.0) + float(lot.get("qty") or 0) * float(lot.get("unit_cost") or 0)
-    return _shares(parts, amount)
+    return _shares(parts, amount, await company_currency(session, company_id))
 
 
 async def _allocated_lot_key(session, company_id, lot: dict, payable_codes) -> str:

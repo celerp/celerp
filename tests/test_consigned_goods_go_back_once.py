@@ -30,7 +30,8 @@ async def test_what_is_left_after_a_shipped_sale_goes_back(client, session, auth
     await _sell(client, session, auth, lot, 1)
     r = await _back(client, auth, con, lot, 2)
     assert r.status_code == 200, r.text
-    assert float((await _state(session, auth, lot))["quantity"]) == 0
+    left = await _state(session, auth, lot)
+    assert (left["status"], float(left["quantity"])) == ("disposed", 2.0)  # gone back; the quantity records it
     r = await _post(client, auth, f"/docs/{con}/convert")
     assert r.status_code == 200, r.text
     assert await _owed_each(client, auth, a) == (0.0, 0.0)
