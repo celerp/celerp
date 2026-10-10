@@ -48,6 +48,7 @@ from .services import (
     import_preview_hash,
     is_item_field_key,
     item_price_mutex_groups,
+    normalize_sku,
     build_import_plan,
     source_header_semantics,
 )
@@ -667,6 +668,36 @@ _FIELD_ALIASES = {
     "pcs": "pieces",
     "ct_each": "qty_each", "per_pc": "qty_each",
 }
+# The reserved scope that returns a term to matching every field. It wins over any
+# field or attribute that happens to be called "all".
+_ALL_SCOPE = "all"
+# Identifier precedence, best first: the physical codes (barcode and RFID EPC share one
+# namespace), then GTIN, then SKU. The code resolver walks it to decide what a scanned
+# code means and search walks it to rank exact hits, so both follow one rule.
+IDENTIFIER_TIERS: tuple[tuple[str, ...], ...] = (("barcode", "rfid_epc"), ("gtin",), ("sku",))
+
+
+def _code_key(value) -> str:
+    return str(value or "").strip().casefold()
+
+
+# How each identifier field compares when matched exactly: its canonical key. Every key
+# ignores letter case, like every other search term.
+_IDENTIFIER_KEYS = {
+    "barcode": _code_key,
+    "gtin": _code_key,
+    "rfid_epc": lambda v: str(normalize_rfid_epc(v) or ""),
+    "sku": normalize_sku,
+}
+
+
+@dataclass(frozen=True)
+class QueryTerm:
+    """One AND-term of a parsed query: the canonical field it is scoped to (None for
+    every field), its lower-cased value, and the value as typed (for messages)."""
+    field: str | None
+    value: str
+    typed: str
 
 
 def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset[str]]:
@@ -747,74 +778,146 @@ def _as_number(v: object) -> float | None:
         return None
 
 
+def _scope_resolves(raw: str, numeric_fields, text_fields, records) -> bool:
+    """True when a `raw:` prefix names a real user-facing field: a known alias, a
+    searchable or numeric field, or a dynamic attribute present on one of ``records``
+    that is not a core/bookkeeping key (#306). Anything else is not a scope, so a
+    literal `foo:bar` in the text is still found."""
+    field = _FIELD_ALIASES.get(raw, raw)
+    return (
+        raw in _FIELD_ALIASES
+        or field in numeric_fields
+        or field in text_fields
+        or (not is_core_item_key(field) and any(field in r for r in records))
+    )
+
+
+def parse_query(q: str, numeric_fields, text_fields, records) -> list[list[QueryTerm]]:
+    """Parse the search grammar once: `,` separates OR groups, `&` separates the AND
+    terms of a group, empty terms and groups are dropped, and every value is
+    lower-cased.
+
+    The field a group names carries forward: a group whose first term names no field
+    inherits the last named field, exactly as if it had been typed again, so
+    `barcode: 1042, 1043` is two barcodes and `name: ring, gold` is two name terms. A
+    group naming its own field starts a new scope, and the reserved `all:` scope returns
+    to every field. A bare `field:` with no value only sets the scope (a scanner run
+    typed as `barcode:` then the scans). Only a group's first term inherits; later `&`
+    terms keep their own meaning. Prefixes resolve over numeric_fields / text_fields
+    and the attributes present on ``records`` (_scope_resolves)."""
+    groups: list[list[QueryTerm]] = []
+    carried: str | None = None
+    for group in q.split(","):
+        terms: list[QueryTerm] = []
+        for typed in (t.strip() for t in group.split("&")):
+            if not typed:
+                continue
+            field: str | None = None
+            named = False
+            value = typed
+            scope = _SCOPE_RE.match(typed)
+            if scope:
+                raw = scope.group(1).lower()
+                if raw == _ALL_SCOPE or _scope_resolves(raw, numeric_fields, text_fields, records):
+                    named = True
+                    field = None if raw == _ALL_SCOPE else _FIELD_ALIASES.get(raw, raw)
+                    value = scope.group(2).strip()
+            if not terms:
+                if named:
+                    carried = field
+                else:
+                    field = carried
+            if value:
+                terms.append(QueryTerm(field, value.lower(), value))
+        if terms:
+            groups.append(terms)
+    return groups
+
+
+def exact_identifier_field(record: dict, value: str) -> str | None:
+    """The identifier field (walked in IDENTIFIER_TIERS order) whose whole value equals
+    ``value`` under its canonical key, or None. An item whose status is in
+    PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES is history, not a current lot, so it is
+    never an exact identifier hit, the same rule the code resolver applies."""
+    if str(record.get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+        return None
+    for tier in IDENTIFIER_TIERS:
+        for field in tier:
+            stored = record.get(field)
+            key = _IDENTIFIER_KEYS[field]
+            if stored not in (None, "") and key(stored) == key(value):
+                return field
+    return None
+
+
+def identifier_tier(field: str | None) -> int:
+    """The rank of an exact identifier hit on ``field`` (0 is best); every other match
+    ranks after all identifier tiers."""
+    for rank, tier in enumerate(IDENTIFIER_TIERS):
+        if field in tier:
+            return rank
+    return len(IDENTIFIER_TIERS)
+
+
 def _term_match_reason(
-    record: dict, term: str,
+    record: dict, term: QueryTerm,
     numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
     text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
 ) -> tuple[str, str] | None:
     """One AND-term: the (field, matched text) behind the hit, or None. The matched
-    text is the term itself for substring hits and the whole number for numeric
-    range/exact hits, so the UI can embolden exactly what matched.
+    text is the term itself for substring and identifier hits and the whole number for
+    numeric range/exact hits, so the UI can embolden exactly what matched.
 
-    A term of the form `field: value` scopes the match to one named field (an alias
-    resolves to its canonical field). Resolution is gated to user-facing fields - a
-    core/bookkeeping key stays unsearchable (#306) even when named explicitly - and a
-    scoped value may be a range (over that one field) or a substring. A term with no
-    leading `identifier:` falls through to the unscoped behavior unchanged.
+    A scoped term matches its one field (parse_query resolved the field). Identifier
+    fields (barcode, rfid_epc, gtin, sku) compare whole values under their canonical
+    key, so `barcode: 1042` never matches 10420; other text fields match any part; a
+    numeric field may take a range or an exact number. An unscoped term names an exact
+    identifier hit first (exact_identifier_field), then a range, a text part, or a
+    numeric value.
 
     numeric_fields / text_fields are the effective per-category searchable field sets
-    (searchable_field_sets); they drive both resolution and whether a scoped value is
-    coerced to a number. They default to the module-level sets so the grammar stays
-    callable with no DB."""
-    scope = _SCOPE_RE.match(term)
-    if scope:
-        raw = scope.group(1)
-        field = _FIELD_ALIASES.get(raw, raw)
-        value = scope.group(2).strip()
-        # Scope only when the prefix RESOLVES to a real user-facing field: a known
-        # alias, a searchable or numeric field, or a dynamic attribute present on this
-        # record that is not a core/bookkeeping key (#306). An unresolved prefix (or an
-        # empty value) is not a scope - fall through so a literal `foo:bar` in the text
-        # is still found instead of dropping the search.
-        resolved = bool(value) and (
-            raw in _FIELD_ALIASES
-            or field in numeric_fields
-            or field in text_fields
-            or (field in record and not is_core_item_key(field))
-        )
-        if resolved:
-            # Textual identifier fields (sku, barcode, hs_code, batch_no, lot...) are
-            # matched as strings only - never coerced to numbers - so leading zeros and
-            # other identity survive: `sku: 001` must not match a stored "1", and a
-            # barcode `00123` must not match "123". Numeric coercion (range and exact
-            # equality) applies to every field that is not a known text field: genuine
-            # numeric columns, number-typed category fields, and dynamic attributes with
-            # no schema entry (which are in neither set).
-            numeric_ok = field not in text_fields
-            rng = _RANGE_RE.match(value)
-            if numeric_ok and rng:
-                lo, hi = float(rng.group(1)), float(rng.group(2))
-                if lo <= hi:
-                    try:
-                        n = float(record.get(field))
-                    except (TypeError, ValueError):
-                        return None
-                    if lo <= n <= hi:
-                        return field, format(n, "g")
-                    return None
-                # lo > hi is not a usable range; fall through to a scoped value match.
-            stored = record.get(field)
-            if numeric_ok:
-                qnum, snum = _as_number(value), _as_number(stored)
-                if qnum is not None and snum is not None:
-                    # Numeric-coercible on both sides: exact equality, never substring, so
-                    # `qty: 1` does not match 10 and `grade: 3` does not match 30.
-                    return (field, value) if qnum == snum else None
-            if value.lower() in str(stored if stored is not None else "").lower():
+    (searchable_field_sets); they decide whether a scoped value is coerced to a number.
+    They default to the module-level sets so the grammar stays callable with no DB."""
+    value = term.value
+    field = term.field
+    if field is not None:
+        stored = record.get(field)
+        if field in _IDENTIFIER_KEYS:
+            key = _IDENTIFIER_KEYS[field]
+            if stored not in (None, "") and key(stored) == key(value):
                 return field, value
             return None
-        # Unresolved prefix or empty scoped value: fall through to the unscoped path.
-    m = _RANGE_RE.match(term)
+        # Textual fields (hs_code, batch_no, lot...) are matched as strings only -
+        # never coerced to numbers - so leading zeros and other identity survive.
+        # Numeric coercion (range and exact equality) applies to every field that is
+        # not a known text field: genuine numeric columns, number-typed category
+        # fields, and dynamic attributes with no schema entry (which are in neither set).
+        numeric_ok = field not in text_fields
+        rng = _RANGE_RE.match(value)
+        if numeric_ok and rng:
+            lo, hi = float(rng.group(1)), float(rng.group(2))
+            if lo <= hi:
+                try:
+                    n = float(stored)
+                except (TypeError, ValueError):
+                    return None
+                if lo <= n <= hi:
+                    return field, format(n, "g")
+                return None
+            # lo > hi is not a usable range; fall through to a scoped value match.
+        if numeric_ok:
+            qnum, snum = _as_number(value), _as_number(stored)
+            if qnum is not None and snum is not None:
+                # Numeric-coercible on both sides: exact equality, never substring, so
+                # `qty: 1` does not match 10 and `grade: 3` does not match 30.
+                return (field, value) if qnum == snum else None
+        if value in str(stored if stored is not None else "").lower():
+            return field, value
+        return None
+    exact = exact_identifier_field(record, value)
+    if exact is not None:
+        return exact, value
+    m = _RANGE_RE.match(value)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
         if lo <= hi:
@@ -823,11 +926,11 @@ def _term_match_reason(
                     return f, format(n, "g")
             return None
         # lo > hi is not a usable range; fall through and treat the term as literal text.
-    field = _text_match(record, term)
+    field = _text_match(record, value)
     if field is not None:
-        return field, term
+        return field, value
     try:
-        num = float(term)
+        num = float(value)
     except (TypeError, ValueError):
         return None
     for f, n in _numeric_values(record):
@@ -841,17 +944,25 @@ def query_match_reasons(
     numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
     text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
 ) -> list[tuple[str, str]] | None:
-    """Match a flattened item dict against the search grammar. `,` ORs groups, `&`
-    ANDs the terms within a group; empty terms and empty groups are dropped.
-    Returns the first matching group's (field, matched text) pairs - one per
-    AND-term, deduped, order preserved - or None when no group matches.
+    """Match one flattened item dict against the search grammar (parse_query, with
+    attribute prefixes resolved over this record). See parsed_match_reasons."""
+    return parsed_match_reasons(
+        record, parse_query(q, numeric_fields, text_fields, [record]), numeric_fields, text_fields)
+
+
+def parsed_match_reasons(
+    record: dict, groups: list[list[QueryTerm]],
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> list[tuple[str, str]] | None:
+    """Match a flattened item dict against a parsed query: the groups OR together and
+    the terms of a group AND together. Returns the first matching group's (field,
+    matched text) pairs - one per AND-term, deduped, order preserved - or None when no
+    group matches.
 
     numeric_fields / text_fields are the effective per-category searchable field sets
     threaded to _term_match_reason; they default to the module-level sets."""
-    for group in q.split(","):
-        terms = [t.strip().lower() for t in group.split("&") if t.strip()]
-        if not terms:
-            continue
+    for terms in groups:
         reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
         if all(r is not None for r in reasons):
             deduped: list[tuple[str, str]] = []
@@ -860,6 +971,40 @@ def query_match_reasons(
                     deduped.append(r)
             return deduped
     return None
+
+
+def best_exact_identifier(record: dict, groups: list[list[QueryTerm]]) -> str | None:
+    """The identifier field of the record's best exact hit by any unscoped term (its
+    highest IDENTIFIER_TIERS tier), or None. Ranks a bare-term search; a scoped term is
+    already a filter on its one field, so it does not rank."""
+    hits = [
+        f for terms in groups for t in terms if t.field is None
+        if (f := exact_identifier_field(record, t.value)) is not None
+    ]
+    return min(hits, key=identifier_tier) if hits else None
+
+
+def unmatched_identifiers(records: list[dict], groups: list[list[QueryTerm]]) -> list[str]:
+    """The scoped identifier values (as typed, de-duplicated, in query order) that no
+    record holds, so a scanned code that matched nothing is named instead of silently
+    missing from the list."""
+    held: dict[str, set[str]] = {}
+    out: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for terms in groups:
+        for t in terms:
+            if t.field not in _IDENTIFIER_KEYS:
+                continue
+            key = _IDENTIFIER_KEYS[t.field]
+            wanted = (t.field, key(t.value))
+            if wanted in seen:
+                continue
+            seen.add(wanted)
+            if t.field not in held:
+                held[t.field] = {key(r[t.field]) for r in records if r.get(t.field) not in (None, "")}
+            if wanted[1] not in held[t.field]:
+                out.append(t.typed)
+    return out
 
 
 def item_matches_query(record: dict, q: str) -> bool:
@@ -993,6 +1138,7 @@ async def query_items(
         apply_query_match,
         flatten_item_rows,
         load_item_rows,
+        parse_item_query,
         strip_field_visibility,
         without_deleted,
     )
@@ -1197,14 +1343,20 @@ async def query_items(
         removable = set(await untouched_demo_item_ids(session, company_id))
         result = [r for r in result if r.get("id") in removable]
 
+    not_found: list[str] = []
     if f.q:
-        # Shared q-filter + q_match attachment (single-sourced in celerp_inventory.search):
-        # comma = OR groups, & = AND terms, lo-hi = numeric range, bare number =
-        # numeric-exact OR text, else text substring. Each item is matched against its own
-        # category's numeric/text field sets, so a number-typed category field resolves and
-        # a text-typed one is not coerced. Reasons are computed over the visibility-filtered
-        # dict, so every cited field is one the role may see; no post-filter is needed.
-        result = apply_query_match(result, f.q, item_field_sets)
+        # Shared q parse + filter + q_match attachment (single-sourced in
+        # celerp_inventory.search): comma = OR groups with the named field carried
+        # forward, & = AND terms, lo-hi = numeric range, scoped identifier = whole value,
+        # bare number = numeric-exact OR text, else text substring. Each item is matched
+        # against its own category's numeric/text field sets, so a number-typed category
+        # field resolves and a text-typed one is not coerced. Reasons are computed over
+        # the visibility-filtered dict, so every cited field is one the role may see; no
+        # post-filter is needed. Scoped identifier values no item in the filtered set
+        # holds are reported as not_found, so a scan that matched nothing is named.
+        groups = parse_item_query(f.q, result, item_field_sets)
+        not_found = unmatched_identifiers(result, groups)
+        result = apply_query_match(result, groups, item_field_sets)
 
     # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
     # The consignment value is cost, so it is gated by view_inventory_costs exactly like
@@ -1242,7 +1394,7 @@ async def query_items(
         _item["_channel_state"] = _channel_states.get(_item.get("id"), {})
 
     resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets,
-                  "aggregates": aggregates}
+                  "aggregates": aggregates, "not_found": not_found}
     if holding_scoped and not gate_cost:
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact
         # card reads it directly and reconciles with the list at the same value basis; items
@@ -2060,29 +2212,26 @@ class ResolveResult:
         return self.matches[0] if len(self.matches) == 1 else None
 
 
-def _resolve_from_candidates(barcode_matches, rfid_matches, gtin_matches, sku_matches) -> "ResolveResult":
-    """Choose a ResolveResult from the per-field candidate lists, enforcing the shared
-    physical namespace. Barcode and RFID EPC are one namespace: a code matching EITHER
-    field is a physical match, gathered BEFORE any product identifier is considered. The
-    physical union is deduped by ``entity_id`` (a single item carrying both a barcode and
-    an EPC is ONE item, not a duplicate). If the union spans more than one distinct item
-    the resolver fails closed (``duplicate_physical`` True, ``one`` None), never silently
-    picking one; a single physical item resolves (kind "barcode" when a barcode matched,
-    else "rfid_epc"). Only with NO physical match do the product identifiers resolve -
-    gtin then sku - each to its N lots. Shared by both the single and the batch resolver
-    so they disambiguate identically."""
-    physical: dict = {}
-    for r in barcode_matches:
-        physical.setdefault(r.entity_id, r)
-    for r in rfid_matches:
-        physical.setdefault(r.entity_id, r)
-    if physical:
-        kind = "barcode" if barcode_matches else "rfid_epc"
-        return ResolveResult(kind, list(physical.values()))
-    if gtin_matches:
-        return ResolveResult("gtin", gtin_matches)
-    if sku_matches:
-        return ResolveResult("sku", sku_matches)
+def _resolve_from_candidates(matches: dict[str, list]) -> "ResolveResult":
+    """Choose a ResolveResult from the per-field candidate lists (keyed by identifier
+    field), walking IDENTIFIER_TIERS in order. Barcode and RFID EPC are one tier, the
+    shared physical namespace: a code matching EITHER field is a physical match, gathered
+    BEFORE any product identifier is considered. Each tier's union is deduped by
+    ``entity_id`` (a single item carrying both a barcode and an EPC is ONE item, not a
+    duplicate). If the physical union spans more than one distinct item the resolver
+    fails closed (``duplicate_physical`` True, ``one`` None), never silently picking one;
+    a single physical item resolves (kind "barcode" when a barcode matched, else
+    "rfid_epc"). Only with NO physical match do the product identifiers resolve - gtin
+    then sku - each to its N lots. Shared by both the single and the batch resolver so
+    they disambiguate identically."""
+    for tier in IDENTIFIER_TIERS:
+        found: dict = {}
+        for field in tier:
+            for r in matches.get(field, []):
+                found.setdefault(r.entity_id, r)
+        if found:
+            kind = next(field for field in tier if matches.get(field))
+            return ResolveResult(kind, list(found.values()))
     return ResolveResult("none", [])
 
 
@@ -2134,12 +2283,12 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     def _by(key, wanted):
         return [r for r in rows if str((r.state or {}).get(key) or "") == wanted and _live(r)]
 
-    return _resolve_from_candidates(
-        _by("barcode", code),
-        _by("rfid_epc", epc_code),
-        _by("gtin", code),
-        _by("sku", code),
-    )
+    return _resolve_from_candidates({
+        "barcode": _by("barcode", code),
+        "rfid_epc": _by("rfid_epc", epc_code),
+        "gtin": _by("gtin", code),
+        "sku": _by("sku", code),
+    })
 
 
 async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
@@ -2184,12 +2333,12 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
     out: dict[str, ResolveResult] = {}
     for code in wanted:
         epc_code = normalize_rfid_epc(code)
-        out[code] = _resolve_from_candidates(
-            by_barcode.get(code, []),
-            by_rfid_epc.get(epc_code, []),
-            by_gtin.get(code, []),
-            by_sku.get(code, []),
-        )
+        out[code] = _resolve_from_candidates({
+            "barcode": by_barcode.get(code, []),
+            "rfid_epc": by_rfid_epc.get(epc_code, []),
+            "gtin": by_gtin.get(code, []),
+            "sku": by_sku.get(code, []),
+        })
     return out
 
 
