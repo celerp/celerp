@@ -4472,6 +4472,7 @@
   "docs.close_goods_out": "Không thể đóng memo này khi còn {count} sản phẩm đang ở ngoài hoặc được giữ trên đó. Hãy bán hoặc nhận lại chúng trước.",
   "docs.undo_receipt_after_return": "Một phần hàng này đã được trả lại nhà cung cấp, nên không thể hoàn tác việc nhận hàng. Phiếu trả hàng vẫn được lưu.",
   "docs.undo_receipt_units_sold": "SKU '{sku}': {gone} đơn vị đã rời kho kể từ khi chứng từ này nhận {needed}, nên không thể hoàn tác việc nhận hàng. Hãy dùng Trả hàng cho nhà cung cấp, trả hàng theo giá vốn.",
+  "docs.return_lot_split_before_receipt": "{sku} đã được tách ra trước khi hàng của chứng từ này về, nên không chứa hàng nào trong số đó. Hãy yêu cầu nhà cung cấp xuất giấy báo có.",
   "docs.return_lot_transformed": "{sku} được làm bằng cách chế biến hàng đã nhận theo chứng từ này, nên không thể trả lại nhà cung cấp theo giá vốn. Hãy yêu cầu nhà cung cấp xuất giấy báo có.",
   "docs.return_line_not_on_hand": "{name}: tối đa {qty} trong số hàng nhận trên dòng này còn trong kho và có thể trả lại. Hàng đã bán, đang gửi theo phiếu ký gửi hoặc đã giữ chỉ được trả lại nhà cung cấp khi đã về kho và không bị giữ.",
   "docs.return_line_shared": "{name}: hàng nhận trên dòng này đã vào cùng lô tồn kho với dòng khác, nên không thể trả lại theo dòng.",

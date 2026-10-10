@@ -4470,6 +4470,7 @@
   "docs.close_goods_out": "This memo cannot be closed while {count} product(s) are still out or held on it. Sell or return them first.",
   "docs.undo_receipt_after_return": "Some of these goods were already returned to the supplier, so the receipt cannot be undone. The return stays on record.",
   "docs.undo_receipt_units_sold": "SKU '{sku}': {gone} units have left stock since this document received {needed}, so the receipt cannot be undone. Use Return to supplier, which takes the goods back at cost.",
+  "docs.return_lot_split_before_receipt": "{sku} was split off before this document's goods came in, so none of them are in it. Ask the supplier for a credit note instead.",
   "docs.return_lot_transformed": "{sku} was made by processing goods received on this document, so it cannot go back to the supplier at cost. Ask the supplier for a credit note instead.",
   "docs.return_line_not_on_hand": "{name}: at most {qty} received on this line is on hand and free to return. Goods sold, out on memo or reserved go back to the supplier only once they are back in stock and free.",
   "docs.return_line_shared": "{name}: goods received on this line went into the same stock as another line's, so they cannot be returned by line.",

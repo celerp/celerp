@@ -4472,6 +4472,7 @@
   "docs.close_goods_out": "Este memo no se puede cerrar mientras {count} producto(s) sigan fuera o reservados en él. Véndalos o devuélvalos primero.",
   "docs.undo_receipt_after_return": "Parte de estos bienes ya se devolvió al proveedor, así que la recepción no se puede deshacer. La devolución queda registrada.",
   "docs.undo_receipt_units_sold": "SKU '{sku}': {gone} unidades salieron del inventario desde que este documento recibió {needed}, así que la recepción no se puede deshacer. Use Devolver al proveedor, que devuelve los artículos al costo.",
+  "docs.return_lot_split_before_receipt": "{sku} se separó antes de que llegaran los artículos de este documento, así que no contiene ninguno de ellos. Pida al proveedor una nota de crédito.",
   "docs.return_lot_transformed": "{sku} se hizo procesando artículos recibidos con este documento, así que no puede volver al proveedor al costo. Pida al proveedor una nota de crédito.",
   "docs.return_line_not_on_hand": "{name}: como máximo {qty} de lo recibido en esta línea está en existencia y libre para devolver. Los bienes vendidos, en memo o reservados vuelven al proveedor solo cuando están de nuevo en stock y libres.",
   "docs.return_line_shared": "{name}: los bienes recibidos en esta línea entraron en el mismo stock que los de otra línea, así que no se pueden devolver por línea.",

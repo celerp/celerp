@@ -2353,6 +2353,8 @@ async def finalize_document(
         # Covers both PO->bill conversion and directly-created bills finalized directly.
         # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
         _revert_count = int(_initial_doc_state.get("revert_count", 0))
+        await auto_je.restore_return_charges(session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
+                                             revert_count=_revert_count)
         await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
         await _capitalise_landed_received(session, company_id, _user_id, entity_id, _initial_doc_state,
                                           f"fin:{_revert_count}")
@@ -2624,6 +2626,9 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     current_revert_count = int(state.get("revert_count", 0))
     await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
                                          revert_count=current_revert_count, goods_movements=not to_order)
+    if to_order:
+        await auto_je.reverse_return_charges(session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+                                             revert_count=current_revert_count)
     if to_order or emptied:
         # The bill's landed cost goes with it. Going back to its order, the goods stay, so its
         # capitalisation is reversed here: what the lots still hold in stock goes back to
@@ -2631,11 +2636,13 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         # the bill's own receipt and return entries were reversed above, landed cost included.
         lots = await _bill_lineage(session, company_id, state)
         if to_order:
+            returned = {x.get("returned_lot_id") or x["item_id"] for x in state.get("returned_items") or []}
             await auto_je.void_landed_capitalisation(
                 session, company_id=company_id, user_id=user.id, doc_id=entity_id,
                 undo_key=f"revert-{current_revert_count}",
                 held_by_account=_landed_held(entity_id, (r.state for r in lots if in_stock(r.state))),
                 trigger="doc.reverted_to_draft", reason=f"Reversed: {entity_id} reverted to draft",
+                sent_back=sum(_landed_held(entity_id, (r.state for r in lots if r.entity_id in returned)).values()),
             )
         await _drop_landed(session, company_id, user.id, entity_id, lots, f"revert-{current_revert_count}")
     entry = await emit_event(
@@ -4483,12 +4490,13 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
                                       state: dict, suffix: str) -> None:
     """Landed cost a bill charged for goods that came in before it was finalized (a purchase
     order received, then made into the bill), through the entry goods received after the bill
-    take it by (auto_je.create_for_landed_capitalisation). Each lot those receipts made or
-    added to takes the share of the goods it holds, spread by quantity over the lot and the
-    lots split off it. Of the goods no longer there, the share of those sent back to the supplier
-    goes to stock shrinkage and of the rest to cost of goods sold; a lot the goods were added
-    to is taken to have sold its other stock first. A lot already carrying this bill's landed
-    cost is left as it is, so a bill finalized again takes nothing twice."""
+    take it by (auto_je.create_for_landed_capitalisation). It is spread as it would have been
+    had the bill been finalized at the receipt: over every unit of the lot the receipt made or
+    added to, at its average. So each lot of it (the lot and the lots split off it since) takes
+    the share of the units it holds, the share of the units sent back to the supplier goes to
+    stock shrinkage, and that of the units that left since the receipt
+    (_units_gone_since_receipt) to cost of goods sold. A lot already carrying this bill's
+    landed cost is left as it is, so a bill finalized again takes nothing twice."""
     received = state.get("received_items") or []
     if not received:
         return
@@ -4539,6 +4547,7 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
     by_kind: dict[str, float] = {}
     by_account: dict[str, float] = {}
     expensed: dict[AccountRole, float] = {}
+    gone, _split = await _units_gone_since_receipt(session, company_id, doc_id, list(shares))
     for lot_id, kinds in shares.items():
         lot, came = rows[lot_id], units.get(lot_id, 0.0)
         if came <= 0 or any(f"{doc_id}::{k}" in (lot.state.get("landed_costs") or {}) for k in kinds):
@@ -4547,13 +4556,12 @@ async def _capitalise_landed_received(session: AsyncSession, company_id, user_id
         gone_back = sum(sent_back.get(member.entity_id, 0.0) for member in family)
         holding = [(m, float(m.state.get("quantity") or 0)) for m in family if in_stock(m.state)]
         holding = [(m, qty) for m, qty in holding if qty > 0]
-        on_hand = sum(qty for _m, qty in holding)
-        returned = min(came, gone_back)
-        held = min(came - returned, on_hand)
-        # Each kind's amount goes, to the cent (allocate_pro_rata), to the goods sent back, the
-        # goods sold, and each lot holding the rest by what it holds.
-        weights = [to_decimal(returned), to_decimal(came - returned - held),
-                   *(to_decimal(held) * to_decimal(qty) / to_decimal(on_hand) for _m, qty in holding)]
+        left = gone.get(lot_id, 0.0)
+        if gone_back + left + sum(qty for _m, qty in holding) <= 1e-9:
+            left = came  # nothing of the lot is left to say where the goods went: they left
+        # Each kind's amount goes, to the cent (allocate_pro_rata), to the units sent back, the
+        # units that left, and each lot by the units it holds.
+        weights = [to_decimal(gone_back), to_decimal(left), *(to_decimal(qty) for _m, qty in holding)]
         for kind, amount in kinds.items():
             back, sold, *kept = allocate_pro_rata(amount, weights, currency)
             for role, part in ((AccountRole.STOCK_SHRINKAGE, back), (AccountRole.COGS, sold)):
@@ -4677,42 +4685,6 @@ def _lot_additions(doc: dict) -> dict[str, tuple[float, float]]:
             qty, cost = added[lot]
             added[lot] = (qty - float(x["lot_quantity_taken"]), cost - float(x["lot_cost_taken"] or 0))
     return {lot: (max(0.0, round_basis(qty)), max(0.0, round_basis(cost))) for lot, (qty, cost) in added.items()}
-
-
-async def _others_added(session: AsyncSession, company_id, doc_id: str, lot_id: str, units: float) -> float:
-    """What the goods other documents' receipts added to lot ``lot_id`` cost them, for up to
-    ``units`` of them, latest receipt first: a lot the goods were added to is taken to have
-    sold its earlier stock first (_lot_additions)."""
-    from celerp.models.ledger import LedgerEntry
-
-    source = LedgerEntry.metadata_["source_doc"].as_string()
-    docs = (await session.execute(
-        select(source)
-        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == lot_id,
-               LedgerEntry.event_type == "item.quantity.adjusted", source.is_not(None), source != doc_id)
-        .group_by(source).order_by(_func.max(LedgerEntry.id).desc()))).scalars().all()
-    additions = []
-    for other in docs:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": other})
-        additions.append((other, *_lot_additions(row.state if row is not None else {}).get(lot_id, (0.0, 0.0))))
-    return round_basis(sum(cost for _, cost in _held_newest_first(additions, units).values()))
-
-
-def _held_newest_first(additions: Iterable[tuple[str, float, float]], units: float) -> dict[str, tuple[float, float]]:
-    """Document -> (units, cost) of what its receipt added to a lot that the lot still holds when
-    it holds ``units``, from ``additions`` (document, units added and still there, their cost),
-    latest receipt first. A lot goods were added to is taken to have sold its earlier stock
-    first: the latest additions are what it still holds, and whatever they do not cover is the
-    stock the lot was made with."""
-    held: dict[str, tuple[float, float]] = {}
-    for doc, qty, cost in additions:
-        if units <= 1e-9:
-            break
-        if qty > 1e-9:
-            part = min(units, qty)
-            held[doc] = (part, cost * part / qty)
-            units -= part
-    return held
 
 
 def _line_quantities_received(doc: dict) -> dict[int, float]:
@@ -5752,6 +5724,17 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 "docs.return_lot_more_than_received",
                 f"{name}: at most {max(0.0, left):g} received on this document can still be returned.",
                 sku=name, qty=f"{max(0.0, left):g}"))
+        if root != it.item_id and it.item_id not in root_of:
+            # A part split off the lot before the goods came in holds none of them: the
+            # supplier credits goods it never sent with a credit note, not a return at cost.
+            first = await _standing_receipt_since(session, company_id, entity_id) or 0
+            if it.item_id not in {r.entity_id for r in (await _split_since(session, company_id, [root], first))[root]}:
+                found = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
+                name = _lot_label(found.state if found is not None and found.entity_type == "item" else {})
+                raise HTTPException(status_code=422, detail=refusal(
+                    "docs.return_lot_split_before_receipt",
+                    f"{name} was split off before this document's goods came in, so none of them are "
+                    "in it. Ask the supplier for a credit note instead.", sku=name))
         root_of[it.item_id] = root
         returnable[root] = left - it.quantity_returned
 
@@ -5819,9 +5802,10 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         returned.append({**it.model_dump(), **({"source_line_id": source_line_id} if source_line_id else {}),
                          **({"received_lot_id": root} if root != it.item_id else {})})
         if owned:
-            # Units this document added to a lot already on hand and that are still there go
-            # back first, at what they were received for; any other units take their share of
-            # the rest of the lot's cost. The last units out take whatever cost is left.
+            # Goods go back at what the document charged for them: the units it added to a lot
+            # already on hand at what they were received for, the units of a lot it made at its
+            # price for them. Units it named no price for take the lot's average. The last units
+            # out take whatever cost is left.
             lot_before = dict(item.state)
             basis = goods_basis(item.state) or 0.0
             qty_added, cost_added = added.get(root, (0.0, 0.0))
@@ -5829,7 +5813,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             taken_cost = cost_added if taken == qty_added else cost_added * taken / qty_added if qty_added else 0.0
             others_qty = current_qty - qty_added
             rest = it.quantity_returned - taken
-            others_cost = (basis - cost_added) * rest / others_qty if others_qty > 1e-9 else 0.0
+            rest_cost = (basis - cost_added) * rest / others_qty if others_qty > 1e-9 else 0.0
             made_qty, made_cost = made.get(root, (0.0, None))
             origin = lot_account(item.state)
             target = origin if goods_role == AccountRole.INVENTORY_PURCHASED else goods_role
@@ -5840,21 +5824,17 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 def _charged(units: float) -> float:
                     return to_stored_float(round_money(made_cost * min(units, made_qty) / made_qty, currency))
 
-                billed_rest = _charged(before + rest) - _charged(before)
+                billed_rest = rest_cost = _charged(before + rest) - _charged(before)
                 made_gone[root] = before + rest
                 if others_qty > 1e-9 and abs(others_qty - (made_qty - before)) <= 1e-9:
                     # The lot holds only what this document made it with: its units go at what
                     # they were charged plus their share of any correction to the lot's cost.
-                    others_cost = billed_rest + (basis - cost_added - made_cost + _charged(before)) * rest / others_qty
-            # The goods leave at what they cost, but never take another document's goods still
-            # in the lot with them: the lot keeps those at what that document received them for,
-            # and what the goods leaving cost beyond what is left goes to stock shrinkage.
-            at_cost = to_stored_float(round_money(taken_cost + others_cost, currency))
-            if whole:
-                share = basis
-            else:
-                others_held = await _others_added(session, company_id, entity_id, root, new_qty)
-                share = min(max(0.0, round_basis(basis - others_held)), at_cost)
+                    rest_cost = billed_rest + (basis - cost_added - made_cost + _charged(before)) * rest / others_qty
+            # The goods leave stock at that cost, never at more than the lot carries: what the
+            # price comes to beyond that goes to stock shrinkage, and the units that stay keep
+            # what is left.
+            at_cost = to_stored_float(round_money(taken_cost + rest_cost, currency))
+            share = basis if whole else min(at_cost, basis)
             # What the document charged for the goods comes off what it is owed: its own units at
             # their price, any others at what they cost.
             if billed_rest is not None:
@@ -9941,10 +9921,10 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
     back any other way, a count up among them, never cancel a removal.
 
     Only units that left at the lot's average cost count, because they took a share of this
-    receipt's cost with them. Another document's own goods going back (its receipt undone,
-    or its goods returned to the supplier) leave at that document's cost. A return taking
-    more than that document's own units still in the lot (_beyond_own_units) took the rest at
-    the lot's average, so those units count. A migration's
+    receipt's cost with them. Another document's goods going back (its receipt undone, or its
+    goods returned to the supplier) leave at that document's price, so they took none of it;
+    whether the lot still holds enough for this receipt to leave is the undo's own check of
+    what is on hand and what it carries. A migration's
     movements are the source's history at the source's own figures, written after the
     receipts it carries, so the ledger order says nothing about which came first."""
     from celerp.models.ledger import LedgerEntry
@@ -9973,29 +9953,9 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
     paired: dict[str, dict[tuple[str, str], float]] = {lot: {} for lot in lots}
     # A part carved off only to go back to its supplier is a return, not a split.
     sent_back = {lot for _, lot, event_type, _, _, _ in entries if event_type == "item.returned_to_supplier"}
-    # Per lot: the units each receipt added to it and still there, oldest first: the same
-    # bookkeeping a return values other documents' units by.
-    adds: dict[str, dict[str, float]] = {}
-    just_carved: dict[str, str] = {}  # part -> lot, for the parts the previous entry carved off
     for entry_id, lot, event_type, data, source, meta in entries:
         before = states.get(lot)
         states[lot] = ProjectionEngine._apply(dict(before or {}), event_type, data or {})
-        meta = meta or {}
-        carved, just_carved = just_carved, (dict.fromkeys((data or {}).get("child_ids") or [], lot)
-                                            if event_type == "item.split" else {})
-        if event_type == "item.quantity.adjusted" and meta.get("source_receive_undo"):
-            adds.get(lot, {}).pop(str(meta["source_receive_undo"]), None)
-        elif event_type == "item.quantity.adjusted" and meta.get("source_doc"):
-            doc = str(meta["source_doc"])
-            lot_adds = adds.setdefault(lot, {})
-            moved = held(states[lot]) - held(before)
-            units = max(0.0, lot_adds.pop(doc, 0.0) + moved) if moved > 0 else max(0.0, lot_adds.get(doc, 0.0) + moved)
-            lot_adds[doc] = units  # a receipt adding goods makes them the lot's latest
-        elif event_type == "item.returned_to_supplier":
-            gone_back = _beyond_own_units(states, adds, lot, before, carved.get(lot),
-                                          (data or {}).get("source_doc_id"), entity_id, held)
-            if entry_id > first and source not in ("migration", "receive_undo"):
-                plain[root_of[lot]] += gone_back
         if (entry_id <= first or source in ("migration", "receive_undo")
                 or event_type == "item.returned_to_supplier"):
             continue
@@ -10010,43 +9970,6 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
             plain[root] -= moved  # units split off into a lot of the lineage are still held
     gone = {lot: plain[lot] + sum(max(0.0, units) for units in paired[lot].values()) for lot in lots}
     return {lot: max(0.0, round_basis(units)) for lot, units in gone.items()}, split
-
-
-def _beyond_own_units(states: dict[str, dict], adds: dict[str, dict[str, float]], lot: str,
-                      before: dict | None, carved_from: str | None, doc: str | None, receipt_doc: str,
-                      held: Callable[[dict | None], float]) -> float:
-    """Units another document's return to its supplier took from a lot beyond that document's
-    own units in it at that moment: the other documents' additions the lot held before the
-    return and no longer holds after it (_held_newest_first), which is what the return valued
-    the rest of the lot by (_others_added). Those units leave at the lot's average, like a
-    sale, and come off what their documents are recorded as having added; the document's own
-    units leave at its own cost. ``carved_from`` is the lot the returned part was carved off
-    just before it went back, if it was. A return of the receipt's own document, or one
-    naming no document, counts nothing here."""
-    if not doc or doc == receipt_doc:
-        return 0.0
-    doc = str(doc)
-    if carved_from and carved_from in states:
-        units = float((states.get(lot) or {}).get("quantity") or 0)
-        holder, on_hand = carved_from, held(states[carved_from]) + units
-    else:
-        units = held(before)
-        holder, on_hand = lot, units
-    while holder not in adds and (states.get(holder) or {}).get("split_from") in states:
-        holder = states[holder]["split_from"]
-    lot_adds = adds.get(holder, {})
-    others = [(d, q, q) for d, q in reversed(lot_adds.items()) if d != doc]
-    kept_before = _held_newest_first(others, on_hand)
-    kept_after = _held_newest_first(others, on_hand - units)
-    beyond = 0.0
-    for other, (part, _) in kept_before.items():
-        took = part - kept_after.get(other, (0.0, 0.0))[0]
-        if took > 1e-9:
-            lot_adds[other] = max(0.0, lot_adds[other] - took)
-            beyond += took
-    if doc in lot_adds:
-        lot_adds[doc] = max(0.0, lot_adds[doc] - (units - beyond))
-    return max(0.0, round_basis(beyond))
 
 
 async def _receipt_measures_on_lots(session: AsyncSession, company_id, entity_id: str, doc: dict) -> dict:
@@ -10260,7 +10183,7 @@ async def undo_receive(
     await auto_je.void_landed_capitalisation(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id, undo_key=undo_suffix,
         held_by_account=_landed_held(entity_id, (item_rows.get(iid) or {} for iid in [*received_item_ids, *topped_up])),
-        trigger="doc.receive_undone", reason="Goods received undone",
+        trigger="doc.receive_undone", reason="Goods received undone", sent_back=None,
     )
     # Goods the purchase order's receipts booked onto the lots leave the lots' accounts with them.
     lines = state.get("line_items") or []

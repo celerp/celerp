@@ -13,15 +13,23 @@ return and a revert take off the books.
   receipt's units leaving.
 - A removal undone by its own reversal (a write-off and its undo, a sale and its reversal,
   a count and its undo) did not take any units away. A count up never hides a sale.
-- Another bill's goods going back out of a mixed lot come off accounts payable at that bill's
-  price; the units that stay keep their own cost and their own freight.
+- A bill's goods going back to its supplier come off accounts payable and off stock at that
+  bill's price, as an undo of its receipt would take them, never more than the lot carries;
+  what the price comes to beyond that goes to stock shrinkage, and the other bills' freight
+  stays on the lot.
 - In a foreign currency, the partial returns of a bill take off accounts payable its share of
   the bill in the company's currency, so accounts payable follows what is still owed.
 - A lot made by a transform is a different product, however it was recorded: a transform's
   product from before transforms stopped inheriting split_from cannot go back on the bill,
   and is not a part of the receipt still on hand.
-- Another bill's goods going back take this receipt's units with them only beyond that
-  bill's own units still in the lot at the time.
+- Another bill's goods going back leave at that bill's price, so they never take this
+  receipt's cost with them: its receipt can still be undone while the lot holds its units.
+- A bill taken back to its order reverses the tax and payable its returns took off with the
+  bill, and finalizing it again puts them back.
+- Goods in a lot split off before the receipt never came in on it, so they cannot go back on it.
+- Finalizing a bill again after taking it back to its order puts its freight where it was:
+  the units still held carry it, the units sold expensed it and the units sent back
+  shrank it.
 """
 from __future__ import annotations
 
@@ -37,7 +45,7 @@ from test_landed_cost_removals import _audit, _seed, _split, _writeoff
 from test_landed_cost_structural import (LEGS, _ROOT, _callers, _counted_lot, _family, _goods,
                                          _refused_units_sold, _transformed, _undo)
 from test_money_stock_and_contact_invariants import _account_net
-from test_receipt_accounting import _return
+from test_receipt_accounting import _doc, _finalize, _receive, _return
 
 _ORDERS = pytest.mark.parametrize("from_order", [False, True], ids=["bill_first", "order_first"])
 _VAT = {"doc_taxes": [{"code": "VAT", "rate": 7.0, "order": 1, "is_compound": False, "label": "VAT"}]}
@@ -263,14 +271,15 @@ async def test_another_bills_return_out_of_a_mixed_lot_is_credited_at_its_price(
     r = await _return(client, auth, b, lot, 3)
     assert r.status_code == 200, r.text
     after = await _b(session, auth, "2110", "6970")
-    # Accounts payable falls by 3 x 100.00. The lot held 145.00 of goods, 5.00 of them A's,
-    # so 140.00 leaves stock and the 160.00 the lot no longer carried is a credit to shrinkage.
+    # Accounts payable falls by 3 x 100.00. The goods leave at that price, but the lot carries
+    # only 145.00 of goods, so all of it leaves and the 155.00 it no longer carried is a credit
+    # to shrinkage. The units that stay re-average to nothing; A's freight stays with them.
     assert round(after["2110"] - before["2110"], 2) == 300.0, (before, after)
-    assert round(after["6970"] - before["6970"], 2) == -160.0, (before, after)
+    assert round(after["6970"] - before["6970"], 2) == -155.0, (before, after)
     assert float((await _state(session, auth, b))["amount_outstanding"]) == 200.0
     st = await _state(session, auth, lot)
     assert float(st["quantity"]) == 5.0
-    assert round(goods_basis(st), 2) == 5.0, st
+    assert round(goods_basis(st), 2) == 0.0, st
     assert _doc_pools(st, a) == {f"{a}::freight": 5.0}, st.get("landed_costs")
     await _inv(client, session, auth, b, others=float((await _state(session, auth, a))["amount_outstanding"]))
 
@@ -388,28 +397,184 @@ async def test_an_older_transform_product_is_not_the_receipt_still_on_hand(clien
     assert await _b(session, auth, *LEGS) == before
 
 
-# ── Another bill's return takes this receipt's units only beyond its own ────
+# ── Another bill's return leaves at that bill's price ───────────────────────
 
-# Bill B makes a lot of 5 and 3 are sold; bill A then adds 4. B sending back 5 takes its own 2
-# and 3 of A's, so A's receipt can no longer be undone. Sending back only its own 2 leaves A's
-# 4 in the lot at what A received them for, and A's receipt undoes cleanly. The bill still
-# stands after an undo, so the books are checked settled before it.
-@pytest.mark.parametrize("back, refused", [(5, True), (2, False)], ids=["beyond_own", "own_only"])
-async def test_another_bills_return_counts_only_beyond_its_own_units(client, session, auth, back, refused):
+# Bill B makes a lot of 5 and 3 are sold; bill A then adds 4 at 20.00 (and bill C 5 at 10.00).
+# B sending back 5 at 10.00 leaves the lot 1 unit, too few to undo A's 4. Sending back 2, or 3
+# while C's goods keep the lot stocked, leaves A's 80.00 in the lot, and A's receipt undoes
+# cleanly. The bill still stands after an undo, so the books are checked settled before it.
+@pytest.mark.parametrize("back, third, refused", [(5, False, True), (2, False, False), (3, True, False)],
+                         ids=["more_than_held", "own_only", "beyond_own_still_stocked"])
+async def test_another_bills_return_leaves_this_receipt_undoable(client, session, auth, back, third, refused):
     await _seed(session, auth)
     b, [lot] = await _received(client, session, auth, [_goods(10.0, 5)], from_order=False)
     await _sell(client, auth, lot, 3)
     a = await _po_into(client, auth, lot, 4, 20.0)
+    if third:
+        await _po_into(client, auth, lot, 5, 10.0)
     r = await _return(client, auth, b, lot, back)
     assert r.status_code == 200, r.text
     await assert_settled(client, session, auth)
     before = await _b(session, auth, *LEGS)
-    held = float((await _state(session, auth, lot))["quantity"])
+    from celerp_inventory.services import goods_basis
+
+    st = await _state(session, auth, lot)
+    held, cost = float(st["quantity"]), round(goods_basis(st) or 0.0, 2)
     r = await _undo(client, auth, a)
     if refused:
-        _refused_units_sold(r)
-        assert r.json()["detail"]["params"]["gone"] == "3", r.text
+        assert r.status_code == 409, r.text
         assert await _b(session, auth, *LEGS) == before
     else:
         assert r.status_code == 200, r.text
-        assert float((await _state(session, auth, lot))["quantity"]) == held - 4
+        st = await _state(session, auth, lot)
+        assert (float(st["quantity"]), round(goods_basis(st) or 0.0, 2)) == (held - 4, round(cost - 80.0, 2)), st
+
+
+# ── S1. A bill's return relieves stock at the bill's price ──────────────────
+
+# Opening 10 at 20.00; A adds 5 at 100.00; 5 are sold at the average (or split off and sold);
+# B adds 5 at 10.00 and sends them straight back. Stock and accounts payable fall by 50.00 and
+# nothing goes to shrinkage: the same as undoing B's receipt.
+@pytest.mark.parametrize("sale", ["lot", "split"])
+async def test_a_bills_return_relieves_stock_at_its_price(client, session, auth, sale):
+    await _seed(session, auth)
+    lot = await _opening(client, auth, 10, 200.0)
+    await _po_into(client, auth, lot, 5, 100.0)
+    if sale == "split":
+        [kid] = await _split(client, auth, lot, 5)
+        await _sell(client, auth, kid, 5)
+    else:
+        await _sell(client, auth, lot, 5)
+    b = await _po_into(client, auth, lot, 5, 10.0)
+    before = await _b(session, auth, *LEGS)
+    cost = round(float((await _state(session, auth, lot))["cost_total"]), 2)
+    r = await _return(client, auth, b, lot, 5)
+    assert r.status_code == 200, r.text
+    after = await _b(session, auth, *LEGS)
+    delta = {k: round(after[k] - before[k], 2) for k in LEGS if after[k] != before[k]}
+    assert delta == {"2110": 50.0, "1130-OB": -50.0}, delta
+    assert round(float((await _state(session, auth, lot))["cost_total"]), 2) == round(cost - 50.0, 2)
+    await assert_settled(client, session, auth)
+
+
+# Three bills on one lot, with a sale, a split, a write-off and a count between them: B's 4
+# units go back at 50.00 each, 200.00 off stock and off accounts payable, and A's and C's
+# freight stays on the lot.
+async def test_three_bills_return_relieves_the_returning_bills_price(client, session, auth):
+    from celerp_inventory.services import goods_basis
+
+    await _seed(session, auth)
+    loc = await _location(client, auth)
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": f"LCL-{uuid.uuid4().hex[:6]}", "name": "Opening", "quantity": 10, "sell_by": "piece",
+        "status": "available", "cost_total": 200.0, "location_id": loc})
+    assert r.status_code == 200, r.text
+    lot = r.json()["id"]
+    a = await _po_into(client, auth, lot, 5, 30.0, shipping=5.0)
+    await _sell(client, auth, lot, 6)
+    b = await _po_into(client, auth, lot, 4, 50.0, shipping=2.0)
+    await _split(client, auth, lot, 3)
+    await _writeoff(client, auth, lot, 1)
+    c = await _po_into(client, auth, lot, 3, 10.0, shipping=0.3)
+    await _audit(client, auth, lot, loc, float((await _state(session, auth, lot))["quantity"]) + 1)
+    s0 = await _state(session, auth, lot)
+    before = await _b(session, auth, "2110")
+    r = await _return(client, auth, b, lot, 4)
+    assert r.status_code == 200, r.text
+    s1 = await _state(session, auth, lot)
+    assert round((await _b(session, auth, "2110"))["2110"] - before["2110"], 2) == 200.0
+    assert round(goods_basis(s0) - goods_basis(s1), 2) == 200.0, (s0["cost_total"], s1["cost_total"])
+    assert (_doc_pools(s1, a), _doc_pools(s1, c)) == (_doc_pools(s0, a), _doc_pools(s0, c))
+    await assert_settled(client, session, auth)
+
+
+# ── F2. A revert to the order takes the returns' tax off with the bill ──────
+
+@pytest.mark.parametrize("steps", [[13], [3, 10]], ids=["full_once", "partial_then_rest"])
+@pytest.mark.parametrize("currency, rate", [("THB", 1.0), ("EUR", 36.123457)], ids=["THB", "EUR"])
+@pytest.mark.parametrize("vat", [True, False], ids=["vat", "novat"])
+async def test_revert_to_order_after_returns_leaves_every_leg_where_it_started(client, session, auth, steps,
+                                                                             currency, rate, vat):
+    await _seed(session, auth)
+    start = await _b(session, auth, *LEGS, "6960")
+    extra = dict(_VAT) if vat else {}
+    if currency != "THB":
+        extra.update(currency=currency, conversion_rate=rate)
+    doc, [lot] = await _received(client, session, auth, [_goods(0.37, 13)], from_order=True, shipping=1.01, **extra)
+    for qty in steps:
+        r = await _return(client, auth, doc, lot, qty)
+        assert r.status_code == 200, r.text
+    r = await _post(client, auth, doc, "revert-to-draft")
+    assert r.status_code == 200, r.text
+    assert await _b(session, auth, *LEGS, "6960") == start
+    await assert_settled(client, session, auth)
+
+
+# The goods back in two returns, then the bill taken back to its order and finalized again:
+# the returns' tax and payable come back with the bill, so the books are as before the revert.
+@pytest.mark.parametrize("currency, rate", [("THB", 1.0), ("EUR", 36.123457)], ids=["THB", "EUR"])
+async def test_refinalize_after_revert_restores_the_returns_charges(client, session, auth, currency, rate):
+    await _seed(session, auth)
+    extra = dict(_VAT)
+    if currency != "THB":
+        extra.update(currency=currency, conversion_rate=rate)
+    doc, [lot] = await _received(client, session, auth, [_goods(0.37, 13)], from_order=True, shipping=1.01, **extra)
+    for qty in (3, 10):
+        r = await _return(client, auth, doc, lot, qty)
+        assert r.status_code == 200, r.text
+    returned = await _b(session, auth, *LEGS, "6960")
+    assert (await _post(client, auth, doc, "revert-to-draft")).status_code == 200
+    assert (await _post(client, auth, doc, "finalize")).status_code == 200
+    assert await _b(session, auth, *LEGS, "6960") == returned
+    await assert_settled(client, session, auth)
+
+
+# ── F3. Goods split off before the receipt never came in on it ─────────────
+
+async def test_a_lot_split_off_before_the_receipt_cannot_go_back_on_it(client, session, auth):
+    await _seed(session, auth)
+    lot = await _opening(client, auth, 6, 60.0)
+    [pre] = await _split(client, auth, lot, 2)
+    doc = await _doc(client, auth, "purchase_order", [{"item_id": lot, "name": "Lot", "quantity": 6,
+                                                       "unit_price": 20.0}], shipping=3.0)
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "name": "Lot", "quantity_received": 3})
+    assert r.status_code == 200, r.text
+    await _finalize(client, auth, doc)
+    [post] = await _split(client, auth, lot, 2)
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "item_id": lot, "name": "Lot", "quantity_received": 3})
+    assert r.status_code == 200, r.text
+    before = await _b(session, auth, *LEGS)
+    r = await _return(client, auth, doc, pre, 1)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_lot_split_before_receipt", r.text
+    assert await _b(session, auth, *LEGS) == before
+    r = await _return(client, auth, doc, post, 2)
+    assert r.status_code == 200, r.text
+    await assert_settled(client, session, auth)
+
+
+# ── D1. Finalizing again puts the freight back where it was ─────────────────
+
+# Opening 2 at 1.00; an order adds 2 at 0.25 with 1.00 freight and becomes the bill; 1 unit is
+# sold and the bill's 2 go back. Taken back to the order, the bill's freight leaves the books
+# by where it went: off cost of goods sold for the unit sold, off shrinkage for the units sent
+# back. Finalized again, the books and the lot are as they were before the revert.
+async def test_refinalize_after_revert_puts_the_freight_back_where_it_was(client, session, auth):
+    await _seed(session, auth)
+    lot = await _opening(client, auth, 2, 1.0)
+    start = await _b(session, auth, *LEGS)
+    doc = await _po_into(client, auth, lot, 2, 0.25, shipping=1.0)
+    await _sell(client, auth, lot, 1)
+    goods_sold = round((await _b(session, auth, "5100"))["5100"] - start["5100"] - 0.25, 2)
+    r = await _return(client, auth, doc, lot, 2)
+    assert r.status_code == 200, r.text
+    returned = await _b(session, auth, *LEGS)
+    pools = _doc_pools(await _state(session, auth, lot), doc)
+    assert (await _post(client, auth, doc, "revert-to-draft")).status_code == 200
+    reverted = await _b(session, auth, *LEGS)
+    assert (reverted["6970"], round(reverted["5100"] - start["5100"], 2)) == (start["6970"], goods_sold), reverted
+    await assert_settled(client, session, auth)
+    assert (await _post(client, auth, doc, "finalize")).status_code == 200
+    assert await _b(session, auth, *LEGS) == returned
+    assert _doc_pools(await _state(session, auth, lot), doc) == pools == {f"{doc}::freight": 0.25}
+    await assert_settled(client, session, auth)

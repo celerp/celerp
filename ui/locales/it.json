@@ -4472,6 +4472,7 @@
   "docs.close_goods_out": "Questo memo non può essere chiuso mentre {count} prodotto/i sono ancora fuori o riservati su di esso. Vendili o riprendili prima.",
   "docs.undo_receipt_after_return": "Parte di questa merce è già stata resa al fornitore, quindi il ricevimento non può essere annullato. Il reso resta registrato.",
   "docs.undo_receipt_units_sold": "SKU '{sku}': {gone} unità sono uscite dal magazzino da quando questo documento ne ha ricevute {needed}, quindi il ricevimento non può essere annullato. Usa Reso al fornitore, che restituisce la merce al costo.",
+  "docs.return_lot_split_before_receipt": "{sku} è stato separato prima che arrivasse la merce di questo documento, quindi non ne contiene. Chiedi invece al fornitore una nota di credito.",
   "docs.return_lot_transformed": "{sku} è stato ottenuto lavorando merce ricevuta con questo documento, quindi non può tornare al fornitore al costo. Chiedi invece al fornitore una nota di credito.",
   "docs.return_line_not_on_hand": "{name}: al massimo {qty} di quanto ricevuto su questa riga è a magazzino e libero per il reso. La merce venduta, in conto visione o riservata torna al fornitore solo quando è di nuovo a magazzino e libera.",
   "docs.return_line_shared": "{name}: la merce ricevuta su questa riga è entrata nello stesso stock di un'altra riga, quindi non può essere resa per riga.",

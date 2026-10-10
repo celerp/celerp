@@ -1294,6 +1294,67 @@ async def create_for_supplier_return(
     return taken
 
 
+async def reverse_return_charges(session, *, company_id, user_id, doc_id: str, revert_count: int) -> None:
+    """A bill going back to its purchase order leaves its returns to the supplier with the order
+    (void_for_doc_finalized, goods_movements=False): the goods they took off stock stay off,
+    against the payable the order's receipts booked. The input tax they took off and the
+    exchange difference they booked belong to the bill, so they reverse with it, against
+    accounts payable, in one entry per revert. Finalizing the bill again voids that entry
+    (restore_return_charges), so the returns take off what they did before."""
+    settings = await current_settings(session, company_id)
+    charged = {R.TAX_INPUT.value, R.FX_GAIN.value, R.FX_LOSS.value}
+    back: dict[tuple[str, str], _Dec] = {}  # (account, role) -> what reverses, debit positive
+    payable: dict | None = None
+    for row in (await session.execute(_select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+            Projection.entity_id.startswith(f"je:auto:{doc_id}:rtn:", autoescape=True),
+    ))).scalars().all():
+        if row.state.get("status") != "posted":
+            continue
+        entries = row.state.get("entries") or []
+        # The line that took the goods off accounts payable: posted for that role, or, on an
+        # account recognized before it served the role, the entry's first line.
+        payable = payable or next((e for e in entries if R.PAYABLE.value in line_roles(settings, e)), entries[0])
+        for e in entries:
+            for role in charged.intersection(line_roles(settings, e)):
+                key = (e["account"], role)
+                back[key] = back.get(key, _Dec(0)) + to_decimal(e.get("credit") or 0) - to_decimal(e.get("debit") or 0)
+    back = {key: amount for key, amount in back.items() if amount}
+    if not back or payable is None:
+        return
+    total = sum(back.values(), _Dec(0))
+    ap = {**payable, "debit": to_stored_float(max(-total, _Dec(0))), "credit": to_stored_float(max(total, _Dec(0)))}
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:rtn-bill:{revert_count}",
+        idem_create=je_idempotency_key(doc_id, f"items.returned.bill:{revert_count}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"items.returned.bill:{revert_count}", "p"),
+        memo=f"Auto JE for {doc_id} tax and exchange difference of its returns, reversed with the bill",
+        ts=await entry_day(session, company_id),
+        entries=[*(_line(code, role, debit=to_stored_float(max(v, _Dec(0))), credit=to_stored_float(max(-v, _Dec(0))))
+                   for (code, role), v in sorted(back.items())), ap],
+        metadata_={"trigger": "doc.reverted_to_draft", "doc_id": doc_id},
+    )
+
+
+async def restore_return_charges(session, *, company_id, user_id, doc_id: str, revert_count: int) -> None:
+    """Void the entries that reversed a bill's returns' tax and exchange difference when it went
+    back to its order (reverse_return_charges), as the bill is finalized again."""
+    for row in (await session.execute(_select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+            Projection.entity_id.startswith(f"je:auto:{doc_id}:rtn-bill:", autoescape=True),
+    ))).scalars().all():
+        await _void_je_if_posted(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=row.entity_id,
+            idem_key=f"{row.entity_id}:void:fin:{revert_count}", reason=f"Restored: {doc_id} finalized again",
+            trigger="doc.finalized",
+        )
+
+
 async def _bill_line_target(session, company_id, li: dict):
     """What a bill line debits: the account chosen on the line, the role for what it brings
     in (inventory for stock, general expense for anything else), or, for a landed charge on
@@ -1520,9 +1581,10 @@ _RECOGNITION_FAMILIES = ("fin", "bill", "cogs-backfill", "cogs-adj")
 # posted at the same id, so the caller decides from the document, never from the id alone.
 _IMPORTED_RECEIPT = "rcv"
 _FULFILLMENT_COGS = re.compile(r"fulfill(?:-\d+)?")
-# The entries of a bill's own receipts and returns to the supplier: the goods, and the landed
-# cost the receipts capitalised and the returns expensed.
-_GOODS_MOVEMENTS = ("rcv", "rtn", "landed-cap", "landed-rtn")
+# The entries of a bill's own receipts and returns to the supplier: the goods, the landed
+# cost the receipts capitalised and the returns expensed, and the returns' tax reversed when
+# the bill went back to its order (reverse_return_charges).
+_GOODS_MOVEMENTS = ("rcv", "rtn", "landed-cap", "landed-rtn", "rtn-bill")
 
 
 def _recognition_root(suffix: str, imported_receipt: bool = False,
@@ -2483,13 +2545,18 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
 
 
 async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: str, undo_key: str,
-                                     held_by_account: dict[str, float], trigger: str, reason: str) -> None:
+                                     held_by_account: dict[str, float], trigger: str, reason: str,
+                                     sent_back: float | None) -> None:
     """Void the entries that capitalised a bill's landed cost when its receipt is undone or
     the bill goes back to its purchase order (``trigger``, with the void's ``reason``), so
     the cost goes back to the clearing accounts it came from. ``held_by_account`` is what the
     lots still hold of it on each inventory account, which is what leaves them. Where that
-    differs from what was capitalised there, the difference goes to stock shrinkage, so the
-    undo never takes back more than the lots still hold and the books follow the lots."""
+    differs from what was capitalised there, the difference is what the lots let go of since:
+    the part that went back to the supplier with returned goods (``sent_back``) comes back off
+    stock shrinkage, where the return expensed it, and the rest off cost of goods sold, where
+    the sales expensed it. With ``sent_back`` None (an undone receipt) all of it is stock
+    shrinkage, so the undo never takes back more than the lots still hold and the books follow
+    the lots."""
     rows = [row for row in (await session.execute(_select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
@@ -2514,11 +2581,16 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
         return
     settings = await current_settings(session, company_id)
     total = sum(left.values(), _Dec(0))
+    shrinkage = total
+    if sent_back is not None and total > 0:
+        shrinkage = min(total, max(round_money(to_decimal(sent_back), currency), _Dec(0)))
     entries = [*(_lot_line(settings, code, debit=to_stored_float(max(v, _Dec(0))),
-                           credit=to_stored_float(max(-v, _Dec(0)))) for code, v in left.items()),
-               *([_line(await resolve(session, company_id, R.STOCK_SHRINKAGE), R.STOCK_SHRINKAGE,
-                        debit=to_stored_float(max(-total, _Dec(0))), credit=to_stored_float(max(total, _Dec(0))))]
-                 if total else [])]
+                           credit=to_stored_float(max(-v, _Dec(0)))) for code, v in left.items())]
+    for role, amount in ((R.STOCK_SHRINKAGE, shrinkage), (R.COGS, total - shrinkage)):
+        if amount:
+            entries.append(_line(await resolve(session, company_id, role), role,
+                                 debit=to_stored_float(max(-amount, _Dec(0))),
+                                 credit=to_stored_float(max(amount, _Dec(0)))))
     await _emit_auto_posted_je(
         session,
         company_id=company_id,

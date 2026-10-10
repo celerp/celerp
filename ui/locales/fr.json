@@ -4472,6 +4472,7 @@
   "docs.close_goods_out": "Ce mémo ne peut pas être clôturé tant que {count} produit(s) sont encore sortis ou réservés dessus. Vendez-les ou reprenez-les d'abord.",
   "docs.undo_receipt_after_return": "Une partie de ces marchandises a déjà été renvoyée au fournisseur, la réception ne peut donc pas être annulée. Le retour reste enregistré.",
   "docs.undo_receipt_units_sold": "SKU '{sku}' : {gone} unités sont sorties du stock depuis que ce document en a reçu {needed}, la réception ne peut donc pas être annulée. Utilisez Retour au fournisseur, qui renvoie les marchandises au coût.",
+  "docs.return_lot_split_before_receipt": "{sku} a été séparé avant l'arrivée des articles de ce document, il n'en contient donc aucun. Demandez plutôt un avoir au fournisseur.",
   "docs.return_lot_transformed": "{sku} a été fabriqué en transformant des marchandises reçues avec ce document, il ne peut donc pas retourner au fournisseur au coût. Demandez plutôt un avoir au fournisseur.",
   "docs.return_line_not_on_hand": "{name} : au plus {qty} de ce qui a été reçu sur cette ligne est en stock et libre pour un retour. Les marchandises vendues, en dépôt ou réservées ne repartent chez le fournisseur qu'une fois revenues en stock et libres.",
   "docs.return_line_shared": "{name} : les marchandises reçues sur cette ligne sont entrées dans le même stock que celles d'une autre ligne, elles ne peuvent donc pas être renvoyées par ligne.",
