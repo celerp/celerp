@@ -14,12 +14,9 @@ on:
         default: all
         options: [all, windows, linux, mac]
 
-# Tags build one at a time, in the order pushed, so a release never takes latest
-# from a newer one that finished first; a waiting tag is never cancelled.
-# publish.yml queues its own tags under its own name.
 concurrency:
-  group: ${{ github.ref_type == 'tag' && format('{0}-release', github.workflow) || format('{0}-{1}', github.workflow, github.event.pull_request.number || github.run_id) }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -1079,6 +1076,16 @@ jobs:
   publish-release:
     needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    # Tags build side by side; only this job queues, so GitHub releases are
+    # published one at a time, in the order their runs reach this job (not the
+    # order the tags were pushed). Every waiting tag stays queued, none is
+    # cancelled, and the version check below decides which becomes latest.
+    # publish.yml queues nothing, so the PyPI release this job waits for never
+    # waits behind it.
+    concurrency:
+      group: github-release
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       actions: read

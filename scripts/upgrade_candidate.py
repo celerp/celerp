@@ -11,7 +11,8 @@ the check inside itself (GITHUB_RUN_ID), before the run has finished: there the
 latest attempt of its Linux and Windows build jobs must have succeeded. Any
 other run must have finished successfully. The commit is the run's head_sha,
 which every re-run keeps; a tag build must have built the commit the tag points
-at. The previous release is PREVIOUS, or when PREVIOUS is blank the latest
+at, and any other run's ref must still be a branch, so a build of a tag deleted
+since is refused. The previous release is PREVIOUS, or when PREVIOUS is blank the latest
 release, which is never a draft or a prerelease. The commit must contain the
 previous release and add to it: a commit on a side branch, an older one or the
 release's own commit is refused whatever version it carries. Writes run, sha,
@@ -35,7 +36,7 @@ import re
 import sys
 from urllib.parse import quote
 
-from release_gate import Refused, _list, api_get, platform_builds, release_number, unfinished
+from release_gate import Refused, _list, api_get, latest_jobs, platform_builds, release_number, unfinished
 
 WORKFLOW = "build.yml"
 PLATFORMS = ("ubuntu-latest", "windows-latest")
@@ -59,12 +60,13 @@ def newer(installed: str, previous: str) -> None:
     print(f"the candidate installs {installed}, newer than the previous release {previous}")
 
 
-def tag_commit(name: str) -> str | None:
-    """The commit tag `name` points at, or None when there is no such tag."""
-    body, _ = api_get(f"{_repo()}/git/matching-refs/tags/{quote(name)}?per_page=100")
+def ref_commit(kind: str, name: str) -> str | None:
+    """The commit ref `name` of `kind` (tags or heads) points at, or None when
+    there is no such ref."""
+    body, _ = api_get(f"{_repo()}/git/matching-refs/{kind}/{quote(name)}?per_page=100")
     if not isinstance(body, list):
-        raise Refused(f"GitHub API returned no ref list for tag {name}")
-    target = next((ref["object"] for ref in body if ref.get("ref") == f"refs/tags/{name}"), None)
+        raise Refused(f"GitHub API returned no ref list for {kind}/{name}")
+    target = next((ref["object"] for ref in body if ref.get("ref") == f"refs/{kind}/{name}"), None)
     while target is not None and target["type"] == "tag":  # an annotated tag points at its tag object
         target = _get(f"{_repo()}/git/tags/{target['sha']}")["object"]
     return None if target is None else target["sha"]
@@ -81,16 +83,18 @@ def check(run_id: str) -> dict[str, str]:
         if run_id != os.environ.get("GITHUB_RUN_ID"):
             raise Refused(f"{label} is {run.get('status')}; "
                           "only a finished build, or the release build this check runs in, is a candidate")
-        missing = unfinished(run_id, label, platform_builds(PLATFORMS))
+        missing = unfinished(latest_jobs(run_id), label, platform_builds(PLATFORMS))
         if missing:
             raise Refused(f"{label} has not finished {', '.join(missing)}")
     elif run.get("conclusion") != "success":
         raise Refused(f"{label} is {run.get('status')}, conclusion {run.get('conclusion')}; "
                       "only a successful build is a candidate")
     sha, ref = run["head_sha"], run["head_branch"]
-    tagged = tag_commit(ref)
+    tagged = ref_commit("tags", ref)
     if tagged is not None and sha != tagged:
         raise Refused(f"{label} built {sha}, but tag {ref} points at {tagged}")
+    if tagged is None and ref_commit("heads", ref) is None:
+        raise Refused(f"{label} built {ref}, which is now neither a tag nor a branch")
     present = {a["name"] for a in _list(f"{_repo()}/actions/runs/{run_id}/artifacts?per_page=100", "artifacts")
                if not a.get("expired") and a.get("size_in_bytes", 0) > 0}
     missing = [name for name in ARTIFACTS if name not in present]

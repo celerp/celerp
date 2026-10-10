@@ -28,6 +28,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 
 PLATFORMS = ("ubuntu-latest", "windows-latest", "macos-latest")
 BUILD_PREREQUISITES = ("prepare-release", "setup-matrix", "openapi-asset")
@@ -35,6 +36,9 @@ BUILD_PREREQUISITES = ("prepare-release", "setup-matrix", "openapi-asset")
 # workflow's jobs "<calling job> / <job>", so they are matched on the last part.
 UPGRADE_TESTS = ("upgrade (ubuntu-latest)", "upgrade (windows-latest)")
 PENDING = 3
+# How long the desktop builds may take, counted from when the tag's build run
+# started building, so time spent queued for runners or behind other runs is free.
+BUILD_TIME = timedelta(hours=4)
 _VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+].*)?")
 
 
@@ -107,10 +111,14 @@ def platform_builds(platforms: tuple[str, ...]) -> dict[str, Callable[[str], boo
             for os_name in platforms}
 
 
-def unfinished(run_id: object, label: str, required: dict[str, Callable[[str], bool]]) -> list[str]:
-    """The required jobs of the run's current attempt that have not succeeded yet.
-    Refused when one is there more than once, or finished without succeeding."""
-    jobs = _list(f"{_api()}/runs/{run_id}/jobs?filter=latest&per_page=100", "jobs")
+def latest_jobs(run_id: object) -> list[dict]:
+    """The jobs of the run's current attempt, with the jobs a re-run kept."""
+    return _list(f"{_api()}/runs/{run_id}/jobs?filter=latest&per_page=100", "jobs")
+
+
+def unfinished(jobs: list[dict], label: str, required: dict[str, Callable[[str], bool]]) -> list[str]:
+    """The required jobs that have not succeeded yet. Refused when one is there
+    more than once, or finished without succeeding."""
     found = {name: [j for j in jobs if matches(j["name"])] for name, matches in required.items()}
     for name, same in found.items():
         if len(same) > 1:
@@ -123,17 +131,37 @@ def unfinished(run_id: object, label: str, required: dict[str, Callable[[str], b
 def desktop_builds() -> None:
     """The current attempt of build.yml's run: exactly one successful build per
     platform, one successful upgrade test each on Linux and Windows, and every job
-    they depend on or that completes the release assets."""
+    they depend on or that completes the release assets. Refused once the run has
+    been building for BUILD_TIME without them."""
     run = _run("build.yml")
     required = {name: lambda job, name=name: job == name for name in BUILD_PREREQUISITES}
     required |= platform_builds(PLATFORMS)
     required |= {name: lambda job, name=name: job.rsplit(" / ", 1)[-1] == name for name in UPGRADE_TESTS}
-    missing = unfinished(run["id"], f"build.yml run {run['id']}", required)
+    jobs = latest_jobs(run["id"])
+    missing = unfinished(jobs, f"build.yml run {run['id']}", required)
     if not missing:
         return
     if run["status"] == "completed":
         raise Refused(f"build.yml run {run['id']} finished without {', '.join(missing)}")
+    started = building_since(run, jobs)
+    if started and datetime.now(timezone.utc) - _time(started) > BUILD_TIME:
+        raise Refused(f"build.yml run {run['id']} started building at {started} and has not finished within "
+                      f"{BUILD_TIME.seconds // 3600} hours. Once it finishes, re-run the failed publish job")
     raise NotReady(f"waiting for {', '.join(missing)} in build.yml run {run['id']}")
+
+
+def _time(stamp: str) -> datetime:
+    return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def building_since(run: dict, jobs: list[dict]) -> str | None:
+    """When the run's current attempt started building: its first job to get a
+    runner, not before the attempt began (a re-run keeps its old successful jobs).
+    None while every job still waits for a runner. A skipped job never runs, so
+    GitHub stamps it started when it was created."""
+    started = [j["started_at"] for j in jobs if j["status"] in ("in_progress", "completed")
+               and j["conclusion"] != "skipped" and j.get("started_at")]
+    return max(min(started), run["run_started_at"], key=_time) if started else None
 
 
 def pypi_release() -> None:

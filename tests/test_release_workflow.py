@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import threading
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -133,6 +134,7 @@ def test_pypi_publishes_from_its_own_tag_push_workflow():
 
 
 _PYPI = "reached pypa/gh-action-pypi-publish"
+_PYPI_POLLS = 340  # a minute apart, inside GitHub's 6-hour job limit
 _REPO = "/repos/celerp/celerp"
 _ACTIONS = f"{_REPO}/actions"
 _BUILD_RUN, _PUBLISH_RUN = 36595157056, 36595157121
@@ -191,16 +193,24 @@ def github():
 
 def _workflow_run(workflow: str, run_id: int, status: str = "completed", conclusion: str | None = "success",
                   attempt: int = 1, **identity: str) -> dict:
-    """A run as GitHub lists it, by default the push of tag v9.9.9 at _SHA."""
+    """A run as GitHub lists it, by default the push of tag v9.9.9 at _SHA, its
+    current attempt started 21 minutes ago."""
     name = {"build.yml": "Build Binaries", "publish.yml": "Publish to PyPI"}[workflow]
     return {"id": run_id, "name": name, "path": f".github/workflows/{workflow}", "head_branch": "v9.9.9",
             "head_sha": _SHA, "event": "push", "status": status, "conclusion": conclusion,
-            "run_attempt": attempt, "run_number": 2043, **identity}
+            "run_attempt": attempt, "run_number": 2043, "run_started_at": _ago(21), **identity}
 
 
-def _job(name: str, conclusion: str | None = "success", attempt: int = 1) -> dict:
+def _ago(minutes: float) -> str:
+    """A GitHub timestamp the given number of minutes before now."""
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _job(name: str, conclusion: str | None = "success", attempt: int = 1, started: float = 20) -> dict:
+    """A job as GET /actions/runs/<id>/jobs lists it, started the given minutes ago."""
     return {"id": abs(hash((name, attempt))), "name": name, "head_sha": _SHA, "run_attempt": attempt,
-            "status": "in_progress" if conclusion is None else "completed", "conclusion": conclusion}
+            "status": "in_progress" if conclusion is None else "completed", "conclusion": conclusion,
+            "created_at": _ago(started + 1), "started_at": _ago(started)}
 
 
 def _build_jobs(conclusions: dict[str, str | None] | None = None) -> list[dict]:
@@ -316,7 +326,7 @@ def test_pypi_waits_for_the_upgrade_test_after_the_builds(tmp_path, github):
                                     {_BUILD_RUN: _build_jobs({_UPGRADE_LINUX: None, _UPGRADE_WINDOWS: None})})
     assert code != 0, out
     assert "waiting for upgrade (ubuntu-latest), upgrade (windows-latest)" in out
-    assert _polls(github, "build.yml") == 240
+    assert _polls(github, "build.yml") == _PYPI_POLLS
     assert _PYPI not in out
 
 
@@ -394,8 +404,38 @@ def test_pypi_reads_every_page_of_runs_and_jobs(tmp_path, github):
 def test_pypi_is_not_published_while_the_desktop_builds_never_finish(tmp_path, github, runs):
     code, out, _ = _publish_to_pypi(tmp_path, github, runs, {_BUILD_RUN: _build_jobs({_MAC: None})})
     assert code != 0, out
-    assert "did not finish within 4 hours" in out
-    assert _polls(github, "build.yml") == 240
+    assert "did not finish within 340 minutes. Once they finish, re-run the failed publish job" in out
+    assert _polls(github, "build.yml") == _PYPI_POLLS
+    assert _PYPI not in out
+
+
+def test_pypi_is_not_published_when_the_build_run_was_building_for_more_than_4_hours(tmp_path, github):
+    """Counted from when the tag's build run started building, not from the tag push."""
+    jobs = [{**j, "started_at": _ago(250)} for j in _build_jobs({_MAC: None})]
+    code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "in_progress", None,
+                                                                      run_started_at=_ago(251))], {_BUILD_RUN: jobs})
+    assert code != 0, out
+    assert f"build.yml run {_BUILD_RUN} started building at {jobs[0]['started_at']} and has not finished " in out
+    assert "within 4 hours. Once it finishes, re-run the failed publish job" in out
+    assert _polls(github, "build.yml") == 1
+    assert _PYPI not in out
+
+
+@pytest.mark.parametrize("queued", ["created long ago, jobs waiting for runners", "re-run started recently"])
+def test_pypi_waits_while_the_build_run_has_not_been_building_for_4_hours(tmp_path, github, queued):
+    """A tag's build run created hours ago behind other runs, or one whose failed
+    jobs were re-run (the jobs it kept started hours ago), is not out of time."""
+    if queued.startswith("created"):
+        run = _workflow_run("build.yml", _BUILD_RUN, "queued", None, run_started_at=_ago(300))
+        jobs = [{**j, "status": "queued", "conclusion": None, "created_at": _ago(300), "started_at": _ago(300)}
+                for j in _build_jobs()]
+    else:
+        run = _workflow_run("build.yml", _BUILD_RUN, "in_progress", None, attempt=2, run_started_at=_ago(10))
+        jobs = [{**j, "started_at": _ago(300)} for j in _build_jobs({_MAC: "absent"})] + [_job(_MAC, None, 2, 9)]
+    code, out, _ = _publish_to_pypi(tmp_path, github, [run], {_BUILD_RUN: jobs})
+    assert code != 0, out
+    assert "within 4 hours" not in out
+    assert _polls(github, "build.yml") == _PYPI_POLLS
     assert _PYPI not in out
 
 
@@ -528,24 +568,23 @@ def test_the_github_release_stays_a_draft_when_the_releases_cannot_be_read(tmp_p
     assert not any("PATCH" in c for c in calls), calls
 
 
-def test_tag_releases_run_one_at_a_time():
-    """Two tags pushed together build and publish in turn, never in parallel, so
-    latest cannot move back to the older one. Each workflow queues its own tags:
-    one group shared by both would hold publish.yml back from the build.yml run it
-    waits for. Pull requests and other runs keep their own groups."""
-    def concurrency(workflow: str) -> tuple[str, dict]:
-        wf = yaml.safe_load((_WORKFLOWS / workflow).read_text())
-        return wf["name"], wf["concurrency"]
-
-    tags = "github.ref_type == 'tag' && format('{0}-release', github.workflow)"
-    build, publish = concurrency("build.yml"), concurrency("publish.yml")
-    assert build[1] == {
-        "group": "${{ " + tags + " || format('{0}-{1}', github.workflow, "
-                 "github.event.pull_request.number || github.run_id) }}",
-        "cancel-in-progress": "${{ github.ref_type != 'tag' }}"}
-    assert publish[1] == {"group": "${{ " + tags + " || format('{0}-{1}', github.workflow, github.run_id) }}",
-                          "cancel-in-progress": False}
-    assert build[0] != publish[0]
+def test_tag_releases_mark_latest_one_at_a_time():
+    """Two tags pushed together build and publish to PyPI side by side; only their
+    GitHub releases queue, one at a time in the order they reached the queue, so
+    the higher-version check and the update that marks latest never interleave.
+    Every waiting tag stays queued, none is cancelled. publish.yml queues nothing:
+    one tag's PyPI release never waits on another tag, as the GitHub release of a
+    tag waits on its own PyPI release. Pull requests still cancel their earlier runs."""
+    build = yaml.safe_load((_WORKFLOWS / "build.yml").read_text())
+    publish = yaml.safe_load((_WORKFLOWS / "publish.yml").read_text())
+    assert build["concurrency"] == {
+        "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}",
+        "cancel-in-progress": True}
+    assert build["jobs"]["publish-release"]["concurrency"] == {
+        "group": "github-release", "cancel-in-progress": False, "queue": "max"}
+    assert ["publish-release"] == [name for name, job in build["jobs"].items() if "concurrency" in job]
+    assert "concurrency" not in publish
+    assert not any("concurrency" in job for job in publish["jobs"].values())
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +643,10 @@ def _tag_ref(name: str, sha: str = _HEAD, kind: str = "commit") -> dict:
     return {"ref": f"refs/tags/{name}", "object": {"type": kind, "sha": sha}}
 
 
+def _branch_ref(name: str, sha: str = _HEAD) -> dict:
+    return {"ref": f"refs/heads/{name}", "object": {"type": "commit", "sha": sha}}
+
+
 def _serve_candidate(github, run: dict, artifacts: list[dict] | None = None, tags: list[dict] | None = None,
                      jobs: list[dict] | None = None, latest: str = "v2.5.4", lineage: dict = _AHEAD) -> None:
     if artifacts is None:
@@ -621,6 +664,10 @@ def _serve_candidate(github, run: dict, artifacts: list[dict] | None = None, tag
         (200, {"total_count": len(jobs), "jobs": jobs})]
     github.pages[f"{_REPO}/git/matching-refs/tags/v2.5.5"] = [(200, tags)]
     github.pages[f"{_REPO}/git/matching-refs/tags/develop"] = [(200, [])]
+    # A prefix match, as for tags: develop lists develop-old too.
+    github.pages[f"{_REPO}/git/matching-refs/heads/develop"] = [
+        (200, [_branch_ref("develop"), _branch_ref("develop-old", _OLD)])]
+    github.pages[f"{_REPO}/git/matching-refs/heads/v2.5.5"] = [(200, [])]
     github.pages[f"{_REPO}/git/tags/{_TAG_OBJECT}"] = [(200, {"sha": _TAG_OBJECT, "object": {"type": "commit", "sha": _HEAD}})]
     github.pages[f"{_REPO}/releases/latest"] = [(200, {"tag_name": latest})]
     github.pages[f"{_REPO}/releases/tags/v2.5.3"] = [(200, {"tag_name": "v2.5.3"})]
@@ -702,6 +749,26 @@ def test_a_release_build_whose_tag_points_elsewhere_fails_the_check(tmp_path, gi
     assert outputs == ""
 
 
+@pytest.mark.parametrize("run,current", [(_release_run(), str(_CANDIDATE)), (_candidate_run(head_branch="v2.5.5"), "1")],
+                         ids=["release build", "finished build"])
+def test_a_build_of_a_tag_deleted_since_fails_the_check(tmp_path, github, run, current):
+    """The tag was deleted after its run started: a ref that is neither a tag nor
+    a branch is refused, never taken as a branch build."""
+    _serve_candidate(github, run, tags=[_tag_ref("v2.5.50", _OLD)])
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=current)
+    assert code == 1, out
+    assert f"::error::build run {_CANDIDATE} built v2.5.5, which is now neither a tag nor a branch" in out
+    assert outputs == ""
+
+
+def test_a_build_of_a_branch_deleted_since_fails_the_check(tmp_path, github):
+    _serve_candidate(github, _candidate_run())
+    github.pages[f"{_REPO}/git/matching-refs/heads/develop"] = [(200, [_branch_ref("develop-old", _OLD)])]
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE))
+    assert code == 1, out
+    assert f"build run {_CANDIDATE} built develop, which is now neither a tag nor a branch" in out
+
+
 def test_a_manual_candidate_is_the_commit_its_run_built(tmp_path, github):
     """A run's head_sha is the commit it built, kept by every re-run, so a branch
     build is taken at that commit wherever the branch has moved since; only the
@@ -776,6 +843,7 @@ def test_a_build_missing_either_platform_fails_the_check(tmp_path, github, artif
     (f"compare/v2.5.4...{_HEAD}", _candidate_run(), "1"),
     (f"compare/{_HEAD}...main", _candidate_run(), "1"),
     ("git/matching-refs/tags/develop", _candidate_run(), "1"),
+    ("git/matching-refs/heads/develop", _candidate_run(), "1"),
     ("git/matching-refs/tags/v2.5.5", _release_run(), str(_CANDIDATE)),
     (f"actions/runs/{_CANDIDATE}/jobs?filter=latest", _release_run(), str(_CANDIDATE)),
 ])
