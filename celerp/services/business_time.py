@@ -43,7 +43,7 @@ def business_date_of(recorded: object, timezone_name: str | None) -> str:
         instant = datetime.fromisoformat(raw.replace("Z", "+00:00")) if "T" in raw else None
         day = date.fromisoformat(raw[:10])
     except ValueError:
-        raise ValueError(f"{recorded} is not a date. Enter it as YYYY-MM-DD.") from None
+        raise ValueError(t("error.business_date_invalid", value=str(recorded))) from None
     if instant is not None and instant.utcoffset() is not None:
         return business_date_at(instant, timezone_name)
     return day.isoformat()

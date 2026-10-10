@@ -107,7 +107,7 @@ def from_stripe_amount(api_amount: int, currency: str) -> Decimal:
     try:
         to_stripe_amount(value, currency)
     except ValueError as exc:
-        raise ValueError(f"{api_amount} is not an exact Stripe amount of {currency.upper()}") from exc
+        raise ValueError(t("error.stripe_amount_inexact", value=api_amount, code=currency.upper())) from exc
     return value
 
 

@@ -29,6 +29,6 @@ def require_phone(phone: str | None) -> None:
     """Refuse a phone with fewer than 4 digits or over 40 characters, not counting surrounding
     spaces, at a write boundary. Empty means no phone."""
     if phone and sum(c.isdigit() for c in str(phone)) < 4:
-        raise HTTPException(status_code=422, detail="Enter a phone number with at least 4 digits.")
+        raise HTTPException(status_code=422, detail=t("error.phone_too_short"))
     if phone and len(str(phone).strip()) > 40:
-        raise HTTPException(status_code=422, detail="Enter a phone number of at most 40 characters.")
+        raise HTTPException(status_code=422, detail=t("error.phone_too_long"))

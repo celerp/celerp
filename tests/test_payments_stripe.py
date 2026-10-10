@@ -590,10 +590,12 @@ async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_defau
 @pytest.mark.parametrize("value", [1110, 0, False, True, [], ["1110"], {}, {"code": "1110"}, 1110.0])
 @pytest.mark.asyncio
 async def test_the_online_deposit_setting_refuses_a_value_that_is_not_an_account_code(client, key, value):
+    from ui.i18n import refusal_text
+
     tok = await _register(client)
     r = await client.patch("/companies/me/books", json={key: value}, headers=_h(tok))
     assert r.status_code == 422, (value, r.status_code, r.text)
-    assert "account code" in r.json()["detail"]
+    assert "account code" in refusal_text(r.json()["detail"])
     stored = (await client.get("/companies/me", headers=_h(tok))).json().get("settings", {})
     assert key not in stored
 

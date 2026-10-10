@@ -882,8 +882,11 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     if owned_before != owned_after:
         raise HTTPException(
             status_code=422,
-            detail=f"This item holds stock booked to inventory account {code}, so its inventory type and "
-                   "consignment cannot change. Sell, write off or return the stock to draft first.")
+            detail=refusal(
+                "inventory.booked_account_locks_type",
+                f"This item holds stock booked to inventory account {code}, so its inventory type and "
+                "consignment cannot change. Sell, write off or return the stock to draft first.",
+                code=code))
     if self_booked(entry):
         return None
     if _held(before) is None or _held(after) is None:
