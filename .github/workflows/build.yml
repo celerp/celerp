@@ -14,9 +14,12 @@ on:
         default: all
         options: [all, windows, linux, mac]
 
+# Tags build one at a time, in the order pushed, so a release never takes latest
+# from a newer one that finished first; a waiting tag is never cancelled.
+# publish.yml queues its own tags under its own name.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  group: ${{ github.ref_type == 'tag' && format('{0}-release', github.workflow) || format('{0}-{1}', github.workflow, github.event.pull_request.number || github.run_id) }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: write
@@ -1068,8 +1071,8 @@ jobs:
   # ── Publish the release (tag builds only) ────────────────────────────────
   # Platform builds upload their assets to a DRAFT release (electron-builder
   # publish releaseType=draft). Only once EVERY platform job and the upgrade
-  # test have succeeded do we flip the release to published + latest -
-  # atomically, with all assets present. If any of them fails (e.g. macOS
+  # test have succeeded do we flip the release to published (and latest, unless
+  # a higher version is already out) - atomically, with all assets present. If any of them fails (e.g. macOS
   # notarization), this job is skipped, the release stays a draft, and
   # /releases/latest keeps serving the previous complete release: no 404 window
   # during a build, and no partial or untested release.
@@ -1105,7 +1108,10 @@ jobs:
           echo "ERROR: the PyPI release did not finish within 90 minutes" >&2
           exit 1
 
-      - name: Publish the draft release as latest
+      # The release becomes latest unless a higher version is already published
+      # (scripts/release_gate.py make-latest): a fix to an older line is published,
+      # as PyPI has it, and latest stays on the newer version.
+      - name: Publish the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1124,6 +1130,7 @@ jobs:
             echo "ERROR: no release found for tag $TAG to publish" >&2
             exit 1
           fi
+          LATEST=$(python3 scripts/release_gate.py make-latest)
           # Description: auto-generate from merged PR titles since the previous
           # release (GitHub generate-notes). Only when the body is empty - a
           # hand-written draft body always wins.
@@ -1131,15 +1138,15 @@ jobs:
             PAYLOAD=$(curl -fsS -X POST -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/celerp/celerp/releases/generate-notes" \
               -d "{\"tag_name\":\"$TAG\"}" \
-              | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'true','body':notes.get('body','')}))")
+              | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'$LATEST','body':notes.get('body','')}))")
           else
-            PAYLOAD='{"draft":false,"make_latest":"true"}'
+            PAYLOAD="{\"draft\":false,\"make_latest\":\"$LATEST\"}"
           fi
-          echo "Publishing release $RELEASE_ID ($TAG) as latest"
+          echo "Publishing release $RELEASE_ID ($TAG), latest: $LATEST"
           curl -fsS -o /dev/null -X PATCH -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
             -d "$PAYLOAD"
-          echo "Published $TAG as latest."
+          echo "Published $TAG."
 
   # ── Alert on a failed release build ──────────────────────────────────────────
   # When any platform (or prepare, upgrade test or publish) fails on a v* tag, the release is left as

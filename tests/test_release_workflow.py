@@ -133,7 +133,8 @@ def test_pypi_publishes_from_its_own_tag_push_workflow():
 
 
 _PYPI = "reached pypa/gh-action-pypi-publish"
-_ACTIONS = "/repos/celerp/celerp/actions"
+_REPO = "/repos/celerp/celerp"
+_ACTIONS = f"{_REPO}/actions"
 _BUILD_RUN, _PUBLISH_RUN = 36595157056, 36595157121
 
 
@@ -233,8 +234,20 @@ def _publish_to_pypi(tmp_path, github, runs: list[dict], jobs: dict[int, list[di
     return _run_job(tmp_path, "publish.yml", "publish", GITHUB_API_URL=github.url)
 
 
-def _publish_on_github(tmp_path, github, runs: list[dict], jobs: dict[int, list[dict]]):
+def _release(tag: str, draft: bool = False, prerelease: bool = False) -> dict:
+    """A release as GET /releases lists it, the fields read."""
+    return {"id": abs(hash(tag)), "tag_name": tag, "draft": draft, "prerelease": prerelease}
+
+
+# GitHub lists releases newest first; an authorised token sees drafts too.
+_RELEASES = [_release("v9.9.9", draft=True), _release("dev-latest", prerelease=True), _release("v9.9.8"),
+             _release("v9.9.10", draft=True)]
+
+
+def _publish_on_github(tmp_path, github, runs: list[dict], jobs: dict[int, list[dict]],
+                       releases: list[dict] = _RELEASES):
     _serve(github, "publish.yml", runs, jobs, "all")
+    github.pages[f"{_REPO}/releases"] = [(200, releases)]
     return _run_job(tmp_path, "build.yml", "publish-release", GITHUB_API_URL=github.url)
 
 
@@ -474,9 +487,65 @@ def test_the_github_release_reads_every_page_of_jobs(tmp_path, github):
     _serve(github, "publish.yml", [_workflow_run("publish.yml", _PUBLISH_RUN)], {}, "all")
     github.pages[f"{_ACTIONS}/runs/{_PUBLISH_RUN}/jobs?filter=all"] = [
         (200, {"total_count": len(jobs), "jobs": jobs[:-1]}), (200, {"total_count": len(jobs), "jobs": jobs[-1:]})]
+    github.pages[f"{_REPO}/releases"] = [(200, _RELEASES)]
     code, out, calls = _run_job(tmp_path, "build.yml", "publish-release", GITHUB_API_URL=github.url)
     assert code == 0, out
     assert any("PATCH" in c and "releases/7" in c for c in calls), calls
+
+
+def _published(calls: list[str]) -> str:
+    """The release update the publish step sent."""
+    patch = next(c for c in calls if "PATCH" in c and "releases/7" in c)
+    return json.loads(patch.split(" -d ", 1)[1])["make_latest"]
+
+
+def test_the_github_release_is_marked_latest_when_no_higher_version_is_published(tmp_path, github):
+    """Drafts, prereleases and lower versions never hold the release back: v9.9.10
+    is only a draft, and a higher number compares by value, not as text."""
+    code, out, calls = _publish_on_github(tmp_path, github, [_workflow_run("publish.yml", _PUBLISH_RUN)],
+                                          {_PUBLISH_RUN: _publish_jobs()})
+    assert code == 0, out
+    assert _published(calls) == "true"
+
+
+@pytest.mark.parametrize("higher", ["v9.9.10", "v9.10.0", "v10.0.0"])
+def test_the_github_release_is_not_marked_latest_over_a_higher_published_version(tmp_path, github, higher):
+    """A tag pushed after a higher version shipped (a fix to an older line) is
+    published, as PyPI already has it, but latest stays on the higher version."""
+    code, out, calls = _publish_on_github(tmp_path, github, [_workflow_run("publish.yml", _PUBLISH_RUN)],
+                                          {_PUBLISH_RUN: _publish_jobs()}, releases=_RELEASES + [_release(higher)])
+    assert code == 0, out
+    assert _published(calls) == "false"
+    assert f"{higher} is already published" in out
+
+
+def test_the_github_release_stays_a_draft_when_the_releases_cannot_be_read(tmp_path, github):
+    _serve(github, "publish.yml", [_workflow_run("publish.yml", _PUBLISH_RUN)], {_PUBLISH_RUN: _publish_jobs()}, "all")
+    github.pages[f"{_REPO}/releases"] = [(200, [_release("v9.9.8")]), (502, {"message": "Bad Gateway"})]
+    code, out, calls = _run_job(tmp_path, "build.yml", "publish-release", GITHUB_API_URL=github.url)
+    assert code != 0, out
+    assert "GitHub API returned HTTP 502" in out
+    assert not any("PATCH" in c for c in calls), calls
+
+
+def test_tag_releases_run_one_at_a_time():
+    """Two tags pushed together build and publish in turn, never in parallel, so
+    latest cannot move back to the older one. Each workflow queues its own tags:
+    one group shared by both would hold publish.yml back from the build.yml run it
+    waits for. Pull requests and other runs keep their own groups."""
+    def concurrency(workflow: str) -> tuple[str, dict]:
+        wf = yaml.safe_load((_WORKFLOWS / workflow).read_text())
+        return wf["name"], wf["concurrency"]
+
+    tags = "github.ref_type == 'tag' && format('{0}-release', github.workflow)"
+    build, publish = concurrency("build.yml"), concurrency("publish.yml")
+    assert build[1] == {
+        "group": "${{ " + tags + " || format('{0}-{1}', github.workflow, "
+                 "github.event.pull_request.number || github.run_id) }}",
+        "cancel-in-progress": "${{ github.ref_type != 'tag' }}"}
+    assert publish[1] == {"group": "${{ " + tags + " || format('{0}-{1}', github.workflow, github.run_id) }}",
+                          "cancel-in-progress": False}
+    assert build[0] != publish[0]
 
 
 # ---------------------------------------------------------------------------
@@ -506,14 +575,19 @@ def test_each_event_builds_its_platforms(tmp_path, event, platforms, ref_name, b
 
 _CANDIDATE = 37700000001
 _HEAD, _OLD, _TAG_OBJECT = "a" * 40, "b" * 40, "d" * 40
-_REPO = "/repos/celerp/celerp"
+# GET /compare/<base>...<head>, the fields read, as GitHub answers them (v2.5.3
+# against main, bugfix, develop and itself).
+_AHEAD = {"status": "ahead", "ahead_by": 14, "behind_by": 0, "total_commits": 14}
+_DIVERGED = {"status": "diverged", "ahead_by": 1, "behind_by": 98, "total_commits": 1}
+_BEHIND = {"status": "behind", "ahead_by": 0, "behind_by": 19, "total_commits": 0}
+_IDENTICAL = {"status": "identical", "ahead_by": 0, "behind_by": 0, "total_commits": 0}
 
 
 def _candidate_run(**fields) -> dict:
-    """A finished manual Build Binaries run of develop."""
+    """A finished manual Build Binaries run of develop, as GET /actions/runs/<id> answers."""
     return {"id": _CANDIDATE, "name": "Build Binaries", "path": ".github/workflows/build.yml", "head_branch": "develop",
             "head_sha": _HEAD, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
-            "created_at": "2026-10-11T03:17:05Z", **fields}
+            "run_attempt": 1, **fields}
 
 
 def _release_run(**fields) -> dict:
@@ -530,14 +604,10 @@ def _tag_ref(name: str, sha: str = _HEAD, kind: str = "commit") -> dict:
     return {"ref": f"refs/tags/{name}", "object": {"type": kind, "sha": sha}}
 
 
-def _serve_candidate(github, run: dict, artifacts: list[dict] | None = None, activity: list[dict] | None = None,
-                     tags: list[dict] | None = None, jobs: list[dict] | None = None, latest: str = "v2.5.4") -> None:
+def _serve_candidate(github, run: dict, artifacts: list[dict] | None = None, tags: list[dict] | None = None,
+                     jobs: list[dict] | None = None, latest: str = "v2.5.4", lineage: dict = _AHEAD) -> None:
     if artifacts is None:
         artifacts = [_artifact("binaries-ubuntu-latest"), _artifact("binaries-windows-latest")]
-    if activity is None:
-        # develop moved on after the run was created; the run built the head before that.
-        activity = [{"timestamp": "2026-10-11T04:00:00Z", "after": "c" * 40, "before": _HEAD},
-                    {"timestamp": "2026-10-10T12:23:11Z", "after": _HEAD, "before": _OLD}]
     if tags is None:
         # A prefix match: v2.5.5 lists v2.5.50 too, and a branch build finds no tag of its name.
         tags = [_tag_ref("v2.5.5"), _tag_ref("v2.5.50", _OLD)]
@@ -549,12 +619,14 @@ def _serve_candidate(github, run: dict, artifacts: list[dict] | None = None, act
         (200, {"total_count": len(artifacts), "artifacts": artifacts})]
     github.pages[f"{_REPO}/actions/runs/{_CANDIDATE}/jobs?filter=latest"] = [
         (200, {"total_count": len(jobs), "jobs": jobs})]
-    github.pages[f"{_REPO}/activity"] = [(200, activity)]
     github.pages[f"{_REPO}/git/matching-refs/tags/v2.5.5"] = [(200, tags)]
     github.pages[f"{_REPO}/git/matching-refs/tags/develop"] = [(200, [])]
     github.pages[f"{_REPO}/git/tags/{_TAG_OBJECT}"] = [(200, {"sha": _TAG_OBJECT, "object": {"type": "commit", "sha": _HEAD}})]
     github.pages[f"{_REPO}/releases/latest"] = [(200, {"tag_name": latest})]
     github.pages[f"{_REPO}/releases/tags/v2.5.3"] = [(200, {"tag_name": "v2.5.3"})]
+    for previous in (latest, "v2.5.3"):
+        github.pages[f"{_REPO}/compare/{previous}...{_HEAD}"] = [(200, lineage)]
+    github.pages[f"{_REPO}/compare/{_HEAD}...main"] = [(200, _DIVERGED)]
 
 
 def _check(tmp_path, github, *args: str, **env: str) -> tuple[int, str, str]:
@@ -578,7 +650,6 @@ def test_a_release_build_is_the_candidate_of_the_upgrade_test_it_runs(tmp_path, 
     assert outputs.splitlines() == [f"run={_CANDIDATE}", f"sha={_HEAD}", "previous=v2.5.4", "previous_version=2.5.4",
                                     "guarded=true", "ref=v2.5.5"]
     assert f"{_REPO}/releases/latest" in github.calls
-    assert not any(c.startswith(f"{_REPO}/activity") for c in github.calls)
 
 
 @pytest.mark.parametrize("conclusions,message", [
@@ -601,6 +672,28 @@ def test_a_release_build_without_both_binaries_built_fails_the_check(tmp_path, g
     assert outputs == ""
 
 
+@pytest.mark.parametrize("rerun,passes,message", [
+    ("success", True, ""),
+    (None, False, f"build run {_CANDIDATE} has not finished build (windows-latest)"),
+    ("failure", False, f"{_WINDOWS} in build run {_CANDIDATE} finished failure"),
+], ids=["re-run succeeded", "re-run building", "re-run failed"])
+def test_a_rerun_release_build_is_judged_on_the_rerun_of_its_failed_build(tmp_path, github, rerun, passes, message):
+    """Windows failed in attempt 1 and was re-run alone: GitHub's latest filter lists
+    each job of attempt 2 once, carrying the jobs that had succeeded; the full list
+    holds both Windows builds."""
+    first = [_job(n) for n in ("setup-matrix", "prepare-release", _LINUX, _MAC)] + [_job(_WINDOWS, "failure")]
+    second = [_job(n, attempt=2) for n in ("setup-matrix", "prepare-release", _LINUX, _MAC)]
+    second.append(_job(_WINDOWS, rerun, attempt=2))
+    _serve_candidate(github, _release_run(run_attempt=2), jobs=second)
+    github.pages[f"{_REPO}/actions/runs/{_CANDIDATE}/jobs?filter=all"] = [
+        (200, {"total_count": len(first) + len(second), "jobs": first + second})]
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=str(_CANDIDATE))
+    assert (code == 0) is passes, out
+    assert message in out
+    assert f"{_REPO}/actions/runs/{_CANDIDATE}/jobs?filter=latest&per_page=100" in github.calls
+    assert not any("filter=all" in c for c in github.calls)
+
+
 def test_a_release_build_whose_tag_points_elsewhere_fails_the_check(tmp_path, github):
     _serve_candidate(github, _release_run(), tags=[_tag_ref("v2.5.5", _OLD)])
     code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=str(_CANDIDATE))
@@ -609,13 +702,17 @@ def test_a_release_build_whose_tag_points_elsewhere_fails_the_check(tmp_path, gi
     assert outputs == ""
 
 
-def test_a_manual_candidate_takes_the_same_checks_against_its_own_branch(tmp_path, github):
+def test_a_manual_candidate_is_the_commit_its_run_built(tmp_path, github):
+    """A run's head_sha is the commit it built, kept by every re-run, so a branch
+    build is taken at that commit wherever the branch has moved since; only the
+    previous release must come before it."""
     _serve_candidate(github, _candidate_run())
     code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), PREVIOUS="v2.5.3")
     assert code == 0, out
     assert outputs.splitlines() == [f"run={_CANDIDATE}", f"sha={_HEAD}", "previous=v2.5.3", "previous_version=2.5.3",
                                     "guarded=false", "ref=develop"]
-    assert f"{_REPO}/activity?ref=refs%2Fheads%2Fdevelop&per_page=100" in github.calls
+    assert f"commit {_HEAD} is 14 commits after v2.5.3 and 1 commits behind main" in out
+    assert not any(c.startswith(f"{_REPO}/activity") for c in github.calls)
 
 
 def test_a_manual_candidate_may_be_a_finished_release_build(tmp_path, github):
@@ -625,6 +722,20 @@ def test_a_manual_candidate_may_be_a_finished_release_build(tmp_path, github):
     assert "ref=v2.5.5" in outputs
 
 
+@pytest.mark.parametrize("lineage", [_DIVERGED, _BEHIND, _IDENTICAL], ids=["diverged", "behind", "identical"])
+@pytest.mark.parametrize("run,current", [(_candidate_run(), "1"), (_release_run(), str(_CANDIDATE))],
+                         ids=["branch build", "release build"])
+def test_a_build_not_made_after_the_previous_release_fails_the_check(tmp_path, github, lineage, run, current):
+    """A higher version number is not enough: the commit must contain the previous
+    release and add to it, or the upgrade would test a side branch or the release itself."""
+    _serve_candidate(github, run, lineage=lineage)
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=current)
+    assert code == 1, out
+    assert (f"::error::build run {_CANDIDATE} built {_HEAD}, which is {lineage['status']} v2.5.4, "
+            "not a commit after it") in out
+    assert outputs == ""
+
+
 @pytest.mark.parametrize("run,message", [
     (_candidate_run(conclusion="failure"), "conclusion failure; only a successful build is a candidate"),
     (_candidate_run(conclusion="cancelled"), "conclusion cancelled"),
@@ -632,10 +743,8 @@ def test_a_manual_candidate_may_be_a_finished_release_build(tmp_path, github):
      "is in_progress; only a finished build, or the release build this check runs in, is a candidate"),
     (_release_run(), "is in_progress; only a finished build, or the release build this check runs in"),
     (_candidate_run(path=".github/workflows/ci.yml"), "not Build Binaries"),
-    (_candidate_run(head_sha=_OLD), f"built {_OLD}, but develop pointed at {_HEAD} when the run was created"),
-], ids=["build failed", "build cancelled", "build running", "another release build running", "other workflow",
-        "not the head"])
-def test_a_build_that_is_not_its_branch_head_or_did_not_succeed_fails_the_check(tmp_path, github, run, message):
+], ids=["build failed", "build cancelled", "build running", "another release build running", "other workflow"])
+def test_a_build_that_did_not_succeed_fails_the_check(tmp_path, github, run, message):
     _serve_candidate(github, run)
     code, out, outputs = _check(tmp_path, github, str(_CANDIDATE))
     assert code == 1, out
@@ -660,18 +769,12 @@ def test_a_build_missing_either_platform_fails_the_check(tmp_path, github, artif
     assert f"build run {_CANDIDATE} carries no {missing}" in out
 
 
-def test_a_branch_with_no_recorded_head_before_the_run_fails_the_check(tmp_path, github):
-    _serve_candidate(github, _candidate_run(), activity=[{"timestamp": "2026-10-11T04:00:00Z", "after": _HEAD}])
-    code, out, _ = _check(tmp_path, github, str(_CANDIDATE))
-    assert code == 1, out
-    assert "no change to develop at or before 2026-10-11T03:17:05Z" in out
-
-
 @pytest.mark.parametrize("path,run,current", [
     (f"actions/runs/{_CANDIDATE}", _candidate_run(), "1"),
-    ("activity", _candidate_run(), "1"),
     (f"actions/runs/{_CANDIDATE}/artifacts", _candidate_run(), "1"),
     ("releases/latest", _candidate_run(), "1"),
+    (f"compare/v2.5.4...{_HEAD}", _candidate_run(), "1"),
+    (f"compare/{_HEAD}...main", _candidate_run(), "1"),
     ("git/matching-refs/tags/develop", _candidate_run(), "1"),
     ("git/matching-refs/tags/v2.5.5", _release_run(), str(_CANDIDATE)),
     (f"actions/runs/{_CANDIDATE}/jobs?filter=latest", _release_run(), str(_CANDIDATE)),

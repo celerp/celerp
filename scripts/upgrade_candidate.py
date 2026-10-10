@@ -5,18 +5,19 @@
     python scripts/upgrade_candidate.py check <run id>
     python scripts/upgrade_candidate.py newer <installed version> <previous version>
 
-check: Build Binaries run <run id> succeeded, built the right commit, and
-carries the Linux and Windows binaries. A tag's release build runs the check
-inside itself (GITHUB_RUN_ID), before the run has finished: there its Linux and
-Windows build jobs must have succeeded. Any other run must have finished
-successfully. A tag build must have built the commit the tag points at; a
-branch build the commit its branch pointed at when the run was created (a
-re-run keeps that commit, so the head is read from the branch's push history at
-that moment, not now). The previous release is PREVIOUS, or when PREVIOUS is
-blank the latest release, which is never a draft or a prerelease. Writes run,
-sha, previous, previous_version, guarded (whether the previous release checks
-the version of an install or its data before opening it, from GUARDED_SINCE)
-and ref to GITHUB_OUTPUT.
+check: Build Binaries run <run id> succeeded, built a commit after the previous
+release, and carries the Linux and Windows binaries. A tag's release build runs
+the check inside itself (GITHUB_RUN_ID), before the run has finished: there the
+latest attempt of its Linux and Windows build jobs must have succeeded. Any
+other run must have finished successfully. The commit is the run's head_sha,
+which every re-run keeps; a tag build must have built the commit the tag points
+at. The previous release is PREVIOUS, or when PREVIOUS is blank the latest
+release, which is never a draft or a prerelease. The commit must contain the
+previous release and add to it: a commit on a side branch, an older one or the
+release's own commit is refused whatever version it carries. Writes run, sha,
+previous, previous_version, guarded (whether the previous release checks the
+version of an install or its data before opening it, from GUARDED_SINCE) and ref
+to GITHUB_OUTPUT.
 
 newer: the installed version's X.Y.Z is above the previous release's. A
 development build installs the next patch with a suffix
@@ -34,12 +35,11 @@ import re
 import sys
 from urllib.parse import quote
 
-from release_gate import Refused, _list, api_get, platform_builds, unfinished
+from release_gate import Refused, _list, api_get, platform_builds, release_number, unfinished
 
 WORKFLOW = "build.yml"
 PLATFORMS = ("ubuntu-latest", "windows-latest")
 ARTIFACTS = tuple(f"binaries-{os_name}" for os_name in PLATFORMS)
-_VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+].*)?")
 
 
 def _repo() -> str:
@@ -53,32 +53,10 @@ def _get(url: str) -> dict:
     return body
 
 
-def release_number(version: str) -> tuple[int, int, int]:
-    """X.Y.Z of a version, ignoring a pre-release or build suffix."""
-    m = _VERSION.fullmatch(version.strip().removeprefix("v"))
-    if not m:
-        raise Refused(f"{version!r} is not an X.Y.Z version")
-    return tuple(int(n) for n in m.groups())
-
-
 def newer(installed: str, previous: str) -> None:
     if release_number(installed) <= release_number(previous):
         raise Refused(f"the candidate installs {installed}, which is not newer than the previous release {previous}")
     print(f"the candidate installs {installed}, newer than the previous release {previous}")
-
-
-def branch_head_at(branch: str, moment: str) -> str:
-    """The commit the branch pointed at when `moment` (ISO 8601, UTC) came:
-    the newest change to the branch at or before it, from its activity."""
-    url = f"{_repo()}/activity?ref={quote(f'refs/heads/{branch}', safe='')}&per_page=100"
-    while url:
-        body, url = api_get(url)
-        if not isinstance(body, list):
-            raise Refused(f"GitHub API returned no activity list for {branch}")
-        for change in body:
-            if change["timestamp"] <= moment:
-                return change["after"]
-    raise Refused(f"no change to {branch} at or before {moment} in its activity")
 
 
 def tag_commit(name: str) -> str | None:
@@ -111,14 +89,8 @@ def check(run_id: str) -> dict[str, str]:
                       "only a successful build is a candidate")
     sha, ref = run["head_sha"], run["head_branch"]
     tagged = tag_commit(ref)
-    if tagged is not None:
-        if sha != tagged:
-            raise Refused(f"{label} built {sha}, but tag {ref} points at {tagged}")
-    else:
-        head = branch_head_at(ref, run["created_at"])
-        if sha != head:
-            raise Refused(f"{label} built {sha}, but {ref} pointed at {head} "
-                          f"when the run was created ({run['created_at']})")
+    if tagged is not None and sha != tagged:
+        raise Refused(f"{label} built {sha}, but tag {ref} points at {tagged}")
     present = {a["name"] for a in _list(f"{_repo()}/actions/runs/{run_id}/artifacts?per_page=100", "artifacts")
                if not a.get("expired") and a.get("size_in_bytes", 0) > 0}
     missing = [name for name in ARTIFACTS if name not in present]
@@ -127,6 +99,11 @@ def check(run_id: str) -> dict[str, str]:
     previous = os.environ.get("PREVIOUS", "").strip()
     release = _get(f"{_repo()}/releases/tags/{previous}" if previous else f"{_repo()}/releases/latest")
     previous = release["tag_name"]
+    lineage = _get(f"{_repo()}/compare/{quote(previous)}...{sha}?per_page=1")
+    if lineage.get("status") != "ahead":
+        raise Refused(f"{label} built {sha}, which is {lineage.get('status')} {previous}, not a commit after it")
+    behind = _get(f"{_repo()}/compare/{sha}...main?per_page=1")["ahead_by"]
+    print(f"commit {sha} is {lineage['ahead_by']} commits after {previous} and {behind} commits behind main")
     guarded = release_number(previous) >= release_number(os.environ["GUARDED_SINCE"])
     return {"run": run_id, "sha": sha, "previous": previous,
             "previous_version": ".".join(map(str, release_number(previous))), "guarded": str(guarded).lower(),

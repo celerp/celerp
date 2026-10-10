@@ -11,6 +11,12 @@ on:
         description: "Version to build, for example 2.5.4"
         required: true
 
+# Tags publish one at a time, in the order pushed; a waiting tag is never
+# cancelled. Its own group, not build.yml's: the publish job waits on build.yml.
+concurrency:
+  group: ${{ github.ref_type == 'tag' && format('{0}-release', github.workflow) || format('{0}-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest

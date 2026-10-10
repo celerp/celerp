@@ -17,10 +17,11 @@ name: Packaged Upgrade Smoke
 # The candidate is one Build Binaries run, candidate_run, so Linux and Windows
 # test the same commit: in a release, the tag's own run; on demand, any run. Both
 # take the same checks (scripts/upgrade_candidate.py) before either platform
-# starts: the run's Linux and Windows builds succeeded, it built the commit its
-# tag points at (or its branch pointed at when the run was created), and it
-# carries both platforms' binaries. The previous release is the latest published
-# one, never the draft a release build is filling. Each platform then checks that
+# starts: the run's Linux and Windows builds succeeded, a tag's run built the
+# commit its tag points at, the commit comes after the previous release (it
+# contains that release and adds to it), and the run carries both platforms'
+# binaries. The previous release is the latest published one, never the draft a
+# release build is filling. Each platform then checks that
 # the installed candidate is newer than the previous release, so the job never
 # tests a downgrade as an upgrade. Releases before GUARDED_SINCE do not check the
 # version of an install or of the data before opening it, so with such a release

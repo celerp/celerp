@@ -10,6 +10,11 @@ only when exactly one does.
 
     python scripts/release_gate.py desktop-builds   # in publish.yml, before PyPI
     python scripts/release_gate.py pypi-release     # in build.yml, before GitHub
+    python scripts/release_gate.py make-latest      # in build.yml, publishing on GitHub
+
+make-latest prints whether the tag's GitHub release becomes the latest one:
+false when a published release (not a draft or prerelease) has a higher X.Y.Z,
+so a fix to an older line never takes latest from a newer version.
 
 Reads GITHUB_API_URL, GITHUB_REPOSITORY, GITHUB_REF_NAME, GITHUB_SHA and GH_TOKEN.
 Exit status: 0 ready, 3 not finished yet, 1 never ready (any API error included).
@@ -30,6 +35,7 @@ BUILD_PREREQUISITES = ("prepare-release", "setup-matrix", "openapi-asset")
 # workflow's jobs "<calling job> / <job>", so they are matched on the last part.
 UPGRADE_TESTS = ("upgrade (ubuntu-latest)", "upgrade (windows-latest)")
 PENDING = 3
+_VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+].*)?")
 
 
 class NotReady(Exception):
@@ -70,6 +76,14 @@ def _list(url: str, key: str) -> list[dict]:
             raise Refused(f"GitHub API request failed for {url}: {e}") from e
         url = following
     return items
+
+
+def release_number(version: str) -> tuple[int, int, int]:
+    """X.Y.Z of a version, ignoring a pre-release or build suffix."""
+    m = _VERSION.fullmatch(version.strip().removeprefix("v"))
+    if not m:
+        raise Refused(f"{version!r} is not an X.Y.Z version")
+    return tuple(int(n) for n in m.groups())
 
 
 def _run(workflow: str) -> dict:
@@ -137,7 +151,33 @@ def pypi_release() -> None:
     raise NotReady(f"waiting for the publish job in publish.yml run {run['id']}")
 
 
+def make_latest() -> bool:
+    """No published release has a higher X.Y.Z than this tag. A release whose tag
+    is not a version (dev-latest) has no number to compare."""
+    tag = os.environ["GITHUB_REF_NAME"]
+    url = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/releases?per_page=100"
+    while url:
+        body, url = api_get(url)
+        if not isinstance(body, list):
+            raise Refused("GitHub API returned no release list")
+        for release in body:
+            if release["draft"] or release["prerelease"] or not _VERSION.fullmatch(release["tag_name"].removeprefix("v")):
+                continue
+            if release_number(release["tag_name"]) > release_number(tag):
+                print(f"{release['tag_name']} is already published, so {tag} is published without becoming latest",
+                      file=sys.stderr)
+                return False
+    return True
+
+
 def main() -> int:
+    if sys.argv[1] == "make-latest":
+        try:
+            print(str(make_latest()).lower())
+        except Refused as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
+        return 0
     check = {"desktop-builds": desktop_builds, "pypi-release": pypi_release}[sys.argv[1]]
     try:
         check()
