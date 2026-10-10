@@ -261,10 +261,10 @@ async def test_a_void_document_imports_void_and_posts_nothing(client, session, a
     assert await _posted_for(session, auth, doc["id"]) == 0
 
 
-@pytest.mark.parametrize("doc_type,status", [("invoice", "unpaid"), ("invoice", "overdue"),
+@pytest.mark.parametrize("doc_type,status", [("invoice", "received"), ("invoice", "shipped"),
                                              ("bill", "received"), ("bill", "partially_received")])
 async def test_a_status_the_file_cannot_back_is_refused(client, session, auth, monkeypatch, doc_type, status):
-    """RED before the change: any status was written as it came, so an invoice "unpaid" read as
+    """RED before the change: any status was written as it came, so an invoice "shipped" read as
     issued while nothing was booked for it, and a bill "received" held no goods."""
     routes = _screen(monkeypatch, client, auth)
     number = f"U-{uuid.uuid4().hex[:6]}"
@@ -272,6 +272,53 @@ async def test_a_status_the_file_cannot_back_is_refused(client, session, auth, m
                           **{f"treatment:{doc_type}:{number}": "opening_balances"})
     assert f"{number} was not imported" in html and status in html, html
     assert "doc_import.status_not_importable" not in html, html
+    assert await _doc(client, auth, number) == {}
+
+
+# N4: other systems export an open document as "Unpaid" or "Overdue". Overdue is never a
+# stored status (it is read from the due date), and both mean the whole total is still owed,
+# so both import as awaiting_payment and are checked and booked exactly as it is.
+
+
+@pytest.mark.parametrize("doc_type,treatment", [("invoice", "record_now"), ("invoice", "opening_balances"),
+                                                ("bill", "record_now"), ("bill", "opening_balances")])
+@pytest.mark.parametrize("status", ["Unpaid", "Overdue"])
+@pytest.mark.parametrize("outstanding", ["100", ""])
+async def test_an_unpaid_or_overdue_document_imports_as_awaiting_payment(
+        client, session, auth, monkeypatch, doc_type, treatment, status, outstanding):
+    """RED before the change: "unpaid" and "overdue" were refused as statuses the file cannot
+    back, so a file from another system could not bring its open documents in."""
+    routes = _screen(monkeypatch, client, auth)
+    number = f"A-{uuid.uuid4().hex[:6]}"
+    html = await _confirm(routes, _HEAD + _row(doc_type, number, status, outstanding),
+                          **{f"treatment:{doc_type}:{number}": treatment})
+    assert "flash--error" not in html, html
+    doc = await _doc(client, auth, number)
+    assert doc["status"] == "awaiting_payment" and float(doc["amount_outstanding"]) == 100.0, doc
+    assert float(doc.get("amount_paid") or 0) == 0.0, doc
+    held = await _net(session, auth, _CONTROL[doc_type], prefix="je:")
+    # The same document imported as awaiting_payment books exactly as much again.
+    control = f"C-{uuid.uuid4().hex[:6]}"
+    html = await _confirm(routes, _HEAD + _row(doc_type, control, "awaiting_payment", outstanding),
+                          **{f"treatment:{doc_type}:{control}": treatment})
+    assert "flash--error" not in html, html
+    assert await _net(session, auth, _CONTROL[doc_type], prefix="je:") == 2 * held
+    if treatment == "opening_balances":
+        assert held == 0.0 and await _posted_for(session, auth, doc["id"]) == 0
+    else:
+        assert abs(held) == 100.0 and await _posted_for(session, auth, doc["id"]) > 0
+
+
+@pytest.mark.parametrize("doc_type", ["invoice", "bill"])
+async def test_an_overdue_document_owing_less_than_its_total_is_still_refused(
+        client, session, auth, monkeypatch, doc_type):
+    """An overdue document owes its whole total; one whose file says it owes part was part
+    paid, which the figures check refuses as it does for awaiting_payment."""
+    routes = _screen(monkeypatch, client, auth)
+    number = f"P-{uuid.uuid4().hex[:6]}"
+    html = await _confirm(routes, _HEAD + _row(doc_type, number, "Overdue", "40"),
+                          **{f"treatment:{doc_type}:{number}": "opening_balances"})
+    assert f"{number} was not imported" in html and "amount outstanding" in html, html
     assert await _doc(client, auth, number) == {}
 
 

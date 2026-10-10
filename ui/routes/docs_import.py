@@ -138,19 +138,24 @@ _FILE_STATUSES: dict[str, frozenset[str]] = {
     doc_type: frozenset({"draft", "void"}) | (IMPORTED_ISSUE_STATUSES[doc_type] - _GOODS_STATUSES)
     for doc_type in _SETTLED_DOC_TYPES
 }
+# Statuses other systems export for an open document, read as the open status they mean:
+# the whole total is still owed. Overdue is never stored; the app reads it from the due date.
+_STATUS_ALIASES = {"unpaid": "awaiting_payment", "overdue": "awaiting_payment"}
 
 
 def _status_refusal(data: dict, treatment: str) -> str | None:
     """Why a document cannot be imported with the status its file gives, or None, filling in
-    what it owes and has been paid. Paid means nothing is outstanding, partial means part of
+    what it owes and has been paid. Unpaid and overdue are read as awaiting_payment
+    (_STATUS_ALIASES). Paid means nothing is outstanding, partial means part of
     the total is, and an open status owes the whole total (a blank amount outstanding is read
     that way). A paid or part-paid document recorded now is refused: the file does not say
     when or into which account the payment was made, so the import could only book the whole
     total as still owed, or a payment that never happened."""
-    doc_type, status = data["doc_type"], data["status"]
+    doc_type = data["doc_type"]
     allowed = _FILE_STATUSES.get(doc_type)
     if allowed is None:
         return None
+    status = data["status"] = _STATUS_ALIASES.get(data["status"], data["status"])
     number = data["doc_number"]
     if status not in allowed:
         return t("doc_import.status_not_importable", number=number, status=status,
