@@ -130,6 +130,7 @@ jobs:
     needs: [verify, pins]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # GitHub's limit for one job; the wait below fits inside it
     environment: pypi
     permissions:
       actions: read
@@ -140,15 +141,20 @@ jobs:
 
       # PyPI cannot take a release back, so it follows the desktop builds of this
       # tag and commit: scripts/release_gate.py says when build.yml's run built every
-      # platform and attached the API schema. build.yml's release job waits for this
-      # workflow, so this waits for those jobs, never its whole run. Waits up to 4
-      # hours; anything else publishes nothing.
-      - name: Wait for the desktop builds of this commit
+      # platform, passed the packaged upgrade test on its Linux and Windows binaries
+      # and attached the API schema. A failed upgrade test publishes nothing here,
+      # as it leaves the GitHub release a draft. build.yml's release job waits for
+      # this workflow, so this waits for those jobs, never its whole run. The builds
+      # get 4 hours from when their run started building, so time queued for
+      # runners does not count; this job polls for as long as GitHub lets one job
+      # run. Either way out publishes nothing, and re-running this failed job once
+      # the builds finish publishes the release.
+      - name: Wait for the desktop builds and upgrade test of this commit
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for _ in $(seq 240); do
+          for _ in $(seq 340); do
             STATUS=0
             python3 scripts/release_gate.py desktop-builds || STATUS=$?
             case "$STATUS" in
@@ -157,7 +163,7 @@ jobs:
               *) exit 1 ;;
             esac
           done
-          echo "ERROR: the desktop builds did not finish within 4 hours" >&2
+          echo "ERROR: the desktop builds did not finish within 340 minutes. Once they finish, re-run the failed publish job" >&2
           exit 1
 
       - uses: actions/download-artifact@v8

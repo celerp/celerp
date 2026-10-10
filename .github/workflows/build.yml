@@ -77,11 +77,13 @@ jobs:
     steps:
       - id: gen
         shell: bash
+        env:
+          PLATFORMS: ${{ github.event.inputs.platforms }}
         run: |
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
           lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
-          sel="${{ github.event.inputs.platforms }}"
+          sel="$PLATFORMS"
           if [ -n "$sel" ] && [ "$sel" != "all" ]; then
             case "$sel" in
               windows) inc="$win" ;;
@@ -90,7 +92,7 @@ jobs:
               *)       inc="$lin,$win,$mac" ;;
             esac
             echo "matrix={\"include\":[$inc]}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          elif [ "$GITHUB_REF_NAME" = "bugfix" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else
             echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"
@@ -958,8 +960,8 @@ jobs:
           check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
           exit $FAIL
 
-      - name: Upload artifacts (dev builds only)
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+      # A tag build keeps its binaries here too: the upgrade test installs them.
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.os }}
@@ -969,23 +971,6 @@ jobs:
             electron/dist/Celerp.AppImage
             electron/dist/Celerp.deb
           if-no-files-found: warn
-
-      - name: Release (dev build)
-        # Only develop publishes to the shared dev-latest release. Bugfix and
-        # manually dispatched feature branches stay as downloadable workflow
-        # artifacts only (above), so they never overwrite the dev channel.
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name == 'develop' }}
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: dev-latest
-          name: "Dev Build (latest)"
-          files: |
-            electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac.dmg
-            electron/dist/Celerp.AppImage
-            electron/dist/Celerp.deb
-          draft: false
-          prerelease: true
 
   # ── Attach the OpenAPI schema as a release asset (tag builds only) ────────
   # The website renders a static API reference from this schema, fetching
@@ -1065,16 +1050,42 @@ jobs:
           fi
           echo "Attached openapi.json to release $RELEASE_ID ($TAG)."
 
+  # ── Upgrade test of this release's binaries (tag builds only) ─────────────
+  # The Linux and Windows binaries this run built, installed over the latest
+  # published release, downgraded and upgraded again (packaged-upgrade-smoke.yml).
+  # Nothing is published unless it passes: publish-release needs it, and PyPI
+  # waits for it (scripts/release_gate.py desktop-builds in publish.yml).
+  upgrade-smoke:
+    needs: [build]
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/packaged-upgrade-smoke.yml
+    with:
+      candidate_run: ${{ github.run_id }}
+
   # ── Publish the release (tag builds only) ────────────────────────────────
   # Platform builds upload their assets to a DRAFT release (electron-builder
-  # publish releaseType=draft). Only once EVERY platform job has succeeded do we
-  # flip the release to published + latest - atomically, with all assets present.
-  # If any platform fails (e.g. macOS notarization), this job is skipped, the
-  # release stays a draft, and /releases/latest keeps serving the previous
-  # complete release: no 404 window during a build, and no partial release.
+  # publish releaseType=draft). Only once EVERY platform job and the upgrade
+  # test have succeeded do we flip the release to published (and latest, unless
+  # a higher version is already out) - atomically, with all assets present. If any of them fails (e.g. macOS
+  # notarization), this job is skipped, the release stays a draft, and
+  # /releases/latest keeps serving the previous complete release: no 404 window
+  # during a build, and no partial or untested release.
   publish-release:
-    needs: [prepare-release, setup-matrix, build, openapi-asset]
+    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    # Tags build side by side; only this job queues, so GitHub releases are
+    # published one at a time, in the order their runs reach this job (not the
+    # order the tags were pushed). Every waiting tag stays queued, none is
+    # cancelled, and the version check below decides which becomes latest.
+    # publish.yml queues nothing, so the PyPI release this job waits for never
+    # waits behind it.
+    concurrency:
+      group: github-release
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -1104,7 +1115,10 @@ jobs:
           echo "ERROR: the PyPI release did not finish within 90 minutes" >&2
           exit 1
 
-      - name: Publish the draft release as latest
+      # The release becomes latest unless a higher version is already published
+      # (scripts/release_gate.py make-latest): a fix to an older line is published,
+      # as PyPI has it, and latest stays on the newer version.
+      - name: Publish the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1123,6 +1137,7 @@ jobs:
             echo "ERROR: no release found for tag $TAG to publish" >&2
             exit 1
           fi
+          LATEST=$(python3 scripts/release_gate.py make-latest)
           # Description: auto-generate from merged PR titles since the previous
           # release (GitHub generate-notes). Only when the body is empty - a
           # hand-written draft body always wins.
@@ -1130,18 +1145,18 @@ jobs:
             PAYLOAD=$(curl -fsS -X POST -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/celerp/celerp/releases/generate-notes" \
               -d "{\"tag_name\":\"$TAG\"}" \
-              | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'true','body':notes.get('body','')}))")
+              | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'$LATEST','body':notes.get('body','')}))")
           else
-            PAYLOAD='{"draft":false,"make_latest":"true"}'
+            PAYLOAD="{\"draft\":false,\"make_latest\":\"$LATEST\"}"
           fi
-          echo "Publishing release $RELEASE_ID ($TAG) as latest"
+          echo "Publishing release $RELEASE_ID ($TAG), latest: $LATEST"
           curl -fsS -o /dev/null -X PATCH -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
             -d "$PAYLOAD"
-          echo "Published $TAG as latest."
+          echo "Published $TAG."
 
   # ── Alert on a failed release build ──────────────────────────────────────────
-  # When any platform (or prepare/publish) fails on a v* tag, the release is left as
+  # When any platform (or prepare, upgrade test or publish) fails on a v* tag, the release is left as
   # a draft and `latest` keeps serving the previous version - correct, but SILENT.
   # GitHub's default failure email only reaches whoever pushed the tag, if their
   # personal notification settings allow it. Open (or comment on) a tracking issue
@@ -1149,7 +1164,7 @@ jobs:
   # This is the only signal that e.g. macOS notarization broke (Apple agreement
   # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
   notify-release-failure:
-    needs: [prepare-release, setup-matrix, build, openapi-asset, publish-release]
+    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke, publish-release]
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
@@ -1166,12 +1181,12 @@ jobs:
           gh label create release-failure --repo "$REPO" --color B60205 --force \
             --description "A release build failed; the release is stuck as a draft" || true
           cat > /tmp/release_failure.md <<EOF
-          The build for **$TAG** failed, so the release was left as a **draft and not published**.
+          The build or upgrade test for **$TAG** failed, so the release was left as a **draft and not published**.
 
           \`releases/latest\` still serves the previous complete release (no 404 window), but **$TAG will not ship on any platform until the build is fixed and the tag is re-pushed**.
 
           - Failed run: $RUN_URL
-          - Check which platform failed in the logs (e.g. macOS notarization / an expired Apple agreement).
+          - Check which platform or upgrade test failed in the logs (e.g. macOS notarization / an expired Apple agreement).
 
           Re-pushing the tag after a fix re-drafts and re-publishes automatically once every platform succeeds.
           If this version is already on PyPI and only publishing the release failed, re-run just the failed jobs of this run; a version on PyPI is never built again.

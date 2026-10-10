@@ -1904,7 +1904,7 @@
 "tests/test_electron_build_config.py::test_main_kill_subprocesses_before_quit_and_install": 0.002,
 "tests/test_electron_build_config.py::test_main_periodic_check_interval": 0.002,
 "tests/test_electron_build_config.py::test_packaged_build_checks_its_modules_and_boots_with_every_locked_module": 0.035,
-"tests/test_electron_build_config.py::test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only": 0.008,
+"tests/test_electron_build_config.py::test_packaged_upgrade_smoke_runs_in_the_tag_release_and_on_demand_only": 0.008,
 "tests/test_electron_build_config.py::test_shell_check_btn_hides_on_click": 0.002,
 "tests/test_electron_build_config.py::test_shell_has_log_element": 0.002,
 "tests/test_electron_build_config.py::test_shell_has_progress_bar_element": 0.002,
