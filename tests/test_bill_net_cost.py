@@ -205,11 +205,10 @@ async def test_shipping_on_goods_added_to_a_lot_and_sent_back_before_the_order_i
                                [(0, 5)], shipping=7.0)
     assert (await _return(client, auth, doc, lot, 2)).status_code == 200
     await _finalize(client, auth, doc)
-    # 7.00 over the fifteen units the lot had at the receipt, as billing first spreads it: the
-    # two sent back take 0.93, the thirteen kept 6.07.
-    assert await _cost(session, auth, lot) == 148.07
+    # 7.00 over five units: the two sent back take 2.80, the three kept 4.20.
+    assert await _cost(session, auth, lot) == 146.2
     assert await _books(session, auth, "6970", "1130-OB", "1130-FRT") == {
-        "6970": 0.93, "1130-OB": 148.07, "1130-FRT": 0.0}
+        "6970": 2.8, "1130-OB": 146.2, "1130-FRT": 0.0}
     await assert_settled(client, session, auth)
 
 
@@ -219,9 +218,11 @@ async def test_shipping_on_goods_added_to_a_lot_and_sent_back_after_the_order_is
                                [(0, 5)], shipping=7.0)
     await _finalize(client, auth, doc)
     assert (await _return(client, auth, doc, lot, 2)).status_code == 200
-    assert await _cost(session, auth, lot) == 148.07
+    # The freight is the five units', 1.40 each: the two sent back take 2.80 to shrinkage
+    # while the supplier credits their 28.00, and the lot keeps 4.20 of it.
+    assert await _cost(session, auth, lot) == 146.2
     assert await _books(session, auth, "6970", "1130-OB", "1130-FRT") == {
-        "6970": 0.93, "1130-OB": 148.07, "1130-FRT": 0.0}
+        "6970": 2.8, "1130-OB": 146.2, "1130-FRT": 0.0}
     await assert_settled(client, session, auth)
 
 

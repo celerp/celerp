@@ -159,6 +159,7 @@ _SPREADERS = {
     (_DOCS, "_received_goods_cost"): "a line's cost over its receipts",
     (_DOCS, "_received_landed"): "a line's landed cost over its receipts",
     (_DOCS, "_capitalise_landed_received"): "freight over a receipt's lineage",
+    (_DOCS, "return_consignment_items"): "a bill's landed cost over its own units sent back",
     (_INV, "carve_cost"): "a lot's cost over a part and the rest",
     (_INV, "kept"): "carve_cost's share of one amount",
 }
@@ -576,5 +577,7 @@ async def test_refinalize_after_revert_puts_the_freight_back_where_it_was(client
     await assert_settled(client, session, auth)
     assert (await _post(client, auth, doc, "finalize")).status_code == 200
     assert await _b(session, auth, *LEGS) == returned
-    assert _doc_pools(await _state(session, auth, lot), doc) == pools == {f"{doc}::freight": 0.25}
+    # The sale took 0.25 of the 1.00 at the lot's average and the two sent back the 0.75 left
+    # (0.50 each, capped at what the lot held), so none of it stays on the lot either way.
+    assert _doc_pools(await _state(session, auth, lot), doc) == pools == {}
     await assert_settled(client, session, auth)
