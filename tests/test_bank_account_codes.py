@@ -46,9 +46,10 @@ async def test_more_than_a_hundred_bank_accounts_get_valid_sorted_codes(client):
     assert in_block == seeded + codes
 
 
-def test_codes_keep_sorting_in_the_order_added_past_a_thousand_bank_accounts():
+@pytest.mark.parametrize("stem, below", [("111", "1120"), ("1015-", "1015."), ("BANK-", "BANK.")])
+def test_codes_keep_sorting_in_the_order_added_past_a_thousand_bank_accounts(stem, below):
     from celerp_accounting.import_service import _bank_code
-    codes = [_bank_code(n) for n in range(1, 10000)]
+    codes = [_bank_code(stem, n) for n in range(1, 10000)]
     assert len(set(codes)) == len(codes)
     assert codes == sorted(codes)
-    assert all(c < "1120" for c in codes)
+    assert all(c.startswith(stem) and c < below for c in codes)
