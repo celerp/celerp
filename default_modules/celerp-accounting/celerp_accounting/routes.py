@@ -2554,7 +2554,11 @@ async def create_bank_account(
         idem_c = f"opening:{bank.id}:c"
         idem_p = f"opening:{bank.id}:p"
         from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
-        today = datetime.now(timezone.utc).date().isoformat()
+        # The balance is as of the company's today, in its own timezone.
+        from celerp.models.company import Company
+        from celerp.services.business_time import business_date_at
+        company = await session.get(Company, company_id)
+        today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
         ob = float(payload.opening_balance)
         # Debit the bank account, credit equity (the retained earnings account)
         entries = [
