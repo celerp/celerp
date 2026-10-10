@@ -356,23 +356,24 @@ async def test_finalizing_stays_fast_with_many_open_invoices(client, session, au
     assert time.perf_counter() - started < 2.0
 
 
-async def _timed_finalize(client, auth, engine, doc: str) -> tuple[float, int]:
-    """Finalize ``doc``: (seconds taken, SQL statements run)."""
+async def _timed_finalize(client, auth, engine, doc: str) -> tuple[float, int, int]:
+    """Finalize ``doc``: (seconds taken, SQL statements run, rows they returned)."""
     from sqlalchemy import event
 
-    statements = 0
+    statements = rows = 0
 
-    def count(*_args) -> None:
-        nonlocal statements
+    def count(_conn, cursor, *_args) -> None:
+        nonlocal statements, rows
         statements += 1
+        rows += max(cursor.rowcount, 0)
 
-    event.listen(engine.sync_engine, "before_cursor_execute", count)
+    event.listen(engine.sync_engine, "after_cursor_execute", count)
     try:
         started = time.perf_counter()
         await _ok(client, auth, f"/docs/{doc}/finalize")
-        return time.perf_counter() - started, statements
+        return time.perf_counter() - started, statements, rows
     finally:
-        event.remove(engine.sync_engine, "before_cursor_execute", count)
+        event.remove(engine.sync_engine, "after_cursor_execute", count)
 
 
 # Open invoices the shared-SKU speed test seeds on one SKU, and the seconds its last
@@ -391,13 +392,46 @@ async def test_finalizing_on_a_shared_sku_stays_fast_with_many_open_invoices(cli
     for opened in range(_SHARED_OPEN):
         doc = await _invoice(client, auth, [(await _lot(client, auth, sku, 1, 10.0), sku, 1)], finalize=False)
         if opened == 1:
-            _seconds, with_one_open = await _timed_finalize(client, auth, _db_engine, doc)
+            _seconds, with_one_open, _rows = await _timed_finalize(client, auth, _db_engine, doc)
         else:
             await _ok(client, auth, f"/docs/{doc}/finalize")
     setup = time.perf_counter() - started
     doc = await _invoice(client, auth, [(await _lot(client, auth, sku, 1, 10.0), sku, 1)], finalize=False)
-    seconds, statements = await _timed_finalize(client, auth, _db_engine, doc)
+    seconds, statements, _rows = await _timed_finalize(client, auth, _db_engine, doc)
     timings = (f"{_SHARED_OPEN} open invoices on one SKU: setup {setup:.1f}s, finalize {seconds:.3f}s, "
                f"{statements} statements (with one open: {with_one_open})")
     assert statements <= with_one_open, timings
     assert seconds < _SHARED_BOUND, timings
+
+
+# Invoices the company has finalized on other goods before the history test's second finalize.
+_HISTORY = 150
+
+
+@pytest.mark.timeout(30)
+async def test_finalizing_reads_no_more_rows_after_many_invoices_elsewhere(client, auth, _db_engine):
+    """Finalizing an invoice reads the cost records of only the open invoices on its own
+    goods, never every invoice the company has finalized, so the rows it reads stay the
+    same as invoices on other goods pile up."""
+
+    async def finalize_beside_three_open() -> tuple[float, int]:
+        sku = f"PERF-{uuid.uuid4().hex[:6]}"
+        for _ in range(3):
+            await _invoice(client, auth, [(await _lot(client, auth, sku, 1, 10.0), sku, 1)])
+        doc = await _invoice(client, auth, [(await _lot(client, auth, sku, 1, 10.0), sku, 1)], finalize=False)
+        seconds, _statements, rows = await _timed_finalize(client, auth, _db_engine, doc)
+        return seconds, rows
+
+    first_seconds, first_rows = await finalize_beside_three_open()
+    started = time.perf_counter()
+    for _ in range(_HISTORY):
+        r = await client.post("/docs", headers=auth["headers"], json={
+            "doc_type": "invoice", "ref_id": f"INV-{uuid.uuid4().hex[:6]}", "total": 40.0,
+            "line_items": [{"name": "Service", "quantity": 1, "unit_price": 40.0, "line_total": 40.0}]})
+        assert r.status_code == 200, r.text
+        await _ok(client, auth, f"/docs/{r.json()['id']}/finalize")
+    setup = time.perf_counter() - started
+    seconds, rows = await finalize_beside_three_open()
+    assert rows == first_rows, (
+        f"rows read: {first_rows} before, {rows} after {_HISTORY} invoices elsewhere (seeded in "
+        f"{setup:.1f}s); finalize {first_seconds:.3f}s before, {seconds:.3f}s after")

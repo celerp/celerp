@@ -58,7 +58,7 @@ from celerp.services.money import allocate_pro_rata, checked_exchange_rate, rece
 from celerp.services.posting_dates import correction_day, void_reversal
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
-from sqlalchemy import func, or_
+from sqlalchemy import ARRAY, String, any_, bindparam, func, or_
 from sqlalchemy import select as _select
 
 if TYPE_CHECKING:
@@ -423,9 +423,17 @@ async def compute_doc_cogs(
     remaining: dict[str, float] = {}
     settings: dict | None = None
     claimed: dict[str, float] = {}
+
+    async def claims_on(lots) -> dict[str, float]:
+        # What other unshipped invoices hold of ``lots`` (every lot when None), per lot.
+        held: dict[str, float] = {}
+        for claim in await unshipped_claims(session, company_id, exclude=doc_id, costed=False, lots=lots):
+            held[claim.lot_id] = held.get(claim.lot_id, 0.0) + claim.qty
+        return held
+
     if span_lots:
-        for claim in await unshipped_claims(session, company_id, exclude=doc_id, costed=False):
-            claimed[claim.lot_id] = claimed.get(claim.lot_id, 0.0) + claim.qty
+        # The lots the lines name decide whether a line spans; a spanning line reads the rest.
+        claimed = await claims_on({str(line_item_id(li)) for li in line_items if line_item_id(li)})
     for index, li in enumerate(line_items):
         line_qty = float(li.get("quantity") or 0)
         if line_qty <= 0:
@@ -451,6 +459,7 @@ async def compute_doc_cogs(
                 company = await session.get(Company, company_id)
                 settings = (company.settings or {}) if company else {}
                 pool = await doc_lot_pool(session, company_id, doc_id, line_items)
+                claimed = await claims_on(None)
                 # Units other unshipped invoices already costed are not this document's.
                 for lot_id, qty in claimed.items():
                     lot = pool[0].get(lot_id)
@@ -2541,6 +2550,15 @@ def _finalize_doc(je_id: str, doc_ids: set[str]) -> str | None:
     return None
 
 
+def _finalize_entry_doc(je_id):
+    """SQL for the doc part of a finalize-family JE id: what lies between ``je:auto:`` and
+    the last ``:fin``. A finalize suffix (fin, fin:2, fin:rate, any unvoid restore) holds
+    no other ``:fin``, so this is the doc _finalize_doc finds; matching it to the docs
+    asked about reads only their entries, however many the company has posted."""
+    start = len("je:auto:") + 1
+    return func.substr(je_id, start, func.length(je_id) - func.strpos(func.reverse(je_id), "nif:") - (start + 2))
+
+
 async def _created_metadata(session, company_id, je_ids) -> dict[str, tuple[int, dict]]:
     """je id -> (ledger id, metadata) of the latest creation event of each JE."""
     from celerp.models.ledger import LedgerEntry
@@ -2584,7 +2602,9 @@ async def _recognitions(session, company_id, doc_ids, legacy: dict[str, dict] | 
     if len(docs) == 1:
         query = query.where(Projection.entity_id.startswith(f"je:auto:{next(iter(docs))}:", autoescape=True))
     else:
-        query = query.where(Projection.entity_id.like("je:auto:%:fin%"))
+        query = query.where(Projection.entity_id.like("je:auto:%:fin%"),
+                            _finalize_entry_doc(Projection.entity_id) == any_(
+                                bindparam("recognition_docs", sorted(docs), type_=ARRAY(String))))
     live: dict[str, tuple[str, datetime | None]] = {}
     for je_id, created_at, status in (await session.execute(query)).all():
         doc_id = _finalize_doc(je_id, docs) if status == "posted" else None
