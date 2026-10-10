@@ -4447,6 +4447,7 @@
   "item.draft": "{sku} es un borrador y aún no es existencia: primero póngalo disponible.",
   "item.held_for_other_line": "{sku} está apartado para otra línea de este registro: elija otro artículo o libérelo allí primero.",
   "item.reserve_not_available": "{sku} está {status}: solo se puede reservar existencia disponible.",
+  "items.split_key_reused": "Esta clave de solicitud ya se usó para otra acción. Envíe la división de nuevo sin clave o con una nueva.",
   "item.reserve_out_of_range": "{sku} tiene {held} con {reserved} reservado: un cambio de reserva de {change} dejaría {result}, fuera de 0 a {held}.",
   "item.invoice_not_available": "{sku} está {lot_status}: solo se puede facturar existencia disponible.",
   "item.invoice_not_available_on": "{sku} está {lot_status} en {doc}: solo se puede facturar existencia disponible.",

@@ -4447,6 +4447,7 @@
   "item.draft": "{sku} là bản nháp, chưa phải hàng tồn kho: hãy đặt thành có sẵn trước.",
   "item.held_for_other_line": "{sku} đang được giữ cho một dòng khác của hồ sơ này: hãy chọn mặt hàng khác hoặc nhả ở đó trước.",
   "item.reserve_not_available": "{sku} đang ở trạng thái {status}: chỉ có thể giữ chỗ hàng có sẵn.",
+  "items.split_key_reused": "Khóa yêu cầu này đã được dùng cho một thao tác khác. Gửi lại thao tác tách không kèm khóa hoặc với khóa mới.",
   "item.reserve_out_of_range": "{sku} có {held}, đã giữ chỗ {reserved}: thay đổi giữ chỗ {change} sẽ còn {result}, ngoài khoảng 0 đến {held}.",
   "item.invoice_not_available": "{sku} đang ở trạng thái {lot_status}: chỉ có thể lập hóa đơn cho hàng có sẵn.",
   "item.invoice_not_available_on": "{sku} đang ở trạng thái {lot_status} theo chứng từ {doc}: chỉ có thể lập hóa đơn cho hàng có sẵn.",

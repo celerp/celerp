@@ -4447,6 +4447,7 @@
   "item.draft": "{sku} è una bozza, non ancora a magazzino: rendilo prima disponibile.",
   "item.held_for_other_line": "{sku} è trattenuto per un'altra riga di questo record: scegli un altro articolo o rilascialo prima lì.",
   "item.reserve_not_available": "{sku} è {status}: si può riservare solo merce disponibile.",
+  "items.split_key_reused": "Questa chiave di richiesta è già stata usata per un'altra azione. Invia di nuovo la suddivisione senza chiave o con una nuova.",
   "item.reserve_out_of_range": "{sku} contiene {held} con {reserved} riservato: una variazione della riserva di {change} lascerebbe {result}, fuori da 0 a {held}.",
   "item.invoice_not_available": "{sku} è {lot_status}: si può fatturare solo merce disponibile.",
   "item.invoice_not_available_on": "{sku} è {lot_status} su {doc}: si può fatturare solo merce disponibile.",

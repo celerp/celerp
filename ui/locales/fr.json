@@ -4447,6 +4447,7 @@
   "item.draft": "{sku} est un brouillon, pas encore du stock : rendez-le d'abord disponible.",
   "item.held_for_other_line": "{sku} est retenu pour une autre ligne de cet enregistrement : choisissez un autre article ou libérez-le d'abord là-bas.",
   "item.reserve_not_available": "{sku} est {status} : seul le stock disponible peut être réservé.",
+  "items.split_key_reused": "Cette clé de requête a déjà été utilisée pour une autre action. Renvoyez la division sans clé ou avec une nouvelle.",
   "item.reserve_out_of_range": "{sku} contient {held} dont {reserved} réservé : une modification de réservation de {change} laisserait {result}, hors de 0 à {held}.",
   "item.invoice_not_available": "{sku} est {lot_status} : seul le stock disponible peut être facturé.",
   "item.invoice_not_available_on": "{sku} est {lot_status} sur {doc} : seul le stock disponible peut être facturé.",

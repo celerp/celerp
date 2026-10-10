@@ -4447,6 +4447,7 @@
   "item.draft": "{sku} adalah draf, belum menjadi stok: jadikan tersedia terlebih dahulu.",
   "item.held_for_other_line": "{sku} ditahan untuk baris lain di catatan ini: pilih barang lain atau lepaskan di sana dulu.",
   "item.reserve_not_available": "{sku} berstatus {status}: hanya stok yang tersedia yang dapat dipesan.",
+  "items.split_key_reused": "Kunci permintaan ini sudah dipakai untuk tindakan lain. Kirim pemisahan lagi tanpa kunci atau dengan kunci baru.",
   "item.reserve_out_of_range": "{sku} berisi {held} dengan {reserved} dipesan: perubahan pemesanan sebesar {change} akan menyisakan {result}, di luar 0 sampai {held}.",
   "item.invoice_not_available": "{sku} berstatus {lot_status}: hanya stok yang tersedia yang dapat ditagihkan.",
   "item.invoice_not_available_on": "{sku} berstatus {lot_status} pada {doc}: hanya stok yang tersedia yang dapat ditagihkan.",

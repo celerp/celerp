@@ -4447,6 +4447,7 @@
   "item.draft": "{sku} ist ein Entwurf und noch kein Bestand: Machen Sie es zuerst verfügbar.",
   "item.held_for_other_line": "{sku} ist für eine andere Zeile dieses Datensatzes vorgemerkt: Wählen Sie einen anderen Artikel oder geben Sie ihn dort zuerst frei.",
   "item.reserve_not_available": "{sku} ist {status}: Nur verfügbarer Bestand kann reserviert werden.",
+  "items.split_key_reused": "Dieser Anfrageschlüssel wurde bereits für eine andere Aktion verwendet. Senden Sie die Teilung erneut ohne Schlüssel oder mit einem neuen.",
   "item.reserve_out_of_range": "{sku} hat {held} Bestand, davon {reserved} reserviert: Eine Änderung der Reservierung um {change} ergäbe {result}, außerhalb von 0 bis {held}.",
   "item.invoice_not_available": "{sku} hat den Status {lot_status}: Nur verfügbarer Bestand kann in Rechnung gestellt werden.",
   "item.invoice_not_available_on": "{sku} hat den Status {lot_status} (Beleg {doc}): Nur verfügbarer Bestand kann in Rechnung gestellt werden.",

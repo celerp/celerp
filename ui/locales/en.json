@@ -4445,6 +4445,7 @@
   "item.draft": "{sku} is a draft, not stock yet: make it available first.",
   "item.held_for_other_line": "{sku} is held for another line of this record: pick another item or release it there first.",
   "item.reserve_not_available": "{sku} is {status}: only available stock can be reserved.",
+  "items.split_key_reused": "This request key was already used for a different action. Send the split again without a key, or with a new one.",
   "item.reserve_out_of_range": "{sku} holds {held} with {reserved} reserved: a reservation change of {change} would leave {result}, outside 0 to {held}.",
   "item.invoice_not_available": "{sku} is {lot_status}: only available stock can be invoiced.",
   "item.invoice_not_available_on": "{sku} is {lot_status} on {doc}: only available stock can be invoiced.",

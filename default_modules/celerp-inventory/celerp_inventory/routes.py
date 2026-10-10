@@ -3175,6 +3175,22 @@ async def split_preview(
     return result
 
 
+_SPLIT_ID_NAMESPACE = uuid.UUID("3b8e2f61-4c7d-4a9e-b1f5-7d2c9e6a0b84")
+
+
+def _split_request_digest(entity_id: str, payload: SplitBody) -> str:
+    """What a split asks for. A retry under the same request key must ask for exactly this."""
+    canonical = {"entity": entity_id, "children": [c.model_dump() for c in payload.children],
+                 "mother_qty": payload.mother_qty, "mother_weight": payload.mother_weight}
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _split_key_reused() -> dict:
+    return refusal("items.split_key_reused",
+                   "This request key was already used for a different action. Send the split again "
+                   "without a key, or with a new one.")
+
+
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists = (await get_price_config(session, company_id))[0]
@@ -3182,7 +3198,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         _validate_sku(_child.sku)
         reject_system_item_fields({"attributes": _child.attributes})
         reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
+    request_digest = _split_request_digest(entity_id, payload)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
+    if payload.idempotency_key:
+        # A repeat delivery of a split that already happened gets its result again. Read
+        # under the item lock, so a delivery still in flight finishes first.
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if (replay.event_type != "item.split" or replay.entity_id != entity_id
+                    or (replay.metadata_ or {}).get("split_request") != request_digest):
+                raise HTTPException(status_code=409, detail=_split_key_reused())
+            return {"event_id": replay.id, "children": [
+                {"id": eid, "sku": sku} for eid, sku in zip(replay.data["child_ids"], replay.data["child_skus"])]}
+    # Every record the split writes is keyed from the request key, so the key covers the whole split.
+    split_key = payload.idempotency_key or str(uuid.uuid4())
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
@@ -3317,7 +3346,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     running_weight = parent_weight
 
     for i, child in enumerate(children):
-        child_eid = f"item:{uuid.uuid4()}"
+        child_eid = f"item:{uuid.uuid5(_SPLIT_ID_NAMESPACE, f'{company_id}:{split_key}:{i}')}"
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
         # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
@@ -3357,7 +3386,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=_parse_uuid(parent_location_id),
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:{i}:created",
             metadata_={"parent_id": entity_id},
         )
 
@@ -3380,7 +3409,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=_parse_uuid(parent_location_id),
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:{i}:split_from",
             metadata_={"reason": "from_split"},
         )
 
@@ -3420,7 +3449,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"{split_key}:{i}:price:{price_type}",
                 metadata_={"reason": "from_split"},
             )
         # The child's goods cost; its landed pools came with item.created
@@ -3435,7 +3464,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"{split_key}:{i}:cost",
                 metadata_={"reason": "from_split"},
             )
 
@@ -3458,13 +3487,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             raise HTTPException(status_code=422, detail="Mother weight cannot be negative")
         if (derived_mother_weight is None or round(payload.mother_weight, weight_decimals) != derived_mother_weight) and not role_has_permission(settings, role, "edit_inventory_amounts"):
             raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the mother weight: requires the edit_inventory_amounts permission")
+    # Clamp sub-epsilon residuals from float subtraction to an exact zero (a submitted
+    # negative override was rejected above, never silently zeroed).
+    derived_parent_qty = max(derived_parent_qty, 0.0)
     new_parent_qty = payload.mother_qty if payload.mother_qty is not None else derived_parent_qty
-    # Clamp sub-epsilon residuals from float subtraction to an exact zero (derived branch
-    # only; a submitted negative override was rejected above, never silently zeroed).
-    if payload.mother_qty is None and new_parent_qty < 0:
-        new_parent_qty = 0.0
-    # The mother keeps what the last carve left her, whatever quantity a re-weigh sets.
-    mother: dict = {"new_qty": new_parent_qty, "landed_costs": remaining["landed_costs"]}
+    # The mother keeps what the last carve left her at the derived remainder.
+    mother: dict = {"new_qty": derived_parent_qty, "landed_costs": remaining["landed_costs"]}
     if remaining["cost_base"] is not None:
         mother["cost_base"] = remaining["cost_base"]
     await emit_event(
@@ -3477,9 +3505,14 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=str(uuid.uuid4()),
+        idempotency_key=f"{split_key}:mother",
         metadata_={"reason": "split_parent"},
     )
+    if round(new_parent_qty, 10) != derived_parent_qty:
+        # A re-weigh that finds more or fewer units than the split leaves is a stock count:
+        # the same quantity and value change, journal and event as POST /items/{id}/adjust.
+        await adjust_item_quantity(session, company_id, user.id, entity_id, {"new_qty": new_parent_qty},
+                                   source="api", idempotency_key=f"{split_key}:count")
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
@@ -3525,7 +3558,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:measures",
             metadata_={"reason": "split_parent"},
         )
 
@@ -3541,7 +3574,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:archived",
             metadata_={"reason": "consumed_by_split"},
         )
 
@@ -3578,8 +3611,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
+        idempotency_key=split_key,
+        metadata_={"split_request": request_digest},
     )
 
     await session.commit()

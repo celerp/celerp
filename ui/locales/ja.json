@@ -4445,6 +4445,7 @@
   "item.draft": "{sku} は下書きで、まだ在庫ではありません。先に利用可能にしてください。",
   "item.held_for_other_line": "{sku} はこの記録の別の行に確保されています。別の品目を選ぶか、先にそちらで解除してください。",
   "item.reserve_not_available": "{sku} は {status} です。予約できるのは利用可能な在庫だけです。",
+  "items.split_key_reused": "このリクエストキーは別の操作で既に使われています。キーなし、または新しいキーで分割をもう一度送信してください。",
   "item.reserve_out_of_range": "{sku} の数量は {held}、予約済みは {reserved} です。予約を {change} 変更すると {result} になり、0 から {held} の範囲外です。",
   "item.invoice_not_available": "{sku} は {lot_status} です。請求できるのは利用可能な在庫だけです。",
   "item.invoice_not_available_on": "{sku} は {doc} で {lot_status} です。請求できるのは利用可能な在庫だけです。",
