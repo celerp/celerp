@@ -3,12 +3,15 @@
 """UI route coverage for celerp-subscriptions (ui/routes/subscriptions.py)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 from test_helpers import make_test_token
+from ui.i18n import t
 
 
 def _authed(role: str = "owner") -> dict:
@@ -129,7 +132,7 @@ class TestSubscriptionActions:
         r = await owner_ui.post(f"/subscriptions/{eid}/generate")
         assert r.status_code == 200
         assert "location" not in r.headers and "HX-Redirect" not in r.headers
-        assert "Cannot generate from a cancelled subscription" in r.headers["HX-Trigger"]
+        assert t("subscriptions.err_generate_cancelled", "en") in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
 
     async def test_generate_sent_twice_with_its_key_creates_one_document(self, owner_ui):
         eid = await _active_subscription(owner_ui)
