@@ -366,8 +366,9 @@ class ItemConsignorPayableRecorded(BaseModel):
 
 class ItemConsignmentBought(BaseModel):
     # Consigned goods bought on a vendor bill: the lot becomes the company's own, valued at
-    # the bill's cost on the inventory account the bill debited.
+    # the bill's cost on the inventory account the bill debited, for the units it held then.
     cost_total: float
+    quantity: float
     inventory_account_code: str
     consignment_doc_id: str
     bill_doc_id: str

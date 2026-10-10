@@ -305,26 +305,38 @@ def _bill_receipts(state: dict, plan: _Plan, source: list[int]) -> tuple[list[di
 
 async def bought_parcels(session, company_id, bill: dict) -> dict[str, tuple[float, float | None]]:
     """Lot -> (stock units, cost in the books' currency) a bill bought from a consignment took
-    over of each lot the consignment's receipts made: the units kept, held or sold
-    (``lot_quantity_bought``), at what the bill booked on that lot and the parts split off it
-    (``item.consignment.bought``). A supplier return from the bill goes back against these,
-    never against what the consignment recorded when the goods came in."""
+    over: of each lot the consignment's receipts made, the units kept, held or sold
+    (``lot_quantity_bought``); of each lot holding goods a customer returned from them, the
+    units it held when bought. Each at what the bill booked on that lot and the parts split off
+    it (``item.consignment.bought``). A supplier return from the bill goes back against these,
+    never against what the consignment recorded when the goods came in.
+
+    Goods a customer returned were sold units the bill already counts as kept on the lot they
+    were sold from; they are the same goods, now on the shelf in their own lot, so they go back
+    from that lot and never from the sold units, which have left."""
     roots = list(bill.get("received_item_ids") or [])
     receipts = [x for x in bill.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
     family: dict[str, str] = {}
     for row, parent, link in await lineage(session, company_id, roots):
-        if link is None:
+        if link is None or link == "returned_from":
             family[row.entity_id] = row.entity_id
         elif link == "split_from" and parent in family:
             family[row.entity_id] = family[parent]
     cost: dict[str, float] = {}
+    units: dict[str, float] = {}
     if family:
         for entity_id, data in (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.data).where(
                 LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(family)),
                 LedgerEntry.event_type == "item.consignment.bought"))).all():
             if (data or {}).get("consignment_doc_id") == bill.get("source_consignment_id"):
-                cost[family[entity_id]] = cost.get(family[entity_id], 0.0) + float(data.get("cost_total") or 0)
-    return {lot: (float(x.get("lot_quantity_bought") or 0), cost.get(lot, 0.0)) for x, lot in zip(receipts, roots)}
+                lot = family[entity_id]
+                cost[lot] = cost.get(lot, 0.0) + float(data.get("cost_total") or 0)
+                units[lot] = units.get(lot, 0.0) + float(data.get("quantity") or 0)
+    made = {lot: (float(x.get("lot_quantity_bought") or 0), cost.get(lot, 0.0)) for x, lot in zip(receipts, roots)}
+    for lot, qty in units.items():
+        if lot not in made and qty > 0:
+            made[lot] = (qty, cost[lot])
+    return made
 
 
 async def buy_consignment(session, *, company_id, user_id, consignment_id: str, state: dict, ref: str,
@@ -446,7 +458,7 @@ async def _bought(session, company_id, user_id, row: Projection, cost: Decimal, 
     await emit_event(
         session, company_id=company_id, entity_id=row.entity_id, entity_type="item",
         event_type="item.consignment.bought",
-        data={"cost_total": to_stored_float(cost), LOT_ACCOUNT_FIELD: account,
+        data={"cost_total": to_stored_float(cost), "quantity": qty, LOT_ACCOUNT_FIELD: account,
               "consignment_doc_id": consignment_id, "bill_doc_id": bill_id},
         actor_id=user_id, location_id=None, source="api",
         idempotency_key=f"consignment-buy:{bill_id}:{row.entity_id}",

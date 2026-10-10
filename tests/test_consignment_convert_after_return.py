@@ -139,3 +139,97 @@ async def test_a_consignment_kept_whole_converts_with_its_lines_as_received(clie
     assert await _books(session, auth, PAYABLE, PURCHASED, AP) == {PAYABLE: 0.0, PURCHASED: 15.0, AP: -15.0}
     assert float((await _state(session, auth, bill_id))["amount_outstanding"]) == 15.0
     await _settled(client, session, auth)
+
+
+# Goods a customer returned before the conversion were bought by the bill like the rest
+# (item.consignment.bought): they go back to the supplier from the bill at the bill's cost,
+# counted against the lot they were sold from, never past what the bill bought of it.
+
+
+async def test_goods_a_customer_returned_go_back_from_the_bill_at_its_cost(client, session, auth):
+    """2 received at a recorded 4 and billed at 5, both sold and both returned by the customer,
+    then converted: the bill bought the 2 back on the shelf. 1 goes back from the bill at 5,
+    so the bill owes 5; a third unit is refused and books nothing."""
+    from test_consignment_in_sale import _customer_return, _sell as _sold
+
+    con, lot = await _consign(client, session, auth, qty=2, cost_price=4.0)
+    doc = await _sold(client, session, auth, lot)
+    returned = await _customer_return(client, session, auth, doc, lot, 2)
+    r = await client.post(f"/docs/{con}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    bill_id = r.json()["target_doc_id"]
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 0.0, PURCHASED: 10.0, AP: -10.0}
+
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    bill = await _state(session, auth, bill_id)
+    assert (float(bill["amount_outstanding"]), float(bill["returned_credit"])) == (5.0, 5.0)
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 0.0, PURCHASED: 5.0, AP: -5.0}
+    await _settled(client, session, auth)
+
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
+        PAYABLE: 0.0, COGS: 0.0, PURCHASED: 0.0, AP: 0.0}
+    entries = len(await _posted(session, auth))
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lot, "quantity_returned": 1}]})
+    assert r.status_code in (409, 422), r.text
+    assert len(await _posted(session, auth)) == entries
+    await _settled(client, session, auth)
+
+
+async def test_held_and_customer_returned_goods_go_back_from_the_bill_to_what_it_bought(client, session, auth):
+    """4 received at a recorded 4 and billed at 5: 1 sold and returned by the customer, 3 held.
+    The bill bought 4 for 20. The 3 held and the 1 returned all go back at 5 a unit, the bill
+    then owes nothing, and nothing more goes back."""
+    from test_consignment_in_sale import _customer_return, _sell as _sold
+
+    con, lot = await _consign(client, session, auth, qty=4, cost_price=4.0)
+    doc = await _sold(client, session, auth, lot, 1)
+    sold = next(x["entity_id"] for x in (await _state(session, auth, doc))["line_items"])
+    returned = await _customer_return(client, session, auth, doc, sold, 1)
+    r = await client.post(f"/docs/{con}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    bill_id = r.json()["target_doc_id"]
+    assert await _books(session, auth, PAYABLE, PURCHASED, AP) == {PAYABLE: 0.0, PURCHASED: 20.0, AP: -20.0}
+
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"], json={"items": [
+        {"item_id": lot, "quantity_returned": 3}, {"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    bill = await _state(session, auth, bill_id)
+    assert (float(bill["amount_outstanding"]), float(bill["returned_credit"])) == (0.0, 20.0)
+    assert await _books(session, auth, PAYABLE, PURCHASED, AP) == {PAYABLE: 0.0, PURCHASED: 0.0, AP: 0.0}
+    await _settled(client, session, auth)
+
+
+async def test_customer_returned_goods_partly_back_with_the_consignor_go_back_from_the_bill_only_as_bought(
+        client, session, auth):
+    """2 sold and returned by the customer, 1 of them sent back to the consignor: the bill
+    bought the 1 left at 5. It goes back from the bill at 5; the unit already with the
+    consignor is refused and books nothing."""
+    from test_consignment_in_sale import _customer_return, _sell as _sold
+
+    con, lot = await _consign(client, session, auth, qty=2, cost_price=4.0)
+    doc = await _sold(client, session, auth, lot)
+    returned = await _customer_return(client, session, auth, doc, lot, 2)
+    await _back(client, auth, con, returned, 1)
+    r = await client.post(f"/docs/{con}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    bill_id = r.json()["target_doc_id"]
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, PAYABLE, PURCHASED, AP) == {PAYABLE: 0.0, PURCHASED: 0.0, AP: 0.0}
+    entries = len(await _posted(session, auth))
+    gone = next(x["returned_lot_id"] for x in (await _state(session, auth, con))["returned_items"]
+                if x.get("returned_lot_id"))
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": gone, "quantity_returned": 1}]})
+    assert r.status_code in (409, 422), r.text
+    assert len(await _posted(session, auth)) == entries
+    await _settled(client, session, auth)
