@@ -10,7 +10,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -59,7 +58,7 @@ async def _bad_account(client, tok, case: str) -> tuple[str, str]:
         return "1199", "Account 1199 is not in the chart of accounts."
     if case == "archived":
         await _account(client, tok, "1190", "asset", active=False)
-        return "1190", t("acct.err_account_archived", "en", code="1190")
+        return "1190", "Account 1190 is inactive."
     if case == "not_asset":
         return "4100", "Account 4100 is of type revenue."
     r = await client.post("/companies", json={"name": "OtherCo"}, headers=_h(tok))

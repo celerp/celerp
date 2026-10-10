@@ -19,6 +19,7 @@ from celerp.modules.importer import (
     install_from_folder,
     install_from_zip,
 )
+from ui.i18n import t as translate
 
 MANIFEST = '''PLUGIN_MANIFEST = {
     "name": "my-module",
@@ -292,7 +293,7 @@ def test_concurrent_installs_of_same_slug_land_exactly_one(module_dir):
     assert next(iter(results.values()))["name"] == "same-slug"
     error = next(iter(errors.values()))
     assert isinstance(error, ModuleImportError)
-    assert str(error) == "A module named 'same-slug' already exists. Remove it first, then import."
+    assert str(error) == translate("module_import.already_installed", "en", name="same-slug")
     installed = module_dir / "same-slug"
     assert (installed / "__init__.py").read_text() == manifest
     assert (installed / "data.txt").read_text() == "payload"

@@ -14,6 +14,7 @@ from test_lot_value_boundary import GAIN, SHRINKAGE, _role
 from test_money_stock_and_contact_invariants import _account_net
 from test_receipt_accounting import _doc, _finalize, _receive, _return
 from test_receive_selected_lines import _stamp_line_ids
+from ui.i18n import t
 
 
 async def _aged(client, auth) -> float:
@@ -68,7 +69,7 @@ async def test_a_payment_cannot_exceed_what_the_bill_owes_after_a_return(client,
     r = await client.post(f"/docs/{doc}/payment", headers=auth["headers"],
                           json={"amount": 140.0, "payment_date": "2026-03-02", "bank_account": "1111"})
     assert r.status_code == 409, r.text
-    assert "exceeds amount outstanding 84.0" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_payment_too_much", "en", amount=140.0, outstanding=84.0)
     assert await _account_net(session, auth["company_id"], "2110") == -84.0
 
 
