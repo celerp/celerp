@@ -20,7 +20,6 @@ from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
-from celerp.connectors.registry import service_name
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 from celerp.services.background import spawn_background
 
@@ -572,6 +571,7 @@ def _connector_status_view(
     is needed only where a request can fail mid-poll, as in the modules restart panel);
     when all entities are terminal it renders WITHOUT the trigger, stopping the poll.
     aria-live announces it."""
+    from celerp.connectors.registry import service_name
     polling = force_poll or _any_in_progress(runs)
     attrs: dict = {}
     if polling:
@@ -1057,6 +1057,7 @@ def setup_routes(app):
             return r
         lang = get_lang(request)
 
+        from celerp.connectors.registry import service_name
         from ui.api_client import APIError, get_connector_authorize_url
         try:
             result = await get_connector_authorize_url(token, platform, shop=shop)
@@ -1308,7 +1309,7 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-    
+        from celerp.connectors.registry import service_name
         company_id = _request_company_id(request)
         lang = get_lang(request)
         runs = await _entity_runs(company_id, platform)
