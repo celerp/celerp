@@ -162,7 +162,7 @@ async def create_chart_account(
     )).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail=refusal(
-            "chart.code_exists", f"Account code {code} already exists", code=code))
+            "chart.code_exists", f"Account code {code} is already used. Choose a different code.", code=code))
     await check_new_account(session, company_id, account_type=account_type, parent_code=parent_code)
     acc = Account(
         id=uuid.uuid4(),

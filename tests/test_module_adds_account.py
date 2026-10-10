@@ -80,7 +80,7 @@ async def test_a_module_adds_an_account_and_posts_a_balanced_entry_to_it(client,
 
 
 @pytest.mark.parametrize(("code", "name", "account_type", "message"), [
-    ("1120", "Second bank", "asset", "Account code 1120 already exists"),
+    ("1120", "Second bank", "asset", "Account code 1120 is already used"),
     ("KIOSK-2", "Float", "money", "Account type must be one of: asset, liability, equity"),
     ("  ", "Float", "asset", "Account code is required."),
     ("KIOSK-2", " ", "asset", "Account name is required."),
