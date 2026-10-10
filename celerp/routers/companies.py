@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import re
 import uuid
 from datetime import date
 
@@ -384,8 +385,8 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
         if value is None or value == "":
             return None
         try:
-            if not isinstance(value, str) or len(value) != 10:
-                raise ValueError
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+                raise ValueError  # fromisoformat also reads week dates (2026-W41-6) and basic forms
             return date.fromisoformat(value).isoformat()
         except ValueError:
             raise HTTPException(status_code=422, detail=refusal(

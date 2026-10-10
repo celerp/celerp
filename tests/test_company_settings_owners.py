@@ -220,6 +220,9 @@ async def test_books_currency_change_is_allowed_with_only_sample_stock(client, s
     ({"opening_balance_date": "2026-02-30"}, "company.opening_balance_date_invalid"),
     ({"opening_balance_date": "31/03/2026"}, "company.opening_balance_date_invalid"),
     ({"opening_balance_date": 20260331}, "company.opening_balance_date_invalid"),
+    ({"opening_balance_date": "2026-W41-6"}, "company.opening_balance_date_invalid"),
+    ({"opening_balance_date": "2026-W01-1"}, "company.opening_balance_date_invalid"),
+    ({"opening_balance_date": "2026-1-1"}, "company.opening_balance_date_invalid"),
 ])
 async def test_books_route_refuses_invalid_values(client, session, payload, key):
     h, cid = await _owner(client)
