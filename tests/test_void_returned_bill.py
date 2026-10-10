@@ -113,7 +113,7 @@ async def test_a_bill_still_holding_goods_neither_voids_nor_reverts(client, sess
 
     r = await _post(client, auth, doc, "void")
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "Cannot void a document with received items; return the goods first"
+    assert r.json()["detail"] == "This document can't be voided: it still holds received goods. Return them with Return Goods, then void it."
     r = await _post(client, auth, doc, "revert-to-draft")
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == t("documents.err_revert_status", "en")
