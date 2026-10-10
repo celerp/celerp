@@ -4621,5 +4621,6 @@
   "shell.unknown_error": "Erro desconhecido",
   "documents.cost_moved_with_goods": "O lote {sku} estava reservado para a fatura {doc}. O custo da fatura {doc} será registrado quando ela for enviada.",
   "accounting.year_end_invalid": "{value} não é uma data. Introduza o último dia do ano a encerrar no formato AAAA-MM-DD.",
-  "accounting.bank_not_found": "Essa conta bancária não foi encontrada nesta empresa. Escolha uma das contas bancárias da empresa."
+  "accounting.bank_not_found": "Essa conta bancária não foi encontrada nesta empresa. Escolha uma das contas bancárias da empresa.",
+  "location.not_found": "{value} não é um local desta empresa. Escolha um local em Configurações > Estoque > Locais ou adicione-o lá primeiro."
 }

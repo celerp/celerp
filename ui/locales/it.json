@@ -4621,5 +4621,6 @@
   "shell.unknown_error": "Errore sconosciuto",
   "documents.cost_moved_with_goods": "Il lotto {sku} era riservato alla fattura {doc}. Il costo della fattura {doc} sarà registrato alla spedizione.",
   "accounting.year_end_invalid": "{value} non è una data. Inserisci l'ultimo giorno dell'anno da chiudere nel formato AAAA-MM-GG.",
-  "accounting.bank_not_found": "Quel conto bancario non è stato trovato in questa azienda. Scegli uno dei conti bancari dell'azienda."
+  "accounting.bank_not_found": "Quel conto bancario non è stato trovato in questa azienda. Scegli uno dei conti bancari dell'azienda.",
+  "location.not_found": "{value} non è una sede di questa azienda. Scegli una sede in Impostazioni > Inventario > Sedi o aggiungila prima lì."
 }

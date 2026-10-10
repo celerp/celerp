@@ -4621,5 +4621,6 @@
   "shell.unknown_error": "ያልታወቀ ስህተት",
   "documents.cost_moved_with_goods": "ሎት {sku} ለደረሰኝ {doc} ተይዞ ነበር። የደረሰኝ {doc} ወጪ ሲላክ ይሰላል።",
   "accounting.year_end_invalid": "{value} ቀን አይደለም። የሚዘጋውን ዓመት የመጨረሻ ቀን በ YYYY-MM-DD ቅርጸት ያስገቡ።",
-  "accounting.bank_not_found": "ያ የባንክ ሂሳብ በዚህ ኩባንያ ውስጥ አልተገኘም። ከኩባንያው የባንክ ሂሳቦች አንዱን ይምረጡ።"
+  "accounting.bank_not_found": "ያ የባንክ ሂሳብ በዚህ ኩባንያ ውስጥ አልተገኘም። ከኩባንያው የባንክ ሂሳቦች አንዱን ይምረጡ።",
+  "location.not_found": "{value} የዚህ ኩባንያ ቦታ አይደለም። ከቅንጅቶች > ክምችት > ቦታዎች ቦታ ይምረጡ ወይም መጀመሪያ እዚያ ያክሉት።"
 }

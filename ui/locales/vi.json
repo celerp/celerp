@@ -4621,5 +4621,6 @@
   "shell.unknown_error": "Lỗi không xác định",
   "documents.cost_moved_with_goods": "Lô {sku} đã được giữ cho hóa đơn {doc}. Giá vốn của hóa đơn {doc} sẽ được ghi nhận khi giao hàng.",
   "accounting.year_end_invalid": "{value} không phải là ngày. Nhập ngày cuối cùng của năm cần khóa sổ theo định dạng YYYY-MM-DD.",
-  "accounting.bank_not_found": "Không tìm thấy tài khoản ngân hàng đó trong công ty này. Chọn một trong các tài khoản ngân hàng của công ty."
+  "accounting.bank_not_found": "Không tìm thấy tài khoản ngân hàng đó trong công ty này. Chọn một trong các tài khoản ngân hàng của công ty.",
+  "location.not_found": "{value} không phải là vị trí của công ty này. Hãy chọn vị trí trong Cài đặt > Hàng tồn kho > Vị trí, hoặc thêm vị trí đó trước."
 }

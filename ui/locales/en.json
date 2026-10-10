@@ -4621,5 +4621,6 @@
   "shell.unknown_error": "Unknown error",
   "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships.",
   "accounting.year_end_invalid": "{value} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
-  "accounting.bank_not_found": "That bank account was not found in this company. Choose one of the company's bank accounts."
+  "accounting.bank_not_found": "That bank account was not found in this company. Choose one of the company's bank accounts.",
+  "location.not_found": "{value} is not one of this company's locations. Choose a location from Settings > Inventory > Locations, or add it there first."
 }

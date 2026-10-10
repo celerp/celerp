@@ -2266,19 +2266,9 @@ async def _lock_items_for_physical_mutation(session: AsyncSession, company_id, e
 
 
 async def _require_company_location(session: AsyncSession, company_id, location_id) -> None:
-    if location_id is None:
-        return
-    from celerp.models.company import Location
+    from celerp.services.locations import require_company_location
 
-    try:
-        parsed = location_id if isinstance(location_id, uuid.UUID) else uuid.UUID(str(location_id))
-    except (TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=422, detail="Invalid location_id")
-    exists = (await session.execute(
-        select(Location.id).where(Location.id == parsed, Location.company_id == company_id)
-    )).scalar_one_or_none()
-    if exists is None:
-        raise HTTPException(status_code=422, detail="Location not found for this company")
+    await require_company_location(session, company_id, location_id)
 
 
 @router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})

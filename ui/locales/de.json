@@ -4621,5 +4621,6 @@
   "shell.unknown_error": "Unbekannter Fehler",
   "documents.cost_moved_with_goods": "Los {sku} war für Rechnung {doc} zurückgelegt. Die Kosten von Rechnung {doc} werden beim Versand gebucht.",
   "accounting.year_end_invalid": "{value} ist kein Datum. Geben Sie den letzten Tag des abzuschließenden Jahres als JJJJ-MM-TT ein.",
-  "accounting.bank_not_found": "Dieses Bankkonto wurde in diesem Unternehmen nicht gefunden. Wählen Sie eines der Bankkonten des Unternehmens."
+  "accounting.bank_not_found": "Dieses Bankkonto wurde in diesem Unternehmen nicht gefunden. Wählen Sie eines der Bankkonten des Unternehmens.",
+  "location.not_found": "{value} ist kein Standort dieses Unternehmens. Wählen Sie einen Standort unter Einstellungen > Lagerbestand > Standorte oder legen Sie ihn dort zuerst an."
 }

@@ -519,6 +519,13 @@ async def emit_event(
     if _normalize is not None:
         _normalize(kwargs["data"])
 
+    # Every location the event names is one of this company's locations.
+    from celerp.services.locations import require_event_locations
+
+    await require_event_locations(
+        session, kwargs.get("company_id"), kwargs.get("location_id"), kwargs.get("data")
+    )
+
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
