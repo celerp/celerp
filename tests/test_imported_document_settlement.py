@@ -169,33 +169,42 @@ async def test_paid_in_full_still_imports(client, session, auth):
     assert await _books(session, auth) == {"1120": 0.0, "3200": 300.0, "4100": -300.0, "1111": 0.0, "6960": 0.0}
 
 
-# N3: a used credit note imported without its invoice
+# N3: a credit note imported without its invoice is refused until the invoice is in;
+# imported after it, what it was used for comes off the invoice's own balance
+
+
+_ZERO = {"1120": 0.0, "3200": 0.0, "4100": 0.0, "1111": 0.0, "6960": 0.0}
 
 
 @pytest.mark.parametrize("refunded", [0.0, 15.0])
 async def test_used_credit_note_without_its_invoice(client, session, auth, refunded):
     inv, cn = _ids("T")
-    key = uuid.uuid4().hex
-    r = await _import(client, auth, cn, _note(cn, inv, 40.0, refunded, 0.0, "paid"), key=key)
-    assert r.status_code == 200, r.text
-    alone = await _books(session, auth)
-    assert alone == {"1120": 0.0, "3200": -40.0, "4100": 40.0, "1111": 0.0, "6960": 0.0}
-    assert (await _import(client, auth, cn, _note(cn, inv, 40.0, refunded, 0.0, "paid"), key=key)).status_code == 200
-    assert await _books(session, auth) == alone
-    # Its invoice imported later takes the used part off its own balance: the
-    # retained-earnings leg for it goes, the refunded part stays.
+    r = await _import(client, auth, cn, _note(cn, inv, 40.0, refunded, 0.0, "paid"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "credit_note.original_missing", r.text
+    assert await _books(session, auth) == _ZERO
+    assert await _state(session, auth, cn) == {}
+    # Its invoice imported first takes the used part off its own balance; the credit note
+    # then imports, and only its refunded part stays against retained earnings.
     assert (await _import(client, auth, inv, _inv(inv, 100.0, 0.0, 100.0 - (40.0 - refunded), "partial"))).status_code == 200
-    assert await _books(session, auth) == {"1120": 100.0 - (40.0 - refunded), "3200": -refunded, "4100": -60.0,
-                                           "1111": 0.0, "6960": 0.0}
+    key = uuid.uuid4().hex
+    assert (await _import(client, auth, cn, _note(cn, inv, 40.0, refunded, 0.0, "paid"), key=key)).status_code == 200
+    done = {"1120": 100.0 - (40.0 - refunded), "3200": -refunded, "4100": -60.0, "1111": 0.0, "6960": 0.0}
+    assert await _books(session, auth) == done
+    assert (await _import(client, auth, cn, _note(cn, inv, 40.0, refunded, 0.0, "paid"), key=key)).status_code == 200
+    assert await _books(session, auth) == done
     assert await _doc(session, auth, cn) == ("paid", 0.0, refunded)
     assert await _doctor(client, auth) == []
 
 
 async def test_open_credit_note_without_its_invoice_is_unchanged(client, session, auth):
     inv, cn = _ids("T")
-    assert (await _import(client, auth, cn, _note(cn, inv, 40.0, 0.0, 40.0, "final"))).status_code == 200
-    assert await _books(session, auth) == {"1120": -40.0, "3200": 0.0, "4100": 40.0, "1111": 0.0, "6960": 0.0}
+    r = await _import(client, auth, cn, _note(cn, inv, 40.0, 0.0, 40.0, "final"))
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "credit_note.original_missing", r.text
+    assert await _books(session, auth) == _ZERO
     assert (await _import(client, auth, inv, _inv(inv, 100.0, 0.0, 100.0, "final"))).status_code == 200
+    assert (await _import(client, auth, cn, _note(cn, inv, 40.0, 0.0, 40.0, "final"))).status_code == 200
     assert await _books(session, auth) == {"1120": 60.0, "3200": 0.0, "4100": -60.0, "1111": 0.0, "6960": 0.0}
 
 
@@ -207,7 +216,11 @@ async def test_credit_note_import_at_another_rate_is_refused(client, session, au
     inv, cn = _ids("U")
     invoice = (inv, _inv(inv, 100.0, 0.0, 100.0, "final", currency="EUR", conversion_rate=1.1))
     note = (cn, _note(cn, inv, 40.0, 0.0, 40.0, "final", currency="EUR", conversion_rate=1.3))
-    first, second = (note, invoice) if note_first else (invoice, note)
+    if note_first:
+        # Tried before its invoice, it is refused for the missing invoice, not booked.
+        early = await _import(client, auth, *note)
+        assert early.status_code == 422 and early.json()["detail"]["message_key"] == "credit_note.original_missing", early.text
+    first, second = invoice, note
     assert (await _import(client, auth, *first)).status_code == 200
     before = await _books(session, auth)
     r = await _import(client, auth, *second)
@@ -297,7 +310,8 @@ async def test_credit_note_imported_against_a_void_invoice(client, session, auth
     used = 40.0 - paid - out
     books = {"1120": 0.0, "3200": -(paid + used), "4100": paid + used, "1111": 0.0, "6960": 0.0}
     assert await _books(session, auth) == books
-    assert await _doc(session, auth, cn) == ("paid", 0.0, paid)
+    # What it still had open is released: it reads closed, never paid (EF-11).
+    assert await _doc(session, auth, cn) == ("closed" if out else "paid", 0.0, paid)
     for path, body in ((f"/docs/{cn}/cn-refund", {"amount": 5.0, "date": "2026-10-09", "bank_account": "1111"}),):
         assert (await _post(client, auth, path, body)).status_code in (409, 422)
     assert await _books(session, auth) == books

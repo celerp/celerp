@@ -56,7 +56,14 @@ def _ids(prefix):
 async def test_invoice_settled_only_by_its_credit_note(client, session, auth, credit_note_first):
     inv, cn = _ids("J")
     docs = [(inv, _invoice(inv, 100.0, 0.0, 60.0, "partial")), (cn, _note(cn, inv, 40.0, 0.0, 0.0, "paid"))]
-    for eid, data in reversed(docs) if credit_note_first else docs:
+    if credit_note_first:
+        # Tried before its invoice, the credit note is refused and books nothing.
+        r = await client.post("/docs/import", headers=auth["headers"], json={
+            "entity_id": cn, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+            "data": docs[1][1]})
+        assert r.status_code == 422 and r.json()["detail"]["message_key"] == "credit_note.original_missing", r.text
+        assert await _tie(session, auth) == 0.0
+    for eid, data in docs:
         await _import(client, auth, eid, data)
     assert await _tie(session, auth) == 60.0
     assert await _net(session, auth, "4100", prefix="je:") == -60.0

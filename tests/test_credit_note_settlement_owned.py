@@ -114,7 +114,7 @@ async def _import(client, auth, eid, data):
 async def test_import_takes_credited_from_the_imported_credit_notes(client, session, auth, credit_note_first):
     """An exported invoice of 80 a credit note of 30 settled, with 20 paid: the snapshot's
     own `credited` (here a wrong 70) is ignored, and what the credit note settled is
-    recomputed from the two snapshots whichever comes in first."""
+    recomputed from the two snapshots. A credit note tried before its invoice is refused."""
     tag = uuid.uuid4().hex[:6]
     inv, cn = f"doc:INV-I{tag}", f"doc:CN-I{tag}"
     line = [{"name": "Service", "quantity": 1, "unit_price": 80.0, "line_total": 80.0}]
@@ -123,7 +123,13 @@ async def test_import_takes_credited_from_the_imported_credit_notes(client, sess
     note = {"doc_type": "credit_note", "ref_id": cn[4:], "status": "paid", "original_doc_id": inv, "total": 30.0,
             "amount_paid": 0.0, "amount_outstanding": 0.0, "credited": 70.0,
             "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 30.0, "line_total": 30.0}]}
-    for eid, data in ((cn, note), (inv, invoice)) if credit_note_first else ((inv, invoice), (cn, note)):
+    if credit_note_first:
+        # Tried before its invoice, the credit note is refused; it imports once the invoice is in.
+        r = await client.post("/docs/import", headers=auth["headers"], json={
+            "entity_id": cn, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+            "data": note})
+        assert r.status_code == 422 and r.json()["detail"]["message_key"] == "credit_note.original_missing", r.text
+    for eid, data in ((inv, invoice), (cn, note)):
         await _import(client, auth, eid, data)
     assert (await _state(session, auth, inv)).get("credited") == 30.0
     assert (await _state(session, auth, cn)).get("credited") == 30.0
@@ -144,7 +150,7 @@ async def test_an_invoice_with_an_issued_credit_note_is_undone_only_after_it(cli
     gl = await _net(session, auth, "1120", prefix="je:")
     r = await _post(client, auth, f"/docs/{inv}/{action}")
     assert r.status_code == 409, r.text
-    assert "void the credit note first" in r.text.lower(), r.text
+    assert r.json()["detail"]["message_key"] == f"docs.{action.split('-')[0]}_under_credit_note", r.text
     assert await _net(session, auth, "1120", prefix="je:") == gl
     assert (await _post(client, auth, f"/docs/{cn}/void")).status_code == 200
     r = await _post(client, auth, f"/docs/{inv}/{action}")

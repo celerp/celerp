@@ -154,6 +154,7 @@ _SPREADERS = {
     (_AJE, "_clearing_lines"): "landed cost over its clearing roles",
     (_AJE, "bill_line_charges"): "a bill's discount and tax over its lines",
     (_AJE, "create_for_supplier_return"): "what a return takes off a bill in another currency",
+    (_AJE, "_shares"): "a cost of sales over its lots and accounts, and a cost claim over its lots",
     (_MFG, "_close"): "a production run's cost over its outputs",
     (_MFG, "reconcile"): "a production run's variance over its outputs",
     (_DOCS, "_received_goods_cost"): "a line's cost over its receipts",
@@ -163,6 +164,7 @@ _SPREADERS = {
     (_DOCS, "sent_back"): "a bill's landed cost over its own units sent back",
     (_INV, "carve_cost"): "a lot's cost over a part and the rest",
     (_INV, "kept"): "carve_cost's share of one amount",
+    ("default_modules/celerp-docs/celerp_docs/consignment_buy.py", "_lot_costs"): "a consignment bill line's cost over the lots it buys",
 }
 
 # Functions that put a rounding unit on one part, and why that is not a spread over parts.

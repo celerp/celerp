@@ -34,17 +34,17 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, AccountRole, refusal
+from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, AccountRole, refusal
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.account_roles import consignor_of, is_consigned, lineage, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.lot_origin import RETIRED
+from celerp.services.money import allocate_pro_rata, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_money import UnratedTaxError, document_money
 
-_RETIRED = frozenset({"archived", "expired"})
 _EPS = Decimal("1e-9")
 
 
@@ -85,6 +85,7 @@ class _Plan:
     back: dict[str, Decimal]  # sold lot -> its stock units that went back to the consignor
     allocations: dict[str, dict[tuple[str, str, int], float]]  # lot -> current allocations
     docs: set[str]
+    units: list[tuple[Decimal, Decimal]]  # per stock receipt: (bill units, stock units) kept
 
     @property
     def lots(self) -> set[str]:
@@ -111,6 +112,27 @@ async def _sale_doc(session, company_id, lot_id: str) -> str | None:
     if sale is None or sale.event_type != "item.fulfilled":
         return None
     return (sale.data or {}).get("source_doc_id")
+
+
+async def _sent_back(session, company_id, lot_ids) -> set[str]:
+    """Of these disposed lots, the ones a return to the supplier disposed: the movement that
+    last took them off the books is ``item.returned_to_supplier``, not a write-off. A lot
+    keeps its quantity when it goes back, as the record of what left, so the quantity alone
+    cannot tell goods returned to the consignor from goods lost while held."""
+    if not lot_ids:
+        return set()
+    rows = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.event_type).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(lot_ids)),
+        LedgerEntry.event_type.in_(("item.returned_to_supplier", "item.written_off")),
+    ).order_by(LedgerEntry.id))).all()
+    last = {entity_id: event_type for entity_id, event_type in rows}
+    return {lot for lot, event_type in last.items() if event_type == "item.returned_to_supplier"}
+
+
+def _gave_up_value(state: dict) -> bool:
+    """A lot retired from the catalog (RETIRED) that a split, transform, merge or undone
+    receipt left behind holds no goods; one the user archived or expired keeps them on hand."""
+    return str(state.get("status") or "").lower() in RETIRED and state.get(ON_BOOKS_FIELD) is not True
 
 
 async def _plan(session, company_id, state: dict) -> _Plan:
@@ -154,6 +176,12 @@ async def _plan(session, company_id, state: dict) -> _Plan:
     kept: dict[int, Decimal] = {}
     allocations: dict[str, dict[tuple[str, str, int], float]] = {}
     docs: set[str] = set()
+    # What the bill buys is told apart by the movement that moved the units: goods on hand
+    # and goods sold (historical sales, still owed to the consignor) are kept; goods a
+    # return sent back to the consignor or the supplier are not.
+    sent_back = await _sent_back(session, company_id, {
+        m.entity_id for g in groups for m in g.members
+        if str((m.state or {}).get("status") or "").lower() == "disposed"})
     for group in groups:
         members = []
         for row in group.members:
@@ -162,7 +190,7 @@ async def _plan(session, company_id, state: dict) -> _Plan:
             qty = to_decimal(ls.get("quantity") or 0)
             if status == "merged":
                 raise _changed(_sku(ls))
-            if status in _RETIRED or qty <= 0:
+            if qty <= 0 or _gave_up_value(ls) or row.entity_id in sent_back:
                 continue
             if not is_consigned(ls) or ls.get("landed_costs"):
                 raise _changed(_sku(ls))
@@ -190,7 +218,13 @@ async def _plan(session, company_id, state: dict) -> _Plan:
             kept[group.line] -= to_decimal(x.get("quantity_returned") or 0) * group.basis
             if kept[group.line] < -_EPS:
                 raise _changed(line_sku(group.line))
-    return _Plan(groups=groups, kept=kept, back=_back(groups, of, line_sku), allocations=allocations, docs=docs)
+    back = _back(groups, of, line_sku)
+    units = []
+    for group in groups[:len(receipts)]:
+        stock = sum((to_decimal(m.state.get("quantity") or 0) - back.get(m.entity_id, Decimal(0))
+                     for m in group.members), Decimal(0))
+        units.append((stock * group.basis, stock))
+    return _Plan(groups=groups, kept=kept, back=back, allocations=allocations, docs=docs, units=units)
 
 
 def _back(groups: list[_Group], of: dict[str, _Group], line_sku) -> dict[str, Decimal]:
@@ -236,11 +270,61 @@ def _bill_lines(state: dict, kept: dict[int, Decimal], currency: str) -> tuple[l
                     continue
                 total = to_decimal(li.get("line_total") or 0) or ordered * to_decimal(li.get("unit_price") or 0)
                 line["quantity"] = to_stored_float(qty)
+                if "quantity_received" in line:  # received and kept, never what the consignment received
+                    line["quantity_received"] = line["quantity"]
                 line["line_total"] = to_stored_float(round_money(total * qty / ordered, currency)
                                                      if ordered > 0 else Decimal(0))
         out.append(line)
         source.append(idx)
     return out, source, changed
+
+
+def _bill_receipts(state: dict, plan: _Plan, source: list[int]) -> tuple[list[dict], list[str]]:
+    """The bill's receipts and the lots they brought in: each of the consignment's receipts,
+    on the bill line it now sits on, for what the bill took over of it (_Plan.units), so a
+    line's receipts never come to more than it bills. A receipt whose goods all went back, or
+    whose line the bill left out, is left off with its lot."""
+    at = {idx: j for j, idx in enumerate(source)}
+    roots = iter(state.get("received_item_ids") or [])
+    units = iter(plan.units)
+    items: list[dict] = []
+    lots: list[str] = []
+    for x in state.get("received_items") or []:
+        idx = int(x.get("po_line_index", -1))
+        if (x.get("receive_as") or "stock") != "stock":
+            if idx in at:
+                items.append({**x, "po_line_index": at[idx]})
+            continue
+        lot, (bill_units, stock_units) = next(roots), next(units)
+        if idx in at and stock_units > _EPS:
+            items.append({**x, "po_line_index": at[idx], "quantity_received": to_stored_float(bill_units),
+                          "lot_quantity_bought": to_stored_float(stock_units)})
+            lots.append(lot)
+    return items, lots
+
+
+async def bought_parcels(session, company_id, bill: dict) -> dict[str, tuple[float, float | None]]:
+    """Lot -> (stock units, cost in the books' currency) a bill bought from a consignment took
+    over of each lot the consignment's receipts made: the units kept, held or sold
+    (``lot_quantity_bought``), at what the bill booked on that lot and the parts split off it
+    (``item.consignment.bought``). A supplier return from the bill goes back against these,
+    never against what the consignment recorded when the goods came in."""
+    roots = list(bill.get("received_item_ids") or [])
+    receipts = [x for x in bill.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
+    family: dict[str, str] = {}
+    for row, parent, link in await lineage(session, company_id, roots):
+        if link is None:
+            family[row.entity_id] = row.entity_id
+        elif link == "split_from" and parent in family:
+            family[row.entity_id] = family[parent]
+    cost: dict[str, float] = {}
+    if family:
+        for entity_id, data in (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.data).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(family)),
+                LedgerEntry.event_type == "item.consignment.bought"))).all():
+            if (data or {}).get("consignment_doc_id") == bill.get("source_consignment_id"):
+                cost[family[entity_id]] = cost.get(family[entity_id], 0.0) + float(data.get("cost_total") or 0)
+    return {lot: (float(x.get("lot_quantity_bought") or 0), cost.get(lot, 0.0)) for x, lot in zip(receipts, roots)}
 
 
 async def buy_consignment(session, *, company_id, user_id, consignment_id: str, state: dict, ref: str,
@@ -263,8 +347,11 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "Nothing received on this consignment is still held or sold, so there is nothing to buy. "
             "Receive the goods first."))
     bill_id = f"doc:{ref}"
-    data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "amount_paid", "amount_outstanding"}}
+    # What went back to the consignor was returned on the consignment, never on the bill.
+    data = {k: v for k, v in state.items() if k not in {
+        "status", "entity_type", "amount_paid", "amount_outstanding", "returned_items", "returned_credit"}}
     data["line_items"] = lines
+    data["received_items"], data["received_item_ids"] = _bill_receipts(state, plan, source)
     if changed:
         if to_decimal(state.get("discount") or 0) > 0 and state.get("discount_type") != "percentage":
             raise _cannot_recompute()
@@ -295,7 +382,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
         account = by_line[group.line][0] if group.line in by_line else fallback
         if not account:
             raise HTTPException(status_code=409, detail=refusal(
-                "posting.role_missing", "Choose an inventory account for purchased stock first.",
+                "posting.role_missing", "Choose an account for Inventory purchased in the accounting settings first, then try again.",
                 role=AccountRole.INVENTORY_PURCHASED.value))
         for row in group.members:
             await _bought(session, company_id, user_id, row, costs[row.entity_id], account,
@@ -325,23 +412,25 @@ def _cannot_recompute() -> HTTPException:
 def _lot_costs(plan: _Plan, by_line: dict[int, tuple[str, Decimal]], base_currency: str) -> dict[str, Decimal]:
     """Each lot's cost at the bill's price per unit, for the units the company kept: a
     sold lot's units that a customer returned and that went back to the consignor are
-    not. The lots received on a line share exactly what the bill debits for it, the
-    rounding remainder going to the largest."""
+    not. The lots received on a line share exactly what the bill debits for it, spread by
+    the allocator (money.allocate_pro_rata) over the bill units each lot kept."""
     costs: dict[str, Decimal] = {}
-    on_line: dict[int, list[str]] = {}
+    on_line: dict[int, list[tuple[str, Decimal]]] = {}
     for group in plan.groups:
         debit = by_line[group.line][1] if group.line in by_line else Decimal(0)
         kept = plan.kept.get(group.line, Decimal(0))
-        unit = debit * group.basis / kept if kept > 0 else Decimal(0)
         for row in group.members:
-            qty = to_decimal(row.state.get("quantity") or 0) - plan.back.get(row.entity_id, Decimal(0))
-            costs[row.entity_id] = round_money(unit * max(qty, Decimal(0)), base_currency)
+            qty = max(to_decimal(row.state.get("quantity") or 0) - plan.back.get(row.entity_id, Decimal(0)), Decimal(0))
             if group.returned is None:
-                on_line.setdefault(group.line, []).append(row.entity_id)
+                on_line.setdefault(group.line, []).append((row.entity_id, qty * group.basis))
+            else:
+                # Goods a customer brought back: one lot at the line's price per unit, not a share.
+                costs[row.entity_id] = round_money(debit * group.basis * qty / kept if kept > 0 else 0, base_currency)
     for line, lots in on_line.items():
         debit = by_line[line][1] if line in by_line else Decimal(0)
-        largest = max(lots, key=lambda lot: (costs[lot], lot))
-        costs[largest] += debit - sum((costs[lot] for lot in lots), Decimal(0))
+        weights = [w for _lot, w in lots]
+        shares = allocate_pro_rata(debit, weights, base_currency) if any(weights) else [Decimal(0)] * len(lots)
+        costs.update({lot: share for (lot, _w), share in zip(lots, shares)})
     return costs
 
 

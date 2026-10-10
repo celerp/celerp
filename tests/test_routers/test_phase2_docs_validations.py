@@ -88,6 +88,8 @@ async def test_quotation_convert_expired_rejected_and_non_expired_allowed(client
 async def test_credit_note_validation_total_not_exceed_original(client):
     token = await _register(client, email="admin3@docs.test")
     inv = await _create_invoice(client, token, total=100)
+    # A credit note credits an issued invoice, so the invoice is issued first.
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(token))).status_code == 200
 
     bad = await client.post(
         "/docs",
@@ -102,7 +104,6 @@ async def test_credit_note_validation_total_not_exceed_original(client):
         json={"doc_type": "credit_note", "original_doc_id": inv, "reason": "return", "line_items": [{"name": "Refund", "quantity": 1, "unit_price": 40, "line_total": 40}], "subtotal": 40, "tax": 0, "total": 40},
     )
     assert good.status_code == 200
-    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(token))).status_code == 200
     assert (await client.post(f"/docs/{good.json()['id']}/finalize", headers=_h(token))).status_code == 200
     inv_state = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert inv_state["amount_outstanding"] == 60

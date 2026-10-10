@@ -23,7 +23,6 @@ from test_cost_follows_goods import _doc_number, _invoice, _ship
 from test_cost_restatement import _state
 from test_invoice_unshipped_books import _lot
 from test_quantity_cost_invariant import _po, _receive
-from test_set_aside_goods_every_exit import _refused
 from test_set_aside_older_paths import _held, _net, _strip_snapshot, _unrecorded
 
 pytestmark = pytest.mark.asyncio
@@ -255,14 +254,23 @@ async def test_a_credit_note_line_for_a_service_releases_nothing(client, session
 # A shipping invoice and goods an older invoice holds
 
 
-async def test_an_invoice_with_a_snapshot_cannot_ship_goods_an_older_invoice_holds(client, session, auth):
+async def test_an_invoice_cannot_take_goods_an_older_invoice_without_a_cost_record_holds(client, session, auth):
+    """The older invoice holds all 3 with no cost record, so there is no cost to move with
+    the goods: a newer invoice for them is refused at finalize, naming the older one, and
+    nothing leaves stock."""
     sku = f"SNP-{uuid.uuid4().hex[:4]}"
     lot = await _lot(client, auth, sku, 3, 30.0)
     older = await _invoice(client, auth, [(lot, sku, 3)])
     await _strip_snapshot(session, auth, older)
-    newer = await _invoice(client, auth, [(lot, sku, 2)])
-    r = await client.post(f"/docs/{newer}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [lot]})
-    await _refused(session, auth, r, older, None)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "total": 80.0, "line_items": [
+            {"entity_id": lot, "sku": sku, "name": "Lot", "quantity": 2, "unit_price": 40.0, "line_total": 80.0}]})
+    assert r.status_code == 200, r.text
+    newer = r.json()["id"]
+    f = await client.post(f"/docs/{newer}/finalize", headers=auth["headers"])
+    assert f.status_code == 409, f.text
+    assert f.json()["detail"]["message_key"] == "lines.lot_already_invoiced", f.text
+    assert await _doc_number(session, auth, older) in f.json()["detail"]["message"]
     assert float((await _state(session, auth, lot))["quantity"]) == 3.0
     assert await _held(session, auth, lot) == {await _doc_number(session, auth, older): 3.0}
 

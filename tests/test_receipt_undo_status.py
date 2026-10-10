@@ -205,7 +205,7 @@ async def test_an_earlier_bill_imported_as_issued_stays_final(client, session):
     r = await client.post("/docs/import/batch", headers=h, json={"records": [{
         "entity_id": bill, "event_type": "doc.created", "source": "import", "idempotency_key": f"imp-{bill}",
         "data": {"doc_type": "bill", "status": "final", "doc_number": f"IMP-{bill[-8:]}", "issue_date": "2026-01-10",
-                 "currency": "USD", "subtotal": 100, "tax": 0, "total": 100, "line_items": [
+                 "currency": "USD", "subtotal": 100, "tax": 0, "total": 100, "import_treatment": "record_now", "line_items": [
                      {"sku": "RU-OLD-IMP", "name": "Widget", "quantity": 2, "unit_price": 50, "line_total": 100,
                       "receive_as": "stock"}]}}]})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text

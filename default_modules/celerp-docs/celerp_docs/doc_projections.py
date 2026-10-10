@@ -6,6 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from celerp.services.document_lines import received_line_index
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
 
@@ -55,16 +56,31 @@ def _recalc_list_totals(state: dict) -> dict:
     return state
 
 
+# A document in one of these statuses was never issued, or no longer stands: it holds no
+# payment, and nothing it is paid makes it read as paid.
+UNISSUED_STATUSES = frozenset({"draft", "void"})
+
+
+# Only a credit note and the invoice it credits settle each other (``credited``). A bill is
+# settled by its payments and supplier returns alone, so a ``credited`` an older release
+# wrote on one takes nothing off what it owes.
+CREDITED_DOC_TYPES = frozenset({"invoice", "credit_note"})
+
+
+def _credited(state: dict):
+    return to_decimal(state.get("credited", 0) or 0) if state.get("doc_type") in CREDITED_DOC_TYPES else Decimal(0)
+
+
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
     """Return document-currency paid and outstanding balances. Goods sent back to the supplier
     owe nothing: what their return took off accounts payable (``returned_credit``) comes off
-    the total the same as a payment. What an issued credit note settled between a document
-    and the invoice it credits (``credited``) is owed by neither."""
+    the total the same as a payment, once. What an issued credit note settled between itself
+    and the invoice it credits (``credited``, CREDITED_DOC_TYPES) is owed by neither."""
     currency = str(state.get("currency") or "USD")
     owed = round_money(to_decimal(state.get("total", 0) or 0) - to_decimal(state.get("returned_credit", 0) or 0),
                        currency)
     paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
-    credited = round_money(to_decimal(state.get("credited", 0) or 0), currency)
+    credited = round_money(_credited(state), currency)
     outstanding = round_money(max(Decimal(0), owed - paid_d - credited), currency)
     return paid_d, outstanding
 
@@ -79,7 +95,7 @@ def payment_status(state: dict, paid: Decimal, outstanding: Decimal) -> str:
     (``credited``) has settled part of it; otherwise final."""
     if outstanding == 0:
         return "paid"
-    return "partial" if paid > 0 or to_decimal(state.get("credited", 0) or 0) > 0 else "final"
+    return "partial" if paid > 0 or _credited(state) > 0 else "final"
 
 
 def _receipt_status(current: dict) -> str:
@@ -120,39 +136,6 @@ def _status_without_receipts(state: dict) -> str:
     return "awaiting_payment" if status == "final" and before == "awaiting_payment" else status
 
 
-def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:
-    """Whether ``line`` holds the goods a receipt entry names: its item or SKU. An entry naming
-    neither (an expense or asset line) is held by a line naming neither, the one ``in_place``
-    at its recorded position whatever it is called, any other only under the same name."""
-    item_id = entry.get("item_id")
-    sku = str(entry.get("sku") or "").strip()
-    if item_id or sku:
-        return bool((item_id and line.get("item_id") == item_id)
-                    or (sku and str(line.get("sku") or "").strip() == sku))
-    if line.get("item_id") or str(line.get("sku") or "").strip():
-        return False
-    name = str(entry.get("name") or "").strip()
-    return in_place or (bool(name) and str(line.get("name") or line.get("description") or "").strip() == name)
-
-
-def received_line_index(lines: list[dict], entry: dict) -> int | None:
-    """The document line a receipt (or return) entry is for, or None when it cannot be told.
-
-    An entry recorded with its line's id names that line wherever it now sits. An older entry
-    names its line by position, trusted only while the line there still holds the entry's
-    goods; otherwise the one line holding them. Two lines holding them leave it untold.
-    """
-    line_id = entry.get("source_line_id")
-    if line_id:
-        found = [i for i, li in enumerate(lines) if li.get("line_id") == line_id]
-        return found[0] if len(found) == 1 else None
-    index = int(entry.get("po_line_index", -1))
-    if 0 <= index < len(lines) and _holds_receipt(lines[index], entry, in_place=True):
-        return index
-    found = [i for i, li in enumerate(lines) if _holds_receipt(li, entry)]
-    return found[0] if len(found) == 1 else None
-
-
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
 
@@ -163,6 +146,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
         current.setdefault("files", [])
+        if current["status"] in UNISSUED_STATUSES and (current.get("amount_paid") or current.get("payments")):
+            # An older import could store a draft or void document as paid; no payment was
+            # ever recorded on it, so it holds none.
+            current["amount_paid"] = 0.0
+            current.pop("payments", None)
+            _, outstanding = _payment_balances(current, 0)
+            current["amount_outstanding"] = 0.0 if current["status"] == "void" else to_stored_float(outstanding)
     elif event_type == "doc.pushed":
         # Outbound write-back: record the id the platform returned so this doc is never
         # pushed (created) there again. Field matches list_unsynced_invoices' skip check.
@@ -191,6 +181,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
             _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
             current["amount_outstanding"] = to_stored_float(outstanding)
+        elif "credited" in data["fields_changed"] and current.get("doc_type") not in CREDITED_DOC_TYPES:
+            # An older release settled a credit note on a bill: the bill still owes what its
+            # payments and returns leave, and stands as they make it.
+            paid, outstanding = _payment_balances(current, current.get("amount_paid", 0))
+            current["amount_outstanding"] = to_stored_float(outstanding)
+            if current.get("status") in ("final", "partial", "paid"):
+                current["status"] = payment_status(current, paid, outstanding)
     elif event_type == "doc.renumbered":
         # Narrow alias of doc.updated: only ref_id / doc_number may be changed.
         for field, change in data["fields_changed"].items():
@@ -227,14 +224,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("doc_type"):
             current["doc_type"] = data["doc_type"]
     elif event_type == "doc.voided":
-        current["status"] = "void"
-        current["amount_outstanding"] = 0.0  # a void document owes nothing
-        if data.get("reason"):
-            current["void_reason"] = data["reason"]
-        if data.get("pre_void_status"):
-            current["pre_void_status"] = data["pre_void_status"]
-        if data.get("pre_void_fulfillment"):
-            current["pre_void_fulfillment"] = data["pre_void_fulfillment"]
+        # A void of a document already void (older releases accepted one) changes nothing:
+        # the status to restore stays the one it had before the first void.
+        if current.get("status") != "void":
+            current["status"] = "void"
+            current["amount_outstanding"] = 0.0  # a void document owes nothing
+            if data.get("reason"):
+                current["void_reason"] = data["reason"]
+            if data.get("pre_void_status"):
+                current["pre_void_status"] = data["pre_void_status"]
+            if data.get("pre_void_fulfillment"):
+                current["pre_void_fulfillment"] = data["pre_void_fulfillment"]
     elif event_type == "doc.reverted_to_draft":
         current["status"] = "draft"
         current["finalized"] = False  # back to an editable, un-issued draft
@@ -291,8 +291,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         paid, outstanding = _payment_balances(
             current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
         current["amount_paid"] = to_stored_float(paid)
-        current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = payment_status(current, paid, outstanding)
+        # A draft or void document never reads as paid: the payment stays on record (so it
+        # can be voided) and the document keeps its own status. A void one owes nothing.
+        if current.get("status", "draft") not in UNISSUED_STATUSES:
+            current["amount_outstanding"] = to_stored_float(outstanding)
+            current["status"] = payment_status(current, paid, outstanding)
+        elif current.get("status") == "draft":
+            current["amount_outstanding"] = to_stored_float(outstanding)
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({

@@ -409,7 +409,9 @@ async def test_goods_a_customer_returned_can_go_back_to_the_consignor(client, se
                           json={"items": [{"item_id": returned, "quantity_returned": 2}]})
     assert r.status_code == 200, r.text
     state = await _state(session, auth, returned)
-    assert (state["quantity"], state.get("consignment_flag")) == (0, None)
+    # Back with the consignor: off the books and no longer consigned; the lot keeps the
+    # quantity that went back as the record of the return.
+    assert (state["status"], state["quantity"], state.get("consignment_flag")) == ("disposed", 2.0, None)
     assert await _books(session, auth, PAYABLE, COGS, PURCHASED, AP) == {
         PAYABLE: 0.0, COGS: 0.0, PURCHASED: 0.0, AP: 0.0}
     await _settled(client, session, auth)

@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from stock_books import assert_settled
 from test_cost_restatement import _item, _state
+import uuid
+
 from test_landed_cost_pools import _po_into, _sell
 from test_money_stock_and_contact_invariants import _account_net
-from test_receipt_accounting import _return
+from test_receipt_accounting import _doc, _finalize, _receive, _return
 
 _ACCOUNTS = ("1130-OB", "1130-P", "1130-FRT", "2110", "4300", "5100", "6970")
 
@@ -75,6 +77,32 @@ async def test_excess_on_a_return_that_is_not_the_last_goes_to_stock_gain(client
     assert _stock(d) == 0.0, d
     assert d.get("4300") == -1000.0, d
     assert "6970" not in d and "5100" not in d, d
+    await assert_settled(client, session, auth)
+
+
+async def test_a_whole_lot_returned_while_the_bill_keeps_other_goods_is_credited_at_the_bill_price(
+        client, session, auth):
+    """Lot 10 at 1.00; one bill adds 1 at 1000.00 to it and 1 at 50.00 of a new item (payable
+    1050.00). Sell 10: the lot keeps 1 at 91.82. Returning that unit takes the lot whole while
+    the bill keeps the other goods: Dr payable 1000.00, Cr stock 91.82, Cr stock gain 908.18;
+    the bill still owes 50.00."""
+    lot = await _item(client, auth, 10.0, qty=10)
+    sku = f"SRD-{uuid.uuid4().hex[:6]}"
+    bill = await _doc(client, auth, "purchase_order", [
+        {"item_id": lot, "name": "Lot", "quantity": 1, "unit_price": 1000.0},
+        {"sku": sku, "name": "Other", "quantity": 1, "unit_price": 50.0}])
+    r = await _receive(client, auth, bill,
+                       {"po_line_index": 0, "item_id": lot, "name": "Lot", "quantity_received": 1},
+                       {"po_line_index": 1, "sku": sku, "name": "Other", "quantity_received": 1})
+    assert r.status_code == 200, r.text
+    await _finalize(client, auth, bill)
+    await _sell(client, auth, lot, 10)
+    d = await _send_back(client, session, auth, bill, lot, 1)
+    assert d.get("2110") == 1000.0, d
+    assert _stock(d) == -91.82, d
+    assert d.get("4300") == -908.18, d
+    assert "6970" not in d and "5100" not in d, d
+    assert round(await _account_net(session, auth["company_id"], "2110"), 2) == -50.0
     await assert_settled(client, session, auth)
 
 

@@ -427,7 +427,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import category_label, get_lang, t
+from ui.i18n import category_label, get_lang, refusal_text, t
 from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -3616,7 +3616,7 @@ celerpUpdateBulkAlloc();
         skipped = result.get("skipped") or []
         if skipped:
             paid = len(result.get("allocations") or [])
-            reasons = "; ".join(f"{s.get('doc_id')}: {s.get('reason')}" for s in skipped)
+            reasons = "; ".join(f"{s.get('doc_id')}: {refusal_text(s.get('reason'))}" for s in skipped)
             return _action_error(t("documents.bulk_payment_result", paid=paid, skipped=len(skipped), reasons=reasons))
         # Refresh the page
         doc_type = str(form.get("doc_type", "invoice")).strip()

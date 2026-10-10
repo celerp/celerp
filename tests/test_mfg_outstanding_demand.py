@@ -73,15 +73,12 @@ async def _ship(client, auth, doc: str, *items: str) -> None:
     assert r.status_code == 200, r.text
 
 
-async def _send_out(client, auth, item_id: str, qty: float) -> None:
-    """Send ``qty`` of a lot out on a memo, so it leaves stock without a second invoice booking its cost."""
-    sku = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json().get("sku")
-    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "total": 0, "line_items": [
-        {"item_id": item_id, "sku": sku, "name": "Made", "quantity": qty, "unit_price": 100}]})
-    assert r.status_code in (200, 201), r.text
-    memo = r.json()["id"]
-    assert (await client.post(f"/docs/{memo}/finalize", headers=auth["headers"])).status_code == 200
-    await _ship(client, auth, memo, item_id)
+async def _shipped_elsewhere(client, auth, item_id: str, qty: float) -> None:
+    """Another invoice ships ``qty`` of a lot an earlier invoice holds: the goods leave stock
+    and their cost moves with them, so the earlier invoice still wants them. (A memo cannot
+    send out goods a finalized invoice holds.)"""
+    other = await _invoice(client, auth, (item_id, qty))
+    await _ship(client, auth, other, item_id)
 
 
 async def _take_back(client, auth, doc: str, *items: str) -> None:
@@ -197,9 +194,9 @@ async def test_part_shipped_order_with_production_running_is_short_only_the_rest
     fg_lot = (await _lots(client, auth, fg, 6))[0]
     doc = await _invoice(client, auth, (fg, 4), (fg_lot, 6))
     await _ship(client, auth, doc, fg)
-    await _send_out(client, auth, fg_lot, 6)
+    await _shipped_elsewhere(client, auth, fg_lot, 6)
 
-    # The first order still wants the six whose lot went out on a memo; three are on the way.
+    # The first order still wants the six another invoice shipped; three are on the way.
     assert _figures(await _row(client, auth, fg)) == (6, 0, 3, 3)
     assert await _outstanding(session, auth, doc) == [(0, 4, 4, 0), (1, 6, 0, 6)]
 
@@ -282,7 +279,7 @@ async def test_posting_alongside_a_part_shipped_order_and_running_production(cli
     fg_lot = (await _lots(client, auth, fg, 6))[0]
     first = await _invoice(client, auth, (fg, 4), (fg_lot, 6))
     await _ship(client, auth, first, fg)
-    await _send_out(client, auth, fg_lot, 6)
+    await _shipped_elsewhere(client, auth, fg_lot, 6)
     await _auto(session, auth)
 
     doc = await _invoice(client, auth, (fg, 2))

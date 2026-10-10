@@ -79,7 +79,7 @@ async def test_a_store_re_import_cannot_take_set_aside_goods(client, session, au
                                          company_id=auth["company_id"])
     await session.rollback()
     assert refused.value.status_code == 409
-    assert await _doc_number(session, auth, inv) in refused.value.detail, refused.value.detail
+    assert await _doc_number(session, auth, inv) in refused.value.detail["message"], refused.value.detail
     await _unchanged(client, session, auth, lot)
 
 
@@ -185,7 +185,7 @@ async def test_two_invoices_hold_until_each_ships_or_is_voided(client, session, 
     b = await _invoice(client, auth, [(lot, sku, 2)])
     r = await _adjust(client, auth, lot, 3)
     await _refused(session, auth, r, b, 4)
-    assert await _doc_number(session, auth, a) in r.json()["detail"]
+    assert await _doc_number(session, auth, a) in r.json()["detail"]["message"]
     assert (await _adjust(client, auth, lot, 4)).status_code == 200  # the free unit leaves
     assert (await client.post(f"/docs/{a}/void", headers=auth["headers"], json={"reason": "cancelled"})).status_code == 200
     assert (await _adjust(client, auth, lot, 2)).status_code == 200

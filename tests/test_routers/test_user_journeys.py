@@ -1546,8 +1546,9 @@ async def test_edge_void_already_void_doc_returns_error(client):
     eid = await _invoice(client, token)
     await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "test"})
     r = await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "again"})
-    # Can void void; or 409 - implementation-dependent, just assert it doesn't crash (2xx or 409)
-    assert r.status_code in {200, 409, 422}
+    # A void document is voided once: a second void is refused and names the way back.
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.void_already_void"
 
 
 @pytest.mark.asyncio
