@@ -88,6 +88,7 @@ async def repair_imported_documents(session: AsyncSession) -> dict:
     for company_id, doc_id, meta, data in imports:
         meta = meta or {}
         if (not meta.get(auto_je.IMPORTED_SNAPSHOT) or meta.get(auto_je.IMPORTED_OPENING)
+                or meta.get(auto_je.IMPORT_TREATMENT)
                 or auto_je.imported_issue_kind(data or {}) not in ("purchase_order", "bill")):
             continue
         if company_id not in staged:

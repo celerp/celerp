@@ -488,10 +488,8 @@ async def test_return_lot_offers_the_measures_that_lot_keeps(client, session, au
 
 @pytest.mark.parametrize("key", [
     "docs.return_line_not_on_hand", "docs.return_line_shared", "docs.return_line_unknown",
-    "docs.return_line_untraced", "docs.return_not_on_hand", "docs.return_imported_on_bill",
-    "docs.imported_on_bill_next.revert", "docs.imported_on_bill_next.void", "docs.imported_on_bill_next.return",
-    "docs.undo_receipt_imported", "docs.revert_imported_bill", "docs.void_imported_bill",
-    "docs.imported_on_bill_next.receive", "docs.receive_imported_bill", "docs.void_order_receipt",
+    "docs.return_line_untraced", "docs.return_not_on_hand", "docs.undo_imported_receipt",
+    "docs.void_imported_receipt", "docs.revert_imported_receipt", "docs.void_order_receipt",
     "docs.return_line_by_lot", "docs.return_lot_mixed_prices", "docs.return_lot_merged", "docs.undo_receipt_merged",
     "documents.confirm_return_selected",
     "documents.nothing_to_return", "documents.return_nothing_selected", "documents.return_measure_blank_hint",

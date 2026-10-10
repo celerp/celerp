@@ -24,6 +24,7 @@ from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.journal_accounts import require_line_destinations
 from celerp_docs.routes import (
+    RECORD_NOW,
     DocImportRecord,
     DocPatch,
     _assert_doc_import_permissions,
@@ -35,6 +36,8 @@ from celerp_docs.routes import (
     _lock_imported_contact,
     _require_doc_rate_http,
     check_imported_snapshot,
+    import_treatment,
+    imported_booked_now,
     imported_opening_snapshot,
     imported_settlement_free,
     import_digest,
@@ -131,9 +134,10 @@ async def import_doc_records(
                 if upserting:
                     status = await _upsert_doc(session, company_id, user, role, settings, rec)
                 else:
-                    status = await _create_doc(
-                        session, company_id, user, rec, base_currency, post_ledger=post_ledger,
+                    entry = await create_imported_doc(
+                        session, company_id, user, role, settings, rec, base_currency, post_ledger=post_ledger,
                     )
+                    status = "skipped" if getattr(entry, "was_deduped", False) else "created"
         except Exception as exc:
             outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
             continue
@@ -161,20 +165,30 @@ async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportR
     return "skipped" if result.get("event_id") is None else "updated"
 
 
-async def _create_doc(
-    session, company_id, user, rec: DocImportRecord, base_currency: str, *, post_ledger: bool,
-) -> OutcomeStatus:
-    """Write one imported document and, when it is issued, its accounting entry."""
+async def create_imported_doc(
+    session, company_id, user, role: str, settings: dict, rec: DocImportRecord, base_currency: str, *,
+    post_ledger: bool,
+):
+    """Write one imported document and, when it is issued into live books, what its import
+    treatment books for it (import_treatment): nothing when the opening balances hold it,
+    otherwise the entries the app posts for it (_import_auto_je). Shared by the single and
+    batch imports; returns the doc.created entry."""
     await _lock_imported_contact(session, company_id, "doc", rec.data)
     await _assert_import_number_free(session, company_id, "doc", rec.data)
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
     await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
+    treatment = import_treatment(rec.entity_id, rec.data, post_ledger=post_ledger)
     data = imported_settlement_free(rec.data)
+    received: list[dict] = []
     if post_ledger:
-        if auto_je.imported_issue_kind(data) == "bill":
+        kind = auto_je.imported_issue_kind(data)
+        if kind == "bill":
             await require_line_destinations(session, company_id, data.get("line_items"))
-        data = await imported_opening_snapshot(session, company_id, data)
+        if treatment == RECORD_NOW and kind in ("purchase_order", "bill"):
+            data, received = imported_booked_now(data)
+        else:
+            data = await imported_opening_snapshot(session, company_id, data)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -187,14 +201,12 @@ async def _create_doc(
         source=rec.source,
         idempotency_key=rec.idempotency_key,
         metadata_=_import_metadata(rec.source_ts, data, post_ledger=post_ledger,
-                                   request=import_digest(rec.entity_id, rec.data)),
+                                   request=import_digest(rec.entity_id, rec.data), treatment=treatment),
     )
     if getattr(entry, "was_deduped", False):
-        return "skipped"
+        return entry
     await settle_imported_credit(session, company_id, user.id, entry.entity_id, data)
-    if post_ledger:
-        await _import_auto_je(
-            session, company_id, user.id, entry.entity_id, data,
-            base_currency=base_currency,
-        )
-    return "created"
+    if treatment == RECORD_NOW:
+        await _import_auto_je(session, company_id, user, role, settings, entry.entity_id, data, received,
+                              key=rec.idempotency_key, base_currency=base_currency)
+    return entry

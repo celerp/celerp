@@ -45,14 +45,15 @@ def _line_price(st: dict) -> dict[str, float]:
 
 
 def _payable(st: dict) -> float:
-    """What the document still owes the supplier."""
+    """What the document still owes the supplier. A bill's outstanding already nets its
+    supplier returns (returned_credit); an order owes what it received less returns."""
     if st.get("status") in ("void", "draft"):
         return 0.0
+    if st.get("doc_type") == "bill":
+        return float(st.get("amount_outstanding") or 0)
     price = _line_price(st)
     returned = sum(float(x.get("quantity_returned") or 0) * price.get(x.get("item_id"), 0)
                    for x in st.get("returned_items") or [])
-    if st.get("doc_type") == "bill":
-        return float(st.get("amount_outstanding") or 0) - returned
     received = sum(float(x.get("quantity_received") or 0) * price.get(x.get("item_id"), 0)
                    for x in st.get("received_items") or [])
     return received - returned - float(st.get("amount_paid") or 0)
@@ -110,7 +111,10 @@ async def _opening(client, auth, owed: float, in_transit: float = 0.0) -> None:
     assert r.status_code == 200, r.text
 
 
-def _snapshot(lot: str, doc_type: str, qty: int, received: int, paid: float = 0.0) -> dict:
+def _snapshot(lot: str, doc_type: str, qty: int, received: int, paid: float = 0.0,
+              treatment: str | None = "opening_balances") -> dict:
+    """The document as imported. Its value is in the opening balances, so it is imported
+    with that treatment; ``treatment=None`` is a document as an earlier release stored it."""
     total = PRICE * qty
     if doc_type == "purchase_order":
         status = "received" if received >= qty else "partially_received"
@@ -123,7 +127,7 @@ def _snapshot(lot: str, doc_type: str, qty: int, received: int, paid: float = 0.
             "subtotal": total, "total": total, "amount_outstanding": total - paid, "amount_paid": paid,
             "received_items": [{"item_id": lot, "po_line_index": 0, "quantity_received": float(received),
                                 "receive_as": "stock"}] if received else [],
-            "received_item_ids": []}
+            "received_item_ids": [], **({"import_treatment": treatment} if treatment else {})}
 
 
 def _owed(doc_type: str, qty: int, received: int) -> tuple[float, float]:
@@ -273,7 +277,7 @@ async def _legacy(client, session, auth, lot, doc_type="purchase_order", qty=10,
     await _opening(client, auth, *_owed(doc_type, qty, received))
     cid, uid = auth["company_id"], auth["user_id"]
     await emit_event(session, company_id=cid, entity_id=doc, entity_type="doc", event_type="doc.created",
-                     data=_snapshot(lot, doc_type, qty, received), actor_id=uid, location_id=None,
+                     data=_snapshot(lot, doc_type, qty, received, treatment=None), actor_id=uid, location_id=None,
                      source="test", idempotency_key=uuid.uuid4().hex,
                      metadata_={auto_je.IMPORTED_SNAPSHOT: True})
     if doc_type == "purchase_order":
@@ -452,6 +456,7 @@ async def test_an_imported_receipt_is_costed_from_the_line_naming_its_goods(clie
     r = await client.post("/docs/import", headers=auth["headers"], json={
         "entity_id": doc, "event_type": "doc.created", "source": "test", "idempotency_key": uuid.uuid4().hex,
         "data": {"doc_type": "purchase_order", "contact_id": "supplier:1", "status": "received", "doc_number": "IMP-IDX",
+                 "import_treatment": "opening_balances",
                  "issue_date": "2026-01-01", "subtotal": 180, "total": 180, "amount_outstanding": 180, "amount_paid": 0,
                  "line_items": [{"item_id": a, "name": "A", "quantity": 3, "unit_price": 10},
                                 {"item_id": b, "name": "B", "quantity": 3, "unit_price": 50}],
