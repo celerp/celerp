@@ -4617,7 +4617,7 @@
   "docs.undo_return_moved_on": "Retur tidak dapat dibatalkan: barang yang dikembalikannya tidak lagi seperti saat masuk. Item yang diblokir: {reasons}. Perbaiki stok terlebih dahulu, lalu coba lagi.",
   "posting.role_missing": "Pilih akun untuk {role} di pengaturan akuntansi terlebih dahulu, lalu coba lagi.",
   "item.deleted": "{sku} telah dihapus: pulihkan dari daftar Terhapus untuk menggunakannya.",
-  "doc_import.treatment_required": "Dokumen {number} harus menyatakan cara masuk ke pembukuan. Pilih Sudah ada di saldo awal saya (tidak ada yang diposting dan barangnya tetap pada nilai impornya) atau Catat sekarang (dibukukan seperti tagihan dan penerimaan barang), lalu impor lagi.",
+  "doc_import.treatment_required": "Dokumen {number} tidak diimpor karena tidak menyatakan cara masuk ke pembukuan. Impor lagi dan pilih \"Sudah ada di saldo awal saya\" atau \"Catat sekarang\" di layar tinjauan, atau tetapkan dulu tanggal saldo awal di Detail Perusahaan agar pilihannya dibuat dari tanggal dokumen.",
   "doc_import.treatment_unknown": "Dokumen {number} memberi perlakuan impor ({given}) yang tidak dikenal aplikasi. Gunakan Sudah ada di saldo awal saya atau Catat sekarang, atau kosongkan, lalu impor lagi.",
   "doc_import.record_now_goods_held": "Dokumen {number} menyatakan barang yang diterima padanya sudah ada di stok pada lot {lot}. Catat sekarang memasukkan barangnya ke stok, sehingga akan terhitung dua kali. Impor sebagai Sudah ada di saldo awal saya, atau hapus isi lot dari barang yang diterimanya, lalu impor lagi.",
   "doc_import.received_invalid": "Dokumen {number}: satu baris barang yang diterima tidak dapat dibaca ({problem}). Perbaiki jumlah yang diterima di file, lalu impor lagi.",

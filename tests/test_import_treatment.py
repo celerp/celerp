@@ -23,6 +23,8 @@ on the document, and a document booked now is never taken for an earlier release
 """
 from __future__ import annotations
 
+import re
+
 import uuid
 from types import SimpleNamespace
 
@@ -87,7 +89,9 @@ async def test_a_live_import_with_no_treatment_is_refused_and_writes_nothing(
     r = await _post(client, auth, rec, batch)
     if batch:
         assert r.status_code == 200 and r.json()["created"] == 0, r.text
-        assert "Already in my opening balances" in r.json()["errors"][0], r.text
+        reason = r.json()["errors"][0]
+        assert "Already in my opening balances" in reason and "review screen" in reason, r.text
+        assert not {"import_treatment", "opening_balances", "record_now"} & set(re.findall(r"\w+", reason)), r.text
     else:
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["message_key"] == _REQUIRED, r.text

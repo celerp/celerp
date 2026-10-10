@@ -7316,9 +7316,10 @@ def import_treatment(entity_id: str, data: dict, *, post_ledger: bool) -> str | 
     if given is None and (kind == "bill" or (kind == "purchase_order" and received)):
         raise HTTPException(status_code=422, detail=refusal(
             "doc_import.treatment_required",
-            f"Document {number} must say how it enters the books. Set import_treatment to opening_balances "
-            "(Already in my opening balances: nothing is posted and its goods stay at their imported value) "
-            "or record_now (Record it now: it is booked as a bill and a receipt are), then import it again.",
+            f"Document {number} was not imported because it does not say how it enters the books. Import it "
+            "again and choose \"Already in my opening balances\" or \"Record it now\" for it on the review "
+            "screen, or first set an opening balance date in Company Details so the choice is made from the "
+            "document's date.",
             number=number))
     return given or RECORD_NOW
 
