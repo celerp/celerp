@@ -239,7 +239,9 @@ async def test_revert_of_a_lot_the_invoice_set_aside_is_refused(committed_engine
     revert = await _move(client, tok, "revert-to-draft", b)()
     assert revert.status_code == 409, revert.text
     number = (await _state(committed_engine, cid, doc))["doc_number"]
-    assert number in revert.json()["detail"], revert.text
+    detail = revert.json()["detail"]
+    assert detail["message_key"] == "lots.held_for_invoice_leave", revert.text
+    assert number in detail["message"] and detail["params"]["docs"] == number, revert.text
     assert (await _state(committed_engine, cid, b))["status"] == "available"
     assert await _draft_entries(committed_engine, cid, b) == ["made-available"]
 
