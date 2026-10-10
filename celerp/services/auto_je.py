@@ -2079,7 +2079,7 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
         if index is not None and (x.get("receive_as") or "stock") == "stock":
             received[index] = received.get(index, _Dec(0)) + to_decimal(x.get("quantity_received"))
 
-    def received_share(source: int | None) -> _Dec:
+    def received_fraction(source: int | None) -> _Dec:
         ordered = to_decimal(lines[source].get("quantity")) if source is not None else _Dec(0)
         return min(received.get(source, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
 
@@ -2088,7 +2088,7 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
         in_stock = _Dec(0)
         for e, s, d in zip(entries, sources, debits):
             stock = s is not None and bill_line_kind(lines[s]) == "stock"
-            amount = round_money(d * received_share(s), base_currency) if stock else _Dec(0)
+            amount = round_money(d * received_fraction(s), base_currency) if stock else _Dec(0)
             if amount:
                 in_stock += amount
                 e = {**e, "debit": to_stored_float(d - amount)}
@@ -2102,7 +2102,7 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
     for e, s, d in zip(entries, sources, debits):
         if s is None:
             continue
-        amount = round_money(d * received_share(s), base_currency)
+        amount = round_money(d * received_fraction(s), base_currency)
         if amount:
             carried.append({**e, "debit": to_stored_float(amount)})
     if not carried:
