@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Outra baixa já usa o número {number}. Escolha um número diferente.",
   "documents.err_price_list_unknown": "A lista de preços {price_list} não existe. Escolha uma lista de preços no menu suspenso.",
   "documents.err_contact_currency_invalid": "O Celerp não reconhece a moeda do contato ({currency}). Abra o contato, escolha uma moeda na lista e tente novamente.",
-  "documents.err_deposit_account_refused": "A conta {code} não pode receber pagamentos online porque não é a conta de depósito padrão ({default}) nem uma conta bancária ativa. Escolha uma das suas contas bancárias, ou a conta de depósito padrão.",
+  "documents.err_deposit_account_refused": "A conta {code} não pode receber pagamentos online porque não é a conta de depósito padrão ({default}) nem uma conta bancária ativa. Escolha uma das suas contas bancárias, ou Padrão dos pagamentos online.",
   "documents.err_received_not_found": "O Celerp não encontrou este documento recebido. Ele pode ter sido excluído. Volte a Recebidos e atualize.",
   "documents.err_revision_conflict": "O Celerp já recebeu esta versão do documento com outro conteúdo, então esta cópia não foi importada. Peça ao remetente para enviá-la como uma nova revisão.",
   "documents.err_book_first": "Este documento ainda não foi lançado. Lance-o primeiro e tente novamente.",

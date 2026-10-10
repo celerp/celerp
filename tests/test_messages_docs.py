@@ -186,7 +186,7 @@ def test_patch_refusal_names_the_buttons_as_the_user_sees_them(lang):
 
 @pytest.mark.parametrize("lang", _LANGS)
 def test_deposit_refusal_names_the_option_as_the_user_sees_it(lang):
-    text = t("documents.err_deposit_account_refused", lang, code="4000", cash="1000")
+    text = t("documents.err_deposit_account_refused", lang, code="4000", default="1000")
     assert t("connectors.deposit_default", lang) in text
 
 

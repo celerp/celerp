@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Một phiếu xóa sổ khác đã dùng số {number}. Hãy chọn số khác.",
   "documents.err_price_list_unknown": "Bảng giá {price_list} không tồn tại. Hãy chọn một bảng giá trong danh sách thả xuống.",
   "documents.err_contact_currency_invalid": "Celerp không nhận ra tiền tệ của liên hệ ({currency}). Hãy mở liên hệ, chọn một loại tiền trong danh sách rồi thử lại.",
-  "documents.err_deposit_account_refused": "Tài khoản {code} không thể nhận thanh toán trực tuyến vì không phải tài khoản nhận tiền mặc định ({default}) hoặc tài khoản ngân hàng đang hoạt động. Hãy chọn một tài khoản ngân hàng của bạn, hoặc tài khoản nhận tiền mặc định.",
+  "documents.err_deposit_account_refused": "Tài khoản {code} không thể nhận thanh toán trực tuyến vì không phải tài khoản nhận tiền mặc định ({default}) hoặc tài khoản ngân hàng đang hoạt động. Hãy chọn một tài khoản ngân hàng của bạn, hoặc Mặc định của thanh toán trực tuyến.",
   "documents.err_received_not_found": "Celerp không tìm thấy chứng từ đã nhận này. Có thể nó đã bị xóa. Hãy quay lại Đã nhận và tải lại.",
   "documents.err_revision_conflict": "Celerp đã nhận phiên bản này của chứng từ với nội dung khác nên bản này không được nhập. Hãy nhờ người gửi gửi nó dưới dạng bản sửa đổi mới.",
   "documents.err_book_first": "Chứng từ này chưa được ghi sổ. Hãy ghi sổ trước rồi thử lại.",

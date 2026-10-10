@@ -553,7 +553,7 @@ async def test_the_online_deposit_setting_refuses_an_account_that_is_not_cash_or
     r = await client.patch("/companies/me/books", json={key: value},
                            headers=_h(tok))
     assert r.status_code == 422
-    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]
+    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]["message"]
 
 
 @pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
@@ -567,7 +567,8 @@ async def test_the_online_deposit_setting_refuses_a_bank_whose_chart_account_can
     r = await client.patch("/companies/me/books", json={key: code},
                            headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]
+    expected_key = "posting.destination.inactive" if "is_active" in change else "posting.destination.not_money"
+    assert r.json()["detail"]["message_key"] == expected_key
 
 
 @pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])

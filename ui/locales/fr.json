@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Une autre mise au rebut utilise déjà le numéro {number}. Choisissez un autre numéro.",
   "documents.err_price_list_unknown": "La liste de prix {price_list} n'existe pas. Choisissez une liste de prix dans le menu déroulant.",
   "documents.err_contact_currency_invalid": "La devise du contact ({currency}) n'est pas reconnue par Celerp. Ouvrez le contact, choisissez une devise dans la liste, puis réessayez.",
-  "documents.err_deposit_account_refused": "Le compte {code} ne peut pas recevoir de paiements en ligne, car ce n'est ni le compte de dépôt par défaut ({default}) ni un compte bancaire actif. Choisissez l'un de vos comptes bancaires, ou le compte de dépôt par défaut.",
+  "documents.err_deposit_account_refused": "Le compte {code} ne peut pas recevoir de paiements en ligne, car ce n'est ni le compte de dépôt par défaut ({default}) ni un compte bancaire actif. Choisissez l'un de vos comptes bancaires, ou Compte par défaut des paiements en ligne.",
   "documents.err_received_not_found": "Celerp n'a pas trouvé ce document reçu. Il a peut-être été supprimé. Revenez à Reçus et actualisez.",
   "documents.err_revision_conflict": "Celerp a déjà reçu cette version du document avec un contenu différent, cette copie n'a donc pas été importée. Demandez à l'expéditeur de l'envoyer comme nouvelle révision.",
   "documents.err_book_first": "Ce document n'a pas encore été comptabilisé. Comptabilisez-le d'abord, puis réessayez.",

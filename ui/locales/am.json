@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "ሌላ ሰረዛ ቁጥር {number}ን አስቀድሞ ይጠቀማል። የተለየ ቁጥር ይምረጡ።",
   "documents.err_price_list_unknown": "የዋጋ ዝርዝሩ {price_list} የለም። ከተቆልቋዩ የዋጋ ዝርዝር ይምረጡ።",
   "documents.err_contact_currency_invalid": "የእውቂያው ገንዘብ ({currency}) Celerp የሚያውቀው ገንዘብ አይደለም። እውቂያውን ይክፈቱና ከዝርዝሩ ገንዘብ ይምረጡ፣ ከዚያ እንደገና ይሞክሩ።",
-  "documents.err_deposit_account_refused": "መለያ {code} የመስመር ላይ ክፍያዎችን መቀበል አይችልም፣ ምክንያቱም ነባሪ የተቀማጭ መለያ ({default}) ወይም ንቁ የባንክ መለያ አይደለም። ከባንክ መለያዎችዎ አንዱን ወይም ነባሪ የተቀማጭ መለያ ይምረጡ።",
+  "documents.err_deposit_account_refused": "መለያ {code} የመስመር ላይ ክፍያዎችን መቀበል አይችልም፣ ምክንያቱም ነባሪ የተቀማጭ መለያ ({default}) ወይም ንቁ የባንክ መለያ አይደለም። ከባንክ መለያዎችዎ አንዱን ወይም የመስመር ላይ ክፍያዎች ነባሪ ይምረጡ።",
   "documents.err_received_not_found": "Celerp ይህን የተቀበለ ሰነድ ማግኘት አልቻለም። ተሰርዞ ሊሆን ይችላል። ወደ የደረሱ ይመለሱና ያድሱ።",
   "documents.err_revision_conflict": "Celerp ይህን የሰነድ ስሪት በተለየ ይዘት ቀደም ሲል ተቀብሏል፣ ስለዚህ ይህ ቅጂ አልገባም። ላኪው እንደ አዲስ ክለሳ እንዲልከው ይጠይቁ።",
   "documents.err_book_first": "ይህ ሰነድ ገና አልተመዘገበም። መጀመሪያ ይመዝግቡት፣ ከዚያ እንደገና ይሞክሩ።",

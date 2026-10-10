@@ -166,7 +166,8 @@ async def test_import_rejects_duplicate_entity_id(client, session):
         "source": "import:test", "idempotency_key": f"idem-2-{uuid.uuid4().hex[:8]}",
     })
     assert r.status_code == 409
-    assert "already exists" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "doc_import.entity_exists"
+    assert "already exists" in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio

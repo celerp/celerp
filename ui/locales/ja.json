@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "別の除却がすでに番号 {number} を使っています。別の番号を選んでください。",
   "documents.err_price_list_unknown": "価格表 {price_list} は存在しません。ドロップダウンから価格表を選んでください。",
   "documents.err_contact_currency_invalid": "連絡先の通貨 ({currency}) は Celerp が認識できる通貨ではありません。連絡先を開いて一覧から通貨を選び、もう一度お試しください。",
-  "documents.err_deposit_account_refused": "勘定 {code} は既定の入金口座 ({default}) でも有効な銀行口座でもないため、オンライン決済を受け取れません。銀行口座のいずれか、または既定の入金口座を選んでください。",
+  "documents.err_deposit_account_refused": "勘定 {code} は既定の入金口座 ({default}) でも有効な銀行口座でもないため、オンライン決済を受け取れません。銀行口座のいずれか、またはオンライン決済の既定を選んでください。",
   "documents.err_received_not_found": "Celerp でこの受信書類が見つかりませんでした。削除された可能性があります。「受信」に戻って再読み込みしてください。",
   "documents.err_revision_conflict": "Celerp はこの版の書類を別の内容ですでに受け取っているため、このコピーは取り込まれませんでした。送信者に新しい版として送るよう依頼してください。",
   "documents.err_book_first": "この書類はまだ記帳されていません。先に記帳してから、もう一度お試しください。",

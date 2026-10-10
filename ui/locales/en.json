@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Another write-off already uses the number {number}. Choose a different number.",
   "documents.err_price_list_unknown": "The price list {price_list} doesn't exist. Choose a price list from the dropdown.",
   "documents.err_contact_currency_invalid": "The contact's currency ({currency}) isn't a currency Celerp recognizes. Open the contact and choose a currency from the list, then try again.",
-  "documents.err_deposit_account_refused": "Account {code} can't receive online payments because it isn't the default deposit account ({default}) or an active bank account. Choose one of your bank accounts, or the default deposit account.",
+  "documents.err_deposit_account_refused": "Account {code} can't receive online payments because it isn't the default deposit account ({default}) or an active bank account. Choose one of your bank accounts, or Online payments default.",
   "documents.err_received_not_found": "Celerp couldn't find this received document. It may have been deleted. Go back to Received and refresh.",
   "documents.err_revision_conflict": "Celerp already received this version of the document with different content, so this copy was not imported. Ask the sender to send it as a new revision.",
   "documents.err_book_first": "This document hasn't been booked yet. Book it first, then try again.",

@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Otra baja ya usa el número {number}. Elige un número distinto.",
   "documents.err_price_list_unknown": "La lista de precios {price_list} no existe. Elige una lista de precios del desplegable.",
   "documents.err_contact_currency_invalid": "Celerp no reconoce la moneda del contacto ({currency}). Abre el contacto, elige una moneda de la lista e inténtalo de nuevo.",
-  "documents.err_deposit_account_refused": "La cuenta {code} no puede recibir pagos en línea porque no es la cuenta de depósito predeterminada ({default}) ni una cuenta bancaria activa. Elige una de tus cuentas bancarias o la cuenta de depósito predeterminada.",
+  "documents.err_deposit_account_refused": "La cuenta {code} no puede recibir pagos en línea porque no es la cuenta de depósito predeterminada ({default}) ni una cuenta bancaria activa. Elige una de tus cuentas bancarias o Predeterminado de pagos en línea.",
   "documents.err_received_not_found": "Celerp no encontró este documento recibido. Puede que se haya eliminado. Vuelve a Recibidos y actualiza.",
   "documents.err_revision_conflict": "Celerp ya recibió esta versión del documento con otro contenido, así que esta copia no se importó. Pide al remitente que la envíe como una revisión nueva.",
   "documents.err_book_first": "Este documento aún no se ha registrado. Regístralo primero e inténtalo de nuevo.",
