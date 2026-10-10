@@ -951,6 +951,10 @@ async def _require_contact_filter(
         )
 
 
+# The id of the reversal row _je_rows adds for an entry voided out of a locked period.
+_REVERSAL_SUFFIX = ":reversal"
+
+
 async def _je_rows(
     session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
 ) -> list[tuple[str, dict, str]]:
@@ -980,7 +984,7 @@ async def _je_rows(
             # Voided out of a locked period: the entry stays posted in its own period and
             # its reversal posts on reversed_on (posting_dates.void_reversal).
             out.append((row.entity_id, {**state, "status": "posted"}, day))
-            out.append((f"{row.entity_id}:reversal", _reversal_state(row.entity_id, state), state["reversed_on"]))
+            out.append((f"{row.entity_id}{_REVERSAL_SUFFIX}", _reversal_state(row.entity_id, state), state["reversed_on"]))
             continue
         if status != "posted" and not (include_void and status == "void"):
             continue
@@ -1089,13 +1093,18 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     total - travel with the ref so the extended journal can name what was bought
     or sold on each posting. The projection row is already loaded whole here, so
     carrying them costs no extra read.
+
+    The reversal row of an entry voided out of a locked period has no creation
+    event of its own; it is the same document's posting undone, so it resolves to
+    the ref of the entry it reverses: same document, party and currency.
     """
     from celerp.models.ledger import LedgerEntry
 
     if not je_ids:
         return {}
+    reverses = {je_id: je_id.removesuffix(_REVERSAL_SUFFIX) for je_id in je_ids}
     ledger_events = []
-    for chunk in _id_chunks(je_ids):
+    for chunk in _id_chunks(sorted(set(reverses.values()))):
         ledger_events.extend((
             await session.execute(
                 select(LedgerEntry).where(
@@ -1183,7 +1192,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
             "doc": state,
         }
-    return refs
+    return {je_id: refs[original] for je_id, original in reverses.items() if original in refs}
 
 
 def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[str, str]) -> str:
