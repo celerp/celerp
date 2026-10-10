@@ -173,13 +173,19 @@ def out_on_another_memo(state: dict, entity_id: str | None, source_memo_id: str 
     return state.get("status") == "memo_out" and (not holder or holder not in (entity_id, source_memo_id))
 
 
-def shipped_elsewhere(lines: str, doc: str) -> dict:
-    """The refusal for goods that went out on document ``doc``: they come back only by
-    reverting that fulfillment, so whatever wants them (another record's line, a write
-    that drops or rebinds the line that shipped them) is told to do that first."""
+def shipped_elsewhere(by_doc: dict[str, list[str]]) -> dict:
+    """The refusal for goods that went out on other documents: ``by_doc`` maps each
+    document number to the lines it shipped. The goods come back only by reverting those
+    fulfillments, so whatever wants them (another record's line, a write that drops or
+    rebinds the line that shipped them) is told every place they went, each with its own
+    lines, and then to set them available there."""
+    went = [refusal("lines.went_out_on", f"{', '.join(names)} went out on {doc}.",
+                    lines=", ".join(names), doc=doc) for doc, names in by_doc.items()]
+    docs = ", ".join(by_doc)
     return refusal("lines.shipped_elsewhere",
-                   f"{lines} went out on {doc}. Revert fulfillment first: set it as available on {doc}.",
-                   lines=lines, doc=doc)
+                   " ".join(w["message"] for w in went)
+                   + f" Revert fulfillment first: set the goods as available on {docs}.",
+                   went=went, docs=docs)
 
 
 def memo_out_refusal(state: dict, sku: str) -> dict:
@@ -533,6 +539,7 @@ async def assert_protected_lines_kept(session, company_id, owner_id: str, stored
         parts = {r.entity_id: (r.state or {}).get("split_from") for r in (await session.execute(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type == "item",
             Projection.entity_id.in_(rebound)))).scalars().all()}
+    shipped: list[str] = []
     for index in sorted(protected):
         why, lots = protected[index]
         old = stored_lines[index]
@@ -550,8 +557,11 @@ async def assert_protected_lines_kept(session, company_id, owner_id: str, stored
         if not ok:
             sku = str(old.get("sku") or old.get("description") or old.get("name") or "")
             if why == "shipped":
-                doc = str(stored.get("doc_number") or stored.get("ref_id") or owner_id)
-                raise HTTPException(status_code=409, detail=shipped_elsewhere(sku, doc))
+                shipped.append(sku)
+                continue
             key, text = _PROTECTED_MESSAGES[why]
             raise HTTPException(status_code=409, detail=refusal(
                 key, text.format(line=index + 1, sku=sku), line=index + 1, sku=sku))
+    if shipped:
+        doc = str(stored.get("doc_number") or stored.get("ref_id") or owner_id)
+        raise HTTPException(status_code=409, detail=shipped_elsewhere({doc: shipped}))

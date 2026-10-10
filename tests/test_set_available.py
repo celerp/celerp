@@ -190,10 +190,44 @@ async def test_a_list_refuses_goods_a_document_shipped(client, h):
     r = await _set_available(client, h, q, line_ids=[lq0, lq1])
     assert r.status_code == 422, r.text
     assert _key(r) == "lines.shipped_elsewhere"
-    assert r.json()["detail"]["params"] == {"lines": "SA-10A", "doc": (await item(client, h, a))["status_doc_number"]}
-    assert "Revert fulfillment first" in r.json()["detail"]["message"]
+    n = (await item(client, h, a))["status_doc_number"]
+    assert r.json()["detail"]["params"]["docs"] == n
+    assert [w["params"] for w in r.json()["detail"]["params"]["went"]] == [{"lines": "SA-10A", "doc": n}]
+    assert r.json()["detail"]["message"] == (
+        f"SA-10A went out on {n}. Revert fulfillment first: set the goods as available on {n}.")
     assert (await item(client, h, a))["status"] == "sold"
     assert (await item(client, h, b))["status"] == "reserved"
+
+
+async def test_a_list_names_every_document_that_shipped_its_goods_with_their_lines(client, h):
+    """Goods two documents shipped: the refusal names each document with its own lines,
+    so every place the goods went is seen before reverting, and ends with the next step."""
+    a = await lot(client, h, "SA-12A", 1)
+    b = await lot(client, h, "SA-12B", 1)
+    c = await lot(client, h, "SA-12C", 1)
+    q = await quotation(client, h, [line(a, 1, sku="SA-12A"), line(b, 1, sku="SA-12B"), line(c, 1, sku="SA-12C")])
+    lq = await line_ids(client, h, q)
+    d1 = await doc(client, h, [line(a, 1, sku="SA-12A"), line(c, 1, sku="SA-12C")])
+    await _fulfil(client, h, d1, await line_ids(client, h, d1))
+    d2 = await doc(client, h, [line(b, 1, sku="SA-12B")])
+    await _fulfil(client, h, d2, await line_ids(client, h, d2))
+    n1 = (await item(client, h, a))["status_doc_number"]
+    n2 = (await item(client, h, b))["status_doc_number"]
+    assert n1 != n2
+    r = await _set_available(client, h, q, line_ids=lq)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "lines.shipped_elsewhere"
+    assert [(w["message_key"], w["params"]) for w in detail["params"]["went"]] == [
+        ("lines.went_out_on", {"lines": "SA-12A, SA-12C", "doc": n1}),
+        ("lines.went_out_on", {"lines": "SA-12B", "doc": n2})]
+    assert detail["message"] == (f"SA-12A, SA-12C went out on {n1}. SA-12B went out on {n2}. "
+                                 f"Revert fulfillment first: set the goods as available on {n1}, {n2}.")
+    es = _plain(detail, "es")
+    assert f"SA-12A, SA-12C salió en {n1}." in es and f"SA-12B salió en {n2}." in es
+    assert es.endswith(f"disponible en {n1}, {n2}."), es
+    for lot_id in (a, b, c):
+        assert (await item(client, h, lot_id))["status"] == "sold"
 
 
 def _plain(detail, code: str) -> str:

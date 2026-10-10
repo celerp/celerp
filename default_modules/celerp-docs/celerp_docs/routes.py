@@ -8676,8 +8676,7 @@ async def set_list_lines_available(
                 by = str(bound.state.get("status_doc_number") or bound.state.get("status_doc_id") or "")
                 shipped.setdefault(by, []).append(str(line_items[i].get("sku") or i + 1))
         if shipped:
-            by, names = next(iter(shipped.items()))
-            raise HTTPException(status_code=422, detail=shipped_elsewhere(", ".join(names), by))
+            raise HTTPException(status_code=422, detail=shipped_elsewhere(shipped))
         return await _reserve_lines_impl(row, entity_id, "available", indices, user, session,
                                          may_acquire=False, commit=False)
 
@@ -9204,7 +9203,7 @@ def _unavailable(bound: Projection, owner_id: str) -> dict | None:
     by = st.get("status_doc_number")
     if by and st.get("status_doc_id") != owner_id:
         if status in ("sold", "memo_out"):
-            return shipped_elsewhere(sku, by)
+            return shipped_elsewhere({by: [sku]})
         return refusal("lines.lot_held_by", f"{sku} is held by {by} (status: {status}).",
                        sku=sku, doc=by, status=status)
     return refusal("lines.lot_status", f"{sku} has status {status}.", sku=sku, status=status)
@@ -9219,7 +9218,17 @@ def _stands_in(bound: Projection, owner_id: str, draws: list) -> bool:
 
 
 def _refuse_unavailable(reasons: list[dict]) -> None:
+    """Refuse lines that cannot be taken. Goods other documents shipped are named in one
+    reason, each document with its own lines, placed last so the refusal ends with the
+    next step."""
     if reasons:
+        by_doc: dict[str, list[str]] = {}
+        for r in reasons:
+            for went in (r["params"]["went"] if r.get("message_key") == "lines.shipped_elsewhere" else ()):
+                by_doc.setdefault(went["params"]["doc"], []).append(went["params"]["lines"])
+        reasons = [r for r in reasons if r.get("message_key") != "lines.shipped_elsewhere"]
+        if by_doc:
+            reasons.append(shipped_elsewhere(by_doc))
         text = " ".join(r["message"] for r in reasons)
         raise HTTPException(status_code=422, detail=refusal(
             "lines.unavailable", f"Not available: {text}", reasons=reasons))
