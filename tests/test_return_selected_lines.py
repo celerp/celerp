@@ -19,6 +19,7 @@ from fasthtml.common import to_xml
 from sqlalchemy import select
 
 import ui.api_client as api_client
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _item, _state
 from test_receipt_accounting import _books, _doc, _finalize, _parcels
@@ -302,7 +303,7 @@ async def test_return_line_request_is_checked(client, session, auth):
     assert await _qty(session, auth, parcel) == 4
 
 
-async def test_return_line_sharing_a_lot_is_refused(client, session, auth):
+async def _two_lines_into_one_lot(client, session, auth):
     lot = await _item(client, auth, 100.0, qty=10)
     po = await _doc(client, auth, "purchase_order", [
         {"item_id": lot, "name": "Lot", "quantity": 5, "unit_price": 14.0},
@@ -312,6 +313,36 @@ async def test_return_line_sharing_a_lot_is_refused(client, session, auth):
     for line_id in ids:
         r = await _post(client, auth, po, {"source_line_id": line_id, "quantity_received": 5, "receive_as": "stock"})
         assert r.status_code == 200, r.text
+    return lot, po, ids
+
+
+# Lines sharing a lot each send back their own goods in it, no more than the line brought in.
+async def test_return_line_sharing_a_lot(client, session, auth):
+    lot, po, ids = await _two_lines_into_one_lot(client, session, auth)
+    r = await _return_lines(client, auth, po, {"line_id": ids[0], "quantity_returned": 6})
+    assert r.status_code == 422 and "docs.return_line_not_on_hand" in r.text, r.text
+    r = await _return_lines(client, auth, po, {"line_id": ids[0], "quantity_returned": 1})
+    assert r.status_code == 200, r.text
+    assert await _qty(session, auth, lot) == 19
+    lines = (await client.get(f"/docs/{po}", headers=auth["headers"])).json()["line_items"]
+    assert [(li.get("returnable_quantity"), li.get("return_status")) for li in lines] == [
+        (4.0, "partial_returned"), (5.0, None)]
+
+
+# Receipts that did not say what they added to the lot cannot tell the lines apart in it.
+async def test_return_line_sharing_a_lot_it_cannot_tell_apart_is_refused(client, session, auth):
+    lot, po, ids = await _two_lines_into_one_lot(client, session, auth)
+    session.expire_all()
+    legacy = ("lot_quantity_added", "lot_cost_added")
+    for entry in (await session.execute(select(LedgerEntry).where(
+            LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == po,
+            LedgerEntry.event_type == "doc.received"))).scalars():
+        entry.data = {**entry.data, "received_items": [
+            {k: v for k, v in x.items() if k not in legacy} for x in entry.data["received_items"]]}
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": po})
+    row.state = {**row.state, "received_items": [
+        {k: v for k, v in x.items() if k not in legacy} for x in row.state["received_items"]]}
+    await session.commit()
     r = await _return_lines(client, auth, po, {"line_id": ids[0], "quantity_returned": 1})
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["message_key"] == "docs.return_line_shared"
@@ -461,7 +492,7 @@ async def test_return_lot_offers_the_measures_that_lot_keeps(client, session, au
     "docs.imported_on_bill_next.revert", "docs.imported_on_bill_next.void", "docs.imported_on_bill_next.return",
     "docs.undo_receipt_imported", "docs.revert_imported_bill", "docs.void_imported_bill",
     "docs.imported_on_bill_next.receive", "docs.receive_imported_bill", "docs.void_order_receipt",
-    "docs.return_line_by_lot",
+    "docs.return_line_by_lot", "docs.return_lot_mixed_prices", "docs.return_lot_merged", "docs.undo_receipt_merged",
     "documents.confirm_return_selected",
     "documents.nothing_to_return", "documents.return_nothing_selected", "documents.return_measure_blank_hint",
     "documents.return_held_split_off", "documents.returned_nothing_owed",
