@@ -4619,5 +4619,7 @@
   "company_reset.partition_key": "Không thể đặt lại công ty này vì bảng {table} đã bị thay đổi bên ngoài Celerp (bởi một mô-đun đã cài đặt hoặc một thay đổi trực tiếp trong cơ sở dữ liệu) theo cách mà việc đặt lại không thể xử lý an toàn. Không có gì bị xóa. Hãy nhờ người đã cài mô-đun đó hoặc đã thay đổi cơ sở dữ liệu sửa lại.",
   "company_reset.reference_cycle": "Các bảng {tables} tham chiếu lẫn nhau thành vòng, nên không thể đặt lại công ty này. Không có gì bị xóa.",
   "shell.unknown_error": "Lỗi không xác định",
-  "documents.cost_moved_with_goods": "Lô {sku} đã được giữ cho hóa đơn {doc}. Giá vốn của hóa đơn {doc} sẽ được ghi nhận khi giao hàng."
+  "documents.cost_moved_with_goods": "Lô {sku} đã được giữ cho hóa đơn {doc}. Giá vốn của hóa đơn {doc} sẽ được ghi nhận khi giao hàng.",
+  "docs.void_already_void": "Chứng từ này đã bị hủy. Để khôi phục, hãy bỏ hủy chứng từ.",
+  "docs.unvoid_not_void": "Chứng từ này chưa bị hủy, nên không có gì để bỏ hủy."
 }

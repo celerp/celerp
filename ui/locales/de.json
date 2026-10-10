@@ -4619,5 +4619,7 @@
   "company_reset.partition_key": "Diese Firma kann nicht zurückgesetzt werden, weil die Tabelle {table} außerhalb von Celerp geändert wurde (durch ein installiertes Modul oder eine direkte Änderung an der Datenbank), und zwar so, dass das Zurücksetzen nicht sicher möglich ist. Es wurde nichts gelöscht. Bitten Sie die Person, die das Modul installiert oder die Datenbank geändert hat, das zu beheben.",
   "company_reset.reference_cycle": "Die Tabellen {tables} verweisen in einer Schleife aufeinander. Daher kann diese Firma nicht zurückgesetzt werden. Es wurde nichts gelöscht.",
   "shell.unknown_error": "Unbekannter Fehler",
-  "documents.cost_moved_with_goods": "Los {sku} war für Rechnung {doc} zurückgelegt. Die Kosten von Rechnung {doc} werden beim Versand gebucht."
+  "documents.cost_moved_with_goods": "Los {sku} war für Rechnung {doc} zurückgelegt. Die Kosten von Rechnung {doc} werden beim Versand gebucht.",
+  "docs.void_already_void": "Dieses Dokument ist bereits storniert. Um es wiederherzustellen, heben Sie die Stornierung auf.",
+  "docs.unvoid_not_void": "Dieses Dokument ist nicht storniert, daher gibt es keine Stornierung aufzuheben."
 }

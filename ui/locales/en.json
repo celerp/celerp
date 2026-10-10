@@ -4619,5 +4619,7 @@
   "settings.type_reset_prefix": "Type ",
   "settings.type_reset_suffix": " to confirm. This cannot be undone.",
   "shell.unknown_error": "Unknown error",
-  "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships."
+  "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships.",
+  "docs.void_already_void": "This document is already void. To bring it back, unvoid it.",
+  "docs.unvoid_not_void": "This document is not void, so there is nothing to unvoid."
 }

@@ -4619,5 +4619,7 @@
   "settings.type_reset_prefix": "ይተይቡ ",
   "settings.type_reset_suffix": "። ይህ ሊቀለበስ አይችልም።",
   "shell.unknown_error": "ያልታወቀ ስህተት",
-  "documents.cost_moved_with_goods": "ሎት {sku} ለደረሰኝ {doc} ተይዞ ነበር። የደረሰኝ {doc} ወጪ ሲላክ ይሰላል።"
+  "documents.cost_moved_with_goods": "ሎት {sku} ለደረሰኝ {doc} ተይዞ ነበር። የደረሰኝ {doc} ወጪ ሲላክ ይሰላል።",
+  "docs.void_already_void": "ይህ ሰነድ አስቀድሞ ተሰርዟል። እንደገና ለመመለስ፣ ስረዛውን ይቀልብሱ።",
+  "docs.unvoid_not_void": "ይህ ሰነድ አልተሰረዘም፣ ስለዚህ የሚቀለበስ ስረዛ የለም።"
 }

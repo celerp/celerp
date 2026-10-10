@@ -4619,5 +4619,7 @@
   "settings.type_reset_prefix": "確認するには",
   "settings.type_reset_suffix": "と入力してください。この操作は元に戻せません。",
   "shell.unknown_error": "不明なエラー",
-  "documents.cost_moved_with_goods": "ロット {sku} は請求書 {doc} 用に確保されていました。請求書 {doc} の原価は出荷時に計上されます。"
+  "documents.cost_moved_with_goods": "ロット {sku} は請求書 {doc} 用に確保されていました。請求書 {doc} の原価は出荷時に計上されます。",
+  "docs.void_already_void": "この書類はすでに無効です。元に戻すには、無効を取り消してください。",
+  "docs.unvoid_not_void": "この書類は無効になっていないため、取り消す無効はありません。"
 }

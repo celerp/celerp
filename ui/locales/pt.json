@@ -4619,5 +4619,7 @@
   "company_reset.partition_key": "Esta empresa não pode ser redefinida porque a tabela {table} foi alterada fora do Celerp (por um módulo instalado ou uma alteração direta no banco de dados) de um jeito que a redefinição não consegue tratar com segurança. Nada foi excluído. Peça a quem instalou esse módulo ou alterou o banco de dados que corrija isso.",
   "company_reset.reference_cycle": "As tabelas {tables} fazem referência umas às outras em ciclo, por isso esta empresa não pode ser redefinida. Nada foi excluído.",
   "shell.unknown_error": "Erro desconhecido",
-  "documents.cost_moved_with_goods": "O lote {sku} estava reservado para a fatura {doc}. O custo da fatura {doc} será registrado quando ela for enviada."
+  "documents.cost_moved_with_goods": "O lote {sku} estava reservado para a fatura {doc}. O custo da fatura {doc} será registrado quando ela for enviada.",
+  "docs.void_already_void": "Este documento já está anulado. Para recuperá-lo, desfaça a anulação.",
+  "docs.unvoid_not_void": "Este documento não está anulado, então não há anulação a desfazer."
 }

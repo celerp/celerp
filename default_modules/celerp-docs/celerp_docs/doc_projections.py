@@ -227,14 +227,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("doc_type"):
             current["doc_type"] = data["doc_type"]
     elif event_type == "doc.voided":
-        current["status"] = "void"
-        current["amount_outstanding"] = 0.0  # a void document owes nothing
-        if data.get("reason"):
-            current["void_reason"] = data["reason"]
-        if data.get("pre_void_status"):
-            current["pre_void_status"] = data["pre_void_status"]
-        if data.get("pre_void_fulfillment"):
-            current["pre_void_fulfillment"] = data["pre_void_fulfillment"]
+        # A void of a document already void (older releases accepted one) changes nothing:
+        # the status to restore stays the one it had before the first void.
+        if current.get("status") != "void":
+            current["status"] = "void"
+            current["amount_outstanding"] = 0.0  # a void document owes nothing
+            if data.get("reason"):
+                current["void_reason"] = data["reason"]
+            if data.get("pre_void_status"):
+                current["pre_void_status"] = data["pre_void_status"]
+            if data.get("pre_void_fulfillment"):
+                current["pre_void_fulfillment"] = data["pre_void_fulfillment"]
     elif event_type == "doc.reverted_to_draft":
         current["status"] = "draft"
         current["finalized"] = False  # back to an editable, un-issued draft

@@ -4619,5 +4619,7 @@
   "company_reset.partition_key": "Questa azienda non può essere reimpostata perché la tabella {table} è stata modificata al di fuori di Celerp (da un modulo installato o da una modifica diretta al database) in un modo che la reimpostazione non può gestire in sicurezza. Non è stato eliminato nulla. Chiedi a chi ha installato quel modulo o modificato il database di correggerlo.",
   "company_reset.reference_cycle": "Le tabelle {tables} si richiamano a vicenda in un ciclo, quindi questa azienda non può essere reimpostata. Non è stato eliminato nulla.",
   "shell.unknown_error": "Errore sconosciuto",
-  "documents.cost_moved_with_goods": "Il lotto {sku} era riservato alla fattura {doc}. Il costo della fattura {doc} sarà registrato alla spedizione."
+  "documents.cost_moved_with_goods": "Il lotto {sku} era riservato alla fattura {doc}. Il costo della fattura {doc} sarà registrato alla spedizione.",
+  "docs.void_already_void": "Questo documento è già annullato. Per ripristinarlo, revoca l'annullamento.",
+  "docs.unvoid_not_void": "Questo documento non è annullato, quindi non c'è alcun annullamento da revocare."
 }

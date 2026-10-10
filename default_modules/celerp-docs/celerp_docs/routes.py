@@ -2413,6 +2413,12 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     if (done := await _earlier_run(session, company_id, key, event_type="doc.voided",
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
+    # A void document already reversed its entries: voiding it again would record "void" as
+    # the status to restore, so unvoid could never bring it back.
+    if row.state.get("status") == "void":
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.void_already_void",
+            "This document is already void. To bring it back, unvoid it."))
     _reject_if_closed(row.state, "void it")
     if row.state.get("doc_type") == "credit_note":
         await refuse_on_void_invoice(session, company_id, row.state)
@@ -3096,7 +3102,8 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         return done
     state = row.state
     if state.get("status") != "void":
-        raise HTTPException(status_code=409, detail="Can only unvoid documents in 'void' status")
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.unvoid_not_void", "This document is not void, so there is nothing to unvoid."))
     restored_status = state.get("pre_void_status")
     if not restored_status:
         raise HTTPException(status_code=409, detail="Cannot unvoid: document was voided before unvoid support was added (no pre_void_status)")
