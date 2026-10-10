@@ -104,12 +104,6 @@ class EventType(StrEnum):
     MFG_ORDER_WIP_OPENED = "mfg.order.wip_opened"
     MFG_ORDER_WIP_UNRESOLVED = "mfg.order.wip_unresolved"
 
-    # Scanning
-    SCAN_BARCODE = "scan.barcode"
-    SCAN_RFID = "scan.rfid"
-    SCAN_NFC = "scan.nfc"
-    SCAN_RESOLVED = "scan.resolved"
-
     # Marketplace
     MP_LISTING_CREATED = "mp.listing.created"
     MP_LISTING_UPDATED = "mp.listing.updated"

@@ -1038,31 +1038,6 @@ class MfgOrderScheduled(BaseModel):
 # applied them (celerp.projections.retired).
 
 # -----------------
-# Scanning
-# -----------------
-
-
-class ScanBarcode(BaseModel):
-    code: str
-    location_id: str | None = None
-    raw: dict[str, Any] = Field(default_factory=dict)
-
-
-class ScanRfid(ScanBarcode):
-    pass
-
-
-class ScanNfc(ScanBarcode):
-    pass
-
-
-class ScanResolved(BaseModel):
-    code: str
-    entity_id: str
-    entity_type: str
-
-
-# -----------------
 # Marketplace
 # -----------------
 
@@ -1480,12 +1455,6 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.wip_opened": MfgOrderWipOpened,
     "mfg.order.wip_unresolved": MfgOrderWipUnresolved,
     "mfg.operation.recorded": MfgOperationRecorded,
-
-    # Scanning
-    "scan.barcode": ScanBarcode,
-    "scan.rfid": ScanRfid,
-    "scan.nfc": ScanNfc,
-    "scan.resolved": ScanResolved,
 
     # Marketplace
     "mp.listing.created": MpListingCreated,

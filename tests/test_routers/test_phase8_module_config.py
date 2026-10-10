@@ -40,3 +40,28 @@ async def test_scanning_route_returns_404(client):
     """GET /scanning returns 404 — scanning module disabled."""
     r = await client.get("/scanning")
     assert r.status_code == 404
+
+
+def test_scanning_leaves_no_router_event_or_label_behind():
+    """The standalone scanning module was never mounted and its events were never written;
+    barcode scanning lives on lists and documents. No router, handler, event type, schema,
+    merge rule or navigation label of the old module remains."""
+    import importlib.util
+    import json
+    import pathlib
+
+    from celerp.events.schemas import EVENT_SCHEMA_MAP
+    from celerp.events.types import EventType
+    from celerp.projections.engine import MERGE_EVENTS
+
+    assert importlib.util.find_spec("celerp_inventory.routes_scanning") is None
+    assert importlib.util.find_spec("celerp.projections.handlers.scanning") is None
+    left = [e for e in EVENT_SCHEMA_MAP if e.startswith("scan.")]
+    left += [e.value for e in EventType if e.value.startswith("scan.")]
+    left += [e for e in MERGE_EVENTS if e.startswith("scan.")]
+    assert not left, left
+    root = pathlib.Path(__file__).parents[2]
+    for catalog in sorted((root / "ui" / "locales").glob("*.json")):
+        keys = json.loads(catalog.read_text(encoding="utf-8"))
+        assert not {"nav.scanning", "page.scanning"} & set(keys), catalog.name
+    assert "/scanning/" not in (root / "ui" / "api_client.py").read_text(encoding="utf-8")

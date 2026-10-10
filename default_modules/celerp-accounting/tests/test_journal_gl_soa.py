@@ -284,9 +284,9 @@ async def test_void_auto_je_rejected(client):
 @pytest.mark.asyncio
 async def test_void_unknown_je_404(client):
     """The 404 must come from the handler rejecting an unknown entry, not from
-    the route being absent. The app flattens every 404 detail to "Not found"
-    (celerp/main.py:330), so the discriminator is that the very same route
-    voids a real entry successfully in this test.
+    the route being absent: the very same route voids a real entry successfully
+    in this test, and the refusal carries the handler's own detail rather than
+    the "Not Found" an unmatched path answers with.
     """
     tok = await _reg(client)
     je_id = (await _post_manual_je(client, tok, _bal(10.0))).json()["je_id"]
@@ -298,6 +298,7 @@ async def test_void_unknown_je_404(client):
     r = await client.post("/accounting/journal-entries/je:manual:nope/void",
                           headers=_h(tok), json={})
     assert r.status_code == 404
+    assert r.json()["detail"] != "Not Found", r.text
 
 
 @pytest.mark.asyncio

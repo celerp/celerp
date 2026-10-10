@@ -136,5 +136,4 @@ def test_spanish_navigation_and_issue_date_strings():
     es = json.loads((Path(__file__).resolve().parents[1] / "ui" / "locales" / "es.json").read_text())
     assert es["nav.lists"] == "Listas"
     assert es["doc.issue_date"] == "Fecha de emisión:"
-    assert es["nav.scanning"] == "Escaneo"
 

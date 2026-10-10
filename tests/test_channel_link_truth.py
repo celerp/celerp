@@ -675,3 +675,42 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
         assert "currently linked to Shopify" in r.json()["detail"]
     finally:
         await holder.close()
+
+
+async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(client, session):
+    """POST /connector-items/shopify/sync emits shop.sync.enabled/disabled and the
+    projection's sync flag follows; a second identical request changes nothing."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    h, cid = await _register(client)
+    a = await _item(client, h, "SYNC-A")
+    await _set_state(session, cid, a, external_links={"shopify": dict(LIVE_SHOPIFY)})
+    await _connect(session, cid, "shopify")
+
+    async def _flag() -> bool | None:
+        row = await session.get(Projection, {"company_id": uuid.UUID(cid), "entity_id": a},
+                                populate_existing=True)
+        return row.is_sync_to_shopify
+
+    async def _events() -> list[str]:
+        rows = await session.execute(sa.select(LedgerEntry.event_type).where(
+            LedgerEntry.company_id == uuid.UUID(cid), LedgerEntry.entity_id == a,
+            LedgerEntry.event_type.like("shop.sync.%")).order_by(LedgerEntry.id))
+        return list(rows.scalars())
+
+    r = await client.post("/connector-items/shopify/sync", headers=h,
+                          json={"entity_ids": [a], "enable": True})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"updated": 1, "enabled": True, "errors": []}
+    assert await _flag() is True
+    again = await client.post("/connector-items/shopify/sync", headers=h,
+                              json={"entity_ids": [a], "enable": True})
+    assert again.json()["updated"] == 0
+
+    r = await client.post("/connector-items/shopify/sync", headers=h,
+                          json={"entity_ids": [a], "enable": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["updated"] == 1
+    assert await _flag() is False
+    assert await _events() == ["shop.sync.enabled", "shop.sync.disabled"]

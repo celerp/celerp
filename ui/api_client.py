@@ -2130,42 +2130,6 @@ async def update_mfg_settings(token: str, mfg: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# BOM
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Scanning disabled — module not yet complete
-# ---------------------------------------------------------------------------
-
-# async def scan_once(token: str, code: str, location_id: str | None = None) -> dict:
-#     async with _api_client(token) as c:
-#         payload: dict = {"code": code}
-#         if location_id:
-#             payload["location_id"] = location_id
-#         return _raise(await c.post("/scanning/scan", json=payload)).json()
-#
-#
-# async def resolve_scan(token: str, code: str) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.get(f"/scanning/resolve/{code}")).json()
-#
-#
-# async def start_batch(token: str, location_id: str | None = None) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post("/scanning/batch", json={"location_id": location_id})).json()
-#
-#
-# async def complete_batch(token: str, batch_id: str) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post(f"/scanning/batch/{batch_id}/complete")).json()
-#
-#
-# async def scan_batch(token: str, scans: list[dict]) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post("/scanning/scan/batch", json={"scans": scans})).json()
-
-
-# ---------------------------------------------------------------------------
 # CSV export
 # ---------------------------------------------------------------------------
 

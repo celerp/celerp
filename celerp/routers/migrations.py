@@ -26,9 +26,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from python_multipart.exceptions import MultipartParseError
 from python_multipart.multipart import MultipartParser, parse_options_header
@@ -58,28 +56,7 @@ from celerp.services.provisioning import create_install_owner, provision_migrati
 
 logger = logging.getLogger(__name__)
 
-
-
-class _MigrationRoute(APIRoute):
-    """Answers a refused migration request with its own detail.
-
-    The app-wide 404 handler replaces every 404 detail with a generic one; a migration the caller
-    cannot see must still say "Migration not found.", so migration errors become responses here.
-    """
-
-    def get_route_handler(self):
-        handler = super().get_route_handler()
-
-        async def route(request: Request) -> Response:
-            try:
-                return await handler(request)
-            except (migrations.MigrationError, store.ScanStoreError) as exc:
-                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
-
-        return route
-
-
-router = APIRouter(prefix="/migrations", tags=["migrations"], route_class=_MigrationRoute)
+router = APIRouter(prefix="/migrations", tags=["migrations"])
 
 OWNER_ONLY = "Only the company owner can move a company into Celerp."
 BOOTSTRAPPED = "System already bootstrapped. Contact your admin."
