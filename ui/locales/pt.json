@@ -4342,6 +4342,7 @@
   "mfg.over_receipt": "Restam apenas {remaining:g} a receber deste ciclo; não é possível receber {quantity:g}.",
   "mfg.cancel_moved": "Este ciclo ainda contém materiais ou produção, por isso não pode ser cancelado. Primeiro devolva os materiais e desfaça os recebimentos.",
   "mfg.run_not_found": "A ordem de produção {order} não foi encontrada.",
+  "mfg.wip_location_unknown": "O local {value} não é um dos locais desta empresa. Escolha um local em Configurações > Locais ou deixe o campo vazio.",
   "mfg.wip_account_missing": "Os ciclos de produção precisam de uma conta de produção em andamento que aceite lançamentos. Escolha-a em Configurações > Contabilidade > Contas de lançamento.",
   "mfg.issue_first": "Emita todos os componentes para este ciclo antes de receber a sua produção.",
   "mfg.key_reused": "Esta ação já foi enviada com outros dados. Verifique a lista e tente novamente.",

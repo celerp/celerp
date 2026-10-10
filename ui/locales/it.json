@@ -4342,6 +4342,7 @@
   "mfg.over_receipt": "Da questa produzione restano da ricevere solo {remaining:g}; non è possibile riceverne {quantity:g}.",
   "mfg.cancel_moved": "Questa produzione contiene ancora materiali o articoli prodotti, quindi non può essere annullata. Prima restituisci i materiali e annulla i ricevimenti.",
   "mfg.run_not_found": "L'ordine di produzione {order} non è stato trovato.",
+  "mfg.wip_location_unknown": "L'ubicazione {value} non è una delle ubicazioni di questa azienda. Scegli un'ubicazione da Impostazioni > Ubicazioni oppure lascia il campo vuoto.",
   "mfg.wip_account_missing": "Le produzioni richiedono un conto lavori in corso che accetti registrazioni. Sceglierlo in Impostazioni > Contabilità > Conti di registrazione.",
   "mfg.issue_first": "Prelevare tutti i componenti per questa produzione prima di riceverne i prodotti.",
   "mfg.key_reused": "Questa azione è già stata inviata con dati diversi. Controlla l'elenco, poi riprova.",

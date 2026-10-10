@@ -4342,6 +4342,7 @@
   "mfg.over_receipt": "Chỉ còn {remaining:g} cần nhận từ đợt sản xuất này; không thể nhận {quantity:g}.",
   "mfg.cancel_moved": "Đợt sản xuất này vẫn còn nguyên vật liệu hoặc thành phẩm nên không thể hủy. Hãy trả lại nguyên vật liệu và hoàn tác các lần nhận trước.",
   "mfg.run_not_found": "Không tìm thấy lệnh sản xuất {order}.",
+  "mfg.wip_location_unknown": "Vị trí {value} không thuộc các vị trí của công ty này. Hãy chọn một vị trí trong Cài đặt > Vị trí, hoặc để trống.",
   "mfg.wip_account_missing": "Các đợt sản xuất cần một tài khoản chi phí sản xuất dở dang có thể nhận bút toán. Hãy chọn tài khoản này trong Cài đặt > Kế toán > Tài khoản ghi sổ.",
   "mfg.issue_first": "Hãy xuất tất cả linh kiện cho đợt sản xuất này trước khi nhận thành phẩm.",
   "mfg.key_reused": "Thao tác này đã được gửi với thông tin khác. Hãy kiểm tra danh sách rồi thử lại.",
