@@ -10323,7 +10323,7 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
         root, lot, before = e.root, e.lot, e.before
         if before is None:
             born_since.add(lot)
-            split[root] = split[root] or lot not in sent_back
+            split[root] = split[root] or (lot != root and lot not in sent_back)
         moved = _held(e.after) - _held(before)
         if (key := _reversal_key(e.event_type, e.data, e.meta)) is not None:
             paired[root][key] = paired[root].get(key, 0.0) - moved
@@ -10457,6 +10457,14 @@ async def undo_receive(
                 f"SKU '{sku}': {units:g} units have left stock since this document received {needed:g}, "
                 f"so the receipt cannot be undone. Use Return to supplier, which takes the goods back at cost.",
                 sku=sku, gone=f"{units:g}", needed=f"{needed:g}"))
+    # A split leaves the goods on hand in the lots split off, so the way back is a return.
+    for lot in [*received_item_ids, *topped_up]:
+        if split_since.get(lot):
+            sku = (item_rows.get(lot) or {}).get("sku") or lot
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.undo_receipt_split",
+                f"SKU {sku} was split since this document received it, so the receipt cannot be undone. "
+                f"Use Return to supplier.", sku=sku))
     blocked = [why for iid in received_item_ids
                if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in.get(iid, 0.0))) is not None]
     for lot in topped_up:
@@ -10465,9 +10473,7 @@ async def undo_receive(
         sku = lot_state.get("sku") or lot
         free = _free_on_hand(lot_state)
         left = round_basis((goods_basis(lot_state) or 0.0) - cost)
-        if split_since[lot]:
-            blocked.append(f"SKU '{sku}' was split since this document received it")
-        elif free + 1e-9 < qty:
+        if free + 1e-9 < qty:
             blocked.append(f"SKU '{sku}' has {free:g} on hand and free, {qty:g} came in on this document")
         elif left < 0 or (free - qty <= 1e-9 and left != 0):
             blocked.append(f"SKU '{sku}' has had its cost changed since this document received it")

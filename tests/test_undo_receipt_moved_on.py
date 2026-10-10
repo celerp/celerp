@@ -5,12 +5,16 @@ has been split, partly sold or reserved, undoing would leave that part outside t
 and let the document be received in full again, so the undo is refused and says why."""
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
 
 from test_cost_restatement import _state
-from test_receipt_accounting import _doc
+from test_landed_cost_pools import _ORDERS, _goods
+from test_landed_cost_removals import _split
+from test_landed_cost_structural import _undo
+from test_receipt_accounting import _doc, _finalize, _receive
 
 
 async def _received_parcel(client, session, auth) -> tuple[str, str]:
@@ -48,17 +52,74 @@ async def _reserve_one(client, auth, lot) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("move, why", [
-    (_split_one, "holds 3 of the 4 that came in"),
-    (_reserve_one, "has 1 reserved"),
-], ids=["split", "reserved"])
-async def test_a_receipt_whose_parcel_moved_on_cannot_be_undone(client, session, auth, move, why):
+async def test_a_receipt_whose_parcel_has_goods_reserved_cannot_be_undone(client, session, auth):
     bill, parcel = await _received_parcel(client, session, auth)
-    await move(client, auth, parcel)
+    await _reserve_one(client, auth, parcel)
     r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "UNDO-G" in r.json()["detail"] and why in r.json()["detail"], r.json()["detail"]
+    assert "UNDO-G" in r.json()["detail"] and "has 1 reserved" in r.json()["detail"], r.json()["detail"]
     assert (await _state(session, auth, bill))["received_item_ids"] == [parcel]
+
+
+def _assert_split_refusal(r, parcel_sku: str) -> None:
+    """The one answer when a received parcel was split: keyed, names the SKU, and points to
+    Return to supplier, where the goods (all on hand in the split lots) go back at cost."""
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert isinstance(detail, dict) and detail.get("message_key") == "docs.undo_receipt_split", detail
+    assert detail["params"] == {"sku": parcel_sku}, detail
+    assert parcel_sku in detail["message"] and "Return to supplier" in detail["message"], detail
+    assert "cannot archive" not in detail["message"] and "manually correct" not in detail["message"], detail
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_whose_parcel_was_partly_split_points_to_return_to_supplier(client, session, auth):
+    bill, parcel = await _received_parcel(client, session, auth)
+    await _split_one(client, auth, parcel)
+    r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
+    _assert_split_refusal(r, "UNDO-G")
+    assert (await _state(session, auth, bill))["received_item_ids"] == [parcel]
+
+
+@_ORDERS
+@pytest.mark.asyncio
+async def test_a_receipt_whose_parcel_was_split_whole_points_to_return_to_supplier(client, session, auth, from_order):
+    """Splitting all of a parcel archives it. The goods are on hand in the split lots, so the
+    refusal must not call the parent 'archived - cannot archive': the way back is a return."""
+    goods = _goods(14.0, 5)
+    doc = await _doc(client, auth, "purchase_order" if from_order else "bill", [goods], shipping=7.0)
+    if not from_order:
+        await _finalize(client, auth, doc)
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "sku": goods["sku"], "name": goods["name"],
+                                           "quantity_received": 5})
+    assert r.status_code == 200, r.text
+    [lot] = (await _state(session, auth, doc))["received_item_ids"]
+    if from_order:
+        await _finalize(client, auth, doc)
+    await _split(client, auth, lot, 2, 3)
+    r = await _undo(client, auth, doc)
+    _assert_split_refusal(r, goods["sku"])
+    assert (await _state(session, auth, doc))["received_item_ids"] == [lot]
+
+
+_NEW_KEYS = ("docs.undo_receipt_split", "item.deleted")
+
+
+@pytest.mark.parametrize("key", _NEW_KEYS)
+def test_undo_receipt_split_and_item_deleted_copy_is_translated_in_every_locale(key):
+    """Read from each catalog file, so a missing key or an English placeholder cannot hide
+    behind the fallback to English."""
+    import json
+    from pathlib import Path
+
+    catalogs = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in (Path(__file__).resolve().parent.parent / "ui" / "locales").glob("*.json")}
+    english = catalogs.pop("en")[key]
+    assert len(catalogs) == 11
+    placeholders = {"{sku}"}
+    for code, catalog in catalogs.items():
+        assert catalog.get(key), (key, code)
+        assert catalog[key] != english, (key, code)
+        assert placeholders <= set(re.findall(r"\{[a-z_]+\}", catalog[key])), (key, code)
 
 
 @pytest.mark.asyncio
