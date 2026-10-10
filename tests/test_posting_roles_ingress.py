@@ -35,6 +35,7 @@ from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_draft_stock import _inactive, _settings, _unmapped, _wrong_type
 from test_posting_roles_older_stock import _make_available, _without_accounting
 from test_posting_roles_rollout import _startup
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -155,11 +156,12 @@ async def test_an_item_created_available_is_not_created_when_the_opening_account
 
 
 async def test_an_item_created_available_on_a_locked_day_is_not_created(session, client, auth):
-    await _settings(session, auth, timezone="UTC", lock_date=datetime.now(timezone.utc).date().isoformat())
+    today = datetime.now(timezone.utc).date().isoformat()
+    await _settings(session, auth, timezone="UTC", lock_date=today)
     before = await _events(session, auth["company_id"])
     r = await _create(client, auth, cost_total=200.0, status="available", sku="LOCKED-1")
     assert r.status_code == 422, r.text
-    assert "Period is locked through" in r.json()["detail"]
+    assert r.json()["detail"] == t("error.period_locked", "en", date=today)
     assert await _events(session, auth["company_id"]) == before
     assert await _items_by_sku(session, auth["company_id"], "LOCKED-1") == []
 

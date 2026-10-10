@@ -89,7 +89,8 @@ async def test_unknown_account_in_entry_names_the_code(client):
                           json=_je([{"account": "9999", "debit": 10, "credit": 0},
                                     {"account": "4100", "debit": 0, "credit": 10}]))
     assert r.status_code == 422
-    assert r.json()["detail"] == t("acct.err_account_unknown", "en", code="9999")
+    detail = r.json()["detail"]
+    assert (detail["message_key"], detail["params"]) == ("posting.destination.not_in_chart", {"code": "9999"})
 
 
 @pytest.mark.parametrize("key,needle", [
@@ -128,6 +129,6 @@ def test_thai_reader_gets_thai_entry_message():
 
 
 def test_ui_account_code_limit_matches_the_api():
-    from celerp_accounting.routes import _ACCOUNT_CODE_MAX as api_max
+    from celerp_accounting.chart_rules import ACCOUNT_CODE_MAX as api_max
     from ui.routes.settings_accounting import _ACCOUNT_CODE_MAX as ui_max
     assert ui_max == api_max

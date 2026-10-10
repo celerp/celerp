@@ -24,7 +24,7 @@ from ui.routes.accounting_import import ACCOUNT_TYPES
 # list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
 # two run in separate processes, so a test asserts they still match.
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
-# The longest account code the API accepts (celerp_accounting.routes._ACCOUNT_CODE_MAX),
+# The longest account code the API accepts (celerp_accounting.chart_rules.ACCOUNT_CODE_MAX),
 # mirrored the same way and asserted by the same kind of test.
 _ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission

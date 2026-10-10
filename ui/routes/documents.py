@@ -1931,7 +1931,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _Resp(content=t("documents.error_detail", detail=error_message(e)), status_code=e.status)
+            return _Resp(content=error_message(e), status_code=e.status)
         line_items = doc.get("line_items") or []
         doc_ref = (doc.get("ref_id") or doc.get("doc_number") or entity_id).replace(" ", "_")
 
@@ -2164,7 +2164,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _HR(to_xml(P(t("documents.error_detail", detail=error_message(e)))), status_code=e.status)
+            return _HR(to_xml(P(error_message(e))), status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
         if not lst.get("issue_date"):
@@ -2207,7 +2207,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             from starlette.responses import HTMLResponse as _HR
-            return _HR(to_xml(P(t("documents.error_detail", detail=error_message(e)))), status_code=e.status)
+            return _HR(to_xml(P(error_message(e))), status_code=e.status)
         # Inject company fields
         doc = await _merge_company_letterhead(token, doc)
         # Fill any missing customer-facing fields independently from the selected contact.

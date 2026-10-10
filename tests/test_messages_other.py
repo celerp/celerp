@@ -125,7 +125,8 @@ def test_quantity_messages_name_the_rule():
     from celerp.services.units import validate_positive, validate_quantity
     with pytest.raises(HTTPException) as ei:
         validate_quantity(1.234, 2, label="Ring")
-    assert ei.value.detail == t("error.qty_precision", "en", label="Ring", qty=1.234, decimals=2)
+    assert (ei.value.detail["message_key"], ei.value.detail["params"]) == (
+        "quantity.precision", {"label": "Ring", "qty": "1.234", "decimals": 2})
     with pytest.raises(HTTPException) as ei:
         validate_positive(-1, label="Ring")
     assert ei.value.detail == t("error.qty_positive", "en", label="Ring")
@@ -189,11 +190,10 @@ def test_failed_backup_keeps_details_for_support(monkeypatch):
     (FileNotFoundError(), "error.restore_tool_missing"),
     (subprocess.TimeoutExpired("pg_restore", 600), "error.restore_timed_out"),
 ])
-def test_restore_failures_say_what_to_do(exc, key, monkeypatch, tmp_path):
+def test_restore_failures_say_what_to_do(exc, key):
     from celerp.services import backup
-    monkeypatch.setattr(backup, "_find_pg_tool", lambda n: n)
     with pytest.raises(RuntimeError) as ei:
-        backup._run_pg_restore(tmp_path / "d", "postgresql://x/y", True, _fail(exc))
+        backup._run_tool(["pg_restore"], _fail(exc))
     assert str(ei.value) == t(key, "en")
 
 

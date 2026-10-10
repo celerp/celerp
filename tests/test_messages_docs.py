@@ -61,7 +61,7 @@ async def test_lifecycle_refusals_say_what_to_do(client):
     assert r.json()["detail"] == t("documents.err_delete_not_draft", "en")
     r = await client.post(f"/docs/{eid}/unvoid", headers=h, json={})
     assert r.status_code == 409
-    assert r.json()["detail"] == t("documents.err_unvoid_not_void", "en")
+    assert r.json()["detail"]["message_key"] == "docs.unvoid_not_void"
 
 
 @pytest.mark.asyncio
