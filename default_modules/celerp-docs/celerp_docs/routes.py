@@ -2618,11 +2618,19 @@ def credit_note_currency(invoice_state: dict, base_currency: str, currency, rate
     if not differs and rate not in (None, "") and inv_rate not in (None, ""):
         differs = to_decimal(rate) != to_decimal(inv_rate)
     if differs:
-        number = invoice_state.get("doc_number") or invoice_state.get("ref_id") or "its invoice"
-        at = f" at rate {float(inv_rate):g}" if inv_rate not in (None, "") else ""
-        raise HTTPException(status_code=422, detail=(
-            f"A credit note reverses its invoice's sale in the invoice's currency and rate: "
-            f"invoice {number} is in {inv_currency}{at}. Leave the currency and rate as the invoice's."))
+        number = str(invoice_state.get("doc_number") or invoice_state.get("ref_id") or "")
+        if inv_rate not in (None, ""):
+            rate_text = f"{float(inv_rate):g}"
+            raise HTTPException(status_code=422, detail=refusal(
+                "credit_note.currency_differs_rate",
+                f"A credit note reverses its invoice's sale in the invoice's currency and rate: invoice {number} "
+                f"is in {inv_currency} at rate {rate_text}. Leave the currency and rate as the invoice's.",
+                invoice=number, currency=inv_currency, rate=rate_text))
+        raise HTTPException(status_code=422, detail=refusal(
+            "credit_note.currency_differs",
+            f"A credit note reverses its invoice's sale in the invoice's currency and rate: invoice {number} "
+            f"is in {inv_currency}. Leave the currency and rate as the invoice's.",
+            invoice=number, currency=inv_currency))
     out = {"currency": inv_currency}
     if invoice_state.get("conversion_rate") not in (None, ""):
         out["conversion_rate"] = invoice_state["conversion_rate"]
@@ -2699,12 +2707,11 @@ async def credit_note_original(session, company_id, data: dict, *, for_update: b
             f"This credit note names {number} as the invoice it credits, but no document {number} exists in "
             f"this company. Create or import that invoice here first, then the credit note.", invoice=number))
     if state.get("doc_type") != "invoice":
-        doc_type = str(state.get("doc_type") or "document").replace("_", " ")
         raise HTTPException(status_code=422, detail=refusal(
             "credit_note.original_not_invoice",
-            f"This credit note names {number}, which is a {doc_type}, not an invoice. A credit note credits an "
-            f"invoice: choose the invoice it credits. To reduce what a bill owes, return the goods on the bill.",
-            document=number, doc_type=doc_type))
+            f"This credit note names {number}, which is not an invoice. A credit note credits an invoice: "
+            f"choose the invoice it credits. To reduce what a bill owes, return the goods on the bill.",
+            document=number))
     if state.get("status") in (None, "draft"):
         raise HTTPException(status_code=422, detail=refusal(
             "credit_note.original_not_issued",
@@ -2894,10 +2901,12 @@ async def _refuse_undo_under_credit_note(session, company_id, state: dict, invoi
         return
     numbers = await issued_credit_notes(session, company_id, invoice_id)
     if numbers:
-        one = len(numbers) == 1
-        raise HTTPException(status_code=409, detail=(
-            f"Cannot {action} this invoice: credit note{'' if one else 's'} {', '.join(numbers)} "
-            f"{'is' if one else 'are'} issued against it. Void the credit note first."))
+        listed = ", ".join(numbers)
+        raise HTTPException(status_code=409, detail=refusal(
+            f"docs.{action}_under_credit_note",
+            f"This invoice cannot be {'voided' if action == 'void' else 'reverted to draft'}: credit notes "
+            f"{listed} are issued against it. Void those credit notes first, then try again.",
+            numbers=listed))
 
 
 @router.post("/{entity_id}/close")
@@ -4559,13 +4568,14 @@ def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]
     it.name = it.name or line.get("name") or line.get("description") or None
 
 
-def _unpriced_receipt(goods: str, doc_label: str) -> HTTPException:
-    """The refusal of received goods no line of the document prices (_received_goods_cost)."""
-    return HTTPException(
-        status_code=422,
-        detail=(f"{goods}: no line on this {doc_label} prices it, so the received goods cannot be "
-                f"costed. Add it to the {doc_label} first."),
-    )
+def _unpriced_receipt(goods: str, doc: dict) -> HTTPException:
+    """The refusal of received goods no line of the document ``doc`` prices (_received_goods_cost)."""
+    number = str(doc.get("doc_number") or doc.get("ref_id") or "this document")
+    return HTTPException(status_code=422, detail=refusal(
+        "docs.unpriced_receipt",
+        f"{goods}: no line of {number} prices it, so the received goods cannot be costed. "
+        f"Add a line for it to {number} first, then receive it.",
+        goods=goods, document=number))
 
 
 async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float,
@@ -4737,7 +4747,6 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
         _stated_measures(it.weight, it.pieces)
 
-    doc_label = _RECEIVING_DOC_LABEL.get(doc_type, "document")
     # A line is received up to what it orders, across every receipt on it. Goods sent back
     # are credited against the line, so replacing them means raising the line first.
     lines = row.state.get("line_items") or []
@@ -4813,7 +4822,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         elif doc_type == "purchase_order" or it.receive_as == "stock":
             cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty, before)
             if cost is None:
-                raise _unpriced_receipt(it.sku or it.name or it.item_id, doc_label)
+                raise _unpriced_receipt(it.sku or it.name or it.item_id, row.state)
         negative = negative_cost_error(str(it.sku or it.name or it.item_id), cost)
         if negative:
             raise HTTPException(status_code=422, detail=negative)
@@ -7436,7 +7445,7 @@ async def imported_opening_snapshot(session: AsyncSession, company_id, data: dic
         return data
     marked, unpriced = await mark_received_goods(session, company_id, data)
     if unpriced:
-        raise _unpriced_receipt(unpriced[0], _RECEIVING_DOC_LABEL.get(kind, "document"))
+        raise _unpriced_receipt(unpriced[0], data)
     return marked
 
 
@@ -10836,24 +10845,36 @@ async def receive_return(
     return result
 
 
-def _parcel_moved_on(item_state: dict | None, item_id: str, came_in: float) -> str | None:
+def _parcel_moved_on(item_state: dict | None, item_id: str, came_in: float) -> dict | None:
     """Why a parcel a receipt created can no longer be taken back whole, or None when it is
     still as the receipt left it: available, holding what came in, none of it reserved.
     A split, a sale or an adjustment changes what it holds, so undoing the receipt would
     leave the moved part behind outside it."""
     if item_state is None:
-        return f"{item_id} (not found - may have already been removed)"
+        return refusal("docs.undo_lot_missing", f"{item_id} was not found; it may already have been removed",
+                       item=item_id)
     sku = item_state.get("sku") or item_id
     status = item_state.get("status") or "unknown"
     if status != "available":
-        return f"SKU '{sku}' is '{status}' - cannot archive"
+        return refusal("docs.undo_lot_status", f"SKU '{sku}' is {status} and cannot be archived",
+                       sku=sku, lot_status=status)
     held = float(item_state.get("quantity") or 0)
     if abs(held - came_in) > 1e-9:
-        return f"SKU '{sku}' holds {held:g} of the {came_in:g} that came in (split, sold or adjusted since)"
+        return refusal("docs.undo_lot_holds",
+                       f"SKU '{sku}' holds {held:g} of the {came_in:g} that came in (split, sold or adjusted since)",
+                       sku=sku, held=f"{held:g}", came_in=f"{came_in:g}")
     reserved = float(item_state.get("reserved_quantity") or 0)
     if reserved > 0:
-        return f"SKU '{sku}' has {reserved:g} reserved"
+        return refusal("docs.undo_lot_reserved", f"SKU '{sku}' has {reserved:g} reserved",
+                       sku=sku, reserved=f"{reserved:g}")
     return None
+
+
+def _moved_on_refusal(key: str, english: str, blocked: list[dict]) -> HTTPException:
+    """The 409 for goods a receipt or return brought in that moved on since, naming each."""
+    reasons = "; ".join(b["message"] for b in blocked)
+    return HTTPException(status_code=409, detail=refusal(
+        key, f"{english} Blocked items: {reasons}. Correct the stock first, then try again.", reasons=blocked))
 
 
 @router.delete("/{entity_id}/receive-return")
@@ -10891,14 +10912,9 @@ async def undo_receive_return(
         blocked = [why for iid in item_ids
                    if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in[iid])) is not None]
         if blocked:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Cannot revert return stock: one or more returned items are no longer available. "
-                    f"Blocked items: {'; '.join(blocked)}. "
-                    "You may need to manually correct the inventory before reverting."
-                ),
-            )
+            raise _moved_on_refusal("docs.undo_return_moved_on",
+                                    "The return cannot be undone: goods it brought back are no longer as they came in.",
+                                    blocked)
 
     # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
     undo_suffix = str(uuid.uuid4())
@@ -11226,20 +11242,19 @@ async def undo_receive(
         free = _free_on_hand(lot_state)
         left = round_basis((goods_basis(lot_state) or 0.0) - cost)
         if split_since[lot]:
-            blocked.append(f"SKU '{sku}' was split since this document received it")
+            blocked.append(refusal("docs.undo_lot_split", f"SKU '{sku}' was split since this document received it",
+                                   sku=sku))
         elif free + 1e-9 < qty:
-            blocked.append(f"SKU '{sku}' has {free:g} on hand and free, {qty:g} came in on this document")
+            blocked.append(refusal("docs.undo_lot_not_free",
+                                   f"SKU '{sku}' has {free:g} on hand and free, {qty:g} came in on this document",
+                                   sku=sku, free=f"{free:g}", qty=f"{qty:g}"))
         elif left < 0 or (free - qty <= 1e-9 and left != 0):
-            blocked.append(f"SKU '{sku}' has had its cost changed since this document received it")
+            blocked.append(refusal("docs.undo_lot_cost_changed",
+                                   f"SKU '{sku}' has had its cost changed since this document received it", sku=sku))
     if blocked:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Cannot revert goods received: one or more items are no longer available. "
-                f"Blocked items: {'; '.join(blocked)}. "
-                "You may need to manually correct the inventory before reverting."
-            ),
-        )
+        raise _moved_on_refusal("docs.undo_receipt_moved_on",
+                                "The receipt cannot be undone: goods it brought in are no longer as they came in.",
+                                blocked)
 
     undo_suffix = str(uuid.uuid4())
 

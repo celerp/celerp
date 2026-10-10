@@ -295,7 +295,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
         account = by_line[group.line][0] if group.line in by_line else fallback
         if not account:
             raise HTTPException(status_code=409, detail=refusal(
-                "posting.role_missing", "Choose an inventory account for purchased stock first.",
+                "posting.role_missing", "Choose an account for Inventory purchased in the accounting settings first, then try again.",
                 role=AccountRole.INVENTORY_PURCHASED.value))
         for row in group.members:
             await _bought(session, company_id, user_id, row, costs[row.entity_id], account,

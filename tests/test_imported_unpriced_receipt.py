@@ -38,10 +38,10 @@ async def test_import_refuses_received_goods_no_line_prices(client, session, aut
         "entity_id": doc, "event_type": "doc.created", "source": "test",
         "idempotency_key": uuid.uuid4().hex, "data": data})
     assert r.status_code == 422, r.text
-    label = "purchase order" if doc_type == "purchase_order" else "bill"
-    assert f"no line on this {label} prices it" in r.json()["detail"]
+    detail = r.json()["detail"]
     sku = (await _state(session, auth, stray))["sku"]
-    assert r.json()["detail"].startswith(f"{sku}:")
+    assert detail["message_key"] == "docs.unpriced_receipt", detail
+    assert detail["params"]["goods"] == sku and detail["message"].startswith(f"{sku}: no line of "), detail
     session.expire_all()
     after = (await session.execute(select(func.count()).select_from(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"]))).scalar_one()

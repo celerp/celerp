@@ -57,7 +57,8 @@ async def test_a_receipt_whose_parcel_moved_on_cannot_be_undone(client, session,
     await move(client, auth, parcel)
     r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "UNDO-G" in r.json()["detail"] and why in r.json()["detail"], r.json()["detail"]
+    message = r.json()["detail"]["message"]
+    assert "UNDO-G" in message and why in message, message
     assert (await _state(session, auth, bill))["received_item_ids"] == [parcel]
 
 
@@ -105,4 +106,5 @@ async def test_a_returned_parcel_that_was_split_cannot_be_unreturned(client, ses
     await _split_one(client, auth, returned)
     r = await client.delete(f"/docs/{cn}/receive-return", headers=h)
     assert r.status_code == 409, r.text
-    assert "holds 1 of the 2 that came in" in r.json()["detail"], r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "docs.undo_return_moved_on", r.text
+    assert "holds 1 of the 2 that came in" in r.json()["detail"]["message"], r.text

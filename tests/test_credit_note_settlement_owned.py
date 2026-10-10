@@ -150,7 +150,7 @@ async def test_an_invoice_with_an_issued_credit_note_is_undone_only_after_it(cli
     gl = await _net(session, auth, "1120", prefix="je:")
     r = await _post(client, auth, f"/docs/{inv}/{action}")
     assert r.status_code == 409, r.text
-    assert "void the credit note first" in r.text.lower(), r.text
+    assert r.json()["detail"]["message_key"] == f"docs.{action.split('-')[0]}_under_credit_note", r.text
     assert await _net(session, auth, "1120", prefix="je:") == gl
     assert (await _post(client, auth, f"/docs/{cn}/void")).status_code == 200
     r = await _post(client, auth, f"/docs/{inv}/{action}")
