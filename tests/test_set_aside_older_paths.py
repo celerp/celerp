@@ -145,7 +145,17 @@ async def test_an_invoice_cannot_claim_units_an_older_invoice_without_a_snapshot
     lot = await _lot(client, auth, sku, 3, 30.0)
     b = await _invoice(client, auth, [(lot, sku, 3)])
     await _strip_snapshot(session, auth, b)
-    a = await _invoice(client, auth, [(lot, sku, 2)])
+    # B has no cost record, so its cost cannot move to another invoice: A is refused at
+    # finalize, naming B, and stays a draft.
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "total": 80.0, "line_items": [
+            {"entity_id": lot, "sku": sku, "name": "Lot", "quantity": 2, "unit_price": 40.0, "line_total": 80.0}]})
+    assert r.status_code == 200, r.text
+    a = r.json()["id"]
+    f = await client.post(f"/docs/{a}/finalize", headers=auth["headers"])
+    assert f.status_code == 409, f.text
+    assert f.json()["detail"]["message_key"] == "lines.lot_already_invoiced", f.text
+    assert await _doc_number(session, auth, b) in f.json()["detail"]["message"]
     held = await _held(session, auth, lot)
     assert held == {await _doc_number(session, auth, b): 3.0}, held
     await _ship(client, auth, b, lot)

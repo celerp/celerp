@@ -463,41 +463,41 @@ async def test_finalize_still_allows_a_whole_lot_and_a_backorder(client, session
     await _doc(client, auth, [_line(short, sku2, 4)])
 
 
-async def test_a_second_invoice_for_the_same_unshipped_lot_is_refused(client, session, auth):
+async def test_a_second_invoice_for_the_same_unshipped_lot_finalizes_without_costing_it_again(client, session, auth):
+    """The first invoice holds all 5 at a recorded cost. A second invoice for the same lot
+    finalizes (the goods go to whichever invoice ships them, and the cost moves with them),
+    and costs nothing more: no unit is free."""
     sku = f"LSD-{uuid.uuid4().hex[:6]}"
     lot = await _new_item(client, auth, sku, quantity=5, cost_total=50)
     await _doc(client, auth, [_line(lot, sku, 5)])
     assert await _account_net(session, auth["company_id"], "5100") == 50.0
-    second = await _doc(client, auth, [_line(lot, sku, 5)], finalize=False)
-    r = await client.post(f"/docs/{second}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
+    second = await _doc(client, auth, [_line(lot, sku, 5)])
+    assert (await _st(session, auth, second)).get("finalized")
     assert await _account_net(session, auth["company_id"], "5100") == 50.0
-    # What the first invoice leaves can still be invoiced.
-    third = await _doc(client, auth, [_line(lot, sku, 5)], finalize=False)
-    r = await client.post(f"/docs/{third}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
 
 
-async def test_invoices_sharing_a_lot_within_its_quantity_both_finalize(client, session, auth):
+async def test_invoices_sharing_a_lot_cost_it_only_once(client, session, auth):
+    """Two invoices take the lot's 5 between them; a third for 1 finalizes and costs nothing."""
     sku = f"LSE-{uuid.uuid4().hex[:6]}"
     lot = await _new_item(client, auth, sku, quantity=5, cost_total=50)
     await _doc(client, auth, [_line(lot, sku, 3)])
     await _doc(client, auth, [_line(lot, sku, 2)])
     assert await _account_net(session, auth["company_id"], "5100") == 50.0
-    third = await _doc(client, auth, [_line(lot, sku, 1)], finalize=False)
-    r = await client.post(f"/docs/{third}/finalize", headers=auth["headers"])
-    assert r.status_code == 409, r.text
+    await _doc(client, auth, [_line(lot, sku, 1)])
     assert await _account_net(session, auth["company_id"], "5100") == 50.0
 
 
-async def test_a_line_whose_lot_is_already_invoiced_says_so_before_allow_splitting(client, session, auth):
-    """The line's own lot is booked on another invoice; the only other stock of the product
-    may not be split. The refusal names the invoice holding the lot, the reason the line
-    cannot have its own stock, not Allow Splitting on the stock it might have taken instead."""
+async def test_a_line_whose_lot_an_invoice_without_a_cost_record_holds_says_so(client, session, auth):
+    """The line's own lot is held by an invoice finalized before cost records existed; the
+    only other stock of the product may not be split. That cost cannot move, so the second
+    invoice is refused, naming the invoice holding the lot, not Allow Splitting on the stock
+    it might have taken instead."""
+    from test_set_aside_older_paths import _strip_snapshot
     sku = f"LSG-{uuid.uuid4().hex[:6]}"
     lot = await _new_item(client, auth, sku, quantity=1, cost_total=10, allow_splitting=True)
     await _new_item(client, auth, sku, quantity=8, cost_total=80, allow_splitting=False)
     first = await _doc(client, auth, [_line(lot, sku, 1)])
+    await _strip_snapshot(session, auth, first)
     number = (await _st(session, auth, first)).get("doc_number")
     second = await _doc(client, auth, [_line(lot, sku, 1)], finalize=False)
     r = await client.post(f"/docs/{second}/finalize", headers=auth["headers"])
@@ -505,3 +505,16 @@ async def test_a_line_whose_lot_is_already_invoiced_says_so_before_allow_splitti
     assert _key(r) == "lines.lot_already_invoiced", r.text
     assert number in r.json()["detail"]["message"]
     assert not (await _st(session, auth, second)).get("finalized")
+
+
+async def test_a_line_whose_lot_a_costed_invoice_holds_finalizes_without_a_sibling(client, session, auth):
+    """Neighbour: the same, but the holder has its cost record. The second invoice finalizes
+    without cutting the non-splittable sibling, and books no cost: the lot's one unit is held."""
+    sku = f"LSG-{uuid.uuid4().hex[:6]}"
+    lot = await _new_item(client, auth, sku, quantity=1, cost_total=10, allow_splitting=True)
+    sibling = await _new_item(client, auth, sku, quantity=8, cost_total=80, allow_splitting=False)
+    await _doc(client, auth, [_line(lot, sku, 1)])
+    second = await _doc(client, auth, [_line(lot, sku, 1)])
+    assert (await _st(session, auth, second)).get("finalized")
+    assert await _account_net(session, auth["company_id"], "5100") == 10.0
+    assert float((await _st(session, auth, sibling))["quantity"]) == 8.0

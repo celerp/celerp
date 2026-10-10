@@ -2172,10 +2172,14 @@ async def _taken_back(session, company_id, doc_ids: set[str], lots: set[str],
 
 
 async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[str, Projection]) -> dict[str, tuple[float, list[str]]]:
-    """Stock other invoices have already booked the cost of and not yet shipped, per lot:
-    ``{lot: (quantity, invoice numbers)}``. A finalized invoice's line names the lot it
-    sells until it ships (a shipped part is carved off and named instead), so a line of an
-    open finalized invoice that names a lot still in stock holds that much of it."""
+    """Stock other invoices finalized with no cost record (before cost snapshots existed)
+    hold and have not yet shipped, per lot: ``{lot: (quantity, invoice numbers)}``. A
+    finalized invoice's line names the lot it sells until it ships (a shipped part is carved
+    off and named instead), so a line of such an invoice that names a lot still in stock
+    holds that much of it. Goods an invoice holds at a recorded cost are not counted: the
+    invoice that ships them takes that cost with them (auto_je.reconcile_doc_cogs), so
+    another invoice may name them, and its finalize costs only the units still free
+    (auto_je.doc_lot_pool). Cost never recorded cannot move, so those goods stay refused."""
     in_stock = {eid for eid, p in locked.items()
                 if str(p.state.get("status") or "").lower() in ("available", "reserved")}
     if not in_stock:
@@ -2192,6 +2196,7 @@ async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[
         Projection.state["status"].as_string() != "void",
         binds,
     ))).scalars().all()
+    rows = [doc for doc in rows if await auto_je.recognized_cogs(session, company_id, doc.entity_id) is None]
     released = await _taken_back(session, company_id, {doc.entity_id for doc in rows}, in_stock, locked)
     out: dict[str, tuple[float, list[str]]] = {}
     for doc in rows:
@@ -2209,8 +2214,8 @@ async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[
 async def _refuse_unfillable_invoice_lines(session, company_id, entity_id: str, state: dict, company_settings: dict) -> None:
     """Finalizing an invoice books the cost of the stock it sells, so it plans each stock line
     the way shipping it will: a line that could be filled only by taking part of a lot that
-    may not be split is refused, and so is one whose stock another finalized invoice has
-    already booked and not yet shipped (its cost would be booked twice). Each line gets one
+    may not be split is refused, and so is one whose stock another finalized invoice with no
+    cost record holds and has not shipped (_invoiced_elsewhere). Each line gets one
     refusal, the most specific true one: its own lot's reason before a sibling's. Stock the customer
     already has (out on the memo the invoice came from, or sold to it) is not drawn again.
     A line no stock covers at all is a backorder and still finalizes."""
