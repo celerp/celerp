@@ -4622,5 +4622,7 @@
   "documents.cost_moved_with_goods": "El lote {sku} estaba reservado para la factura {doc}. El costo de la factura {doc} se registrará cuando se envíe.",
   "accounting.year_end_invalid": "{value} no es una fecha. Introduzca el último día del año que va a cerrar como AAAA-MM-DD.",
   "accounting.bank_not_found": "Esa cuenta bancaria no se encontró en esta empresa. Elija una de las cuentas bancarias de la empresa.",
-  "location.not_found": "{value} no es una ubicación de esta empresa. Elige una ubicación en Configuración > Inventario > Ubicaciones o créala allí primero."
+  "location.not_found": "{value} no es una ubicación de esta empresa. Elige una ubicación en Configuración > Inventario > Ubicaciones o créala allí primero.",
+  "erase.locked_period": "No se borró nada. {count} de los artículos seleccionados tienen historial con fecha igual o anterior al {lock_date}, cuando los libros están bloqueados. Desbloquee el periodo en Settings > Accounting, bórrelos y vuelva a bloquear el periodo.",
+  "demo.not_sample_fixture": "No se borró nada. {count} de los artículos seleccionados tienen registros que no son datos de ejemplo, así que no se eliminan como ejemplos. Abra cada artículo y use Delete, Archive o Write Off Stock en su lugar."
 }

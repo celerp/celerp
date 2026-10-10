@@ -4622,5 +4622,7 @@
   "documents.cost_moved_with_goods": "Il lotto {sku} era riservato alla fattura {doc}. Il costo della fattura {doc} sarà registrato alla spedizione.",
   "accounting.year_end_invalid": "{value} non è una data. Inserisci l'ultimo giorno dell'anno da chiudere nel formato AAAA-MM-GG.",
   "accounting.bank_not_found": "Quel conto bancario non è stato trovato in questa azienda. Scegli uno dei conti bancari dell'azienda.",
-  "location.not_found": "{value} non è una sede di questa azienda. Scegli una sede in Impostazioni > Inventario > Sedi o aggiungila prima lì."
+  "location.not_found": "{value} non è una sede di questa azienda. Scegli una sede in Impostazioni > Inventario > Sedi o aggiungila prima lì.",
+  "erase.locked_period": "Non è stato cancellato nulla. {count} degli articoli selezionati hanno una cronologia datata al {lock_date} o prima, quando i libri sono bloccati. Sblocca il periodo in Settings > Accounting, cancellali, poi blocca di nuovo il periodo.",
+  "demo.not_sample_fixture": "Non è stato cancellato nulla. {count} degli articoli selezionati contengono registrazioni che non sono dati di esempio, quindi non vengono rimossi come esempi. Apri ogni articolo e usa invece Delete, Archive o Write Off Stock."
 }

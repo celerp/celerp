@@ -4622,5 +4622,7 @@
   "documents.cost_moved_with_goods": "Lô {sku} đã được giữ cho hóa đơn {doc}. Giá vốn của hóa đơn {doc} sẽ được ghi nhận khi giao hàng.",
   "accounting.year_end_invalid": "{value} không phải là ngày. Nhập ngày cuối cùng của năm cần khóa sổ theo định dạng YYYY-MM-DD.",
   "accounting.bank_not_found": "Không tìm thấy tài khoản ngân hàng đó trong công ty này. Chọn một trong các tài khoản ngân hàng của công ty.",
-  "location.not_found": "{value} không phải là vị trí của công ty này. Hãy chọn vị trí trong Cài đặt > Hàng tồn kho > Vị trí, hoặc thêm vị trí đó trước."
+  "location.not_found": "{value} không phải là vị trí của công ty này. Hãy chọn vị trí trong Cài đặt > Hàng tồn kho > Vị trí, hoặc thêm vị trí đó trước.",
+  "erase.locked_period": "Không có gì bị xóa. {count} mặt hàng đã chọn có lịch sử ghi ngày {lock_date} hoặc trước đó, khi sổ sách đã khóa. Mở khóa kỳ trong Settings > Accounting, xóa chúng, rồi khóa lại kỳ.",
+  "demo.not_sample_fixture": "Không có gì bị xóa. {count} mặt hàng đã chọn có bản ghi không phải dữ liệu mẫu, nên không bị xóa như mẫu. Mở từng mặt hàng và dùng Delete, Archive hoặc Write Off Stock thay thế."
 }

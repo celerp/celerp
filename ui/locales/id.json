@@ -4622,5 +4622,7 @@
   "documents.cost_moved_with_goods": "Lot {sku} disisihkan untuk faktur {doc}. Biaya faktur {doc} akan dicatat saat dikirim.",
   "accounting.year_end_invalid": "{value} bukan tanggal. Masukkan hari terakhir tahun yang akan ditutup dengan format YYYY-MM-DD.",
   "accounting.bank_not_found": "Rekening bank itu tidak ditemukan di perusahaan ini. Pilih salah satu rekening bank perusahaan.",
-  "location.not_found": "{value} bukan lokasi perusahaan ini. Pilih lokasi dari Pengaturan > Persediaan > Lokasi, atau tambahkan di sana terlebih dahulu."
+  "location.not_found": "{value} bukan lokasi perusahaan ini. Pilih lokasi dari Pengaturan > Persediaan > Lokasi, atau tambahkan di sana terlebih dahulu.",
+  "erase.locked_period": "Tidak ada yang dihapus. {count} dari barang yang dipilih memiliki riwayat bertanggal {lock_date} atau sebelumnya, saat pembukuan dikunci. Buka kunci periode di Settings > Accounting, hapus barang tersebut, lalu kunci kembali periodenya.",
+  "demo.not_sample_fixture": "Tidak ada yang dihapus. {count} dari barang yang dipilih memiliki catatan yang bukan data contoh, jadi tidak dihapus sebagai contoh. Buka setiap barang dan gunakan Delete, Archive, atau Write Off Stock."
 }

@@ -4622,5 +4622,7 @@
   "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships.",
   "accounting.year_end_invalid": "{value} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
   "accounting.bank_not_found": "That bank account was not found in this company. Choose one of the company's bank accounts.",
-  "location.not_found": "{value} is not one of this company's locations. Choose a location from Settings > Inventory > Locations, or add it there first."
+  "location.not_found": "{value} is not one of this company's locations. Choose a location from Settings > Inventory > Locations, or add it there first.",
+  "erase.locked_period": "Nothing was erased. {count} of the selected items have history dated on or before {lock_date}, when the books are locked. Unlock the period in Settings > Accounting, erase them, then lock the period again.",
+  "demo.not_sample_fixture": "Nothing was erased. {count} of the selected items hold records that are not sample data, so they are not removed as samples. Open each item and use Delete, Archive or Write Off Stock instead."
 }

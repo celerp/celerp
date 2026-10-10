@@ -1627,16 +1627,48 @@ async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[st
     )).scalars().all())
 
 
-async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> None:
-    """Remove the given items completely: their projection and every ledger row, after
-    taking the stock they hold off the books (lot_origin.remove_opening_lots).
+async def _not_sample_fixtures(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> set[str]:
+    """The given ids holding a ledger row that is not a sample fixture: anything other
+    than a row the demo seeder wrote or the books recording where its stock sits."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.lot_origin import KEPT, RECORDED
 
-    Runs inside the caller's transaction and does not commit."""
-    from celerp.services.item_erasure import erase_items
+    return set((await session.execute(
+        sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(entity_ids),
+            LedgerEntry.source != "demo",
+            LedgerEntry.event_type.not_in((RECORDED, KEPT)),
+        ).distinct()
+    )).scalars().all())
+
+
+async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> None:
+    """Remove the given sample items completely: their projection and every ledger row,
+    after taking the stock they hold off the books (lot_origin.remove_opening_lots).
+
+    Only sample fixtures go: an item holding any other record is refused
+    (``demo.not_sample_fixture``), and so is one with history inside the locked period
+    (item_erasure.require_unlocked_history). Runs inside the caller's transaction and does
+    not commit."""
+    from fastapi import HTTPException
+
+    from celerp.accounting_roles import refusal
+    from celerp.services.item_erasure import erase_items, require_unlocked_history
     from celerp.services.lot_origin import remove_opening_lots
 
     if not entity_ids:
         return
+    other = await _not_sample_fixtures(session, company_id, entity_ids)
+    if other:
+        raise HTTPException(status_code=409, detail=refusal(
+            "demo.not_sample_fixture",
+            f"Nothing was erased. {len(other)} of the selected items hold records that are not sample "
+            "data, so they are not removed as samples. Open each item and use Delete, Archive or "
+            "Write Off Stock instead.",
+            count=len(other)))
+    await require_unlocked_history(session, company_id, entity_ids)
     await remove_opening_lots(session, company_id, entity_ids, None, _SAMPLE_STOCK)
     await erase_items(session, company_id, entity_ids)
 
@@ -1649,19 +1681,10 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
     another record (a document line, a movement, a note) mentions its id or its SKU
     (item_erasure.depended_on)."""
     import sqlalchemy as sa
-    from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
     from celerp.services.item_erasure import depended_on
-    from celerp.services.lot_origin import KEPT, RECORDED
 
-    touched = set((await session.execute(
-        sa.select(LedgerEntry.entity_id).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.entity_id.in_(entity_ids),
-            LedgerEntry.source != "demo",
-            LedgerEntry.event_type.not_in((RECORDED, KEPT)),
-        ).distinct()
-    )).scalars().all())
+    touched = await _not_sample_fixtures(session, company_id, entity_ids)
     skus = dict((await session.execute(
         sa.select(Projection.entity_id, Projection.state["sku"].as_string()).where(
             Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
@@ -1681,6 +1704,8 @@ async def untouched_demo_item_ids(session: AsyncSession, company_id: uuid.UUID) 
 
 async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UUID) -> tuple[int, int]:
     """Delete the demo items the user never edited or used; the rest stay as they are.
+    A sample with history inside the locked period stays too, since erasing it would
+    change the locked books (item_erasure.locked_history).
 
     Runs inside the caller's transaction and does not commit. Returns how many demo
     items were deleted and how many were kept.
@@ -1688,10 +1713,13 @@ async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UU
     The items are locked before they are checked, so an edit either commits first and
     the check sees it (the item is kept), or waits and finds the item gone."""
     from celerp.services.company_lock import lock_projections
+    from celerp.services.item_erasure import locked_history
 
     demo_ids = await demo_item_ids(session, company_id)
     await lock_projections(session, company_id, demo_ids)
     removable = await _untouched_demo_items(session, company_id, demo_ids) if demo_ids else []
+    _lock, locked = await locked_history(session, company_id, removable)
+    removable = [eid for eid in removable if eid not in locked]
     await delete_demo_items(session, company_id, removable)
     return len(removable), len(demo_ids) - len(removable)
 

@@ -4622,5 +4622,7 @@
   "documents.cost_moved_with_goods": "ロット {sku} は請求書 {doc} 用に確保されていました。請求書 {doc} の原価は出荷時に計上されます。",
   "accounting.year_end_invalid": "{value} は日付ではありません。締める年度の最終日を YYYY-MM-DD 形式で入力してください。",
   "accounting.bank_not_found": "この口座はこの会社に見つかりません。会社の銀行口座から選んでください。",
-  "location.not_found": "{value} はこの会社の保管場所ではありません。[設定] > [在庫] > [保管場所] から保管場所を選ぶか、先にそこで追加してください。"
+  "location.not_found": "{value} はこの会社の保管場所ではありません。[設定] > [在庫] > [保管場所] から保管場所を選ぶか、先にそこで追加してください。",
+  "erase.locked_period": "何も消去されていません。選択した品目のうち {count} 件に、帳簿がロックされている {lock_date} 以前の履歴があります。Settings > Accounting で期間のロックを解除し、消去してから、期間を再びロックしてください。",
+  "demo.not_sample_fixture": "何も消去されていません。選択した品目のうち {count} 件にサンプルデータではない記録があるため、サンプルとしては削除されません。各品目を開き、代わりに Delete、Archive、または Write Off Stock を使ってください。"
 }
