@@ -185,7 +185,7 @@ async def test_a_held_lot_cannot_become_a_service(client, session, auth, via, or
         assert r.status_code in (409, 422), r.text
         await session.rollback()
         if r.status_code == 409:
-            assert number in r.json()["detail"], r.text
+            assert number in r.json()["detail"]["message"], r.text
     else:
         _rejected_naming(await _csv(client, auth, _csv_row(lot, {"inventory_type": "service"})), number, sku)
         await session.rollback()

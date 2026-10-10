@@ -7,6 +7,8 @@ Taking them off stock by hand, or merging their lot into another, while an invoi
 them is refused, naming the invoice."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import select
 
@@ -122,7 +124,7 @@ async def test_taking_set_aside_goods_off_by_hand_is_refused_naming_the_invoice(
     number = await _doc_number(session, auth, a)
     r = await _adjust(client, auth, lot, 1)
     assert r.status_code == 409, r.text
-    assert number in r.json()["detail"] and "cannot go below 2" in r.json()["detail"]
+    assert number in r.json()["detail"]["message"] and "cannot go below 2" in r.json()["detail"]["message"]
     r = await _adjust(client, auth, lot, 0)
     assert r.status_code == 409, r.text
     r = await _adjust(client, auth, lot, 2)
@@ -141,8 +143,9 @@ async def test_two_invoices_holding_a_lot_are_both_named(client, session, auth):
     r = await _adjust(client, auth, lot, 1)
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
-    assert await _doc_number(session, auth, a) in detail and await _doc_number(session, auth, b) in detail
-    assert detail.startswith(f"{sku}: invoices ")
+    numbers = f"{await _doc_number(session, auth, a)}, {await _doc_number(session, auth, b)}"
+    assert detail["params"]["docs"] == numbers, detail
+    assert detail["message"].startswith(f"{sku}: 2 of this lot are set aside for invoice {numbers}"), detail
 
 
 async def test_set_aside_goods_can_be_taken_off_once_the_invoice_lets_go(client, session, auth):
@@ -173,7 +176,7 @@ async def test_making_set_aside_goods_into_something_else_is_refused(client, ses
     body = {"child_sku": "SAF-TX-OUT", "child_category": "Processed", "child_sell_by": "piece", "child_quantity": 1.0}
     r = await client.post(f"/items/{lot}/transform", headers=auth["headers"], json=body)
     assert r.status_code == 409, r.text
-    assert await _doc_number(session, auth, a) in r.json()["detail"]
+    assert await _doc_number(session, auth, a) in r.json()["detail"]["message"]
     await assert_settled(client, session, auth)
     await _ok(client, auth, f"/docs/{a}/void")
     r = await client.post(f"/items/{lot}/transform", headers=auth["headers"], json=body)
@@ -203,4 +206,34 @@ async def test_a_part_holding_goods_two_invoices_set_aside_is_not_taken_off_by_h
     part = await _two_invoices_then_split(client, auth, "SAF-TWO-ADJ")
     r = await _adjust(client, auth, part, 0)
     assert r.status_code == 409, r.text
+    await assert_settled(client, session, auth)
+
+
+async def test_goods_reserved_for_the_invoice_are_the_ones_it_holds(client, session, auth):
+    """Lot 5, an invoice for 2 reserves its line: the reserve carves the 2 into a part
+    reserved for the invoice, so those are the goods it holds and the 3 left on the lot
+    are free: sending the whole rest of the lot out on memo is allowed, and the invoice
+    still holds its 2 on the reserved part."""
+    sku = "SAF-RSV"
+    lot = await _lot(client, auth, sku, 5, 50.0)
+    inv = await _invoice(client, auth, [(lot, sku, 2)])
+    h = auth["headers"]
+    line_ids = [li["line_id"] for li in (await client.get(f"/docs/{inv}", headers=h)).json()["line_items"]]
+    r = await client.post(f"/docs/{inv}/reserve-lines", headers=h, json={"line_ids": line_ids, "new_status": "reserved"})
+    assert r.status_code == 200, r.text
+    part = (await client.get(f"/docs/{inv}", headers=h)).json()["line_items"][0]["item_id"]
+    assert part != lot
+    r = await client.post("/docs", headers=h, json={"doc_type": "memo", "line_items": [
+        {"item_id": lot, "sku": sku, "name": sku, "quantity": 3, "unit_price": 10.0}]})
+    assert r.status_code == 200, r.text
+    memo = r.json()["id"]
+    assert (r := await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200, r.text
+    memo_lines = [li["line_id"] for li in (await client.get(f"/docs/{memo}", headers=h)).json()["line_items"]]
+    r = await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": memo_lines})
+    assert r.status_code == 200, r.text
+    from celerp.services.auto_je import set_aside
+    number = await _doc_number(session, auth, inv)
+    session.expire_all()
+    lots = [SimpleNamespace(entity_id=lot), SimpleNamespace(entity_id=part)]
+    assert await set_aside(session, auth["company_id"], lots) == {part: {number: 2.0}}
     await assert_settled(client, session, auth)

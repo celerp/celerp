@@ -506,6 +506,8 @@
   "lots.split_action.take_back": "reprendre",
   "lots.split_action.write_off": "radier",
   "lots.split_action.invoice": "facturer",
+  "lots.held_for_invoice_floor": "{sku} : {qty} de ce lot sont réservés pour la facture {docs}, qui ne les a pas encore expédiés, donc le lot ne peut pas descendre sous {floor}. Expédiez cette facture, ou libérez la marchandise en l'annulant ou en modifiant sa ligne, puis réessayez.",
+  "lots.held_for_invoice_leave": "{sku} : {qty} de ce lot sont réservés pour la facture {docs}, qui ne les a pas encore expédiés, donc le lot ne peut pas sortir du stock. Expédiez cette facture, ou libérez la marchandise en l'annulant ou en modifiant sa ligne, puis réessayez.",
   "lines.weight_invalid": "Le poids doit être supérieur à 0.",
   "lines.pieces_invalid": "Le nombre de pièces doit être un nombre entier supérieur à 0.",
   "docs.return_line_measure_lots": "{name} : les articles de cette ligne sont répartis sur plusieurs lots. Retournez-les par lot pour indiquer leur poids ou leurs pièces.",

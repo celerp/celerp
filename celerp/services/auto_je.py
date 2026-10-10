@@ -3159,6 +3159,16 @@ async def _open_invoices(session, company_id, *, exclude: str | None, lots=None)
     return out
 
 
+def _hold_order(state: dict | None, doc_id: str) -> int:
+    """Where an invoice's claim looks first among the lots holding its goods: a part
+    reserved for this invoice holds its goods, a part reserved for another holds that
+    one's, and the rest come between, in lineage order (the sort is stable)."""
+    state = state or {}
+    if state.get("status") != "reserved" or not state.get("status_doc_id"):
+        return 1
+    return 0 if state.get("status_doc_id") == doc_id else 2
+
+
 async def unshipped_claims(session, company_id, *, exclude: str | None = None,
                            states: dict[str, dict] | None = None, costed: bool = True,
                            lots=None) -> list[UnshippedClaim]:
@@ -3180,7 +3190,7 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
     to what was allocated from each. The goods of an allocated lot are wherever they went
     while still in stock: the lot itself, the parts split off it, and the lot it was
     merged into (_held_where), each up to what it still holds less what earlier claims
-    took from it. The line's recognized
+    took from it, a part reserved for the invoice first (_hold_order). The line's recognized
     cost for its unshipped goods is shared over those lots by their allocated cost. Goods
     no longer in stock claim nothing: they left stock some other way."""
     open_docs = await _open_invoices(session, company_id, exclude=exclude, lots=lots)
@@ -3201,10 +3211,11 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
             for lot in recognized.allocations[str(idx)].get("lots") or []:
                 want = min(float(lot.get("qty") or 0), left)
                 key = None
-                for member in held_where.get(lot["lot_entity_id"], []):
-                    if states and member.entity_id in states:
-                        member = SimpleNamespace(entity_id=member.entity_id, state=states[member.entity_id],
-                                                 consignment_flag=member.consignment_flag)
+                members = [SimpleNamespace(entity_id=m.entity_id, state=states[m.entity_id],
+                                           consignment_flag=m.consignment_flag)
+                           if states and m.entity_id in states else m
+                           for m in held_where.get(lot["lot_entity_id"], [])]
+                for member in sorted(members, key=lambda m: _hold_order(m.state, doc_id)):
                     value = _on_hand_value(member)
                     qty = min(want, float((member.state or {}).get("quantity") or 0) - used.get(member.entity_id, 0.0))
                     if value is None or qty <= 1e-9:
@@ -3273,6 +3284,13 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     invoices with a cost snapshot are left out too; an invoice with none has no cost to
     move, so the goods it holds stay refused to every other shipment.
 
+    A caller may judge a change before writing it, as split_off_child does for goods
+    leaving stock through a part carved off the lot: ``after`` is read as the lot's state.
+
+    Refused with lots.held_for_invoice_floor or lots.held_for_invoice_leave, naming the
+    invoices and the next step (ship the invoice, or release the goods by voiding it or
+    changing its line).
+
     Takes the company lock first, as finalize does, so a finalize in flight is either
     seen or waits for this transaction (emit_event takes it before the row lock)."""
     from fastapi import HTTPException
@@ -3301,6 +3319,7 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
             return out
 
         held, now = cover(was), cover(c for c in await unshipped_claims(session, company_id, exclude=exclude,
+                                                                        states={lot_id: after},
                                                                         costed=False, lots={lot_id})
                                       if not moves_cost or c.doc_id not in costed)
         lost = sum(max(0.0, qty - now.get(key, 0.0)) for key, qty in held.items())
@@ -3309,14 +3328,19 @@ async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: d
     # Archived, expired, merged and memo stock is no longer free to ship from this lot: an
     # invoice holding any of it is refused outright.
     numbers = sorted({await _doc_number_of(session, company_id, d) for d in held_here})
-    one = len(numbers) == 1
-    outcome = ("the lot cannot leave stock" if leaves
-               else f"the lot cannot go below {float(after.get('quantity') or 0) + lost:g}")
-    raise HTTPException(status_code=409, detail=(
-        f"{after.get('sku') or before.get('sku') or lot_id}: {'invoice' if one else 'invoices'} "
-        f"{', '.join(numbers)} {'has' if one else 'have'} costed {sum(held_here.values()):g} of this lot for "
-        f"{'its customer' if one else 'their customers'} and not shipped them yet, so {outcome}. Ship or void "
-        f"{'the invoice' if one else 'those invoices'}, or change {'its line' if one else 'their lines'}, first."))
+    params = {"sku": after.get("sku") or before.get("sku") or lot_id, "qty": f"{sum(held_here.values()):g}",
+              "docs": ", ".join(numbers)}
+    next_step = ("Ship that invoice, or release the goods by voiding it or changing its line, "
+                 "then try again.")
+    lead = (f"{params['sku']}: {params['qty']} of this lot are set aside for invoice {params['docs']}, "
+            "which has not shipped them, so the lot")
+    if leaves:
+        detail = refusal("lots.held_for_invoice_leave", f"{lead} cannot leave stock. {next_step}", **params)
+    else:
+        floor = f"{float(after.get('quantity') or 0) + lost:g}"
+        detail = refusal("lots.held_for_invoice_floor", f"{lead} cannot go below {floor}. {next_step}",
+                         **params, floor=floor)
+    raise HTTPException(status_code=409, detail=detail)
 
 
 async def held_short(session, company_id, doc_id: str, doc_state: dict) -> set[str]:

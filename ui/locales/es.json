@@ -506,6 +506,8 @@
   "lots.split_action.take_back": "recibir de vuelta",
   "lots.split_action.write_off": "dar de baja",
   "lots.split_action.invoice": "facturar",
+  "lots.held_for_invoice_floor": "{sku}: {qty} de este lote están apartados para la factura {docs}, que aún no los ha enviado, así que el lote no puede bajar de {floor}. Envíe esa factura, o libere la mercancía anulándola o cambiando su línea, y vuelva a intentarlo.",
+  "lots.held_for_invoice_leave": "{sku}: {qty} de este lote están apartados para la factura {docs}, que aún no los ha enviado, así que el lote no puede salir del inventario. Envíe esa factura, o libere la mercancía anulándola o cambiando su línea, y vuelva a intentarlo.",
   "lines.weight_invalid": "El peso debe ser mayor que 0.",
   "lines.pieces_invalid": "Las piezas deben ser un número entero mayor que 0.",
   "docs.return_line_measure_lots": "{name}: los artículos de esta línea están en más de un lote. Devuélvalos por lote para indicar su peso o piezas.",

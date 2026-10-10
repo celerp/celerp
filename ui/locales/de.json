@@ -506,6 +506,8 @@
   "lots.split_action.take_back": "zurücknehmen",
   "lots.split_action.write_off": "abschreiben",
   "lots.split_action.invoice": "fakturieren",
+  "lots.held_for_invoice_floor": "{sku}: {qty} dieses Postens sind für die Rechnung {docs} zurückgelegt, die sie noch nicht versendet hat, daher kann der Posten nicht unter {floor} fallen. Versenden Sie diese Rechnung, oder geben Sie die Ware frei, indem Sie sie stornieren oder ihre Zeile ändern, und versuchen Sie es dann erneut.",
+  "lots.held_for_invoice_leave": "{sku}: {qty} dieses Postens sind für die Rechnung {docs} zurückgelegt, die sie noch nicht versendet hat, daher kann der Posten den Bestand nicht verlassen. Versenden Sie diese Rechnung, oder geben Sie die Ware frei, indem Sie sie stornieren oder ihre Zeile ändern, und versuchen Sie es dann erneut.",
   "lines.weight_invalid": "Das Gewicht muss größer als 0 sein.",
   "lines.pieces_invalid": "Die Stückzahl muss eine ganze Zahl größer als 0 sein.",
   "docs.return_line_measure_lots": "{name}: Die Waren dieser Zeile liegen in mehr als einer Partie. Senden Sie sie nach Partie zurück, um Gewicht oder Stückzahl anzugeben.",

@@ -539,6 +539,8 @@
   "lots.split_action.take_back": "መልሶ መቀበል",
   "lots.split_action.write_off": "መሰረዝ",
   "lots.split_action.invoice": "ደረሰኝ መስጠት",
+  "lots.held_for_invoice_floor": "{sku}: ከዚህ ሎት {qty} ለደረሰኝ {docs} ተለይተው ተቀምጠዋል፣ ገና አልተላኩም፣ ስለዚህ ሎቱ ከ {floor} በታች ሊወርድ አይችልም። ያንን ደረሰኝ ይላኩ፣ ወይም ደረሰኙን በመሰረዝ ወይም መስመሩን በመቀየር እቃዎቹን ይልቀቁ፣ ከዚያ እንደገና ይሞክሩ።",
+  "lots.held_for_invoice_leave": "{sku}: ከዚህ ሎት {qty} ለደረሰኝ {docs} ተለይተው ተቀምጠዋል፣ ገና አልተላኩም፣ ስለዚህ ሎቱ ከክምችት ሊወጣ አይችልም። ያንን ደረሰኝ ይላኩ፣ ወይም ደረሰኙን በመሰረዝ ወይም መስመሩን በመቀየር እቃዎቹን ይልቀቁ፣ ከዚያ እንደገና ይሞክሩ።",
   "lines.weight_invalid": "ክብደት ከ0 በላይ መሆን አለበት።",
   "lines.pieces_invalid": "የቁራጭ ብዛት ከ0 በላይ ሙሉ ቁጥር መሆን አለበት።",
   "docs.return_line_measure_lots": "{name}: በዚህ መስመር ያሉት እቃዎች ከአንድ በላይ ሎት ውስጥ ናቸው። ክብደታቸውን ወይም ቁራጮቻቸውን ለመስጠት በሎት ይመልሷቸው።",

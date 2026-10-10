@@ -564,6 +564,8 @@
   "lots.split_action.take_back": "take back",
   "lots.split_action.write_off": "write off",
   "lots.split_action.invoice": "invoice",
+  "lots.held_for_invoice_floor": "{sku}: {qty} of this lot are set aside for invoice {docs}, which has not shipped them, so the lot cannot go below {floor}. Ship that invoice, or release the goods by voiding it or changing its line, then try again.",
+  "lots.held_for_invoice_leave": "{sku}: {qty} of this lot are set aside for invoice {docs}, which has not shipped them, so the lot cannot leave stock. Ship that invoice, or release the goods by voiding it or changing its line, then try again.",
   "lines.weight_invalid": "Weight must be greater than 0.",
   "lines.pieces_invalid": "Pieces must be a whole number greater than 0.",
   "docs.return_line_measure_lots": "{name}: the goods on this line are in more than one lot. Return them by lot to give their weight or pieces.",

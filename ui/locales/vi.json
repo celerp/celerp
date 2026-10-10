@@ -506,6 +506,8 @@
   "lots.split_action.take_back": "nhận lại",
   "lots.split_action.write_off": "xóa sổ",
   "lots.split_action.invoice": "lập hóa đơn",
+  "lots.held_for_invoice_floor": "{sku}: {qty} của lô này đã được giữ cho hóa đơn {docs}, hóa đơn này chưa giao hàng, nên lô không thể xuống dưới {floor}. Hãy giao hóa đơn đó, hoặc giải phóng hàng bằng cách hủy hóa đơn hoặc đổi dòng của nó, rồi thử lại.",
+  "lots.held_for_invoice_leave": "{sku}: {qty} của lô này đã được giữ cho hóa đơn {docs}, hóa đơn này chưa giao hàng, nên lô không thể rời khỏi kho. Hãy giao hóa đơn đó, hoặc giải phóng hàng bằng cách hủy hóa đơn hoặc đổi dòng của nó, rồi thử lại.",
   "lines.weight_invalid": "Trọng lượng phải lớn hơn 0.",
   "lines.pieces_invalid": "Số chiếc phải là số nguyên lớn hơn 0.",
   "docs.return_line_measure_lots": "{name}: hàng trên dòng này nằm ở nhiều lô. Hãy trả lại theo từng lô để ghi trọng lượng hoặc số chiếc.",

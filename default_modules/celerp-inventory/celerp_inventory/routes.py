@@ -3680,6 +3680,12 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         raise ValueError(f"cannot split {child_qty:g} of {parent_qty:g} available")
     if not splitting_allowed(parent.state) and child_qty < parent_qty - 1e-9:
         raise HTTPException(status_code=409, detail=splitting_off(parent_sku, action))
+    if action in ("return", "write_off"):
+        # The part leaves stock as soon as it is carved, so the mother must keep the goods
+        # finalized invoices set aside: judged on the mother as the carve would leave it.
+        from celerp.services.auto_je import refuse_stranding_set_aside
+        await refuse_stranding_set_aside(session, company_id, entity_id, parent.state,
+                                         {**parent.state, "quantity": parent_qty - child_qty})
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
