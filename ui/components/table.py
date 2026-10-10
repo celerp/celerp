@@ -1368,6 +1368,12 @@ def data_row(
     row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
     if str(row.get("inventory_type") or "") == "component":
         row_cls += " data-row--component"  # visual cue for component (raw-material) items
+    # Search ranking cue: the row's identifier equals the search term exactly (q_exact,
+    # from the inventory search), named in the row title.
+    row_title: dict = {}
+    if row.get("q_exact"):
+        row_cls += " data-row--exact"
+        row_title["title"] = t(f"inventory.search_exact_{row['q_exact']}")
     # Per-row editability escape: a row may carry _row_editable_keys naming fields
     # that render click-to-edit even when the schema marked them read-only
     # (used for draft items, whose amount fields stay authorable until commit).
@@ -1393,6 +1399,7 @@ def data_row(
         *action_cell,
         id=f"row-{safe_id}",
         cls=row_cls,
+        **row_title,
     )
 
 

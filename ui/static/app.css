@@ -743,6 +743,9 @@ a:hover { text-decoration: underline; }
 .badge--component { background: rgba(124,58,237,0.12); color: #6d28d9; border: 1px solid rgba(124,58,237,0.3); }
 /* Component (raw-material) rows get a subtle left accent so they read as distinct (item 3). */
 .data-row--component td:first-child { box-shadow: inset 3px 0 0 #7c3aed; }
+/* A search hit whose barcode, RFID, GTIN or SKU equals the search term exactly; the row
+   title names the field. */
+.data-row--exact > td { background: var(--c-green-bg); }
 
 /* Tiny inline button spinner (shown only while the button's HTMX request is in flight). */
 .btn-spinner { display: none; width: 11px; height: 11px; margin-left: 6px; vertical-align: -1px;
