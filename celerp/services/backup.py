@@ -88,9 +88,7 @@ def _find_pg_tool(name: str) -> str:
         # a bad user override. Fail loudly rather than falling back to a system
         # pg_dump of unknown version, which risks an incompatible/corrupt backup.
         raise FileNotFoundError(
-            f"{name} not found in configured pg_bin_dir ({settings.pg_bin_dir}). "
-            "The bundled PostgreSQL tools are missing — reinstall the app, or set "
-            "CELERP_PG_BIN_DIR to a valid client-tools directory."
+            t("error.restore_tool_bin_dir_missing", name=name, bin_dir=str(settings.pg_bin_dir))
         )
     if found := shutil.which(name):
         return found
@@ -285,8 +283,9 @@ def check_free_space(dump_path: Path) -> None:
     need = dump_path.stat().st_size * _SCRIPT_PER_DUMP_BYTE + _FREE_SPACE_FLOOR
     free = shutil.disk_usage(dump_path.parent).free
     if free < need:
-        raise ValueError(f"Not enough free disk space to restore this backup: {-(-need >> 20)} MB must be free "
-                         f"on the disk holding {dump_path.parent}, and {free >> 20} MB is.")
+        raise ValueError(t(
+            "backup.not_enough_free_space",
+            need_mb=-(-need >> 20), free_mb=free >> 20, path=str(dump_path.parent)))
 
 
 def check_backup_dump(dump_path: Path, database_url: str,
@@ -300,8 +299,7 @@ def check_backup_dump(dump_path: Path, database_url: str,
     lines = [line for line in _text(listing).splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
     if other:
-        raise ValueError("This backup holds database objects Celerp does not restore. Remove them from "
-                         f"{source}, then try again: " + "; ".join(other))
+        raise ValueError(t("backup.unrestorable_objects", source=source, objects="; ".join(other)))
     _check_extensions(sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match}),
                       database_url, source)
     _check_server_objects(dump_path, database_url, source)
@@ -349,9 +347,7 @@ def _check_server_objects(dump_path: Path, database_url: str, source: str) -> No
              for name, table, names in policies if absent.intersection(names)]
     found += [f"{kind} {name}" for kind, name in missing if kind != "role"]
     if found:
-        raise ValueError("This backup needs database roles, collations or tablespaces this database "
-                         f"does not have. Add them here, or stop using them in {source}, then try again: "
-                         + "; ".join(found))
+        raise ValueError(t("backup.missing_server_objects", source=source, objects="; ".join(found)))
 
 
 def check_database_extensions(database_url: str) -> None:
@@ -363,9 +359,7 @@ def check_database_extensions(database_url: str) -> None:
 
 def _check_extensions(extensions: list[str], database_url: str, source: str) -> None:
     if extensions and (blocked := _psql(database_url, _UNINSTALLABLE_EXTENSIONS.format(" ".join(extensions)))):
-        raise ValueError("This backup uses database extensions that Celerp's database user cannot install "
-                         f"here. Remove them from {source}, or have a database administrator allow that "
-                         "user to install them, then try again: " + ", ".join(blocked.split()))
+        raise ValueError(t("backup.uninstallable_extensions", source=source, extensions=", ".join(blocked.split())))
 
 
 def restore_tools() -> tuple[str, str]:
@@ -374,7 +368,7 @@ def restore_tools() -> tuple[str, str]:
     try:
         tools = _find_pg_tool("pg_restore"), _find_pg_tool("psql")
     except FileNotFoundError as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise RuntimeError(t("error.restore_tool_missing")) from exc
     for tool in tools:
         _run_tool([tool, "--version"], None, timeout=10)
     return tools

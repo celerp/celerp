@@ -119,12 +119,12 @@ def validate_archive(path: Path) -> ImportMeta:
     if modules is None:
         modules = []
     if not isinstance(modules, list) or not all(isinstance(name, str) for name in modules):
-        raise ValueError("Archive meta.json has an invalid enabled_modules list")
+        raise ValueError(t("backup.err_meta_enabled_modules_invalid"))
     try:
         for name in modules:
             _validate_name_chars(name)
     except ModuleImportError as exc:
-        raise ValueError(f"Archive meta.json lists an invalid module name: {exc}") from exc
+        raise ValueError(t("backup.err_meta_module_name_invalid", reason=str(exc))) from exc
 
     meta = ImportMeta(
         celerp_version=meta_data.get("celerp_version") or "unknown",
@@ -413,7 +413,7 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         try:
             write_restore_script(root / _STAGED_DUMP, root / _STAGED_SCRIPT)
         except RuntimeError as exc:
-            raise ValueError(f"This backup file is damaged and cannot be restored: {exc}") from exc
+            raise ValueError(t("backup.err_file_damaged", reason=str(exc))) from exc
         prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
                                     files=_staged_files(root))
         (root / _STAGED_RECORD).write_text(json.dumps({
@@ -945,7 +945,7 @@ async def run_recovery(path: Path):
                 try:
                     _remove_staging((await prepare_recovery(safety.path)).root)
                 except ValueError as exc:
-                    raise ValueError(f"The safety backup of this installation could not be restored: {exc}") from exc
+                    raise ValueError(t("backup.err_safety_restore_failed", reason=str(exc))) from exc
                 await _cloud_safety_snapshot()
                 return await commit_recovery(prepared, safety.path)
     except Exception as exc:

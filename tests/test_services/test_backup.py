@@ -271,7 +271,7 @@ class TestFindPgTool:
         bin_dir = _make_fake_pg_bin(tmp_path, "pg_dump")
         monkeypatch.setenv("PATH", str(bin_dir))
 
-        with pytest.raises(FileNotFoundError, match="bundled PostgreSQL tools are missing"):
+        with pytest.raises(FileNotFoundError, match="not found in the configured PostgreSQL tools folder"):
             backup_mod._find_pg_tool("pg_dump")
 
     def test_finds_tool_via_which_when_in_path(self, monkeypatch, tmp_path):
