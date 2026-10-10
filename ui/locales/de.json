@@ -4481,6 +4481,7 @@
   "docs.return_lot_merged": "{sku} kann nicht zurückgegeben werden: Es wurde in {into} zusammengeführt, daher sind seine Waren nicht mehr darin. Bitten Sie den Lieferanten stattdessen um eine Gutschrift.",
   "docs.undo_receipt_merged": "Die SKU '{sku}' wurde in {into} zusammengeführt, nachdem dieser Beleg sie empfangen hat, daher kann der Wareneingang nicht rückgängig gemacht werden. Bitten Sie den Lieferanten stattdessen um eine Gutschrift.",
   "docs.undo_receipt_split": "Die SKU {sku} wurde geteilt, nachdem dieser Beleg sie empfangen hat, daher kann der Wareneingang nicht rückgängig gemacht werden. Verwenden Sie Rücksendung an Lieferanten.",
+  "docs.undo_receipt_cost_changed": "Die Kosten der SKU {sku} wurden geändert, nachdem dieser Beleg sie empfangen hat, daher kann der Wareneingang nicht rückgängig gemacht werden. Setzen Sie die Kosten zuerst zurück oder verwenden Sie Rücksendung an Lieferanten.",
   "docs.return_line_unknown": "Eine ausgewählte Position ist so nicht auf diesem Beleg. Laden Sie den Beleg neu und wählen Sie die Positionen erneut aus.",
   "docs.return_line_untraced": "Einige auf diesem Beleg eingegangene Waren lassen sich keiner Position zuordnen und können daher nicht positionsweise zurückgesendet werden.",
   "docs.return_not_on_hand": "{sku} kann nicht zurückgesendet werden: Status {status}, nicht am Lager. Verkaufte, auf Kommission ausgegebene oder reservierte Waren gehen erst an den Lieferanten zurück, wenn sie wieder am Lager und frei sind.",

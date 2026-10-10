@@ -4481,6 +4481,7 @@
   "docs.return_lot_merged": "Não é possível devolver {sku}: foi fundido em {into}, por isso as suas mercadorias já não estão nele. Peça ao fornecedor uma nota de crédito.",
   "docs.undo_receipt_merged": "O SKU '{sku}' foi fundido em {into} depois de este documento o receber, por isso a receção não pode ser anulada. Peça ao fornecedor uma nota de crédito.",
   "docs.undo_receipt_split": "O SKU {sku} foi dividido depois de este documento o receber, por isso a receção não pode ser anulada. Use Devolver ao fornecedor.",
+  "docs.undo_receipt_cost_changed": "O custo do SKU {sku} foi alterado depois de este documento o receber, por isso a receção não pode ser anulada. Reponha primeiro o custo ou use Devolver ao fornecedor.",
   "docs.return_line_unknown": "Uma linha selecionada não está neste documento como indicado. Recarregue o documento e selecione as linhas novamente.",
   "docs.return_line_untraced": "Algumas mercadorias recebidas neste documento não podem ser ligadas à sua linha, por isso não podem ser devolvidas por linha.",
   "docs.return_not_on_hand": "Não é possível devolver {sku}: está {status}, fora do estoque. Mercadorias vendidas, em consignação ou reservadas voltam ao fornecedor só quando estiverem de novo em estoque e livres.",

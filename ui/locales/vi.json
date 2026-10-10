@@ -4481,6 +4481,7 @@
   "docs.return_lot_merged": "Không thể trả {sku}: lô đã được gộp vào {into}, nên hàng không còn trong lô này. Hãy đề nghị nhà cung cấp phát hành giấy báo có.",
   "docs.undo_receipt_merged": "SKU '{sku}' đã được gộp vào {into} sau khi chứng từ này nhận hàng, nên không thể hoàn tác việc nhận hàng. Hãy đề nghị nhà cung cấp phát hành giấy báo có.",
   "docs.undo_receipt_split": "SKU {sku} đã được tách sau khi chứng từ này nhận hàng, nên không thể hoàn tác việc nhận hàng. Hãy dùng Trả hàng cho nhà cung cấp.",
+  "docs.undo_receipt_cost_changed": "Giá vốn của SKU {sku} đã bị thay đổi sau khi chứng từ này nhận hàng, nên không thể hoàn tác việc nhận hàng. Hãy khôi phục lại giá vốn trước, hoặc dùng Trả hàng cho nhà cung cấp.",
   "docs.return_line_unknown": "Một dòng đã chọn không có trên chứng từ này như đã nêu. Tải lại chứng từ và chọn lại các dòng.",
   "docs.return_line_untraced": "Một số hàng nhận trên chứng từ này không truy được về dòng của nó, nên không thể trả lại theo dòng.",
   "docs.return_not_on_hand": "Không thể trả lại {sku}: trạng thái là {status}, không có trong kho. Hàng đã bán, đang gửi theo phiếu ký gửi hoặc đã giữ chỉ được trả lại nhà cung cấp khi đã về kho và không bị giữ.",

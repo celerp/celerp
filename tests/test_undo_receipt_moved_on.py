@@ -10,8 +10,8 @@ import uuid
 
 import pytest
 
-from test_cost_restatement import _state
-from test_landed_cost_pools import _ORDERS, _goods
+from test_cost_restatement import _item, _set_cost, _state
+from test_landed_cost_pools import _ORDERS, _goods, _po_into
 from test_landed_cost_removals import _split
 from test_landed_cost_structural import _undo
 from test_receipt_accounting import _doc, _finalize, _receive
@@ -102,11 +102,43 @@ async def test_a_receipt_whose_parcel_was_split_whole_points_to_return_to_suppli
     assert (await _state(session, auth, doc))["received_item_ids"] == [lot]
 
 
-_NEW_KEYS = ("docs.undo_receipt_split", "item.deleted")
+async def _topped_up_lot(client, session, auth) -> tuple[str, str, str]:
+    """(bill, lot, sku): a purchase order received into a lot already on hand."""
+    lot = await _item(client, auth, 100.0, qty=10)
+    doc = await _po_into(client, auth, lot, 5, 14.0, shipping=7.0)
+    return doc, lot, (await _state(session, auth, lot))["sku"]
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_into_a_lot_whose_cost_was_restated_says_how_to_go_back(client, session, auth):
+    """The lot's goods cost was set below what the receipt added, so the receipt cannot be
+    taken back off it. The refusal says the cost changed and names both ways back: set the
+    cost back, or Return to supplier."""
+    doc, lot, sku = await _topped_up_lot(client, session, auth)
+    assert (await _set_cost(client, auth, lot, 5.0)).status_code == 200
+    r = await _undo(client, auth, doc)
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert isinstance(detail, dict) and detail.get("message_key") == "docs.undo_receipt_cost_changed", detail
+    assert detail["params"] == {"sku": sku}, detail
+    assert sku in detail["message"] and "Return to supplier" in detail["message"], detail
+    assert "cost" in detail["message"] and "manually correct" not in detail["message"], detail
+    assert float((await _state(session, auth, lot))["quantity"]) == 15.0
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_into_a_lot_whose_cost_is_unchanged_is_undone(client, session, auth):
+    doc, lot, _ = await _topped_up_lot(client, session, auth)
+    r = await _undo(client, auth, doc)
+    assert r.status_code == 200, r.text
+    assert float((await _state(session, auth, lot))["quantity"]) == 10.0
+
+
+_NEW_KEYS = ("docs.undo_receipt_split", "docs.undo_receipt_cost_changed", "item.deleted")
 
 
 @pytest.mark.parametrize("key", _NEW_KEYS)
-def test_undo_receipt_split_and_item_deleted_copy_is_translated_in_every_locale(key):
+def test_undo_receipt_and_item_deleted_copy_is_translated_in_every_locale(key):
     """Read from each catalog file, so a missing key or an English placeholder cannot hide
     behind the fallback to English."""
     import json

@@ -10476,7 +10476,10 @@ async def undo_receive(
         if free + 1e-9 < qty:
             blocked.append(f"SKU '{sku}' has {free:g} on hand and free, {qty:g} came in on this document")
         elif left < 0 or (free - qty <= 1e-9 and left != 0):
-            blocked.append(f"SKU '{sku}' has had its cost changed since this document received it")
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.undo_receipt_cost_changed",
+                f"The cost of SKU {sku} was changed since this document received it, so the receipt "
+                f"cannot be undone. Set the cost back first, or use Return to supplier.", sku=sku))
     if blocked:
         raise HTTPException(
             status_code=409,

@@ -4481,6 +4481,7 @@
   "docs.return_lot_merged": "Impossibile restituire {sku}: è stato unito in {into}, quindi le sue merci non sono più al suo interno. Chiedi invece al fornitore una nota di credito.",
   "docs.undo_receipt_merged": "Lo SKU '{sku}' è stato unito in {into} dopo che questo documento lo ha ricevuto, quindi il ricevimento non può essere annullato. Chiedi invece al fornitore una nota di credito.",
   "docs.undo_receipt_split": "Lo SKU {sku} è stato suddiviso dopo che questo documento lo ha ricevuto, quindi il ricevimento non può essere annullato. Usa Reso al fornitore.",
+  "docs.undo_receipt_cost_changed": "Il costo dello SKU {sku} è stato modificato dopo che questo documento lo ha ricevuto, quindi il ricevimento non può essere annullato. Ripristina prima il costo oppure usa Reso al fornitore.",
   "docs.return_line_unknown": "Una riga selezionata non è su questo documento come indicato. Ricarica il documento e seleziona di nuovo le righe.",
   "docs.return_line_untraced": "Parte della merce ricevuta su questo documento non è riconducibile alla sua riga, quindi non può essere resa per riga.",
   "docs.return_not_on_hand": "Impossibile rendere {sku}: è {status}, non a magazzino. La merce venduta, in conto visione o riservata torna al fornitore solo quando è di nuovo a magazzino e libera.",

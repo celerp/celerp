@@ -4479,6 +4479,7 @@
   "docs.return_lot_merged": "Cannot return {sku}: it was merged into {into}, so its goods are no longer in it. Ask the supplier for a credit note instead.",
   "docs.undo_receipt_merged": "SKU '{sku}' was merged into {into} since this document received it, so the receipt cannot be undone. Ask the supplier for a credit note instead.",
   "docs.undo_receipt_split": "SKU {sku} was split since this document received it, so the receipt cannot be undone. Use Return to supplier.",
+  "docs.undo_receipt_cost_changed": "The cost of SKU {sku} was changed since this document received it, so the receipt cannot be undone. Set the cost back first, or use Return to supplier.",
   "docs.return_line_unknown": "A selected line is not on this document as named. Reload the document and select the lines again.",
   "docs.return_line_untraced": "Some goods received on this document cannot be traced to their line, so they cannot be returned by line.",
   "docs.return_not_on_hand": "Cannot return {sku}: it is {status}, not on hand. Goods sold, out on memo or reserved go back to the supplier only once they are back in stock and free.",
