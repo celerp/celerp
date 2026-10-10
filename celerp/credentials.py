@@ -112,6 +112,7 @@ async def issue_token_pair(
     Holding the lock across the read-check-mint-register-commit window is what
     serializes issuance against ``invalidate_sessions``/``invalidate_all_sessions``.
     """
+    from celerp.accounting_roles import refusal
     from celerp.services.session_tracker import (
         lock_auth_state as _lock,
         register_token as _register,
@@ -122,7 +123,8 @@ async def issue_token_pair(
     company_id = str(company_id)
     auth_state = await _lock(session, user_id)
     if expected_snonce is not None and expected_snonce != auth_state.nonce:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=refusal(
+            "error.session_expired", "You were signed out. Refresh the page and sign in again."))
     snonce = auth_state.nonce
     access_token, token_jti = create_access_token(
         user_id, company_id, role, user.email, jti=jti, snonce=snonce

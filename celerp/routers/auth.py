@@ -253,7 +253,7 @@ async def start_company(request: Request, payload: StartCompanyRequest,
     user = await authenticate(session, payload.email, payload.password)
     name = payload.company_name.strip()
     if not name:
-        raise HTTPException(status_code=422, detail="Company name required")
+        raise HTTPException(status_code=422, detail=t("error.company_name_blank"))
     await hold_direct_slot(session)
     if not await hold_companyless_login(session, user.id):
         raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
