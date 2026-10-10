@@ -4280,6 +4280,7 @@ async def set_posting_account(
     role: str,
     payload: PostingAccountIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4287,7 +4288,7 @@ async def set_posting_account(
     where they are; the earlier account stays with the role for them."""
     from celerp.services.account_roles import set_role
 
-    await set_role(session, company_id, role, payload.code)
+    await set_role(session, company_id, role, payload.code, user.id)
     await session.commit()
     return await _posting_accounts(session, company_id)
 

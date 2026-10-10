@@ -99,7 +99,8 @@ class TestSetupCompanySave:
 
     @pytest.mark.asyncio
     async def test_setup_company_fields_routed_to_settings(self):
-        """REG-002a: tax_id, phone, address go into settings_patch, not direct_patch."""
+        """REG-002a: tax_id, phone, address go into settings_patch, not direct_patch; the
+        currency and fiscal year start go to the books route."""
         import ui.api_client as api_client
 
         patched_calls: list[dict] = []
@@ -132,7 +133,7 @@ class TestSetupCompanySave:
                 "address": "123 Main St",
                 "currency": "THB",
                 "timezone": "Asia/Bangkok",
-                "fiscal_year_start": "01",
+                "fiscal_year_start": "01-01",
             })
 
         # Must have at least one PATCH call with settings containing tax_id, phone, address
@@ -142,7 +143,9 @@ class TestSetupCompanySave:
         assert merged_settings.get("tax_id") == "1234567890123", "tax_id not in settings patch"
         assert merged_settings.get("phone") == "+66 2 123 4567", "phone not in settings patch"
         assert merged_settings.get("address") == "123 Main St", "address not in settings patch"
-        assert merged_settings.get("currency") == "THB", "currency not in settings patch"
+        assert "currency" not in merged_settings, "currency is a books setting, not a company setting"
+        books_patches = [c for c in patched_calls if c["url"] == "/companies/me/books"]
+        assert [c["json"] for c in books_patches] == [{"currency": "THB", "fiscal_year_start": "01-01"}]
 
     @pytest.mark.asyncio
     async def test_setup_company_no_direct_patch_for_known_fields(self):

@@ -1118,7 +1118,7 @@ async def test_all_checks_have_auto_fixable_field(client, session):
 async def test_doctor_reports_missing_foreign_rate_as_blocked_instead_of_posting(client, session):
     token = await _register(client)
     r = await client.patch(
-        "/companies/me", headers=_h(token), json={"settings": {"currency": "THB"}})
+        "/companies/me/books", headers=_h(token), json={"currency": "THB"})
     assert r.status_code == 200, r.text
 
     entity_id = f"doc:legacy-fx-{uuid.uuid4().hex[:8]}"

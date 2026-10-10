@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "اختر تاريخ العكس بالصيغة YYYY-MM-DD، في تاريخ القيد الذي يعكسه ({entry_date}) أو بعده.",
   "accounting.reversal_date_locked": "الفترة مقفلة حتى {lock_date}، لذا لا يمكن ترحيل أي شيء في {date}. اختر تاريخ عكس بعد {lock_date}.",
   "accounting.reversal_no_open_date": "الفترة مقفلة حتى {lock_date}، وهذا يشمل اليوم، لذا لا يوجد تاريخ مفتوح لترحيل العكس فيه. أعد تاريخ القفل إلى الوراء في Settings > Accounting، ثم حاول مرة أخرى.",
-  "accounting.reversal_account_missing": "رُحّل القيد إلى الحساب {account} الذي لم يعد في دليل الحسابات، لذا لا يمكن ترحيل عكسه. أعد إضافة الحساب {account} من Settings > Accounting، ثم حاول مرة أخرى."
+  "accounting.reversal_account_missing": "رُحّل القيد إلى الحساب {account} الذي لم يعد في دليل الحسابات، لذا لا يمكن ترحيل عكسه. أعد إضافة الحساب {account} من Settings > Accounting، ثم حاول مرة أخرى.",
+  "company.setting_unknown": "{key} ليس إعدادًا للشركة. احذفه من الطلب ثم حاول مرة أخرى.",
+  "company.setting_system_owned": "يحتفظ Celerp بـ {key} ولا يمكن تعيينه مباشرة. احذفه من الطلب ثم حاول مرة أخرى.",
+  "company.setting_has_own_route": "لا يتغير {key} من إعدادات الشركة. غيّره من خلال {route}.",
+  "company.currency_unknown": "{currency} ليست عملة يعرفها Celerp. اختر عملة من القائمة.",
+  "company.currency_has_postings": "تُمسك الدفاتر بعملة {currency} وقد رُحّلت بها قيود بالفعل، لذا لا يمكن تغيير العملة. أنشئ شركة جديدة لمسك الدفاتر بعملة أخرى.",
+  "company.fiscal_year_start_invalid": "{value} ليس بداية سنة مالية. اختر اليوم الأول من شهر بالصيغة MM-01.",
+  "company.import_vat_default_invalid": "يجب أن يكون استرداد ضريبة القيمة المضافة على الواردات مفعّلًا أو معطّلًا. أرسل true أو false."
 }

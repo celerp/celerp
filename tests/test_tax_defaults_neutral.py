@@ -27,10 +27,6 @@ async def _settings(client, h) -> dict:
     return r.json()["settings"]
 
 
-async def _patch_settings(client, h, **settings) -> None:
-    r = await client.patch("/companies/me", headers=h, json={"settings": settings})
-    assert r.status_code == 200, r.text
-
 
 async def _set_country(client, h, country: str) -> None:
     r = await client.post("/companies/me/locations", headers=h, json={
@@ -64,7 +60,8 @@ async def test_explicit_empty_sales_taxes_stay_empty(client):
 
 async def test_explicit_empty_payment_terms_inherited_by_purchasing(client):
     h = await _register(client, "empty-terms@test.example")
-    await _patch_settings(client, h, payment_terms=[])
+    r = await client.patch("/companies/me/payment-terms", headers=h, json={"terms": []})
+    assert r.status_code == 200, r.text
     assert (await client.get("/companies/me/purchasing-payment-terms", headers=h)).json() == []
 
 
@@ -115,7 +112,8 @@ async def test_explicit_empty_taxes_are_not_replaced(client):
 
 async def test_saved_currency_is_kept_while_untouched_taxes_are_seeded(client):
     h = await _register(client, "saved-ccy@test.example")
-    await _patch_settings(client, h, currency="EUR")
+    r = await client.patch("/companies/me/books", headers=h, json={"currency": "EUR"})
+    assert r.status_code == 200, r.text
     await _set_country(client, h, "AU")
     s = await _settings(client, h)
     assert s["currency"] == "EUR"

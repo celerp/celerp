@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "取消日は YYYY-MM-DD 形式で、取り消す仕訳の日付（{entry_date}）以降の日付を選んでください。",
   "accounting.reversal_date_locked": "{lock_date} までの期間はロックされているため、{date} には何も記帳できません。{lock_date} より後の取消日を選んでください。",
   "accounting.reversal_no_open_date": "{lock_date} までの期間は今日を含めてロックされているため、取消を記帳できる日付がありません。Settings > Accounting でロック日を前に戻してから、もう一度お試しください。",
-  "accounting.reversal_account_missing": "この仕訳は勘定科目 {account} に記帳されていますが、その科目は勘定科目表にもうないため、取消を記帳できません。Settings > Accounting で勘定科目 {account} を追加し直してから、もう一度お試しください。"
+  "accounting.reversal_account_missing": "この仕訳は勘定科目 {account} に記帳されていますが、その科目は勘定科目表にもうないため、取消を記帳できません。Settings > Accounting で勘定科目 {account} を追加し直してから、もう一度お試しください。",
+  "company.setting_unknown": "{key} は会社の設定ではありません。リクエストから削除して、もう一度お試しください。",
+  "company.setting_system_owned": "{key} は Celerp が管理しており、直接設定できません。リクエストから削除して、もう一度お試しください。",
+  "company.setting_has_own_route": "{key} は会社の設定では変更できません。{route} から変更してください。",
+  "company.currency_unknown": "{currency} は Celerp が認識できる通貨ではありません。一覧から通貨を選んでください。",
+  "company.currency_has_postings": "帳簿は {currency} で管理されており、すでに仕訳が計上されているため、通貨は変更できません。別の通貨で帳簿を管理するには、新しい会社を作成してください。",
+  "company.fiscal_year_start_invalid": "{value} は会計年度の開始日ではありません。月の初日を MM-01 の形式で選んでください。",
+  "company.import_vat_default_invalid": "輸入消費税の控除はオンかオフのどちらかです。true か false を送ってください。"
 }

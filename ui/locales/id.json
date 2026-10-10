@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "Pilih tanggal pembalikan dengan format YYYY-MM-DD, pada atau setelah tanggal jurnal yang dibalik ({entry_date}).",
   "accounting.reversal_date_locked": "Periode dikunci sampai {lock_date}, jadi tidak ada yang bisa diposting pada {date}. Pilih tanggal pembalikan setelah {lock_date}.",
   "accounting.reversal_no_open_date": "Periode dikunci sampai {lock_date}, termasuk hari ini, jadi tidak ada tanggal terbuka untuk memposting pembalikan. Mundurkan tanggal kunci di Settings > Accounting, lalu coba lagi.",
-  "accounting.reversal_account_missing": "Jurnal ini diposting ke akun {account}, yang sudah tidak ada di bagan akun, jadi pembalikannya tidak bisa diposting. Tambahkan kembali akun {account} di Settings > Accounting, lalu coba lagi."
+  "accounting.reversal_account_missing": "Jurnal ini diposting ke akun {account}, yang sudah tidak ada di bagan akun, jadi pembalikannya tidak bisa diposting. Tambahkan kembali akun {account} di Settings > Accounting, lalu coba lagi.",
+  "company.setting_unknown": "{key} bukan pengaturan perusahaan. Hapus dari permintaan lalu coba lagi.",
+  "company.setting_system_owned": "{key} dikelola oleh Celerp dan tidak dapat diatur langsung. Hapus dari permintaan lalu coba lagi.",
+  "company.setting_has_own_route": "{key} tidak diubah di pengaturan perusahaan. Ubah melalui {route}.",
+  "company.currency_unknown": "{currency} bukan mata uang yang dikenal Celerp. Pilih mata uang dari daftar.",
+  "company.currency_has_postings": "Pembukuan dicatat dalam {currency} dan jurnal sudah diposting dalam mata uang itu, jadi mata uang tidak dapat diubah. Buat perusahaan baru untuk mencatat pembukuan dalam mata uang lain.",
+  "company.fiscal_year_start_invalid": "{value} bukan awal tahun fiskal. Pilih hari pertama suatu bulan, dalam format MM-01.",
+  "company.import_vat_default_invalid": "Pemulihan PPN impor harus aktif atau nonaktif. Kirim true atau false."
 }

@@ -1596,7 +1596,8 @@ _SAMPLE_STOCK = "sample-stock"
 
 async def has_own_books(session: AsyncSession, company_id: uuid.UUID) -> bool:
     """True once the company has posted a journal entry of its own, any entry other
-    than the sample stock setup booked or the removal of those samples."""
+    than the sample stock setup booked or the removal of those samples. An entry posted
+    and later voided was posted: its void keeps it in the books."""
     import sqlalchemy as sa
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
@@ -1608,7 +1609,7 @@ async def has_own_books(session: AsyncSession, company_id: uuid.UUID) -> bool:
     )).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
-        Projection.state["status"].as_string() == "posted",
+        Projection.state["status"].as_string().in_(("posted", "void")),
         operation != _SAMPLE_STOCK,
     ).limit(1))) is not None
 

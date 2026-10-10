@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "Escolha uma data de estorno no formato YYYY-MM-DD, igual ou posterior à data do lançamento estornado ({entry_date}).",
   "accounting.reversal_date_locked": "O período está bloqueado até {lock_date}, por isso nada pode ser lançado em {date}. Escolha uma data de estorno posterior a {lock_date}.",
   "accounting.reversal_no_open_date": "O período está bloqueado até {lock_date}, o que inclui hoje, por isso não há uma data aberta para lançar o estorno. Recue a data de bloqueio em Settings > Accounting e tente novamente.",
-  "accounting.reversal_account_missing": "O lançamento foi feito na conta {account}, que já não está no plano de contas, por isso o seu estorno não pode ser lançado. Adicione novamente a conta {account} em Settings > Accounting e tente novamente."
+  "accounting.reversal_account_missing": "O lançamento foi feito na conta {account}, que já não está no plano de contas, por isso o seu estorno não pode ser lançado. Adicione novamente a conta {account} em Settings > Accounting e tente novamente.",
+  "company.setting_unknown": "{key} não é uma configuração da empresa. Remova-a da solicitação e tente novamente.",
+  "company.setting_system_owned": "{key} é mantida pelo Celerp e não pode ser definida diretamente. Remova-a da solicitação e tente novamente.",
+  "company.setting_has_own_route": "{key} não é alterada nas configurações da empresa. Altere-a por meio de {route}.",
+  "company.currency_unknown": "{currency} não é uma moeda que o Celerp conhece. Escolha uma moeda da lista.",
+  "company.currency_has_postings": "Os livros são mantidos em {currency} e já há lançamentos nessa moeda, por isso a moeda não pode mudar. Crie uma nova empresa para manter os livros em outra moeda.",
+  "company.fiscal_year_start_invalid": "{value} não é um início de exercício fiscal. Escolha o primeiro dia de um mês, no formato MM-01.",
+  "company.import_vat_default_invalid": "A recuperação do IVA de importação deve estar ativada ou desativada. Envie true ou false."
 }

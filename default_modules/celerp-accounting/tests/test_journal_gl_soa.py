@@ -77,7 +77,7 @@ def _fx(line: dict, currency: str, rate: float) -> dict:
 
 async def _thb(client, tok):
     """Put the company on a base currency that is not the tested foreign one."""
-    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=_h(tok), json={"currency": "THB"})
 
 
 def _bal(entry_lines):
@@ -538,7 +538,7 @@ async def test_journal_date_filter_and_order(client):
 @pytest.mark.asyncio
 async def test_journal_doc_ref_and_doc_level_fx(client):
     tok = await _reg(client)
-    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=_h(tok), json={"currency": "THB"})
 
     fx_inv = await _invoice(client, tok, total=100.0, currency="USD", rate=35.0)
     assert (await client.post(f"/docs/{fx_inv}/finalize", headers=_h(tok))).status_code == 200
@@ -556,7 +556,7 @@ async def test_journal_doc_ref_and_doc_level_fx(client):
 @pytest.mark.asyncio
 async def test_journal_payment_uses_payment_rate(client):
     tok = await _reg(client)
-    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=_h(tok), json={"currency": "THB"})
     inv = await _invoice(client, tok, total=100.0, currency="USD", rate=35.0)
     assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
     r = await client.post(f"/docs/{inv}/payment", headers=_h(tok), json={
@@ -1159,7 +1159,7 @@ async def test_journal_fx_survives_payment_deletion(client):
     """Deleting a payment tombstones it in place; a surviving payment JE
     keeps resolving its own exchange rate, never another payment's."""
     tok = await _reg(client)
-    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=_h(tok), json={"currency": "THB"})
     inv = await _invoice(client, tok, total=100.0, currency="USD", rate=35.0)
     assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
     for date_amt_rate in (("2026-02-05", 30.0, 34.0), ("2026-02-10", 40.0, 36.5)):
@@ -1189,7 +1189,7 @@ async def test_journal_fx_keeps_own_rate_when_earlier_payment_survives(client):
     """Deleting the LAST payment leaves earlier indices intact: the surviving
     payment JE still resolves its own payment-specific rate."""
     tok = await _reg(client)
-    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=_h(tok), json={"currency": "THB"})
     inv = await _invoice(client, tok, total=100.0, currency="USD", rate=35.0)
     assert (await client.post(f"/docs/{inv}/finalize", headers=_h(tok))).status_code == 200
     for d, amt, rate in (("2026-02-05", 30.0, 34.0), ("2026-02-10", 40.0, 36.5)):
@@ -1639,7 +1639,7 @@ async def test_cross_report_consistency(client):
     """One dataset, every report: journal totals == TB totals, GL closings ==
     TB nets, GL balances to zero, SOA closing == aging total."""
     tok = await _reg(client)
-    await client.patch("/companies/me", headers=_h(tok), json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=_h(tok), json={"currency": "THB"})
     contact = await _contact(client, tok)
 
     inv = await _invoice(client, tok, total=300.0, contact_id=contact, issue_date="2026-01-10")

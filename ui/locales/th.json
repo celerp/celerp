@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "เลือกวันที่กลับรายการในรูปแบบ YYYY-MM-DD ตั้งแต่วันที่ของรายการที่ถูกกลับ ({entry_date}) เป็นต้นไป",
   "accounting.reversal_date_locked": "งวดถูกล็อกถึงวันที่ {lock_date} จึงไม่สามารถบันทึกรายการในวันที่ {date} ได้ เลือกวันที่กลับรายการหลังวันที่ {lock_date}",
   "accounting.reversal_no_open_date": "งวดถูกล็อกถึงวันที่ {lock_date} ซึ่งรวมวันนี้ด้วย จึงไม่มีวันที่เปิดอยู่สำหรับบันทึกการกลับรายการ เลื่อนวันที่ล็อกย้อนกลับใน Settings > Accounting แล้วลองอีกครั้ง",
-  "accounting.reversal_account_missing": "รายการนี้บันทึกไปที่บัญชี {account} ซึ่งไม่อยู่ในผังบัญชีแล้ว จึงบันทึกการกลับรายการไม่ได้ เพิ่มบัญชี {account} กลับเข้าไปใน Settings > Accounting แล้วลองอีกครั้ง"
+  "accounting.reversal_account_missing": "รายการนี้บันทึกไปที่บัญชี {account} ซึ่งไม่อยู่ในผังบัญชีแล้ว จึงบันทึกการกลับรายการไม่ได้ เพิ่มบัญชี {account} กลับเข้าไปใน Settings > Accounting แล้วลองอีกครั้ง",
+  "company.setting_unknown": "{key} ไม่ใช่การตั้งค่าของบริษัท ลบออกจากคำขอแล้วลองอีกครั้ง",
+  "company.setting_system_owned": "{key} ถูกดูแลโดย Celerp และตั้งค่าโดยตรงไม่ได้ ลบออกจากคำขอแล้วลองอีกครั้ง",
+  "company.setting_has_own_route": "{key} ไม่ได้เปลี่ยนในการตั้งค่าบริษัท เปลี่ยนผ่าน {route}",
+  "company.currency_unknown": "{currency} ไม่ใช่สกุลเงินที่ Celerp รู้จัก เลือกสกุลเงินจากรายการ",
+  "company.currency_has_postings": "สมุดบัญชีบันทึกเป็น {currency} และมีรายการบันทึกในสกุลเงินนี้แล้ว จึงเปลี่ยนสกุลเงินไม่ได้ เริ่มบริษัทใหม่เพื่อทำบัญชีในสกุลเงินอื่น",
+  "company.fiscal_year_start_invalid": "{value} ไม่ใช่วันเริ่มปีบัญชี เลือกวันแรกของเดือนในรูปแบบ MM-01",
+  "company.import_vat_default_invalid": "การขอคืนภาษีมูลค่าเพิ่มนำเข้าต้องเปิดหรือปิด ส่ง true หรือ false"
 }

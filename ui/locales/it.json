@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "Scegli una data di storno nel formato YYYY-MM-DD, uguale o successiva alla data della scrittura stornata ({entry_date}).",
   "accounting.reversal_date_locked": "Il periodo è bloccato fino al {lock_date}, quindi nulla può essere registrato il {date}. Scegli una data di storno successiva al {lock_date}.",
   "accounting.reversal_no_open_date": "Il periodo è bloccato fino al {lock_date}, oggi compreso, quindi non c'è una data aperta su cui registrare lo storno. Sposta indietro la data di blocco in Settings > Accounting, poi riprova.",
-  "accounting.reversal_account_missing": "La scrittura è stata registrata sul conto {account}, che non è più nel piano dei conti, quindi il suo storno non può essere registrato. Aggiungi di nuovo il conto {account} in Settings > Accounting, poi riprova."
+  "accounting.reversal_account_missing": "La scrittura è stata registrata sul conto {account}, che non è più nel piano dei conti, quindi il suo storno non può essere registrato. Aggiungi di nuovo il conto {account} in Settings > Accounting, poi riprova.",
+  "company.setting_unknown": "{key} non è un'impostazione dell'azienda. Rimuovila dalla richiesta e riprova.",
+  "company.setting_system_owned": "{key} è gestita da Celerp e non può essere impostata direttamente. Rimuovila dalla richiesta e riprova.",
+  "company.setting_has_own_route": "{key} non si modifica nelle impostazioni dell'azienda. Modificala tramite {route}.",
+  "company.currency_unknown": "{currency} non è una valuta nota a Celerp. Scegli una valuta dall'elenco.",
+  "company.currency_has_postings": "I libri sono tenuti in {currency} e ci sono già scritture registrate in questa valuta, quindi la valuta non può cambiare. Crea una nuova azienda per tenere i libri in un'altra valuta.",
+  "company.fiscal_year_start_invalid": "{value} non è un inizio di esercizio. Scegli il primo giorno di un mese, nel formato MM-01.",
+  "company.import_vat_default_invalid": "Il recupero dell'IVA all'importazione deve essere attivo o disattivo. Invia true o false."
 }

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 
 from fastapi import HTTPException
 from sqlalchemy import select, text
@@ -147,14 +147,15 @@ async def find_event_by_idempotency(session, company_id, idempotency_key: str | 
 def write_period_lock(company, lock_date: str | None, user_id) -> None:
     """Lock *company*'s books through the ISO *lock_date*, recorded as set by *user_id*,
     or unlock them when *lock_date* is None. The caller holds the company row and commits."""
+    from celerp.services.company_settings import clear_change, record_change
+
     settings = dict(company.settings or {})
     if lock_date:
         settings["lock_date"] = lock_date
-        settings["lock_date_set_by"] = str(user_id)
-        settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
+        record_change(settings, "lock_date", user_id)
     else:
-        for key in ("lock_date", "lock_date_set_by", "lock_date_set_at"):
-            settings.pop(key, None)
+        settings.pop("lock_date", None)
+        clear_change(settings, "lock_date")
     company.settings = settings
 
 

@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "Choisissez une date de contrepassation au format YYYY-MM-DD, à la date de l'écriture contrepassée ({entry_date}) ou après.",
   "accounting.reversal_date_locked": "La période est verrouillée jusqu'au {lock_date}, rien ne peut donc être comptabilisé le {date}. Choisissez une date de contrepassation après le {lock_date}.",
   "accounting.reversal_no_open_date": "La période est verrouillée jusqu'au {lock_date}, aujourd'hui compris, il n'y a donc aucune date ouverte pour comptabiliser la contrepassation. Reculez la date de verrouillage dans Settings > Accounting, puis réessayez.",
-  "accounting.reversal_account_missing": "L'écriture a été passée sur le compte {account}, qui ne figure plus dans le plan comptable, sa contrepassation ne peut donc pas être comptabilisée. Rajoutez le compte {account} dans Settings > Accounting, puis réessayez."
+  "accounting.reversal_account_missing": "L'écriture a été passée sur le compte {account}, qui ne figure plus dans le plan comptable, sa contrepassation ne peut donc pas être comptabilisée. Rajoutez le compte {account} dans Settings > Accounting, puis réessayez.",
+  "company.setting_unknown": "{key} n'est pas un paramètre de l'entreprise. Retirez-le de la requête et réessayez.",
+  "company.setting_system_owned": "{key} est géré par Celerp et ne peut pas être défini directement. Retirez-le de la requête et réessayez.",
+  "company.setting_has_own_route": "{key} ne se modifie pas dans les paramètres de l'entreprise. Modifiez-le via {route}.",
+  "company.currency_unknown": "{currency} n'est pas une devise connue de Celerp. Choisissez une devise dans la liste.",
+  "company.currency_has_postings": "La comptabilité est tenue en {currency} et des écritures y sont déjà passées, la devise ne peut donc pas changer. Créez une nouvelle entreprise pour tenir la comptabilité dans une autre devise.",
+  "company.fiscal_year_start_invalid": "{value} n'est pas un début d'exercice. Choisissez le premier jour d'un mois, au format MM-01.",
+  "company.import_vat_default_invalid": "La récupération de la TVA à l'importation doit être activée ou désactivée. Envoyez true ou false."
 }

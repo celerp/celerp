@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "Chọn ngày đảo bút toán theo định dạng YYYY-MM-DD, bằng hoặc sau ngày của bút toán được đảo ({entry_date}).",
   "accounting.reversal_date_locked": "Kỳ đã bị khóa đến {lock_date}, nên không thể ghi sổ vào ngày {date}. Hãy chọn ngày đảo bút toán sau {lock_date}.",
   "accounting.reversal_no_open_date": "Kỳ đã bị khóa đến {lock_date}, bao gồm cả hôm nay, nên không có ngày mở nào để ghi bút toán đảo. Hãy lùi ngày khóa trong Settings > Accounting rồi thử lại.",
-  "accounting.reversal_account_missing": "Bút toán đã ghi vào tài khoản {account}, tài khoản này không còn trong hệ thống tài khoản, nên không thể ghi bút toán đảo. Hãy thêm lại tài khoản {account} trong Settings > Accounting rồi thử lại."
+  "accounting.reversal_account_missing": "Bút toán đã ghi vào tài khoản {account}, tài khoản này không còn trong hệ thống tài khoản, nên không thể ghi bút toán đảo. Hãy thêm lại tài khoản {account} trong Settings > Accounting rồi thử lại.",
+  "company.setting_unknown": "{key} không phải là cài đặt của công ty. Xóa nó khỏi yêu cầu rồi thử lại.",
+  "company.setting_system_owned": "{key} do Celerp quản lý và không thể đặt trực tiếp. Xóa nó khỏi yêu cầu rồi thử lại.",
+  "company.setting_has_own_route": "{key} không được thay đổi trong cài đặt công ty. Hãy thay đổi qua {route}.",
+  "company.currency_unknown": "{currency} không phải là loại tiền Celerp biết. Hãy chọn một loại tiền trong danh sách.",
+  "company.currency_has_postings": "Sổ sách được ghi bằng {currency} và đã có bút toán ghi sổ bằng loại tiền này, nên không thể đổi loại tiền. Hãy tạo công ty mới để ghi sổ bằng loại tiền khác.",
+  "company.fiscal_year_start_invalid": "{value} không phải là ngày bắt đầu năm tài chính. Hãy chọn ngày đầu tiên của một tháng, theo dạng MM-01.",
+  "company.import_vat_default_invalid": "Khấu trừ thuế VAT hàng nhập khẩu phải bật hoặc tắt. Hãy gửi true hoặc false."
 }

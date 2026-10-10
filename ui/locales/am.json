@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "የመቀልበሻ ቀንን በ YYYY-MM-DD ቅርጸት ይምረጡ፣ ከሚቀለበሰው መዝገብ ቀን ({entry_date}) ጀምሮ ወይም በኋላ።",
   "accounting.reversal_date_locked": "ጊዜው እስከ {lock_date} ተቆልፏል፣ ስለዚህ በ{date} ምንም ሊመዘገብ አይችልም። ከ{lock_date} በኋላ ያለ የመቀልበሻ ቀን ይምረጡ።",
   "accounting.reversal_no_open_date": "ጊዜው እስከ {lock_date} ተቆልፏል፣ ይህም ዛሬን ያካትታል፣ ስለዚህ መቀልበሻውን የሚመዘግቡበት ክፍት ቀን የለም። በ Settings > Accounting ውስጥ የመቆለፊያ ቀኑን ወደ ኋላ ያንቀሳቅሱ፣ ከዚያ እንደገና ይሞክሩ።",
-  "accounting.reversal_account_missing": "መዝገቡ በሂሳብ {account} ላይ ተመዝግቧል፣ ይህም ከአሁን በኋላ በሂሳቦች ዝርዝር ውስጥ የለም፣ ስለዚህ መቀልበሻው ሊመዘገብ አይችልም። ሂሳብ {account}ን በ Settings > Accounting ውስጥ መልሰው ያክሉ፣ ከዚያ እንደገና ይሞክሩ።"
+  "accounting.reversal_account_missing": "መዝገቡ በሂሳብ {account} ላይ ተመዝግቧል፣ ይህም ከአሁን በኋላ በሂሳቦች ዝርዝር ውስጥ የለም፣ ስለዚህ መቀልበሻው ሊመዘገብ አይችልም። ሂሳብ {account}ን በ Settings > Accounting ውስጥ መልሰው ያክሉ፣ ከዚያ እንደገና ይሞክሩ።",
+  "company.setting_unknown": "{key} የኩባንያ ቅንብር አይደለም። ከጥያቄው ያስወግዱትና እንደገና ይሞክሩ።",
+  "company.setting_system_owned": "{key} በ Celerp የሚጠበቅ ነው፣ በቀጥታ ሊቀየር አይችልም። ከጥያቄው ያስወግዱትና እንደገና ይሞክሩ።",
+  "company.setting_has_own_route": "{key} በኩባንያ ቅንብሮች ውስጥ አይቀየርም። በ {route} በኩል ይቀይሩት።",
+  "company.currency_unknown": "{currency} Celerp የሚያውቀው ምንዛሬ አይደለም። ከዝርዝሩ ምንዛሬ ይምረጡ።",
+  "company.currency_has_postings": "መዛግብቱ በ {currency} የተያዙ ሲሆን መዝገቦች ቀድሞ በዚህ ተለጥፈዋል፣ ስለዚህ ምንዛሬው ሊቀየር አይችልም። በሌላ ምንዛሬ መዛግብትን ለመያዝ አዲስ ኩባንያ ይጀምሩ።",
+  "company.fiscal_year_start_invalid": "{value} የበጀት ዓመት መጀመሪያ አይደለም። የወር የመጀመሪያ ቀንን በ MM-01 ቅርጸት ይምረጡ።",
+  "company.import_vat_default_invalid": "የገቢ ዕቃ ተ.እ.ታ ማስመለስ መብራት ወይም መጥፋት አለበት። true ወይም false ይላኩ።"
 }

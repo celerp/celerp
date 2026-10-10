@@ -49,6 +49,7 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
+from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -320,42 +321,12 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         raise HTTPException(status_code=404, detail="Not found")
     if payload.name is not None:
         company.name = payload.name.strip()
-    # Merge (PATCH semantics): a partial settings payload must not wipe other
-    # keys. Replacing wholesale erased e.g. the numbering `sequences`, currency,
-    # and category_schemas whenever a caller sent only one field (the UI happens
-    # to pre-merge, but partial callers — and a name-only patch — must be safe).
+    # Merge (PATCH semantics): a partial settings payload must not wipe other keys,
+    # and a name-only patch leaves the settings as they are.
     if payload.settings:
-        # Role grants are owner-only and may be written only through the dedicated
-        # PATCH /me/role-permissions endpoint (manage_permissions). This door is
-        # admin-gated (manage_company_settings), so accepting role_grants here would
-        # let an admin self-escalate around the owner gate. role_permissions is the
-        # retired storage key; reject it too so it can never be re-introduced.
-        if "role_grants" in payload.settings or "role_permissions" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Role permissions are set through the permissions matrix, not company settings",
-            )
-        # Business type carries modules, categories and default terms with it, so it
-        # changes only through POST /companies/me/business-type.
-        if "vertical" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Business type is set through POST /companies/me/business-type, not company settings",
-            )
-        # The record of which company backup a company was restored from is written only by
-        # the restore itself; a restore of that backup finds its company by it.
-        if "restored_backup" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="The restored backup record is set only by restoring a company backup, not company settings",
-            )
-        # The company's module choice changes only through the enable/disable endpoints,
-        # which check installation and dependencies and keep the load list in step.
-        if "enabled_modules" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Modules are turned on and off on the Modules page, not company settings",
-            )
+        # Only the general settings change here; every other key has its own route,
+        # which checks its own permission and rules (celerp.services.company_settings).
+        require_general(payload.settings)
         merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:
@@ -363,33 +334,94 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         require_phone(payload.settings.get("phone"))
-        from celerp.modules.loader import is_running
-        from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
-        # Empty is the default deposit account.
-        chosen = [k for k in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY)
-                  if payload.settings.get(k) not in (None, "")]
-        if chosen and not is_running("celerp-docs"):
-            raise HTTPException(status_code=422, detail=(
-                "Turn on Documents on the Modules page before choosing a deposit account."))
-        for key in chosen:
-            value = payload.settings[key]
-            if not isinstance(value, str):
-                raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
-            from celerp_docs.routes_payments import require_online_deposit_account
-            await require_online_deposit_account(session, company_id, value)
-        # Price config must pass the same gate as the dedicated endpoints: the read
-        # path trusts stored config, so no door may store what the validator rejects.
-        if "price_lists" in payload.settings or "base_price_list" in payload.settings:
-            merged_lists = merged.get("price_lists") or []
-            error = price_config_error(merged_lists, merged.get("base_price_list"),
-                                       (company.settings or {}).get("price_lists") or [])
-            if error:
-                raise HTTPException(status_code=422, detail=error)
-            if merged.get("price_lists"):
-                merged["price_lists"] = normalized_price_lists(merged["price_lists"])
         company.settings = merged
     await session.commit()
     return {"ok": True}
+
+
+class BooksPatch(BaseModel):
+    currency: str | None = None
+    fiscal_year_start: str | None = None
+    import_vat_recoverable_default: object = None
+    stripe_deposit_account: object = None
+    woocommerce_deposit_account: object = None
+
+
+_FISCAL_YEAR_STARTS = frozenset(f"{m:02d}-01" for m in range(1, 13))
+
+
+async def _check_books_change(session: AsyncSession, company_id, current: dict, key: str, value) -> object:
+    """The value to store for one books setting, or a keyed refusal saying what to do."""
+    from celerp.accounting_roles import refusal
+    from celerp.services.currencies import CURRENCY_CODES
+
+    if key == "currency":
+        value = str(value).strip().upper()
+        if value not in CURRENCY_CODES:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.currency_unknown",
+                f"{value} is not a currency Celerp knows. Pick a currency from the list.", currency=value))
+        held = current.get("currency")
+        if held and held != value:
+            from celerp.services.demo import has_own_books
+            if await has_own_books(session, company_id):
+                raise HTTPException(status_code=409, detail=refusal(
+                    "company.currency_has_postings",
+                    f"The books are kept in {held} and entries are already posted in it, so the "
+                    "currency cannot change. Start a new company to keep books in another currency.",
+                    currency=held))
+        return value
+    if key == "fiscal_year_start":
+        if value not in _FISCAL_YEAR_STARTS:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.fiscal_year_start_invalid",
+                f"{value} is not a fiscal year start. Pick the first day of a month, as MM-01.",
+                value=str(value)))
+        return value
+    if key == "import_vat_recoverable_default":
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.import_vat_default_invalid",
+                "Import VAT recovery must be on or off. Send true or false."))
+        return value
+    # A deposit account: empty is the default account.
+    if value is None or (isinstance(value, str) and value == ""):
+        return value
+    from celerp.modules.loader import is_running
+    if not is_running("celerp-docs"):
+        raise HTTPException(status_code=422, detail=(
+            "Turn on Documents on the Modules page before choosing a deposit account."))
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+    from celerp_docs.routes_payments import require_online_deposit_account
+    await require_online_deposit_account(session, company_id, value)
+    return value
+
+
+@router.patch("/me/books")
+async def patch_books(
+    payload: BooksPatch,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the settings the books depend on: the currency (fixed once the company
+    has posted entries of its own), the fiscal year start, the import VAT default and the
+    online deposit accounts. Each change records who made it and when."""
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    sent = payload.model_dump(exclude_unset=True)
+    settings = dict(company.settings or {})
+    for key in sorted(BOOKS_KEYS & set(sent)):
+        value = await _check_books_change(session, company_id, settings, key, sent[key])
+        if settings.get(key) != value:
+            settings[key] = value
+            record_change(settings, key, user.id)
+    company.settings = settings
+    await session.commit()
+    return {key: settings.get(key) for key in sorted(BOOKS_KEYS)}
 
 
 @router.patch("/me/role-permissions")

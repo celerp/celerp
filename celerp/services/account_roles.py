@@ -500,9 +500,10 @@ async def continue_role(session: AsyncSession, company_id, role, code: str) -> s
     return code
 
 
-async def set_role(session: AsyncSession, company_id, role: str, code: str) -> dict:
-    """Point ``role`` at ``code`` for new recognition. Existing balances stay where they
-    were posted; the old account stays in the role's scope for historical readers."""
+async def set_role(session: AsyncSession, company_id, role: str, code: str, user_id=None) -> dict:
+    """Point ``role`` at ``code`` for new recognition, recorded as changed by ``user_id``.
+    Existing balances stay where they were posted; the old account stays in the role's
+    scope for historical readers."""
     from celerp.services.company_lock import lock_chart, locked_company
     from celerp.services.journal_accounts import lock_accounts
 
@@ -529,6 +530,8 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str) -> d
         problem = target_problem(checked_role, new_map, accounts.get(new_map[checked_role]))
         if problem:
             raise HTTPException(status_code=422, detail=problem)
+    from celerp.services.company_settings import record_change
+    record_change(settings, ROLES_KEY, user_id)
     company.settings = settings
     await session.flush()
     return settings

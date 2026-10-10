@@ -4628,5 +4628,12 @@
   "accounting.reversal_date_invalid": "Wählen Sie ein Stornodatum im Format YYYY-MM-DD, am oder nach dem Datum der Buchung, die storniert wird ({entry_date}).",
   "accounting.reversal_date_locked": "Der Zeitraum ist bis {lock_date} gesperrt, daher kann am {date} nichts gebucht werden. Wählen Sie ein Stornodatum nach dem {lock_date}.",
   "accounting.reversal_no_open_date": "Der Zeitraum ist bis {lock_date} gesperrt, also auch heute, daher gibt es kein offenes Datum für die Stornobuchung. Setzen Sie das Sperrdatum unter Settings > Accounting zurück und versuchen Sie es erneut.",
-  "accounting.reversal_account_missing": "Die Buchung ging auf Konto {account}, das nicht mehr im Kontenplan steht, daher kann ihr Storno nicht gebucht werden. Fügen Sie Konto {account} unter Settings > Accounting wieder hinzu und versuchen Sie es erneut."
+  "accounting.reversal_account_missing": "Die Buchung ging auf Konto {account}, das nicht mehr im Kontenplan steht, daher kann ihr Storno nicht gebucht werden. Fügen Sie Konto {account} unter Settings > Accounting wieder hinzu und versuchen Sie es erneut.",
+  "company.setting_unknown": "{key} ist keine Unternehmenseinstellung. Entfernen Sie es aus der Anfrage und versuchen Sie es erneut.",
+  "company.setting_system_owned": "{key} wird von Celerp verwaltet und kann nicht direkt gesetzt werden. Entfernen Sie es aus der Anfrage und versuchen Sie es erneut.",
+  "company.setting_has_own_route": "{key} wird nicht in den Unternehmenseinstellungen geändert. Ändern Sie es über {route}.",
+  "company.currency_unknown": "{currency} ist keine Währung, die Celerp kennt. Wählen Sie eine Währung aus der Liste.",
+  "company.currency_has_postings": "Die Bücher werden in {currency} geführt und es sind bereits Buchungen darin erfasst, daher kann die Währung nicht geändert werden. Legen Sie ein neues Unternehmen an, um die Bücher in einer anderen Währung zu führen.",
+  "company.fiscal_year_start_invalid": "{value} ist kein Geschäftsjahresbeginn. Wählen Sie den ersten Tag eines Monats im Format MM-01.",
+  "company.import_vat_default_invalid": "Die Vorsteuer auf Einfuhren muss ein- oder ausgeschaltet sein. Senden Sie true oder false."
 }
