@@ -2619,7 +2619,13 @@ async def recognized_cogs(session, company_id, doc_id: str) -> RecognizedCogs | 
     finalized before snapshots existed; those are trued up against the entries that
     booked their cost instead (_legacy_cogs_truth).
     """
-    return (await _recognitions(session, company_id, [doc_id])).get(doc_id)
+    return (await recognized_cogs_of(session, company_id, [doc_id])).get(doc_id)
+
+
+async def recognized_cogs_of(session, company_id, doc_ids) -> dict[str, RecognizedCogs]:
+    """recognized_cogs for each of ``doc_ids``, read in a fixed number of queries; a doc
+    with none is left out."""
+    return await _recognitions(session, company_id, doc_ids)
 
 
 def _less_moved(allocations: dict, moves: list[dict]) -> dict:

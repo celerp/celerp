@@ -1475,6 +1475,8 @@
 "tests/test_contact_search_options.py::TestSearchableSelectComponent::test_search_url_adds_htmx_attrs_to_wrap": 0.001,
 "tests/test_contact_search_options.py::TestSearchableSelectComponent::test_search_url_adds_name_q_to_text_input": 0.001,
 "tests/test_contact_search_options.py::TestSearchableSelectComponent::test_static_options_still_rendered_with_search_url": 0.002,
+"tests/test_cost_follows_goods.py::test_finalizing_on_a_shared_sku_stays_fast_with_many_open_invoices": 8.17,
+"tests/test_cost_follows_goods.py::test_finalizing_stays_fast_with_many_open_invoices": 16.96,
 "tests/test_cost_restatement.py::test_broken_lineage_refuses_correction_atomically[cycle]": 0.259,
 "tests/test_cost_restatement.py::test_broken_lineage_refuses_correction_atomically[missing]": 0.254,
 "tests/test_cost_restatement.py::test_correction_after_finalize_adjusts_the_recognized_cogs[False]": 0.155,

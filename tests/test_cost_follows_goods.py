@@ -340,8 +340,8 @@ async def test_finalizing_stays_fast_with_many_open_invoices(client, session, au
     from celerp.services.lot_origin import stock_off_books
 
     sku = f"PERF-{uuid.uuid4().hex[:6]}"
-    # Each open invoice sells its own SKU: finalizing plans a line over every lot of its
-    # SKU, so 200 invoices on one SKU would make the setup itself slow down as it runs.
+    # Each open invoice sells its own SKU, so 200 of them seed quickly. Open invoices on
+    # one shared SKU: test_finalizing_on_a_shared_sku_stays_fast_with_many_open_invoices.
     for _ in range(200):
         other = f"PERF-{uuid.uuid4().hex[:6]}"
         await _invoice(client, auth, [(await _lot(client, auth, other, 1, 10.0), other, 1)])
@@ -355,3 +355,49 @@ async def test_finalizing_stays_fast_with_many_open_invoices(client, session, au
     assert await stock_off_books(session, auth["company_id"]) == []
     assert time.perf_counter() - started < 2.0
 
+
+async def _timed_finalize(client, auth, engine, doc: str) -> tuple[float, int]:
+    """Finalize ``doc``: (seconds taken, SQL statements run)."""
+    from sqlalchemy import event
+
+    statements = 0
+
+    def count(*_args) -> None:
+        nonlocal statements
+        statements += 1
+
+    event.listen(engine.sync_engine, "before_cursor_execute", count)
+    try:
+        started = time.perf_counter()
+        await _ok(client, auth, f"/docs/{doc}/finalize")
+        return time.perf_counter() - started, statements
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count)
+
+
+# Open invoices the shared-SKU speed test seeds on one SKU, and the seconds its last
+# finalize must stay under.
+_SHARED_OPEN = 100
+_SHARED_BOUND = 0.5
+
+
+@pytest.mark.timeout(30)
+async def test_finalizing_on_a_shared_sku_stays_fast_with_many_open_invoices(client, auth, _db_engine):
+    """Open invoices that set aside other lots of the same SKU are read in a fixed number
+    of queries when another invoice of that SKU is finalized, so finalizing does not slow
+    down as they pile up."""
+    sku = f"PERF-{uuid.uuid4().hex[:6]}"
+    started = time.perf_counter()
+    for opened in range(_SHARED_OPEN):
+        doc = await _invoice(client, auth, [(await _lot(client, auth, sku, 1, 10.0), sku, 1)], finalize=False)
+        if opened == 1:
+            _seconds, with_one_open = await _timed_finalize(client, auth, _db_engine, doc)
+        else:
+            await _ok(client, auth, f"/docs/{doc}/finalize")
+    setup = time.perf_counter() - started
+    doc = await _invoice(client, auth, [(await _lot(client, auth, sku, 1, 10.0), sku, 1)], finalize=False)
+    seconds, statements = await _timed_finalize(client, auth, _db_engine, doc)
+    timings = (f"{_SHARED_OPEN} open invoices on one SKU: setup {setup:.1f}s, finalize {seconds:.3f}s, "
+               f"{statements} statements (with one open: {with_one_open})")
+    assert statements <= with_one_open, timings
+    assert seconds < _SHARED_BOUND, timings

@@ -2217,7 +2217,8 @@ async def _invoiced_elsewhere(session, company_id, entity_id: str, locked: dict[
         Projection.state["status"].as_string() != "void",
         binds,
     ))).scalars().all()
-    rows = [doc for doc in rows if await auto_je.recognized_cogs(session, company_id, doc.entity_id) is None]
+    costed = await auto_je.recognized_cogs_of(session, company_id, [doc.entity_id for doc in rows])
+    rows = [doc for doc in rows if doc.entity_id not in costed]
     released = await _taken_back(session, company_id, {doc.entity_id for doc in rows}, in_stock, locked)
     out: dict[str, tuple[float, list[str]]] = {}
     for doc in rows:
