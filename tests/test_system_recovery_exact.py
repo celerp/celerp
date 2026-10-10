@@ -2554,7 +2554,7 @@ async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine)
             def runner(command, **kwargs):
                 return subprocess.run(command, **{**kwargs, "timeout": 3 if _tool(command) == "psql" else 60})
 
-            with pytest.raises(RuntimeError, match=re.escape(t("error.restore_timed_out", "en"))):
+            with pytest.raises(RuntimeError, match=re.escape(t("error.restore_timed_out", "en", seconds=600))):
                 await _restore(dump, runner)
         async with real_engine.connect() as conn:
             for _ in range(100):

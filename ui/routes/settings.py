@@ -2335,7 +2335,7 @@ def setup_routes(app):
         try:
             async with api._local_client(token, timeout=60.0, follow_redirects=False) as c:
                 r = await c.post("/companies/me/reset", json={"company_name": str(form.get("company_name", ""))})
-        except Exception as exc:
+        except Exception:
             return Div(t("api.unreachable"), cls="flash flash--error")
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         if r.status_code != 200:
@@ -2364,7 +2364,7 @@ def setup_routes(app):
                 r = await c.delete("/companies/me")
             if r.status_code != 200:
                 return Div(api.error_text(r, t("settings.deactivation_failed")), cls="flash flash--error")
-        except Exception as exc:
+        except Exception:
             return Div(t("api.unreachable"), cls="flash flash--error")
         from starlette.responses import RedirectResponse
         # Check if the user has other active companies
