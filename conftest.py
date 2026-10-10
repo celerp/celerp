@@ -6,7 +6,8 @@ from __future__ import annotations
 import os
 import shutil
 
-from conftest_support import is_own_test_config, resolve_worker_config, resolve_worker_data_dir
+from conftest_support import (
+    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -87,7 +88,7 @@ def _provision_test_database() -> None:
         _tune_pg_server(url)
         worker = os.environ.get("PYTEST_XDIST_WORKER")
         if worker:
-            url = _create_worker_db(url, worker)
+            url = provision_worker_db(url, worker)
     else:
         from testcontainers.postgres import PostgresContainer
         global _PG_CONTAINER
@@ -108,29 +109,6 @@ def _provision_test_database() -> None:
         # loop" / "Event loop is closed". NullPool opens+closes a connection per
         # use within the current loop, sidestepping it entirely.
         os.environ["CELERP_TEST_NULLPOOL"] = "1"
-
-
-def _create_worker_db(url: str, worker: str) -> str:
-    """CREATE DATABASE <base>_<worker> on the shared server; return its asyncpg URL."""
-    import re
-    from urllib.parse import urlsplit, urlunsplit
-    import psycopg2
-
-    parts = urlsplit(url.replace("+asyncpg", ""))
-    base_db = parts.path.lstrip("/") or "postgres"
-    worker_db = f"{base_db}_{re.sub(r'[^a-zA-Z0-9]', '', worker)}"
-    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                            password=parts.password, dbname=base_db)
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (worker_db,))
-            if not cur.fetchone():
-                cur.execute(f'CREATE DATABASE "{worker_db}"')
-    finally:
-        conn.close()
-    return urlunsplit(parts._replace(path=f"/{worker_db}")).replace(
-        "postgresql://", "postgresql+asyncpg://")
 
 
 _provision_test_database()
