@@ -35,15 +35,16 @@ INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 # Per-doc-type allowlist of the statuses POST /receive takes goods in. An issued purchase
 # document receives in every status its payments and earlier receipts or returns can move it
 # to; a void, closed or converted one receives nothing. A purchase order may receive while
-# still a draft (its receipt books its own entry); a draft bill or consignment has not been
-# issued, so it receives nothing. The finalized view offers Receive Goods from the same map.
+# still a draft (its receipt books its own entry), and so may a consignment (consigned goods
+# are not owned, so their receipt books nothing); a draft bill has not been issued, so it
+# receives nothing. The finalized view offers Receive Goods from the same map.
 _RECEIVING_STATUSES = frozenset({
     "final", "sent", "awaiting_payment", "partial", "paid",
     "received", "partially_received", "partial_returned", "returned",
 })
 RECEIVABLE_STATUSES: dict[str, frozenset[str]] = {
     "bill": _RECEIVING_STATUSES,
-    "consignment_in": _RECEIVING_STATUSES,
+    "consignment_in": _RECEIVING_STATUSES | {"draft"},
     "purchase_order": _RECEIVING_STATUSES | {"draft"},
 }
 
