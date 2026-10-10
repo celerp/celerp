@@ -253,7 +253,7 @@ def _row(name, *, enabled, running, is_default=False, load_error=None):
 def test_module_the_company_turned_off_offers_enable_while_others_keep_it_running(is_default):
     """Turning a module off for a company takes effect at once, even though it stays
     loaded for the other companies: the row says it is off and offers Enable, never a
-    Running badge with only Disable, and no restart is asked for."""
+    Running badge with only Disable, and no restart banner is raised."""
     from fasthtml.common import to_xml
     from ui.i18n import t
     from ui.routes import modules_page as mp
@@ -263,8 +263,18 @@ def test_module_the_company_turned_off_offers_enable_while_others_keep_it_runnin
     assert "/modules/celerp-labels/disable" not in body
     assert f'>{t("modules.badge_disabled", "en")}<' in body
     assert f'>{t("modules.badge_running", "en")}<' not in body
-    assert t("settings.restart_needed", "en") not in body
     assert t("settings._a_restart_is_required_for_module_changes_to_take", "en") not in body
+
+
+def test_an_installed_module_turned_off_but_still_running_offers_a_restart():
+    """Deleting an installed module waits until it stops running, so its row offers
+    Restart once it is off. A built-in module is never deleted and asks for none."""
+    from fasthtml.common import to_xml
+    from ui.routes import modules_page as mp
+    installed = to_xml(mp._local_panel([_row("acme-gems", enabled=False, running=True)], owner=True))
+    assert 'hx-post="/modules/restart"' in installed
+    built_in = to_xml(mp._local_panel([_row("celerp-labels", enabled=False, running=True, is_default=True)], owner=True))
+    assert 'hx-post="/modules/restart"' not in built_in
 
 
 def test_refused_module_does_not_ask_for_a_restart():
@@ -289,6 +299,16 @@ async def test_a_module_built_into_celerp_is_always_on_and_cannot_be_turned_off(
     assert "always on" in r.json()["detail"]
     listed = {m["name"]: m for m in (await client.get("/companies/me/modules", headers=a)).json()}
     assert listed[folded]["enabled"] is True and listed[folded]["running"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_module_naming_its_dependency_as_text_is_not_split_into_letters(client, module_dir):
+    name = f"acme-loose-{_uid()}"
+    _write_module(module_dir, {"name": name, "version": "1.0.0", "depends_on": "celerp-docs"}, {})
+    a, _b = await _two_companies(client)
+    r = await client.get("/companies/me/modules", headers=a)
+    assert r.status_code == 200, r.text
+    assert {m["name"]: m for m in r.json()}[name]["depends_on"] == []
 
 
 @pytest.mark.asyncio
@@ -330,7 +350,9 @@ async def test_company_settings_cannot_change_the_module_choice(client, value):
     config_before = _configured()
     r = await client.patch("/companies/me", headers=h, json={"settings": {"enabled_modules": value}})
     assert r.status_code == 422, r.text
-    assert "Modules page" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "company.setting_has_own_route"
+    assert "/companies/me/modules/" in detail["message"]
     assert (await client.get("/companies/me", headers=h)).json()["settings"].get("enabled_modules") == before
     assert _configured() == config_before
 

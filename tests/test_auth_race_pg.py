@@ -33,6 +33,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from celerp import credentials
 from celerp.models.accounting import UserCompany
 from celerp.models.auth import SessionRegistry, UserAuthState
 from celerp.models.company import Company, User
@@ -175,7 +176,7 @@ async def _run_revoke_first(engine, seeded, *, company_id_key="company_a_id"):
             user = await s.get(User, user_id)
             company = await s.get(Company, company_id)
             try:
-                result = await auth_svc.issue_token_pair(
+                result = await credentials.issue_token_pair(
                     s,
                     user=user,
                     company_id=company.id,
@@ -237,7 +238,7 @@ async def test_17_sliding_bearer_refresh_loses_to_concurrent_logout(engine, seed
             user = await s.get(User, user_id)
             company = await s.get(Company, company_id)
             try:
-                return await auth_svc.issue_token_pair(
+                return await credentials.issue_token_pair(
                     s, user=user, company_id=company.id,
                     jti=reused_jti, expected_snonce=n0,
                 ), None
@@ -299,7 +300,7 @@ async def test_20_issuance_first_then_logout_deletes_jti_and_rotates(engine, see
     try:
         user = await s.get(User, user_id)
         company = await s.get(Company, company_id)
-        pair = await auth_svc.issue_token_pair(
+        pair = await credentials.issue_token_pair(
             s, user=user, company_id=company.id, expected_snonce=n0
         )
     finally:
@@ -362,7 +363,7 @@ async def test_22_fresh_login_after_revocation_mints_on_current_generation(engin
     try:
         user = await s2.get(User, user_id)
         company = await s2.get(Company, company_id)
-        pair = await auth_svc.issue_token_pair(
+        pair = await credentials.issue_token_pair(
             s2, user=user, company_id=company.id, expected_snonce=None
         )
     finally:

@@ -23,8 +23,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 import celerp.gateway.state as gw_state
-from celerp.services.permissions import authorize_request
-from test_helpers import authed_cookies, seed_member
+from test_helpers import authed_cookies, seed_member, signed_request
 
 
 @pytest.fixture(autouse=True)
@@ -178,9 +177,9 @@ async def test_ai_api_401_is_transport_neutral_in_partner_mode(monkeypatch, sess
     _set_partner()
     monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
     company_id, user_id = await seed_member(session)
-    authorize_request(session, company_id, user_id, "operator")
-    with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id=str(company_id), session_token="", db_session=session)
+    async with signed_request(session, company_id, user_id):
+        with pytest.raises(HTTPException) as exc:
+            await ai_query(query="hi", company_id=str(company_id), session_token="", db_session=session)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
@@ -194,9 +193,9 @@ async def test_ai_api_401_is_transport_neutral_in_direct_mode(monkeypatch, sessi
     from celerp.modules.api import ai_query
     monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
     company_id, user_id = await seed_member(session)
-    authorize_request(session, company_id, user_id, "operator")
-    with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id=str(company_id), session_token="", db_session=session)
+    async with signed_request(session, company_id, user_id):
+        with pytest.raises(HTTPException) as exc:
+            await ai_query(query="hi", company_id=str(company_id), session_token="", db_session=session)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail

@@ -61,8 +61,9 @@ async def test_demo_filter_lists_only_untouched_samples_and_delete_keeps_the_res
     listed = await _skus(client, h, filter=DEMO_ITEMS_FILTER)
     assert set(listed) == {"DEMO-AGR-003", "DEMO-AGR-004"}, sorted(listed)
 
-    # Select-all plus Delete on that list: exactly the listed ids.
-    r = await client.post("/items/bulk/delete", headers=h, json={"entity_ids": [i["id"] for i in listed.values()]})
+    # Select-all plus Delete on that list: exactly the listed ids, as untouched samples.
+    r = await client.post("/items/bulk/delete", headers=h, json={
+        "entity_ids": [i["id"] for i in listed.values()], "untouched_samples_only": True})
     assert r.status_code == 200, r.text
     left = await _skus(client, h, status="all")
     assert {"DEMO-AGR-001", "DEMO-AGR-002", "DEMO-AGR-005", "MINE-1"} <= set(left)
@@ -109,16 +110,18 @@ async def test_demo_list_delete_keeps_a_sample_edited_after_the_list_was_shown(o
 
 
 @pytest.mark.asyncio
-async def test_inventory_list_delete_still_deletes_an_edited_sample(owner_ui):
-    """Outside the demo list Delete is the owner's own choice and removes what was ticked."""
+async def test_inventory_list_delete_refuses_an_edited_sample_that_is_stock(owner_ui):
+    """Outside the demo list Delete removes only draft mistakes: an edited sample is stock,
+    so it is kept and the answer names it."""
     listed = await _agricultural_samples(owner_ui)
     edited = listed[0]
     r = await owner_ui.api.patch(f"/items/{edited['id']}", json={
         "fields_changed": {"name": {"old": edited["name"], "new": "Edited"}}})
     assert r.status_code == 200, r.text
-    await _demo_list_delete(owner_ui, [edited["id"]], "/inventory")
+    html = await _demo_list_delete(owner_ui, [edited["id"]], "/inventory")
+    assert "flash--error" in html and "Nothing was deleted." in html and edited["sku"] in html
     left = (await owner_ui.api.get("/items", params={"status": "all", "limit": 500})).json()["items"]
-    assert edited["id"] not in {i["id"] for i in left}
+    assert edited["id"] in {i["id"] for i in left}
 
 
 @pytest.mark.asyncio

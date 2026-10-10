@@ -19,9 +19,11 @@ from celerp.services.company_lock import locked_company
 from ui.i18n import t
 
 
+pytestmark = pytest.mark.usefixtures("docs_running")
+
 # When Stripe reported a payment paid, and the books its page opened with.
 PAID = datetime.datetime(2026, 7, 13, 9, 0, tzinfo=datetime.timezone.utc)
-BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
+BOOKS = {"deposit_account": "1111", "timezone": "UTC", "base_currency": "USD", "rate": "1"}
 
 
 def _h(token: str) -> dict:
@@ -132,7 +134,7 @@ def test_a_stripe_amount_that_does_not_convert_exactly_is_refused(api, currency)
 
 async def _idr_invoice(client: AsyncClient, tok: str, total: float = 100000.0) -> tuple[str, str]:
     """A finalized, shared invoice for *total* IDR in a company that keeps its books in IDR."""
-    assert (await client.patch("/companies/me", json={"settings": {"currency": "IDR"}},
+    assert (await client.patch("/companies/me/books", json={"currency": "IDR"},
                                headers=_h(tok))).status_code == 200
     r = await client.post("/docs", json={
         "doc_type": "invoice", "contact_name": "Buyer",
@@ -236,7 +238,7 @@ async def test_an_invoice_stripe_cannot_charge_exactly_does_not_open_a_payment(c
         return {"url": "https://stripe.test/cs_clp"}
     monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
     tok = await _register(client)
-    assert (await client.patch("/companies/me", json={"settings": {"currency": "CLP"}},
+    assert (await client.patch("/companies/me/books", json={"currency": "CLP"},
                                headers=_h(tok))).status_code == 200
     r = await client.post("/docs", json={
         "doc_type": "invoice", "contact_name": "Buyer",
@@ -383,7 +385,7 @@ async def test_backup_push_records_and_is_idempotent(client, session, payments_o
 async def test_a_payment_clears_to_the_deposit_account_its_page_opened_with(client, session, payments_on,
                                                                           monkeypatch):
     """The deposit GL account is the company setting when the payment page opens,
-    defaulting to Cash; changing the setting later does not move the payment."""
+    defaulting to the default deposit account; changing the setting later does not move the payment."""
     from celerp.models.projections import Projection
     from celerp_docs.routes_payments import record_stripe_payment
     opened = {}
@@ -455,11 +457,11 @@ async def _refused_deposit(client, session, tok, kind: str) -> str:
         return "4100"
     if kind == "inactive-bank":
         return await _bank(client, tok, active=False)
-    code = "1110" if "cash" in kind else await _bank(client, tok)
+    code = "1111" if "cash" in kind else await _bank(client, tok)
     if "archived" in kind:
         await _chart_changed(session, tok, code, is_active=False)
     else:
-        await _chart_changed(session, tok, code, account_type="liability" if code == "1110" else "revenue")
+        await _chart_changed(session, tok, code, account_type="liability" if code == "1111" else "revenue")
     return code
 
 
@@ -495,7 +497,7 @@ async def test_a_payment_page_opens_for_cash_or_an_active_bank(client, session, 
     monkeypatch.setattr("celerp.services.payments.create_checkout", _mk)
     tok = await _register(client)
     _, token = await _payable_invoice(client, tok)
-    code = "1110" if kind == "cash" else await _bank(client, tok)
+    code = "1111" if kind == "cash" else await _bank(client, tok)
     await _deposit_to(session, tok, code)
 
     assert (await client.get(f"/pay/{token}", follow_redirects=False)).status_code == 303
@@ -548,10 +550,10 @@ async def test_a_payment_to_an_active_bank_is_recorded_there(client, session, pa
 async def test_the_online_deposit_setting_refuses_an_account_that_is_not_cash_or_an_active_bank(
         client, key, value):
     tok = await _register(client)
-    r = await client.patch("/companies/me", json={"settings": {key: value}},
+    r = await client.patch("/companies/me/books", json={key: value},
                            headers=_h(tok))
     assert r.status_code == 422
-    assert "Cash (1110) or an active bank account" in r.json()["detail"]
+    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]
 
 
 @pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
@@ -562,10 +564,10 @@ async def test_the_online_deposit_setting_refuses_a_bank_whose_chart_account_can
     tok = await _register(client)
     code = await _bank(client, tok)
     await _chart_changed(session, tok, code, **change)
-    r = await client.patch("/companies/me", json={"settings": {key: code}},
+    r = await client.patch("/companies/me/books", json={key: code},
                            headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "Cash (1110) or an active bank account" in r.json()["detail"]
+    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]
 
 
 @pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
@@ -574,11 +576,11 @@ async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_defau
     tok = await _register(client)
     code = await _bank(client, tok)
     inactive = await _bank(client, tok, active=False)
-    for value in ("1110", code, ""):
-        r = await client.patch("/companies/me", json={"settings": {key: value}},
+    for value in ("1111", code, ""):
+        r = await client.patch("/companies/me/books", json={key: value},
                                headers=_h(tok))
         assert r.status_code == 200, (value, r.text)
-    r = await client.patch("/companies/me", json={"settings": {key: inactive}},
+    r = await client.patch("/companies/me/books", json={key: inactive},
                            headers=_h(tok))
     assert r.status_code == 422
 
@@ -588,7 +590,7 @@ async def test_the_online_deposit_setting_takes_cash_an_active_bank_or_the_defau
 @pytest.mark.asyncio
 async def test_the_online_deposit_setting_refuses_a_value_that_is_not_an_account_code(client, key, value):
     tok = await _register(client)
-    r = await client.patch("/companies/me", json={"settings": {key: value}}, headers=_h(tok))
+    r = await client.patch("/companies/me/books", json={key: value}, headers=_h(tok))
     assert r.status_code == 422, (value, r.status_code, r.text)
     assert "account code" in r.json()["detail"]
     stored = (await client.get("/companies/me", headers=_h(tok))).json().get("settings", {})
@@ -730,7 +732,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
     stale = dict((await session.get(Projection, (cid, eid))).state)
 
     r = await client.post(f"/docs/{eid}/payment", json={
-        "amount": 500.0, "payment_date": "2026-07-13", "bank_account": "1110",
+        "amount": 500.0, "payment_date": "2026-07-13", "bank_account": "1111",
     }, headers=_h(tok))
     assert r.status_code == 200, r.text
 
@@ -797,7 +799,7 @@ async def test_paid_invoice_share_view_drops_pay_bar(client, payments_on):
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
     r = await client.post(f"/docs/{eid}/payment", json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110",
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111",
     }, headers=_h(tok))
     assert r.status_code == 200, r.text
     html = (await client.get(f"/share/{token}")).text
@@ -859,7 +861,7 @@ async def test_connect_endpoint_returns_oauth_url(client, monkeypatch):
     assert r.json()["url"] == "https://connect.stripe.test/oauth"
 
 
-_NOT_HTTPS = ["javascript:alert(1)", "http://stripe.test/cs_1", "//evil.test/x", 7, ["https://stripe.test/cs_1"]]
+_NOT_HTTPS = ["javascript:alert(1)", "http://stripe.test/cs_1", "//other.test/x", 7, ["https://stripe.test/cs_1"]]
 
 
 @pytest.mark.asyncio
@@ -1140,7 +1142,7 @@ async def test_a_payment_entered_by_hand_can_still_be_refunded_voided_or_deleted
     tok = await _register(client)
     eid, _ = await _payable_invoice(client, tok)
     r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110", "method": method,
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111", "method": method,
         "reference": "pi_card"})
     assert r.status_code == 200, r.text
 
@@ -1206,7 +1208,7 @@ async def test_a_payment_entered_by_hand_stays_the_users_when_stripe_later_repor
     eid, _ = await _payable_invoice(client, tok)
     cid = _company_id(tok)
     r = await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110", "method": "stripe",
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111", "method": "stripe",
         "reference": "pi_card"})
     assert r.status_code == 200, r.text
     assert await receive_payment({"company_id": cid, "entity_id": eid, "reference": "pi_card",

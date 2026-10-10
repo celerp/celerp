@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from functools import lru_cache
@@ -177,14 +178,6 @@ def category_labels(names: dict) -> dict:
     return {k: category_label(k, names.get(k)) for k in {*library, *names}}
 
 
-def unit_label(name: str) -> str:
-    """Display name for a unit of measure: a system unit (piece, gram, ...) in the user's
-    language, a unit the company added exactly as named. Display only: the stored value
-    stays the unit name."""
-    tkey = f"unit.{name}"
-    return t(tkey) if tkey in _cached_load("en") else name
-
-
 def item_status_label(status: str, lang: str | None = None) -> str:
     """Display name for an item status in the user's language; a status with no
     catalog entry shows as stored, so a message never names a translation key."""
@@ -208,16 +201,147 @@ def field_label_key(label: str) -> str | None:
     a library category's field shows in the user's language; ``None`` for a label the
     user typed, which shows as typed."""
     return _field_label_keys().get(label)
-def localize_notification(item: dict, lang: str | None = None) -> dict:
-    """*item* with its title and body in *lang* when it carries a ``message_key``
-    (celerp.notifications.service.create_keyed); a param given as ``{"key": k}`` is
-    itself translated. A plain-text notification is returned unchanged."""
-    key = item.get("message_key")
+
+
+def t_or(key: str, fallback: str, **kwargs) -> str:
+    """Translate *key* when a catalog has it, else return *fallback* (text the server
+    already wrote in English). A translation missing one of *kwargs* falls back too."""
+    lang = _current_lang.get()
+    text = _cached_load(lang).get(key) or _cached_load("en").get(key)
+    if text is None:
+        return fallback
+    try:
+        return text.format(**kwargs) if kwargs else text
+    except (KeyError, IndexError, ValueError):
+        return fallback
+
+
+def role_label(role: str, fallback: str) -> str:
+    """Display label of a posting role (``posting.role.<role>``)."""
+    return t_or(f"posting.role.{role}", fallback)
+
+
+# Doc-type display labels: the raw doc_type stays canonical everywhere (persistence,
+# URLs, comparisons); only the shown label is translated.
+_DOC_TYPE_LABEL_KEYS = {
+    "invoice": "settings.doc_type_invoice",
+    "purchase_order": "settings.doc_type_purchase_order",
+    "quotation": "settings_sales.doc_type_quotation",
+    "credit_note": "settings.doc_type_credit_note",
+    "bill": "settings.doc_type_bill",
+    "memo": "th.memo",
+    "shipping_doc": "settings_sales.doc_type_shipping_doc",
+    "list": "enum.doc_type.list",
+    "consignment_in": "settings.doc_type_consignment_in",
+    "receipt": "settings.doc_type_receipt",
+}
+
+
+def doc_type_label(dt: str) -> str:
+    """Human label for a doc_type, in the request language; unknown types fall
+    back to a title-cased form of the raw value."""
+    key = _DOC_TYPE_LABEL_KEYS.get(dt)
+    return t(key) if key else dt.replace("_", " ").title()
+
+
+# Why a run needs reconciling, as the server records it, in the user's language.
+_RECONCILE_REASONS = {
+    "books disagree": "manufacturing.reconcile_reason_books_disagree",
+    "received before tracking": "manufacturing.reconcile_reason_received",
+    "component without an inventory account": "manufacturing.reconcile_reason_no_account",
+    "books from elsewhere": "manufacturing.reconcile_reason_elsewhere",
+}
+
+
+def reconcile_reason(reason: str) -> str:
+    """Why a production run waits for reconciling, in the user's language."""
+    key = _RECONCILE_REASONS.get(reason)
+    return t(key) if key else reason
+
+
+def refusal_text(detail) -> str:
+    """An API refusal in the user's language, as plain sentences.
+
+    A structured refusal carries ``message`` (English), ``message_key`` and ``params``;
+    its ``message_key`` is translated with those params. A body's ``errors`` (a list
+    wins over a joined English ``message`` beside it) and lists render every entry in
+    turn, a body's ``detail`` renders what it holds, and plain text is shown as the
+    server wrote it. Internal record ids never reach the user. Anything
+    else renders as "", so callers fall back to their own plain message."""
+    if isinstance(detail, str):
+        return _without_ids(detail)
+    if isinstance(detail, list):
+        return " ".join(text for text in (refusal_text(d) for d in detail) if text)
+    if not isinstance(detail, dict):
+        return ""
+    errors = detail.get("errors")
+    if errors and (isinstance(errors, list) or "message" not in detail):
+        return refusal_text(errors)
+    if "message" not in detail:
+        return refusal_text(detail.get("detail"))
+    message = _without_ids(str(detail.get("message") or ""))
+    key = detail.get("message_key")
     if not key:
-        return item
-    params = {k: t(v["key"], lang) if isinstance(v, dict) else v
-              for k, v in (item.get("message_params") or {}).items()}
-    return {**item, "title": t(f"{key}.title", lang, **params), "body": t(f"{key}.body", lang, **params)}
+        return message
+    params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
+    return _without_ids(t_or(str(key), message, **params))
+
+
+# A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>.
+_INTERNAL_ID = re.compile(
+    r"\b(?:[a-z_]+:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+
+
+def _without_ids(text: str) -> str:
+    """``text`` with internal record ids removed: ``item:<uuid> (RAW-2): reason`` reads
+    ``RAW-2: reason``."""
+    if not _INTERNAL_ID.search(text):
+        return text
+    text = _INTERNAL_ID.sub("", text)
+    text = re.sub(r"^\s*\(([^()]*)\)", r"\1", text)  # "(RAW-2): x" once its id is gone
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip().lstrip(":;,").strip()
+
+
+_ICON = re.compile(r"^\W+")
+
+
+def _refusal_param(name: str, value):
+    """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
+    label without its icon), or a list of them (``steps`` and ``reasons`` joined by
+    semicolons, others as sentences), in the user's language; a
+    ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
+    ``status`` as an item status, ``lot_status`` as one read mid-sentence and
+    ``doc_status`` as a document status; ``reason``
+    as why a production run waits for reconciling."""
+    from ui.components.table import display_enum
+
+    if isinstance(value, dict) and "message" in value:
+        text = refusal_text(value)
+        # A sidebar item named in a sentence reads as its label, without its icon.
+        return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
+    if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+        return ("; " if name in ("steps", "reasons") else " ").join(refusal_text(v) for v in value)
+    if name == "role":
+        return role_label(str(value), str(value).replace("_", " "))
+    if name == "roles" and isinstance(value, list):
+        return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
+    if name == "status":
+        return display_enum(value, "item_status")
+    if name == "lot_status":
+        # Read mid-sentence: lowercase, except in German, where the label is a noun.
+        label = display_enum(value, "item_status")
+        return label if current_lang() == "de" else label.lower()
+    if name == "doc_status":
+        return display_enum(value, "doc_status")
+    if name == "reason":
+        return reconcile_reason(str(value))
+    if name == "type":
+        return display_enum(value, "account_type")
+    if name == "types" and isinstance(value, list):
+        return t("posting.type_or").join(display_enum(v, "account_type") for v in value)
+    return value
 
 
 def field_label(f: dict) -> str:

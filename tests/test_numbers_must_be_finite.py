@@ -11,7 +11,6 @@ import uuid
 
 import pytest
 
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_operation_retries import DATE, _final
 
 

@@ -60,8 +60,8 @@ async def _seed(client) -> tuple[str, str]:
     assert r.status_code == 200, r.text
     tok = r.json()["access_token"]
 
-    r = await client.patch("/companies/me", headers=_h(tok),
-                           json={"settings": {"currency": "THB"}})
+    r = await client.patch("/companies/me/books", headers=_h(tok),
+                           json={"currency": "THB"})
     assert r.status_code == 200, r.text
 
     r = await client.post("/crm/contacts", headers=_h(tok),

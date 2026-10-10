@@ -262,7 +262,8 @@ async def test_browser_and_file_mapping_produce_same_effective_mapping(client, m
     price_lists = (await client.get("/companies/me/price-lists", headers=h)).json()
     schemas = (await client.get("/companies/me/category-schemas", headers=h)).json()
     spec = build_item_import_spec(price_lists)
-    browser_mapping = {**tabular.suggest_mapping(header, spec.cols, _union_category_attr_keys(schemas)), **browser_choices}
+    browser_mapping = {**tabular.suggest_mapping(header, spec.cols, _union_category_attr_keys(schemas),
+                                                    skip_cols=spec.skip_cols), **browser_choices}
     form = {f"map__{col}": target for col, target in browser_mapping.items()}
     assert tabular.validate_column_mapping(form, header, core_fields=spec.cols, required_targets=spec.required,
                                           is_reserved_field=is_item_field_key) == []

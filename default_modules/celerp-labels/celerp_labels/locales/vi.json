@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "Không thể tạo: {error}",
+  "labels.could_not_delete": "Không thể xóa: {error}",
+  "labels.could_not_save": "Không thể lưu: {error}",
+  "labels.created": "Đã tạo '{name}'.",
   "labels.delete_template_confirm": "Xóa mẫu '{name}'?",
   "labels.edit_name": "Chỉnh sửa: {name}",
   "labels.height_example": "ví dụ: 30",
+  "labels.name_required": "Cần nhập tên mẫu.",
   "labels.new_template_name": "Tên mẫu mới",
   "labels.print_labels": "In nhãn",
   "labels.print_labels_heading": "In nhãn - {n} mặt hàng",
   "labels.remove_field": "Xóa trường",
   "labels.selected": "Đã chọn: {ids}{more}",
+  "labels.template_deleted": "Đã xóa mẫu.",
+  "labels.template_not_found": "Không tìm thấy mẫu.",
   "labels.width_example": "Ví dụ: 50"
 }

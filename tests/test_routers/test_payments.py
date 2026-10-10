@@ -34,9 +34,15 @@ async def _create_and_finalize_invoice(client, token: str, total: float = 100.0,
     return doc_id
 
 
-async def _create_and_finalize_cn(client, token: str, original_doc_id: str, total: float = 50.0, contact_id: str | None = None) -> str:
+async def _create_and_finalize_cn(client, token: str, total: float = 50.0, contact_id: str | None = None) -> str:
+    """A credit note the customer holds as credit: it credits an invoice of its own that was
+    paid in full, so none of it went to settling that invoice and all of it is left to spend."""
+    source = await _create_and_finalize_invoice(client, token, total, contact_id=contact_id)
+    r = await client.post(f"/docs/{source}/payment", headers=_h(token), json={
+        "payment_date": "2026-01-05", "amount": total, "method": "transfer", "bank_account": "1111"})
+    assert r.status_code == 200, r.text
     data = {
-        "doc_type": "credit_note", "original_doc_id": original_doc_id,
+        "doc_type": "credit_note", "original_doc_id": source,
         "line_items": [{"name": "CN", "quantity": 1, "unit_price": total, "line_total": total}], "total": total,
     }
     if contact_id:
@@ -139,7 +145,7 @@ async def test_void_payment_partial_to_paid_lifecycle(client):
 async def test_apply_cn_to_invoice(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 200.0, contact_id="contact:acme")
-    cn = await _create_and_finalize_cn(client, token, inv, 50.0, contact_id="contact:acme")
+    cn = await _create_and_finalize_cn(client, token, 50.0, contact_id="contact:acme")
 
     r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token), json={
         "target_doc_id": inv, "amount": 50.0, "date": "2026-03-28",
@@ -164,7 +170,7 @@ async def test_apply_cn_to_invoice(client):
 async def test_apply_cn_different_contact_rejected(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 200.0, contact_id="contact:acme")
-    cn = await _create_and_finalize_cn(client, token, inv, 50.0, contact_id="contact:other")
+    cn = await _create_and_finalize_cn(client, token, 50.0, contact_id="contact:other")
 
     r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token), json={
         "target_doc_id": inv, "amount": 50.0,
@@ -176,7 +182,7 @@ async def test_apply_cn_different_contact_rejected(client):
 async def test_void_cn_application_voids_both_sides(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 200.0, contact_id="contact:acme")
-    cn = await _create_and_finalize_cn(client, token, inv, 50.0, contact_id="contact:acme")
+    cn = await _create_and_finalize_cn(client, token, 50.0, contact_id="contact:acme")
 
     await client.post(f"/docs/{cn}/apply-to-invoice", headers=_h(token), json={
         "target_doc_id": inv, "amount": 50.0,
@@ -203,8 +209,7 @@ async def test_void_cn_application_voids_both_sides(client):
 @pytest.mark.asyncio
 async def test_cn_refund(client):
     token = await _register(client)
-    inv = await _create_and_finalize_invoice(client, token, 200.0)
-    cn = await _create_and_finalize_cn(client, token, inv, 50.0)
+    cn = await _create_and_finalize_cn(client, token, 50.0)
 
     r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={
         "date": "2026-01-15", "amount": 50.0, "method": "transfer", "bank_account": "1111", "reference": "REF-001",
@@ -220,8 +225,7 @@ async def test_cn_refund(client):
 @pytest.mark.asyncio
 async def test_cn_refund_exceeds_balance(client):
     token = await _register(client)
-    inv = await _create_and_finalize_invoice(client, token, 200.0)
-    cn = await _create_and_finalize_cn(client, token, inv, 50.0)
+    cn = await _create_and_finalize_cn(client, token, 50.0)
 
     r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={"date": "2026-01-15", "amount": 100.0})
     assert r.status_code == 409
@@ -386,8 +390,7 @@ async def test_bulk_payment_requires_bank_account(client):
 async def test_cn_refund_requires_bank_account(client):
     """cn-refund must reject missing bank_account."""
     token = await _register(client)
-    inv = await _create_and_finalize_invoice(client, token, 200.0)
-    cn = await _create_and_finalize_cn(client, token, inv, 50.0)
+    cn = await _create_and_finalize_cn(client, token, 50.0)
     r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token),
                           json={"date": "2026-01-15", "amount": 50.0})
     assert r.status_code == 422
@@ -418,7 +421,7 @@ async def test_payment_projection_stores_bank_account_not_default(client):
 
 async def _foreign_invoice(client, token: str, total: float = 100.0) -> str:
     """A finalized USD invoice in a company whose books are in THB."""
-    r = await client.patch("/companies/me", headers=_h(token), json={"settings": {"currency": "THB"}})
+    r = await client.patch("/companies/me/books", headers=_h(token), json={"currency": "THB"})
     assert r.status_code == 200, r.text
     data = {"doc_type": "invoice", "currency": "USD", "conversion_rate": 35.0, "total": total,
             "line_items": [{"name": "X", "quantity": 1, "unit_price": total, "line_total": total}]}
@@ -1193,7 +1196,7 @@ async def test_apply_cn_void_then_reapply_same_invoice(client):
     h = _h(token)
 
     inv = await _create_and_finalize_invoice(client, token, total=500.0)
-    cn = await _create_and_finalize_cn(client, token, original_doc_id=inv, total=100.0)
+    cn = await _create_and_finalize_cn(client, token, total=100.0)
 
     # First application
     r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=h, json={

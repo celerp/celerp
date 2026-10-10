@@ -25,7 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_fresh_authority_races_pg import _ITEM, _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
+from test_fresh_authority_races_pg import _ITEM, _app_client, _direct, _http, _ok, _race, _refused, _revoke
+from test_fresh_authority_races_pg import _seed as _seed_company
+from test_helpers import provision_company_books
 
 pytestmark = pytest.mark.asyncio
 
@@ -60,6 +62,15 @@ def _delete_one(client, c, doc_id):
 
 def _delete_bulk(client, c, ids):
     return lambda: client.delete("/docs/bulk-draft", params={"doc_ids": ",".join(ids)}, headers=c["h"]["manager"])
+
+
+async def _seed(factory) -> dict:
+    """A company whose books take the entries a finalized document posts."""
+    c = await _seed_company(factory)
+    async with factory() as s:
+        await provision_company_books(s, c["company_id"])
+        await s.commit()
+    return c
 
 
 def _factory(engine):

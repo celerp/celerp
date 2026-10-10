@@ -21,6 +21,8 @@ from sqlalchemy import select
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.lot_origin import recognize_opening_lots
+from test_helpers import invoices_booking_one_lot_twice
 from test_memo_lifecycle_concurrency import _barcode, _cleanup, _factory, _race, _seed_company
 
 
@@ -35,6 +37,7 @@ async def _lot(factory, company_id, user, cost_total: float = 100.0) -> str:
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [entity_id], user.id, f"seed:{entity_id}")
         await s.commit()
     return entity_id
 
@@ -188,20 +191,42 @@ async def test_cost_correction_during_void_or_revert_leaves_no_cogs_behind(_db_e
 
 
 @pytest.mark.asyncio
-async def test_cost_correction_reaches_both_invoices_that_named_the_lot(_db_engine):
+async def test_cost_correction_reaches_the_invoice_that_costed_the_lot(_db_engine):
     from celerp_docs.routes import FulfillLinesRequest, fulfill_lines
 
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
     try:
         lot = await _lot(factory, company_id, user)
-        shipped = await _finalized_invoice(factory, company_id, user, lot)
-        waiting = await _finalized_invoice(factory, company_id, user, lot)
+        with invoices_booking_one_lot_twice():
+            shipped = await _finalized_invoice(factory, company_id, user, lot)
+            waiting = await _finalized_invoice(factory, company_id, user, lot)
         async with factory() as s:
             await fulfill_lines(shipped, FulfillLinesRequest(line_entity_ids=[lot]),
                                 company_id=company_id, _=None, user=user, session=s)
         await _correct_cost(factory, company_id, user, lot, 120.0)
         assert await _doc_cogs(factory, company_id, shipped) == 120.0
-        assert await _doc_cogs(factory, company_id, waiting) == 120.0
+        # The lot was costed once, by the first invoice. The second stays
+        # uncosted until goods ship on it, so the correction does not reach it.
+        assert await _doc_cogs(factory, company_id, waiting) == 0.0
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_two_invoices_finalized_at_once_cost_a_lot_once(_db_engine):
+    """Two invoices for the same single unit finalized at the same moment: one sets it
+    aside, the other costs nothing until it ships."""
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        lot = await _lot(factory, company_id, user, cost_total=100.0)
+        docs: list[str] = []
+
+        async def finalize():
+            docs.append(await _finalized_invoice(factory, company_id, user, lot))
+
+        await _race(finalize(), finalize())
+        assert sorted([await _doc_cogs(factory, company_id, d) for d in docs]) == [0.0, 100.0]
     finally:
         await _cleanup(factory, company_id, user_id)

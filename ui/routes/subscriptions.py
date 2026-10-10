@@ -15,17 +15,19 @@ from urllib.parse import urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from ui.components.icons import import_icon
+from ui.components.operation_key import operation_key_vals, submitted_operation_key
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, display_enum, empty_state_cta, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
+from ui.routes.documents import _action_error
 from ui.routes.settings import _check_permission
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -175,9 +177,8 @@ def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
 
     if status == "draft":
         return _schedule_inputs(entity_id, sub) + [
-            Form(Button(t("btn.activate"), type="submit", cls="btn btn--primary"),
-                 method="post", action=f"/subscriptions/{entity_id}/activate",
-                 title=t("subscriptions.activate_title")),
+            Button(t("btn.activate"), cls="btn btn--primary", hx_post=f"/subscriptions/{entity_id}/activate",
+                   hx_swap="none", title=t("subscriptions.activate_title")),
         ], []
 
     left: list = [_status_badge(status)]
@@ -185,25 +186,22 @@ def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
 
     if status == "active":
         left.append(
-            Form(Button(t("btn.generate_now"), type="submit", cls="btn btn--secondary btn--sm"),
-                 method="post", action=f"/subscriptions/{entity_id}/generate")
+            Button(t("btn.generate_now"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/generate",
+                   hx_swap="none", hx_vals=operation_key_vals())
         )
         right.append(
-            Form(Button(t("btn.pause"), type="submit", cls="btn btn--warning btn--sm"),
-                 method="post", action=f"/subscriptions/{entity_id}/pause")
+            Button(t("btn.pause"), cls="btn btn--warning btn--sm", hx_post=f"/subscriptions/{entity_id}/pause", hx_swap="none")
         )
     elif status == "paused":
         # Allow editing schedule while paused
         left.extend(_schedule_inputs(entity_id, sub))
         right.append(
-            Form(Button(t("btn.resume"), type="submit", cls="btn btn--success btn--sm"),
-                 method="post", action=f"/subscriptions/{entity_id}/resume")
+            Button(t("btn.resume"), cls="btn btn--success btn--sm", hx_post=f"/subscriptions/{entity_id}/resume", hx_swap="none")
         )
 
     if status not in ("cancelled", "draft"):
         right.append(
-            Form(Button(t("btn.cancel"), type="submit", cls="btn btn--danger btn--sm"),
-                 method="post", action=f"/subscriptions/{entity_id}/cancel")
+            Button(t("btn.cancel"), cls="btn btn--danger btn--sm", hx_post=f"/subscriptions/{entity_id}/cancel", hx_swap="none")
         )
 
     gen_count = len(sub.get("generated_doc_ids") or [])
@@ -424,57 +422,16 @@ def setup_routes(app) -> None:
 
     # --- Lifecycle actions ---
 
-    @app.post("/subscriptions/{entity_id}/activate")
-    async def activate_ui(request: Request, entity_id: str):
+    @app.post("/subscriptions/{entity_id}/{action}")
+    async def subscription_action_ui(request: Request, entity_id: str, action: str):
+        if action not in api.SUBSCRIPTION_ACTIONS:
+            return Response(status_code=404)
         token = _token(request)
         if not token:
-            return RedirectResponse("/login", status_code=302)
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.activate_subscription(token, entity_id)
+            await api.subscription_action(token, entity_id, action,
+                                          submitted_operation_key(await request.form()) or None)
         except APIError as e:
-            logger.warning("activate %s failed: %s", entity_id, e)
-        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
-
-    @app.post("/subscriptions/{entity_id}/generate")
-    async def generate_ui(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.generate_subscription(token, entity_id)
-        except APIError as e:
-            logger.warning("generate %s failed: %s", entity_id, e)
-        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
-
-    @app.post("/subscriptions/{entity_id}/pause")
-    async def pause_ui(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.pause_subscription(token, entity_id)
-        except APIError as e:
-            logger.warning("pause %s failed: %s", entity_id, e)
-        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
-
-    @app.post("/subscriptions/{entity_id}/resume")
-    async def resume_ui(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.resume_subscription(token, entity_id)
-        except APIError as e:
-            logger.warning("resume %s failed: %s", entity_id, e)
-        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
-
-    @app.post("/subscriptions/{entity_id}/cancel")
-    async def cancel_ui(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.cancel_subscription(token, entity_id)
-        except APIError as e:
-            logger.warning("cancel %s failed: %s", entity_id, e)
-        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
+            return _action_error(refusal_text(e.data or e.detail))
+        return Response(status_code=204, headers={"HX-Redirect": f"/subscriptions/{entity_id}"})

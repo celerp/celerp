@@ -1,0 +1,141 @@
+{
+ "boms": {
+  "dropped": "bom:1cb2ed6a-41d9-4668-84ab-7c4e751dc27e",
+  "kept": "bom:a1ddbb6e-c95e-4fd7-93cb-be2e4db1a798"
+ },
+ "ledger": [
+  {
+   "data": {
+    "components": [
+     {
+      "item_id": null,
+      "qty": 2.0,
+      "sku": "COMP-A",
+      "unit": "pieces"
+     },
+     {
+      "item_id": null,
+      "qty": 1.0,
+      "sku": "COMP-B",
+      "unit": "pieces"
+     }
+    ],
+    "name": "Kept",
+    "output_item_id": null,
+    "output_qty": 1.0
+   },
+   "entity_id": "bom:a1ddbb6e-c95e-4fd7-93cb-be2e4db1a798",
+   "entity_type": "bom",
+   "event_type": "bom.created",
+   "idempotency_key": "bb6d0548-848a-4c9e-853f-ae639613058d",
+   "metadata": {},
+   "source": "api",
+   "ts": "2026-10-04T09:31:59.223661+00:00"
+  },
+  {
+   "data": {
+    "name": "Kept v2",
+    "output_qty": 2.0
+   },
+   "entity_id": "bom:a1ddbb6e-c95e-4fd7-93cb-be2e4db1a798",
+   "entity_type": "bom",
+   "event_type": "bom.updated",
+   "idempotency_key": "02321e60-1f7a-4faf-9364-acb50d3291be",
+   "metadata": {},
+   "source": "api",
+   "ts": "2026-10-04T09:31:59.233038+00:00"
+  },
+  {
+   "data": {
+    "components": [
+     {
+      "item_id": null,
+      "qty": 2.0,
+      "sku": "COMP-A",
+      "unit": "pieces"
+     }
+    ],
+    "name": "Dropped",
+    "output_item_id": null,
+    "output_qty": 1.0
+   },
+   "entity_id": "bom:1cb2ed6a-41d9-4668-84ab-7c4e751dc27e",
+   "entity_type": "bom",
+   "event_type": "bom.created",
+   "idempotency_key": "66b947df-6370-4558-b613-70c3ce0e43b1",
+   "metadata": {},
+   "source": "api",
+   "ts": "2026-10-04T09:31:59.242588+00:00"
+  },
+  {
+   "data": {},
+   "entity_id": "bom:1cb2ed6a-41d9-4668-84ab-7c4e751dc27e",
+   "entity_type": "bom",
+   "event_type": "bom.deleted",
+   "idempotency_key": "6b3e74bf-d8cb-44bb-a7c0-6dc04b3dcc1b",
+   "metadata": {},
+   "source": "api",
+   "ts": "2026-10-04T09:31:59.251354+00:00"
+  }
+ ],
+ "projections": [
+  {
+   "created_at": "2026-10-04T09:31:59.229870+00:00",
+   "entity_id": "bom:a1ddbb6e-c95e-4fd7-93cb-be2e4db1a798",
+   "entity_type": "bom",
+   "is_available": null,
+   "is_expired": null,
+   "is_in_production": null,
+   "is_on_marketplace": null,
+   "is_on_memo": null,
+   "state": {
+    "components": [
+     {
+      "item_id": null,
+      "qty": 2.0,
+      "sku": "COMP-A",
+      "unit": "pieces"
+     },
+     {
+      "item_id": null,
+      "qty": 1.0,
+      "sku": "COMP-B",
+      "unit": "pieces"
+     }
+    ],
+    "entity_type": "bom",
+    "name": "Kept v2",
+    "output_item_id": null,
+    "output_qty": 2.0
+   },
+   "updated_at": "2026-10-04T09:31:59.238449+00:00"
+  },
+  {
+   "created_at": "2026-10-04T09:31:59.247260+00:00",
+   "entity_id": "bom:1cb2ed6a-41d9-4668-84ab-7c4e751dc27e",
+   "entity_type": "bom",
+   "is_available": null,
+   "is_expired": null,
+   "is_in_production": null,
+   "is_on_marketplace": null,
+   "is_on_memo": null,
+   "state": {
+    "components": [
+     {
+      "item_id": null,
+      "qty": 2.0,
+      "sku": "COMP-A",
+      "unit": "pieces"
+     }
+    ],
+    "deleted": true,
+    "entity_type": "bom",
+    "name": "Dropped",
+    "output_item_id": null,
+    "output_qty": 1.0
+   },
+   "updated_at": "2026-10-04T09:31:59.257615+00:00"
+  }
+ ],
+ "release": "1.1.19.dev158"
+}

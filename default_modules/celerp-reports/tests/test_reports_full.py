@@ -47,7 +47,7 @@ async def test_reports_all_branches(client):
 
     await _issued({"doc_type": "invoice", "contact_id": "c1", "contact_name": "C1", "line_items": [{"item_id": i1, "name": "Item1", "quantity": 2, "unit_price": 25, "line_total": 50, "cost_total": 30}], "subtotal": 50, "tax": 0, "total": 50, "date": past_10, "due_date": past_10})
     partial = await _issued({"doc_type": "invoice", "contact_id": "c2", "contact_name": "C2", "line_items": [{"item_id": i2, "name": "Item2", "quantity": 1, "unit_price": 80, "line_total": 80, "cost_total": 20}], "subtotal": 80, "tax": 0, "total": 80, "date": past_40, "due_date": past_40})
-    rp = await client.post(f"/docs/{partial}/payment", headers=_h(token), json={"amount": 30.0, "payment_date": past_40, "bank_account": "1110"})
+    rp = await client.post(f"/docs/{partial}/payment", headers=_h(token), json={"amount": 30.0, "payment_date": past_40, "bank_account": "1111"})
     assert rp.status_code == 200, rp.text
     await import_sent_po(
         client, _h(token), contact_id="s1", contact_name="S1", subtotal=100, total=100,

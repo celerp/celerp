@@ -21,6 +21,7 @@ from ui.components.activity import (
     _origin_detail,
     _qpw_delta,
 )
+from test_helpers import merge_items
 
 
 async def _token(client) -> str:
@@ -318,7 +319,7 @@ async def test_merge_denormalizes_skus(client):
     h = {"Authorization": f"Bearer {await _token(client)}"}
     a = await _seed(client, h, sku="A", quantity=5.0, category="Raw")
     b = await _seed(client, h, sku="B", quantity=3.0, category="Raw")
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=h)
     assert r.status_code == 200, r.text
     new_id = r.json()["id"]

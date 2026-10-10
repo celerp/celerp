@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from .inline_edit import set_cell
+from .inline_edit import cancel_editor, ready, set_cell, settled
 
 pytestmark = pytest.mark.browser
 
@@ -267,3 +267,63 @@ def test_add_row_validation_flashes_empty_required_field(page, ui_server, api):
     page.locator("tr.recipe-add-row:has(input[name=oh_new_desc]) button.recipe-add-btn").click()
     page.wait_for_selector("input[name=oh_new_desc].field-flash-error", timeout=3000)
     assert (api.get(f"/items/{fg}").json().get("recipe") or {}).get("overhead", []) == []
+
+
+def test_recipe_quantities_must_be_more_than_nothing(page, ui_server, api):
+    """A component used at zero, or an output of zero per batch, is refused with a message
+    saying why, and the saved recipe is left as it was."""
+    api.post("/items", json={"sku": "PQ-GOLD", "name": "Gold", "quantity": 10, "sell_by": "gram",
+                             "cost_total": 100, "inventory_type": "component"})
+    fg = api.post("/items", json={"sku": "PQ-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    _open_tab(page, ui_server, fg)
+    _ghost_pick(page, "PQ-GOLD")
+    cell = 'td[data-col="recipe__components__0__quantity"]'
+    page.wait_for_selector(cell, timeout=8000)
+
+    # The editor stays open on a refusal, so this edit is driven directly, not via set_cell.
+    settled(page, SCOPE)
+    page.dblclick(f"{SCOPE} {cell}")
+    editor = page.locator(f"{SCOPE} input[name=value]").last
+    editor.wait_for(state="visible", timeout=4000)
+    ready(page, f"{SCOPE} input[name=value]")
+    editor.fill("0")
+    editor.press("Enter")
+    # A refused edit swaps in the editor cell, which carries the field on its input.
+    page.wait_for_selector(f'{SCOPE} td.cell--error[title*="greater than zero"]'
+                           ':has(input[hx-patch$="recipe__components__0__quantity"])', timeout=8000)
+    cancel_editor(page, SCOPE)
+
+    page.fill("#output_qty", "0")
+    page.locator("#output_qty").dispatch_event("change")
+    page.wait_for_selector("#recipe-save-status.error:has-text('greater than zero')", timeout=8000)
+
+    got = api.get(f"/items/{fg}").json()["recipe"]
+    assert got["output_qty"] == 1 and got["components"][0]["quantity"] == 1
+
+
+# Every recipe card whose Save button sits outside the card: [card title, right edge of card,
+# right edge of Save]. On a laptop Save shows without scrolling; a table wider than a phone
+# scrolls inside its card, so there Save is scrolled to first and must then be in the card.
+_SAVE_OUTSIDE_JS = """(scroll) => [...document.querySelectorAll('#recipe-form .recipe-block')]
+  .map(card => [card, card.querySelector('.recipe-add-btn')])
+  .filter(([card, save]) => save && (scroll && save.scrollIntoView({block: 'nearest', inline: 'nearest'}),
+                                     save.getBoundingClientRect().right > card.getBoundingClientRect().right + 0.5))
+  .map(([card, save]) => [card.querySelector('.section-title')?.textContent.trim(),
+                          Math.round(card.getBoundingClientRect().right), Math.round(save.getBoundingClientRect().right)])"""
+
+
+@pytest.mark.parametrize("lang", ["en", "de"])
+@pytest.mark.parametrize("width", [1280, 390])
+def test_every_recipe_card_keeps_its_save_button_inside(page, ui_server, api, recipe_item, width, lang):
+    fg_id, _ = recipe_item
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": lang, "domain": host, "path": "/"}])
+    try:
+        page.set_viewport_size({"width": width, "height": 900})
+        _open_tab(page, ui_server, fg_id)
+        page.wait_for_selector(".recipe-add-btn", timeout=5000)
+        outside = page.evaluate(_SAVE_OUTSIDE_JS, width < 900)
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert not outside, f"at {width}px ({lang}) Save sits outside its card: {outside}"

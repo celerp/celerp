@@ -352,11 +352,11 @@ class TestModuleProvenanceAndDelete:
         assert row["source"] == "marketplace"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("sidecar", ['{"source": "trusted"}', '{"source": null}', "{}", "[]",
+    @pytest.mark.parametrize("metadata", ['{"source": "other"}', '{"source": null}', "{}", "[]",
                                          '{"source": []}', '{"source": {}}'],
                              ids=["unknown", "null", "empty", "not_an_object",
                                   "source_list", "source_object"])
-    async def test_scan_reports_an_unknown_source_as_sideloaded(self, client, tmp_path, sidecar):
+    async def test_scan_reports_an_unknown_source_as_sideloaded(self, client, tmp_path, metadata):
         from celerp.modules.importer import install_from_zip
         from celerp.modules.meta import META_FILENAME
 
@@ -368,7 +368,7 @@ class TestModuleProvenanceAndDelete:
             with zipfile.ZipFile(buf, "w") as zf:
                 zf.writestr("acme-odd/__init__.py", _PKG_INIT.format(name="acme-odd", disp="Odd"))
             install_from_zip(buf.getvalue(), source="community")
-            (module_dir / "acme-odd" / META_FILENAME).write_text(sidecar)
+            (module_dir / "acme-odd" / META_FILENAME).write_text(metadata)
             r = await client.get("/companies/me/modules", headers=_h(token))
         assert r.status_code == 200, r.text
         row = next(m for m in r.json() if m["name"] == "acme-odd")
@@ -401,7 +401,7 @@ class TestModuleProvenanceAndDelete:
         assert "acme-odd" in to_xml(_local_panel(rows, lang="en"))
 
     @pytest.mark.asyncio
-    async def test_upload_cannot_claim_marketplace_source(self, client, tmp_path):
+    async def test_upload_with_marketplace_source_is_rejected(self, client, tmp_path):
         token = await _register(client)
         module_dir = tmp_path / "modules"
         module_dir.mkdir()
@@ -809,6 +809,36 @@ class TestModuleDataPurge:
             names = await session.run_sync(
                 lambda s: sa_inspect(s.connection()).get_table_names())
         assert "acme_widget" not in names and "acme_meta" not in names
+
+
+class TestSettingsPredatingModuleEnablement:
+    """A company whose settings hold no enabled_modules runs every loaded module, so a
+    toggle starts from those, never from nothing."""
+
+    async def _legacy(self, client, session) -> str:
+        from celerp.models.company import Company
+
+        token = await _register(client)
+        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
+        company = await session.get(Company, uuid.UUID(company_id))
+        company.settings = {k: v for k, v in (company.settings or {}).items() if k != "enabled_modules"}
+        await session.commit()
+        return token
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["enable", "disable"])
+    async def test_a_toggle_keeps_every_other_running_module(self, client, session, monkeypatch, action):
+        import celerp.config
+        from celerp.modules import loader
+
+        name = "celerp-labels"
+        running = set(loader.first_party_names()) - ({name} if action == "enable" else set())
+        # The installation's list, which a company that has never chosen runs.
+        monkeypatch.setattr(celerp.config, "read_config", lambda: {"modules": {"enabled": sorted(running)}})
+        token = await self._legacy(client, session)
+        r = await client.post(f"/companies/me/modules/{name}/{action}", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert set(r.json()["enabled_modules"]) == (running | {name} if action == "enable" else running - {name})
 
 
 class TestPurgeRechecksTablePrefix:

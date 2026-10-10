@@ -37,7 +37,7 @@ from ui.routes.csv_import import (
 )
 
 
-# The accounting API owns this list (celerp_accounting.routes.ACCOUNT_TYPES) and
+# The accounting API owns this list (celerp_accounting.chart_rules.ACCOUNT_TYPES) and
 # validates against it; the two run in separate processes, so a test asserts they
 # still match.
 ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")

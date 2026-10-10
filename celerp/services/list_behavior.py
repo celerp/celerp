@@ -96,14 +96,8 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
 
 LIST_TYPES: tuple[str, ...] = tuple(LIST_BEHAVIOR.keys())
 
-# Result values that close a list, mapped to their badge label (single source for status_label).
-_RESULT_LABELS = {
-    "converted": "Converted",
-    "stock_adjusted": "Adjusted",
-    "received": "Received",
-    "expired": "Expired",
-    "written_off": "Written off",
-}
+# Result values that close a list and name its badge; any other result reads as closed.
+_RESULT_STATUSES = frozenset({"converted", "stock_adjusted", "received", "expired", "written_off"})
 
 
 def behavior(list_type: str | None) -> ListBehavior:
@@ -118,29 +112,29 @@ def terminal_action(list_type: str | None, key: str) -> TerminalAction | None:
     return next((a for a in behavior(list_type).terminal if a.key == key), None)
 
 
-def status_label(state: dict) -> str:
-    """Human badge text from (status, list_type, result, milestones) — the one DRY renderer.
+def status_key(state: dict) -> str:
+    """The badge status token for a list, from (status, list_type, result, milestones).
 
-    Recovers the per-type richness the flattened spine drops (GDR debuggability): a finalized
-    quotation reads "Sent"/"Accepted", a finalized audit reads "Counting", etc.
+    Recovers the per-type richness the flattened spine drops: a finalized quotation reads
+    "sent" or "accepted", a finalized audit "counting". The UI renders the token through
+    the ``enum.doc_status`` catalog, like a document's status.
     """
     status = state.get("status") or DRAFT
-    if status == DRAFT:
-        return "Draft"
-    if status == VOID:
-        return "Void"
+    if status in (DRAFT, VOID):
+        return status
     if status == CLOSED:
-        return _RESULT_LABELS.get(state.get("result") or "", "Closed")
-    # finalized — interpret per type / milestone
+        result = state.get("result") or ""
+        return result if result in _RESULT_STATUSES else CLOSED
+    # finalized: interpret per type / milestone
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     if lt == "audit":
-        return "Counting"
+        return "counting"
     if lt == "transfer":
-        return "In transit"
+        return "in_transit"
     if lt == "shipping_doc":
-        return "Issued"
+        return "issued"
     if lt == "quotation":
         if state.get("accepted_at"):
-            return "Accepted"
-        return "Sent" if state.get("sent_at") else "Issued"
-    return "Finalized"
+            return "accepted"
+        return "sent" if state.get("sent_at") else "issued"
+    return FINALIZED

@@ -18,7 +18,6 @@ import time
 import httpx
 
 from celerp.config import settings
-from celerp.gateway.state import build_handoff_url, relay_http_url
 
 # Cache keyed by surface and language: (medium, lang) -> (fetched_at_monotonic, cta_dict)
 _cache: dict[tuple[str, str], tuple[float, dict]] = {}
@@ -49,6 +48,7 @@ def neutral_cta(medium: str) -> dict:
 
     This is the deterministic offline state - shown when the relay is unreachable.
     """
+    from celerp.gateway.state import build_handoff_url
     return {
         "mode": "neutral",
         "show_count": False,
@@ -65,6 +65,7 @@ async def get_star_cta(medium: str, lang: str) -> dict | None:
     ``None`` means "relay unreachable / no data" - the caller renders neutral_cta.
     Returns ``None`` (not neutral) so the caller decides how to degrade.
     """
+    from celerp.gateway.state import relay_http_url
     if not settings.star_cta_enabled:
         return None
 

@@ -14,8 +14,11 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
-import celerp_manufacturing.routes as mfg_routes
+from celerp.models.projections import Projection
+from celerp_manufacturing import movements
+from stock_books import assert_settled
 
 
 async def _register(client) -> str:
@@ -94,20 +97,44 @@ async def test_auto_complete_on_finalize_completes_run(client):
     assert any(n["category"] == "manufacturing" for n in notes)
 
 
+async def _entries(session, company_id, pattern: str) -> list[tuple]:
+    """The posted lines of the one journal entry whose id matches ``pattern``, sorted."""
+    row = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(pattern)))).scalar_one()
+    assert row.state["status"] == "posted", row.state
+    return sorted((e["account"], float(e.get("debit") or 0), float(e.get("credit") or 0))
+                  for e in row.state["entries"])
+
+
 @pytest.mark.asyncio
-async def test_auto_complete_posts_completion_je(client):
-    """A completion journal entry is posted for the auto-completed run."""
+async def test_auto_complete_posts_completion_je(client, session):
+    """The run moves the components through work in progress onto the made goods account,
+    the invoice's cost of sale comes off that account, and shipping the line ships the made
+    lot: every inventory account then carries exactly the stock it holds."""
     token = await _register(client)
-    gold = await _item(client, token, "GOLDJE", quantity=100, cost_total=8000)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(token))).json()["id"])
+    gold = await _item(client, token, "GOLDJE", quantity=100, cost_total=8000)  # 80 each
     ring = await _item(client, token, "RINGJE", quantity=0)
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
     await _enable(client, token)
 
-    await _finalize_invoice(client, token, ring, "RINGJE", 2)
+    doc = await _finalize_invoice(client, token, ring, "RINGJE", 2)
 
     run = (await _runs_for(client, token, ring))[0]["id"]
-    ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
-    assert any(run in (e["data"].get("memo") or "") for e in ledger)
+    assert await _entries(session, company_id, f"je:auto:{run}:issue:%") == [
+        ("1130-OB", 0.0, 800.0), ("1130-WIP", 800.0, 0.0)]
+    assert await _entries(session, company_id, f"je:auto:{run}:receive:%") == [
+        ("1130-P", 800.0, 0.0), ("1130-WIP", 0.0, 800.0)]
+    assert await _entries(session, company_id, "je:auto:doc:%:fin") == [
+        ("1120", 200.0, 0.0), ("1130-P", 0.0, 800.0), ("4100", 0.0, 200.0), ("5100", 800.0, 0.0)]
+
+    r = await client.post(f"/docs/{doc}/fulfill-lines", headers=_h(token), json={"line_entity_ids": [ring]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "fulfilled"
+    assert (await client.get(f"/docs/{doc}", headers=_h(token))).json()["fulfillment_status"] == "fulfilled"
+    session.expire_all()
+    await assert_settled(client, session, {"company_id": str(company_id)})
 
 
 @pytest.mark.asyncio
@@ -131,12 +158,9 @@ async def test_auto_complete_idempotent_on_refinalize(client):
 @pytest.mark.asyncio
 async def test_partial_completion_rolls_back(client):
     """A mid-completion failure rolls the line back to its savepoint: the run stays ``planned``,
-    the component consumption is undone, the invoice still finalizes, and a high-priority
-    notification names the run left open.
-
-    Failure injection deviates from the plan's deleted-component 404 (no ``DELETE /items`` route
-    exists): patching ``_receive`` to raise exercises the same per-line savepoint rollback one
-    step later in the completion, after the issue has already run.
+    the component consumption and its entry are undone, the invoice still finalizes, and a
+    high-priority notification names the run left open. Receiving the output is made to fail,
+    so the rollback has an issue already written to undo.
     """
     token = await _register(client)
     gold = await _item(client, token, "GOLDRB", quantity=100, cost_total=8000)
@@ -144,12 +168,14 @@ async def test_partial_completion_rolls_back(client):
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
     await _enable(client, token)
 
-    with patch.object(mfg_routes, "_receive", new=AsyncMock(side_effect=RuntimeError("boom"))):
+    with patch.object(movements, "_receive", new=AsyncMock(side_effect=RuntimeError("boom"))):
         await _finalize_invoice(client, token, ring, "RINGRB", 2)
 
     runs = await _runs_for(client, token, ring)
     assert len(runs) == 1 and runs[0]["status"] == "planned"  # savepoint rolled back the issue
     assert await _qty(client, token, gold) == 100  # consumption undone
+    ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
+    assert not any(runs[0]["id"] in (e["data"].get("memo") or "") for e in ledger)  # and its entry
     notes = await _notifs(client, token)
     assert any(n["category"] == "manufacturing" and n["priority"] == "high" for n in notes)
 

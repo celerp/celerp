@@ -23,7 +23,7 @@ def test_revision_follows_its_parent():
     from celerp.alembic_config import build_alembic_config
 
     script = ScriptDirectory.from_config(build_alembic_config())
-    assert script.get_revision("v0m1n2o3p4q5").down_revision == "u8j9k0l1m2n3"
+    assert script.get_revision("v0m1n2o3p4q5").down_revision == "e9f0a1b2c3d4"
 
 
 @pytest.fixture()

@@ -24,6 +24,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from decimal import Decimal
 
+from celerp.accounting_roles import AccountRole
 from celerp.importers.results import RecordOutcome
 from celerp.importers.schema import (
     CIFDocument,
@@ -38,6 +39,7 @@ from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, Sink
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.account_roles import current_settings, source_control
 from celerp.services.migration_core_sink import (
     acting_member,
     deterministic_id,
@@ -64,7 +66,9 @@ ITEM = "item"
 CONTACT = "contact"
 ACCOUNT = "account"
 TAX = "tax"
-PAYABLE_CODE = "2110"
+# The role whose source control account an imported document's balance sits on.
+_PARTY_ROLE = {"invoice": AccountRole.RECEIVABLE, "credit_note": AccountRole.RECEIVABLE,
+               "bill": AccountRole.PAYABLE, "debit_note": AccountRole.PAYABLE}
 
 # Celerp status of an imported document, by type and source status. Issued sales
 # and purchase documents arrive unpaid; orders and quotes carry no money.
@@ -343,6 +347,7 @@ async def _post_document(
                 context.session, company_id=context.company_id, user_id=context.user_id,
                 doc_id=outcome.entity_id, doc_type=record.doc_type.value,
                 contact_id=contacts.get(record.contact_external_id or ""),
+                party_account=await _party_account(context, record),
                 entries=_entries(record, base, accounts), ts=_date(record),
                 cogs_allocations=_cogs_allocations(record, base, delivered),
             )
@@ -358,6 +363,12 @@ async def _post_document(
     except Exception as exc:
         return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")
     return outcome
+
+
+async def _party_account(context: SinkContext, record: CIFDocument) -> str:
+    """The source books' control account for the document's customer or supplier balance."""
+    return source_control(await current_settings(context.session, context.company_id),
+                          _PARTY_ROLE[record.doc_type.value])
 
 
 async def _import_debit_note(
@@ -377,18 +388,21 @@ async def _import_debit_note(
     suffix = f"dn:{deterministic_id(context, record.source_type, record.source_external_id)}"
     try:
         async with context.session.begin_nested():
+            payable = await _party_account(context, record)
             await auto_je.create_for_imported_document(
                 context.session, company_id=context.company_id, user_id=context.user_id,
                 doc_id=bill_id, doc_type=record.doc_type.value,
                 contact_id=contacts.get(record.contact_external_id or ""),
+                party_account=payable,
                 entries=_entries(record, base, accounts), ts=_date(record), suffix=suffix,
             )
             entry, _amount = await apply_doc_payment(
                 context.session, context.company_id, bill_id,
                 {"amount": _money(record.total, base), "payment_date": _date(record),
-                 "bank_account": PAYABLE_CODE, "method": "debit_note"},
+                 "bank_account": payable, "method": "debit_note"},
                 source="migration", actor_id=context.user_id,
                 idempotency_key=context.idempotency_key(record, "applied"), commit=False,
+                moves_cash=False,
             )
     except Exception as exc:
         return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")

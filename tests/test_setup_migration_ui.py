@@ -147,6 +147,9 @@ class FakeMigrationAPI:
         self.scans: dict[str, dict] = {}
         self.runs: dict[str, dict] = {}
         self.recon: dict[str, dict] = {}
+        self.posting: dict[str, list[dict]] = {}  # run -> the posting accounts it needs
+        self.finalized_with: list[dict] = []
+        self.refuse_finalize = ""
         self.decisions_posted: list[dict] = []
         self.started: dict[str, str] = {}  # scan token -> the run a company-mode start created
         self.scan_error = False
@@ -206,13 +209,15 @@ class FakeMigrationAPI:
                 return _json(201, {"run_id": run_id})
             return _json(201, {"access_token": make_test_token("owner"),
                                "refresh_token": "refresh-new", "run_id": run_id})
-        m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/]+)?", path)
+        m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/-]+)?", path)
         if not m or m.group(1) not in self.runs:
             return _json(404, {"detail": "Migration not found."})
         run_id, tail = m.group(1), m.group(2) or ""
         run = self.runs[run_id]
         if method == "GET" and tail == "":
             return _json(200, run)
+        if method == "GET" and tail == "/posting-accounts":
+            return _json(200, {"roles": self.posting.get(run_id, [])})
         if method == "GET" and tail == "/reconciliation":
             return _json(200, self.recon[run_id])
         if method == "GET" and tail == "/reconciliation/pack":
@@ -229,6 +234,9 @@ class FakeMigrationAPI:
         if method == "POST" and tail == "/finalize":
             if run["status"] != "ready_to_finalize":
                 return _json(409, {"detail": f"Cannot finalize a migration that is {run['status']}."})
+            if self.refuse_finalize:
+                return _json(409, {"detail": self.refuse_finalize})
+            self.finalized_with.append(json.loads(body) if body else {})
             run["status"] = "completed"
             return _json(200, run)
         if method == "POST" and tail == "/discard":
@@ -795,8 +803,8 @@ async def test_verify_page_names_records_and_formats_figures(ui, router, fake_ap
     assert r.status_code == 200
     page = _visible(r)
     for text in ("Payables control: 2100 Accounts payable", "Payables by supplier: Northwind Supplies",
-                 "Inventory quantity: Blue widget (WID)", "Document status: Bill, Awaiting Payment",
-                 "Document count: Invoice (USD)", "Settlement allocation: Payments"):
+                 "Inventory quantity: Blue widget (WID)", "Document status: Bill: Awaiting Payment",
+                 "Document count: Invoice (USD)", "Settlement allocation: Payment"):
         assert text in page, text
     # Business-normal sign: a payable balance reads as the amount owed, at currency precision.
     for figure in ("$1,875.40", "$310.50", "$0.00", "$2,200.50"):
@@ -809,6 +817,98 @@ async def test_verify_page_names_records_and_formats_figures(ui, router, fake_ap
     r = await ui.get(f"/migrations/{run_id}/complete")
     assert r.status_code == 200
     assert _AP_KEY not in _visible(r)
+
+
+def _posting_row(role: str, label: str, *, required: bool = True, current: str | None = None,
+                 current_name: str | None = None, preselect: str | None = None, candidates: tuple = (),
+                 proposal: dict | None = None, generated: tuple = ()) -> dict:
+    """``generated``: the codes an importer made up (code_generated on the account)."""
+    def account(code: str, name: str, account_type: str) -> dict:
+        return {"code": code, "name": name, "account_type": account_type, "code_generated": code in generated}
+
+    return {"role": role, "label": label, "group": "core", "required": required, "current": current,
+            "current_account": account(current, current_name, "asset") if current and current_name else None,
+            "controls": [], "preselect": preselect,
+            "candidates": [account(c, n, ty) for c, n, ty in candidates],
+            "proposal": proposal or {"code": "9999", "name": label, "account_type": "expense"}}
+
+
+_EXPENSE_PROPOSAL = {"code": "6950", "name": "General expenses", "account_type": "expense"}
+
+
+@pytest.mark.asyncio
+async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, router, fake_api):
+    _owner(ui)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.posting[run_id] = [
+        _posting_row("receivable", "Accounts receivable", current="120"),
+        _posting_row("payable", "Accounts payable", preselect="210",
+                     candidates=(("210", "Creditors", "liability"), ("211", "Other creditors", "liability"))),
+        _posting_row("general_expense", "General expenses", proposal=_EXPENSE_PROPOSAL),
+        _posting_row("sales_revenue", "Sales revenue",
+                     candidates=tuple((f"4{n:02d}", f"Sales {n}", "revenue") for n in range(12))),
+        _posting_row("fx_gain", "Exchange gain", required=False),
+    ]
+    verify = _visible(await ui.get(f"/migrations/{run_id}/verify"))
+    assert "Posting accounts" in verify
+    # An account already set is shown, not asked for again.
+    assert re.search(r"<td>Accounts receivable</td>\s*<td>120</td>", verify)
+    assert 'name="role.receivable"' not in verify
+    # The source's single control account is offered already chosen.
+    assert re.search(r'<select[^>]*name="role.payable"[^>]*>.*?<option value="210" selected>210 Creditors</option>',
+                     verify, re.S)
+    # Where the chart has nothing suitable, adding the proposed account is offered.
+    assert re.search(r'<option value="__new__">Add account 6950 General expenses \(Expense\)</option>', verify)
+    # More than ten options become a searchable picker.
+    assert re.search(r'class="combobox-wrap".*?name="role.sales_revenue"', verify, re.S)
+    # A role no workflow needs yet is not asked for.
+    assert "Exchange gain" not in verify
+
+    fake_api.refuse_finalize = "Choose the posting account for: Sales revenue."
+    r = await ui.post(f"/migrations/{run_id}/finalize",
+                      data={"role.payable": "211", "role.general_expense": "__new__", "role.sales_revenue": ""})
+    assert r.status_code == 200
+    page = _visible(r)
+    assert "Choose the posting account for: Sales revenue." in page
+    assert re.search(r'<option value="211" selected>', page)
+    assert fake_api.runs[run_id]["status"] == "ready_to_finalize"
+
+    fake_api.refuse_finalize = ""
+    r = await ui.post(f"/migrations/{run_id}/finalize",
+                      data={"role.payable": "211", "role.general_expense": "__new__", "role.sales_revenue": "405"})
+    assert r.status_code == 303 and r.headers["location"] == f"/migrations/{run_id}/complete"
+    assert fake_api.finalized_with == [{
+        "roles": {"payable": "211", "sales_revenue": "405"},
+        "add_accounts": [{**_EXPENSE_PROPOSAL, "role": "general_expense"}],
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang", ["en", "de"])
+async def test_finishing_names_accounts_the_source_gave_no_code_by_their_name(ui, router, fake_api, lang):
+    """Manager books carry accounts without a code; Celerp gives each an internal code
+    (M and eight hex digits) and records that it did. The posting accounts show such an
+    account by its name alone, while the picker still submits the code. A code someone
+    chose is shown, however it is spelled."""
+    _owner(ui)
+    ui.cookies.set("celerp_lang", lang)
+    run_id = fake_api.add_run("ready_to_finalize")
+    fake_api.posting[run_id] = [
+        _posting_row("receivable", "Accounts receivable", current="M73d6d4fc", current_name="Debtors",
+                     generated=("M73d6d4fc",)),
+        _posting_row("payable", "Accounts payable", preselect="M0a1b2c3d-1",
+                     candidates=(("M0a1b2c3d-1", "Creditors", "liability"), ("211", "Other creditors", "liability"),
+                                 ("Mdeadbeef", "Bank charges", "liability")),
+                     generated=("M0a1b2c3d-1",)),
+    ]
+    verify = _visible(await ui.get(f"/migrations/{run_id}/verify"))
+
+    assert re.search(r"<td>Debtors</td>", verify)
+    assert re.search(r'<option value="M0a1b2c3d-1" selected>Creditors</option>', verify)
+    assert re.search(r'<option value="211">211 Other creditors</option>', verify)
+    assert re.search(r'<option value="Mdeadbeef">Mdeadbeef Bank charges</option>', verify)
+    shown = re.sub(r"<[^>]*>", " ", verify)
+    assert "M73d6d4fc" not in shown and "M0a1b2c3d" not in shown
 
 
 @pytest.mark.asyncio

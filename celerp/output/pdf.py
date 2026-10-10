@@ -428,6 +428,12 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     totals_data = [
         [Paragraph("Subtotal", s["total_label"]), Paragraph(_fmt_money(subtotal, currency), s["total_value"])],
     ]
+    # The stored header discount and shipping are part of the stored total, so both are shown
+    # for the rows to add up.
+    discount_amount = float(doc.get("discount_amount") or 0)
+    if discount_amount:
+        totals_data.append([Paragraph("Discount", s["total_label"]),
+                            Paragraph("-" + _fmt_money(discount_amount, currency), s["total_value"])])
     doc_taxes = doc.get("doc_taxes") or []
     if doc_taxes:
         for dt in doc_taxes:
@@ -438,6 +444,9 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
             ])
     else:
         totals_data.append([Paragraph("Tax", s["total_label"]), Paragraph(_fmt_money(tax, currency), s["total_value"])])
+    shipping = float(doc.get("shipping") or 0)
+    if shipping:
+        totals_data.append([Paragraph("Shipping", s["total_label"]), Paragraph(_fmt_money(shipping, currency), s["total_value"])])
     totals_data.append([Paragraph("Total", s["total_label"]), Paragraph(_fmt_money(total, currency), s["total_value"])])
     if outstanding > 0:
         totals_data.append([

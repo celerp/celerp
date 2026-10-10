@@ -149,17 +149,41 @@ async def test_bulk_delete_with_an_unknown_id_deletes_nothing(client, session):
     assert await _snapshot(session, company_id, s["item_id"]) == item_before
 
 
+async def _draft_item(client, h, location_id, sku="DRAFT-1") -> str:
+    r = await client.post("/items", json={"sku": sku, "name": "Draft", "quantity": 1,
+                                          "location_id": location_id, "sell_by": "piece",
+                                          "status": "draft"}, headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
 async def test_bulk_delete_of_items_keeps_other_streams(client, session):
-    """The item's own rows go; a document's rows stay even if it shares nothing but the company."""
+    """The draft item's own rows go; a document's rows stay even if it shares nothing but the company.
+    Bulk Delete removes only drafts that were a mistake, so the selected item is a draft."""
     s = await perm_setup(client, session)
     company_id = await _company_id(session)
+    item_id = await _draft_item(client, s["admin_h"], s["location_id"])
     doc_id = await _doc(client, s["admin_h"])
     doc_before = await _snapshot(session, company_id, doc_id)
 
-    r = await client.post("/items/bulk/delete", json={"entity_ids": [s["item_id"]]}, headers=s["admin_h"])
+    r = await client.post("/items/bulk/delete", json={"entity_ids": [item_id]}, headers=s["admin_h"])
     assert r.status_code == 200, r.text
-    gone = await _snapshot(session, company_id, s["item_id"])
+    gone = await _snapshot(session, company_id, item_id)
     assert gone[0] is None and gone[3] == 0
+    assert await _snapshot(session, company_id, doc_id) == doc_before
+
+
+async def test_bulk_delete_of_a_draft_with_a_document_id_deletes_nothing(client, session):
+    s = await perm_setup(client, session)
+    company_id = await _company_id(session)
+    item_id = await _draft_item(client, s["admin_h"], s["location_id"])
+    doc_id = await _doc(client, s["admin_h"])
+    item_before = await _snapshot(session, company_id, item_id)
+    doc_before = await _snapshot(session, company_id, doc_id)
+
+    r = await client.post("/items/bulk/delete", json={"entity_ids": [item_id, doc_id]}, headers=s["admin_h"])
+    assert r.status_code == 404, r.text
+    assert await _snapshot(session, company_id, item_id) == item_before
     assert await _snapshot(session, company_id, doc_id) == doc_before
 
 
@@ -169,7 +193,7 @@ async def test_bulk_delete_of_items_keeps_other_streams(client, session):
     ("post", "unreserve", {"quantity": 1}),
     ("post", "adjust", {"new_qty": 3}),
     ("post", "price", {"price_type": "retail_price", "new_price": 9}),
-    ("post", "status", {"new_status": "sold"}),
+    ("post", "status", {"new_status": "archived"}),
     ("post", "expire", None),
 ])
 async def test_single_item_action_on_a_document_id_is_refused(client, session, method, suffix, body):
@@ -200,11 +224,7 @@ async def test_item_file_upload_on_a_document_id_stores_nothing(client, session,
 async def test_document_bulk_draft_delete_leaves_a_draft_item(client, session):
     s = await perm_setup(client, session)
     company_id = await _company_id(session)
-    r = await client.post("/items", json={"sku": "DRAFT-1", "name": "Draft", "quantity": 1,
-                                          "location_id": s["location_id"], "sell_by": "piece",
-                                          "status": "draft"}, headers=s["admin_h"])
-    assert r.status_code == 200, r.text
-    item_id = r.json()["id"]
+    item_id = await _draft_item(client, s["admin_h"], s["location_id"])
     before = await _snapshot(session, company_id, item_id)
     assert before[1].get("status") == "draft"
 

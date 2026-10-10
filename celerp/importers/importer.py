@@ -32,6 +32,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
+from celerp.importers.results import message_text
 from celerp.importers.schema import CIFBundleManifest
 
 MAX_BATCH_SIZE = 500
@@ -150,7 +151,7 @@ class BundleImporter:
                 done += len(chunk)
 
                 for err in resp.get("errors", []):
-                    result.record_error("batch", err)
+                    result.record_error("batch", message_text(err))
 
                 print(
                     f"\r  {label}: {done}/{total} ({batch_per_sec:.0f}/sec)",

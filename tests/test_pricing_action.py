@@ -186,10 +186,10 @@ def test_loader_rejects_a_malformed_pricing_action(tmp_path, contribution, messa
 
 
 @pytest.mark.parametrize("href", [
-    "https://evil.example/q/{entity_id}",
+    "https://other.example/q/{entity_id}",
     "javascript:alert(1)",
-    "//evil.example/q/{entity_id}",
-    "/\\evil.example/q/{entity_id}",
+    "//other.example/q/{entity_id}",
+    "/\\other.example/q/{entity_id}",
     "/q/{entity_id}\x01",
     "/q/{entity_id}\x7f",
     "q/{entity_id}",
@@ -254,8 +254,8 @@ def test_loader_still_accepts_well_formed_actions(tmp_path, contribution):
 
 
 @pytest.mark.parametrize("href, message", [
-    ("https://evil.example/i/{entity_id}", "inside Celerp"),
-    ("//evil.example/i/{entity_id}", "inside Celerp"),
+    ("https://other.example/i/{entity_id}", "inside Celerp"),
+    ("//other.example/i/{entity_id}", "inside Celerp"),
     ("/i/{entity_id}\x01", "inside Celerp"),
     ("/i/{entity_id", "brace"),
     ("/i/{price_list}", r"\{price_list\}"),
@@ -277,8 +277,8 @@ def test_loader_accepts_an_item_action_inside_celerp(tmp_path):
 
 
 @pytest.mark.parametrize("value", [
-    "//evil.example", "/\\evil.example", "https://evil.example", "\\\\evil", "a\x01b",
-    "x/../../y", "?next=//evil", "#frag",
+    "//other.example", "/\\other.example", "https://other.example", "\\\\other", "a\x01b",
+    "x/../../y", "?next=//other", "#frag",
 ])
 def test_filled_placeholders_cannot_lead_the_link_out_of_celerp(value):
     """The template is checked once at load; a value filled in at render is URL-encoded

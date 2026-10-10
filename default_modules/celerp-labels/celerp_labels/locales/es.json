@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "No se pudo crear: {error}",
+  "labels.could_not_delete": "No se pudo eliminar: {error}",
+  "labels.could_not_save": "No se pudo guardar: {error}",
+  "labels.created": "Se creó «{name}».",
   "labels.delete_template_confirm": "¿Eliminar la plantilla «{name}»?",
   "labels.edit_name": "Editar: {name}",
   "labels.height_example": "p. ej., 30",
+  "labels.name_required": "Se requiere el nombre de la plantilla.",
   "labels.new_template_name": "Nuevo nombre de plantilla",
   "labels.print_labels": "Imprimir etiquetas",
   "labels.print_labels_heading": "Imprimir etiquetas - artículos: {n}",
   "labels.remove_field": "Eliminar campo",
   "labels.selected": "Seleccionado: {ids}{more}",
+  "labels.template_deleted": "Plantilla eliminada.",
+  "labels.template_not_found": "Plantilla no encontrada.",
   "labels.width_example": "p. ej., 50"
 }

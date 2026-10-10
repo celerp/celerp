@@ -21,12 +21,13 @@ from ui.routes.inventory import _bulk_toolbar
 
 
 def test_demo_items_view_offers_bulk_delete():
-    """Delete sits in the bulk menu for archived and expired items, and for the demo
-    items the dashboard link opens; any other active list does not offer it."""
+    """Delete sits in the bulk menu of every list. On the demo items the dashboard link
+    opens it removes the untouched samples, so it is marked as such there only."""
     demo = to_xml(_bulk_toolbar([], p={"filter": DEMO_ITEMS_FILTER}))
-    assert 'value="delete"' in demo
+    assert 'value="delete" data-samples="1"' in demo
     for other in ({"q": "rice"}, {"q": "name:[DEMO]"}, {"filter": "low_stock"}):
-        assert 'value="delete"' not in to_xml(_bulk_toolbar([], p=other)), other
+        html = to_xml(_bulk_toolbar([], p=other))
+        assert 'value="delete"' in html and "data-samples" not in html, other
 
 
 _EMPTY = {"items": [], "total": 0}

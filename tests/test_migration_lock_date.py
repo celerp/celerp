@@ -27,6 +27,8 @@ from migration_support import (
     auth,
     count,
     creator_run,
+    finalize_body,
+    finalize_run,
     load_run,
     maker,
     real_client,  # noqa: F401 - fixture
@@ -100,7 +102,9 @@ async def _owner_headers(engine, run) -> dict:
 
 
 async def _finalize(client, engine, run):
-    return await client.post(f"/migrations/{run.id}/finalize", headers=await _owner_headers(engine, run))
+    headers = await _owner_headers(engine, run)
+    return await client.post(f"/migrations/{run.id}/finalize", headers=headers,
+                             json=await finalize_body(client, headers, run.id))
 
 
 def _assert_unlocked_and_staged(company) -> None:
@@ -271,7 +275,11 @@ async def test_migration_preview_and_summary_show_lock_date(real_engine, monkeyp
         return run_view
 
     monkeypatch.setattr(pages.api, "migration_reconciliation", reconciliation)
+    async def posting_accounts(token, run_id):
+        return {"roles": []}
+
     monkeypatch.setattr(pages.api, "get_migration_run", get_run)
+    monkeypatch.setattr(pages.api, "migration_posting_accounts", posting_accounts)
     request = Request({"type": "http", "method": "GET", "path": f"/migrations/{run.id}/verify",
                        "query_string": b"", "headers": []})
     page = to_xml(await pages._verify_page(request, str(run.id)))
@@ -331,7 +339,7 @@ async def test_failed_finalize_installs_no_lock_date(real_client, real_engine, m
 
         s.commit = lost_commit
         with pytest.raises(MigrationError) as failed:
-            await migrations.finalize(s, await creator_run(s, run.id))
+            await finalize_run(s, await creator_run(s, run.id))
     assert failed.value.status_code == 500
     assert (await load_run(real_engine, run.id)).status == "ready_to_finalize"
     _assert_unlocked_and_staged(await _company(real_engine, run.company_id))

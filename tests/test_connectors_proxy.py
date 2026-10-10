@@ -506,7 +506,7 @@ async def test_mark_reconciled_route_explains_a_refusal(reconcile_ui):
     client, cookies, setter = reconcile_ui
     setter.side_effect = APIError(409, "This order changed in WooCommerce; refresh to review the change")
     entry = {"id": "7", "label": "Order 7", "reason": "has a refund", "signature": "sig-8"}
-    with patch("ui.routes.settings_connectors.attention_entries", AsyncMock(return_value=[entry])):
+    with patch("celerp.connectors.sync_runner.attention_entries", AsyncMock(return_value=[entry])):
         async with client:
             r = await client.post("/settings/connectors/woocommerce/attention/7/reconciled",
                                   data={"signature": "sig-7"}, cookies=cookies)
@@ -556,7 +556,7 @@ def test_reconciled_attention_entries_sit_in_a_collapsed_section():
 async def test_attention_read_failure_shows_no_list():
     from ui.routes import settings_connectors as sc
 
-    with patch.object(sc, "attention_entries", AsyncMock(side_effect=RuntimeError("db down"))):
+    with patch("celerp.connectors.sync_runner.attention_entries", AsyncMock(side_effect=RuntimeError("db down"))):
         assert await sc._attention("00000000-0000-0000-0000-000000000002", "woocommerce") == []
 
 

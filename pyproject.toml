@@ -137,7 +137,7 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "importers/sample/*.manager",
 ]
 "ui" = [
-    "static/*",
+    "static/**/*",
     "locales/**/*",
 ]
 "default_modules" = [

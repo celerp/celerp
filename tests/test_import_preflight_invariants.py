@@ -616,10 +616,12 @@ async def test_bound_commit_holds_what_it_accepted_until_the_import_commits(comm
     from sqlalchemy import text
     from sqlalchemy.exc import DBAPIError
 
+    # Two chunks: a full one, then the one row left over.
+    monkeypatch.setattr(svc, "IMPORT_CHUNK", 2)
     factory = _factory(committed_engine)
     company_id, user_id, entity_id = await _seed_member_with_item(factory)
     rows = [{"name": "Renamed", "sku": "HOLD-1", "sell_by": "piece"}] + [
-        {"name": f"New {i}", "sku": f"NEW-{i}", "sell_by": "piece", "quantity": "1"} for i in range(500)
+        {"name": f"New {i}", "sku": f"NEW-{i}", "sell_by": "piece", "quantity": "1"} for i in range(2)
     ]
     user = SimpleNamespace(id=user_id)
     async with factory() as s:
@@ -652,7 +654,7 @@ async def test_bound_commit_holds_what_it_accepted_until_the_import_commits(comm
             company_id=company_id, role="owner", settings={}, user=user, session=s,
         )
     assert attempts == ["waited", "waited"]
-    assert (result.created, result.updated) == (500, 1)
+    assert (result.created, result.updated) == (2, 1)
     async with factory() as s:
         state = (await s.get(Projection, {"company_id": company_id, "entity_id": entity_id})).state
     assert state["name"] == "Renamed"

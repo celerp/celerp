@@ -26,6 +26,8 @@ from pathlib import Path, PurePosixPath
 
 from ui.i18n import t
 
+from celerp.modules.importer import ModuleImportError, _validate_name_chars
+
 log = logging.getLogger(__name__)
 
 
@@ -113,12 +115,23 @@ def validate_archive(path: Path) -> ImportMeta:
             raise ValueError(t("error.restore_damaged"))
         meta_data = json.loads(meta_file.read())
 
+    modules = meta_data.get("enabled_modules")
+    if modules is None:
+        modules = []
+    if not isinstance(modules, list) or not all(isinstance(name, str) for name in modules):
+        raise ValueError("Archive meta.json has an invalid enabled_modules list")
+    try:
+        for name in modules:
+            _validate_name_chars(name)
+    except ModuleImportError as exc:
+        raise ValueError(f"Archive meta.json lists an invalid module name: {exc}") from exc
+
     meta = ImportMeta(
         celerp_version=meta_data.get("celerp_version") or "unknown",
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
         company_name=meta_data.get("company_name", "unknown"),
-        enabled_modules=list(meta_data.get("enabled_modules") or []),
+        enabled_modules=modules,
     )
 
     # PostgreSQL forward-compatibility: pg_restore cannot read a backup made by a NEWER
@@ -145,11 +158,11 @@ async def _dispose_engine() -> None:
         log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
 
 
-async def _run_pg_restore(dump_path: Path, database_url: str) -> None:
-    """Run pg_restore from the staged dump file off the event loop (blocking subprocess)."""
+async def _run_restore_script(script: Path, database_url: str) -> None:
+    """Replace the database with the staged restore script off the event loop (blocking subprocess)."""
     import asyncio
-    from celerp.services.backup import restore_database_file
-    await asyncio.to_thread(restore_database_file, dump_path, database_url)
+    from celerp.services.backup import run_restore_script
+    await asyncio.to_thread(run_restore_script, script, database_url)
 
 
 async def _reconcile_schema() -> None:
@@ -247,6 +260,7 @@ _ABANDONED_STAGING_AGE = timedelta(days=1)
 
 _STAGED_ARCHIVE = "archive.celerp-backup"
 _STAGED_DUMP = "database.dump"
+_STAGED_SCRIPT = "restore.sql"
 _STAGED_FILES = "files"
 _STAGED_RECORD = "staged.json"
 _PENDING_RECORD = "pending.json"
@@ -281,6 +295,10 @@ class PreparedRecovery:
     @property
     def dump(self) -> Path:
         return self.root / _STAGED_DUMP
+
+    @property
+    def script(self) -> Path:
+        return self.root / _STAGED_SCRIPT
 
 
 @dataclass
@@ -380,6 +398,8 @@ def _stage_members(archive: Path, root: Path) -> None:
 
 
 def _prepare_sync(path: Path) -> PreparedRecovery:
+    from celerp.config import settings
+    from celerp.services.backup import check_backup_dump, write_restore_script
     _purge_expired_staging()
     meta = validate_archive(path)
     staging_id = uuid.uuid4().hex
@@ -389,6 +409,11 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         shutil.copyfile(path, root / _STAGED_ARCHIVE)
         digest = _sha256(root / _STAGED_ARCHIVE)
         _stage_members(root / _STAGED_ARCHIVE, root)
+        check_backup_dump(root / _STAGED_DUMP, settings.database_url)
+        try:
+            write_restore_script(root / _STAGED_DUMP, root / _STAGED_SCRIPT)
+        except RuntimeError as exc:
+            raise ValueError(f"This backup file is damaged and cannot be restored: {exc}") from exc
         prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
                                     files=_staged_files(root))
         (root / _STAGED_RECORD).write_text(json.dumps({
@@ -406,8 +431,11 @@ async def prepare_recovery(path: Path) -> PreparedRecovery:
     Validates the archive, copies it under data_dir and records its sha256, and
     extracts the database dump and every restore-owned file into a staging
     directory on the installation's filesystem, refusing links, devices and paths
-    outside the restore roots. Raises ValueError for an archive that cannot be
-    restored; nothing is left staged on failure.
+    outside the restore roots, then writes the script that restores the dump
+    (``backup.write_restore_script``), which reads all of its data. Raises ValueError
+    for an archive that cannot be restored, including a dump holding objects a Celerp
+    backup does not (``check_backup_dump``) or one that cannot be read; nothing is left
+    staged on failure.
     """
     import asyncio
     return await asyncio.to_thread(_prepare_sync, path)
@@ -524,8 +552,6 @@ def _roll_back_roots(root: Path, swapped: list[tuple[str, Path, bool]], protecte
 
 def _apply_modules(modules: list[str]) -> bool:
     """Make the enabled modules exactly *modules*; returns True when a restart was scheduled."""
-    if not modules:
-        return False
     from celerp.config import replace_enabled_modules
     if not replace_enabled_modules(modules):
         log.info("Enabled modules unchanged - skipping restart")
@@ -745,7 +771,7 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
     from celerp.services import payments, session_tracker
 
     await _dispose_engine()
-    await _run_pg_restore(prepared.dump, settings.database_url)
+    await _run_restore_script(prepared.script, settings.database_url)
     await _reconcile_schema()
     async with get_session_ctx() as session:
         await _clear_restored_connector_state(session)
@@ -860,8 +886,36 @@ async def _recovery_locks():
             yield
 
 
+@asynccontextmanager
+async def _recovery_locks_on_a_replaceable_database(prepared: PreparedRecovery):
+    """The recovery locks, then ValueError, before anything is changed, for a database the
+    restore would not replace exactly (``backup.check_restore_target``) or a staged dump it
+    can no longer restore (``backup.check_backup_dump``)."""
+    import asyncio
+    from celerp.config import settings
+    from celerp.services.backup import check_backup_dump, check_restore_target
+    async with _recovery_locks():
+        await asyncio.to_thread(check_restore_target, settings.database_url)
+        await asyncio.to_thread(check_backup_dump, prepared.root / _STAGED_DUMP, settings.database_url)
+        yield
+
+
+def _restore_tools_missing():
+    """The failed result when the database restore tools cannot be found, before anything is changed."""
+    from celerp.services.backup import restore_tools
+    try:
+        restore_tools()
+    except RuntimeError as exc:
+        log.error("System Recovery refused: %s", exc)
+        return _failed(f"System Recovery did not start: {exc}")
+    return None
+
+
 async def _prepare_or_fail(path: Path):
     """(prepared, None) or (None, failed result) for an archive that cannot be restored."""
+    missing = _restore_tools_missing()
+    if missing is not None:
+        return None, missing
     try:
         return await prepare_recovery(path), None
     except ValueError as exc:
@@ -875,9 +929,9 @@ async def _prepare_or_fail(path: Path):
 async def run_recovery(path: Path):
     """System Recovery from a .celerp-backup: replaces the whole installation.
 
-    The archive is staged and checked first; then, holding the recovery locks, a
-    local safety archive of the current installation is made before anything is
-    overwritten. When no safety archive can be made nothing is changed: the result
+    The archive is staged and checked first; then, holding the recovery locks and with
+    the database checked, a local safety archive of the current installation is made
+    and checked like the archive before anything is overwritten. When no safety archive can be made nothing is changed: the result
     has ``needs_confirmation`` and the staged recovery waits CONFIRMATION_TTL for
     ``continue_recovery``.
     """
@@ -885,9 +939,13 @@ async def run_recovery(path: Path):
     if failure is not None:
         return failure
     try:
-        async with _recovery_locks():
+        async with _recovery_locks_on_a_replaceable_database(prepared):
             safety = await make_safety_archive()
             if safety.ok:
+                try:
+                    _remove_staging((await prepare_recovery(safety.path)).root)
+                except ValueError as exc:
+                    raise ValueError(f"The safety backup of this installation could not be restored: {exc}") from exc
                 await _cloud_safety_snapshot()
                 return await commit_recovery(prepared, safety.path)
     except Exception as exc:
@@ -932,10 +990,13 @@ async def continue_recovery(confirmation_id: str, digest: str):
     if not intact:
         _remove_staging(root)
         return _failed("The staged backup changed after it was checked. Start the recovery again.")
+    missing = _restore_tools_missing()
+    if missing is not None:
+        return missing
     # The confirmation is used once.
     pending_path.unlink()
     try:
-        async with _recovery_locks():
+        async with _recovery_locks_on_a_replaceable_database(prepared):
             return await commit_recovery(prepared, None)
     except Exception as exc:
         return _start_failed(prepared, exc)
@@ -947,7 +1008,7 @@ async def bootstrap_recovery(path: Path):
     if failure is not None:
         return failure
     try:
-        async with _recovery_locks():
+        async with _recovery_locks_on_a_replaceable_database(prepared):
             return await commit_recovery(prepared, None)
     except Exception as exc:
         return _start_failed(prepared, exc)

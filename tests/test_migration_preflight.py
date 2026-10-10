@@ -69,7 +69,7 @@ def restarts(monkeypatch):
 
 
 def _install_accounting(root, monkeypatch) -> None:
-    """The bundled accounting module is on disk, trusted, but not turned on."""
+    """The bundled accounting module is on disk, first-party, but not turned on."""
     from celerp.modules import loader
     pkg = root / "celerp-accounting"
     pkg.mkdir()

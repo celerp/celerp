@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import re
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
@@ -14,7 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_session
+from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
@@ -26,7 +28,6 @@ from celerp.services.auth import (
     get_current_user,
     get_current_role,
     hash_password,
-    issue_token_pair,
     require_install_owner,
     MIN_PASSWORD_LENGTH,
     normalize_role,
@@ -45,10 +46,12 @@ from celerp.services.permissions import (
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services import company_lifecycle
+from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
+from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
 from ui.i18n import t
 
@@ -56,16 +59,26 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TAX_NAMES = {t["name"] for t in TAX_REGIMES["_default"]["taxes"]}
+def _generic_taxes() -> list[dict]:
+    """The neutral tax list a company starts from until it configures its own."""
+    return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
+
+
+def _configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
+    """The list saved under ``key``, an explicitly saved empty list included; a copy
+    of ``default`` only when nothing was ever saved."""
+    value = settings.get(key)
+    return value if value is not None else copy.deepcopy(default)
 
 
 async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> None:
-    """Re-seed taxes and currency from the country in address if:
-    - address has a non-empty 'country' key
-    - company taxes are still at the generic _default (not yet customised)
+    """Seed the tax regime of the country in ``address`` into a company that has not
+    set anything up yet.
 
-    Safe to call multiple times — no-op if already customised.
-    """
+    Taxes are replaced only while they are unset or exactly the generic list, and the
+    currency only while none was ever saved. A company that has posted entries of its
+    own keeps both: changing them would silently restate its books, so it changes
+    them explicitly in settings. Safe to call repeatedly."""
     if not address:
         return
     country = str(address.get("country") or "").strip()
@@ -75,18 +88,18 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     company = await locked_company(session, company_id)
     if company is None:
         return
-
-    current_taxes = company.settings.get("taxes") or []
-    current_names = {t.get("name") for t in current_taxes}
-
-    # Only re-seed if taxes are empty or still match the generic _default set
-    if current_taxes and not current_names.issubset(_DEFAULT_TAX_NAMES | {""}):
-        return  # user has customised — don't overwrite
+    taxes = company.settings.get("taxes")
+    if taxes is not None and taxes != TAX_REGIMES["_default"]["taxes"]:
+        return
+    from celerp.services.demo import has_own_books
+    if await has_own_books(session, company_id):
+        return
 
     regime = get_regime(country)
     settings = dict(company.settings)
-    settings["taxes"] = regime["taxes"]
-    settings["currency"] = regime["currency"]
+    settings["taxes"] = copy.deepcopy(regime["taxes"])
+    if "currency" not in settings:
+        settings["currency"] = regime["currency"]
     company.settings = settings
 
 
@@ -244,6 +257,7 @@ async def create_company(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create a new company linked to the current user. Returns JWT scoped to new company."""
+    from celerp.credentials import issue_token_pair
     user = ctx.user
     company = await provision_additional_company(session, user=user, company_name=payload.name)
     try:
@@ -310,70 +324,120 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     if payload.name is not None:
         company.name = payload.name.strip()
-    # Merge (PATCH semantics): a partial settings payload must not wipe other
-    # keys. Replacing wholesale erased e.g. the numbering `sequences`, currency,
-    # and category_schemas whenever a caller sent only one field (the UI happens
-    # to pre-merge, but partial callers — and a name-only patch — must be safe).
+    # Merge (PATCH semantics): a partial settings payload must not wipe other keys,
+    # and a name-only patch leaves the settings as they are.
     if payload.settings:
-        # Role grants are owner-only and may be written only through the dedicated
-        # PATCH /me/role-permissions endpoint (manage_permissions). This door is
-        # admin-gated (manage_company_settings), so accepting role_grants here would
-        # let an admin self-escalate around the owner gate. role_permissions is the
-        # retired storage key; reject it too so it can never be re-introduced.
-        if "role_grants" in payload.settings or "role_permissions" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Role permissions are set through the permissions matrix, not company settings",
-            )
-        # Business type carries modules, categories and default terms with it, so it
-        # changes only through POST /companies/me/business-type.
-        if "vertical" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Business type is set through POST /companies/me/business-type, not company settings",
-            )
-        # The record of which company backup a company was restored from is written only by
-        # the restore itself; a restore of that backup finds its company by it.
-        if "restored_backup" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="The restored backup record is set only by restoring a company backup, not company settings",
-            )
-        # The company's module choice changes only through the enable/disable endpoints,
-        # which check installation and dependencies and keep the load list in step.
-        if "enabled_modules" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Modules are turned on and off on the Modules page, not company settings",
-            )
+        # Only the general settings change here; every other key has its own route,
+        # which checks its own permission and rules (celerp.services.company_settings).
+        require_general(payload.settings)
         merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        from celerp_docs.routes_payments import (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
-                                                 require_online_deposit_account)
-        for key in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY):
-            value = payload.settings.get(key)
-            if value in (None, ""):  # empty: the default
-                continue
-            if not isinstance(value, str):
-                raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
-            await require_online_deposit_account(session, company_id, value)
-        # Price config must pass the same gate as the dedicated endpoints: the read
-        # path trusts stored config, so no door may store what the validator rejects.
-        if "price_lists" in payload.settings or "base_price_list" in payload.settings:
-            merged_lists = merged.get("price_lists") or []
-            error = price_config_error(merged_lists, merged.get("base_price_list"),
-                                       (company.settings or {}).get("price_lists") or [])
-            if error:
-                raise HTTPException(status_code=422, detail=error)
-            if merged.get("price_lists"):
-                merged["price_lists"] = normalized_price_lists(merged["price_lists"])
+        require_phone(payload.settings.get("phone"))
         company.settings = merged
     await session.commit()
     return {"ok": True}
+
+
+class BooksPatch(BaseModel):
+    currency: str | None = None
+    fiscal_year_start: str | None = None
+    import_vat_recoverable_default: object = None
+    stripe_deposit_account: object = None
+    woocommerce_deposit_account: object = None
+    opening_balance_date: object = None
+
+
+_FISCAL_YEAR_STARTS = frozenset(f"{m:02d}-01" for m in range(1, 13))
+
+
+async def _check_books_change(session: AsyncSession, company_id, current: dict, key: str, value) -> object:
+    """The value to store for one books setting, or a keyed refusal saying what to do."""
+    from celerp.accounting_roles import refusal
+    from celerp.services.currencies import CURRENCY_CODES
+
+    if key == "currency":
+        value = str(value).strip().upper()
+        if value not in CURRENCY_CODES:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.currency_unknown",
+                f"{value} is not a currency Celerp knows. Pick a currency from the list.", currency=value))
+        held = current.get("currency")
+        if held and held != value:
+            from celerp.services.demo import has_own_books
+            if await has_own_books(session, company_id):
+                raise HTTPException(status_code=409, detail=refusal(
+                    "company.currency_has_postings",
+                    f"The books are kept in {held} and entries are already posted in it, so the "
+                    "currency cannot change. Start a new company to keep books in another currency.",
+                    currency=held))
+        return value
+    if key == "fiscal_year_start":
+        if value not in _FISCAL_YEAR_STARTS:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.fiscal_year_start_invalid",
+                f"{value} is not a fiscal year start. Pick the first day of a month, as MM-01.",
+                value=str(value)))
+        return value
+    if key == "opening_balance_date":
+        if value is None or value == "":
+            return None
+        try:
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+                raise ValueError  # fromisoformat also reads week dates (2026-W41-6) and basic forms
+            return date.fromisoformat(value).isoformat()
+        except ValueError:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.opening_balance_date_invalid",
+                f"{value} is not a date. Enter the date the opening balances are stated at, "
+                "as YYYY-MM-DD, or leave it empty.", value=str(value))) from None
+    if key == "import_vat_recoverable_default":
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.import_vat_default_invalid",
+                "Import VAT recovery must be on or off. Send true or false."))
+        return value
+    # A deposit account: empty is the default account.
+    if value is None or (isinstance(value, str) and value == ""):
+        return value
+    from celerp.modules.loader import is_running
+    if not is_running("celerp-docs"):
+        raise HTTPException(status_code=422, detail=(
+            "Turn on Documents on the Modules page before choosing a deposit account."))
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+    from celerp_docs.routes_payments import require_online_deposit_account
+    await require_online_deposit_account(session, company_id, value)
+    return value
+
+
+@router.patch("/me/books")
+async def patch_books(
+    payload: BooksPatch,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the settings the books depend on: the currency (fixed once the company
+    has posted entries of its own), the fiscal year start, the opening balance date, the
+    import VAT default and the online deposit accounts. Each change records who made it and when."""
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    sent = payload.model_dump(exclude_unset=True)
+    settings = dict(company.settings or {})
+    for key in sorted(BOOKS_KEYS & set(sent)):
+        value = await _check_books_change(session, company_id, settings, key, sent[key])
+        if settings.get(key) != value:
+            settings[key] = value
+            record_change(settings, key, user.id)
+    company.settings = settings
+    await session.commit()
+    return {key: settings.get(key) for key in sorted(BOOKS_KEYS)}
 
 
 @router.patch("/me/role-permissions")
@@ -881,6 +945,7 @@ async def patch_user(
 from celerp.services.field_schema import COST_SCHEMA_KEYS  # noqa: F401 re-export
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA  # noqa: F401 re-export
 from celerp.services.field_schema import get_effective_field_schema  # noqa: F401 re-export
+from celerp.services.field_schema import reject_system_item_fields
 
 
 @router.get("/me/item-schema")
@@ -901,6 +966,7 @@ async def patch_item_schema(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     settings["item_schema"] = [f.model_dump() for f in payload.fields]
     company.settings = settings
@@ -932,6 +998,7 @@ async def patch_category_schema(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     cat_schemas = dict(settings.get("category_schemas") or {})
     cat_schemas[category] = [f.model_dump() for f in payload.fields]
@@ -1013,9 +1080,14 @@ async def rename_category(
     category_key: str,
     payload: dict,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Rename a category: its schema and display name, and every item in it, each item
+    through its own item.updated event so the rename is in the ledger and survives a
+    rebuild of the projections."""
+    from celerp.events.engine import emit_event
     from celerp.models.projections import Projection
     new_name = str(payload.get("name") or "").strip()
     if not new_name:
@@ -1042,21 +1114,23 @@ async def rename_category(
     display_names.pop(category_key, None)
     settings["category_display_names"] = display_names
     company.settings = settings
-    # Bulk-update item projections
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "item",
-        )
+        ).order_by(Projection.entity_id)
     )).scalars().all()
-    updated = 0
-    for row in rows:
-        if str(row.state.get("category") or "") == category_key:
-            new_state = dict(row.state)
-            new_state["category"] = new_key
-            row.state = new_state
-            updated += 1
+    moved = [row.entity_id for row in rows if str(row.state.get("category") or "") == category_key]
+    for entity_id in moved:
+        await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="item",
+            event_type="item.updated",
+            data={"fields_changed": {"category": {"old": category_key, "new": new_key}}},
+            actor_id=user.id, location_id=None, source="category_rename",
+            idempotency_key=str(uuid.uuid4()), metadata_={"reason": "category_rename"},
+        )
     await session.commit()
+    updated = len(moved)
     return {"ok": True, "items_updated": updated}
 
 
@@ -1132,20 +1206,12 @@ async def patch_column_prefs(
 # Tax rates
 # ---------------------------------------------------------------------------
 
-DEFAULT_TAX_RATES: list[dict] = [
-    {"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True,
-     "description": "Standard VAT rate", "is_compound": False, "default_order": 0},
-    {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-     "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-]
-
-
 @router.get("/me/taxes")
 async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return company.settings.get("taxes") or DEFAULT_TAX_RATES
+    return _configured(company.settings, "taxes", _generic_taxes())
 
 
 @router.patch("/me/taxes")
@@ -1186,7 +1252,7 @@ async def import_taxes_batch(
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
-    taxes = list(settings.get("taxes") or DEFAULT_TAX_RATES)
+    taxes = list(_configured(settings, "taxes", _generic_taxes()))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
 
     records = [rec.data for rec in (payload.records or [])]
@@ -1419,35 +1485,16 @@ async def patch_terms_conditions(
 
 
 # ---------------------------------------------------------------------------
-# Purchasing taxes & payment terms (independent copies, seeded from sales)
+# Purchasing taxes & payment terms (independent copies, read from sales until saved)
 # ---------------------------------------------------------------------------
 
 def _purchasing_list(settings: dict, key: str, sales_key: str, default: list[dict]) -> list[dict]:
-    """Purchasing data as stored, or a copy of the sales data it is seeded from."""
+    """Purchasing data as stored, else a copy of the sales data while purchasing was
+    never saved. Reading never writes; only PATCH and import store purchasing data."""
     existing = settings.get(key)
     if existing is not None:
         return existing
-    return copy.deepcopy(settings.get(sales_key) or default)
-
-
-async def _seed_purchasing_key(
-    session: AsyncSession, company: Company, key: str, sales_key: str, default: list[dict],
-) -> list[dict]:
-    """Return purchasing data; on first access, copy from sales data and persist."""
-    existing = company.settings.get(key)
-    if existing is not None:
-        return existing
-    company = await locked_company(session, company.id)
-    existing = company.settings.get(key)
-    if existing is not None:
-        await session.commit()
-        return existing
-    seeded = _purchasing_list(company.settings, key, sales_key, default)
-    settings = dict(company.settings)
-    settings[key] = seeded
-    company.settings = settings
-    await session.commit()
-    return seeded
+    return copy.deepcopy(_configured(settings, sales_key, default))
 
 
 @router.get("/me/purchasing-taxes")
@@ -1458,7 +1505,7 @@ async def get_purchasing_taxes(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return await _seed_purchasing_key(session, company, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES)
+    return _purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes())
 
 
 @router.patch("/me/purchasing-taxes")
@@ -1490,7 +1537,7 @@ async def import_purchasing_taxes_batch(
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES))
+    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes()))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
@@ -1529,7 +1576,7 @@ async def get_purchasing_payment_terms(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return await _seed_purchasing_key(session, company, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
+    return _purchasing_list(company.settings, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
 
 
 @router.patch("/me/purchasing-payment-terms")
@@ -1697,12 +1744,11 @@ async def list_modules(
                 loaded = loaded_by_name.get(pkg_name)
                 manifest_source = loaded or read_manifest_metadata(pkg_path)
                 # Provenance and install time drive the source shield and the
-                # newest-imported-first ordering. A default is identified by
-                # content (its digest matches the committed first-party lock), not
-                # by name or sidecar, and never carries an install time (the desktop
-                # app re-seeds them on every version bump). A non-default folder
-                # whose sidecar holds no install time (a pre-existing import) falls
-                # back to its folder ctime so ordering still has something to sort on.
+                # newest-imported-first ordering. A default never carries an
+                # install time (the desktop app re-seeds them on every version
+                # bump). A non-default folder with no recorded install time (a
+                # pre-existing import) falls back to its folder ctime so ordering
+                # still has something to sort on.
                 is_default = is_first_party(pkg_path)
                 if is_default:
                     source = "default"
@@ -1721,7 +1767,7 @@ async def list_modules(
                     "version": manifest_source.get("version", "unknown"),
                     "description": manifest_source.get("description", ""),
                     "author": manifest_source.get("author", ""),
-                    "depends_on": list(manifest_source.get("depends_on") or []),
+                    "depends_on": list(v) if isinstance(v := manifest_source.get("depends_on"), list) else [],
                     # The module's owned table prefix, surfaced so the UI can
                     # gate the irreversible Purge action on a module that owns
                     # tables. None when the manifest declares none.
@@ -1907,11 +1953,7 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     """True when a DROP was refused because an object outside the drop set still
     depends on a table in it (Postgres SQLSTATE 2BP01), so the caller can explain
     the refusal in plain words instead of leaking SQL."""
-    orig = getattr(exc, "orig", None)
-    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
-    if code == "2BP01":
-        return True
-    return "depend" in str(exc).lower()
+    return sqlstate(exc) == "2BP01" or "depend" in str(exc).lower()
 
 
 @router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)])
@@ -1922,16 +1964,29 @@ async def purge_module_data(
     """Drop every table carrying the module's declared prefix, in one transaction. Installation owner only.
 
     Refused while any company uses the module or it is still running: its data
-    must be quiet before it is dropped. The drop list is re-derived from the manifest prefix server-side; no
-    client-sent preview is trusted. A module with no matching tables is a clean
+    must be quiet before it is dropped. Holds the schema key (lock_schema) from
+    before the tables are listed until the drop commits, so it waits for, or is
+    refused during, a company backup or restore. The drop list is read from the manifest prefix at the time of the
+    drop, not from the preview. A module with no matching tables is a clean
     no-op success. A table outside the module still depending on one of these
     tables blocks the whole drop, which rolls back with a plain explanation.
     Deleting the module folder is a separate action and does not touch these tables.
     """
+    from sqlalchemy.exc import DBAPIError
+
+    from celerp.db import lock_schema, sqlstate
     from celerp.modules.loader import read_manifest, resolve_module_path
     from celerp.modules.registry import hold_module_state
 
     await hold_module_state(session)
+    try:
+        await lock_schema(session)
+    except DBAPIError as exc:
+        if sqlstate(exc) != "55P03":
+            raise
+        raise HTTPException(status_code=409, detail=(
+            "Could not purge while a company backup or restore is running. "
+            "Nothing was deleted. Try again when it finishes.")) from None
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
         raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
@@ -2113,38 +2168,28 @@ class _MarketplaceDownloadBody(BaseModel):
 
 
 class _MarketplaceInstallBody(BaseModel):
-    token: str
+    ref: str
 
 
-def _marketplace_staging_dir() -> "Path":
-    """Where a licensed marketplace archive waits between Download and Install."""
-    from pathlib import Path
-
-    from celerp.config import settings as _s
-
-    return Path(_s.data_dir) / "marketplace-downloads"
+_INSTALL_FIELDS = ("token", "slug", "version", "is_official", "is_paid", "sha256")
 
 
-def _read_staged_marketplace(download: str) -> tuple[str, bytes, bool, bool]:
-    """The slug, bytes and trust flags of the download ``download`` names.
-    official/premium come from what the server recorded at download time, never
-    from the client: the client only hands back the download's token, so it
-    cannot promote a third-party module to official or a paid one to free.
-    """
-    from celerp.services import staged_downloads
+def _install_answer(answer: dict, slug: str) -> dict | None:
+    """The install answer's fields if each is present with a plain type and it names
+    the requested module, else None. Any other field is dropped."""
+    from celerp.modules.marketplace_stage import SHA256_RE
 
-    try:
-        data, flags = staged_downloads.read(_marketplace_staging_dir(), download)
-    except staged_downloads.StagedDownloadUnreadable:
-        raise HTTPException(status_code=410,
-                            detail=t("company.err_download_damaged"))
-    except staged_downloads.StagedDownloadMissing:
-        flags = None
-    if flags is None:
-        raise HTTPException(status_code=410,
-                            detail="This download has expired. Download it again.")
-    return (staged_downloads.owner_of(download), data,
-            bool(flags.get("is_official")), bool(flags.get("is_paid")))
+    if any(field not in answer for field in _INSTALL_FIELDS):
+        return None
+    token, version, sha256 = answer["token"], answer["version"], answer["sha256"]
+    if (not isinstance(token, str) or not token
+            or answer["slug"] != slug
+            or not isinstance(version, str) or not version
+            or not isinstance(answer["is_official"], bool)
+            or not isinstance(answer["is_paid"], bool)
+            or not isinstance(sha256, str) or not SHA256_RE.fullmatch(sha256)):
+        return None
+    return {field: answer[field] for field in _INSTALL_FIELDS}
 
 
 @router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)])
@@ -2152,56 +2197,38 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     """Stage a marketplace module for install: fetch it from the relay and hold
     the archive on disk, ready for a following Install. Installation owner only.
 
-    The relay enforces the gates at token issuance: a paid module needs an active
-    license, third-party code needs a passed security scan. Never-stuck by design:
-    every Download requests a FRESH one-time token, so any failure - relay down,
-    download interrupted - is fully recoverable by clicking Download again. The
-    bytes land in the staging area only; nothing is installed until Install.
+    A paid module needs an active license and a third-party module a passed
+    security scan. Every Download requests a fresh one-time token, so after any
+    failure (relay down, download interrupted) clicking Download again works. The
+    package is staged only when its SHA-256 matches the install answer, under a
+    new reference that Install takes; nothing is installed until then.
     """
+    import asyncio
+    import hashlib
+
     import httpx
 
     from celerp.gateway.state import relay_error_detail
+    from celerp.modules import marketplace_stage
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
-    from celerp.services import staged_downloads
 
-    if not staged_downloads.valid_owner(body.slug):
-        raise HTTPException(status_code=404, detail=t("company.err_module_unavailable"))
     url, jwt = await _relay_creds()
     headers = {"Authorization": f"Bearer {jwt}"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
-            # Module metadata decides the official flag (which allows the reserved
-            # celerp- name) and the licence-gate marker.
-            m = await c.get(f"{url}/marketplace/modules/{body.slug}")
-            if m.status_code != 200:
-                raise HTTPException(
-                    status_code=404 if m.status_code == 404 else 502,
-                    detail=relay_error_detail(m, t("company.err_module_unavailable")))
-            meta = _json_dict(m)
-            if not meta:
-                raise HTTPException(status_code=502, detail=t("error.relay_bad_reply"))
-            is_official = bool(meta.get("is_official"))
-            # Type-safe: only a real, positive number counts as paid. A string or
-            # other truthy-but-wrong type must not misclassify a free module as
-            # paid (which would wrongly gate it behind a license check forever).
-            price_monthly = meta.get("price_monthly")
-            price_once = meta.get("price_once")
-            is_paid = any(
-                isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
-                for v in (price_monthly, price_once)
-            )
-
+            # The install answer names the package: its slug, version, flags,
+            # digest, and the token that downloads it.
             r = await c.post(f"{url}/marketplace/install",
                              json={"slug": body.slug}, headers=headers)
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
                     detail=relay_error_detail(r, t("company.err_download_refused")))
-            token = str(_json_dict(r).get("token") or "")
-            if not token:
+            answer = _install_answer(_json_dict(r), body.slug)
+            if answer is None:
                 raise HTTPException(status_code=502, detail=t("error.relay_bad_reply"))
 
-            d = await c.get(f"{url}/marketplace/download/{token}")
+            d = await c.get(f"{url}/marketplace/download/{answer['token']}")
             if d.status_code != 200:
                 raise HTTPException(
                     status_code=502,
@@ -2214,61 +2241,55 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail=t("company.err_download_too_large"))
+    if hashlib.sha256(data).hexdigest() != answer["sha256"]:
+        raise HTTPException(status_code=502,
+                            detail="The downloaded package does not match its listing. Try again.")
 
-    # Stage the bytes with the relay's trust verdict, so Install imports with
-    # the right official/paid flags without trusting the client or re-contacting
-    # the relay.
-    download = staged_downloads.stage(
-        _marketplace_staging_dir(), body.slug, data,
-        {"is_official": is_official, "is_paid": is_paid})
-    return {"ok": True, "token": download}
+    ref = await asyncio.to_thread(
+        marketplace_stage.write_stage, data, slug=answer["slug"], version=answer["version"],
+        is_official=answer["is_official"], is_paid=answer["is_paid"], sha256=answer["sha256"])
+    return {"ok": True, "ref": ref}
 
 
 @router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)])
-async def marketplace_install(
-    body: _MarketplaceInstallBody,
-    session: AsyncSession = Depends(get_session),
-) -> dict:
+async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     """Install a staged marketplace module through the shared importer. Installation owner only.
 
-    Reads the archive Download staged (and the trust flags the server recorded
-    beside it) and installs it exactly like every other module package. The
-    module lands DISABLED; enabling and restarting are the same deliberate steps
-    in the Installed tab that a community module uses - the two tabs behave the
-    same way once the package is on disk. A name mismatch is rejected and nothing
-    is left behind, so Install can always be retried.
+    Takes the reference Download returned, rereads that stage and installs its
+    package exactly like every other module package. The package must declare
+    the slug and version it was staged with, or nothing lands. The module lands
+    DISABLED; enabling and restarting are the same deliberate steps in the
+    Installed tab that a community module uses - the two tabs behave the same way
+    once the package is on disk. The stage is removed once installed and kept
+    after a failure, so Install can be retried until it expires.
     """
     import asyncio
 
-    from celerp.modules.importer import (
-        ModuleImportError, install_from_zip, remove_module_dir,
-    )
-    from celerp.modules.registry import hold_module_state
-    from celerp.services import staged_downloads
+    from celerp.modules import marketplace_stage
+    from celerp.modules.importer import ModuleImportError, install_from_zip
 
-    slug, data, is_official, is_paid = _read_staged_marketplace(body.token)
-    # Held until a mismatched package is gone, so no company can turn it on meanwhile.
-    await hold_module_state(session)
+    try:
+        stage = await asyncio.to_thread(marketplace_stage.read_stage, body.ref)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="The download reference is invalid.")
+    except marketplace_stage.StageGone:
+        raise HTTPException(status_code=410,
+                            detail="This download has expired. Download it again.")
     try:
         info = await asyncio.to_thread(
-            install_from_zip, data, official=is_official, premium=is_paid,
-            source="marketplace")
+            install_from_zip, stage.data, official=stage.is_official, premium=stage.is_paid,
+            source="marketplace", expected=(stage.slug, stage.version))
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    if info["name"] != slug:
-        # A package whose manifest name differs from the catalog slug must not
-        # stay installed (it would dodge the slug's license/scan identity).
-        try:
-            await asyncio.to_thread(remove_module_dir, info["name"])
-        except ModuleImportError:
-            pass
-        raise HTTPException(
-            status_code=422,
-            detail=t("company.err_download_mismatch"))
+    if stage.is_official and not stage.is_paid:
+        # Install is online by definition: keep the free verdict now, so the
+        # module never needs the relay to load.
+        from celerp.config import settings
+        from celerp.modules.license import record_free_verdict
+        record_free_verdict(stage.slug, settings.data_dir)
 
-    # Landed on disk: drop the staged download.
-    staged_downloads.discard(_marketplace_staging_dir(), body.token)
+    await asyncio.to_thread(marketplace_stage.remove_stage, body.ref)
     return {"ok": True, **info}
 
 
@@ -2288,6 +2309,7 @@ async def reset_company(
     The typed name must equal the company's name exactly. All or nothing: files go only
     after the commit. Returns a token pair for another of the caller's companies, or
     ``{"next": "start_company"}`` when this was their last one."""
+    from celerp.credentials import issue_token_pair
     from celerp.connectors.ownership import lock_connector_maintenance
     from celerp.services import company_reset, payments
     from celerp.services.migrations import run_cleanup_task

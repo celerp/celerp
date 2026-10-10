@@ -12,7 +12,6 @@ import pytest
 from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_payment_refund_accounting import _books, _invoice, _pay
 
 

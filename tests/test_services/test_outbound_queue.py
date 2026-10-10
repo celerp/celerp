@@ -101,7 +101,7 @@ async def test_connector_origin_item_change_does_not_requeue(session):
 
 
 @pytest.mark.asyncio
-async def test_legacy_connector_adoption_uses_explicit_owner_in_multi_company_db(monkeypatch):
+async def test_legacy_connector_adoption_uses_explicit_owner_in_multi_company_db(_db_engine, monkeypatch):
     from celerp.connectors.outbound_queue import adopt_legacy_connector_configs
     from celerp.db import get_session_ctx
 
@@ -363,7 +363,7 @@ async def test_explicit_catalog_child_change_enqueues_anchor_identity(session):
     assert identities == {"10"}
 
 @pytest.mark.asyncio
-async def test_identity_backoff_applies_to_newer_rows():
+async def test_identity_backoff_applies_to_newer_rows(_db_engine):
     from celerp.db import get_session_ctx
 
     company_id = uuid.uuid4()

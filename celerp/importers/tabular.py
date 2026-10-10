@@ -70,11 +70,17 @@ class TabularError(ValueError):
 _IDENTIFIER_COLS = {"sku", "name", "id", "email", "code"}
 
 
+# Columns every importer maps to Skip by default: the app stamps them itself.
+SYSTEM_SKIP_COLS: frozenset[str] = frozenset({"created_at", "updated_at"})
+
+
 @dataclass(frozen=True)
 class CsvImportSpec:
     cols: list[str]
     required: set[str]
     type_map: dict[str, Callable[[str], Any]]
+    # The file's columns this importer maps to Skip by default (normalized headers).
+    skip_cols: frozenset[str] = SYSTEM_SKIP_COLS
 
 
 def finite_float(value: str) -> float:
@@ -192,9 +198,6 @@ _COMMON_ATTR_ALIASES: dict[str, str] = {normalize_header(k): v for k, v in {
     "cert_no": "certificate_no",
 }.items()}
 
-# Columns that should always default to Skip (system-managed; never imported)
-_FORCE_SKIP_COLS: frozenset[str] = frozenset({"created_at", "updated_at", "status"})
-
 # Sentinel values for the mapping dropdown
 MAPPING_ATTRIBUTE = "__attr__"
 MAPPING_SKIP = "__skip__"
@@ -205,6 +208,8 @@ def suggest_mapping(
     csv_cols: list[str],
     target_cols: list[str],
     category_attrs: list[str] | None = None,
+    *,
+    skip_cols: Collection[str] = SYSTEM_SKIP_COLS,
 ) -> dict[str, str]:
     """Return {csv_col: suggested_target} for each CSV column.
 
@@ -212,7 +217,7 @@ def suggest_mapping(
     ``Qty On-Hand``, ``qty_on_hand`` and ``QTY  ON HAND`` are one name.
 
     Priority:
-    0. Force-skip columns (created_at, updated_at, status) → always MAPPING_SKIP
+    0. ``skip_cols``, the columns the importer manages itself → always MAPPING_SKIP
     1. Exact match to a core target column
     2. Known alias match to a core target column
     2b. Known alias match to a category attribute key
@@ -227,9 +232,9 @@ def suggest_mapping(
     attrs = category_attrs or []
     attr_norm = {normalize_header(a): a for a in attrs}
 
-    # Pass 0: force-skip system columns
+    # Pass 0: the columns the importer manages itself
     for csv_col in csv_cols:
-        if normalize_header(csv_col) in _FORCE_SKIP_COLS:
+        if normalize_header(csv_col) in skip_cols:
             mapping[csv_col] = MAPPING_SKIP
 
     # Pass 1: exact matches to core fields

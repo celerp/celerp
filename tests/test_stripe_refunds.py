@@ -161,7 +161,7 @@ async def _assert_books(engine, entity_id, *, refunded: str) -> None:
     assert Decimal(str(_payment(doc).get("refunded") or 0)) == Decimal(refunded)
     assert Decimal(str(doc["amount_paid"])) == left
     assert Decimal(str(doc["amount_outstanding"])) == Decimal(refunded)
-    assert await _books(engine, entity_id) == ({"1110": left, ar: -left} if left else {})
+    assert await _books(engine, entity_id) == ({"1111": left, ar: -left} if left else {})
 
 
 # ── One refund, applied once ─────────────────────────────────────────────────
@@ -223,11 +223,11 @@ async def test_a_refund_is_dated_and_posted_on_the_books_its_payment_was_recorde
         real_engine, real_client, monkeypatch):
     from test_company_reset_payments import _company_settings
     boss, a, b, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
-    await _company_settings(real_engine, a, timezone="Pacific/Kiritimati", stripe_deposit_account="1111")
+    await _company_settings(real_engine, a, timezone="Pacific/Kiritimati", stripe_deposit_account="1112")
     cloud.refund(a, invoice, "re_1", 20000, datetime(2026, 9, 3, 23, 0, tzinfo=timezone.utc))
     await cloud.deliver()
 
-    await _assert_books(real_engine, invoice, refunded="200")  # back from 1110, not 1111
+    await _assert_books(real_engine, invoice, refunded="200")  # back from 1111, not 1112
     assert (f"je:auto:{invoice}:payrefund:refund_0_0", "2026-09-03") in await _journal(real_engine, invoice)
 
 
@@ -418,7 +418,7 @@ async def test_a_reset_and_recovery_replays_the_payment_then_its_refunds_into_ex
     assert set(journal) <= set(await _journal(real_engine, invoice))
     after_books, after_journal, after_ledger = (await _books(real_engine, invoice), await _journal(
         real_engine, invoice), await _ledger(real_engine, invoice))
-    assert after_books["1110"] == books["1110"] - Decimal("100")
+    assert after_books["1111"] == books["1111"] - Decimal("100")
 
     for d in cloud.deliveries:  # and again: nothing changes
         d["acked"] = False
@@ -745,7 +745,7 @@ async def test_the_gateway_hands_a_release_to_the_release_intake_and_says_it_rec
 
 # ── Given back on the books the payment was recorded on ──────────────────────
 
-THB_BOOKS = {"deposit_account": "1110", "timezone": "UTC", "base_currency": "THB", "rate": "35.5"}
+THB_BOOKS = {"deposit_account": "1111", "timezone": "UTC", "base_currency": "THB", "rate": "35.5"}
 NO_BOOKS = ("Celerp cannot tell which books this Stripe payment was recorded on, so it cannot be refunded or "
             "voided here. Record the refund with a journal entry instead.")
 
@@ -803,7 +803,7 @@ async def _released_in_baht(engine, client, monkeypatch, *, older: bool = False)
     if older:
         await _rewrite_payment(engine, invoice, _as_released_before)
     ar = await _ar_account(engine, invoice)
-    assert await _books(engine, invoice) == {"1110": Decimal("37985"), ar: Decimal("-37985")}
+    assert await _books(engine, invoice) == {"1111": Decimal("37985"), ar: Decimal("-37985")}
     return boss, a, invoice, ar
 
 
@@ -825,9 +825,9 @@ async def test_a_released_payment_is_given_back_on_the_books_it_was_recorded_on(
     # another rate; an older one is read from its entry, which the ledger keeps in the
     # company's currency, so that currency is the one it was posted in.
     if older:
-        await _settings(real_engine, a, stripe_deposit_account="1111")
+        await _settings(real_engine, a, stripe_deposit_account="1112")
     else:
-        await _settings(real_engine, a, currency="JPY", stripe_deposit_account="1111")
+        await _settings(real_engine, a, currency="JPY", stripe_deposit_account="1112")
         await _doc_rate(real_engine, invoice, 36)
 
     tok = auth(await token(real_engine, boss, a))
@@ -835,7 +835,7 @@ async def test_a_released_payment_is_given_back_on_the_books_it_was_recorded_on(
         "payment_index": 0, "amount": 100.33, "payment_date": "2026-09-20"})
     assert r.status_code == 200, r.text
     # 100.33 at 35.5 is 3,561.715 THB, given back to the satang
-    assert await _books(real_engine, invoice) == {"1110": Decimal("34423.28"), ar: Decimal("-34423.28")}
+    assert await _books(real_engine, invoice) == {"1111": Decimal("34423.28"), ar: Decimal("-34423.28")}
     r = await real_client.post(f"/docs/{invoice}/void-payment", headers=tok,
                                json={"payment_index": 0, "refund_date": "2026-09-21"})
     assert r.status_code == 200, r.text
@@ -854,7 +854,7 @@ async def test_an_older_stripe_payment_whose_books_cannot_be_read_is_not_given_b
     assert (refunded.status_code, refunded.json().get("detail")) == (422, NO_BOOKS)
     assert (voided.status_code, voided.json().get("detail")) == (422, NO_BOOKS)
     assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
-    assert await _books(real_engine, invoice) == {"1110": Decimal("37985"), ar: Decimal("-37985")}
+    assert await _books(real_engine, invoice) == {"1111": Decimal("37985"), ar: Decimal("-37985")}
 
 
 # ── Deliveries at once, and deliveries that name no refund ───────────────────

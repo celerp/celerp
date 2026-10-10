@@ -10,6 +10,9 @@ import itertools
 import uuid
 
 import pytest
+from sqlalchemy import select
+
+from celerp.models.projections import Projection
 
 # sku, name, category, status, inventory_type, color, location index, retail price
 _SPEC = [
@@ -26,7 +29,7 @@ _SPEC = [
 ]
 
 
-async def _company(client) -> tuple[dict, list[str]]:
+async def _company(client, session) -> tuple[dict, list[str]]:
     r = await client.post("/auth/register", json={
         "company_name": "Counts Co", "email": f"counts-{uuid.uuid4().hex[:8]}@test.example",
         "name": "Owner", "password": "pwvalid1",
@@ -36,7 +39,8 @@ async def _company(client) -> tuple[dict, list[str]]:
     # Registration seeds a sample; the counts here are about this file's own items.
     items = (await client.get("/items", headers=h, params={"status": "all", "limit": 500})).json()["items"]
     if items:
-        r = await client.post("/items/bulk/delete", headers=h, json={"entity_ids": [i["id"] for i in items]})
+        r = await client.post("/items/bulk/delete", headers=h, json={
+            "entity_ids": [i["id"] for i in items], "untouched_samples_only": True})
         assert r.status_code == 200, r.text
     locs = []
     for name in ("Shop A", "Shop B"):
@@ -46,14 +50,23 @@ async def _company(client) -> tuple[dict, list[str]]:
         locs.append(r.json()["id"])
     for sku, name, cat, status, itype, color, loc, price in _SPEC:
         body = {"sku": sku, "name": name, "sell_by": "piece", "quantity": 1, "inventory_type": itype,
-                "attributes": {"color": color}, "location_id": locs[loc], "status": status,
-                "retail_price": price}
+                "attributes": {"color": color}, "location_id": locs[loc],
+                "status": status if status in ("draft", "available") else "available", "retail_price": price}
         if cat:
             body["category"] = cat
-        if sku == "C1":
-            body["consignment_flag"] = "in"
         r = await client.post("/items", headers=h, json=body)
         assert r.status_code == 200, r.text
+        # Statuses an item reaches only through later actions, and consigned-in goods
+        # (received through a consignment document), are recorded as those leave them.
+        recorded = {"status": status} if status not in ("draft", "available") else {}
+        if sku == "C1":
+            recorded["consignment_flag"] = "in"
+        if recorded:
+            row = (await session.execute(select(Projection).where(
+                Projection.entity_id == r.json()["id"]))).scalar_one()
+            row.state = {**row.state, **recorded}
+            row.consignment_flag = recorded.get("consignment_flag", row.consignment_flag)
+            await session.commit()
     seeded = {i["sku"]: i for i in (await client.get(
         "/items", headers=h, params={"status": "all", "limit": 500})).json()["items"]}
     assert {s: (i.get("status"), i.get("inventory_type")) for s, i in seeded.items()} == {
@@ -76,11 +89,11 @@ async def _valuation(client, h, params) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)  # 504 combinations, about 1200 requests; slower than the suite guard allows on a shared runner
-async def test_counts_equal_rows_for_every_filter_combination(client):
+async def test_counts_equal_rows_for_every_filter_combination(client, session):
     """Red statement: the valuation loop skipped service, non-stocked and consigned-in
     rows and compared status and category as single values, so ?status=available,
     reserved counted 0 over 7 rows and ?inventory_type=service 0 over 1."""
-    h, (shop_a, _) = await _company(client)
+    h, (shop_a, _) = await _company(client, session)
     dims = {
         "q": [None, "ring", "name:ruby"],
         "category": [None, "Gem", "Gem,Gold"],
@@ -115,12 +128,12 @@ async def test_counts_equal_rows_for_every_filter_combination(client):
 
 
 @pytest.mark.asyncio
-async def test_money_totals_keep_to_owned_stocked_goods(client):
+async def test_money_totals_keep_to_owned_stocked_goods(client, session):
     """The value figures still count only owned stocked goods that are not drafts:
     service, non-stocked, consigned-in and draft rows are listed and counted but carry
     no stock value. These totals are the same before and after counts moved to the
     list's rows."""
-    h, (shop_a, _) = await _company(client)
+    h, (shop_a, _) = await _company(client, session)
     cases = [
         ({}, 100 + 200 + 3200 + 25600),
         ({"status": "available"}, 100 + 3200 + 25600),

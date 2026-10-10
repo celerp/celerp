@@ -26,6 +26,7 @@ from migration_support import (
     count,
     fake_bytes,
     fake_spec,
+    finalize_run,
     load_run,
     maker,
     migration_env,  # noqa: F401 - fixture
@@ -243,14 +244,27 @@ async def test_scan_token_is_scoped_expiring_and_tamper_safe(client, session, mi
     monkeypatch.setattr(store, "_write_json", real_write)
 
     # A token held by another request past the lock budget is refused, and the scan is kept.
+    # Only the contending save runs the real lock with a 0.5 second budget.
     from celerp import config_store
-    release = config_store.hold_lock(str(directory / ".lock"))
+    real_hold_lock = config_store.hold_lock
+
+    def _hold_with_test_budget(lock_path, budget=0.5):
+        return real_hold_lock(lock_path, budget)
+
+    saved = (directory / "scan.json").read_bytes()
+    release = real_hold_lock(str(directory / ".lock"))
     try:
-        with pytest.raises(store.ScanStoreError) as exc:
-            store.save_decisions(token, owner=bootstrap, decisions=MigrationDecisions(mode="full_history"))
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(config_store, "hold_lock", _hold_with_test_budget)
+            t0 = time.monotonic()
+            with pytest.raises(store.ScanStoreError) as exc:
+                store.save_decisions(token, owner=bootstrap, decisions=MigrationDecisions(mode="full_history"))
+            waited = time.monotonic() - t0
     finally:
         release()
     assert (exc.value.status_code, exc.value.detail) == (409, store.BUSY)
+    assert 0.4 <= waited < 2.0, f"did not wait for the test budget (waited {waited:.2f}s)"
+    assert (directory / "scan.json").read_bytes() == saved
     assert store.load_scan(token, owner=bootstrap).token == token
     assert not (directory / ".lock").exists()
 
@@ -330,7 +344,7 @@ async def test_migration_source_retention_and_cleanup(real_engine, migration_env
 
     async def finish(run_id):
         async with maker(real_engine)() as s:
-            await migrations.finalize(s, await creator_run(s, run_id))
+            await finalize_run(s, await creator_run(s, run_id))
 
     # Completion deletes the source.
     done, _, _ = await staged_run(real_engine, email="done@example.com")

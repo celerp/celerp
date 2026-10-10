@@ -23,6 +23,20 @@ async def _register(client) -> str:
     return r.json()["access_token"]
 
 
+async def _gone(session, entity_id: str) -> None:
+    """The item a line names no longer exists, as an item removed outside Celerp's own
+    actions (an older release, a repair) leaves it: Delete itself keeps any item a line
+    still names."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    from celerp.services.item_erasure import erase_items
+
+    company_id = await session.scalar(select(Projection.company_id).where(Projection.entity_id == entity_id))
+    await erase_items(session, company_id, [entity_id])
+    await session.commit()
+
+
 async def _item(client, token: str, *, sku: str, retail: float, wholesale: float | None = None) -> str:
     body = {
         "status": "available",
@@ -102,7 +116,7 @@ async def test_reprice_updates_exact_catalog_lines_and_preserves_manual_lines(cl
 
 
 @pytest.mark.asyncio
-async def test_reprice_missing_link_keeps_snapshot_and_never_falls_back_to_same_sku(client):
+async def test_reprice_missing_link_keeps_snapshot_and_never_falls_back_to_same_sku(client, session):
     token = await _register(client)
     h = _h(token)
     missing_id = await _item(client, token, sku="REUSED-SKU", retail=125, wholesale=95)
@@ -121,8 +135,7 @@ async def test_reprice_missing_link_keeps_snapshot_and_never_falls_back_to_same_
         },
     ])
 
-    deleted = await client.post("/items/bulk/delete", headers=h, json={"entity_ids": [missing_id]})
-    assert deleted.status_code == 200, deleted.text
+    await _gone(session, missing_id)
     replacement_id = await _item(client, token, sku="REUSED-SKU", retail=999, wholesale=888)
     assert replacement_id != missing_id
 
@@ -279,7 +292,7 @@ async def test_reprice_rejects_non_money_list_without_mutation(client):
 
 
 @pytest.mark.asyncio
-async def test_doc_reprice_uses_exact_identity_and_same_missing_item_contract(client):
+async def test_doc_reprice_uses_exact_identity_and_same_missing_item_contract(client, session):
     token = await _register(client)
     h = _h(token)
     missing_id = await _item(client, token, sku="DOC-REUSED", retail=125, wholesale=95)
@@ -299,8 +312,7 @@ async def test_doc_reprice_uses_exact_identity_and_same_missing_item_contract(cl
             "quantity": 1, "unit_price": 33, "line_total": 33,
         },
     ])
-    deleted = await client.post("/items/bulk/delete", headers=h, json={"entity_ids": [missing_id]})
-    assert deleted.status_code == 200, deleted.text
+    await _gone(session, missing_id)
     replacement_id = await _item(client, token, sku="DOC-REUSED", retail=999, wholesale=888)
     assert replacement_id != missing_id
 

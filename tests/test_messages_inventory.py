@@ -152,11 +152,11 @@ def _spec_keys() -> list[str]:
 
 
 _REWRITTEN = [
-    "error.invalid_resulting_quantity", "inv.invalid_json_body", "inv.invalid_quantities_use_commaseparated_numbers",
-    "inv.invalid_resulting_cost_price", "inv.pos_some_failed", "inv.source_items_and_target_selection_are_required",
+    "inv.invalid_json_body", "inv.invalid_quantities_use_commaseparated_numbers",
+    "inv.pos_some_failed",
     "inv.target_item_selection_is_required", "inventory.bulk_duplicate_failed", "inventory.bulk_duplicated_partial",
     "inventory.cannot_split_one_piece", "inventory.child_pieces_too_high", "inventory.count_whole_number",
-    "inventory.import_failed", "inventory.invalid_numeric_input", "inventory.not_saved_output_qty_number",
+    "inventory.import_failed", "inventory.invalid_numeric_input",
     "inventory.row_gone_reload", "inventory.split_qty_too_high", "inventory.step_gone_reload",
     "settings_inventory.category_not_found", "settings_manufacturing.save_failed", "inv.invalid_split_quantity",
     "inv.split_quantity_must_be_greater_than_0", "inv.quantity_must_be_greater_than_0", "inventory.count_min_two",

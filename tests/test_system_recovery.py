@@ -12,6 +12,7 @@ import io
 import json
 import re
 import secrets
+import shutil
 import tarfile
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
@@ -64,7 +65,7 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
     recorded calls. With ``safety_error`` the safety archive cannot be made."""
     import celerp.connectors.ownership as ownership
     from celerp.config import settings
-    from celerp.services import backup_import
+    from celerp.services import backup, backup_import
 
     calls: dict[str, list] = {"safety": [], "restore": []}
     monkeypatch.setattr(settings, "data_dir", tmp_path)
@@ -75,8 +76,7 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
             return backup_import.SafetyResult(ok=False, error=safety_error)
         path = tmp_path / "recovery-safety" / "pre-recovery.celerp-backup"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"SAFETY")
-        return backup_import.SafetyResult(ok=True, path=path)
+        return backup_import.SafetyResult(ok=True, path=_archive(path, dump=b"SAFETY"))
 
     async def _restore(dump_path, url):
         calls["restore"].append(dump_path.read_bytes())
@@ -89,7 +89,9 @@ def _import_internals(monkeypatch, tmp_path, *, safety_error: str | None = None)
         return None
 
     monkeypatch.setattr(backup_import, "make_safety_archive", _safety)
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
+    monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
+    monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
     monkeypatch.setattr(ownership, "connector_maintenance_guard", _guard)
     for name in ("_reconcile_connectors", "_dispose_engine", "_reconcile_schema",
                  "_clear_restored_connector_state"):
@@ -556,3 +558,66 @@ async def test_system_recovery_sign_in_button_is_labelled():
     body = _restore_flash(_result(), "Restored.").body.decode()
     assert re.search(r'<a href="/login"[^>]*>Sign in</a>', body), body
     assert "system_recovery." not in body
+
+
+async def test_restore_refused_while_changes_are_paused_reads_as_a_sentence(ui, real_engine, monkeypatch):
+    """A restore refused because the last start held the records back shows the refusal's
+    sentence in the flash, never the keyed refusal's raw fields."""
+    import celerp.main
+    from celerp.held_back import UNKNOWN
+    monkeypatch.setattr(celerp.main.app.state, "data_current", False, raising=False)
+    monkeypatch.setattr(celerp.main.app.state, "held_back", UNKNOWN, raising=False)
+    _, _, tok = await _install_owner(real_engine)
+    ui.cookies.set("celerp_token", tok)
+
+    r = await ui.post("/backup/restore/snap-1")
+    page = _page(r)
+    assert UNKNOWN.refusal()["message"] in page
+    assert "message_key" not in page
+
+
+@pytest.mark.parametrize("method, path, data", [
+    ("post", "/settings/company/reset", {"company_name": "Acme"}),
+    ("delete", "/settings/company/deactivate", None),
+    ("post", "/settings/labels", {"name": "Shelf tag"}),
+    ("put", "/settings/labels/tmpl-1", {"name": "Shelf tag"}),
+    ("delete", "/settings/labels/tmpl-1", None),
+])
+async def test_a_settings_action_refused_while_changes_are_paused_reads_in_the_users_language(
+        ui, real_engine, monkeypatch, method, path, data):
+    """Resetting or deactivating the company, creating, saving or deleting a label
+    template, refused because the last start held the records back, show the refusal's
+    sentence in the reader's language, never the keyed refusal's raw fields, an empty
+    flash, or a success."""
+    import celerp.main
+    from celerp.held_back import UNKNOWN
+    from test_helpers import in_language
+    monkeypatch.setattr(celerp.main.app.state, "data_current", False, raising=False)
+    monkeypatch.setattr(celerp.main.app.state, "held_back", UNKNOWN, raising=False)
+    _, _, tok = await _install_owner(real_engine)
+    ui.cookies.set("celerp_token", tok)
+    ui.cookies.set("celerp_lang", "de")
+    if path.startswith("/settings/labels"):
+        # The labels pages call the API with their own client: route it to the real API too.
+        import types
+
+        import celerp_labels.ui_routes as labels_ui
+        transport = httpx.ASGITransport(app=celerp.main.app)
+        monkeypatch.setattr(labels_ui, "httpx", types.SimpleNamespace(
+            AsyncClient=lambda **kw: httpx.AsyncClient(transport=transport, **kw)))
+        # The module's own phrases, as the module loader registers them at start.
+        from pathlib import Path
+
+        from ui.i18n import register_catalog
+        for lang in ("de", "en"):
+            register_catalog(lang, json.loads(
+                (Path(labels_ui.__file__).parent / "locales" / f"{lang}.json").read_text(encoding="utf-8")))
+
+    kw = {"data": data} if data else {}
+    r = await getattr(ui, method)(path, headers={"HX-Request": "true"}, **kw)
+    toast = json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast", {})
+    page = _page(r) + toast.get("message", "")
+    german = in_language("de", UNKNOWN.refusal())
+    assert german != UNKNOWN.refusal()["message"]
+    assert german in page
+    assert "message_key" not in page and "message-key" not in page and "held_back." not in page

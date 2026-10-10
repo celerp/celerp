@@ -230,7 +230,7 @@ def test_defaults_are_registry_membership():
 
 # ── Gate 1: inventory cost visibility and price writes ───────────
 
-from test_helpers import grant_permission, invite_user, perm_setup  # noqa: E402
+from test_helpers import grant_permission, invite_user, perm_setup, merge_items  # noqa: E402
 
 _GRANTED = {"role_grants": {"view_inventory_costs": _roles_from("operator")}}
 
@@ -1307,23 +1307,17 @@ def test_web_access_link_requires_integrations():
     assert "/settings/cloud" in to_xml(_sidebar("dashboard", role="admin", settings={}))
 
 
-async def test_ai_routes_require_permission(client, session):
+async def test_ai_routes_require_permission(client, session, monkeypatch):
     """An AI endpoint returns 403 for a viewer under default permissions; an
     operator (holding use_ai_assistant by default) is admitted. The AI router also
-    sits behind the Cloud+AI subscription gate (require_session_token); this test
-    isolates the permission gate by satisfying that subscription gate, so a plain
+    sits behind the Cloud+AI subscription gate (an active Connect session); this
+    test isolates the permission gate by seating a session, so a plain
     subscription pass cannot be mistaken for a permission pass."""
-    from celerp.main import app
-    from celerp.session_gate import require_session_token
-
     ctx = await perm_setup(client, session)
     viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
-    app.dependency_overrides[require_session_token] = lambda: None
-    try:
-        assert (await client.get("/ai/memory", headers=viewer_h)).status_code == 403
-        assert (await client.get("/ai/memory", headers=ctx["operator_h"])).status_code == 200
-    finally:
-        app.dependency_overrides.pop(require_session_token, None)
+    monkeypatch.setattr("celerp.gateway.state._session_token", "seated-session")
+    assert (await client.get("/ai/memory", headers=viewer_h)).status_code == 403
+    assert (await client.get("/ai/memory", headers=ctx["operator_h"])).status_code == 200
 
 
 async def test_accounting_reads_require_permission(client, session):
@@ -1575,8 +1569,7 @@ async def test_merge_still_allowed_without_amount_permission(client, session):
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
     a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
-    r = await client.post("/items/merge",
-                          json={"source_entity_ids": [a, b], "target_sku_from": a},
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a},
                           headers=ctx["operator_h"])
     assert r.status_code == 200, r.text
 
@@ -1587,8 +1580,7 @@ async def test_merge_override_denied_without_amount_permission(client, session):
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
     a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [a, b], "target_sku_from": a, "resulting_quantity": 99.0},
         headers=ctx["operator_h"],
     )
@@ -1600,8 +1592,7 @@ async def test_merge_negative_override_rejected(client, session):
     """A negative resulting_quantity is rejected on value, independent of role."""
     ctx = await perm_setup(client, session)
     a, b = await _mergeable_pair(client, ctx["admin_h"], ctx["location_id"])
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [a, b], "target_sku_from": a, "resulting_quantity": -5.0},
         headers=ctx["admin_h"],
     )
@@ -2115,7 +2106,7 @@ async def test_merge_resolved_price_denied_without_permission(client, session):
         })
         assert r.status_code == 200, r.text
         ids.append(r.json()["id"])
-    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+    r = await merge_items(client, headers=ctx["operator_h"], json={
         "source_entity_ids": ids, "target_sku_from": ids[0], "resolved_attributes": {"vip_price": "999"},
     })
     assert r.status_code == 403, r.text
@@ -2142,7 +2133,7 @@ async def _finalized_bill(client, ctx, sku: str, line: dict | None = None, doc_t
         "location_id": ctx["location_id"], "retail_price": 10,
     })).json()["id"]
     bill = (await client.post("/docs", headers=ctx["admin_h"], json={
-        "doc_type": doc_type,
+        "doc_type": doc_type, "contact_id": "supplier:1",
         "line_items": [{"item_id": template, "sku": sku, "name": sku, "quantity": 2,
                         "unit_price": 5, "line_total": 10, **(line or {})}],
         "total": 10,
@@ -2216,19 +2207,28 @@ async def test_consignment_receive_line_cost_without_permission(client, session,
 
 @pytest.mark.parametrize("role_h", ["operator_h", "admin_h"])
 async def test_consignment_receive_without_rate(client, session, role_h):
-    """A foreign-currency consignment with no rate yet still receives: the rate is settled
-    when it is invoiced, so the parcel carries no cost until then."""
+    """A foreign-currency consignment issued before rates were required has no rate, and it
+    still receives: the rate is settled when it is invoiced, so the parcel carries no cost
+    until then."""
     ctx = await perm_setup(client, session)
     template = (await client.post("/items", headers=ctx["admin_h"], json={
         "status": "available", "sku": "CSG-FX", "name": "CSG-FX", "quantity": 0, "sell_by": "piece",
         "location_id": ctx["location_id"], "retail_price": 10,
     })).json()["id"]
     doc = (await client.post("/docs", headers=ctx["admin_h"], json={
-        "doc_type": "consignment_in", "currency": "EUR",
+        "doc_type": "consignment_in", "contact_id": "supplier:1", "currency": "EUR", "conversion_rate": 35,
         "line_items": [{"item_id": template, "sku": "CSG-FX", "name": "CSG-FX", "quantity": 2,
                         "unit_price": 5, "line_total": 10}],
         "total": 10,
     })).json()["id"]
+    fin = await client.post(f"/docs/{doc}/finalize", headers=ctx["admin_h"])
+    assert fin.status_code == 200, fin.text
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    session.expire_all()
+    row = (await session.execute(select(Projection).where(Projection.entity_id == doc))).scalar_one()
+    row.state = {k: v for k, v in row.state.items() if k != "conversion_rate"}
+    await session.commit()
     r = await client.post(f"/docs/{doc}/receive", headers=ctx[role_h], json={
         "location_id": ctx["location_id"],
         "received_items": [{"item_id": template, "sku": "CSG-FX", "name": "CSG-FX",
@@ -2250,12 +2250,12 @@ async def test_merge_cost_override_denied_without_permission(client, session):
             "location_id": ctx["location_id"], "sell_by": "piece", "cost_total": 10,
         })
         ids.append(r.json()["id"])
-    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+    r = await merge_items(client, headers=ctx["operator_h"], json={
         "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 99999,
     })
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == _PRICE_DENIED
-    r = await client.post("/items/merge", headers=ctx["operator_h"], json={
+    r = await merge_items(client, headers=ctx["operator_h"], json={
         "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 20,
     })
     assert r.status_code == 200, r.text

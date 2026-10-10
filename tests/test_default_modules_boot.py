@@ -123,3 +123,26 @@ def test_third_party_route_failure_keeps_booting(tmp_path):
 
     assert "ModuleNotFoundError" in load_errors()["vendor-widget"]
     assert not loader.is_running("vendor-widget")
+
+
+@pytest.mark.parametrize("name", sorted(loader.first_party_names() - loader.CORE_FOLDED))
+def test_enabled_default_module_missing_from_every_module_dir_stops_startup(name, tmp_path):
+    """An enabled default that no module directory holds stops startup naming
+    it, rather than starting without it."""
+    (tmp_path / "other").mkdir()
+    module_dir = f"{tmp_path / 'empty'},{tmp_path / 'other'}"
+
+    with pytest.raises(ModuleLoadError, match=f"{name!r} is not installed"):
+        loader.admit_modules(module_dir, {name})
+    with pytest.raises(ModuleLoadError, match=f"{name!r} is not installed"):
+        load_all(module_dir, {name})
+
+
+def test_enabled_third_party_module_missing_keeps_booting(tmp_path):
+    """An enabled module Celerp does not ship that is not installed is skipped,
+    as before: nothing loads for it and boot continues."""
+    admission = loader.admit_modules(tmp_path, {"vendor-gone"})
+    assert admission.admitted == [] and admission.refused == {}
+
+    assert load_all(tmp_path, {"vendor-gone"}) == []
+    assert not loader.is_running("vendor-gone")

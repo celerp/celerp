@@ -14,74 +14,58 @@ on:
         default: all
         options: [all, windows, linux, mac]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
 env:
   PBS_TAG: "20260414"
   PBS_PYTHON: "3.12.13"
-  # Bundled pg_dump/pg_restore, built from source (macOS). Pin version + SHA256
+  # Bundled pg_dump/pg_restore/psql, built from source (macOS). Pin version + SHA256
   # for every tarball. pg_dump 17.x dumps the embedded server (17) and any
   # external server <= 17.
   PG_VERSION: "17.10"
   PG_SHA256: "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90"
   OPENSSL_VERSION: "3.5.6"
   OPENSSL_SHA256: "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736"
-  # Windows pg_dump/pg_restore: extracted from the official PostgreSQL (EDB)
+  # Windows pg_dump/pg_restore/psql: extracted from the official PostgreSQL (EDB)
   # Windows binaries. The embedded server has no pg_dump, so backup needs these.
   PG_WIN_VERSION: "17.10-1"
   PG_WIN_SHA256: "f9aafca58e7026a1ef2caeee711acf761671e57904d430adc85f468374f5a821"
+  # The tools and their DLL closure (resolved via objdump): libpq, OpenSSL,
+  # gettext+iconv (LGPL), lz4, zstd, mingw winpthreads. Part of the cache key.
+  PG_WIN_FILES: "pg_dump.exe pg_restore.exe psql.exe libpq.dll libcrypto-3-x64.dll libssl-3-x64.dll libintl-9.dll libiconv-2.dll libwinpthread-1.dll liblz4.dll libzstd.dll"
 
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
-  # Runs once before all three platform builds. Creates the GitHub release and
-  # clears any stale assets from a previous attempt at the same tag. This
-  # eliminates the race condition where Mac's electron-builder uploads its first
-  # asset before Windows/Linux reach the asset-clearing step.
+  # Runs once before all three platform builds. A tag whose release is already
+  # published, on GitHub or on PyPI, is refused: a shipped version is never
+  # rebuilt, the next patch version ships instead.
   prepare-release:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Clear existing release assets (retag support)
+      - name: Refuse a tag that is already released
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/tags/$TAG" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || true)
-          if [ -z "$RELEASE_ID" ]; then
-            echo "No existing release for $TAG - nothing to clear"
-            exit 0
-          fi
-          echo "Release $RELEASE_ID found for $TAG - reverting to draft + clearing assets"
-          # Take the existing release out of "latest" while we rebuild (retag), so
-          # /releases/latest/download/* keeps serving the previous complete release
-          # instead of 404-ing on a half-uploaded asset. publish-release re-publishes
-          # it once every platform succeeds.
-          curl -s -X PATCH -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
-            -d '{"draft":true}' >/dev/null
-          ASSET_IDS=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" \
-            | python3 -c "import sys,json; [print(a['id']) for a in json.load(sys.stdin)]" 2>/dev/null || true)
-          if [ -z "$ASSET_IDS" ]; then
-            echo "No assets to delete"
-            exit 0
-          fi
-          for ASSET_ID in $ASSET_IDS; do
-            echo "Deleting asset $ASSET_ID"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/celerp/celerp/releases/assets/$ASSET_ID" | tr -d '\r')
-            if [ "$STATUS" -ge 500 ]; then
-              echo "ERROR: DELETE asset $ASSET_ID returned HTTP $STATUS - aborting"
-              exit 1
-            fi
-            echo "Deleted asset $ASSET_ID (HTTP $STATUS)"
-          done
-          echo "Assets cleared"
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/tags/$GITHUB_REF_NAME")
+          case "$STATUS" in
+            404) echo "No published release for $GITHUB_REF_NAME" ;;
+            200) echo "ERROR: $GITHUB_REF_NAME is already published" >&2; exit 1 ;;
+            *) echo "ERROR: release lookup returned HTTP $STATUS" >&2; exit 1 ;;
+          esac
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/celerp/${GITHUB_REF_NAME#v}/json")
+          case "$STATUS" in
+            404) echo "celerp ${GITHUB_REF_NAME#v} is not on PyPI" ;;
+            200) echo "ERROR: celerp ${GITHUB_REF_NAME#v} is already on PyPI" >&2; exit 1 ;;
+            *) echo "ERROR: PyPI lookup returned HTTP $STATUS" >&2; exit 1 ;;
+          esac
 
   # Compute the build matrix: the bugfix branch and pull requests build macOS only.
   # Bugfix pushes use the normal signed-dev path; pull requests remain unsigned
@@ -93,11 +77,13 @@ jobs:
     steps:
       - id: gen
         shell: bash
+        env:
+          PLATFORMS: ${{ github.event.inputs.platforms }}
         run: |
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
           lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
-          sel="${{ github.event.inputs.platforms }}"
+          sel="$PLATFORMS"
           if [ -n "$sel" ] && [ "$sel" != "all" ]; then
             case "$sel" in
               windows) inc="$win" ;;
@@ -106,7 +92,7 @@ jobs:
               *)       inc="$lin,$win,$mac" ;;
             esac
             echo "matrix={\"include\":[$inc]}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          elif [ "$GITHUB_REF_NAME" = "bugfix" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else
             echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"
@@ -229,7 +215,7 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install . -c constraints.txt
 
-      # ── Bundled pg_dump/pg_restore (macOS) ──────────────────────────────
+      # ── Bundled pg_dump/pg_restore/psql (macOS) ──────────────────────────────
       # Built from source for both arches in this one arm64 job (x86_64 slice
       # cross-compiled with Rosetta). Cached on version + script hash so normal
       # builds skip the multi-minute compile.
@@ -241,14 +227,14 @@ jobs:
           path: electron/pg-tools
           key: pg-tools-${{ runner.os }}-pg${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools.sh') }}
 
-      - name: Build bundled pg_dump/pg_restore (macOS, both arches)
+      - name: Build bundled pg_dump/pg_restore/psql (macOS, both arches)
         if: matrix.os == 'macos-latest' && steps.pg-tools-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           bash electron/scripts/build-pg-tools.sh arm64  "$PWD/electron/pg-tools/mac-arm64"
           bash electron/scripts/build-pg-tools.sh x86_64 "$PWD/electron/pg-tools/mac-x64"
 
-      # ── Bundled pg_dump/pg_restore (Windows) ────────────────────────────
+      # ── Bundled pg_dump/pg_restore/psql (Windows) ────────────────────────────
       # The @embedded-postgres Windows package ships no pg_dump, so extract it +
       # its transitive DLL closure from the official PostgreSQL (EDB) binaries.
       - name: Cache pg-tools (Windows)
@@ -257,9 +243,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: electron/pg-tools/win
-          key: pg-tools-win-${{ env.PG_WIN_VERSION }}-${{ env.PG_WIN_SHA256 }}
+          key: pg-tools-win-${{ env.PG_WIN_VERSION }}-${{ env.PG_WIN_SHA256 }}-${{ env.PG_WIN_FILES }}
 
-      - name: Fetch bundled pg_dump/pg_restore (Windows)
+      - name: Fetch bundled pg_dump/pg_restore/psql (Windows)
         if: matrix.os == 'windows-latest' && steps.pg-tools-win-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
@@ -269,18 +255,14 @@ jobs:
           echo "${PG_WIN_SHA256} *pg-win.zip" | sha256sum -c -
           DEST="electron/pg-tools/win/bin"
           mkdir -p "$DEST"
-          # pg_dump/pg_restore + their transitive DLL closure (resolved via objdump):
-          # libpq, OpenSSL (crypto/ssl), gettext+iconv (LGPL), lz4, zstd, mingw winpthreads.
-          7z e pg-win.zip -o"$DEST" -y \
-            "pgsql/bin/pg_dump.exe" "pgsql/bin/pg_restore.exe" \
-            "pgsql/bin/libpq.dll" "pgsql/bin/libcrypto-3-x64.dll" "pgsql/bin/libssl-3-x64.dll" \
-            "pgsql/bin/libintl-9.dll" "pgsql/bin/libiconv-2.dll" "pgsql/bin/libwinpthread-1.dll" \
-            "pgsql/bin/liblz4.dll" "pgsql/bin/libzstd.dll" >/dev/null
+          7z e pg-win.zip -o"$DEST" -y $(printf 'pgsql/bin/%s ' $PG_WIN_FILES) >/dev/null
           rm -f pg-win.zip
           ls "$DEST"
-          "$DEST/pg_dump.exe" --version   # smoke test (runs with the bundled DLLs)
+          for t in pg_dump pg_restore psql; do
+            PATH="/c/Windows/System32" "$DEST/$t.exe" --version   # runs with the bundled DLLs only
+          done
 
-      # ── Bundled pg_dump/pg_restore (Linux) ──────────────────────────────
+      # ── Bundled pg_dump/pg_restore/psql (Linux) ──────────────────────────────
       # No portable prebuilt exists (theseus-rs needs system OpenSSL-3; musl needs
       # the musl loader), so build from source in a manylinux_2_28 container
       # (glibc 2.28) for portability matching the rest of the AppImage.
@@ -292,7 +274,7 @@ jobs:
           path: electron/pg-tools/linux
           key: pg-tools-linux-${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools-linux.sh') }}
 
-      - name: Build bundled pg_dump/pg_restore (Linux, manylinux)
+      - name: Build bundled pg_dump/pg_restore/psql (Linux, manylinux)
         if: matrix.os == 'ubuntu-latest' && steps.pg-tools-linux-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
@@ -540,10 +522,10 @@ jobs:
           done
           echo "electron-builder failed after 3 attempts" >&2; exit 1
 
-      # Prove the licenses/ folder actually made it into the packaged artifact —
-      # the pre-build check only proves licenses/ existed before electron-builder
-      # ran, not that extraResources put it in the .app/.exe/.AppImage resources.
-      - name: Verify licenses landed in the packaged artifact
+      # Prove the licenses/ folder and the PostgreSQL tools actually made it into
+      # the packaged artifact: the pre-build checks only prove they existed before
+      # electron-builder ran, not that extraResources put them in the resources.
+      - name: Verify licenses and PostgreSQL tools in the packaged artifact
         shell: bash
         run: |
           set -eo pipefail
@@ -572,9 +554,6 @@ jobs:
             test -d "$RES/licenses/postgresql"   # from the built-from-source pg_dump tools
             test -d "$RES/licenses/openssl"
           fi
-          if [ "$OS" = "ubuntu-latest" ]; then
-            test -f "$RES/pg-linux/bin/pg_dump"  # backup pg_dump bundled
-          fi
           # Windows: the StackBuilder DLLs (wxWidgets + libcurl) must have been
           # pruned by afterPack — fail loudly if any leaked into the package
           # (otherwise we'd ship the wxWindows-licensed DLLs without attribution).
@@ -585,17 +564,77 @@ jobs:
               ls "$BIN"/wx*.dll "$BIN"/libcurl.dll 2>/dev/null >&2
               exit 1
             fi
-            # bundled pg_dump (for backup) + libpq must be packaged
-            test -f "$RES/pg-win/bin/pg_dump.exe"
-            test -f "$RES/pg-win/bin/libpq.dll"
           fi
-          echo "OK: third-party licenses present in packaged artifact"
+          # Backup and restore run these tools from the package: each must be
+          # executable, built for its architecture, and start with only the
+          # libraries the package ships plus the system's.
+          TOOLS="pg_dump pg_restore psql"
+          case "$OS" in
+            macos-latest)
+              for tree in "pg-arm64 arm64" "pg-x64 x86_64"; do
+                set -- $tree
+                for t in $TOOLS; do
+                  f="$RES/$1/bin/$t"
+                  test -x "$f"
+                  test "$(lipo -archs "$f")" = "$2"
+                  otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+                    case "$dep" in
+                      /usr/lib/*|/System/Library/*) ;;
+                      @rpath/*) test -f "$RES/$1/lib/${dep#@rpath/}" ;;
+                      *) echo "ERROR: $f needs $dep" >&2; exit 1 ;;
+                    esac
+                  done
+                  env -u DYLD_LIBRARY_PATH arch "-$2" "$f" --version
+                done
+              done ;;
+            windows-latest)
+              for t in $TOOLS; do
+                f="$RES/pg-win/bin/$t.exe"
+                test -x "$f"
+                pe="$(od -An -t u4 -j 60 -N 4 "$f" | tr -d ' ')"
+                test "$(od -An -t x2 -j $((pe + 4)) -N 2 "$f" | tr -d ' ')" = "8664"
+                # The loader finds DLLs beside the exe or in System32, nowhere else.
+                PATH="/c/Windows/System32" "$f" --version
+              done ;;
+            *)
+              for t in $TOOLS; do
+                f="$RES/pg-linux/bin/$t"
+                test -x "$f"
+                case "$(file -b "$f")" in "ELF 64-bit LSB"*x86-64*) ;; *) exit 1 ;; esac
+                if env -u LD_LIBRARY_PATH ldd "$f" | grep "not found"; then exit 1; fi
+                env -u LD_LIBRARY_PATH "$f" --version
+              done ;;
+          esac
+          echo "OK: third-party licenses and PostgreSQL tools present in packaged artifact"
+
+      # The packaged default modules must be exactly the ones the lock names, with
+      # the same content. The packaged Python runs the packaged loader's check.
+      - name: Check bundled modules in the packaged artifact
+        shell: bash
+        run: |
+          set -eo pipefail
+          case "${{ matrix.os }}" in
+            macos-latest)
+              RES="$(ls -d electron/dist/mac*/Celerp.app/Contents/Resources | head -1)"
+              PY="$RES/python-arm64/python/bin/python3" ;;
+            windows-latest)
+              RES="electron/dist/win-unpacked/resources"
+              PY="$RES/python-x64/python/python.exe" ;;
+            *)
+              RES="electron/dist/linux-unpacked/resources"
+              PY="$RES/python-x64/python/bin/python3" ;;
+          esac
+          PYTHONPATH="$RES/app" "$PY" scripts/check_packaged_modules.py \
+            "$RES/app/default_modules" --lock default_modules/first_party.lock.json
 
       # Boot smoke: actually LAUNCH the packaged app and require a real, DB-backed
       # boot before this build can ship. /health/ready does a live SELECT 1, so a
       # 200 {"db":"ok"} proves electron -> Python API -> embedded Postgres -> a query.
+      # Every module in the lock is enabled, and a bundled module that is missing
+      # or fails to load stops startup, so readiness also proves they all load.
       # We poll (never sleep) and fail fast if the process dies (crash on launch).
       - name: Boot smoke (launch the packaged app, require db:ok)
+        timeout-minutes: 15
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -621,6 +660,8 @@ jobs:
           API_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
           export CELERP_API_PORT="$API_PORT"
           export HOME="$RUNNER_TEMP/smoke-home"; mkdir -p "$HOME"   # hermetic, throwaway data dir
+          ENABLED_MODULES="$(python3 -c 'import json; print(",".join(sorted(json.load(open("../default_modules/first_party.lock.json")))))')"
+          export ENABLED_MODULES; echo "smoke: enabling $ENABLED_MODULES"
           LOG="$RUNNER_TEMP/smoke.log"
           LAUNCH=("$APP_BIN")
           [ "$RUNNER_OS" = "Linux" ] && LAUNCH=(xvfb-run -a "$APP_BIN")
@@ -630,18 +671,40 @@ jobs:
           ok=""
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             kill -0 "$APP_PID" 2>/dev/null || { echo "::error::app exited before becoming ready (crash on launch)"; break; }
-            if curl -fs "http://127.0.0.1:$API_PORT/health/ready" 2>/dev/null | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then
+            if curl -fs --max-time 5 "http://127.0.0.1:$API_PORT/health/ready" 2>/dev/null | grep -q '"db"[[:space:]]*:[[:space:]]*"ok"'; then
               ok=1; break
             fi
             sleep 1
           done
-          kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
           if [ -z "$ok" ]; then
             echo "::error::boot smoke FAILED on $RUNNER_OS - /health/ready never returned db:ok"
             echo "----- app log (tail) -----"; tail -n 200 "$LOG" || true
+            # The app keeps its data under the user's real home, which macOS reads without $HOME.
+            find "$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" -maxdepth 6 -path '*celerp-data/logs/*' -type f -exec tail -n 100 {} + || true
+            kill -9 "$APP_PID" 2>/dev/null || true
             exit 1
           fi
           echo "boot smoke OK on $RUNNER_OS"
+          # A force-quit app must not leave its servers running: kill the app itself
+          # (SIGKILL, no shutdown code runs) and require the API and the database to stop,
+          # the database cleanly (it removes postmaster.pid on a clean stop).
+          API=$(lsof -tiTCP:"$API_PORT" -sTCP:LISTEN | head -1)
+          ELECTRON=$(ps -o ppid= -p "$API" | tr -d ' ')
+          PG_DATA=$(ps axww -o command= | sed -n 's|.*/postgres -D \(.*/celerp-data/postgres\) -p .*|\1|p' | head -1)
+          PG_PIDFILE="$PG_DATA/postmaster.pid"
+          PG=$(head -1 "$PG_PIDFILE")
+          echo "force-quit: app $ELECTRON, API $API, database $PG ($PG_PIDFILE)"
+          [ -n "$API" ] && [ -n "$ELECTRON" ] && [ -n "$PG" ] || { echo "::error::force-quit: could not find the app's processes"; exit 1; }
+          kill -9 "$ELECTRON"
+          DEADLINE=$(( $(date +%s) + 30 ))
+          while { kill -0 "$API" || kill -0 "$PG" || [ -e "$PG_PIDFILE" ]; } 2>/dev/null && [ "$(date +%s)" -lt "$DEADLINE" ]; do sleep 1; done
+          kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
+          if { kill -0 "$API" || kill -0 "$PG" || [ -e "$PG_PIDFILE" ]; } 2>/dev/null; then
+            echo "::error::force-quit on $RUNNER_OS left the API or the database running"
+            ps -o pid,ppid,command -p "$API,$PG" || true
+            exit 1
+          fi
+          echo "force-quit OK on $RUNNER_OS: the API and the database stopped"
 
       # Windows runs elevated on the GitHub runner and bundled Postgres refuses to
       # run under an administrator token. The app self-de-elevates at startup
@@ -649,6 +712,7 @@ jobs:
       # the port via machine env — the relaunched, restricted process inherits the
       # machine environment (it would not inherit our process env).
       - name: Boot smoke (Windows, require db:ok)
+        timeout-minutes: 15
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -746,7 +810,11 @@ jobs:
           $boot = Join-Path $pub "celerp-boot.out"
           $run  = Join-Path $pub "celerp-run.cmd"
           Remove-Item $boot -EA SilentlyContinue
-          Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$exe`" > `"$boot`" 2>&1"
+          # Every module in the lock is enabled; a bundled module that is missing or
+          # fails to load stops startup, so readiness also proves they all load.
+          $enabled = ((Get-Content "..\default_modules\first_party.lock.json" -Raw | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ","
+          Write-Host "smoke: enabling $enabled"
+          Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`nset ENABLED_MODULES=$enabled`r`n`"$exe`" > `"$boot`" 2>&1"
 
           Write-Host "smoke: launching installed $exe as standard user $u (default data dir $udd, output $boot)"
           Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
@@ -764,6 +832,9 @@ jobs:
             if (($tick % 10) -eq 0) { Write-Host "smoke: t+$($tick*2)s Celerp procs=$(@(Get-Process Celerp -EA SilentlyContinue).Count) portFound=$([bool]$port)" }
             $tick++; Start-Sleep -Seconds 2
           }
+          $installDir = Split-Path $exe
+          $ours = { @(Get-Process postgres, python -EA SilentlyContinue | Where-Object { $_.Path -like "$installDir\*" }) }
+          $before = (& $ours).Count
           taskkill /IM Celerp.exe /F 2>$null | Out-Null
           if (-not $ok) {
             Write-Host "::error::boot smoke FAILED on Windows - db:ok not reached (port=$port)"
@@ -776,6 +847,16 @@ jobs:
             exit 1
           }
           Write-Host "boot smoke OK on Windows (port $port)"
+
+          # The force-quit above must leave no API or database running (the app's job object ends them).
+          if ($before -eq 0) { Write-Host "::error::force-quit check could not see the app's API and database processes"; exit 1 }
+          for ($i = 0; $i -lt 15; $i++) {
+            $left = @(& $ours) + @(Get-NetTCPConnection -LocalPort $port -State Listen -EA SilentlyContinue)
+            if ($left.Count -eq 0) { break }
+            Start-Sleep -Seconds 2
+          }
+          if ($left.Count -ne 0) { Write-Host "::error::force-quit on Windows left the API or the database running"; $left | Format-Table | Out-String | Write-Host; exit 1 }
+          Write-Host "force-quit OK on Windows: the API and the database stopped ($before processes before)"
 
       # The installer reads the installed version from the uninstall entry. Over an
       # existing install: none -> installs; the same version run silently ->
@@ -879,8 +960,8 @@ jobs:
           check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
           exit $FAIL
 
-      - name: Upload artifacts (dev builds only)
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+      # A tag build keeps its binaries here too: the upgrade test installs them.
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.os }}
@@ -890,23 +971,6 @@ jobs:
             electron/dist/Celerp.AppImage
             electron/dist/Celerp.deb
           if-no-files-found: warn
-
-      - name: Release (dev build)
-        # Only develop publishes to the shared dev-latest release. Bugfix and
-        # manually dispatched feature branches stay as downloadable workflow
-        # artifacts only (above), so they never overwrite the dev channel.
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name == 'develop' }}
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: dev-latest
-          name: "Dev Build (latest)"
-          files: |
-            electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac.dmg
-            electron/dist/Celerp.AppImage
-            electron/dist/Celerp.deb
-          draft: false
-          prerelease: true
 
   # ── Attach the OpenAPI schema as a release asset (tag builds only) ────────
   # The website renders a static API reference from this schema, fetching
@@ -986,19 +1050,75 @@ jobs:
           fi
           echo "Attached openapi.json to release $RELEASE_ID ($TAG)."
 
+  # ── Upgrade test of this release's binaries (tag builds only) ─────────────
+  # The Linux and Windows binaries this run built, installed over the latest
+  # published release, downgraded and upgraded again (packaged-upgrade-smoke.yml).
+  # Nothing is published unless it passes: publish-release needs it, and PyPI
+  # waits for it (scripts/release_gate.py desktop-builds in publish.yml).
+  upgrade-smoke:
+    needs: [build]
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/packaged-upgrade-smoke.yml
+    with:
+      candidate_run: ${{ github.run_id }}
+
   # ── Publish the release (tag builds only) ────────────────────────────────
   # Platform builds upload their assets to a DRAFT release (electron-builder
-  # publish releaseType=draft). Only once EVERY platform job has succeeded do we
-  # flip the release to published + latest - atomically, with all assets present.
-  # If any platform fails (e.g. macOS notarization), this job is skipped, the
-  # release stays a draft, and /releases/latest keeps serving the previous
-  # complete release: no 404 window during a build, and no partial release.
+  # publish releaseType=draft). Only once EVERY platform job and the upgrade
+  # test have succeeded do we flip the release to published (and latest, unless
+  # a higher version is already out) - atomically, with all assets present. If any of them fails (e.g. macOS
+  # notarization), this job is skipped, the release stays a draft, and
+  # /releases/latest keeps serving the previous complete release: no 404 window
+  # during a build, and no partial or untested release.
   publish-release:
-    needs: [build, openapi-asset]
+    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    # Tags build side by side; only this job queues, so GitHub releases are
+    # published one at a time, in the order their runs reach this job (not the
+    # order the tags were pushed). Every waiting tag stays queued, none is
+    # cancelled, and the version check below decides which becomes latest.
+    # publish.yml queues nothing, so the PyPI release this job waits for never
+    # waits behind it.
+    concurrency:
+      group: github-release
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
     steps:
-      - name: Publish the draft release as latest
+      - uses: actions/checkout@v7
+
+      # PyPI cannot take a release back, so the GitHub release follows it: it is
+      # published only once publish.yml's publish job succeeded for this tag and
+      # commit (scripts/release_gate.py). That stays true when a later attempt
+      # fails, so re-running only this job after a failure here needs no new PyPI
+      # upload. Waits up to 90 minutes; anything else leaves the release a draft.
+      - name: Wait for the PyPI release of this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for _ in $(seq 90); do
+            STATUS=0
+            python3 scripts/release_gate.py pypi-release || STATUS=$?
+            case "$STATUS" in
+              0) exit 0 ;;
+              3) sleep 60 ;;
+              *) exit 1 ;;
+            esac
+          done
+          echo "ERROR: the PyPI release did not finish within 90 minutes" >&2
+          exit 1
+
+      # The release becomes latest unless a higher version is already published
+      # (scripts/release_gate.py make-latest): a fix to an older line is published,
+      # as PyPI has it, and latest stays on the newer version.
+      - name: Publish the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1008,39 +1128,35 @@ jobs:
           # The release is still a draft; get-release-by-tag only returns published
           # releases, so list releases (drafts included for an authed token) and
           # match on tag_name.
-          INFO=$(curl -s -H "Authorization: token $GH_TOKEN" \
+          INFO=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases?per_page=100" \
-            | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else '%s %s' % (r['id'], 1 if (r.get('body') or '').strip() else 0))" 2>/dev/null || true)
+            | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else '%s %s' % (r['id'], 1 if (r.get('body') or '').strip() else 0))")
           RELEASE_ID="${INFO%% *}"
           HAS_BODY="${INFO##* }"
           if [ -z "$RELEASE_ID" ]; then
             echo "ERROR: no release found for tag $TAG to publish" >&2
             exit 1
           fi
+          LATEST=$(python3 scripts/release_gate.py make-latest)
           # Description: auto-generate from merged PR titles since the previous
           # release (GitHub generate-notes). Only when the body is empty - a
           # hand-written draft body always wins.
           if [ "$HAS_BODY" = "0" ]; then
-            PAYLOAD=$(curl -s -X POST -H "Authorization: token $GH_TOKEN" \
+            PAYLOAD=$(curl -fsS -X POST -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/celerp/celerp/releases/generate-notes" \
               -d "{\"tag_name\":\"$TAG\"}" \
-              | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'true','body':notes.get('body','')}))")
+              | python3 -c "import sys,json; notes=json.load(sys.stdin); print(json.dumps({'draft':False,'make_latest':'$LATEST','body':notes.get('body','')}))")
           else
-            PAYLOAD='{"draft":false,"make_latest":"true"}'
+            PAYLOAD="{\"draft\":false,\"make_latest\":\"$LATEST\"}"
           fi
-          echo "Publishing release $RELEASE_ID ($TAG) as latest"
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
-            -H "Authorization: token $GH_TOKEN" \
+          echo "Publishing release $RELEASE_ID ($TAG), latest: $LATEST"
+          curl -fsS -o /dev/null -X PATCH -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID" \
-            -d "$PAYLOAD")
-          if [ "$STATUS" -ge 300 ]; then
-            echo "ERROR: publish PATCH returned HTTP $STATUS" >&2
-            exit 1
-          fi
-          echo "Published $TAG as latest."
+            -d "$PAYLOAD"
+          echo "Published $TAG."
 
   # ── Alert on a failed release build ──────────────────────────────────────────
-  # When any platform (or prepare/publish) fails on a v* tag, the release is left as
+  # When any platform (or prepare, upgrade test or publish) fails on a v* tag, the release is left as
   # a draft and `latest` keeps serving the previous version - correct, but SILENT.
   # GitHub's default failure email only reaches whoever pushed the tag, if their
   # personal notification settings allow it. Open (or comment on) a tracking issue
@@ -1048,7 +1164,7 @@ jobs:
   # This is the only signal that e.g. macOS notarization broke (Apple agreement
   # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
   notify-release-failure:
-    needs: [prepare-release, setup-matrix, build, openapi-asset, publish-release]
+    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke, publish-release]
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
@@ -1065,14 +1181,15 @@ jobs:
           gh label create release-failure --repo "$REPO" --color B60205 --force \
             --description "A release build failed; the release is stuck as a draft" || true
           cat > /tmp/release_failure.md <<EOF
-          The build for **$TAG** failed, so the release was left as a **draft and not published**.
+          The build or upgrade test for **$TAG** failed, so the release was left as a **draft and not published**.
 
           \`releases/latest\` still serves the previous complete release (no 404 window), but **$TAG will not ship on any platform until the build is fixed and the tag is re-pushed**.
 
           - Failed run: $RUN_URL
-          - Check which platform failed in the logs (e.g. macOS notarization / an expired Apple agreement).
+          - Check which platform or upgrade test failed in the logs (e.g. macOS notarization / an expired Apple agreement).
 
           Re-pushing the tag after a fix re-drafts and re-publishes automatically once every platform succeeds.
+          If this version is already on PyPI and only publishing the release failed, re-run just the failed jobs of this run; a version on PyPI is never built again.
           EOF
           TITLE="Release build failed: $TAG"
           EXISTING=$(gh issue list --repo "$REPO" --state open --label release-failure \

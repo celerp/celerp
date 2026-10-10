@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from celerp_inventory.routes import resolve_item_by_code
+from test_helpers import merge_items, sell_item
 
 
 async def _company_id(session, entity_id: str):
@@ -207,8 +208,7 @@ async def test_merge_carries_gtin_not_epc(client):
         headers=h,
     )).json()["id"]
 
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": [src_a, src_b], "target_sku_from": src_a},
         headers=h,
     )
@@ -406,16 +406,7 @@ async def test_customer_return_parcel_inherits_gtin_fresh_barcode_no_epc(client,
               "rfid_epc": "SOLDTAG"},
         headers=h,
     )).json()["id"]
-    await client.post(f"/items/{sold}/status", headers=h, json={"new_status": "sold"})
-
-    inv = (await client.post(
-        "/docs",
-        json={"doc_type": "invoice", "line_items": [
-            {"name": "Returnable", "sku": "W-RET-G", "quantity": 1, "unit_price": 50, "sell_by": "unit"}],
-         "subtotal": 50, "tax": 0, "total": 50},
-        headers=h,
-    )).json()["id"]
-    await client.post(f"/docs/{inv}/finalize", headers=h)
+    inv = await sell_item(client, h, sold, unit_price=50.0)
 
     cn = (await client.post(
         "/docs",

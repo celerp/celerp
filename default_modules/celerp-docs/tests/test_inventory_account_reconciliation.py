@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 """Inventory-account reconciliation: COGS relieves the SAME account goods are capitalised into
-(1130-P), not the orphan 1300. A buy->sell round-trip nets the inventory account to the unsold value."""
+(1130-OB for stock entered by hand), not the orphan 1300. A buy->sell round-trip nets the inventory account to the unsold value."""
 from __future__ import annotations
 
 import uuid
@@ -37,12 +37,12 @@ async def _ledger_balance(client, t, code) -> float:
 @pytest.mark.asyncio
 async def test_cogs_relieves_same_account_goods_are_capitalised_to(client):
     t = await _register(client)
-    # Stock an item with a known cost (qty 10 @ cost 10 -> cost_total 100), debiting inventory 1130-P
-    # would normally happen on receive; here create the item directly with cost and sell part of it.
+    # Stock an item with a known cost (qty 10 @ cost 10 -> cost_total 100). Stock entered by hand
+    # sits on opening inventory 1130-OB.
     item = (await client.post("/items", headers=_h(t), json={
         "status": "available", "sku": "RECON-1", "name": "Widget", "quantity": 10, "sell_by": "piece", "cost_total": 100})).json()["id"]
 
-    # Sell 10 @ price 20 -> COGS 100. Finalizing posts the COGS legs (Dr 5100 / Cr 1130-P)
+    # Sell 10 @ price 20 -> COGS 100. Finalizing posts the COGS legs (Dr 5100 / Cr 1130-OB)
     # on the invoice JE, alongside revenue and AR; fulfillment no longer posts COGS.
     doc = (await client.post("/docs", headers=_h(t), json={"doc_type": "invoice", "line_items": [
         {"entity_id": item, "sku": "RECON-1", "name": "Widget", "quantity": 10, "unit_price": 20, "sell_by": "piece"}],
@@ -52,7 +52,7 @@ async def test_cogs_relieves_same_account_goods_are_capitalised_to(client):
     assert r.status_code == 200, r.text
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
-    # COGS relieves inventory at 1130-P (the canonical goods account), never the orphan 1300.
+    # COGS relieves inventory on the lot's own account, never the orphan 1300.
     cogs_je = next(e for e in ledger
                    if any(x.get("account") == "5100" for x in (e["data"].get("entries") or [])))
     dr = {}
@@ -61,7 +61,7 @@ async def test_cogs_relieves_same_account_goods_are_capitalised_to(client):
         dr[x["account"]] = dr.get(x["account"], 0.0) + float(x.get("debit", 0) or 0)
         cr[x["account"]] = cr.get(x["account"], 0.0) + float(x.get("credit", 0) or 0)
     assert round(dr.get("5100", 0.0), 2) == 100.0, dr
-    assert round(cr.get("1130-P", 0.0), 2) == 100.0, cr
+    assert round(cr.get("1130-OB", 0.0), 2) == 100.0, cr
     assert "1300" not in dr and "1300" not in cr
 
     # No JE anywhere references the orphan 1300 account.
@@ -72,7 +72,7 @@ async def test_cogs_relieves_same_account_goods_are_capitalised_to(client):
 
 @pytest.mark.asyncio
 async def test_audit_adjustment_uses_canonical_inventory_account(client):
-    """An audit stock adjustment posts shrinkage/overage against 1130-P, consistent with COGS."""
+    """An audit stock adjustment posts shrinkage/overage against the lot's account, consistent with COGS."""
     t = await _register(client)
     loc = (await client.post("/companies/me/locations", headers=_h(t),
                              json={"name": "WH", "type": "warehouse"})).json()["id"]
@@ -87,4 +87,4 @@ async def test_audit_adjustment_uses_canonical_inventory_account(client):
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
     je = next(e for e in ledger if audit in (e["data"].get("memo") or "") and e["data"].get("entries"))
     accts = {x["account"] for x in je["data"]["entries"]}
-    assert "1130-P" in accts and "1130" not in accts and "1300" not in accts
+    assert "1130-OB" in accts and "1130" not in accts and "1300" not in accts

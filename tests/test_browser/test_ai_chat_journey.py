@@ -104,7 +104,7 @@ def agent_env():
     set_session_token("test-session-token-for-browser-tests")
     _SCRIPT.clear()
     with contextlib.ExitStack() as stack:
-        stack.enter_context(patch("celerp_ai.routes.get_quota_status",
+        stack.enter_context(patch("celerp.ai.quota.get_quota_status",
                                   new=AsyncMock(return_value=_FAKE_STATUS)))
         stack.enter_context(patch.object(ai_service, "complete", _fake_complete))
         yield

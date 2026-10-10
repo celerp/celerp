@@ -26,7 +26,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from test_helpers import import_sent_po
+from test_helpers import import_sent_po, merge_items
 from ui.i18n import t
 
 # ---------------------------------------------------------------------------
@@ -672,7 +672,7 @@ async def test_crud_item_merge(client):
     h = _h(token)
     eid_a = await _item(client, token, qty=5)
     eid_b = await _item(client, token, qty=3)
-    r = await client.post("/items/merge", headers=h, json={
+    r = await merge_items(client, headers=h, json={
         "source_entity_ids": [eid_a, eid_b],
         "target_sku_from": eid_a,
     })
@@ -726,7 +726,7 @@ async def test_merge_active_count_drops_by_one(client):
     assert count_before == list_count_before, "valuation and list counts must agree before merge"
     assert available_before == count_before, "all items should be 'available' before merge"
     # Merge.
-    r = await client.post("/items/merge", headers=h, json={
+    r = await merge_items(client, headers=h, json={
         "source_entity_ids": [eid_a, eid_b],
         "target_sku_from": eid_a,
     })
@@ -766,7 +766,7 @@ async def test_merge_source_ledger_has_details(client):
     # Get source SKUs for verification.
     sku_a = (await client.get(f"/items/{eid_a}", headers=h)).json()["sku"]
     sku_b = (await client.get(f"/items/{eid_b}", headers=h)).json()["sku"]
-    r = await client.post("/items/merge", headers=h, json={
+    r = await merge_items(client, headers=h, json={
         "source_entity_ids": [eid_a, eid_b],
         "target_sku_from": eid_a,
     })
@@ -824,6 +824,7 @@ async def test_crud_credit_note_reduces_invoice_outstanding(client):
     token = await _reg(client)
     h = _h(token)
     inv_id = await _invoice(client, token, subtotal=100, tax=0, total=100)
+    assert (await client.post(f"/docs/{inv_id}/finalize", headers=h)).status_code == 200
     r = await client.post(
         "/docs",
         headers=h,
@@ -831,13 +832,16 @@ async def test_crud_credit_note_reduces_invoice_outstanding(client):
             "doc_type": "credit_note",
             "original_doc_id": inv_id,
             "reason": "return",
-            "line_items": [],
-            "subtotal": 0,
+            "line_items": [{"name": "Refund", "quantity": 1, "unit_price": 30, "line_total": 30}],
+            "subtotal": 30,
             "tax": 0,
             "total": 30,
         },
     )
     assert r.status_code == 200
+    assert (await client.get(f"/docs/{inv_id}", headers=h)).json()["amount_outstanding"] == 100
+    f = await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)
+    assert f.status_code == 200, f.text
     inv_state = (await client.get(f"/docs/{inv_id}", headers=h)).json()
     assert inv_state["amount_outstanding"] == 70
 
@@ -1269,13 +1273,14 @@ async def test_wf_manufacturing_list_contains_order(client):
     token = await _reg(client)
     h = _h(token)
     raw_id = await _item(client, token, qty=10, sku="RAW-LIST")
+    made_id = await _item(client, token, qty=0, sku="FG-LIST")
     order = await client.post(
         "/manufacturing",
         headers=h,
         json={
             "description": "List Test",
             "inputs": [{"item_id": raw_id, "quantity": 1}],
-            "expected_outputs": [{"sku": "FG-LIST", "name": "FG List", "quantity": 1}],
+            "output_item_id": made_id,
         },
     )
     oid = order.json()["id"]
@@ -1542,8 +1547,9 @@ async def test_edge_void_already_void_doc_returns_error(client):
     eid = await _invoice(client, token)
     await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "test"})
     r = await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "again"})
-    # Can void void; or 409 - implementation-dependent, just assert it doesn't crash (2xx or 409)
-    assert r.status_code in {200, 409, 422}
+    # A void document is voided once: a second void is refused and names the way back.
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.void_already_void"
 
 
 @pytest.mark.asyncio
@@ -1862,7 +1868,7 @@ async def test_ie_import_partial_with_errors_reports_them(client):
     assert result["created"] == 1
     assert result["skipped"] == 1
     assert len(result.get("errors", [])) == 1
-    assert "not import-safe" in result["errors"][0]
+    assert "not import-safe" in result["errors"][0]["message"]
 
 
 @pytest.mark.asyncio
@@ -1963,7 +1969,7 @@ async def test_ie_import_with_source_ts(client):
         "entity_id": f"item:{uuid.uuid4()}",
         "event_type": "item.created",
         "data": {"sku": "TS-IMPORT", "name": "Timestamped", "sell_by": "piece", "quantity": 1},
-        "source": "migration",
+        "source": "import",
         "idempotency_key": uuid.uuid4().hex,
         "source_ts": "2025-01-15T10:30:00Z",
     }

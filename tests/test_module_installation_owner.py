@@ -20,7 +20,7 @@ _INSTALLATION_ACTIONS = [
     ("post", "/companies/me/modules/import-path", {"json": {"path": "/nonexistent/module"}}),
     ("post", "/companies/me/modules/buy", {"json": {"slug": "some-module"}}),
     ("post", "/companies/me/modules/marketplace-download", {"json": {"slug": "some-module"}}),
-    ("post", "/companies/me/modules/marketplace-install", {"json": {"path": "/nonexistent.zip"}}),
+    ("post", "/companies/me/modules/marketplace-install", {"json": {"ref": "mp_" + "0" * 32}}),
     ("post", "/companies/me/modules/no-such-module/delete", {}),
     ("post", "/companies/me/modules/no-such-module/purge-data", {}),
     ("post", "/system/restart", {}),

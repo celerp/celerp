@@ -14,11 +14,8 @@ that is gone, and a module's tables are never dropped while a company uses it.
 from __future__ import annotations
 
 import asyncio
-import io
 import json
-import threading
 import uuid
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -307,8 +304,6 @@ async def test_purge_first_then_cli_enable_waits_for_the_drop(committed_engine, 
     assert enabled == 1, enabled
 
 
-# ── a marketplace package that is not the module asked for is removed again ──
-
 async def test_a_change_queued_behind_a_long_holder_waits_instead_of_failing(
         committed_engine, module_dir):
     """A request connection gives up on a lock after a few seconds; a module change
@@ -332,63 +327,6 @@ async def test_a_change_queued_behind_a_long_holder_waits_instead_of_failing(
         await impatient.dispose()
     assert not isinstance(outcome, BaseException), outcome
     assert await _uses(committed_engine)
-
-
-def _staged_mismatch(tmp_path, monkeypatch) -> str:
-    """A staged marketplace download for slug acme-gadgets whose package is acme-widgets."""
-    from celerp.config import settings
-    from celerp.routers.companies import _marketplace_staging_dir
-    from celerp.services import staged_downloads
-
-    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr(f"{_NAME}/__init__.py",
-                    f'PLUGIN_MANIFEST = {{"name": "{_NAME}", "version": "1.0.0", '
-                    f'"display_name": "Acme Widgets", "table_prefix": "{_PREFIX}", '
-                    f'"company_backup": {{"{_PREFIX}things": "include"}}}}\n')
-    return staged_downloads.stage(_marketplace_staging_dir(), "acme-gadgets", buf.getvalue(),
-                                  {"is_official": False, "is_paid": False})
-
-
-async def test_enable_while_a_mismatched_marketplace_package_is_removed(
-        committed_engine, tmp_path, monkeypatch):
-    from celerp.modules import importer
-    from celerp.routers.companies import _MarketplaceInstallBody, marketplace_install
-
-    root = tmp_path / "modules"
-    root.mkdir()
-    monkeypatch.setenv("MODULE_DIR", str(root))
-    company_id = await _seed(committed_engine)
-    token = _staged_mismatch(tmp_path, monkeypatch)
-
-    loop = asyncio.get_running_loop()
-    landed, release = asyncio.Event(), threading.Event()
-    real_install = importer.install_from_zip
-
-    def _install(*args, **kwargs):
-        info = real_install(*args, **kwargs)
-        loop.call_soon_threadsafe(landed.set)
-        release.wait(timeout=30)
-        return info
-
-    monkeypatch.setattr(importer, "install_from_zip", _install)
-
-    async def install():
-        async with _factory(committed_engine)() as s:
-            return await marketplace_install(body=_MarketplaceInstallBody(token=token), session=s)
-
-    task = asyncio.create_task(install())
-    await asyncio.wait_for(landed.wait(), timeout=10)
-    rival = asyncio.create_task(_api_enable(committed_engine, company_id)())
-    await _until_blocked_or_done(committed_engine, rival)
-    release.set()
-    installed, enabled = await asyncio.wait_for(
-        asyncio.gather(task, rival, return_exceptions=True), timeout=30)
-
-    assert not (await _uses(committed_engine) and not _installed()), "a company uses a removed module"
-    assert _refused(installed, 422), installed
-    assert _refused(enabled, 404), enabled
 
 
 # ── a company backup restore that turns the module on vs delete and purge ───

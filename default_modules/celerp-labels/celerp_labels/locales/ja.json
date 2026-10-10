@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "作成できませんでした: {error}",
+  "labels.could_not_delete": "削除できませんでした: {error}",
+  "labels.could_not_save": "保存できませんでした: {error}",
+  "labels.created": "「{name}」を作成しました。",
   "labels.delete_template_confirm": "テンプレート「{name}」を削除しますか？",
   "labels.edit_name": "編集：{name}",
   "labels.height_example": "例：30",
+  "labels.name_required": "テンプレート名が必要です。",
   "labels.new_template_name": "新しいテンプレート名",
   "labels.print_labels": "ラベルを印刷",
   "labels.print_labels_heading": "ラベルの印刷 - {n} アイテム",
   "labels.remove_field": "フィールドを削除",
   "labels.selected": "選択済み：{ids}{more}",
+  "labels.template_deleted": "テンプレートを削除しました。",
+  "labels.template_not_found": "テンプレートが見つかりません。",
   "labels.width_example": "例：50"
 }

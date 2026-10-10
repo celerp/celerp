@@ -61,6 +61,26 @@ def test_fallback_uses_quantity_for_the_sell_by_measure():
     assert measure_sublines(line, item_meta=meta) == ["- 3 carat"]
 
 
+def test_a_part_of_a_lot_does_not_show_the_whole_lot_measure():
+    # A line for 2 of a 5-stone, 15 ct lot: the lot's weight is not the line's, and what
+    # the part weighs is unknown, so it shows nothing rather than 15 ct.
+    meta = {"qty_is_pieces": True, "qty_is_weight": False, "quantity": 5,
+            "pieces": 5, "weight": 15.0, "weight_unit": "carat"}
+    line = {"unit": "piece", "quantity": 2}
+    pieces, weight, _wu, _qip, _qiw = resolve_line_measures(line, item_meta=meta)
+    assert pieces == 2 and weight is None
+    assert measure_sublines(line, item_meta=meta) == []
+    other = {"qty_is_pieces": False, "qty_is_weight": False, "quantity": 5,
+             "pieces": 5, "weight": 10.0, "weight_unit": "gram"}
+    assert resolve_line_measures({"unit": "liter", "quantity": 2}, item_meta=other)[:2] == (None, None)
+
+
+def test_a_line_for_the_whole_lot_shows_the_lot_measure():
+    meta = {"qty_is_pieces": True, "qty_is_weight": False, "quantity": 5,
+            "pieces": 5, "weight": 15.0, "weight_unit": "carat"}
+    assert measure_sublines({"unit": "piece", "quantity": 5.0}, item_meta=meta) == ["- 15 carat"]
+
+
 def test_weight_sold_uses_sell_by_as_weight_unit():
     # A weight-sold item has no separate weight_unit; its unit IS the sell_by, and
     # the weight value mirrors the quantity (shown locked in the draft cell).

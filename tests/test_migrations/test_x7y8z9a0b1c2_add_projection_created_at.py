@@ -180,3 +180,29 @@ def test_migration_downgrade_drops_column(sync_db):
     # at minimum imports and defines downgrade without error.
     import celerp.migrations.versions.x7y8z9a0b1c2_add_projection_created_at as mig
     assert callable(mig.downgrade)
+
+
+def test_the_real_upgrade_backfills_each_projection_from_its_first_event(sync_db):
+    """The migration itself, run through an alembic Operations context, not a copy of its SQL."""
+    from .conftest import run_migration_ops
+
+    cid = str(uuid.uuid4())
+    eid, lone = f"item:{uuid.uuid4()}", f"item:{uuid.uuid4()}"
+    with sync_db.begin() as conn:
+        for ts in ("2026-01-02T10:00:00+00", "2026-01-01T10:00:00+00"):
+            conn.execute(text(
+                "INSERT INTO ledger (entity_id, company_id, entity_type, event_type, ts) "
+                "VALUES (:e, :c, 'item', 'item.updated', :ts)"
+            ), {"e": eid, "c": cid, "ts": ts})
+        for e in (eid, lone):
+            conn.execute(text(
+                "INSERT INTO projections (entity_id, company_id, entity_type, state) VALUES (:e, :c, 'item', '{}')"
+            ), {"e": e, "c": cid})
+
+    run_migration_ops(sync_db, "x7y8z9a0b1c2_add_projection_created_at")
+
+    with sync_db.connect() as conn:
+        rows = dict(conn.execute(text(
+            "SELECT entity_id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24') FROM projections"
+        )).all())
+    assert rows == {eid: "2026-01-01 10", lone: None}

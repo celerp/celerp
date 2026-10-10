@@ -486,7 +486,7 @@ def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypat
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", target)
 
-    asyncio.run(backup_import._run_pg_restore(dump, target))
+    backup.restore_database_file(dump, target)
     asyncio.run(backup_import._reconcile_schema())
 
     after = snapshot(target)
@@ -705,7 +705,7 @@ def test_restored_backup_carries_its_record(scratch, tmp_path, monkeypatch):
             conn.execute(sa.text("DROP SCHEMA public CASCADE"))
             conn.execute(sa.text("CREATE SCHEMA public"))
         engine.dispose()
-        asyncio.run(backup_import._run_pg_restore(dump, target))
+        backup.restore_database_file(dump, target)
         return target
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)

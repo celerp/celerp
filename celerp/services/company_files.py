@@ -17,7 +17,6 @@ import shutil
 import uuid
 from pathlib import Path
 
-from celerp.ai import files as ai_files
 from celerp.config import settings
 from celerp.services import attachments, import_stage
 from celerp.services import migration_scan_store as store
@@ -43,6 +42,7 @@ async def delete_company_data(company_id, run_ids: list[str]) -> None:
 
     Every kind is attempted even when another fails; then raises if any failed, so the
     caller's cleanup task stays for a retry that repeats only what is left."""
+    from celerp.ai import files as ai_files
     steps = [
         *((f"migration run {run_id}", lambda r=run_id: asyncio.to_thread(store.remove_run_dir, uuid.UUID(r)))
           for run_id in run_ids),

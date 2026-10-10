@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
 from test_money_stock_and_contact_invariants import _account_net
 
 

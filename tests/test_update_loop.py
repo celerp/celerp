@@ -13,8 +13,7 @@ from sqlalchemy import select, update as sa_update
 from celerp.models.company import Company
 from celerp.models.notification import Notification
 from celerp.services import update
-from ui.i18n import localize_notification
-from test_helpers import register_admin
+from test_helpers import notice_in, register_admin
 
 # 20:30 UTC is 03:30 in Bangkok (inside the window) and outside it in UTC.
 BANGKOK_NIGHT = datetime(2026, 9, 26, 20, 30, tzinfo=timezone.utc)
@@ -109,11 +108,11 @@ async def test_notifies_every_company_once(client, session, cfg_dir, ok, title):
     # The API carries readable text and the message key the UI translates from.
     shown = (await client.get("/notifications", headers=headers)).json()["items"]
     assert [n["title"] for n in shown] == [title]
-    assert shown[0]["message_key"] == ("notif.update_ok" if ok else "notif.update_failed")
+    assert shown[0]["i18n"]["title"] == ("notif.update_ok" if ok else "notif.update_failed") + ".title"
     if not ok:
         assert "still on 1.0.0" in shown[0]["body"] and "not changed" in shown[0]["body"]
         assert update.reason_text("install_failed") in shown[0]["body"]
-        german = localize_notification(shown[0], "de")
+        german = notice_in("de", shown[0])
         assert german["title"] == "Celerp konnte nicht auf 1.1.0 aktualisiert werden"
         assert "die neue Version konnte nicht installiert werden" in german["body"]
         assert "Ihre Daten wurden nicht geändert" in german["body"]

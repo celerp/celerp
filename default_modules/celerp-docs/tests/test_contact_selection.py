@@ -112,7 +112,7 @@ async def test_invoice_selection_applies_every_default_in_one_event(client):
     h = await _owner(client)
     item_id = await _item(client, h)
     cid = await _contact(client, h, name="Euro Buyer", company_name="Euro Buyer SA",
-                         email="buyer@example.test", phone="+33 1", tax_id="FR1",
+                         email="buyer@example.test", phone="+33 1 23 45 67 89", tax_id="FR1",
                          currency="EUR", price_list="Wholesale", payment_terms="Net 30")
     await _add_addresses(client, h, cid)
     doc_id = await _doc(client, h, item_id, conversion_rate=1.1)
@@ -126,7 +126,7 @@ async def test_invoice_selection_applies_every_default_in_one_event(client):
     assert doc["contact_name"] == "Euro Buyer"
     assert doc["contact_company_name"] == "Euro Buyer SA"
     assert doc["contact_email"] == "buyer@example.test"
-    assert doc["contact_phone"] == "+33 1"
+    assert doc["contact_phone"] == "+33 1 23 45 67 89"
     assert doc["contact_tax_id"] == "FR1"
     assert "1 Bill St" in doc["contact_billing_address"]
     assert "2 Ship Rd" in doc["contact_shipping_address"]
@@ -346,7 +346,7 @@ async def test_contact_without_currency_keeps_the_draft_currency(client):
 @pytest.mark.asyncio
 async def test_clearing_the_contact_clears_the_snapshot(client):
     h = await _owner(client)
-    cid = await _contact(client, h, name="Gone Soon", email="gone@example.test", phone="1")
+    cid = await _contact(client, h, name="Gone Soon", email="gone@example.test", phone="081 234 5678")
     await _add_addresses(client, h, cid)
     doc_id = await _doc(client, h, None)
     assert (await _select(client, h, "docs", doc_id, cid)).status_code == 200

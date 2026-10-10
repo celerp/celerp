@@ -97,7 +97,7 @@ async def test_close_refused_counts_pending(client):
 
     r = await client.post(f"/docs/{memo}/close", headers=h, json={})
     assert r.status_code == 409, r.text
-    assert "2" in r.json()["detail"]
+    assert "2" in r.json()["detail"]["message"]
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert doc.get("status") != "closed"
     assert "doc.closed" not in await _events(client, h, memo)

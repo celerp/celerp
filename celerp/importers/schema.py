@@ -572,6 +572,12 @@ class ReconciliationMeasure(StrEnum):
     SETTLEMENT_ALLOCATION = "settlement_allocation"
 
 
+# Measures whose figure is a count or a quantity. A currency on one of them says which
+# documents were counted; it is not the figure's unit.
+COUNTED_MEASURES = frozenset({ReconciliationMeasure.DOCUMENT_COUNT, ReconciliationMeasure.DOCUMENT_STATUS,
+                              ReconciliationMeasure.INVENTORY_QUANTITY})
+
+
 class ReconciliationExpectation(BaseModel):
     """One source-side figure the destination must reproduce."""
     measure: ReconciliationMeasure
@@ -579,7 +585,7 @@ class ReconciliationExpectation(BaseModel):
     currency: str | None = None
     expected: CIFDecimal
     tolerance: CIFTolerance
-    label: str = ""                           # display only: the source's own name for the record keyed
+    label: str = ""                           # display only: the source's own name for the keyed record
     credit_normal: bool = False               # display only: a credit balance is this figure's normal side
 
 

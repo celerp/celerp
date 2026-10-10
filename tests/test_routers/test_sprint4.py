@@ -223,14 +223,14 @@ async def test_void_paid_doc_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_void_already_void_is_ok(client):
-    """Voiding a void document still succeeds (backend allows it)."""
+async def test_void_already_void_is_refused(client):
+    """Voiding a void document is refused: unvoid is the way back."""
     token = await _register(client)
     eid = await _create_invoice(client, token)
     await client.post(f"/docs/{eid}/void", headers=_h(token), json={})
     r = await client.post(f"/docs/{eid}/void", headers=_h(token), json={})
-    # Should be 200 (or 409 - the backend currently allows it)
-    assert r.status_code in (200, 409)
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.void_already_void"
 
 
 @pytest.mark.asyncio

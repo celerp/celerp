@@ -11,6 +11,8 @@ import asyncio
 import pytest
 from sqlalchemy import text
 
+from celerp.services.company_backup import RESTORE_RUNNING
+
 from company_backup_support import company, download, owner, snapshot, token
 from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, real_client, real_engine  # noqa: F401
 from test_company_backup_ui import (  # noqa: F401
@@ -138,7 +140,9 @@ async def test_two_restores_at_once_make_one_company(real_client, real_engine, m
                                    real_client.post(RESTORE, json=_confirm(second)))
 
     assert sorted(r.status_code for r in results) == [201, 409], [r.text for r in results]
-    assert [r.json()["detail"] for r in results if r.status_code == 409] == [HAS_COMPANY]
+    # Refused while the first runs, or once it has made the company.
+    [refusal] = [r.json()["detail"] for r in results if r.status_code == 409]
+    assert refusal in {RESTORE_RUNNING, HAS_COMPANY}, refusal
     assert [n for _, n in await _companies(real_engine)] == [NAME]
 
 

@@ -33,6 +33,13 @@ async def _register(client, suffix: str = "") -> str:
     return r.json()["access_token"]
 
 
+async def _product(client, token: str, sku: str) -> str:
+    """An item for a run to make."""
+    r = await client.post("/items", headers=_h(token), json={"sku": sku, "name": sku, "quantity": 0, "sell_by": "piece", "status": "available"})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
 def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
@@ -202,8 +209,8 @@ class TestManufacturingProjectionHandler:
 
     def test_bom_events_no_longer_routed_to_this_handler(self):
         # The standalone BOM entity was retired and the bom.* prefix is no longer registered to
-        # this handler; historical bom.* events fall through to the engine's default merge on
-        # replay (see test_bom_removed). Calling this handler with one is now an error.
+        # this handler; the kernel replays historical bom.* events as that release applied them
+        # (see test_bom_removed). Calling this handler with one is now an error.
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
         with pytest.raises(ValueError, match="Unsupported mfg event"):
             apply_manufacturing_event({"sku": "X", "quantity": 1}, "bom.created", {"name": "old"})
@@ -267,13 +274,12 @@ class TestProjectionEngineSlotDispatch:
         )
         assert result["quantity"] == 7
 
-    def test_engine_mfg_event_falls_through_to_passthrough_when_no_slot(self):
-        """Without mfg slot, mfg.* has no built-in handler — falls through to passthrough."""
+    def test_engine_mfg_event_without_its_slot_is_refused(self):
+        """Without the mfg slot nothing applies mfg.* events, so applying one is refused
+        rather than merged into the state unread."""
         from celerp.projections.engine import ProjectionEngine
-        result = ProjectionEngine._apply({"existing": "data"}, "mfg.order.created", {"description": "x"})
-        # Passthrough merge: no entity_type set (no handler ran the proper logic)
-        assert result["description"] == "x"
-        assert "entity_type" not in result  # Confirms handler was not invoked
+        with pytest.raises(ValueError, match="No enabled module applies mfg.order.created"):
+            ProjectionEngine._apply({"existing": "data"}, "mfg.order.created", {"description": "x"})
 
     def test_engine_module_handler_takes_precedence_over_builtin(self):
         """Module handler for a prefix beats any built-in with same prefix."""
@@ -301,33 +307,20 @@ class TestProjectionEngineSlotDispatch:
         finally:
             pass  # teardown_method clears slots
 
-    def test_engine_bad_handler_path_logs_and_skips(self):
-        """A malformed handler path is logged and skipped; falls through to built-in."""
+    @pytest.mark.parametrize("contribution, event_type, data", [
+        ({"prefix": "mfg.", "handler": "nonexistent.module:no_such_func"}, "mfg.order.created", {"description": "y"}),
+        ({"handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event"}, "item.consumed",
+         {"quantity_consumed": 1}),
+        ({"prefix": "mfg."}, "mfg.order.created", {"description": "z"}),
+    ], ids=["bad_handler_path", "missing_prefix", "missing_handler"])
+    def test_engine_malformed_contribution_is_skipped_and_the_event_refused(self, contribution, event_type, data):
+        """A malformed projection_handler contribution is logged and skipped; with nothing
+        else applying the event, applying it is refused."""
         from celerp.modules.slots import register
-        register("projection_handler", {
-            "prefix": "mfg.",
-            "handler": "nonexistent.module:no_such_func",
-            "_module": "bad-module",
-        })
+        register("projection_handler", {**contribution, "_module": "bad-module"})
         from celerp.projections.engine import ProjectionEngine
-        # Should not raise — bad handler is skipped, falls through to passthrough
-        result = ProjectionEngine._apply({"x": 1}, "mfg.order.created", {"description": "y"})
-        assert result["description"] == "y"
-
-    def test_engine_missing_prefix_key_is_skipped(self):
-        from celerp.modules.slots import register
-        register("projection_handler", {"handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event", "_module": "x"})
-        from celerp.projections.engine import ProjectionEngine
-        # Should not raise
-        result = ProjectionEngine._apply({}, "item.consumed", {"quantity_consumed": 1})
-        assert isinstance(result, dict)
-
-    def test_engine_missing_handler_key_is_skipped(self):
-        from celerp.modules.slots import register
-        register("projection_handler", {"prefix": "mfg.", "_module": "x"})
-        from celerp.projections.engine import ProjectionEngine
-        result = ProjectionEngine._apply({}, "mfg.order.created", {"description": "z"})
-        assert isinstance(result, dict)
+        with pytest.raises(ValueError, match=f"No enabled module applies {event_type}"):
+            ProjectionEngine._apply({"x": 1}, event_type, data)
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +358,7 @@ class TestManufacturingModuleHTTP:
             json={
                 "description": "Make FG",
                 "inputs": [{"item_id": item_id, "quantity": 2}],
-                "expected_outputs": [{"sku": "FG1", "name": "Finished 1", "quantity": 1}],
+                "output_item_id": await _product(client, token, "FG1"),
             },
         )
         assert r.status_code == 200
@@ -379,7 +372,7 @@ class TestManufacturingModuleHTTP:
     @pytest.mark.asyncio
     async def test_full_order_lifecycle(self, client):
         token = await _register(client, "lifecycle")
-        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-L", "name": "Raw L", "quantity": 10, "sell_by": "piece"})
+        item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-L", "name": "Raw L", "quantity": 10, "sell_by": "piece", "cost_price": 4.0})
         item_id = item_r.json()["id"]
 
         # Create
@@ -389,7 +382,7 @@ class TestManufacturingModuleHTTP:
             json={
                 "description": "Full lifecycle",
                 "inputs": [{"item_id": item_id, "quantity": 3}],
-                "expected_outputs": [{"sku": "OUT-L", "name": "Output L", "quantity": 1}],
+                "output_item_id": await _product(client, token, "OUT-L"),
             },
         )
         assert order_r.status_code == 200
@@ -400,9 +393,12 @@ class TestManufacturingModuleHTTP:
         assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "in_progress"
         assert (await client.get(f"/items/{item_id}", headers=_h(token))).json()["quantity"] == 7  # 10 - 3
 
-        # Complete -> finishes the run.
+        # Complete -> receives the product, carrying the components' value, and finishes the run.
         assert (await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})).status_code == 200
-        assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "completed"
+        run = (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()
+        assert run["status"] == "completed" and run["received_qty"] == 1.0
+        lot = (await client.get(f"/items/{run['receipts'][0]['lot_item_id']}", headers=_h(token))).json()
+        assert lot["cost_total"] == 12.0
 
     @pytest.mark.asyncio
     async def test_cannot_complete_order_twice(self, client):
@@ -413,7 +409,7 @@ class TestManufacturingModuleHTTP:
         order_r = await client.post(
             "/manufacturing", headers=_h(token),
             json={"description": "Twice", "inputs": [{"item_id": item_id, "quantity": 2}],
-                  "expected_outputs": [{"sku": "OUT-T", "name": "Out T", "quantity": 1}]},
+                  "output_item_id": await _product(client, token, "OUT-T")},
         )
         oid = order_r.json()["id"]
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
@@ -429,7 +425,7 @@ class TestManufacturingModuleHTTP:
         order_r = await client.post(
             "/manufacturing", headers=_h(token),
             json={"description": "CC", "inputs": [{"item_id": item_id, "quantity": 1}],
-                  "expected_outputs": [{"sku": "OUT-CC", "name": "Out CC", "quantity": 1}]},
+                  "output_item_id": await _product(client, token, "OUT-CC")},
         )
         oid = order_r.json()["id"]
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
@@ -443,7 +439,7 @@ class TestManufacturingModuleHTTP:
                                      json={"status": "available", "sku": "RAW-IC", "name": "Raw IC", "quantity": 5, "sell_by": "piece"})).json()["id"]
         oid = (await client.post("/manufacturing", headers=_h(token),
                json={"description": "IC", "inputs": [{"item_id": item_id, "quantity": 1}],
-                     "expected_outputs": [{"sku": "OUT-IC", "name": "Out IC", "quantity": 1}]})).json()["id"]
+                     "output_item_id": await _product(client, token, "OUT-IC")})).json()["id"]
         await client.post(f"/manufacturing/{oid}/cancel", headers=_h(token), json={"reason": "x"})
         assert (await client.post(f"/manufacturing/{oid}/issue", headers=_h(token))).status_code == 409
 
@@ -456,7 +452,7 @@ class TestManufacturingModuleHTTP:
         order_r = await client.post(
             "/manufacturing", headers=_h(token),
             json={"description": "SC", "inputs": [{"item_id": item_id, "quantity": 1}],
-                  "expected_outputs": [{"sku": "OUT-SC", "name": "Out SC", "quantity": 1}]},
+                  "output_item_id": await _product(client, token, "OUT-SC")},
         )
         oid = order_r.json()["id"]
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
@@ -476,7 +472,7 @@ class TestManufacturingModuleHTTP:
         item_id = item_r.json()["id"]
         oid = (await client.post("/manufacturing", headers=_h(token),
                json={"description": "Hold flow", "inputs": [{"item_id": item_id, "quantity": 1}],
-                     "expected_outputs": [{"sku": "OUT-H", "name": "Out H", "quantity": 1}]})).json()["id"]
+                     "output_item_id": await _product(client, token, "OUT-H")})).json()["id"]
         await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
         # Hold -> on_hold; cannot resume something not on hold; resume -> in_progress.
         assert (await client.post(f"/manufacturing/{oid}/hold", headers=_h(token), json={"reason": "wait"})).status_code == 200
@@ -492,10 +488,10 @@ class TestManufacturingModuleHTTP:
         item_r = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "RAW-SF", "name": "Raw SF", "quantity": 9, "sell_by": "piece"})
         item_id = item_r.json()["id"]
 
-        def _mk(desc):
-            return client.post("/manufacturing", headers=_h(token),
+        async def _mk(desc):
+            return await client.post("/manufacturing", headers=_h(token),
                                json={"description": desc, "inputs": [{"item_id": item_id, "quantity": 1}],
-                                     "expected_outputs": [{"sku": f"O-{desc}", "name": desc, "quantity": 1}]})
+                                     "output_item_id": await _product(client, token, f"O-{desc}")})
         planned = (await _mk("p")).json()["id"]
         prog = (await _mk("ip")).json()["id"]
         await client.post(f"/manufacturing/{prog}/start", headers=_h(token))

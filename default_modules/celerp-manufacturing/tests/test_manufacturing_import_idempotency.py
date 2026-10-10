@@ -35,13 +35,15 @@ async def test_manufacturing_import_batch_idempotency(client, session):
     token = await make_authed_token(session, str(user_id), str(company_id), "admin")
     headers = {"Authorization": f"Bearer {token}"}
 
+    made = (await client.post("/items", headers=headers, json={
+        "sku": "IMP-FG", "name": "Made", "quantity": 0, "sell_by": "piece"})).json()["id"]
     entity_id = "mfg-test-" + uuid.uuid4().hex[:8]
     payload = {
         "records": [
             {
                 "entity_id": entity_id,
                 "event_type": "mfg.order.created",
-                "data": {"description": "Import order", "inputs": [], "expected_outputs": []},
+                "data": {"description": "Import order", "inputs": [], "output_item_id": made},
                 "source": "import",
                 "idempotency_key": "mfg-created-" + entity_id,
             }

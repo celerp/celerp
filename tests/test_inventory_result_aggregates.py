@@ -249,10 +249,10 @@ async def test_price_totals_round_in_company_currency(client, seeded_currency, r
 
 @pytest.mark.parametrize("seeded_currency", ["KWD", "CLF", "USD"], indirect=True)
 async def test_filtered_totals_agree_with_store_valuation(client, seeded_currency):
-    # Stocked items are exactly what the valuation counts, so both must report the same
-    # totals for the same rows.
+    # Goods the company holds (stocked items and components) are exactly what the
+    # valuation counts, so both must report the same totals for the same rows.
     h = seeded_currency["admin_h"]
-    agg = (await _list(client, h, inventory_type="stocked"))["aggregates"]
+    agg = (await _list(client, h, inventory_type="stocked,component"))["aggregates"]
     r = await client.get("/items/valuation", headers=h)
     assert r.status_code == 200, r.text
     valuation = r.json()

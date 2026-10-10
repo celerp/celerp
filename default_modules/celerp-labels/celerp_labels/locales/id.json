@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "Tidak dapat membuat: {error}",
+  "labels.could_not_delete": "Tidak dapat menghapus: {error}",
+  "labels.could_not_save": "Tidak dapat menyimpan: {error}",
+  "labels.created": "'{name}' dibuat.",
   "labels.delete_template_confirm": "Hapus templat '{name}'?",
   "labels.edit_name": "Ubah: {name}",
   "labels.height_example": "misalnya 30",
+  "labels.name_required": "Nama templat wajib diisi.",
   "labels.new_template_name": "Nama templat baru",
   "labels.print_labels": "Cetak label",
   "labels.print_labels_heading": "Cetak Label - {n} item",
   "labels.remove_field": "Hapus bidang",
   "labels.selected": "Terpilih: {ids}{more}",
+  "labels.template_deleted": "Templat dihapus.",
+  "labels.template_not_found": "Templat tidak ditemukan.",
   "labels.width_example": "misalnya 50"
 }

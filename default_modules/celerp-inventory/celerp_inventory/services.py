@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
+import functools
 import hashlib
 import json
 import logging
@@ -10,12 +11,15 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp.events.engine import emit_event, find_event_by_idempotency
@@ -32,15 +36,18 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.account_roles import current_settings, is_consigned, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.money import round_basis
+from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
-from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
+from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
+from celerp.importers.tabular import SYSTEM_SKIP_COLS, CsvImportSpec, cell_error_code, finite_float
+from celerp.services.item_erasure import erased_from_connector
+from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import category_item_defaults
@@ -82,21 +89,35 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     "pieces",
     "cost_total",
     "cost_price",
-    # Status - children start as available regardless of parent's terminal status
+    "cost_base",
+    "cost_landed",
+    "landed_costs",
+    # Status - children start as available regardless of parent's terminal status, so
+    # they never carry the parent's document or line pairing either
     "status",
+    "status_doc_id",
+    "status_doc_number",
+    "status_line_entity_id",
     # Timestamps - set fresh
     "created_at",
     "updated_at",
-    # Relationship - set by split/transform logic
+    # Relationship - set by split/transform logic. A lot's lineage is its own: a part split
+    # off it records split_from, a transform's product records transformed_from, and neither
+    # inherits the lot's own.
     "parent_id",
     "parent_sku",
+    "split_from",
+    "transformed_from",
+    "transformed_into",
 })
 
 
 def lot_fields(parent_state: dict) -> dict:
     """The fields a new lot of an item inherits from it: everything but identity, quantity,
-    cost, status, timestamps and lineage, which each new lot sets for itself."""
-    return {k: v for k, v in parent_state.items() if k not in _CHILD_RESET_FIELDS}
+    cost, status, timestamps and lineage, which each new lot sets for itself. A part of
+    a lot keeps the lot's inventory account, recorded or not, so it never takes today's."""
+    return {**{k: v for k, v in parent_state.items() if k not in _CHILD_RESET_FIELDS},
+            LOT_ACCOUNT_FIELD: parent_state.get(LOT_ACCOUNT_FIELD)}
 
 
 async def _next_seq(session: AsyncSession, company_id) -> int:
@@ -145,24 +166,6 @@ async def allocate_internal_codes(session: AsyncSession, company_id, count: int 
     return codes
 
 
-async def create_item(session, company_id: str, data: dict, actor_id: str | None = None):
-    entity_id = data.get("entity_id", f"item:{uuid.uuid4()}")
-    return await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.created",
-        data=data,
-        actor_id=actor_id,
-        location_id=data.get("location_id"),
-        source="api",
-        idempotency_key=data.get("idempotency_key", str(uuid.uuid4())),
-        metadata_={},
-    )
-
-
-
 class CostRestatementConflict(ValueError):
     """A cost change whose downstream consequences cannot be reconciled exactly."""
 
@@ -178,6 +181,76 @@ def goods_basis(state: dict) -> float | None:
     if basis is None:
         basis = state.get("cost_total")
     return None if basis is None else round_basis(basis)
+
+
+@dataclass(frozen=True)
+class CostCarve:
+    """A lot's cost divided between a part leaving it and what the lot keeps: goods cost
+    (None when the lot has none) and each landed pool ("<source_bill_id>::<kind>")."""
+
+    part_goods: float | None
+    part_landed: dict[str, float]
+    rest_goods: float | None
+    rest_landed: dict[str, float]
+
+
+def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | None = None,
+               landed_of: str | None = None, landed_part: dict[str, float] | None = None) -> CostCarve:
+    """The one division of a lot's cost when ``part_qty`` of it becomes a lot of its own (a
+    split, a return to the supplier, a count). The lot keeps its quantity share of the goods
+    cost (unless ``part_goods`` names the part's) and of every landed pool, each to the cent in
+    ``currency`` (allocate_pro_rata), and the part takes the difference. The books carry
+    every lot to the cent, so the part and the lot round back to exactly what the whole
+    carried. When the whole lot divides by quantity, its whole cost is rounded once: the lot
+    keeps the cent share of goods and pools together, the share an invoice costs the same
+    units at, and its goods take what its rounded pools leave of that share. Goods going back to the supplier of bill ``landed_of`` take a share of that
+    bill's landed pools only: another bill's pool changes only with that bill. A pool named in
+    ``landed_part`` gives the part the amount named, never more than the pool holds, in place
+    of its quantity share: goods a bill added to a lot carry that bill's landed cost per unit
+    of its own goods, not per unit of the whole lot."""
+    qty = float(state.get("quantity") or 0)
+
+    def kept(amount: float) -> float:
+        if qty <= 0:
+            return 0.0
+        rest, _part = allocate_pro_rata(amount, [to_decimal(qty - part_qty), to_decimal(part_qty)], currency)
+        return to_stored_float(rest)
+
+    pools = {k: float(v or 0) for k, v in (state.get("landed_costs") or {}).items()}
+    divided = {k for k in pools if landed_of is None or k.partition("::")[0] == landed_of}
+    named = landed_part or {}
+    rest_landed = {k: (round_basis(v - min(v, max(float(named[k]), 0.0))) if k in named else kept(v))
+                   if k in divided else v for k, v in pools.items()}
+    part_landed = {k: round_basis(v - rest_landed[k]) for k, v in pools.items() if k in divided}
+    basis = goods_basis(state)
+    if basis is None:
+        return CostCarve(None, part_landed, None, rest_landed)
+    if part_goods is not None:
+        part = round_basis(part_goods)
+        return CostCarve(part, part_landed, round_basis(basis - part), rest_landed)
+    rest = kept(basis)
+    if landed_of is None and not named and basis > 0:
+        once = round_basis(kept(basis + sum(pools.values())) - sum(rest_landed.values()))
+        if 0 <= once <= basis:
+            rest = once
+    return CostCarve(round_basis(basis - rest), part_landed, rest, rest_landed)
+
+
+def cost_kept(state: dict, new_qty: float, currency: str) -> dict:
+    """The cost a lot with landed pools keeps when it falls to ``new_qty`` with no part
+    becoming a lot of its own (a count, a manual adjustment, a consumption), to the cent
+    (carve_cost), as the ``landed_costs`` and ``cost_base`` of the event that moves it; empty
+    when the lot rises, keeps its quantity, empties or has no pools. A lot that rises keeps
+    its pools as they are (units found bring no freight), and an emptied lot keeps its whole
+    unit cost for stock that comes back."""
+    old = float(state.get("quantity") or 0)
+    if not state.get("landed_costs") or old <= 0 or not 0 < float(new_qty) < old:
+        return {}
+    carve = carve_cost(state, old - float(new_qty), currency)
+    out: dict = {"landed_costs": carve.rest_landed}
+    if carve.rest_goods is not None:
+        out["cost_base"] = carve.rest_goods
+    return out
 
 
 def _basis_or_conflict(state: dict, label: str) -> float:
@@ -290,6 +363,20 @@ async def _return_after(session: AsyncSession, company_id, sku: str, after_id: i
     return None
 
 
+async def cost_can_be_restated(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
+    """Whether a later change to the lot's cost can still be carried (restate_item_cost): all
+    of its cost is on it or went whole into a merge or a sale, it was not written off, and a
+    sale is one whose cost of goods sold the change can adjust (_sale_of_lot)."""
+    status = str(state.get("status") or "").lower()
+    if status == "disposed" or not await _cost_is_traceable(session, company_id, entity_id, state):
+        return False
+    if status == "sold":
+        try:
+            await _sale_of_lot(session, company_id, entity_id, state)
+        except CostRestatementConflict:
+            return False
+    return True
+
 async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state: dict) -> _Sale:
     """How a sold lot's cost reached cost of goods sold, or CostRestatementConflict.
 
@@ -349,8 +436,9 @@ class _Restatement:
     repriced: dict[str, list[dict]]          # lot id -> per-invoice-line COGS changes
     lots: list[str]                          # the item and every merge result it reads
     docs: list[str]                          # the invoices it adjusts
-    resold: dict[str, float]                 # invoice without allocations -> COGS change
+    resold: dict[str, dict[str, float]]      # invoice without allocations -> COGS change per inventory account
     unposted: list[str]                      # lots sold by hand, whose cost no entry carries
+    sold: list[tuple[str, str, float]]       # (lot id, inventory account, change in its cost of sale)
 
 
 async def _restatement(session: AsyncSession, company_id, entity_id: str, event_type: str, data: dict,
@@ -420,7 +508,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             state = row.state or {}
             current = lot_label(state, next_id)
             succ_status = str(state.get("status") or "").lower()
-            if not await _cost_is_traceable(session, company_id, next_id, state) or succ_status == "disposed":
+            if not await cost_can_be_restated(session, company_id, next_id, state):
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, which was later split, transformed, used, or "
                     "written off, so the correction cannot be carried through it automatically"
@@ -453,8 +541,9 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     # change in its unit cost. Two invoices can both allocate one lot before either
     # ships it, so a sold lot can still be allocated on another invoice.
     repriced: dict[str, list[dict]] = {}
-    resold: dict[str, float] = {}
+    resold: dict[str, dict[str, float]] = {}
     unposted: list[str] = []
+    sold: list[tuple[str, str, float]] = []
     if cost_changed:
         for lot_id, before, after in restated:
             lot_status = str(before.get("status") or "").lower()
@@ -470,7 +559,13 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 elif sale.doc_id is None:
                     unposted.append(lot_label(before, lot_id))
                 elif not sale.allocated and change:
-                    resold[sale.doc_id] = resold.get(sale.doc_id, 0.0) + change
+                    by_account, account = resold.setdefault(sale.doc_id, {}), await sold_lot_key(
+                        session, company_id, lot_id, before)
+                    by_account[account] = by_account.get(account, 0.0) + change
+                # A consigned lot was never on the books: its cost is what is owed to the
+                # consignor, so the true-up alone moves cost of sales against that payable.
+                if sale.doc_id is not None and change and not is_consigned(before):
+                    sold.append((lot_id, sold_lot_account(before), change))
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
             allocations = await auto_je.allocations_naming_lot(session, company_id, lot_id)
             if sale.allocated:
@@ -490,7 +585,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
         label=label, successors=successors, repriced=repriced,
         lots=[eid for eid, _, _ in restated],
         docs=sorted({r["doc_id"] for records in repriced.values() for r in records} | set(resold)),
-        resold=resold, unposted=unposted,
+        resold=resold, unposted=unposted, sold=sold,
     )
 
 
@@ -504,6 +599,7 @@ async def restate_item_cost(
     actor_id,
     source: str,
     idempotency_key: str,
+    day: str | None = None,
 ) -> LedgerEntry:
     """Apply a goods-cost change to an item and carry its consequences.
 
@@ -513,7 +609,13 @@ async def restate_item_cost(
     to a result are kept. Every invoice that recognizes one of these lots - sold
     on one of its lines, or allocated to a line not yet shipped - has the change
     recorded against that line and its COGS trued up by one adjustment JE dated
-    today, leaving the invoice's own entries untouched. Every check runs before
+    ``day``, the business day of the operation making the change, or today,
+    leaving the invoice's own entries untouched. A sold lot is no longer in stock, so
+    its change in cost is first booked onto its inventory account against stock gains
+    or shrinkage (lot_origin.book_lot_value) and the true-up relieves it from there:
+    the account nets to nothing and cost of sales moves against the source leg. A
+    writer that books the value itself (lot_origin.self_booked, a production run) is
+    left to its own entries. Every check runs before
     the first event is written: the change lands with all of its consequences in
     the caller's transaction, or raises CostRestatementConflict.
     """
@@ -546,22 +648,33 @@ async def restate_item_cost(
         metadata_=_metadata(entity_id, {"cogs_unposted": plan.unposted} if plan.unposted else {}),
     )
     identity = hashlib.sha256(idempotency_key.encode()).hexdigest()[:24]
+    # A production run's completion entry books the re-cost of every lot it produced,
+    # merged or not, so the change carried into a merge result names the run too.
+    lineage = {"restated_from": entity_id}
+    if data.get("manufacturing_order_id"):
+        lineage["manufacturing_order_id"] = data["manufacturing_order_id"]
     for succ_id, basis in successors:
         await emit_event(
             session, company_id=company_id, entity_id=succ_id, entity_type="item",
             event_type="item.cost_adjusted", data={"cost_total": basis},
             actor_id=actor_id, location_id=None, source=source,
             idempotency_key=f"cost-restate:{identity}:{succ_id}",
-            metadata_=_metadata(succ_id, {"restated_from": entity_id}),
+            metadata_=_metadata(succ_id, lineage),
         )
     if plan.docs:
-        company = await session.get(Company, company_id)
-        today = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
+        if day is None:
+            company = await session.get(Company, company_id)
+            day = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
+        for lot_id, account, change in ([] if self_booked(entry) else plan.sold):
+            await book_lot_value(
+                session, company_id, actor_id, account, Decimal(str(change)),
+                je_id=f"je:auto:{lot_id}:cost-restated:{identity}", idem=f"cost-restate-value:{identity}:{lot_id}",
+                day=day, metadata={"trigger": "item.cost_restated", "item_id": entity_id, "restatement": identity})
         for doc_id in plan.docs:
             adjustment = dict(
                 session=session, company_id=company_id, user_id=actor_id, doc_id=doc_id,
                 cycle_tag=f"restate-{hashlib.sha256(f'{identity}:{doc_id}'.encode()).hexdigest()[:16]}",
-                ts=today, trigger="item.cost_restated",
+                ts=day, trigger="item.cost_restated",
                 memo=f"COGS adjustment: cost of {label} corrected",
                 context={"item_id": entity_id, "restatement": identity},
             )
@@ -595,6 +708,8 @@ async def cost_correction_notice(session: AsyncSession, company_id, entry: Ledge
     )).scalars().all()
     adjusted = []
     for metadata_ in rows:
+        if "cogs_delta" not in metadata_:
+            continue   # the sold lot's own value change, booked before its invoice is adjusted
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": metadata_.get("doc_id")})
         doc_state = (doc.state or {}) if doc is not None else {}
         adjusted.append({"doc_number": doc_state.get("doc_number") or doc_state.get("ref_id") or metadata_.get("doc_id"),
@@ -730,6 +845,15 @@ def _is_structural_product_anchor_state(state: dict) -> bool:
             state.get("transformed_from"),
         ))
     )
+
+
+def product_of_stock(entity_id: str, state: dict) -> str | None:
+    """The product that stock taken from this item is stock of, as the item records it: the
+    item itself when it is a product, else the product it links to; None when it records
+    none (units split off under another SKU, say). Never inferred from a SKU."""
+    if _is_structural_product_anchor_state(state):
+        return entity_id
+    return state.get("catalog_item_id") or state.get("parent_item_id") or None
 
 
 def _is_product_anchor_state(state: dict) -> bool:
@@ -928,6 +1052,7 @@ async def upsert_external_product(
             )
             selected_by_identity = False
         if row is not None:
+            await lock_company(session, cid)  # before the row lock (company_lock lock order)
             row = await session.get(
                 Projection,
                 {"company_id": cid, "entity_id": row.entity_id},
@@ -976,6 +1101,9 @@ async def upsert_external_product(
                 event_type="item.created", data=data, actor_id=None, location_id=None,
                 source="connector", idempotency_key=event_idem, metadata_={},
             )
+            # A store product is stock held here: it records the opening inventory account,
+            # and any value it carries is booked as opening stock.
+            await recognize_opening_lots(session, cid, [entity_id], None, f"connector:{identity}")
             await session.commit()
             return ("noop" if getattr(entry, "was_deduped", False) else "created", entity_id)
 
@@ -1796,10 +1924,56 @@ async def list_items_modified_since_last_sync(company_id: str, platform: str) ->
     )
 
 
+async def update_item_from_connector(session: AsyncSession, entity_id: str, data: dict, idempotency_key: str,
+                                 *, company_id) -> bool:
+    """Apply a changed connector re-import to the item it created, as an edit: only the
+    fields that differ, a new SKU handled like a SKU edit, and a cost change restated
+    with its consequences. An item erased meanwhile is not recreated (404). Returns
+    False when nothing differs, or when the item was moved to Deleted: the sync leaves it
+    there, and Restore is the one way back."""
+    cid = uuid.UUID(str(company_id))
+    # The company lock comes before the item's row lock, as every stock writer takes them:
+    # a sync that lowers the quantity is judged against what invoices hold under it.
+    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    state = row.state or {}
+    if is_deleted(state):
+        return False
+    current = {**state, "cost_price": _connector_unit_cost(state)}
+    fields_changed = {key: {"old": current.get(key), "new": value}
+                      for key, value in data.items() if current.get(key) != value}
+    if not fields_changed:
+        return False
+    if "quantity" in fields_changed and "cost_price" in data:
+        # A changed quantity restates the unit cost against it.
+        fields_changed["cost_price"] = {"old": current.get("cost_price"), "new": data["cost_price"]}
+    if "sku" in fields_changed and normalize_sku(state.get("sku")) != normalize_sku(data["sku"]):
+        await stamp_catalog_family_members(session, cid, entity_id, source="connector")
+    event = dict(event_type="item.updated", data={"fields_changed": fields_changed}, actor_id=None,
+                 source="connector", idempotency_key=idempotency_key)
+    if COST_ITEM_KEYS & set(fields_changed):
+        await restate_item_cost(session, cid, entity_id, **event)
+    else:
+        await emit_event(session, preserve_external_code_conflicts=True, company_id=cid, entity_id=entity_id,
+                         entity_type="item", location_id=None, metadata_={}, **event)
+    return True
+
+
+def _reported_quantity(item) -> float | None:
+    """The quantity a connector record reports, or None when it reports none. An
+    ``ItemCreate`` fills an unsent quantity with 0, so on one only a quantity the platform
+    actually sent counts; a reported zero is a change like any other."""
+    if isinstance(item, BaseModel) and "quantity" not in item.model_fields_set:
+        return None
+    return item.quantity
+
+
 async def upsert_from_connector(company_id: str, item) -> str:
     """
     Create or update an item from a connector payload. Returns the write outcome:
-    "created", "updated", or "noop" (this exact content was already applied).
+    "created", "updated", or "noop" (this exact content was already applied, or the user
+    erased the item here or moved it to Deleted).
 
     `item` must have: sku, name, idempotency_key (stable per external item).
     Optional: sale_price, quantity, cost_price, description.
@@ -1821,14 +1995,18 @@ async def upsert_from_connector(company_id: str, item) -> str:
     if item.sale_price is not None:
         data["sale_price"] = item.sale_price
         data["retail_price"] = item.sale_price   # canonical selling-price field
-    if item.quantity:
-        data["quantity"] = item.quantity
+    quantity = _reported_quantity(item)
+    if quantity is not None:
+        data["quantity"] = quantity
     if getattr(item, "cost_price", None) is not None:
         data["cost_price"] = item.cost_price     # else margin/COGS/valuation read zero cost
     if getattr(item, "description", None):
         data["description"] = item.description
 
     async with AsyncSessionLocal() as session:
+        # An item the user erased stays erased; the platform still holding it changes nothing.
+        if erased_from_connector(await current_settings(session, company_id), idem_key):
+            return "noop"
         # Derived price lists are computed from the base at read time; a store-synced price
         # must not be stored under a derived key (it would be masked on every read, then
         # resurface as a stale manual price if the factor is ever removed).
@@ -1836,11 +2014,19 @@ async def upsert_from_connector(company_id: str, item) -> str:
         derived = derived_price_keys((await get_price_config(session, company_id))[0])
         for key in derived:
             data.pop(key, None)
+        # An item with a cost is stock held on the accounting system's books: it arrives
+        # as a draft, and making it available books its value here. Without a cost there
+        # is nothing to book, so it arrives available on the opening inventory account.
+        has_cost = bool(data.get("cost_price"))
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
             event_type="item.created", idem_key=idem_key, data=data,
-            update=lambda entity_id, data, key: _update_from_connector(session, company_id, entity_id, data, key),
+            on_create={"status": "draft" if has_cost else "available"},
+            update=functools.partial(update_item_from_connector, company_id=company_id),
         )
+        if outcome == "created" and not has_cost:
+            await recognize_opening_lots(session, uuid.UUID(str(company_id)), [f"item:{idem_key}"], None,
+                                         f"connector:{idem_key}")
         await session.commit()
         return outcome
 
@@ -1851,33 +2037,6 @@ def _connector_unit_cost(state: dict):
     if state.get("cost_total") is not None and qty:
         return round(float(state["cost_total"]) / qty, 10)
     return state.get("cost_price")
-
-
-async def _update_from_connector(session, company_id, entity_id: str, data: dict, idempotency_key: str) -> str:
-    """A re-imported product changes the item it already is, as an item edit does.
-
-    Only the fields that differ are written. A cost change carries its merge and COGS
-    consequences; a changed quantity restates the unit cost against it. An item deleted
-    since it was resolved is not brought back.
-    """
-    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
-    state = row.state if row is not None else {}
-    current = {**state, "cost_price": _connector_unit_cost(state)}
-    changed = {k: {"old": current.get(k), "new": v} for k, v in data.items() if current.get(k) != v}
-    if row is not None and not changed:
-        return "noop"
-    if "quantity" in changed and "cost_price" in data:
-        changed["cost_price"] = {"old": current.get("cost_price"), "new": data["cost_price"]}
-    event = dict(
-        entity_id=entity_id, event_type="item.updated", data={"fields_changed": changed},
-        actor_id=None, source="connector", idempotency_key=idempotency_key,
-    )
-    if row is not None and changed.keys() & COST_ITEM_KEYS:
-        await restate_item_cost(session, company_id, **event)
-    else:
-        await emit_event(session, company_id=company_id, entity_type="item", location_id=None,
-                         metadata_={}, preserve_external_code_conflicts=True, **event)
-    return "updated"
 
 
 # ---------------------------------------------------------------------------
@@ -1905,7 +2064,7 @@ class BatchImportResult(BaseModel):
     created: int
     skipped: int
     updated: int = 0
-    errors: list[str]
+    errors: list[str | dict]
     batch_id: str | None = None
     # Rows an earlier run of this same import already wrote; nothing was duplicated.
     already_imported: int = 0
@@ -2450,6 +2609,9 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
         # after resolution by build_import_records, not as a mapped column.
         required={"name"},
         type_map=type_map,
+        # An item's status is set by what happens to it (sold, reserved, consigned), so a
+        # file's status column is skipped unless the user maps it.
+        skip_cols=SYSTEM_SKIP_COLS | {"status"},
     )
 
 
@@ -3413,6 +3575,8 @@ async def import_items(
         outcome.records.extend(chunk_outcome.records)
         outcome.lasting_effects |= chunk_outcome.lasting_effects
         batch_id = chunk_batch_id or batch_id
+    await recognize_opening_lots(
+        session, company_id, [r.entity_id for r in outcome.records if r.status == "created"], actor_id, batch_id)
 
     # Mutating category schemas is a settings change, so the caller's role must
     # carry manage_company_settings; without it the merge is skipped.
@@ -3424,21 +3588,8 @@ async def import_items(
             schema_changed = await _merge_category_schemas(session, company_id, inferred)
 
     counts = outcome.route_counts(cap_rejections=False)
-    reversible = False
-    if batch_id:
-        from celerp_inventory.models_import_batch import ImportBatch
-
-        batch = await session.get(ImportBatch, uuid.UUID(batch_id))
-        side_effects = bool(plan.locations_to_create or schema_changed or outcome.lasting_effects)
-        if counts["created"] or counts["updated"]:
-            # Reversible only when this run wrote the whole entry and did nothing but
-            # create its items; an entry that grew over several runs cannot show that.
-            batch.reversible = batch.row_count == counts["created"] and not counts["updated"] and not side_effects
-        elif side_effects:
-            # A retry that wrote no item can still change what Undo would leave behind
-            # (category fields it may now add, say); once not reversible, never again.
-            batch.reversible = False
-        reversible = batch.reversible
+    reversible = await _record_reversible(
+        session, batch_id, counts, bool(plan.locations_to_create or schema_changed or outcome.lasting_effects))
     await session.commit()
 
     return BatchImportResult(
@@ -3488,13 +3639,18 @@ async def adjust_item_quantity(
     source: str,
     idempotency_key: str,
 ):
-    """Set an item's quantity on hand, checked against its selling unit's decimals. The caller commits."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    """Set an item's quantity on hand, checked against its selling unit's decimals and
+    against what finalized invoices hold of it, read under the lock. Units that leave take
+    their cost to the cent (cost_kept). The caller commits."""
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row:
         current_sell_by = row.state.get("sell_by")
         unit_map = {u["name"]: u for u in await get_company_units(session, company_id)}
         if current_sell_by and current_sell_by in unit_map:
             validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
+        if "landed_costs" not in data and "cost_base" not in data:
+            from celerp.services.auto_je import company_currency
+            data = {**data, **cost_kept(row.state, data["new_qty"], await company_currency(session, company_id))}
     return await emit_event(
         session,
         company_id=company_id,
@@ -3508,6 +3664,26 @@ async def adjust_item_quantity(
         idempotency_key=idempotency_key,
         metadata_={},
     )
+
+
+def _row_refused(data: dict, reason) -> dict:
+    """Why an import row was refused, naming the row by its SKU; ``reason`` is a refusal or,
+    for a code or cost the app explains in its own words, that text."""
+    text = reason["message"] if isinstance(reason, dict) else str(reason)
+    sku = str(data.get("sku") or "?")
+    return refusal("import.row_refused", f"Row (SKU={sku}): {text}", sku=sku, refusal=reason)
+
+
+def _record_refused(entity_id: str, key: str, message: str, **params) -> dict:
+    """Why an import record was refused, naming the record by its id."""
+    return refusal("import.record_refused", f"{entity_id}: {message}", entity_id=entity_id,
+                   refusal=refusal(f"import.record.{key}", message, **params))
+
+
+def _needs_permission(fields, permission: str) -> dict:
+    names = ", ".join(sorted(fields))
+    return refusal("import.row.needs_permission", f"editing {names} requires the {permission} permission",
+                   fields=names, permission=permission)
 
 
 async def write_import_batch(
@@ -3589,12 +3765,10 @@ async def write_import_batch(
         idem_key = rec.idempotency_key
         primary = existing.get(idem_key)
 
-        managed = sorted(SYSTEM_ITEM_KEYS & set(data))
-        if managed:
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): {managed} cannot be imported; "
-                "remove these columns and import again"
-            )
+        try:
+            reject_system_item_fields(data)
+        except HTTPException as exc:
+            outcome.add(entity_id, "rejected", _row_refused(data, exc.detail))
             continue
         if data.get("category"):
             data["category"], category_error = resolve_import_category(data["category"], category_keys, category_names)
@@ -3607,12 +3781,12 @@ async def write_import_batch(
                 if primary.event_type == "item.patched" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                 continue
         elif event_type == "item.created":
             if primary is not None:
                 if primary.event_type != "item.created" or primary.entity_id != entity_id:
-                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                     continue
                 if not body.upsert:
                     outcome.add(primary.entity_id, "skipped")
@@ -3635,26 +3809,27 @@ async def write_import_batch(
                     if replay.event_type == "item.patched" and replay.entity_id == entity_id:
                         outcome.add(entity_id, "skipped")
                     else:
-                        outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                        outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                     continue
         elif event_type == "item.snapshot":
             if primary is not None:
                 if primary.event_type == "item.snapshot" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", f"{entity_id}: idempotency key was already used for another operation")
+                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
                 continue
         else:
-            outcome.add(entity_id, "rejected", f"{entity_id}: event type {event_type!r} is not import-safe")
+            outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_import_safe", f"event type '{event_type}' is not import-safe", event_type=str(event_type)))
             continue
 
         # A status changes through the status action, never through an upsert patch.
         if status and event_type != "item.patched":
             if status not in IMPORT_ITEM_STATUSES:
-                outcome.add(entity_id, "rejected",
-                    f"Row (SKU={data.get('sku', '?')}): an imported item cannot start as {status}; "
-                    f"use {', '.join(IMPORT_ITEM_STATUSES[:-1])} or {IMPORT_ITEM_STATUSES[-1]}"
-                )
+                statuses = f"{', '.join(IMPORT_ITEM_STATUSES[:-1])} or {IMPORT_ITEM_STATUSES[-1]}"
+                outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+                    "import.row.status_not_importable",
+                    f"an imported item cannot start as {status}; use {statuses}",
+                    status=status, statuses=statuses)))
                 continue
             data["status"] = status
 
@@ -3664,35 +3839,33 @@ async def write_import_batch(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if stored_proj is None or stored_proj.entity_type != "item":
-                outcome.add(entity_id, "rejected", f"{entity_id}: upsert target was not found")
+                outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_found", "upsert target was not found"))
                 continue
         else:
             existing_projection = await session.get(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if existing_projection is not None:
-                outcome.add(entity_id, "rejected", f"{entity_id}: entity already exists")
+                outcome.add(entity_id, "rejected", _record_refused(entity_id, "exists", "entity already exists"))
                 continue
+        # A refused row names its SKU, from the stored item when the row does not carry one.
+        named = {**data, "sku": data.get("sku") or ((stored_proj.state or {}).get("sku") if stored_proj is not None else None)}
 
         # Imported price values modify the same protected business data as the
         # interactive pricing surfaces. Import/export authority does not imply
         # permission to set prices.
         price_keys = price_keys_in(data, price_lists)
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): editing {sorted(price_keys)} "
-                "requires the set_inventory_prices permission"
-            )
+            outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(price_keys, "set_inventory_prices")))
             continue
 
         sell_by = str(data.get("sell_by") or "").strip()
         if event_type != "item.patched" and not sell_by:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): sell_by is required")
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.sell_by_required", "sell_by is required")))
             continue
         if sell_by and valid_units and sell_by not in valid_units:
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): sell_by '{sell_by}' is not a valid unit"
-            )
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
+                "import.row.unknown_unit", f"sell_by '{sell_by}' is not a valid unit", unit=sell_by)))
             continue
 
         if event_type == "item.patched" and stored_proj is not None:
@@ -3702,10 +3875,7 @@ async def write_import_batch(
                 if sell_by and sell_by != stored_sell_by:
                     gated.add("sell_by")
                 if gated:
-                    outcome.add(entity_id, "rejected",
-                        f"Row (SKU={data.get('sku', '?')}): editing {sorted(gated)} "
-                        "requires the edit_inventory_amounts permission"
-                    )
+                    outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(gated, "edit_inventory_amounts")))
                     continue
 
         negative_amount = None
@@ -3720,13 +3890,12 @@ async def write_import_batch(
             except (TypeError, ValueError):
                 pass
         if negative_amount is not None:
-            outcome.add(entity_id, "rejected",
-                f"Row (SKU={data.get('sku', '?')}): {negative_amount} cannot be negative"
-            )
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
+                "import.row.negative", f"{negative_amount} cannot be negative", field=negative_amount)))
             continue
-        refusal = negative_cost_error(lot_label(data, entity_id), *event_goods_costs(event_type, data))
-        if refusal:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {refusal}")
+        cost_refusal = negative_cost_error(lot_label(data, entity_id), *event_goods_costs(event_type, data))
+        if cost_refusal:
+            outcome.add(entity_id, "rejected", _row_refused(named, cost_refusal))
             continue
 
         # Creation follows the ordinary internal-code primitive, after replay
@@ -3749,7 +3918,7 @@ async def write_import_batch(
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
         except ValueError as exc:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc}")
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
 
         if event_type != "item.patched":
@@ -3761,7 +3930,7 @@ async def write_import_batch(
             try:
                 loc_id = uuid.UUID(str(raw_loc))
             except ValueError:
-                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): invalid location_id")
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.invalid_location", "invalid location_id")))
                 continue
 
         # A patched goods cost is restated like an edit on the item page (merge and
@@ -3773,7 +3942,7 @@ async def write_import_batch(
             try:
                 cost_change = _pop_cost_change(data)
             except (TypeError, ValueError):
-                outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): cost must be a number")
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.cost_not_number", "cost must be a number")))
                 continue
 
         try:
@@ -3799,12 +3968,17 @@ async def write_import_batch(
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
-            outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {exc}")
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:
+                # A refusal (goods an invoice has set aside, a change the item cannot take)
+                # is the user's to resolve, so the row says what it is.
+                outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
+                continue
             # The cause stays in the server log; the caller gets a plain row error.
             logger.exception("Item import could not write %s", entity_id)
-            outcome.add(entity_id, "failed", f"Row (SKU={data.get('sku', '?')}): the item could not be written")
+            outcome.add(entity_id, "failed", _row_refused(named, refusal("import.row.not_written", "the item could not be written")))
             continue
 
         existing[idem_key] = entry
@@ -3857,6 +4031,25 @@ async def write_import_batch(
     return outcome, (str(batch.id) if batch is not None else None)
 
 
+async def _record_reversible(session: AsyncSession, batch_id: str | None, counts: dict, side_effects: bool) -> bool:
+    """Record on the import's Import History entry whether Undo can return the company to
+    its state before it (ImportBatch.reversible), and return it."""
+    if not batch_id:
+        return False
+    from celerp_inventory.models_import_batch import ImportBatch
+
+    batch = await session.get(ImportBatch, uuid.UUID(batch_id))
+    if counts["created"] or counts["updated"]:
+        # Reversible only when this run wrote the whole entry and did nothing but
+        # create its items; an entry that grew over several runs cannot show that.
+        batch.reversible = batch.row_count == counts["created"] and not counts["updated"] and not side_effects
+    elif side_effects:
+        # A retry that wrote no item can still change what Undo would leave behind
+        # (category fields it may now add, say); once not reversible, never again.
+        batch.reversible = False
+    return batch.reversible
+
+
 async def commit_import_batch(
     session: AsyncSession,
     company_id,
@@ -3867,9 +4060,25 @@ async def commit_import_batch(
     *,
     operation_key: str | None = None,
 ) -> BatchImportResult:
-    """Write an item import batch and commit it; the route and agent transports call this."""
+    """Write an item import batch and commit it for the raw-batch route. The stock its local
+    creates bring in is booked as opening stock; a snapshot of another system's item keeps the
+    books it came with. Only a migration run writes source "migration", whose lots keep the
+    books of the system they came from, so a caller claiming it is refused."""
+    claimed = next((rec for rec in body.records if rec.source == "migration"), None)
+    if claimed is not None:
+        raise HTTPException(status_code=422, detail=refusal(
+            "import.migration_source_reserved",
+            f'{claimed.entity_id} claims source "migration": only a data migration writes that source.',
+            entity_id=claimed.entity_id))
     outcome, batch_id = await write_import_batch(
         session, company_id, user, role, settings, body, operation_key=operation_key,
     )
+    # One outcome per record, in input order: each record is judged by its own outcome, so
+    # a refused create of an item a snapshot in the same batch brought in books nothing.
+    await recognize_opening_lots(
+        session, company_id,
+        [done.entity_id for rec, done in zip(body.records, outcome.records, strict=True)
+         if done.status == "created" and rec.event_type == "item.created"],
+        user.id, batch_id)
     await session.commit()
     return BatchImportResult(**outcome.route_counts(cap_rejections=False), batch_id=batch_id)

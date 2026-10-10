@@ -13,9 +13,10 @@ const { EventEmitter } = require("events");
 
 const APP_MAIN = path.join(__dirname, "..", "app-main.js");
 
-// app-main.js keeps its window in a module variable that createWindow sets once
-// the app is ready. Tests that never make the app ready set it themselves.
-const SET_MAIN_WINDOW = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; };\n";
+// app-main.js keeps its window, servers and database in module variables that are
+// set once the app is ready. Tests that never make the app ready set them themselves.
+const SETTERS = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; };\n" +
+  ";module.exports.setServices = (api, ui, pg) => { apiProcess = api; uiProcess = ui; pgInstance = pg; };\n";
 
 // Runs app-main.js as Node would (it has a top-level return), resolving the
 // modules below to fakes and everything else normally. `app` and `extraFakes`
@@ -24,6 +25,7 @@ const SET_MAIN_WINDOW = "\n;module.exports.setMainWindow = (win) => { mainWindow
 function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resourcesPath,
                       BrowserWindow = function BrowserWindow() {} } = {}) {
   const handlers = {};
+  const listeners = {};
   const updater = new EventEmitter();
   const fakes = {
     electron: {
@@ -40,7 +42,7 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
       },
       ipcMain: {
         handle: (channel, fn) => { handlers[channel] = fn; },
-        on: () => {},
+        on: (channel, fn) => { listeners[channel] = fn; },
       },
       BrowserWindow,
       shell,
@@ -60,9 +62,10 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
   const mod = { exports: {} };
   const proc = Object.create(process, { resourcesPath: { value: resourcesPath } });
   const body = new Function("exports", "require", "module", "__filename", "__dirname", "process",
-    fs.readFileSync(APP_MAIN, "utf8") + SET_MAIN_WINDOW);
+    fs.readFileSync(APP_MAIN, "utf8") + SETTERS);
   body(mod.exports, fakeRequire, mod, APP_MAIN, path.dirname(APP_MAIN), proc);
-  return { handlers, updater, setMainWindow: mod.exports.setMainWindow };
+  return { handlers, listeners, updater, setMainWindow: mod.exports.setMainWindow,
+           setServices: mod.exports.setServices };
 }
 
 module.exports = { loadAppMain };

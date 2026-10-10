@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from test_helpers import merge_items
 
 
 async def _register(client: AsyncClient, email: str = "perishtest@test.com") -> str:
@@ -88,7 +89,7 @@ async def test_merge_different_expiry_takes_earliest(client: AsyncClient):
     id_a = await _create_item(client, token, "RICE-A", "Rice Lot A", qty=100, attrs={"expiry_date": "2026-06-01"})
     id_b = await _create_item(client, token, "RICE-B", "Rice Lot B", qty=200, attrs={"expiry_date": "2026-09-15"})
 
-    r = await client.post("/items/merge", json={
+    r = await merge_items(client, json={
         "source_entity_ids": [id_a, id_b],
         "target_sku_from": id_b,
     }, headers=_auth(token))
@@ -110,7 +111,7 @@ async def test_merge_earliest_expiry_is_min_date(client: AsyncClient):
     id_b = await _create_item(client, token, "PROD-B", "Product B", attrs={"expiry_date": "2026-12-31"})
     id_c = await _create_item(client, token, "PROD-C", "Product C", attrs={"expiry_date": "2026-07-15"})
 
-    r = await client.post("/items/merge", json={
+    r = await merge_items(client, json={
         "source_entity_ids": [id_a, id_b, id_c],
         "target_sku_from": id_b,
     }, headers=_auth(token))
@@ -135,7 +136,7 @@ async def test_merge_same_expiry_succeeds_and_preserves_attrs(client: AsyncClien
     id_b = await _create_item(client, token, "RICE-B2", "Rice Lot B", qty=500,
                                attrs={"lot_no": "B-001", "expiry_date": "2026-06-15"})
 
-    r = await client.post("/items/merge", json={
+    r = await merge_items(client, json={
         "source_entity_ids": [id_a, id_b],
         "target_sku_from": id_b,
     }, headers=_auth(token))
@@ -158,7 +159,7 @@ async def test_merge_deactivates_source_items(client: AsyncClient):
     id_tgt = await _create_item(client, token, "TGT-ITEM", "Target", qty=100,
                                  attrs={"expiry_date": "2026-06-15"})
 
-    r = await client.post("/items/merge", json={
+    r = await merge_items(client, json={
         "source_entity_ids": [id_src, id_tgt],
         "target_sku_from": id_tgt,
     }, headers=_auth(token))
@@ -180,7 +181,7 @@ async def test_merge_no_expiry_items_succeeds(client: AsyncClient):
     id_a = await _create_item(client, token, "BOLT-M8-A", "Bolt M8", qty=1000)
     id_b = await _create_item(client, token, "BOLT-M8-B", "Bolt M8", qty=500)
 
-    r = await client.post("/items/merge", json={
+    r = await merge_items(client, json={
         "source_entity_ids": [id_a, id_b],
         "target_sku_from": id_b,
     }, headers=_auth(token))

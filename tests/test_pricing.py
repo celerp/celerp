@@ -631,21 +631,20 @@ class TestInjectDefensive:
 
 @pytest.mark.asyncio
 async def test_company_settings_merge_validates_price_config(client):
+    """Price lists change only through their own route; company settings refuse them,
+    valid or not, and the route validates and normalizes."""
     h = _auth(await _register(client))
-    r = await client.patch(
-        "/companies/me",
-        json={"settings": {"price_lists": [{"name": "Retail"}, {"name": "Cost", "multiplier": 0.5}]}},
-        headers=h,
-    )
+    before = (await client.get("/companies/me/price-lists", headers=h)).json()
+    for lists in ([{"name": "Retail"}, {"name": "Cost", "multiplier": 0.5}],
+                  [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Trade", "multiplier": "0.7"}]):
+        r = await client.patch("/companies/me", json={"settings": {"price_lists": lists}}, headers=h)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["message_key"] == "company.setting_has_own_route"
+    assert (await client.get("/companies/me/price-lists", headers=h)).json() == before
+    r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "Cost", "multiplier": 0.5}])
     assert r.status_code == 422
-    # Valid config through the same door is normalized to floats
-    r = await client.patch(
-        "/companies/me",
-        json={"settings": {"price_lists": [
-            {"name": "Retail"}, {"name": "Wholesale"}, {"name": "Trade", "multiplier": "0.7"},
-        ]}},
-        headers=h,
-    )
+    r = await _set_config(client, h, price_lists=[
+        {"name": "Retail"}, {"name": "Wholesale"}, {"name": "Trade", "multiplier": "0.7"}])
     assert r.status_code == 200, r.text
     lists = (await client.get("/companies/me/price-lists", headers=h)).json()
     trade = next(pl for pl in lists if pl["name"] == "Trade")

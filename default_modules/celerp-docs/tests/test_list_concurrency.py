@@ -24,6 +24,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.lot_origin import recognize_opening_lots
 
 
 async def _seed_company(factory) -> uuid.UUID:
@@ -165,11 +166,13 @@ async def test_get_list_for_update_serializes_concurrent_writers(_db_engine):
 
 
 async def _seed_chart(factory, company_id):
-    """Give the company its default chart so the write-off account validation and the Inventory
-    credit both resolve real accounts."""
+    """Give the company its default chart and posting accounts so the write-off account
+    validation and the Inventory credit both resolve real accounts."""
+    from celerp.services.account_roles import reconcile_company
     from celerp_accounting.routes import seed_chart_of_accounts
     async with factory() as s:
         await seed_chart_of_accounts(s, company_id)
+        await reconcile_company(s, company_id)
         await s.commit()
 
 
@@ -183,6 +186,7 @@ async def _seed_item(factory, company_id, entity_id, *, quantity, cost_total, sk
             actor_id=None, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [entity_id], None, f"seed:{entity_id}")
         await s.commit()
 
 
@@ -258,7 +262,7 @@ async def test_writeoff_concurrent_same_item_two_lists_one_wins(_db_engine):
             for je in jes:
                 for e in je.state.get("entries") or []:
                     c = float(e.get("credit", 0) or 0)
-                    if e.get("account") == "1130-P" and c:
+                    if e.get("account") == "1130-OB" and c:
                         credits.append(c)
             assert credits == [50.0], f"expected one 50.0 Inventory credit, got {credits}"
 

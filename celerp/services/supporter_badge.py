@@ -16,7 +16,6 @@ import httpx
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.gateway.state import relay_http_url
 from celerp.models.supporter import SupporterBadge
 
 
@@ -63,6 +62,7 @@ async def get(session: AsyncSession, user_id: uuid.UUID) -> SupporterBadge | Non
 
 async def remove(session: AsyncSession, user_id: uuid.UUID) -> None:
     """Remove the local badge and best-effort opt out on the relay (undo)."""
+    from celerp.gateway.state import relay_http_url
     badge = await session.get(SupporterBadge, user_id)
     if badge is None:
         return

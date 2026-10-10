@@ -86,6 +86,15 @@ def action_bar(print_path: str, csv_path: str, params) -> FT:
     )
 
 
+def csv_amount(value, currency: str | None):
+    """A money cell in a report export: the currency's decimal places, with no symbol
+    or digit grouping, so a spreadsheet still reads it as a number. Kept a Decimal
+    (not text) so a negative amount is never taken for a formula by `csv_safe`."""
+    if value is None or value == "":
+        return ""
+    return round_money(value, currency or "USD")
+
+
 def csv_row(writer, cells: list) -> None:
     writer.writerow([csv_safe(c) for c in cells])
 

@@ -35,6 +35,7 @@ from ui.routes.csv_import import (
     validation_result,
 )
 from ui.i18n import t, get_lang
+from celerp.services.list_behavior import LIST_STATUSES
 
 
 _LIST_IMPORT_SPEC = CsvImportSpec(
@@ -245,9 +246,15 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
         records: list[dict] = []
+        refused: list[str] = []
         for r in rows:
             ref_id = str(r.get("ref_id", "")).strip()
             if not ref_id:
+                continue
+            status = (str(r.get("status", "")).strip() or "draft").lower()
+            if status not in LIST_STATUSES:
+                refused.append(t("lists_import.status_not_importable", ref=ref_id, status=status,
+                                 allowed=", ".join(sorted(LIST_STATUSES))))
                 continue
 
             def _f(key: str) -> float | None:
@@ -261,7 +268,7 @@ def setup_routes(app):
 
             data = {
                 "ref_id": ref_id,
-                "status": (str(r.get("status", "")).strip() or "draft").lower(),
+                "status": status,
                 "total": _f("total") or 0.0,
                 "total_weight": _f("total_weight") or 0.0,
                 "notes": str(r.get("notes", "")).strip() or None,
@@ -283,9 +290,9 @@ def setup_routes(app):
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
         updated = int(result.get("updated", 0) or 0)
-        errors = list(result.get("errors", []) or [])
+        errors = [*refused, *(result.get("errors", []) or [])]
 
-        await discard_import_csv(token, form, result)
+        await discard_import_csv(token, form, {**result, "errors": errors})
         return import_result_panel(
             created=created,
             skipped=skipped,

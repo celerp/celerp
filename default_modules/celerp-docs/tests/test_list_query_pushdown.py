@@ -250,6 +250,23 @@ async def test_list_index_counts_and_weights_utf8(client):
 
 
 @pytest.mark.asyncio
+async def test_list_index_weight_is_unknown_when_a_line_is_unweighed(client):
+    """A line with no weight makes the list's total weight unknown, never a smaller number."""
+    t = await _register(client)
+    q = await _quotation(client, t, ref_id="WT-002")
+    await _set_lines(client, t, q, [
+        {"sku": "S1", "description": "Weighed", "quantity": 1, "unit_price": 1.0, "weight_ct": "2.5"},
+        {"sku": "S2", "description": "Unweighed", "quantity": 1, "unit_price": 1.0},
+    ])
+    empty = await _quotation(client, t, ref_id="WT-003")
+    r = await client.get("/lists?q=WT-00", headers=_h(t))
+    assert r.status_code == 200, r.text
+    rows = {it["id"]: it for it in r.json()["items"]}
+    assert rows[q]["total_weight"] is None
+    assert rows[empty]["total_weight"] == 0
+
+
+@pytest.mark.asyncio
 async def test_list_export_csv_streams(client):
     """CSV export reads only the emitted columns in bounded SQL batches and streams them, never
     loading each list's whole document to write its header row."""

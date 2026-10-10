@@ -37,6 +37,8 @@ from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp import db_catalog
+from celerp.accounting_roles import refusal
 from celerp.importers.adapters.base import (
     Artifact,
     MigrationDecisions,
@@ -82,6 +84,7 @@ from celerp.modules import requirements
 from celerp.modules.registry import set_enabled
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
+from celerp.services import posting_readiness
 from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
 from celerp.services.company_lock import lock_company
@@ -142,8 +145,8 @@ IMPORT_PHASES: tuple[MigrationPhase, ...] = tuple(PHASE_GROUPS)
 
 # Tables a staged migration company may hold rows in, in safe delete order. A
 # company row in any other table means discard cannot prove the graph complete.
-_DISCARD_ORDER = ("import_batches", "ledger", "projections", "bank_accounts", "accounts", "locations",
-                  "migration_runs", "session_registry", "user_companies")
+_DISCARD_ORDER = ("import_batches", "ledger", "projections", "notifications", "bank_accounts", "accounts",
+                  "locations", "migration_runs", "session_registry", "user_companies")
 
 _BLOCKS_FULL_HISTORY = (CoverageClass.UNCLASSIFIED, CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER)
 _BLOCKS_CUTOVER = (CoverageClass.UNCLASSIFIED,)
@@ -885,6 +888,13 @@ def _rule(expectation: ReconciliationExpectation) -> tuple[str, Decimal]:
     return f"within {allowance} {tol.currency}", allowance
 
 
+def _same_places(*figures: Decimal) -> list[str]:
+    """The figures written to one number of decimal places, the most any of them carries,
+    so a row never shows 57.00 beside 57.0 and no difference is rounded away."""
+    places = max(max(0, -f.as_tuple().exponent) for f in figures)
+    return [str(f.quantize(Decimal(1).scaleb(-places))) for f in figures]
+
+
 def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict:
     rule, allowance = _rule(expectation)
     row = {"check": str(expectation.measure), "key": expectation.key, "currency": expectation.currency,
@@ -898,7 +908,8 @@ def _row(expectation: ReconciliationExpectation, actual: Decimal | None) -> dict
             row["rule"] = f"{rule}; Celerp cannot measure this figure"
         return row
     difference = actual - expectation.expected
-    row.update(celerp=str(actual), difference=str(difference))
+    source, celerp, shown = _same_places(expectation.expected, actual, difference)
+    row.update(source=source, celerp=celerp, difference=shown)
     if difference == 0:
         row["result"] = "pass"
     elif abs(difference) <= allowance:
@@ -993,9 +1004,11 @@ async def is_company_migration_staged(session: AsyncSession, company_id: uuid.UU
     return bool(await session.scalar(select(Company.is_migration_staged).where(Company.id == company_id)))
 
 
-async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
-    """Re-check verification under the company lock, then install the source's lock date and
-    activate the company in one commit, so the company never becomes normal without its lock."""
+async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: dict | None = None) -> MigrationRun:
+    """Re-check verification under the company lock, then set the posting accounts
+    (``posting_readiness.apply_choices`` with ``posting_accounts``), install the source's
+    lock date and activate the company in one commit, so the company never becomes normal
+    without its lock or the accounts its workflows post to."""
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
@@ -1007,6 +1020,11 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
             await session.commit()
             raise MigrationError(409, t("migration.err_verification_stale"))
         company = await session.get(Company, run.company_id)
+        try:
+            await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
+        except posting_readiness.ReadinessError as exc:
+            await session.rollback()
+            raise MigrationError(409, exc.detail) from None
         await add_missing_required_defaults(session, run.company_id)
         if run.source_lock_date:
             write_period_lock(company, run.source_lock_date.isoformat(), run.created_by_user_id)
@@ -1058,6 +1076,28 @@ async def company_tables(session: AsyncSession) -> list[str]:
 START_COMPANY_PAGE = "/setup/start-company"
 
 
+def _changed_outside(kind: str, table: str) -> dict:
+    """The refusal for a table changed outside Celerp (``db_catalog.changed_outside``)."""
+    if kind == "outside_reference":
+        return refusal(
+            "migration.discard_outside_reference",
+            f"This migration cannot be discarded because the table {table}, which was added outside "
+            "Celerp (by an installed module or a direct database change), refers to Celerp's "
+            "records. Nothing was deleted. Ask whoever installed that module or changed the "
+            "database to remove that reference.", table=table)
+    return refusal(
+        "migration.discard_partition_key",
+        f"This migration cannot be discarded because the table {table} was changed outside "
+        "Celerp (by an installed module or a direct database change) in a way discarding cannot "
+        "safely handle. Nothing was deleted. Ask whoever installed that module or changed the "
+        "database to fix it.", table=table)
+
+
+async def _refuse_changed_outside(session: AsyncSession) -> None:
+    if changed := await db_catalog.changed_outside(session, db_catalog.keyed(await db_catalog.read(session))):
+        raise MigrationError(409, _changed_outside(*changed))
+
+
 async def discard(session: AsyncSession, run: MigrationRun) -> str:
     """Delete a staged company and its runs, then their files; returns where the user goes next.
 
@@ -1069,6 +1109,11 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         raise MigrationError(409, t(NO_UNFINISHED))
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, t(ALREADY_RUNNING))
+    try:
+        await db_catalog.pin(session)
+    except db_catalog.TableElsewhere as exc:
+        raise MigrationError(409, _changed_outside("partition_key", exc.table)) from None
+    await _refuse_changed_outside(session)
     present = await company_tables(session)
     for table in present:
         if table in _DISCARD_ORDER or table == MigrationCleanupTask.__tablename__:
@@ -1076,8 +1121,13 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         held = await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'),
                                     {"c": str(company.id)})
         if held:
-            logger.warning("Discard refused: the company has data in %s", table)
-            raise MigrationError(409, t("migration.err_discard_unsafe"))
+            raise MigrationError(409, refusal(
+                "migration.discard_unsafe_data",
+                f"This migration cannot be discarded because the table {table} holds records of this "
+                "company that are not part of the migration, so discarding cannot safely remove them. "
+                "They usually come from an installed module or a direct database change. Nothing was "
+                "deleted. Ask whoever installed that module or changed the database to remove those "
+                "records, then discard again.", table=table))
     run_ids = list((await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id
@@ -1092,12 +1142,16 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     await session.execute(text("DELETE FROM companies WHERE id = :c"), {"c": str(company.id)})
     redirect = "/"
     if bootstrap:
-        others = await session.scalar(select(UserCompany.id).where(UserCompany.user_id == owner_id).limit(1))
-        if others is None:
-            await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": str(owner_id)})
+        gone = await session.execute(text(db_catalog.delete_users_left_without_a_company(
+            db_catalog.own_keys(await db_catalog.read(session)))), {"members": [owner_id]})
+        if gone.rowcount:
             redirect = "/setup"
     elif await first_usable_company_link(session, owner_id) is None:
         redirect = START_COMPANY_PAGE  # the login has no company left
+    # A table changed outside Celerp after the first check is reached by the deletes and
+    # kept from changing back until the commit, so checking again finds it; the deletes
+    # are then rolled back with the refusal.
+    await _refuse_changed_outside(session)
     await session.commit()
     task_id = task.id
     session.expunge_all()

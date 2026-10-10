@@ -18,7 +18,10 @@ from __future__ import annotations
 import ast
 import io
 import json
+import os
+import subprocess
 import sys
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
@@ -29,6 +32,8 @@ import pytest
 
 from celerp.modules import loader, slots
 from celerp.modules.importer import PREMIUM_MARKER, install_from_zip
+from celerp.modules.license import UNVERIFIED_MODULE_REFUSAL
+from test_modules.bytecode import plant_bytecode
 
 
 @pytest.fixture(autouse=True)
@@ -165,7 +170,7 @@ def _case_migrations_symlink_escape(base, marker, monkeypatch):
     manifest["migrations"] = "linked"
     (pkg / "__init__.py").write_text(f"PLUGIN_MANIFEST = {manifest!r}\n")
     assert not tmp_marker.exists()
-    return pkg, "outside"
+    return pkg, "Cannot check the module's files."
 
 
 def _case_route_outside_module(base, marker, monkeypatch):
@@ -205,6 +210,78 @@ def _case_unlicensed_premium(base, marker, monkeypatch):
     monkeypatch.setattr(loader, "exchange_api_key_for_jwt", lambda *a, **k: "jwt")
     monkeypatch.setattr(loader, "check_license", lambda **k: False)
     return pkg, "license"
+
+
+def _relay_identity(monkeypatch, data_dir: Path, detail: dict | None = None,
+                    licensed: bool = False, activated: bool = True) -> dict:
+    """An instance whose relay answers the Marketplace module-detail request
+    with *detail* (unreachable when None). Activated, the licence check answers
+    *licensed*; never activated, there is no token to exchange and the real
+    licence check runs. Returns the licence checks and detail requests made."""
+    from celerp.config import settings
+    import celerp.config
+
+    calls: dict = {"licence": [], "detail": []}
+
+    class _Reply(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _urlopen(url, timeout=None):
+        calls["detail"].append(str(url))
+        if detail is None:
+            raise OSError("unreachable")
+        return _Reply(json.dumps(detail).encode())
+
+    def _check_license(**kw):
+        calls["licence"].append(kw["slug"])
+        return licensed
+
+    def _no_exchange(*a, **k):
+        raise AssertionError("a never-activated instance has no token to exchange")
+
+    monkeypatch.setattr(settings, "gateway_token", "test-gateway-token" if activated else "")
+    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.invalid")
+    monkeypatch.setattr(celerp.config, "ensure_instance_id", lambda: "instance-1")
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    monkeypatch.delenv("DATA_DIR", raising=False)
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+    if activated:
+        monkeypatch.setattr(loader, "exchange_api_key_for_jwt", lambda *a, **k: "jwt")
+        monkeypatch.setattr(loader, "check_license", _check_license)
+    else:
+        monkeypatch.setattr(loader, "exchange_api_key_for_jwt", _no_exchange)
+    return calls
+
+
+def _case_celerp_name_without_a_licence(base, marker, monkeypatch):
+    pkg = _migrating_module(base, f"celerp-{_uid()}", marker)
+    _relay_identity(monkeypatch, base.parent / "data")
+    return pkg, "verify this module"
+
+
+def _case_package_of_a_core_module(root):
+    def case(base, marker, monkeypatch):
+        assert root in sys.modules
+        return _migrating_module(base, f"celerp-{_uid()}", marker,
+                                 code={f"../{root}/__init__.py": ""}), repr(root)
+    case.__name__ = f"_case_package_of_{root}"
+    return case
+
+
+def _case_package_imported_from_another_module(base, marker, monkeypatch):
+    import importlib
+
+    root = f"acme_loaded_{_uid()}"
+    other = _write_module(base.parent / "elsewhere", f"acme-{_uid()}",
+                          {"name": "other", "version": "1.0.0"}, {f"{root}/__init__.py": ""})
+    monkeypatch.syspath_prepend(str(other))
+    importlib.import_module(root)
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             code={f"../{root}/__init__.py": ""}), "already used"
 
 
 def _case_async_api_setup(base, marker, monkeypatch):
@@ -285,8 +362,17 @@ def _case_lineage_guard_wrong_arity(base, marker, monkeypatch):
                              ), "session, entry, transition"
 
 
+def _lock_as_first_party(monkeypatch, base: Path, keep=lambda pkg: True) -> None:
+    """The first-party lock lists the module folders under base that keep selects,
+    at their content when the lock is read."""
+    monkeypatch.setattr(loader, "_first_party_lock", lambda: {
+        p.name: loader.module_content_digest(p) for p in base.iterdir() if p.is_dir() and keep(p)})
+
+
 def _case_in_production_wrong_arity(base, marker, monkeypatch):
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
+    # First-party content that is not one of the listed defaults is refused, not fatal.
+    _lock_as_first_party(monkeypatch, base)
+    monkeypatch.setattr(loader, "first_party_names", lambda: frozenset())
     return _migrating_module(base, f"acme-{_uid()}", marker,
                              slots={"inventory_in_production": [{"handler": "{inner}.wip:held"}]},
                              code={"wip.py": "async def held(session, company_id, extra):\n    return 0\n"}
@@ -772,6 +858,11 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_protected_import_in_migration,
     _case_protected_import_in_init,
     _case_unlicensed_premium,
+    _case_celerp_name_without_a_licence,
+    _case_package_of_a_core_module("celerp_ai"),
+    _case_package_of_a_core_module("celerp_backup"),
+    _case_package_of_a_core_module("celerp_connectors"),
+    _case_package_imported_from_another_module,
 ], ids=lambda c: c.__name__.removeprefix("_case_"))
 async def test_refused_module_runs_no_migration_and_is_reported(
         case, _db_engine, _modules, tmp_path, monkeypatch):
@@ -861,7 +952,7 @@ async def test_second_module_shipping_the_same_import_name_is_refused(
 async def test_first_party_module_fills_a_first_party_slot(
         _db_engine, _modules, tmp_path, monkeypatch):
     """Control for the refusal above: Celerp's own module fills the slot."""
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: True)
+    _lock_as_first_party(monkeypatch, _modules)
     marker = tmp_path / "ran.txt"
     pkg, _ = _case_in_production_not_first_party(_modules, marker, monkeypatch)
 
@@ -901,7 +992,7 @@ async def test_first_party_module_claims_its_projection_prefix_first(
     uid = _uid()
     other = _projecting_module(_modules, tmp_path / "a.txt", "acme.", folder=f"acme-a{uid}")
     own = _projecting_module(_modules, tmp_path / "b.txt", "acme.", folder=f"acme-b{uid}")
-    monkeypatch.setattr(loader, "is_first_party", lambda pkg_path: pkg_path.name == own.name)
+    _lock_as_first_party(monkeypatch, _modules, lambda pkg: pkg.name == own.name)
 
     admission, loaded = await _admit_and_migrate(_db_engine, _modules, {other.name, own.name})
 
@@ -931,16 +1022,18 @@ def _official_zip(name: str, files: dict[str, str] | None = None) -> bytes:
     return buf.getvalue()
 
 
-def test_marketplace_install_keeps_reserved_prefix(_modules):
+def test_marketplace_install_keeps_reserved_prefix(_modules, tmp_path, monkeypatch):
     """The reserved prefix is the importer's rule, not a blanket ban: a module the
     Marketplace installed as official keeps its celerp- name."""
+    _relay_identity(monkeypatch, tmp_path / "data", _FREE, activated=False)
     name = f"celerp-{_uid()}"
     install_from_zip(_official_zip(name), official=True, source="marketplace")
 
     assert [a.name for a in loader.admit_modules(str(_modules), {name}).admitted] == [name]
 
 
-def test_celerp_module_copied_in_by_hand_loads(_modules):
+def test_celerp_module_copied_in_by_hand_loads(_modules, tmp_path, monkeypatch):
+    _relay_identity(monkeypatch, tmp_path / "data", _FREE, activated=False)
     name = f"celerp-{_uid()}"
     inner = name.replace("-", "_")
     _write_module(_modules, name, {"name": name, "version": "1.0.0", "api_routes": f"{inner}.api"},
@@ -984,7 +1077,8 @@ def test_celerp_module_copied_in_by_hand_cannot_take_a_default_modules_package(_
 _NOT_ITS_PACKAGE = "The package name '{}' belongs to the celerp- module of that name"
 
 
-def test_celerp_module_copied_in_by_hand_cannot_take_a_marketplace_modules_package(_modules):
+def test_celerp_module_copied_in_by_hand_cannot_take_a_marketplace_modules_package(_modules, tmp_path, monkeypatch):
+    _relay_identity(monkeypatch, tmp_path / "data", _FREE, activated=False)
     u = _uid()
     real, copy, package = f"celerp-zzz{u}", f"celerp-aaa{u}", f"celerp_zzz{u}"
     install_from_zip(_official_zip(real, {f"{package}/__init__.py": ""}),
@@ -1023,7 +1117,8 @@ def test_celerp_module_cannot_take_the_package_of_another_spelling(_modules):
     assert _NOT_ITS_PACKAGE.format(package) in admission.refused[copy]
 
 
-def test_marketplace_module_keeps_its_package_beside_another_spelling(_modules):
+def test_marketplace_module_keeps_its_package_beside_another_spelling(_modules, tmp_path, monkeypatch):
+    _relay_identity(monkeypatch, tmp_path / "data", _FREE, activated=False)
     u = _uid()
     real, copy, package = f"celerp-zz-q{u}", f"celerp-zz_q{u}", f"celerp_zz_q{u}"
     install_from_zip(_official_zip(real, {f"{package}/__init__.py": ""}),
@@ -1099,7 +1194,7 @@ _ALWAYS_EQUAL_STR = (
     + "PLUGIN_MANIFEST['api_routes'] = _Same('celerp.routers.health')\n"
     + "PLUGIN_MANIFEST['version'] = _Same('9.9.9')\n",
 ], ids=["extra-route-and-slot", "always-equal-str"])
-def test_module_rewriting_its_manifest_loads_with_the_admitted_one(_modules, rewrite):
+def test_module_rewriting_its_manifest_loads_with_the_admitted_one(_modules, rewrite, files_unchecked):
     """Admission reads the literal; a module that rewrites PLUGIN_MANIFEST while
     it imports still loads, with only what was admitted."""
     inner = f"acme_{_uid()}"
@@ -1246,7 +1341,7 @@ def test_setup_rebound_to_another_module_is_refused(_modules, tmp_path):
     assert "top-level def" in loader.load_errors()[folder]
 
 
-def test_setup_rebound_after_admission_is_refused_at_registration(_modules, tmp_path):
+def test_setup_rebound_after_admission_is_refused_at_registration(_modules, tmp_path, files_unchecked):
     """Registration proves where the setup it calls comes from, not what admission
     read: a route file changed after admission to rebind its setup to another
     module's function never runs that function as this module's."""
@@ -1298,6 +1393,230 @@ def test_protected_internal_imported_as_a_submodule_name_is_refused(_modules, tm
     assert not marker.exists()
     assert not loader.is_running(folder)
     assert "celerp.ai" in loader.load_errors()[folder]
+
+
+_GETATTR_RAISES = "class G:\n    def __getattr__(self, n):\n        raise RuntimeError('no context')\n"
+_CORE_SERVICES = ("celerp.services.company_files", "celerp.services.company_backup",
+                  "celerp.services.company_backup_files", "celerp.services.company_reset",
+                  "celerp.services.migrations", "celerp.routers.company_backup")
+
+# What a third-party module's own code does as it activates, and whether it loads
+# (True) or the text its refusal names.
+_AI = "protected BSL internals (celerp.ai)"
+_CREDENTIALS = "protected BSL internals (celerp.credentials)"
+_ISSUERS = ("issue_token_pair", "create_access_token", "create_refresh_token")
+_ACTIVATIONS = {
+    "direct-import": ("import celerp.ai.llm  # noqa: F401\n", {}, _AI),
+    "computed-import": ("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-builtin-import": ("__import__('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-importlib-import": ("import importlib\nimportlib.__import__('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-import-in-own-submodule": (
+        "from .reach import VALUE  # noqa: F401\n",
+        {"reach.py": "import importlib\nllm = importlib.import_module('celerp.' + 'ai.llm')\nVALUE = 1\n"}, _AI),
+    "computed-import-in-a-class-body": (
+        "import importlib\nclass C:\n    llm = importlib.import_module('celerp.' + 'ai.llm')\n", {}, _AI),
+    "computed-import-in-a-default": (
+        "import importlib\ndef f(llm=importlib.import_module('celerp.' + 'ai.llm')):\n    return llm\n", {}, _AI),
+    "computed-import-on-a-thread": (
+        "import importlib, threading\nt = threading.Thread(target=lambda: importlib.import_module('celerp.' + 'ai.llm'))\n"
+        "t.start()\nt.join()\n", {}, _AI),
+    "computed-import-in-a-thread-pool": (
+        "import importlib\nfrom concurrent.futures import ThreadPoolExecutor\nwith ThreadPoolExecutor(1) as pool:\n"
+        "    try:\n        pool.submit(importlib.import_module, 'celerp.' + 'ai.llm').result()\n"
+        "    except ImportError:\n        pass\n", {}, _AI),
+    "computed-import-through-asyncio-to-thread": (
+        "import asyncio, importlib\ntry:\n    asyncio.run(asyncio.to_thread(importlib.import_module, 'celerp.' + 'ai.llm'))\n"
+        "except ImportError:\n    pass\n", {}, _AI),
+    **{f"credential-issuer-{name}": (f"from celerp.credentials import {name}  # noqa: F401\n", {}, _CREDENTIALS)
+       for name in _ISSUERS},
+    "own-submodule": ("from .helper import VALUE  # noqa: F401\n", {"helper.py": "VALUE = 1\n"}, True),
+    "unusual-import-arguments": (
+        "__import__('os', 5)\nclass F:\n    def __iter__(self):\n        raise RuntimeError('no names')\n"
+        "__import__('json.decoder', fromlist=F())\n", {}, True),
+    "core-services": ("".join(f"import {s}  # noqa: F401\n" for s in _CORE_SERVICES), {}, True),
+    "core-service-called": (
+        "import asyncio\nfrom celerp.modules.api import ai_query\n"
+        "try:\n    asyncio.run(ai_query('q', 'c'))\nexcept Exception:\n    pass\n", {}, True),
+    "sys-modules-values": ("import sys\nHOLD = list(sys.modules.values())\n", {}, True),
+    "sys-modules-copy": ("import sys\nHOLD = dict(sys.modules)\n", {}, True),
+    "sys-modules-filtered": (
+        "import sys\nHOLD = [m for n, m in sys.modules.items() if n.startswith('celerp.' + 'ai')]\n", {}, True),
+    "sys-modules-lookup": ("import sys\nX = sys.modules.get('celerp.' + 'ai.llm')\n", {}, True),
+    "raising-object": (_GETATTR_RAISES + "X = G()\n", {}, True),
+    "raising-object-in-a-list": (_GETATTR_RAISES + "HOLD = [G()]\n", {}, True),
+}
+
+# The process states modules load in: the API and UI processes as they start, a
+# process that imported a protected internal first, and one that imported nothing.
+_VERDICT = """
+import faulthandler, json, sys, types
+faulthandler.dump_traceback_later(60, exit=True)
+process = sys.argv[2]
+if process == "preloaded":
+    import celerp.ai.llm  # noqa: F401
+elif process == "api":
+    import celerp.main  # noqa: F401
+elif process == "ui":
+    src = open("ui/app.py").read().split("# Register UI routes from the loaded modules.")[0]
+    app = types.ModuleType("ui.app")
+    app.__file__ = "ui/app.py"
+    sys.modules["ui.app"] = app
+    import ui  # noqa: F401
+    exec(compile(src, "ui/app.py", "exec"), app.__dict__)
+from pathlib import Path
+from celerp.modules import loader
+preloaded = bool([n for n in sys.modules if n.startswith("celerp.ai")])
+ui_routes = "celerp_ai.ui_routes" in sys.modules
+folders = set(json.loads(sys.argv[3]))
+loaded = {m["name"] for m in loader.load_all(sys.argv[1], folders)}
+errors = loader.load_errors()
+defaults = {p.name for p in Path("default_modules").iterdir() if (p / "__init__.py").exists()}
+loader.load_all("default_modules", defaults)
+print(json.dumps({"preloaded": preloaded, "ui_routes": ui_routes, "loads": {f: f in loaded for f in folders}, "errors": errors,
+                  "default_errors": loader.load_errors()}))
+"""
+_PROCESSES = ("preloaded", "fresh", "api", "ui")
+
+
+@pytest.mark.process
+@pytest.mark.timeout(120)  # four interpreters each load every default module; slower than the suite guard allows on a shared runner
+def test_module_gets_the_same_verdict_in_every_process(_modules, tmp_path):
+    """A protected import the module's own code attempts as it activates refuses it;
+    what core imports on its own behalf, and what is already loaded, do not count.
+    The API process has imported protected internals before modules load, the UI
+    process others, so each state must give every module the same verdict."""
+    import os
+    import subprocess
+
+    folders = {}
+    for case, (prelude, files, _) in _ACTIVATIONS.items():
+        folder = f"acme-{case}-{_uid()}"
+        _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                      files=files, init_prelude=prelude)
+        folders[folder] = case
+    repo = Path(__file__).resolve().parents[2]
+    # The licensed defaults ask the Marketplace; a relay address that refuses
+    # at once keeps every verdict independent of the network. With no module
+    # enabled, the UI process sets up its own routes without waiting for an API.
+    config = tmp_path / "config.toml"
+    config.write_text("[modules]\nenabled = []\n")
+    env = {**os.environ, "MODULE_DIR": str(_modules), "GATEWAY_HTTP_URL": "http://127.0.0.1:9", "GATEWAY_TOKEN": "",
+           "CELERP_CONFIG": str(config), "ENABLED_MODULES": ""}
+    logs = {p: (tmp_path / f"{p}.out", tmp_path / f"{p}.err") for p in _PROCESSES}
+    runs = {}
+    for p, (out, err) in logs.items():
+        with open(out, "w") as out_file, open(err, "w") as err_file:
+            runs[p] = subprocess.Popen([sys.executable, "-c", _VERDICT, str(_modules), p, json.dumps(list(folders))],
+                                       cwd=repo, env=env, stdin=subprocess.DEVNULL, stdout=out_file, stderr=err_file)
+    results = {}
+    for process, run in runs.items():
+        run.wait()
+        out, err = (path.read_text() for path in logs[process])
+        assert run.returncode == 0, (process, err[-4000:])
+        results[process] = json.loads(out.strip().splitlines()[-1])
+
+    assert results["preloaded"]["preloaded"] and results["api"]["preloaded"]
+    assert not results["fresh"]["preloaded"]
+    assert results["ui"]["ui_routes"]
+    expected = {case: verdict is True for case, (_, _, verdict) in _ACTIVATIONS.items()}
+    for process, result in results.items():
+        assert {folders[f]: v for f, v in result["loads"].items()} == expected, (process, result["errors"])
+        assert result["default_errors"] == {}, process
+    for folder, case in folders.items():
+        if not expected[case]:
+            assert _ACTIVATIONS[case][2] in results["fresh"]["errors"][folder], case
+
+
+def test_core_import_on_another_thread_is_not_charged_to_an_activating_module(_modules):
+    """While a module activates, core code on another thread imports a protected
+    internal; that import is not the module's, so the module still loads."""
+    import importlib
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude="import builtins\nbuiltins._acme_started.set()\nbuiltins._acme_release.wait(10)\n")
+    import builtins
+    builtins._acme_started, builtins._acme_release = started, release
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(loaded=loader.load_all(str(_modules), {folder})))
+    try:
+        worker.start()
+        assert started.wait(10)
+        importlib.import_module("celerp.ai.llm")
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        del builtins._acme_started, builtins._acme_release
+
+    assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
+
+
+def test_core_executor_job_during_an_activation_is_not_charged_to_the_module(_modules):
+    """While a module's activation is held, a core thread-pool job imports a
+    protected internal; the module did not start that work, so it still loads."""
+    import importlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    started, release = threading.Event(), threading.Event()
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude="import builtins\nbuiltins._acme_started.set()\nbuiltins._acme_release.wait(10)\n")
+    import builtins
+    builtins._acme_started, builtins._acme_release = started, release
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(loaded=loader.load_all(str(_modules), {folder})))
+    try:
+        worker.start()
+        assert started.wait(10)
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(importlib.import_module, "celerp.ai.llm").result(10)
+        release.set()
+        worker.join(10)
+    finally:
+        release.set()
+        del builtins._acme_started, builtins._acme_release
+
+    assert folder in [m["name"] for m in result["loaded"]], loader.load_errors()
+
+
+@pytest.mark.parametrize("other_state", ["disabled", "refused"])
+def test_protected_import_in_another_installed_modules_file_refuses_the_module(_modules, other_state):
+    """A file in any installed third-party module's folder is module code, whether
+    that module is enabled or not: a protected import it makes while a module
+    activates and runs it refuses the activating module."""
+    other = f"acme-other-{_uid()}"
+    _write_module(_modules, other, {"name": other, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  files={"reach.py": "import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n"},
+                  init_prelude="import celerp.ai.llm  # noqa: F401\n" if other_state == "refused" else "")
+    folder = f"acme-{_uid()}"
+    _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                  init_prelude=f"import os, runpy\nrunpy.run_path(os.path.join(os.path.dirname(os.path.dirname(__file__)), "
+                               f"{other!r}, 'reach.py'))\n")
+
+    loader.load_all(str(_modules), {folder, other} if other_state == "refused" else {folder})
+
+    assert not loader.is_running(folder)
+    assert not loader.is_running(other)
+    assert _AI in loader.load_errors()[folder]
+
+
+def test_module_with_a_linked_file_is_refused(_modules, tmp_path):
+    """A file in the module's folder that links to a file kept elsewhere cannot be
+    checked as the module's own, so the module is refused before it runs."""
+    folder = f"acme-{_uid()}"
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0", "slots": {}, "depends_on": []},
+                        init_prelude="from . import linked  # noqa: F401\n")
+    (tmp_path / "linked.py").write_text("import importlib\nimportlib.import_module('celerp.' + 'ai.llm')\n")
+    (pkg / "linked.py").symlink_to(tmp_path / "linked.py")
+
+    loader.load_all(str(_modules), {folder})
+
+    assert not loader.is_running(folder)
+    assert loader.load_errors()[folder] == "Cannot check the module's files."
 
 
 def test_locale_file_outside_the_module_is_not_registered(_modules):
@@ -1975,3 +2294,925 @@ async def test_api_serves_no_module_route_until_the_ui_has_reported(
             fence.release()
         assert (await client.get(f"/{inner}/api")).status_code == 200
     assert outcome.ui_report_applied()
+
+
+# ── A7: a celerp- module that is not a default is licence-checked by name ────
+
+
+def _premium_zip(name: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"{name}/__init__.py",
+                    f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n")
+    return buf.getvalue()
+
+
+_PAID = {"is_official": True, "price_monthly": 15}
+_FREE = {"is_official": True, "price_monthly": None, "price_once": None}
+
+
+def test_paid_module_without_its_marker_needs_a_licence(_modules, tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data", _PAID)
+    name = f"celerp-{_uid()}"
+    install_from_zip(_premium_zip(name), official=True, premium=True, source="marketplace")
+    (_modules / name / PREMIUM_MARKER).unlink()
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+    assert calls["licence"] == [name]
+
+
+def test_premium_tree_module_copied_to_the_module_dir_needs_a_licence(
+        _modules, tmp_path, monkeypatch):
+    import shutil
+
+    _relay_identity(monkeypatch, tmp_path / "data", _PAID)
+    name = f"celerp-{_uid()}"
+    premium = tmp_path / "premium_modules"
+    _write_module(premium, name, {"name": name, "version": "1.0.0"})
+    shutil.copytree(premium / name, _modules / name)
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+
+
+def test_celerp_module_with_no_verdict_is_refused_while_the_marketplace_is_unreachable(
+        _modules, tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data")
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
+    assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
+
+
+def test_unofficial_free_listing_still_needs_a_licence(_modules, tmp_path, monkeypatch):
+    _relay_identity(monkeypatch, tmp_path / "data", {"is_official": False, "price_monthly": 0})
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert "no valid license" in admission.refused[name]
+
+
+def test_free_official_module_loads_from_its_cached_verdict(_modules, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    calls = _relay_identity(monkeypatch, data, _FREE)
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert calls["licence"] == []
+    assert (data / "license_cache" / f"{name}.free.json").is_file()
+
+    # Going offline later changes nothing: the verdict is kept.
+    calls = _relay_identity(monkeypatch, data)
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert calls == {"licence": [], "detail": []}
+
+
+def test_premium_module_requires_the_normal_license_path(_modules, tmp_path, monkeypatch):
+    """A premium module requires the normal license path, whatever its listing."""
+    calls = _relay_identity(monkeypatch, tmp_path / "data", _FREE)
+    name = f"celerp-{_uid()}"
+    premium = tmp_path / "premium_modules"
+    _write_module(premium, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(premium, {name})
+
+    assert "no valid license" in admission.refused[name]
+    assert calls["licence"] == [name]
+
+
+@pytest.mark.parametrize("copy", ["premium_tree", "paid_listing"])
+def test_never_activated_install_refuses_a_copied_paid_module(
+        copy, _modules, tmp_path, monkeypatch):
+    import shutil
+
+    _relay_identity(monkeypatch, tmp_path / "data", _PAID, activated=False)
+    if copy == "premium_tree":
+        name = f"acme-{_uid()}"
+        premium = tmp_path / "premium_modules"
+        _write_module(premium, name, {"name": name, "version": "1.0.0"})
+        shutil.copytree(premium / name, _modules / name)
+        (_modules / name / PREMIUM_MARKER).write_text("")
+    else:
+        name = f"celerp-{_uid()}"
+        _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+
+
+def test_never_activated_install_loads_a_free_official_module(
+        _modules, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    calls = _relay_identity(monkeypatch, data, _FREE, activated=False)
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
+    assert (data / "license_cache" / f"{name}.free.json").is_file()
+
+
+def test_never_activated_install_refuses_with_no_verdict_while_the_marketplace_is_unreachable(
+        _modules, tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
+    assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{name}"]
+
+
+def test_licence_cache_lives_in_the_celerp_data_dir(_modules, tmp_path, monkeypatch):
+    """The desktop app sets only CELERP_DATA_DIR; every licence cache must live
+    there, so a free official module still loads after a restart offline."""
+    data = tmp_path / "celerp-data"
+    calls = _relay_identity(monkeypatch, data, _FREE)
+    monkeypatch.setenv("CELERP_DATA_DIR", str(data))
+    seen = {}
+    monkeypatch.setattr(loader, "check_license",
+                        lambda **kw: seen.setdefault("cache_dir", kw["cache_dir"]) and False)
+    free, paid = f"celerp-{_uid()}", f"celerp-{_uid()}"
+    _write_module(_modules, free, {"name": free, "version": "1.0.0"})
+    _write_module(_modules, paid, {"name": paid, "version": "1.0.0"})
+    (_modules / paid / PREMIUM_MARKER).write_text("")
+
+    admission = loader.admit_modules(_modules, {free, paid})
+    assert [m.name for m in admission.admitted] == [free]
+    assert (data / "license_cache" / f"{free}.free.json").is_file()
+    assert Path(seen["cache_dir"]) == data
+
+    # A restart offline.
+    calls = _relay_identity(monkeypatch, data)
+    monkeypatch.setenv("CELERP_DATA_DIR", str(data))
+    assert [m.name for m in loader.admit_modules(_modules, {free}).admitted] == [free]
+    assert calls["detail"] == []
+
+
+def _marketplace_install(base: Path, name: str) -> Path:
+    """A free official module as the Marketplace installed it before verdicts
+    were recorded: the folder and its install metadata, no verdict anywhere."""
+    pkg = _write_module(base, name, {"name": name, "version": "1.0.0"})
+    (pkg / ".celerp-meta.json").write_text(json.dumps(
+        {"source": "marketplace", "installed_at": "2026-09-01T00:00:00+00:00"}))
+    return pkg
+
+
+# Module metadata a module folder may carry.
+_METADATA = {
+    "marketplace": {"source": "marketplace", "installed_at": "2026-09-01T00:00:00+00:00"},
+    "marketplace_extra_field": {"source": "marketplace", "installed_at": "2026-09-01T00:00:00+00:00",
+                                "paid": False},
+    "marketplace_listing_fields": {"source": "marketplace", "paid": False, "free": True,
+                                   "is_official": True, "is_paid": False},
+    "community": {"source": "community"},
+    "sideloaded": {"source": "sideloaded"},
+    "none": None,
+}
+
+
+@pytest.mark.parametrize("metadata", list(_METADATA))
+@pytest.mark.parametrize("activated", [True, False], ids=["activated", "never_activated"])
+def test_module_metadata_does_not_affect_admission(
+        activated, metadata, _modules, tmp_path, monkeypatch):
+    """Module metadata does not affect admission: with no free verdict kept, no
+    licence and the Marketplace unreachable, a celerp- module is refused, and no
+    verdict is written."""
+    data = tmp_path / "data"
+    name = f"celerp-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    if _METADATA[metadata] is not None:
+        (pkg / ".celerp-meta.json").write_text(json.dumps(_METADATA[metadata]))
+    calls = _relay_identity(monkeypatch, data, activated=activated)
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
+    assert calls["licence"] == ([name] if activated else [])
+    assert not (data / "license_cache" / f"{name}.free.json").exists()
+
+
+def test_marketplace_install_from_before_verdicts_needs_the_marketplace_once(
+        _modules, tmp_path, monkeypatch):
+    """A free module the Marketplace installed before verdicts were kept loads on
+    the first start that reaches the Marketplace, and offline from then on."""
+    data = tmp_path / "data"
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    _relay_identity(monkeypatch, data, _FREE, activated=False)
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+
+    calls = _relay_identity(monkeypatch, data, activated=False)
+    assert [m.name for m in loader.admit_modules(_modules, {name}).admitted] == [name]
+    assert calls["detail"] == []
+
+
+@pytest.mark.parametrize("detail", [_PAID, {"is_official": False, "price_monthly": None}],
+                         ids=["paid", "unofficial"])
+def test_marketplace_install_takes_the_licence_check_once_the_marketplace_says_not_free(
+        detail, _modules, tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data", detail)
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    admission = loader.admit_modules(_modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+    assert calls["licence"] == [name]
+
+
+def test_marketplace_install_stays_on_the_licence_check_offline_once_the_marketplace_said_not_free(
+        _modules, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+    _relay_identity(monkeypatch, data, _PAID, activated=False)
+    assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
+
+    _relay_identity(monkeypatch, data, activated=False)
+    assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
+    assert not (data / "license_cache" / f"{name}.free.json").exists()
+
+
+@pytest.mark.parametrize("copy", ["marker_deleted", "copied_without_marker"])
+def test_paid_marketplace_install_without_its_marker_is_refused_offline(
+        copy, _modules, tmp_path, monkeypatch):
+    import shutil
+
+    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    name = f"celerp-{_uid()}"
+    install_from_zip(_premium_zip(name), official=True, premium=True, source="marketplace")
+    modules = _modules
+    if copy == "marker_deleted":
+        (_modules / name / PREMIUM_MARKER).unlink()
+    else:
+        modules = tmp_path / "other-install"
+        shutil.copytree(_modules / name, modules / name,
+                        ignore=shutil.ignore_patterns(PREMIUM_MARKER))
+
+    admission = loader.admit_modules(modules, {name})
+
+    assert admission.admitted == []
+    assert admission.refused[name] == UNVERIFIED_MODULE_REFUSAL
+
+
+def test_marketplace_install_unknown_to_the_marketplace_takes_the_licence_check(
+        _modules, tmp_path, monkeypatch):
+    import urllib.error
+
+    calls = _relay_identity(monkeypatch, tmp_path / "data")
+
+    def _not_found(url, timeout=None):
+        raise urllib.error.HTTPError(str(url), 404, "Not Found", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", _not_found)
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    assert "no valid license" in loader.admit_modules(_modules, {name}).refused[name]
+    assert calls["licence"] == [name]
+
+
+def test_unconfirmed_module_refusal_is_not_shown_as_a_licence_on_another_computer(
+        _modules, tmp_path, monkeypatch):
+    """The modules page keeps its move-your-licence prompt for paid modules; a
+    module the Marketplace could not yet confirm as free gets a plain reason."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.modules_page import _local_panel
+
+    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    name = f"celerp-{_uid()}"
+    _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    refusal = loader.admit_modules(_modules, {name}).refused[name]
+
+    row = {"name": name, "label": name, "version": "1.0.0", "author": "",
+           "enabled": True, "running": False, "is_default": False, "load_error": refusal}
+    html = to_xml(_local_panel([row], "en", owner=True))
+
+    assert "module-license-upsell" not in html
+    assert "bought it on" not in html
+
+
+@pytest.mark.parametrize("activated", [True, False], ids=["activated", "never_activated"])
+def test_unverified_module_is_shown_as_not_loaded_with_its_reason(
+        activated, _modules, tmp_path, monkeypatch):
+    """A celerp- module installed before verdicts were kept, started offline:
+    Celerp keeps running, the module is not running, and the modules page shows
+    the reason with the failed badge."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.modules_page import _local_panel
+
+    _relay_identity(monkeypatch, tmp_path / "data", activated=activated)
+    name = f"celerp-{_uid()}"
+    _marketplace_install(_modules, name)
+
+    assert loader.load_all(_modules, {name}) == []
+
+    assert not loader.is_running(name)
+    assert loader.load_errors()[name] == UNVERIFIED_MODULE_REFUSAL
+    row = {"name": name, "label": name, "version": "1.0.0", "author": "",
+           "enabled": True, "running": loader.is_running(name), "is_default": False,
+           "load_error": loader.load_errors().get(name)}
+    html = to_xml(_local_panel([row], "en", owner=True))
+    assert "Connect once to verify this module, then restart. It will work offline afterward." in html
+    assert "badge--danger" in html
+    assert "badge--active" not in html
+
+
+def test_refusal_log_says_why_the_module_did_not_load(_modules, tmp_path, monkeypatch, caplog):
+    _relay_identity(monkeypatch, tmp_path / "data", activated=False)
+    unconfirmed, paid = f"celerp-{_uid()}", f"celerp-{_uid()}"
+    _write_module(_modules, unconfirmed, {"name": unconfirmed, "version": "1.0.0"})
+    pkg = _write_module(_modules, paid, {"name": paid, "version": "1.0.0"})
+    (pkg / PREMIUM_MARKER).write_text("")
+
+    with caplog.at_level("WARNING", logger="celerp.modules.loader"):
+        loader.admit_modules(_modules, {unconfirmed, paid})
+
+    lines = {r.args[0]: r.getMessage() for r in caplog.records
+             if r.name == "celerp.modules.loader" and r.args}
+    assert lines[paid].startswith("Premium module")
+    assert not lines[unconfirmed].startswith("Premium module")
+    assert "could not confirm" in lines[unconfirmed]
+
+
+def _legacy_licence(legacy: Path, slug: str, entry: dict) -> None:
+    (legacy / "license_cache").mkdir(parents=True, exist_ok=True)
+    (legacy / "license_cache" / f"{slug}.json").write_text(json.dumps(entry))
+
+
+@pytest.mark.parametrize("kind", ["lifetime", "grace"])
+def test_paid_licence_kept_in_the_old_cache_dir_still_loads_offline(
+        kind, _modules, tmp_path, monkeypatch):
+    """Licences kept in the old default data dir are carried into the data dir,
+    so a paid module still loads on the first offline start after the update."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from jose import jwt as jose_jwt
+
+    from celerp.modules import license as lic
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    priv = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                             serialization.NoEncryption()).decode()
+    monkeypatch.setattr(lic, "_LICENSE_PUBLIC_KEY", key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode())
+    data, legacy = tmp_path / "data", tmp_path / "legacy"
+    slug = f"celerp-{_uid()}"
+    pkg = _write_module(_modules, slug, {"name": slug, "version": "1.0.0"})
+    (pkg / PREMIUM_MARKER).write_text("")
+    if kind == "lifetime":
+        token = jose_jwt.encode({"kind": "lifetime", "mod": slug, "sub": "instance-1",
+                                 "iss": "celerp-relay"}, priv, algorithm="ES256")
+        entry = {"licensed": True, "status": "active", "cached_at": 0,
+                 "license_kind": "lifetime", "license_jwt": token}
+    else:
+        entry = {"licensed": True, "status": "active", "cached_at": time.time(),
+                 "license_kind": "subscription", "license_jwt": ""}
+    _legacy_licence(legacy, slug, entry)
+    _relay_identity(monkeypatch, data, activated=False)
+    monkeypatch.setenv("DATA_DIR", str(legacy))
+
+    admission = loader.admit_modules(_modules, {slug})
+
+    assert [m.name for m in admission.admitted] == [slug], admission.refused
+    assert json.loads((data / "license_cache" / f"{slug}.json").read_text()) == entry
+
+
+def test_old_cache_dir_never_replaces_a_licence_already_in_the_data_dir(
+        _modules, tmp_path, monkeypatch):
+    data, legacy = tmp_path / "data", tmp_path / "legacy"
+    slug = f"celerp-{_uid()}"
+    pkg = _write_module(_modules, slug, {"name": slug, "version": "1.0.0"})
+    (pkg / PREMIUM_MARKER).write_text("")
+    _legacy_licence(legacy, slug, {"licensed": True, "status": "active",
+                                   "cached_at": time.time()})
+    current = {"licensed": False, "status": "cancelled", "cached_at": time.time()}
+    _legacy_licence(data, slug, current)
+    _relay_identity(monkeypatch, data, activated=False)
+    monkeypatch.setenv("DATA_DIR", str(legacy))
+
+    assert "no valid license" in loader.admit_modules(_modules, {slug}).refused[slug]
+    assert json.loads((data / "license_cache" / f"{slug}.json").read_text()) == current
+
+
+def test_old_cache_dir_carries_no_free_verdict(_modules, tmp_path, monkeypatch):
+    data, legacy = tmp_path / "data", tmp_path / "legacy"
+    slug = f"celerp-{_uid()}"
+    _write_module(_modules, slug, {"name": slug, "version": "1.0.0"})
+    _legacy_licence(legacy, f"{slug}.free", {"free": True})
+    _relay_identity(monkeypatch, data, activated=False)
+    monkeypatch.setenv("DATA_DIR", str(legacy))
+
+    assert loader.admit_modules(_modules, {slug}).refused[slug] == UNVERIFIED_MODULE_REFUSAL
+    assert not (data / "license_cache" / f"{slug}.free.json").exists()
+
+
+def test_startup_fetches_missing_verdicts_for_installed_celerp_modules(
+        _modules, tmp_path, monkeypatch):
+    """Every installed celerp- module that is not a default and has no verdict
+    gets one while online, enabled or not, so it loads later offline."""
+    data = tmp_path / "data"
+    calls = _relay_identity(monkeypatch, data, _FREE, activated=False)
+    fresh, known, other = f"celerp-{_uid()}", f"celerp-{_uid()}", f"acme-{_uid()}"
+    for name in (fresh, known, other):
+        _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    (data / "license_cache").mkdir(parents=True)
+    (data / "license_cache" / f"{known}.free.json").write_text('{"free": true}')
+
+    loader.fetch_missing_free_verdicts(str(_modules))
+
+    assert calls["detail"] == [f"https://relay.invalid/marketplace/modules/{fresh}"]
+    assert (data / "license_cache" / f"{fresh}.free.json").is_file()
+
+
+def test_startup_fetch_leaves_defaults_and_the_premium_tree_alone(tmp_path, monkeypatch):
+    calls = _relay_identity(monkeypatch, tmp_path / "data", _FREE, activated=False)
+    premium = tmp_path / "premium_modules"
+    name = f"celerp-{_uid()}"
+    _write_module(premium, name, {"name": name, "version": "1.0.0"})
+    default = sorted(loader.first_party_names())[0]
+    _write_module(premium, default, {"name": default, "version": "1.0.0"})
+
+    loader.fetch_missing_free_verdicts(str(premium))
+
+    assert calls["detail"] == []
+
+
+def test_default_names_are_not_licence_checked(tmp_path):
+    """Control: the defaults Celerp ships load without a Marketplace round trip."""
+    def _no_relay():
+        raise AssertionError("a default module asked for relay credentials")
+
+    for name in sorted(loader.first_party_names()):
+        module = loader.AdmittedModule(name, tmp_path / name, {}, False, "")
+        assert loader._license_refusal(module, _no_relay) is None
+
+
+async def test_celerp_module_restored_from_a_backup_needs_a_licence(tmp_path, monkeypatch):
+    import asyncio
+    import tarfile
+
+    from celerp import __version__
+    from celerp.config import settings
+    from celerp.services import backup_import
+    from celerp.services.backup import dump_database
+
+    modules = tmp_path / "modules"
+    monkeypatch.setenv("MODULE_DIR", str(modules))
+    _relay_identity(monkeypatch, tmp_path, _PAID)
+    name = f"celerp-{_uid()}"
+    meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
+                       "created_at": "2026-10-06T00:00:00Z", "company_name": "T"}).encode()
+    init = f"PLUGIN_MANIFEST = {{'name': {name!r}, 'version': '1.0.0'}}\n".encode()
+    archive = tmp_path / "backup.celerp-backup"
+    with tarfile.open(archive, mode="w:gz") as tar:
+        for member, body in [("database.dump", dump_database(settings.database_url)), ("meta.json", meta),
+                             (f"modules/{name}/__init__.py", init)]:
+            info = tarfile.TarInfo(member)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    prepared = await backup_import.prepare_recovery(archive)
+    try:
+        await asyncio.to_thread(backup_import._swap_roots, prepared)
+    finally:
+        backup_import._remove_staging(prepared.root)
+    assert (modules / name / "__init__.py").is_file()
+
+    admission = loader.admit_modules(modules, {name})
+
+    assert admission.admitted == []
+    assert "no valid license" in admission.refused[name]
+
+
+_HELD_PROTECTED_NAMES = """
+import enum, importlib, inspect, pkgutil, sys, types
+from pathlib import Path
+from celerp.modules.loader import _PROTECTED_BSL_INTERNALS
+
+def protected(name):
+    return any(name == p or name.startswith(p + ".") for p in _PROTECTED_BSL_INTERNALS)
+
+def fail(name):
+    raise ImportError(name)
+
+def sources(value, seen):
+    # Where a module or function comes from, for the value itself or anything a
+    # dict, list, tuple, set or frozenset holds, at any depth. Nothing else is
+    # looked into.
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        if id(value) in seen:
+            return
+        seen.add(id(value))
+        items = [x for pair in dict.items(value) for x in pair] if isinstance(value, dict) else value
+        for item in items:
+            yield from sources(item, seen)
+    elif isinstance(value, types.ModuleType):
+        yield value.__name__
+    elif inspect.isclass(value) and issubclass(value, enum.Enum):
+        return
+    elif callable(value):
+        yield getattr(value, "__module__", None) or ""
+
+def packages():
+    if len(sys.argv) > 1:
+        sys.path.insert(0, sys.argv[1])
+        return [importlib.import_module(p.parent.name) for p in sorted(Path(sys.argv[1]).glob("*/__init__.py"))]
+    import celerp, ui
+    found = [celerp, ui]
+    for folder in sorted(Path("default_modules").iterdir()):
+        for inner in sorted(folder.glob("*/__init__.py")):
+            if inner.parent.name == "tests":
+                continue
+            sys.path.insert(0, str(folder.resolve()))
+            found.append(importlib.import_module(inner.parent.name))
+    return found
+
+held = []
+for pkg in packages():
+    for info in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + ".", onerror=fail):
+        if protected(info.name) or ".migrations.versions." in info.name:
+            continue
+        for name, value in vars(importlib.import_module(info.name)).items():
+            if any(protected(source) for source in sources(value, set())):
+                held.append(f"{info.name}.{name}")
+print("\\n".join(held))
+"""
+
+
+def _held_protected_names(*folder: Path) -> list[str]:
+    """The names holding a protected module or function, in the repo's packages or
+    in the packages in *folder*."""
+    import os
+    import subprocess
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    out = subprocess.run([sys.executable, "-c", _HELD_PROTECTED_NAMES, *map(str, folder)], env=env,
+                         cwd=Path(__file__).resolve().parents[2],
+                         capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr[-3000:]
+    return out.stdout.split()
+
+
+def test_core_modules_import_protected_functions_where_they_are_used():
+    """Protected functions are imported inside the code that uses them, so no core
+    module and no bundled first-party module holds one, or a protected module,
+    among its names, directly or in a container. Enum value classes are data, not
+    functions, and are not counted."""
+    assert _held_protected_names() == []
+
+
+def test_protected_names_held_in_containers_are_found(tmp_path):
+    pkg = tmp_path / f"held_{_uid()}"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "holder.py").write_text(
+        "import celerp.ai.llm\n"
+        "from celerp.ai.llm import __name__ as _text\n"
+        "NESTED = {'a': [({1: celerp.ai.llm},)]}\n"
+        "KEYED = {frozenset({celerp.ai.llm}): 1}\n"
+        "LOOP = []\n"
+        "LOOP.append(LOOP)\n"
+        "LOOP.append({'inner': (LOOP, {celerp.ai.llm})})\n"
+        "PLAIN = [_text, {'k': ('celerp.ai.llm',)}]\n"
+        "del celerp\n")
+
+    held = _held_protected_names(tmp_path)
+
+    assert held == [f"{pkg.name}.holder.{n}" for n in ("NESTED", "KEYED", "LOOP")]
+
+
+
+# ── A8: Python runs exactly the files admission checked ─────────────────────
+
+
+@pytest.fixture
+def _first_party(tmp_path, monkeypatch):
+    """Lock the given module folders as first-party, at their current content."""
+    lock_file = tmp_path / "fp.lock.json"
+    monkeypatch.setattr(loader, "_lock_path", lambda: lock_file)
+
+    def lock(*pkgs: Path) -> None:
+        lock_file.write_text(json.dumps({p.name: loader.module_content_digest(p) for p in pkgs}))
+        loader._first_party_lock.cache_clear()
+
+    yield lock
+    loader._first_party_lock.cache_clear()
+
+
+def _bytecode_left(pkg: Path) -> list[str]:
+    return sorted(str(p.relative_to(pkg)) for p in pkg.rglob("*")
+                  if p.name == "__pycache__" or p.suffix == ".pyc")
+
+
+def test_compiled_files_are_removed_before_the_module_runs(_modules, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": "", f"{inner}/sub/__init__.py": ""})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    (pkg / inner / "sub" / "__pycache__").mkdir()
+    (pkg / inner / "sub" / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"\x00")
+    (pkg / inner / "stale.pyc").write_bytes(b"\x00")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "kept.pyc").write_bytes(b"\x00")
+    (pkg / inner / "__pycache__").symlink_to(outside, target_is_directory=True)
+    (pkg / inner / "linked.pyc").symlink_to(outside / "kept.pyc")
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+    assert not (pkg / inner / "__pycache__").is_symlink()
+    assert not (pkg / inner / "linked.pyc").is_symlink()
+    assert (outside / "kept.pyc").is_file()
+
+
+def test_module_whose_compiled_files_are_still_present_after_removal_is_refused(
+        _modules, tmp_path, monkeypatch):
+    """Whether the bytecode is gone is decided by looking again after removing it."""
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    monkeypatch.setattr(loader.shutil, "rmtree", lambda *args, **kwargs: None)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert loaded == []
+    assert not marker.exists()
+    assert loader.load_errors()[folder] == "Cannot remove compiled Python files from the module."
+
+
+@pytest.mark.parametrize("trusted", [False, True], ids=["third_party", "first_party"])
+@pytest.mark.parametrize("where", ["beside_source", "configured_cache_dir"])
+def test_planted_bytecode_never_runs_in_place_of_the_checked_source(
+        where, trusted, _modules, tmp_path, monkeypatch, _first_party):
+    """Valid bytecode left for the module and for an inner package it imports never runs;
+    the checked source does."""
+    prefix = str(tmp_path / "cache") if where == "configured_cache_dir" else None
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", prefix)
+    source, cached = tmp_path / "source.txt", tmp_path / "cached.txt"
+    folder, inner = f"acme-{_uid()}", f"acme_{_uid()}"
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"},
+                        {f"{inner}/__init__.py": _marker_line(source)},
+                        init_prelude=f"import {inner}\n{_marker_line(source)}")
+    if trusted:
+        _first_party(pkg)
+    for path in (pkg / "__init__.py", pkg / inner / "__init__.py"):
+        plant_bytecode(path, _marker_line(cached), pycache_prefix=prefix)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [(m["name"], m["first_party"]) for m in loaded] == [(folder, trusted)]
+    assert source.read_text() == "ran\nran\n"
+    assert not cached.exists()
+
+
+@pytest.fixture
+def _stuck_bytecode():
+    """Make a module's bytecode impossible to remove, and undo that afterwards."""
+    stuck: list[Path] = []
+
+    def stick(pkg: Path) -> None:
+        cache = pkg / "__pycache__"
+        cache.mkdir()
+        (cache / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+        cache.chmod(0o500)
+        stuck.append(cache)
+
+    yield stick
+    for cache in stuck:
+        cache.chmod(0o700)
+
+
+def test_loading_a_module_writes_no_compiled_files_beside_its_source(
+        _modules, tmp_path, monkeypatch):
+    """Loading a module writes no bytecode anywhere in its folder, and the process
+    writes none afterwards either."""
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", str(tmp_path / "cache"))
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": "from . import sub\n",
+                               f"{inner}/sub/__init__.py": ""})
+    (pkg / "__init__.py").write_text(
+        (pkg / "__init__.py").read_text() + f"import {inner}\n")
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+    assert sys.dont_write_bytecode is True
+    assert sys.pycache_prefix is None
+    assert not (tmp_path / "cache").exists()
+
+
+def test_module_in_a_read_only_folder_loads(_modules, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"},
+                              {f"{inner}/__init__.py": ""})
+    (pkg / "__init__.py").write_text(
+        (pkg / "__init__.py").read_text() + f"import {inner}\n")
+    dirs = [pkg, *[d for d in pkg.rglob("*") if d.is_dir()]]
+    for d in dirs:
+        d.chmod(0o555)
+    try:
+        loaded = loader.load_all(str(_modules), {folder})
+    finally:
+        for d in dirs:
+            d.chmod(0o755)
+
+    assert [m["name"] for m in loaded] == [folder]
+    assert marker.exists()
+    assert _bytecode_left(pkg) == []
+
+
+def test_module_whose_compiled_files_cannot_be_removed_is_refused(
+        _modules, tmp_path, _stuck_bytecode):
+    marker = tmp_path / "ran.txt"
+    stuck, other = f"acme-{_uid()}", f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, stuck, marker, {"name": stuck, "version": "1.0.0"})
+    _write_module(_modules, other, {"name": other, "version": "1.0.0"})
+    _stuck_bytecode(pkg)
+
+    loaded = loader.load_all(str(_modules), {stuck, other})
+
+    assert [m["name"] for m in loaded] == [other]
+    assert not marker.exists()
+    assert "Cannot remove compiled Python files" in loader.load_errors()[stuck]
+
+
+def test_default_module_whose_compiled_files_cannot_be_removed_stops_startup(
+        _modules, tmp_path, _first_party, _stuck_bytecode):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, name, marker, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    _stuck_bytecode(pkg)
+
+    with pytest.raises(loader.ModuleLoadError, match="Cannot remove compiled Python files"):
+        loader.load_all(str(_modules), {name})
+    assert not marker.exists()
+
+
+def test_module_changed_after_admission_is_refused_before_it_runs(_modules, tmp_path):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    admission = loader.admit_modules(str(_modules), {name})
+    assert [m.name for m in admission.admitted] == [name]
+    (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+
+    loaded = loader.load_all(str(_modules), {name}, admission=admission)
+
+    assert loaded == []
+    assert not marker.exists()
+    assert loader.load_errors()[name] == loader.MODULE_CHANGED
+
+
+def test_default_module_changed_after_admission_stops_startup(_modules, tmp_path, _first_party):
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    admission = loader.admit_modules(str(_modules), {name})
+    assert [m.first_party for m in admission.admitted] == [True]
+    (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+
+    with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
+        loader.load_all(str(_modules), {name}, admission=admission)
+    assert not marker.exists()
+
+
+def test_module_changed_while_it_is_checked_never_runs(_modules, tmp_path, monkeypatch, _first_party):
+    """What admission records as checked is the content the lock verified."""
+    marker = tmp_path / "ran.txt"
+    name = f"acme-{_uid()}"
+    pkg = _write_module(_modules, name, {"name": name, "version": "1.0.0"})
+    _first_party(pkg)
+    check = loader._check_slot_contracts
+
+    def change_then_check(*args, **kwargs):
+        (pkg / "__init__.py").write_text(_marker_line(marker) + (pkg / "__init__.py").read_text())
+        return check(*args, **kwargs)
+
+    monkeypatch.setattr(loader, "_check_slot_contracts", change_then_check)
+    admission = loader.admit_modules(str(_modules), {name})
+    monkeypatch.setattr(loader, "_check_slot_contracts", check)
+
+    for module in admission.admitted:
+        assert not module.first_party or module.content_digest == json.loads(
+            loader._lock_path().read_text())[name]
+    with pytest.raises(loader.ModuleLoadError, match="changed after it was checked"):
+        loader.load_all(str(_modules), {name}, admission=admission)
+    assert not marker.exists()
+
+
+def test_compiled_files_another_process_removed_first_do_not_refuse_the_module(
+        _modules, tmp_path, monkeypatch):
+    """Bytecode another worker removed while this one was removing it counts as removed."""
+    marker = tmp_path / "ran.txt"
+    folder = f"acme-{_uid()}"
+    pkg = _init_marker_module(_modules, folder, marker, {"name": folder, "version": "1.0.0"})
+    (pkg / "__pycache__").mkdir()
+    (pkg / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"\x00")
+    listing = loader._bytecode
+    calls = []
+
+    def listed_then_removed_elsewhere(path):
+        found = listing(path)
+        if not calls:
+            calls.append(found)
+            for entry in found:
+                for child in entry.iterdir():
+                    child.unlink()
+                entry.rmdir()
+        return found
+
+    monkeypatch.setattr(loader, "_bytecode", listed_then_removed_elsewhere)
+
+    loaded = loader.load_all(str(_modules), {folder})
+
+    assert [m["name"] for m in loaded] == [folder], loader.load_errors()
+    assert marker.exists()
+    assert calls and calls[0]
+
+
+_LOAD_REPEATEDLY = """
+import sys
+from pathlib import Path
+
+from celerp.config import settings
+from celerp.modules import loader
+
+base, folder, inner, data, rounds = sys.argv[1:6]
+settings.data_dir = Path(data)
+for _ in range(int(rounds)):
+    for name in [n for n in sys.modules if n == folder or n.split(".")[0] == inner]:
+        del sys.modules[name]
+    loader.load_all(base, {folder})
+    if loader.load_errors():
+        sys.exit(f"load errors: {loader.load_errors()}")
+"""
+
+
+def test_two_processes_loading_the_same_module_folder_both_load_it(_modules, tmp_path):
+    """Processes sharing a module folder (several workers) never refuse its bytecode
+    to each other, including bytecode an earlier version left in the folder."""
+    folder = f"acme-{_uid()}"
+    inner = f"acme_{_uid()}"
+    files = {f"{inner}/__init__.py": "from . import a, b\n",
+             f"{inner}/a.py": "A = 1\n", f"{inner}/b.py": "B = 2\n"}
+    pkg = _write_module(_modules, folder, {"name": folder, "version": "1.0.0"}, files,
+                        init_prelude=f"import {inner}\n")
+    for rel in ("__pycache__/__init__.cpython-312.pyc", f"{inner}/__pycache__/a.cpython-312.pyc"):
+        (pkg / rel).parent.mkdir(exist_ok=True)
+        (pkg / rel).write_bytes(b"\x00")
+    env = {**os.environ, "MODULE_DIR": str(_modules)}
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env.pop("PYTHONPYCACHEPREFIX", None)
+    procs = [subprocess.Popen(
+        [sys.executable, "-c", _LOAD_REPEATEDLY, str(_modules), folder, inner,
+         str(tmp_path / f"data{i}"), "25"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for i in range(2)]
+    outputs = [p.communicate(timeout=25)[0] for p in procs]
+
+    assert [p.returncode for p in procs] == [0, 0], outputs
+    assert _bytecode_left(pkg) == []
+

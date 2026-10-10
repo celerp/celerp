@@ -41,7 +41,8 @@ inventory_in_production
                    `async def handler(*, session, company_id) -> Decimal`, called with
                    exactly those keyword arguments: stock value an older release issued
                    to work still open, which its books still carry on the inventory
-                   accounts. Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
+                   accounts (lot_origin.in_production). Filled by Celerp's own modules only
+                   (FIRST_PARTY_SLOTS)
 item_lineage_guard {"handler": "module.path:function"} naming
                    `async def handler(*, session, entry, transition) -> None`, called
                    with exactly those keyword arguments on every live item event, after
@@ -134,11 +135,28 @@ def resolve_handler(dotted: str) -> Callable:
     return getattr(mod, func_name)
 
 
+# Slots whose handler core calls on every item write or upgrade: a contribution without a
+# "module.path:function" handler would fail every such call, so it is refused here.
+_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard"})
+
+
+def check(slot: str, contribution: dict) -> None:
+    """Raise ValueError, naming the reason, when ``contribution`` cannot fill ``slot``."""
+    if slot in _HANDLER_SLOTS:
+        handler = contribution.get("handler")
+        if not isinstance(handler, str) or ":" not in handler:
+            raise ValueError(f"Slot {slot!r} needs a \"handler\" naming \"module.path:function\".")
+    if slot in FIRST_PARTY_SLOTS and contribution.get("_first_party") is not True:
+        raise ValueError(f"Slot {slot!r} is filled by Celerp's own modules only.")
+
+
 def register(slot: str, contribution: dict) -> None:
     """Register a module contribution into a named slot.
 
-    Called by the loader for each slot declared in PLUGIN_MANIFEST["slots"].
+    Called by the loader for each slot declared in PLUGIN_MANIFEST["slots"]. A
+    contribution that cannot fill the slot is refused (``check``).
     """
+    check(slot, contribution)
     _slots.setdefault(slot, []).append(contribution)
 
 
@@ -178,22 +196,23 @@ async def _company_hooks(slot: str, kwargs: dict) -> list[dict]:
     return [c for c in contributions if uses_module(settings, c.get("_module"))]
 
 
-async def fire_lifecycle(slot: str, **kwargs) -> None:
+async def fire_lifecycle(slot: str, **kwargs) -> list[tuple[str, str]]:
     """Invoke all async callbacks registered under a lifecycle slot.
 
     Each contribution must have a "handler" key pointing to a dotted path
     "module.path:function_name". The function is called with **kwargs.
-    A failing hook never blocks its siblings or boot: it is logged at ERROR
-    (with traceback) and swallowed, so a recurrence surfaces as an alert
-    instead of vanishing. A hook given the caller's session runs in its own
-    savepoint, so a failed hook's writes are rolled back with it and the
-    caller's transaction carries on as if the hook had not run.
+    Given a ``session``, each hook runs in its own savepoint, so a hook that
+    fails rolls back only its own changes. A failing hook never blocks its
+    siblings or boot: it is logged at ERROR (with traceback) and swallowed, so a
+    recurrence surfaces as an alert instead of vanishing. Returns each failed hook's
+    module with the error it raised.
     """
     import contextlib
     import logging
 
     _log = logging.getLogger(__name__)
     session = kwargs.get("session")
+    failed: list[tuple[str, str]] = []
 
     for contrib in await _company_hooks(slot, kwargs):
         try:
@@ -201,7 +220,9 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
                         else contextlib.nullcontext()):
                 await resolve_handler(contrib["handler"])(**kwargs)
         except Exception as exc:
+            failed.append((contrib.get("_module", "?"), f"{type(exc).__name__}: {exc}"))
             _log.exception(
                 "Lifecycle hook %s from %s failed: %s",
                 slot, contrib.get("_module", "?"), exc,
             )
+    return failed

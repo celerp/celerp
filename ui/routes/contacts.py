@@ -511,7 +511,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
                 Td(format_value((d.get("doc_type") or "").replace("_", " ").title(), "badge")),
                 Td(format_value(str(d.get("issue_date") or "")[:10] or None)),
                 Td(format_value(d.get("total_amount"), "money"), cls="cell--number"),
-                Td(format_value(d.get("status"), "badge")),
+                Td(format_value(d.get("status"), "badge", domain="doc_status")),
                 cls="data-row",
             ))
         docs_section = Table(

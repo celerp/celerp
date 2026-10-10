@@ -154,10 +154,17 @@ def test_manufacturing_order_issue_complete(page, ui_server, api):
     item_id = item_r.json().get("id", item_r.json().get("entity_id", ""))
     assert item_id, f"Could not seed input item: {item_r.json()}"
 
+    output_id = api.post("/items", json={
+        "sku": _unique("MFG-LC-OUT"), "sell_by": "piece", "name": "Lifecycle Output", "quantity": 0,
+        "status": "available",
+    }).json()["id"]
+
     r = api.post("/manufacturing", json={
         "description": _unique("Lifecycle Order"),
         "order_type": "assembly",
         "inputs": [{"item_id": item_id, "quantity": 1}],
+        "output_item_id": output_id,
+        "quantity": 1,
     })
     assert r.status_code in {200, 201}, f"POST /manufacturing failed: {r.text}"
     order_id = r.json().get("id", "")
@@ -167,7 +174,7 @@ def test_manufacturing_order_issue_complete(page, ui_server, api):
     assert issue_r.status_code in {200, 204}, f"Issue failed: {issue_r.status_code}"
 
     complete_r = api.post(f"/manufacturing/{order_id}/complete")
-    assert complete_r.status_code != 500, f"Complete returned 500: {complete_r.text}"
+    assert complete_r.status_code == 200, f"Complete failed: {complete_r.text}"
 
     resp = page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     assert resp.status != 500

@@ -86,7 +86,7 @@ async def test_a_change_committed_while_the_payment_is_on_its_way_keeps_it_among
     await asyncio.wait_for(reached.wait(), 10)
     try:
         if change == "currency":
-            r = await real_client.patch("/companies/me", json={"settings": {"currency": "THB"}},
+            r = await real_client.patch("/companies/me/books", json={"currency": "THB"},
                                         headers=auth(await token(real_engine, boss, a)))
             assert r.status_code == 200, r.text
         else:

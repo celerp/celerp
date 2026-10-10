@@ -25,8 +25,9 @@ async def _company(session, currency: str) -> dict:
     session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    from test_helpers import make_authed_token, provision_company_books
+    await provision_company_books(session, cid)
     await session.commit()
-    from test_helpers import make_authed_token
     token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {"headers": {"Authorization": f"Bearer {token}"}, "company_id": cid, "user_id": uid}
 
@@ -87,24 +88,12 @@ async def test_half_cent_landed_capitalisation_stays_balanced(session):
     auth = await _company(session, "USD")
     await auto_je.create_for_landed_capitalisation(
         session, company_id=auth["company_id"], user_id=auth["user_id"], doc_id="doc:bill-1",
-        landed_by_kind={"freight": 0.005, "duty": 0.005}, receive_suffix="r1",
+        landed_by_kind={"freight": 0.005, "duty": 0.005}, landed_by_account={"1130-P": 0.01},
+        receive_suffix="r1",
     )
     await session.commit()
     lines = await _je(session, auth, "je:auto:doc:bill-1:landed-cap:r1")
     assert lines == [("1130-P", 0.02, 0.0), ("1130-FRT", 0.0, 0.01), ("1130-DTY", 0.0, 0.01)]
-
-
-@pytest.mark.asyncio
-async def test_half_cent_manufacturing_completion_stays_balanced(session):
-    auth = await _company(session, "USD")
-    await auto_je.create_for_mfg_completed(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], order_id="mo:1",
-        input_cost=0.015, waste_cost=0.005,
-    )
-    await session.commit()
-    lines = await _je(session, auth, "je:auto:mo:1:mfg")
-    assert lines == [("1130-P", 0.01, 0.0), ("5100", 0.01, 0.0), ("1130-P", 0.0, 0.02)]
-    assert _balanced(lines)
 
 
 def _bill(total: float, lines: list[tuple[float, str]], **fields) -> dict:
@@ -190,7 +179,7 @@ async def test_kwd_basis_sale_and_restatement_keep_fils(client, session):
     assert (await _set_cost(client, auth, item_id, 10.1274)).status_code == 200
     adjustments = (await _cogs_adjustments(session, auth, doc)).values()
     assert [[(e["account"], e["debit"], e["credit"]) for e in s["entries"]] for s in adjustments] == [
-        [("5100", 0.004, 0.0), ("1130-P", 0.0, 0.004)]
+        [("5100", 0.004, 0.0), ("1130-OB", 0.0, 0.004)]
     ]
 
 

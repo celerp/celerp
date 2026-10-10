@@ -854,9 +854,12 @@ class TestManagerRequiredItemOps:
 
     async def test_manager_can_bulk_delete(self, client, session):
         ctx = await _setup(client, session)
+        r = await client.post("/items", json={"sku": "MGR-DRAFT", "name": "Draft", "quantity": 1, "sell_by": "piece"},
+                              headers=ctx["admin_h"])
+        assert r.status_code == 200, r.text
         r = await client.post(
             "/items/bulk/delete",
-            json={"entity_ids": [ctx["item_id"]]},
+            json={"entity_ids": [r.json()["id"]]},
             headers=ctx["manager_h"],
         )
         assert r.status_code == 200

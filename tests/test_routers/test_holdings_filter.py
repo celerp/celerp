@@ -189,7 +189,7 @@ async def test_return_items_rejects_goods_not_on_hand(client, session):
     rr = await client.post("/docs/{}/return-items".format(doc_id), headers=_h(token),
                            json={"items": [{"item_id": item_id, "quantity_returned": 1}]})
     assert rr.status_code == 409, rr.text
-    assert "not on hand" in str(rr.json().get("detail", ""))
+    assert rr.json()["detail"]["message_key"] == "consignment.return.sold", rr.text
     # Untouched: still out with the customer at full quantity.
     item = (await client.get("/items/{}".format(item_id), headers=_h(token))).json()
     assert item["status"] == "memo_out" and item["quantity"] == 2.0

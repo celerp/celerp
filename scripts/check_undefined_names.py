@@ -260,6 +260,15 @@ class Checker:
             for n in ast.walk(gen.target):
                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                     cscope.names.add(n.id)
+        # An assignment expression in a comprehension binds in the nearest enclosing
+        # function or module scope (PEP 572), so later code there can read it too.
+        owner = scope
+        while owner.kind == "comp":
+            owner = owner.parent
+        for n in ast.walk(node):
+            if isinstance(n, ast.NamedExpr) and isinstance(n.target, ast.Name):
+                cscope.names.add(n.target.id)
+                owner.names.add(n.target.id)
         for i, gen in enumerate(node.generators):
             # The first iterable evaluates in the enclosing scope.
             self.visit(gen.iter, scope if i == 0 else cscope)

@@ -17,8 +17,8 @@ import pytest
 from fasthtml.common import to_xml
 
 from ui import i18n
+from ui.i18n import doc_type_label
 from ui.routes.settings_sales import (
-    _doc_type_label,
     _sales_tabs,
     _numbering_tab,
     _line_items_tab,
@@ -54,13 +54,13 @@ def _xx_lang():
 
 def test_doc_type_label_module_dict_translates():
     # Module-level raw->key map resolved at render time (R1/R3).
-    assert _doc_type_label("invoice") == "XX_INVOICE"
-    assert _doc_type_label("quotation") == "XX_QUOTATION"
+    assert doc_type_label("invoice") == "XX_INVOICE"
+    assert doc_type_label("quotation") == "XX_QUOTATION"
 
 
 def test_doc_type_label_unknown_falls_back_to_titlecase():
     # An unmapped raw value degrades to a title-cased form, never a crash.
-    assert _doc_type_label("some_new_type") == "Some New Type"
+    assert doc_type_label("some_new_type") == "Some New Type"
 
 
 def test_sales_tabs_translate():

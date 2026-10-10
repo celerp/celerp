@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 //
 // Pure functions extracted from app-main.js for unit testing.
-// No Electron imports — safe to require in Jest.
+// No Electron imports, so it is safe to require in Jest.
 
 "use strict";
 
@@ -35,6 +35,9 @@ function restartSentinelPath(proc) {
  * then re-attach the watcher (so subsequent restarts also work). When startApi
  * resolves false (the database was refused), nothing else starts.
  * If absent and exit code is non-zero: call onCrash.
+ * Once the app is stopping, an exit is neither a restart nor a crash, and a
+ * restart under way stops before its next step; trackRestart lets the shutdown
+ * wait for it.
  *
  * @param {string} dbUrl
  * @param {{
@@ -46,6 +49,8 @@ function restartSentinelPath(proc) {
  *   sentinelPath: string,
  *   onCrash: (err: Error) => void,
  *   onRestart?: () => void,
+ *   isStopping: () => boolean,
+ *   trackRestart: (restart: Promise<void>) => void,
  *   fs?: typeof import("fs"),
  * }} deps
  */
@@ -58,27 +63,37 @@ function watchForRestart(dbUrl, {
   sentinelPath,
   onCrash,
   onRestart,
+  isStopping,
+  trackRestart,
   fs: fsOverride,
 }) {
   const proc = getApiProcess();
   if (!proc) return;
   const fs = fsOverride || require("fs");
+  const deps = { getApiProcess, getUiProcess, setUiProcess, startApi, startUi, sentinelPath, onCrash, onRestart,
+                 isStopping, trackRestart, fs };
 
-  proc.once("exit", async (code) => {
+  async function respawn() {
+    try {
+      const ui = getUiProcess();
+      if (ui) { ui.kill(); setUiProcess(null); }
+      if ((await startApi(dbUrl)) === false || isStopping()) return;
+      await startUi(dbUrl);
+      if (isStopping()) return;
+      watchForRestart(dbUrl, deps);
+      console.log("[restart] Servers respawned.");
+      if (onRestart) onRestart();
+    } catch (err) {
+      if (!isStopping()) onCrash(err);
+    }
+  }
+
+  proc.once("exit", (code) => {
+    if (isStopping()) return;
     if (fs.existsSync(sentinelPath)) {
       fs.unlinkSync(sentinelPath);
-      console.log("[restart] Sentinel found — respawning API and UI...");
-      try {
-        const ui = getUiProcess();
-        if (ui) { ui.kill(); setUiProcess(null); }
-        if ((await startApi(dbUrl)) === false) return;
-        await startUi(dbUrl);
-        watchForRestart(dbUrl, { getApiProcess, getUiProcess, setUiProcess, startApi, startUi, sentinelPath, onCrash, onRestart, fs });
-        console.log("[restart] Servers respawned.");
-        if (onRestart) onRestart();
-      } catch (err) {
-        onCrash(err);
-      }
+      console.log("[restart] Sentinel found, respawning API and UI...");
+      trackRestart(respawn());
     } else if (code !== 0 && code !== null) {
       onCrash(new Error(`API process exited unexpectedly with code ${code}`));
     }

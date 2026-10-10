@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_receipt_accounting import _books, _doc, _finalize, _parcels, _receive
 
 

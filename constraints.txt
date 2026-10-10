@@ -32,7 +32,7 @@ certifi==2026.7.22
     #   httpx
 cffi==2.1.1 ; platform_python_implementation != 'PyPy'
     # via cryptography
-charset-normalizer==3.5.1
+charset-normalizer==3.5.2
     # via reportlab
 click==8.5.0
     # via
@@ -44,7 +44,7 @@ cryptography==48.0.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
     # via
     #   celerp (pyproject.toml)
     #   python-jose
-cryptography==50.0.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+cryptography==50.0.2 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via
     #   celerp (pyproject.toml)
     #   python-jose
@@ -58,9 +58,9 @@ et-xmlfile==2.0.0
     # via openpyxl
 exceptiongroup==1.3.1 ; python_full_version < '3.11'
     # via anyio
-fastapi==0.141.1
+fastapi==0.142.2
     # via celerp (pyproject.toml)
-fastcore==2.2.31
+fastcore==2.2.33
     # via python-fasthtml
 greenlet==3.5.6
     # via sqlalchemy
@@ -94,7 +94,7 @@ limits==5.8.0
     # via slowapi
 mako==1.4.3
     # via alembic
-markupsafe==3.0.3
+markupsafe==3.0.4
     # via mako
 numpy==2.2.6 ; python_full_version < '3.11'
     # via celerp (pyproject.toml)
@@ -106,6 +106,8 @@ oauthlib==4.0.0
     # via python-fasthtml
 openpyxl==3.1.5
     # via celerp (pyproject.toml)
+opentelemetry-api==1.45.0
+    # via fastapi
 packaging==26.3
     # via
     #   celerp (pyproject.toml)
@@ -141,7 +143,7 @@ python-barcode==0.16.1
     # via celerp (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via python-fasthtml
-python-dotenv==1.2.3
+python-dotenv==1.2.4
     # via
     #   pydantic-settings
     #   uvicorn
@@ -173,7 +175,7 @@ sqlalchemy==2.0.54 ; python_full_version < '3.11'
     # via
     #   celerp (pyproject.toml)
     #   alembic
-sqlalchemy==2.1.1 ; python_full_version >= '3.11'
+sqlalchemy==2.1.3 ; python_full_version >= '3.11'
     # via
     #   celerp (pyproject.toml)
     #   alembic
@@ -199,6 +201,7 @@ typing-extensions==4.16.0
     #   fastapi
     #   httpx2
     #   limits
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   pypdf
@@ -211,13 +214,13 @@ typing-inspection==0.4.4
     #   fastapi
     #   pydantic
     #   pydantic-settings
-tzdata==2026.4
+tzdata==2026.5
     # via celerp (pyproject.toml)
 uvicorn==0.54.0
     # via
     #   celerp (pyproject.toml)
     #   python-fasthtml
-uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+uvloop==0.23.0 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
     # via uvicorn
 watchfiles==1.3.0
     # via uvicorn
@@ -225,7 +228,7 @@ websockets==16.1.1 ; python_full_version < '3.11'
     # via
     #   celerp (pyproject.toml)
     #   uvicorn
-websockets==17.1 ; python_full_version >= '3.11'
+websockets==17.2 ; python_full_version >= '3.11'
     # via
     #   celerp (pyproject.toml)
     #   uvicorn

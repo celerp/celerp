@@ -46,6 +46,7 @@
       "main.js",
       "app-main.js",
       "restart.js",
+      "shutdown.js",
       "db-mode.js",
       "config-writer.js",
       "migrate_cmd.js",
@@ -232,7 +233,8 @@
   "pnpm": {
     "patchedDependencies": {
       "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch",
-      "app-builder-lib@25.1.8": "patches/app-builder-lib@25.1.8.patch"
+      "app-builder-lib@25.1.8": "patches/app-builder-lib@25.1.8.patch",
+      "embedded-postgres@17.9.0-beta.16": "patches/embedded-postgres@17.9.0-beta.16.patch"
     }
   }
 }

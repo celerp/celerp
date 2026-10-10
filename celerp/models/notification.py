@@ -36,6 +36,9 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     action_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # {"title": key, "body": key, "params": {...}}: the keys title and body were written
+    # from, so the UI shows them in the reader's language (ui.routes.notifications).
+    i18n: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     priority: Mapped[str] = mapped_column(
         String(16), default="medium", nullable=False,
     )  # "low" | "medium" | "high"

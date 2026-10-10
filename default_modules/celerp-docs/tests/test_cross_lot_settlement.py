@@ -140,7 +140,7 @@ async def test_cross_lot_convert_bills_sku_rollup(client):
     At merge-base convert enumerates only line_items, so B's still-out quantity is never
     billed: the invoice carries only A's quantity (or 422s if A was already returned).
     Post-fix the invoice line carries the summed still-out quantity across the allocation
-    set (2 units) at the line's unit price, and both lots leave memo_out."""
+    set (2 units) at the line's unit price, and both lots pass to the invoice."""
     token = await _register(client)
     h = _h(token)
     memo, lot_a, lot_b = await _cross_lot_memo(client, h, "XC-SPAN", unit_price=10)
@@ -158,9 +158,9 @@ async def test_cross_lot_convert_bills_sku_rollup(client):
         f"invoice must bill the full SKU still-out quantity (2 units across A+B); "
         f"got {total_qty} from {inv_lines!r}")
 
-    # Both lots are settled (no longer memo_out on this memo).
-    assert (await client.get(f"/items/{lot_a}", headers=h)).json().get("status") != "memo_out"
-    assert (await client.get(f"/items/{lot_b}", headers=h)).json().get("status") != "memo_out"
+    # Both lots are settled: handed to the invoice, no longer out on this memo.
+    for lot in (lot_a, lot_b):
+        assert (await client.get(f"/items/{lot}", headers=h)).json().get("status_doc_id") == target_id
 
     # A re-convert finds nothing still memo_out and must refuse (no double-billing).
     r2 = await client.post(f"/docs/{memo}/convert", headers=h)

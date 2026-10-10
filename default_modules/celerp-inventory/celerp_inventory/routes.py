@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import re
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
@@ -45,19 +49,25 @@ from .services import (
     import_preview_hash,
     is_item_field_key,
     item_price_mutex_groups,
+    normalize_sku,
     build_import_plan,
     source_header_semantics,
 )
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.services.company_lock import lock_company, lock_projections
-from celerp.services.item_erasure import erase_items, mentioned_elsewhere
+from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
+from celerp.services.lot_origin import (
+    DELETED, RECORDED, RETIRED, book_lot_value, booked_value, ever_became_stock, in_stock, is_authoring_event, is_stock_type,
+    recorded_value, refuse_draft,
+)
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
-from celerp.services.auto_je import create_for_item_transform
+from celerp.services.business_time import business_date_at
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.demo import demo_item_ids
 from celerp.services.goods_cost import GOODS_COST_KEYS, lot_label, negative_cost_error
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES, reject_system_item_fields
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -338,11 +348,12 @@ class MergeBody(BaseModel):
     source_entity_ids: list[str]
     target_sku_from: str                       # entity_id of the source whose SKU/barcode to use
     resulting_quantity: FiniteFloat | None = None    # optional override (default = sum)
-    resulting_cost_total: FiniteFloat | None = None  # optional override (default = sum of source cost_totals)
+    resulting_cost_total: FiniteFloat | None = None  # must equal the sources' cost; a merge never revalues
     resulting_name: str | None = None          # optional override (default = target's name)
     resulting_sku: str | None = None           # optional custom SKU (default = target's SKU); issue #190
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
     idempotency_key: str | None = None
+    plan_fingerprint: str | None = None        # required to confirm: from the preview the user confirmed; refused if the items changed since
 
 
 class TransformBody(BaseModel):
@@ -369,9 +380,19 @@ class PriceBody(BaseModel):
     idempotency_key: str | None = None
 
 
+def status_value(value) -> str:
+    """An item status as it is stored and compared: lower case, whatever case it was typed in."""
+    return str(value or "").lower()
+
+
 class StatusBody(BaseModel):
     new_status: str
     idempotency_key: str | None = None
+
+    @field_validator("new_status")
+    @classmethod
+    def _stored(cls, value: str) -> str:
+        return status_value(value)
 
 
 class ReserveBody(BaseModel):
@@ -380,7 +401,11 @@ class ReserveBody(BaseModel):
 
 
 # Statuses hidden from the default inventory view. Users must explicitly request them.
-_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed"})
+_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed", DELETED})
+
+# Statuses of an item that is not stock yet or any more: never valued, never low stock,
+# and the only ones Delete takes.
+_UNCOMMITTED_STATUSES = frozenset({"draft", DELETED})
 
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
@@ -390,18 +415,42 @@ _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 # historic events are never rejected.
 ITEM_STATUSES: frozenset[str] = frozenset({
     "draft", "available", "active", "reserved", "sold", "archived",
-    "merged", "expired", "memo_out", "returned", "disposed",
+    "merged", "expired", "memo_out", "returned", "disposed", DELETED,
 })
 
-# Authoring-only event types: none of these mean the item has circulated.
-# Any other ledger event on the item (adjust, transfer, fulfill, reserve,
-# split, receive, ...) counts as circulation and blocks a revert to draft.
-# item.file.* is matched by prefix below.
-_AUTHORING_EVENT_TYPES: frozenset[str] = frozenset({
-    "item.created", "item.updated", "item.patched", "item.pricing.set",
-    "item.status.set", "item.recipe.set", "item.workflow.set",
-    "shop.sync.enabled", "shop.sync.disabled",
-})
+# Statuses a generic status edit cannot set: each records an outcome its own action
+# books (Expire is administrative but has its own action and permission).
+_ACTION_OWNED_STATUSES: dict[str, str] = {
+    "sold": "An item is sold by fulfilling its invoice, not a direct status edit.",
+    "merged": "An item is merged through the Merge action, not a direct status edit.",
+    "expired": "Use the Expire action to expire an item, not a direct status edit.",
+    "reserved": "An item is reserved by the sales order or invoice that holds it, not a direct status edit.",
+    "memo_out": "An item goes out on memo by fulfilling its memo, not a direct status edit.",
+    DELETED: "An item is deleted through the Delete action, not a direct status edit.",
+}
+# The only way out of Deleted.
+_RESTORE_ONLY = "A deleted item comes back only through Restore, as a draft."
+
+# Why stock that has left the books cannot come back through a status edit, by the
+# status it left them in; each names the action that undoes it.
+_LEFT_THE_BOOKS: dict[str, str] = {
+    "disposed": "This stock was written off; use Undo write-off to bring it back.",
+    "merged": "This item was merged into another; use Undo merge to bring it back.",
+    "sold": "This item was sold; reverse its fulfilment to bring it back.",
+    "fulfilled": "This item was sold; reverse its fulfilment to bring it back.",
+    "void": "This item was deleted.",
+    DELETED: _RESTORE_ONLY,
+}
+_GAVE_UP_ITS_STOCK = ("This item holds no stock on the books: it was sold, or its stock went into other items "
+                      "(a split, transform or merge), or its receipt or return was undone, so a status edit "
+                      "cannot bring it back.")
+# A sold item can still be archived to tidy the catalog; it stays off the books.
+_ARCHIVABLE_AFTER_SALE = frozenset({"sold", "fulfilled"})
+
+
+def _kept(status: str | None) -> dict:
+    """What an Archive or Expire event says: the company keeps the stock on its books."""
+    return {ON_BOOKS_FIELD: True} if str(status or "").lower() in RETIRED else {}
 
 
 async def lock_item(session: AsyncSession, company_id, entity_id: str) -> Projection | None:
@@ -417,20 +466,6 @@ async def lock_item(session: AsyncSession, company_id, entity_id: str) -> Projec
     return row if row is not None and row.entity_type == "item" else None
 
 
-async def lock_existing_items(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, Projection]:
-    """Lock every selected item before any of them changes; 404 naming the first ID that
-    is not an item of this company (absent, or a document, List or contact). A bulk action
-    checks the whole selection first, so it applies to all of it or to none."""
-    if not entity_ids:
-        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
-    rows = await lock_projections(session, company_id, entity_ids)
-    for entity_id in entity_ids:
-        row = rows.get(entity_id)
-        if row is None or row.entity_type != "item":
-            raise HTTPException(status_code=404, detail=t("inventory.err_items_not_found"))
-    return rows
-
-
 def _status_of(row: Projection | None) -> str:
     return str(((row.state if row else {}) or {}).get("status") or "").lower()
 
@@ -440,11 +475,17 @@ async def assert_status_change_allowed(
     role: str, settings: dict,
 ) -> None:
     """Function-level validation shared by every item-status write path (single,
-    bulk, and PATCH). Unknown values are rejected with the allowed list. A draft
-    item's amounts and costs are freely editable, so an item that has circulated
-    must never quietly become one again: reverting a committed item to draft
-    requires the revert_items_to_draft permission AND a clean history, and every
-    rejection names its reason instead of hiding the control.
+    bulk, and PATCH). Unknown values are rejected with the allowed list. A status
+    edit is administrative: it never records an outcome another action books
+    (written off, sold, merged, expired, reserved, out on memo), it never takes an item
+    out of a status a document holds (only a sold item may still be archived), and
+    stock that has left the books (written
+    off, sold, merged, or used up by a split or transform) comes back only through the
+    action that undoes it, judged on the locked row. A draft item's amounts and costs
+    are freely editable, so an item that has circulated must never quietly become one
+    again: reverting a committed item to draft requires the revert_items_to_draft
+    permission AND a clean history, and every rejection names its reason instead of
+    hiding the control.
     """
     ns = str(new_status or "").lower()
     if ns not in ITEM_STATUSES:
@@ -460,14 +501,23 @@ async def assert_status_change_allowed(
             status_code=422,
             detail=t("inventory.err_dispose_via_write_off"),
         )
+    if ns in _ACTION_OWNED_STATUSES:
+        raise HTTPException(status_code=422, detail=_ACTION_OWNED_STATUSES[ns])
     # Document and List writers check their lines for draft and reserved items under the
     # same company lock, so a concurrent create either sees this change or is seen by it
     # (below: "the item is on document ...").
     row = await lock_item(session, company_id, entity_id)
-    if ns != "draft":
-        return
     state = (row.state if row else {}) or {}
     current = _status_of(row)
+    if ns != "draft":
+        if ns == "archived" and current in _ARCHIVABLE_AFTER_SALE:
+            return
+        if current not in ("", "draft", ns) and not in_stock(state):
+            raise HTTPException(status_code=422, detail=_LEFT_THE_BOOKS.get(current, _GAVE_UP_ITS_STOCK))
+        if ns == "available" and await _orphaned_hold(session, company_id, state):
+            return
+        _reject_document_held(state, "archived" if ns == "archived" else f"set to {ns}")
+        return
     if current in ("", "draft"):
         return  # creating as draft / already draft: harmless no-op
     if not role_has_permission(settings, role, "revert_items_to_draft"):
@@ -493,32 +543,15 @@ async def assert_status_change_allowed(
             LedgerEntry.entity_id == entity_id,
         )
     )).scalars().all())
-    circulated = sorted(
-        e for e in event_types
-        if e not in _AUTHORING_EVENT_TYPES and not e.startswith("item.file.")
-    )
+    circulated = sorted(e for e in event_types if not is_authoring_event(e))
     if circulated:
         from ui.components.activity import event_label
         raise HTTPException(
             status_code=409,
             detail=t("inventory.err_revert_used", uses=", ".join(event_label(e) for e in circulated)),
         )
-    from sqlalchemy import cast, or_
-    from sqlalchemy.dialects.postgresql import JSONB
-    # Doc lines are item_id-keyed via POST /docs (LineItem normalizes entity_id)
-    # but entity_id-keyed via the patch path and receiving/fulfillment writes, so
-    # membership must match either key.
-    _lines = cast(Projection.state["line_items"], JSONB)
-    doc_ref = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type.in_(("doc", "list")),
-            or_(
-                _lines.contains([{"item_id": entity_id}]),
-                _lines.contains([{"entity_id": entity_id}]),
-            ),
-        ).limit(1)
-    )).scalars().first()
+    from celerp.services.document_lines import listing_record
+    doc_ref = await listing_record(session, company_id, entity_id)
     if doc_ref:
         ref_state = (doc_ref.state or {})
         ref = ref_state.get("ref_id") or ref_state.get("doc_number") or doc_ref.entity_id
@@ -526,6 +559,42 @@ async def assert_status_change_allowed(
             status_code=409,
             detail=t("inventory.err_revert_on_document", ref=ref),
         )
+
+
+# Statuses only a document sets and only that document releases.
+_DOCUMENT_HELD_STATUSES = frozenset({"reserved", "memo_out"})
+
+
+async def _orphaned_hold(session: AsyncSession, company_id, state: dict) -> bool:
+    """True for a reservation nothing can release any more: the record holding it is gone
+    or void, or the line it was held for is no longer on that record. Only such a hold
+    may be made available by a status edit. Goods out on memo or sold are never orphans:
+    they are settled by returning or crediting them on their document."""
+    if str(state.get("status") or "").lower() != "reserved" or not state.get("status_doc_id"):
+        return False
+    owner = await session.get(Projection, {"company_id": company_id, "entity_id": state["status_doc_id"]},
+                              populate_existing=True)
+    if owner is None or owner.entity_type not in ("doc", "list"):
+        return True
+    owner_state = owner.state or {}
+    if owner_state.get("status") == "void":
+        return True
+    line_id = state.get("status_line_entity_id")
+    return bool(line_id) and line_id not in {
+        li.get("line_id") for li in owner_state.get("line_items") or [] if isinstance(li, dict)}
+
+
+def _reject_document_held(state: dict, action: str) -> None:
+    """Goods a document holds (reserved or out on memo, or any status a document
+    stamped) are settled by that document: released, returned, converted or closed
+    there. A status edit, Archive or Expire would take them from it behind its back,
+    so they wait until the document lets go."""
+    if not state.get("status_doc_id") and str(state.get("status") or "").lower() not in _DOCUMENT_HELD_STATUSES:
+        return
+    holder = state.get("status_doc_number") or state.get("status_doc_id") or "that holds it"
+    raise HTTPException(status_code=409, detail=(
+        f"This item is held by document {holder}; resolve the document first (release or return the goods, "
+        f"or convert the document), then the item can be {action}."))
 
 
 async def reject_draft_status_change_via_generic_path(
@@ -538,12 +607,16 @@ async def reject_draft_status_change_via_generic_path(
     write must never touch draft in either direction. Every non-draft-origin transition
     (e.g. Restore, archived -> available) is untouched."""
     ns = str(new_status or "").lower()
+    if ns == DELETED:
+        raise HTTPException(status_code=422, detail=_ACTION_OWNED_STATUSES[DELETED])
     if ns == "draft":
         raise HTTPException(
             status_code=422,
             detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
         )
     current = _status_of(await lock_item(session, company_id, entity_id))
+    if current == DELETED:
+        raise HTTPException(status_code=422, detail=_RESTORE_ONLY)
     if current == "draft":
         raise HTTPException(
             status_code=422,
@@ -557,21 +630,33 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
     current = _status_of(await lock_item(session, company_id, entity_id))
     if current in ("draft", "available"):
         return
+    if current == DELETED:
+        raise HTTPException(status_code=409, detail=_RESTORE_ONLY)
     raise HTTPException(
         status_code=409,
         detail=t("inventory.err_make_available_not_draft", status=item_status_label(current)),
     )
 
 
-async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, action: str) -> None:
+async def assert_expirable(session: AsyncSession, company_id, entity_id: str) -> None:
+    """Expire retires stock the company still owns, so the lot must hold stock on the
+    books when its row lock is taken."""
+    await assert_not_draft(session, company_id, entity_id)
+    row = await lock_item(session, company_id, entity_id)
+    state = (row.state if row else {}) or {}
+    _reject_document_held(state, "expired")
+    if row is not None and not in_stock(state):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only stock on hand can be expired; this item is {state.get('status') or 'unknown'}.",
+        )
+
+
+async def assert_not_draft(session: AsyncSession, company_id, entity_id: str) -> None:
     """A draft isn't stock yet, so stock-circulation operations (reserve, expire, ...)
     make no sense on it until it is committed via Make Available."""
-    current = _status_of(await lock_item(session, company_id, entity_id))
-    if current == "draft":
-        raise HTTPException(
-            status_code=422,
-            detail=f"Cannot {action} a draft item; make it available first.",
-        )
+    row = await lock_item(session, company_id, entity_id)
+    refuse_draft((row.state if row else None) or {}, entity_id)
 
 
 # ── Search grammar ─────────────────────────────────────────────────────────────
@@ -609,6 +694,36 @@ _FIELD_ALIASES = {
     "pcs": "pieces",
     "ct_each": "qty_each", "per_pc": "qty_each",
 }
+# The reserved scope that returns a term to matching every field. It wins over any
+# field or attribute that happens to be called "all".
+_ALL_SCOPE = "all"
+# Identifier precedence, best first: the physical codes (barcode and RFID EPC share one
+# namespace), then GTIN, then SKU. The code resolver walks it to decide what a scanned
+# code means and search walks it to rank exact hits, so both follow one rule.
+IDENTIFIER_TIERS: tuple[tuple[str, ...], ...] = (("barcode", "rfid_epc"), ("gtin",), ("sku",))
+
+
+def _code_key(value) -> str:
+    return str(value or "").strip().casefold()
+
+
+# How each identifier field compares when matched exactly: its canonical key. Every key
+# ignores letter case, like every other search term.
+_IDENTIFIER_KEYS = {
+    "barcode": _code_key,
+    "gtin": _code_key,
+    "rfid_epc": lambda v: str(normalize_rfid_epc(v) or ""),
+    "sku": normalize_sku,
+}
+
+
+@dataclass(frozen=True)
+class QueryTerm:
+    """One AND-term of a parsed query: the canonical field it is scoped to (None for
+    every field), its lower-cased value, and the value as typed (for messages)."""
+    field: str | None
+    value: str
+    typed: str
 
 
 def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset[str]]:
@@ -689,74 +804,144 @@ def _as_number(v: object) -> float | None:
         return None
 
 
+def _scope_resolves(raw: str, numeric_fields, text_fields, records) -> bool:
+    """True when a `raw:` prefix names a real user-facing field: a known alias, a
+    searchable or numeric field, or a dynamic attribute present on one of ``records``
+    that is not a core/bookkeeping key (#306). Anything else is not a scope, so a
+    literal `foo:bar` in the text is still found."""
+    field = _FIELD_ALIASES.get(raw, raw)
+    return (
+        raw in _FIELD_ALIASES
+        or field in numeric_fields
+        or field in text_fields
+        or (not is_core_item_key(field) and any(field in r for r in records))
+    )
+
+
+def parse_query(q: str, numeric_fields, text_fields, records) -> list[list[QueryTerm]]:
+    """Parse the search grammar once: `,` separates OR groups, `&` separates the AND
+    terms of a group, empty terms and groups are dropped, and every value is
+    lower-cased.
+
+    The field a group names carries forward: a group whose first term names no field
+    inherits the last named field, exactly as if it had been typed again, so
+    `barcode: 1042, 1043` is two barcodes and `name: ring, gold` is two name terms. A
+    group naming its own field starts a new scope, and the reserved `all:` scope returns
+    to every field. A bare `field:` with no value only sets the scope (a scanner run
+    typed as `barcode:` then the scans). Only a group's first term inherits; later `&`
+    terms keep their own meaning. Prefixes resolve over numeric_fields / text_fields
+    and the attributes present on ``records`` (_scope_resolves)."""
+    groups: list[list[QueryTerm]] = []
+    carried: str | None = None
+    for group in q.split(","):
+        terms: list[QueryTerm] = []
+        for typed in (t.strip() for t in group.split("&")):
+            if not typed:
+                continue
+            field: str | None = None
+            named = False
+            value = typed
+            scope = _SCOPE_RE.match(typed)
+            if scope:
+                raw = scope.group(1).lower()
+                if raw == _ALL_SCOPE or _scope_resolves(raw, numeric_fields, text_fields, records):
+                    named = True
+                    field = None if raw == _ALL_SCOPE else _FIELD_ALIASES.get(raw, raw)
+                    value = scope.group(2).strip()
+            if not terms:
+                if named:
+                    carried = field
+                else:
+                    field = carried
+            if value:
+                terms.append(QueryTerm(field, value.lower(), value))
+        if terms:
+            groups.append(terms)
+    return groups
+
+
+def exact_identifier_field(record: dict, value: str) -> str | None:
+    """The identifier field (walked in IDENTIFIER_TIERS order) whose whole value equals
+    ``value`` under its canonical key, or None. An item whose status is in
+    PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES is history, not a current lot, so it is
+    never an exact identifier hit, the same rule the code resolver applies."""
+    if str(record.get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+        return None
+    for tier in IDENTIFIER_TIERS:
+        for field in tier:
+            stored = record.get(field)
+            key = _IDENTIFIER_KEYS[field]
+            if stored not in (None, "") and key(stored) == key(value):
+                return field
+    return None
+
+
+def identifier_tier(field: str | None) -> int:
+    """The rank of an exact identifier hit on ``field`` (0 is best); every other match
+    ranks after all identifier tiers."""
+    for rank, tier in enumerate(IDENTIFIER_TIERS):
+        if field in tier:
+            return rank
+    return len(IDENTIFIER_TIERS)
+
+
 def _term_match_reason(
-    record: dict, term: str,
+    record: dict, term: QueryTerm,
     numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
     text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
 ) -> tuple[str, str] | None:
     """One AND-term: the (field, matched text) behind the hit, or None. The matched
-    text is the term itself for substring hits and the whole number for numeric
-    range/exact hits, so the UI can embolden exactly what matched.
+    text is the term itself for substring and identifier hits and the whole number for
+    numeric range/exact hits, so the UI can embolden exactly what matched.
 
-    A term of the form `field: value` scopes the match to one named field (an alias
-    resolves to its canonical field). Resolution is gated to user-facing fields - a
-    core/bookkeeping key stays unsearchable (#306) even when named explicitly - and a
-    scoped value may be a range (over that one field) or a substring. A term with no
-    leading `identifier:` falls through to the unscoped behavior unchanged.
+    A scoped term matches its one field (parse_query resolved the field). Identifier
+    fields (barcode, rfid_epc, gtin, sku) compare whole values under their canonical
+    key, so `barcode: 1042` never matches 10420; other text fields match any part; a
+    numeric field may take a range or an exact number. An unscoped term is a numeric
+    range when it reads as one (lo <= hi), so `5-10` keeps its range meaning and
+    `sku: 5-10` names the identifier; otherwise it names an exact identifier hit
+    (exact_identifier_field), then a text part, or a numeric value.
 
     numeric_fields / text_fields are the effective per-category searchable field sets
-    (searchable_field_sets); they drive both resolution and whether a scoped value is
-    coerced to a number. They default to the module-level sets so the grammar stays
-    callable with no DB."""
-    scope = _SCOPE_RE.match(term)
-    if scope:
-        raw = scope.group(1)
-        field = _FIELD_ALIASES.get(raw, raw)
-        value = scope.group(2).strip()
-        # Scope only when the prefix RESOLVES to a real user-facing field: a known
-        # alias, a searchable or numeric field, or a dynamic attribute present on this
-        # record that is not a core/bookkeeping key (#306). An unresolved prefix (or an
-        # empty value) is not a scope - fall through so a literal `foo:bar` in the text
-        # is still found instead of dropping the search.
-        resolved = bool(value) and (
-            raw in _FIELD_ALIASES
-            or field in numeric_fields
-            or field in text_fields
-            or (field in record and not is_core_item_key(field))
-        )
-        if resolved:
-            # Textual identifier fields (sku, barcode, hs_code, batch_no, lot...) are
-            # matched as strings only - never coerced to numbers - so leading zeros and
-            # other identity survive: `sku: 001` must not match a stored "1", and a
-            # barcode `00123` must not match "123". Numeric coercion (range and exact
-            # equality) applies to every field that is not a known text field: genuine
-            # numeric columns, number-typed category fields, and dynamic attributes with
-            # no schema entry (which are in neither set).
-            numeric_ok = field not in text_fields
-            rng = _RANGE_RE.match(value)
-            if numeric_ok and rng:
-                lo, hi = float(rng.group(1)), float(rng.group(2))
-                if lo <= hi:
-                    try:
-                        n = float(record.get(field))
-                    except (TypeError, ValueError):
-                        return None
-                    if lo <= n <= hi:
-                        return field, format(n, "g")
-                    return None
-                # lo > hi is not a usable range; fall through to a scoped value match.
-            stored = record.get(field)
-            if numeric_ok:
-                qnum, snum = _as_number(value), _as_number(stored)
-                if qnum is not None and snum is not None:
-                    # Numeric-coercible on both sides: exact equality, never substring, so
-                    # `qty: 1` does not match 10 and `grade: 3` does not match 30.
-                    return (field, value) if qnum == snum else None
-            if value.lower() in str(stored if stored is not None else "").lower():
+    (searchable_field_sets); they decide whether a scoped value is coerced to a number.
+    They default to the module-level sets so the grammar stays callable with no DB."""
+    value = term.value
+    field = term.field
+    if field is not None:
+        stored = record.get(field)
+        if field in _IDENTIFIER_KEYS:
+            key = _IDENTIFIER_KEYS[field]
+            if stored not in (None, "") and key(stored) == key(value):
                 return field, value
             return None
-        # Unresolved prefix or empty scoped value: fall through to the unscoped path.
-    m = _RANGE_RE.match(term)
+        # Textual fields (hs_code, batch_no, lot...) are matched as strings only -
+        # never coerced to numbers - so leading zeros and other identity survive.
+        # Numeric coercion (range and exact equality) applies to every field that is
+        # not a known text field: genuine numeric columns, number-typed category
+        # fields, and dynamic attributes with no schema entry (which are in neither set).
+        numeric_ok = field not in text_fields
+        rng = _RANGE_RE.match(value)
+        if numeric_ok and rng:
+            lo, hi = float(rng.group(1)), float(rng.group(2))
+            if lo <= hi:
+                try:
+                    n = float(stored)
+                except (TypeError, ValueError):
+                    return None
+                if lo <= n <= hi:
+                    return field, format(n, "g")
+                return None
+            # lo > hi is not a usable range; fall through to a scoped value match.
+        if numeric_ok:
+            qnum, snum = _as_number(value), _as_number(stored)
+            if qnum is not None and snum is not None:
+                # Numeric-coercible on both sides: exact equality, never substring, so
+                # `qty: 1` does not match 10 and `grade: 3` does not match 30.
+                return (field, value) if qnum == snum else None
+        if value in str(stored if stored is not None else "").lower():
+            return field, value
+        return None
+    m = _RANGE_RE.match(value)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
         if lo <= hi:
@@ -765,11 +950,14 @@ def _term_match_reason(
                     return f, format(n, "g")
             return None
         # lo > hi is not a usable range; fall through and treat the term as literal text.
-    field = _text_match(record, term)
+    exact = exact_identifier_field(record, value)
+    if exact is not None:
+        return exact, value
+    field = _text_match(record, value)
     if field is not None:
-        return field, term
+        return field, value
     try:
-        num = float(term)
+        num = float(value)
     except (TypeError, ValueError):
         return None
     for f, n in _numeric_values(record):
@@ -783,25 +971,92 @@ def query_match_reasons(
     numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
     text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
 ) -> list[tuple[str, str]] | None:
-    """Match a flattened item dict against the search grammar. `,` ORs groups, `&`
-    ANDs the terms within a group; empty terms and empty groups are dropped.
-    Returns the first matching group's (field, matched text) pairs - one per
-    AND-term, deduped, order preserved - or None when no group matches.
+    """Match one flattened item dict against the search grammar (parse_query, with
+    attribute prefixes resolved over this record). See parsed_match_reasons."""
+    return parsed_match_reasons(
+        record, parse_query(q, numeric_fields, text_fields, [record]), numeric_fields, text_fields)
+
+
+def matched_groups(
+    record: dict, groups: list[list[QueryTerm]],
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> Iterator[list[tuple[QueryTerm, tuple[str, str]]]]:
+    """Yield, in query order, every group whose AND-terms all match the record, as
+    (term, (field, matched text)) pairs in term order. The groups OR together, so the
+    record matches when anything is yielded. This is the one match evaluation: the
+    reasons read the first matched group and the exact-hit rank reads every matched
+    group. Lazy, so a caller that needs only the first match stops there."""
+    for terms in groups:
+        reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
+        if all(r is not None for r in reasons):
+            yield list(zip(terms, reasons))
+
+
+def match_reasons(pairs: list[tuple[QueryTerm, tuple[str, str]]]) -> list[tuple[str, str]]:
+    """The (field, matched text) reasons of a matched group (matched_groups), deduped,
+    order preserved."""
+    deduped: list[tuple[str, str]] = []
+    for _term, r in pairs:
+        if r not in deduped:
+            deduped.append(r)
+    return deduped
+
+
+def parsed_match_reasons(
+    record: dict, groups: list[list[QueryTerm]],
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> list[tuple[str, str]] | None:
+    """Match a flattened item dict against a parsed query: the groups OR together and
+    the terms of a group AND together. Returns the first matching group's (field,
+    matched text) pairs - one per AND-term, deduped, order preserved - or None when no
+    group matches.
 
     numeric_fields / text_fields are the effective per-category searchable field sets
     threaded to _term_match_reason; they default to the module-level sets."""
-    for group in q.split(","):
-        terms = [t.strip().lower() for t in group.split("&") if t.strip()]
-        if not terms:
-            continue
-        reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
-        if all(r is not None for r in reasons):
-            deduped: list[tuple[str, str]] = []
-            for r in reasons:
-                if r not in deduped:
-                    deduped.append(r)
-            return deduped
-    return None
+    first = next(matched_groups(record, groups, numeric_fields, text_fields), None)
+    return match_reasons(first) if first is not None else None
+
+
+def best_exact_identifier(
+    record: dict, matched: list[list[tuple[QueryTerm, tuple[str, str]]]],
+) -> str | None:
+    """The identifier field of the record's best exact hit (its highest IDENTIFIER_TIERS
+    tier) by an unscoped term of any group that matched (matched_groups), or None. Only
+    a term whose match was that identifier counts, so a term of a failed group or a term
+    read as a numeric range never ranks, and the result does not depend on the order
+    the groups were typed in. A scoped term is already a filter on its one field, so it
+    does not rank."""
+    hits = [
+        field for pairs in matched for t, (field, _m) in pairs
+        if t.field is None and field in _IDENTIFIER_KEYS
+        and exact_identifier_field(record, t.value) == field
+    ]
+    return min(hits, key=identifier_tier) if hits else None
+
+
+def unmatched_identifiers(records: list[dict], groups: list[list[QueryTerm]]) -> list[str]:
+    """The scoped identifier values (as typed, de-duplicated, in query order) that no
+    record holds, so a scanned code that matched nothing is named instead of silently
+    missing from the list."""
+    held: dict[str, set[str]] = {}
+    out: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for terms in groups:
+        for t in terms:
+            if t.field not in _IDENTIFIER_KEYS:
+                continue
+            key = _IDENTIFIER_KEYS[t.field]
+            wanted = (t.field, key(t.value))
+            if wanted in seen:
+                continue
+            seen.add(wanted)
+            if t.field not in held:
+                held[t.field] = {key(r[t.field]) for r in records if r.get(t.field) not in (None, "")}
+            if wanted[1] not in held[t.field]:
+                out.append(t.typed)
+    return out
 
 
 def item_matches_query(record: dict, q: str) -> bool:
@@ -935,7 +1190,9 @@ async def query_items(
         apply_query_match,
         flatten_item_rows,
         load_item_rows,
+        parse_item_query,
         strip_field_visibility,
+        without_deleted,
     )
     # Load + flatten is the shared front of the search pipeline (single-sourced in
     # celerp_inventory.search). The projection set is read once here and reused:
@@ -954,11 +1211,11 @@ async def query_items(
     rows = await load_item_rows(session, company_id)
     result = await flatten_item_rows(session, company_id, rows)
 
-    # Status filtering: default excludes hidden statuses; "all" skips filtering; "archived" expands
+    # Status filtering: default excludes hidden statuses; "all" shows every status but deleted; "archived" expands
     # to include merged/expired; a comma-separated value matches any (column-filter multi-select).
     status_set = {s.strip().lower() for s in f.status.split(",") if s.strip()} if (f.status and "," in f.status) else None
     if f.status == "all":
-        pass  # no filter
+        result = without_deleted(result)
     elif status_set:
         result = [r for r in result if str(r.get("status") or "").lower() in status_set]
     elif f.status == "archived":
@@ -1121,14 +1378,14 @@ async def query_items(
     # Semantic "low stock" filter: at or below reorder point (backs the dashboard
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
     if f.filter == "low_stock":
-        # Drafts are not stock: an unfinished item must not raise a reorder alarm.
+        # Drafts and deleted items are not stock: they must not raise a reorder alarm.
         # Guarded on a visible quantity: is_below_reorder reads quantity defaulting a
         # missing value to 0, so a stripped (role-hidden) quantity would falsely include
         # the item - excluding it keeps low_stock from being an oracle over the hidden
         # quantity / reorder point.
         result = [r for r in result
                   if "quantity" in r and is_below_reorder(r)
-                  and str(r.get("status") or "").lower() != "draft"]
+                  and str(r.get("status") or "").lower() not in _UNCOMMITTED_STATUSES]
 
     # Semantic "demo" filter: setup's samples that are still removable, by their origin
     # (seeded and never edited or used), never by name, so an edited sample or the
@@ -1138,14 +1395,20 @@ async def query_items(
         removable = set(await untouched_demo_item_ids(session, company_id))
         result = [r for r in result if r.get("id") in removable]
 
+    not_found: list[str] = []
     if f.q:
-        # Shared q-filter + q_match attachment (single-sourced in celerp_inventory.search):
-        # comma = OR groups, & = AND terms, lo-hi = numeric range, bare number =
-        # numeric-exact OR text, else text substring. Each item is matched against its own
-        # category's numeric/text field sets, so a number-typed category field resolves and
-        # a text-typed one is not coerced. Reasons are computed over the visibility-filtered
-        # dict, so every cited field is one the role may see; no post-filter is needed.
-        result = apply_query_match(result, f.q, item_field_sets)
+        # Shared q parse + filter + q_match attachment (single-sourced in
+        # celerp_inventory.search): comma = OR groups with the named field carried
+        # forward, & = AND terms, lo-hi = numeric range, scoped identifier = whole value,
+        # bare number = numeric-exact OR text, else text substring. Each item is matched
+        # against its own category's numeric/text field sets, so a number-typed category
+        # field resolves and a text-typed one is not coerced. Reasons are computed over
+        # the visibility-filtered dict, so every cited field is one the role may see; no
+        # post-filter is needed. Scoped identifier values no item in the filtered set
+        # holds are reported as not_found, so a scan that matched nothing is named.
+        groups = parse_item_query(f.q, result, item_field_sets)
+        not_found = unmatched_identifiers(result, groups)
+        result = apply_query_match(result, groups, item_field_sets)
 
     # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
     # The consignment value is cost, so it is gated by view_inventory_costs exactly like
@@ -1183,7 +1446,7 @@ async def query_items(
         _item["_channel_state"] = _channel_states.get(_item.get("id"), {})
 
     resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets,
-                  "aggregates": aggregates}
+                  "aggregates": aggregates, "not_found": not_found}
     if holding_scoped and not gate_cost:
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact
         # card reads it directly and reconciles with the list at the same value basis; items
@@ -1214,7 +1477,7 @@ async def list_items(
     """List items with optional filters.
 
     status: exact status to show (e.g. "sold", "archived", "available").
-            Pass "all" to skip status filtering entirely.
+            Pass "all" for every status but deleted.
             Default (None): exclude sold + archived from results.
     category: exact category to filter on.
     filter: semantic filter. "low_stock" keeps only items at or below their
@@ -1288,11 +1551,11 @@ async def get_valuation(
         # except under a holdings scope, which is about exactly those goods.
         if not holding_scoped and (row.consignment_flag == "in" or state.get("consignment_flag") == "in"):
             continue
-        # Non-stocked and service items have no physical stock to value.
-        if (state.get("inventory_type") or "stocked") != "stocked":
+        # Only goods the company holds have physical value; services and non-stocked do not.
+        if not is_stock_type(state):
             continue
-        # Drafts are not stock yet: listed and counted above, valued once available.
-        if str(state.get("status") or "").lower() == "draft":
+        # Drafts and deleted items are not stock: listed and counted above, valued once available.
+        if str(state.get("status") or "").lower() in _UNCOMMITTED_STATUSES:
             continue
         active_item_count += 1
         # Value from the flattened item so cost (recipe standard / lot total) and derived
@@ -1714,7 +1977,6 @@ async def _build_item_preview(
     ``header_row_required`` and the file's leading lines when no line is clearly
     its header (the caller then sends ``header_row``).
     """
-    import hashlib
 
     from celerp.ai.files import load_file
     from celerp.importers.tabular import (
@@ -1752,7 +2014,7 @@ async def _build_item_preview(
     # overrides it column by column.
     category_attrs = union_category_attr_keys(all_category_schemas(settings))
     resolved = normalize_and_validate_mapping(
-        cols, suggest_mapping(cols, spec.cols, category_attrs), mapping,
+        cols, suggest_mapping(cols, spec.cols, category_attrs, skip_cols=spec.skip_cols), mapping,
         allowed_targets=spec.cols,
         required_targets=spec.required,
         allowed_category_attrs=category_attrs,
@@ -2002,29 +2264,26 @@ class ResolveResult:
         return self.matches[0] if len(self.matches) == 1 else None
 
 
-def _resolve_from_candidates(barcode_matches, rfid_matches, gtin_matches, sku_matches) -> "ResolveResult":
-    """Choose a ResolveResult from the per-field candidate lists, enforcing the shared
-    physical namespace. Barcode and RFID EPC are one namespace: a code matching EITHER
-    field is a physical match, gathered BEFORE any product identifier is considered. The
-    physical union is deduped by ``entity_id`` (a single item carrying both a barcode and
-    an EPC is ONE item, not a duplicate). If the union spans more than one distinct item
-    the resolver fails closed (``duplicate_physical`` True, ``one`` None), never silently
-    picking one; a single physical item resolves (kind "barcode" when a barcode matched,
-    else "rfid_epc"). Only with NO physical match do the product identifiers resolve -
-    gtin then sku - each to its N lots. Shared by both the single and the batch resolver
-    so they disambiguate identically."""
-    physical: dict = {}
-    for r in barcode_matches:
-        physical.setdefault(r.entity_id, r)
-    for r in rfid_matches:
-        physical.setdefault(r.entity_id, r)
-    if physical:
-        kind = "barcode" if barcode_matches else "rfid_epc"
-        return ResolveResult(kind, list(physical.values()))
-    if gtin_matches:
-        return ResolveResult("gtin", gtin_matches)
-    if sku_matches:
-        return ResolveResult("sku", sku_matches)
+def _resolve_from_candidates(matches: dict[str, list]) -> "ResolveResult":
+    """Choose a ResolveResult from the per-field candidate lists (keyed by identifier
+    field), walking IDENTIFIER_TIERS in order. Barcode and RFID EPC are one tier, the
+    shared physical namespace: a code matching EITHER field is a physical match, gathered
+    BEFORE any product identifier is considered. Each tier's union is deduped by
+    ``entity_id`` (a single item carrying both a barcode and an EPC is ONE item, not a
+    duplicate). If the physical union spans more than one distinct item the resolver
+    fails closed (``duplicate_physical`` True, ``one`` None), never silently picking one;
+    a single physical item resolves (kind "barcode" when a barcode matched, else
+    "rfid_epc"). Only with NO physical match do the product identifiers resolve - gtin
+    then sku - each to its N lots. Shared by both the single and the batch resolver so
+    they disambiguate identically."""
+    for tier in IDENTIFIER_TIERS:
+        found: dict = {}
+        for field in tier:
+            for r in matches.get(field, []):
+                found.setdefault(r.entity_id, r)
+        if found:
+            kind = next(field for field in tier if matches.get(field))
+            return ResolveResult(kind, list(found.values()))
     return ResolveResult("none", [])
 
 
@@ -2076,12 +2335,12 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     def _by(key, wanted):
         return [r for r in rows if str((r.state or {}).get(key) or "") == wanted and _live(r)]
 
-    return _resolve_from_candidates(
-        _by("barcode", code),
-        _by("rfid_epc", epc_code),
-        _by("gtin", code),
-        _by("sku", code),
-    )
+    return _resolve_from_candidates({
+        "barcode": _by("barcode", code),
+        "rfid_epc": _by("rfid_epc", epc_code),
+        "gtin": _by("gtin", code),
+        "sku": _by("sku", code),
+    })
 
 
 async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
@@ -2126,12 +2385,12 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
     out: dict[str, ResolveResult] = {}
     for code in wanted:
         epc_code = normalize_rfid_epc(code)
-        out[code] = _resolve_from_candidates(
-            by_barcode.get(code, []),
-            by_rfid_epc.get(epc_code, []),
-            by_gtin.get(code, []),
-            by_sku.get(code, []),
-        )
+        out[code] = _resolve_from_candidates({
+            "barcode": by_barcode.get(code, []),
+            "rfid_epc": by_rfid_epc.get(epc_code, []),
+            "gtin": by_gtin.get(code, []),
+            "sku": by_sku.get(code, []),
+        })
     return out
 
 
@@ -2196,33 +2455,14 @@ async def _lock_items_for_physical_mutation(session: AsyncSession, company_id, e
     committed before this transaction acquired the row locks.
     """
     await lock_item_code_namespace(session, company_id)
-    ids = sorted(set(entity_ids))
-    if not ids:
-        return {}
-    rows = (await session.execute(
-        select(Projection)
-        .where(Projection.company_id == company_id, Projection.entity_type == "item", Projection.entity_id.in_(ids))
-        .order_by(Projection.entity_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().all()
-    return {row.entity_id: row for row in rows}
+    rows = await lock_projections(session, company_id, entity_ids)
+    return {entity_id: row for entity_id, row in rows.items() if row.entity_type == "item"}
 
 
 async def _require_company_location(session: AsyncSession, company_id, location_id) -> None:
-    if location_id is None:
-        return
-    from celerp.models.company import Location
+    from celerp.services.locations import require_company_location
 
-    try:
-        parsed = location_id if isinstance(location_id, uuid.UUID) else uuid.UUID(str(location_id))
-    except (TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=422, detail=t("inventory.err_location_invalid"))
-    exists = (await session.execute(
-        select(Location.id).where(Location.id == parsed, Location.company_id == company_id)
-    )).scalar_one_or_none()
-    if exists is None:
-        raise HTTPException(status_code=422, detail=t("inventory.err_location_not_found"))
+    await require_company_location(session, company_id, location_id)
 
 
 @router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
@@ -2238,7 +2478,15 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # Guard: setting a price on creation requires set_inventory_prices, except that a
     # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
     # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
-    _create_draft = str((payload.model_extra or {}).get("status") or "draft").lower() == "draft"
+    # A new item starts as a draft. One created available is made available in the same
+    # request, so its stock is booked as it enters (Make Available); any other status is
+    # reached only through the action that leads to it.
+    reject_system_item_fields(payload.model_dump(exclude_none=True))
+    _requested_status = str((payload.model_extra or {}).get("status") or "draft").lower()
+    if _requested_status not in ("draft", "available"):
+        raise HTTPException(status_code=422, detail=(
+            f"An item is created as draft or available, not {_requested_status}."))
+    _create_draft = _requested_status == "draft"
     _price_lists = (await get_price_config(session, company_id))[0]
     _gated = price_keys_in(payload.model_dump(exclude_none=True), _price_lists)
     if draft_cost_carveout(_create_draft, role, settings):
@@ -2344,12 +2592,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         if data.get(field) is None and field in category_defaults:
             data[field] = category_defaults[field]
 
-    # Ensure status is set (not part of ItemCreate model but required for projections).
-    # Manual creation starts as draft: the item stays authorable (amounts and costs
-    # editable by anyone with edit_inventory) until "Make available" commits it into
-    # circulating stock. System flows (split, merge, import, receive) pass status
-    # explicitly and stay available - they derive from stock already in circulation.
-    data.setdefault("status", "draft")
+    # Created as a draft: authorable (amounts and costs editable by anyone with
+    # edit_inventory) until Make Available commits it into stock.
+    data["status"] = "draft"
 
     # Strip price fields from create event data - they go via pricing events.
     # Any key ending in _price is treated as a pricing field. cost_total is also a pricing field.
@@ -2396,6 +2641,21 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
             location_id=None,
             source="api",
             idempotency_key=f"{idem_key}:price:{price_type}",
+            metadata_={},
+        )
+
+    if not _create_draft:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "available", "ts": datetime.now(timezone.utc).isoformat()},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=f"{idem_key}:make-available",
             metadata_={},
         )
 
@@ -2458,6 +2718,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
+    reject_system_item_fields(dict.fromkeys(
+        (changed_keys - {"attributes"}) | _changed_attribute_keys(_proj.state, payload.fields_changed)))
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     _price_changes = {k for k in changed_keys | _changed_attribute_keys(_proj.state, payload.fields_changed) if is_price_item_key(k, _price_lists)}
     if draft_cost_carveout(_is_draft, role, settings):
@@ -2471,7 +2733,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     if not _is_draft and not role_has_permission(settings, role, "edit_inventory_amounts"):
         restricted |= AMOUNT_EDIT_GATED_KEYS
     if "status" in changed_keys:
-        _new_status = (payload.fields_changed["status"] or {}).get("new")
+        _new_status = status_value((payload.fields_changed["status"] or {}).get("new"))
+        payload.fields_changed["status"] = {**(payload.fields_changed["status"] or {}), "new": _new_status}
         await reject_draft_status_change_via_generic_path(session, company_id, entity_id, _new_status)
         await assert_status_change_allowed(session, company_id, entity_id, _new_status, role, settings)
     blocked = changed_keys & restricted
@@ -2627,7 +2890,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     event = dict(
         entity_id=entity_id,
         event_type="item.updated",
-        data=payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True),
+              **(_kept((payload.fields_changed.get("status") or {}).get("new")) if "status" in changed_keys else {})},
         actor_id=user.id,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
@@ -2656,6 +2920,11 @@ class BulkStatusBody(BaseModel):
     entity_ids: list[str]
     status: str
 
+    @field_validator("status")
+    @classmethod
+    def _stored(cls, value: str) -> str:
+        return status_value(value)
+
 
 class BulkTransferBody(BaseModel):
     entity_ids: list[str]
@@ -2671,9 +2940,12 @@ class BulkDeleteBody(BaseModel):
 
 @router.post("/bulk/status")
 async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    await lock_existing_items(session, company_id, payload.entity_ids)
-    # Validated per item BEFORE any event is emitted: one blocked item rejects the
-    # whole bulk with the reason, nothing is half-applied (the session never commits).
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    # Locked, then validated per item BEFORE any event is emitted: one blocked item
+    # rejects the whole bulk with the reason, nothing is half-applied (the session
+    # never commits).
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.status)
         await assert_status_change_allowed(session, company_id, entity_id, payload.status, role, settings)
@@ -2685,7 +2957,7 @@ async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_curren
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": payload.status},
+            data={"new_status": payload.status, **_kept(payload.status)},
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -2708,19 +2980,28 @@ class RevertToDraftBody(BaseModel):
 
 @router.post("/bulk/make-available")
 async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission."""
-    await lock_existing_items(session, company_id, payload.entity_ids)
+    """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission.
+
+    Every selected lot is locked before any is checked, so a second request for the same
+    lots waits for this one and then finds them available: already available is a no-op,
+    and only the drafts actually moved are returned."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_make_available_allowed(session, company_id, entity_id)
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole move
     event_ids = []
     for entity_id in payload.entity_ids:
+        if not _row_is_draft(rows[entity_id]):
+            continue
         entry = await emit_event(
             session,
             company_id=company_id,
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": "available"},
+            data={"new_status": "available", "ts": at},
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -2734,19 +3015,27 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
 
 @router.post("/bulk/revert-to-draft")
 async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
-    """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history)."""
-    await lock_existing_items(session, company_id, payload.entity_ids)
+    """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history),
+    on lots locked before any is checked: a fulfilment or reservation that reached a lot
+    first is seen, and a second request for the same lots finds them drafts already, a
+    no-op. Only the lots actually returned to draft are returned."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_status_change_allowed(session, company_id, entity_id, "draft", role, settings)
+    at = datetime.now(timezone.utc).isoformat()  # one business day for the whole move
     event_ids = []
     for entity_id in payload.entity_ids:
+        if _row_is_draft(rows[entity_id]):
+            continue
         entry = await emit_event(
             session,
             company_id=company_id,
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": "draft", "reason": payload.reason},
+            data={"new_status": "draft", "reason": payload.reason, "ts": at},
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -2758,6 +3047,19 @@ async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(ge
     return {"updated": len(event_ids), "event_ids": event_ids}
 
 
+async def _lock_selected_items(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, Projection]:
+    """Lock every selected item before any is checked; an id that is not an item is 404."""
+    rows = await lock_projections(session, company_id, entity_ids)
+    missing = sorted({e for e in entity_ids if e not in rows or rows[e].entity_type != "item"})
+    if missing:
+        raise HTTPException(status_code=404, detail=t("inventory.err_items_not_found"))
+    return rows
+
+
+def _row_is_draft(row: Projection) -> bool:
+    return str((row.state or {}).get("status") or "").lower() == "draft"
+
+
 class BulkShopifySyncBody(BaseModel):
     entity_ids: list[str]
     enable: bool = True
@@ -2767,7 +3069,9 @@ class BulkShopifySyncBody(BaseModel):
 async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Opt the selected items into (or out of) outbound Shopify sync by emitting
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
-    await lock_existing_items(session, company_id, payload.entity_ids)
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
     event_ids = []
     for entity_id in payload.entity_ids:
@@ -2813,7 +3117,9 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
 
 @router.post("/bulk/transfer")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await lock_existing_items(session, company_id, payload.entity_ids)
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     from celerp.models.company import Location
     loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     loc_map = {str(r.id): r.name for r in loc_rows}
@@ -2839,38 +3145,98 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
 
 @router.post("/bulk/delete")
 async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await lock_existing_items(session, company_id, payload.entity_ids)
-    import sqlalchemy as _sa
-    from celerp.models.projections import Projection as _Proj
-    from celerp.models.ledger import LedgerEntry as _LE
-    entity_ids = payload.entity_ids
+    """Delete drafts that were a mistake. Every selected item must be a draft (or already
+    deleted) that never became stock; otherwise nothing is deleted and the answer names the
+    items and the actions that fit them instead. A draft nothing else mentions and holding
+    no file is erased without a trace; any other moves to Deleted, so the records naming it
+    still read, and Restore brings it back. Either way it leaves every import that listed
+    it. The answer says what happened to each item. With ``untouched_samples_only`` the
+    selection is sample items instead: those still untouched are removed with their sample
+    stock, and the rest are kept."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     if payload.untouched_samples_only:
         # Checked under the item locks taken above, so an edit either committed first
         # (the item is kept) or waits and finds the item gone.
-        from celerp.services.demo import untouched_demo_item_ids
+        from celerp.services.demo import delete_demo_items, untouched_demo_item_ids
         untouched = set(await untouched_demo_item_ids(session, company_id))
-        entity_ids = [eid for eid in entity_ids if eid in untouched]
-    # Hard delete: remove projection rows and all ledger events for these items.
-    # This is the correct behaviour for a user-initiated "Delete" action -
-    # the item should vanish from the catalog entirely (hard delete, no event trail).
-    # Every ID was locked and checked as an item above, and both deletes stay on item
-    # rows, so no other record's projection or history can go with them.
-    await session.execute(
-        _sa.delete(_Proj).where(
-            _Proj.company_id == company_id,
-            _Proj.entity_type == "item",
-            _Proj.entity_id.in_(entity_ids),
-        )
-    )
-    await session.execute(
-        _sa.delete(_LE).where(
-            _LE.company_id == company_id,
-            _LE.entity_type == "item",
-            _LE.entity_id.in_(entity_ids),
-        )
-    )
+        removable = [eid for eid in rows if eid in untouched]
+        await delete_demo_items(session, company_id, removable)
+        await session.commit()
+        return {"deleted": len(removable), "kept": len(rows) - len(removable)}
+    blocked = await _not_deletable(session, company_id, rows)
+    if blocked:
+        skus = ", ".join(sorted(str((rows[e].state or {}).get("sku") or e) for e in blocked))
+        raise HTTPException(status_code=409, detail=(
+            f"Nothing was deleted. Only a draft that never became stock can be deleted, and these cannot: {skus}. "
+            f"Use Revert to Draft for stock made available by mistake, Archive to retire a product, "
+            f"or Write Off Stock for goods that left the company."))
+    files = await holding_files(session, company_id, rows)
+    # An item kept as Deleted still names what it names (a sub-assembly's recipe names
+    # its parts), so whatever it names in the selection is kept with it.
+    named: dict[str, list[str]] = {}
+    while True:
+        found = await referrers(session, company_id, [e for e in rows if e not in named and e not in files])
+        if not found:
+            break
+        named.update(found)
+    await release_from_imports(session, company_id, rows)
+    at = datetime.now(timezone.utc).isoformat()
+    for eid in sorted(set(named) | files):
+        if (rows[eid].state or {}).get("status") != DELETED:
+            await emit_event(session, company_id=company_id, entity_id=eid, entity_type="item",
+                             event_type="item.status.set", data={"new_status": DELETED, "ts": at},
+                             actor_id=user.id, location_id=None, source="api",
+                             idempotency_key=str(uuid.uuid4()), metadata_={})
+    erased = [e for e in rows if e not in named and e not in files]
+    await erase_items(session, company_id, erased)
     await session.commit()
-    return {"deleted": len(entity_ids), "kept": len(payload.entity_ids) - len(entity_ids)}
+    return {"deleted": len(erased), "moved_to_deleted": len(rows) - len(erased), "items": [
+        {"entity_id": e, "sku": (rows[e].state or {}).get("sku") or "",
+         "outcome": "deleted" if e in erased else "moved_to_deleted",
+         "referenced_by": named.get(e, []), "has_files": e in files} for e in rows]}
+
+
+async def _not_deletable(session: AsyncSession, company_id, rows: dict[str, Projection]) -> set[str]:
+    """The selected items that are not a draft mistake: anything not a draft (or already
+    deleted) now, one with an inventory account, and one that was ever stock or circulated
+    (lot_origin.ever_became_stock)."""
+    from celerp.models.ledger import LedgerEntry
+
+    blocked = {e for e, row in rows.items()
+               if _status_of(row) not in _UNCOMMITTED_STATUSES or (row.state or {}).get(LOT_ACCOUNT_FIELD)}
+    history: dict[str, list] = {e: [] for e in rows}
+    for eid, event_type, data in (await session.execute(
+            select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(list(rows))))).all():
+        history[eid].append((event_type, data))
+    return blocked | {e for e, events in history.items() if ever_became_stock(events)}
+
+
+class RestoreDeletedBody(BaseModel):
+    entity_ids: list[str]
+
+
+@router.post("/bulk/restore-deleted")
+async def bulk_restore_deleted(payload: RestoreDeletedBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Undo a Delete that moved items to Deleted: each comes back as the draft it was.
+    Every selected item must be deleted; otherwise nothing is restored and the answer names
+    the items that are not."""
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    rows = await _lock_selected_items(session, company_id, payload.entity_ids)
+    live = sorted(str((row.state or {}).get("sku") or e) for e, row in rows.items() if _status_of(row) != DELETED)
+    if live:
+        raise HTTPException(status_code=409, detail=f"Nothing was restored. These items are not deleted: {', '.join(live)}.")
+    at = datetime.now(timezone.utc).isoformat()
+    for eid in rows:
+        await emit_event(session, company_id=company_id, entity_id=eid, entity_type="item",
+                         event_type="item.status.set", data={"new_status": "draft", "ts": at},
+                         actor_id=user.id, location_id=None, source="api",
+                         idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+    return {"restored": len(rows)}
 
 
 class BulkExpireBody(BaseModel):
@@ -2879,9 +3245,11 @@ class BulkExpireBody(BaseModel):
 
 @router.post("/bulk/expire")
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await lock_existing_items(session, company_id, payload.entity_ids)
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
+    await _lock_selected_items(session, company_id, payload.entity_ids)
     for eid in payload.entity_ids:
-        await assert_not_draft(session, company_id, eid, "expire")
+        await assert_expirable(session, company_id, eid)
     for eid in payload.entity_ids:
         await emit_event(
             session,
@@ -2889,7 +3257,7 @@ async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_co
             entity_id=eid,
             entity_type="item",
             event_type="item.expired",
-            data={},
+            data=_kept("expired"),
             actor_id=user.id,
             location_id=None,
             source="api",
@@ -2988,13 +3356,43 @@ async def split_preview(
     return result
 
 
+_SPLIT_ID_NAMESPACE = uuid.UUID("3b8e2f61-4c7d-4a9e-b1f5-7d2c9e6a0b84")
+
+
+def _split_request_digest(entity_id: str, payload: SplitBody) -> str:
+    """What a split asks for. A retry under the same request key must ask for exactly this."""
+    canonical = {"entity": entity_id, "children": [c.model_dump() for c in payload.children],
+                 "mother_qty": payload.mother_qty, "mother_weight": payload.mother_weight}
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _split_key_reused() -> dict:
+    return refusal("items.split_key_reused",
+                   "This request key was already used for a different action. Send the split again "
+                   "without a key, or with a new one.")
+
+
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists = (await get_price_config(session, company_id))[0]
     for _child in payload.children:
         _validate_sku(_child.sku)
+        reject_system_item_fields({"attributes": _child.attributes})
         reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
+    request_digest = _split_request_digest(entity_id, payload)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
+    if payload.idempotency_key:
+        # A repeat delivery of a split that already happened gets its result again. Read
+        # under the item lock, so a delivery still in flight finishes first.
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if (replay.event_type != "item.split" or replay.entity_id != entity_id
+                    or (replay.metadata_ or {}).get("split_request") != request_digest):
+                raise HTTPException(status_code=409, detail=_split_key_reused())
+            return {"event_id": replay.id, "children": [
+                {"id": eid, "sku": sku} for eid, sku in zip(replay.data["child_ids"], replay.data["child_skus"])]}
+    # Every record the split writes is keyed from the request key, so the key covers the whole split.
+    split_key = payload.idempotency_key or str(uuid.uuid4())
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
 
@@ -3011,11 +3409,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_location_id = parent.state.get("location_id")
     parent_attrs = dict(parent.state.get("attributes") or {})
 
-    # Price fields to preserve on children via pricing events (cost is split proportionally)
+    # Price fields to preserve on children via pricing events (cost is carved below)
     parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
-    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
-        float(parent.state.get("cost_price") or 0) * parent_qty
-    )
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -3059,7 +3454,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             status_code=422,
             detail=t("inventory.err_split_qty_over", total=f"{total_child_qty:g}", available=f"{parent_qty:g}"),
         )
-
     # Normalise: top-level pieces field → attributes so all downstream reads are uniform
     for child in children:
         if child.pieces is not None:
@@ -3106,18 +3500,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         )
     )
 
-    # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
-    # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
-    # This is correct for partial splits; no remainder redistribution needed.
-    _child_cost_totals: list[float | None]
-    if parent_cost_total and parent_qty:
-        _D_unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
-        _child_cost_totals = [
-            float((_D_unit_cost * Decimal(str(c.quantity))).quantize(Decimal("0.0000000001")))
-            for c in children
-        ]
-    else:
-        _child_cost_totals = [None] * len(children)
+    # Each child is carved off what the mother holds after the children before it
+    # (carve_cost, the one division split_off_child uses): its goods and landed pools by
+    # quantity, the mother keeping the difference, so the parts add back to the lot.
+    from celerp.services.auto_je import company_currency
+    from celerp_inventory.services import carve_cost, goods_basis
+    currency = await company_currency(session, company_id)
+    remaining = {"quantity": parent_qty, "cost_base": goods_basis(parent.state),
+                 "landed_costs": dict(parent.state.get("landed_costs") or {})}
+    carves = []
+    for c in children:
+        carve = carve_cost(remaining, c.quantity, currency)
+        carves.append(carve)
+        remaining = {"quantity": round(parent_qty - sum(x.quantity for x in children[:len(carves)]), 10),
+                     "cost_base": carve.rest_goods, "landed_costs": carve.rest_landed}
 
     def _child_weight(c) -> float | None:
         if c.weight is not None:
@@ -3129,14 +3525,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     running_qty = parent_qty
     running_pieces = parent_pieces
     running_weight = parent_weight
-    running_cost = parent_cost_total
 
     for i, child in enumerate(children):
-        child_eid = f"item:{uuid.uuid4()}"
+        child_eid = f"item:{uuid.uuid5(_SPLIT_ID_NAMESPACE, f'{company_id}:{split_key}:{i}')}"
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
         # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
         child_data: dict = lot_fields(parent.state)
+        if carves[i].part_landed:
+            child_data["landed_costs"] = carves[i].part_landed
         # Pieces are never inherited from the mother: an explicit per-child count
         # (already merged into child.attributes) or, for a piece-unit item, the
         # child's own quantity. Otherwise the child carries no pieces.
@@ -3170,7 +3567,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=_parse_uuid(parent_location_id),
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:{i}:created",
             metadata_={"parent_id": entity_id},
         )
 
@@ -3193,7 +3590,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=_parse_uuid(parent_location_id),
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:{i}:split_from",
             metadata_={"reason": "from_split"},
         )
 
@@ -3214,13 +3611,14 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             detail["weight_before"] = running_weight
             running_weight = round((running_weight or 0) - (ch_weight or 0), weight_decimals)
             detail["weight_after"] = running_weight
-        if parent_cost_total and _child_cost_totals[i] is not None:
-            detail["cost_before"] = running_cost
-            running_cost = round(running_cost - _child_cost_totals[i], 10)
-            detail["cost_after"] = running_cost
+        if carves[i].rest_goods is not None:
+            detail["cost_before"] = round_basis(
+                carves[i].rest_goods + carves[i].part_goods
+                + sum(carves[i].rest_landed.values()) + sum(carves[i].part_landed.values()))
+            detail["cost_after"] = round_basis(carves[i].rest_goods + sum(carves[i].rest_landed.values()))
         children_detail.append(detail)
 
-        # Preserve prices from parent via pricing events (excluding cost - set proportionally below)
+        # Preserve prices from parent via pricing events (excluding cost - carved below)
         for price_type, price_val in parent_prices.items():
             await emit_event(
                 session,
@@ -3232,22 +3630,22 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"{split_key}:{i}:price:{price_type}",
                 metadata_={"reason": "from_split"},
             )
-        # Assign proportional cost_total to child (pre-computed with Decimal; remainder in last child)
-        if _child_cost_totals[i] is not None:
+        # The child's goods cost; its landed pools came with item.created
+        if carves[i].part_goods is not None:
             await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=child_eid,
                 entity_type="item",
                 event_type="item.pricing.set",
-                data={"price_type": "cost_total", "new_price": _child_cost_totals[i]},
+                data={"price_type": "cost_total", "new_price": carves[i].part_goods},
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"{split_key}:{i}:cost",
                 metadata_={"reason": "from_split"},
             )
 
@@ -3270,42 +3668,32 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             raise HTTPException(status_code=422, detail=t("inventory.err_remaining_weight_negative"))
         if (derived_mother_weight is None or round(payload.mother_weight, weight_decimals) != derived_mother_weight) and not role_has_permission(settings, role, "edit_inventory_amounts"):
             raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
+    # Clamp sub-epsilon residuals from float subtraction to an exact zero (a submitted
+    # negative override was rejected above, never silently zeroed).
+    derived_parent_qty = max(derived_parent_qty, 0.0)
     new_parent_qty = payload.mother_qty if payload.mother_qty is not None else derived_parent_qty
-    # Clamp sub-epsilon residuals from float subtraction to an exact zero (derived branch
-    # only; a submitted negative override was rejected above, never silently zeroed).
-    if payload.mother_qty is None and new_parent_qty < 0:
-        new_parent_qty = 0.0
+    # The mother keeps what the last carve left her at the derived remainder.
+    mother: dict = {"new_qty": derived_parent_qty, "landed_costs": remaining["landed_costs"]}
+    if remaining["cost_base"] is not None:
+        mother["cost_base"] = remaining["cost_base"]
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.quantity.adjusted",
-        data={"new_qty": new_parent_qty},
+        data=mother,
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=str(uuid.uuid4()),
+        idempotency_key=f"{split_key}:mother",
         metadata_={"reason": "split_parent"},
     )
-
-    # Update parent cost_total (reduce by sum of child cost_totals; pre-computed values guarantee conservation)
-    if parent_cost_total and parent_qty:
-        total_child_cost = sum(c for c in _child_cost_totals if c is not None)
-        parent_remaining_cost = max(0.0, round(parent_cost_total - total_child_cost, 10))
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.pricing.set",
-            data={"price_type": "cost_total", "new_price": parent_remaining_cost},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"reason": "split_parent"},
-        )
+    if round(new_parent_qty, 10) != derived_parent_qty:
+        # A re-weigh that finds more or fewer units than the split leaves is a stock count:
+        # the same quantity and value change, journal and event as POST /items/{id}/adjust.
+        await adjust_item_quantity(session, company_id, user.id, entity_id, {"new_qty": new_parent_qty},
+                                   source="api", idempotency_key=f"{split_key}:count")
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
@@ -3351,7 +3739,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:measures",
             metadata_={"reason": "split_parent"},
         )
 
@@ -3367,7 +3755,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:archived",
             metadata_={"reason": "consumed_by_split"},
         )
 
@@ -3404,8 +3792,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
+        idempotency_key=split_key,
+        metadata_={"split_request": request_digest},
     )
 
     await session.commit()
@@ -3416,27 +3804,43 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
 
 async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_proj: Projection,
-                          child_qty: float, child_weight: float | None = None,
-                          child_pieces: int | None = None) -> tuple[str, str]:
-    """Split one child of ``child_qty`` off ``parent_proj`` → ``(child_eid, child_sku)``.
+                          child_qty: float, action: str, child_weight: float | None = None,
+                          child_pieces: int | None = None,
+                          child_cost_base: float | None = None,
+                          landed_of: str | None = None,
+                          landed_part: dict[str, float] | None = None) -> tuple[str, str]:
+    """Split one child of ``child_qty`` off ``parent_proj`` -> ``(child_eid, child_sku)``.
 
     The child keeps the parent SKU (same product; a distinct lot by barcode / entity_id)
-    and is the split-off portion; the mother keeps the remainder. Cost splits
-    proportionally by quantity.
-    Weight and pieces come ONLY from the explicit args — no proportional fallback,
-    no auto-derivation; the mother keeps ``parent - child`` for each.
+    and is the split-off portion; the mother keeps the remainder. The cost divides by
+    carve_cost: goods by quantity unless ``child_cost_base`` names the child's share, and
+    each landed pool by quantity (only bill ``landed_of``'s for goods going back to its
+    supplier, and a pool named in ``landed_part`` by the amount named), the two sides always
+    adding back to the whole.
+
+    ``action`` names what the user is doing (a key of line_measures.splitting_off): a lot
+    whose Allow Splitting is off refuses any part smaller than the whole with HTTP 409,
+    before anything is written.
+
+    Weight and pieces come only from the explicit args; the mother keeps ``parent - child``
+    of each, and a part measuring more than its lot is refused. An omitted measure is
+    unknown: the child carries none and the mother's becomes unknown too, since what is
+    left cannot be worked out. A lot sold by weight (or by pieces) measures its quantity,
+    on both sides, whatever figure it had stored.
 
     Invariants (raise ValueError if violated):
-      - child_qty must not exceed the locked parent quantity
-      - parcel has weight (weight-unit sell_by OR a weight attribute)
-            -> child_weight is required
-      - sell_by is a weight unit  -> child_weight must equal child_qty
-      - parcel has pieces (piece-unit sell_by OR a pieces attribute)
-            -> child_pieces is required
-      - sell_by is a pieces unit  -> child_pieces must equal child_qty
+      - child_qty must not exceed the locked parent quantity, nor be finer than its unit
+      - pieces are whole numbers
+      - sell_by is a weight unit  -> child_weight equals child_qty
+      - sell_by is a pieces unit  -> child_pieces equals child_qty
 
-    Does NOT commit — the caller owns the transaction.
+    Does NOT commit; the caller owns the transaction.
     """
+    from celerp.services.line_measures import splitting_off
+    from celerp.services.units import exceeds_precision
+    from celerp.services.auto_je import company_currency
+    from celerp_inventory.services import carve_cost
+
     # Lock and re-read the live parent projection before carving: split_off_child emits
     # the mother's new quantity as an ABSOLUTE value, so two concurrent carves of one
     # parcel must each base their decrement on the current committed quantity, not on a
@@ -3455,39 +3859,67 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     # --- validate against the locked quantity (no floor, no silent clamp) ---
     if round(child_qty - parent_qty, 10) > 0:
         raise ValueError(f"cannot split {child_qty:g} of {parent_qty:g} available")
+    if not splitting_allowed(parent.state) and child_qty < parent_qty - 1e-9:
+        raise HTTPException(status_code=409, detail=splitting_off(parent_sku, action))
+    if action in ("return", "write_off"):
+        # The part leaves stock as soon as it is carved, so the mother must keep the goods
+        # finalized invoices set aside: judged on the mother as the carve would leave it.
+        from celerp.services.auto_je import refuse_stranding_set_aside
+        await refuse_stranding_set_aside(session, company_id, entity_id, parent.state,
+                                         {**parent.state, "quantity": parent_qty - child_qty})
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     sell_by = parent.state.get("sell_by") or ""
     weight_type = is_weight_unit(sell_by, unit_map)
     pieces_type = is_pieces_unit(sell_by, unit_map)
-    parent_weight = _read_float(parent.state, "weight")
-    parent_pieces = _read_pieces(parent.state)
+    stored_weight = _read_float(parent.state, "weight")
+    stored_pieces = _read_pieces(parent.state)
+    # The quantity of a lot sold by a measure is that measure, so a stored figure that has
+    # drifted from it (an import, an older receipt) is carved from the quantity instead.
+    parent_weight = parent_qty if weight_type and stored_weight is not None else stored_weight
+    parent_pieces = parent_qty if pieces_type and stored_pieces is not None else stored_pieces
+    if sell_by in unit_map and exceeds_precision(child_qty, int(unit_map[sell_by].get("decimals") or 0)):
+        raise ValueError(f"{child_qty:g} is more precise than {sell_by} allows")
 
-    # --- validate (no omission, no fallback) ---
-    if (weight_type or parent_weight is not None) and child_weight is None:
-        raise ValueError("child_weight is required: this item is weight-tracked")
+    if weight_type and child_weight is None:
+        child_weight = child_qty
+    if pieces_type and child_pieces is None:
+        child_pieces = child_qty
+
     if weight_type and child_weight is not None and abs(child_weight - child_qty) > 1e-9:
         raise ValueError("for weight-sold items child_weight must equal child_qty")
-    if (pieces_type or parent_pieces is not None) and child_pieces is None:
-        raise ValueError("child_pieces is required: this item is piece-tracked")
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
+    if child_pieces is not None and float(child_pieces) != int(float(child_pieces)):
+        raise ValueError("pieces must be a whole number")
+    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
+
+    # What the mother keeps of each measure: the difference when both sides are known,
+    # unknown when the part's is not. A part measuring more than its lot is refused.
+    fields_changed: dict[str, dict] = {}
+    weight_after: float | None = None
+    if parent_weight is not None:
+        if child_weight is not None:
+            weight_after = round(parent_weight - child_weight, 10)
+            if weight_after < 0:
+                raise ValueError(f"weight {child_weight:g} is more than the {parent_weight:g} the lot has")
+        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": weight_after}
+    pieces_after: int | None = None
+    if parent_pieces is not None:
+        if ch_pieces is not None:
+            pieces_after = _to_int_pieces(parent_pieces) - ch_pieces
+            if pieces_after < 0:
+                raise ValueError(f"{ch_pieces} pieces is more than the {parent_pieces:g} the lot has")
+        fields_changed["pieces"] = {"old": stored_pieces, "new": pieces_after}
 
     # The split child is the same product as the parent: it KEEPS the parent SKU and is
     # distinguished only by its own unique barcode / entity_id (SKUs repeat across lots).
     child_sku = parent_sku
 
-    # Cost: proportional by quantity (unit-cost invariant).
-    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
-        float(parent.state.get("cost_price") or 0) * parent_qty
-    )
-    child_cost_total: float | None = None
-    if parent_cost_total and parent_qty:
-        unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
-        child_cost_total = float((unit_cost * Decimal(str(child_qty))).quantize(Decimal("0.0000000001")))
+    carve = carve_cost(parent.state, child_qty, await company_currency(session, company_id),
+                       child_cost_base, landed_of, landed_part)
 
-    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
     parent_prices = {
         k: parent.state[k] for k in parent.state
         if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"
@@ -3502,7 +3934,11 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
+    else:
+        child_attrs.pop("pieces", None)
     child_data = lot_fields(parent.state)
+    if carve.part_landed:
+        child_data["landed_costs"] = carve.part_landed
     from celerp_inventory.services import (
         normalize_sku as _normalize_family_sku,
         resolve_catalog_anchor_for_item as _resolve_family_anchor,
@@ -3538,7 +3974,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                      event_type="item.created", data=child_data, actor_id=user_id,
                      location_id=_parse_uuid(parent.state.get("location_id")), source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={"parent_id": entity_id})
-    # Origin marker on the child: "Split from <mother>" — the child's first history entry.
+    # Origin marker on the child: "Split from <mother>" - the child's first history entry.
     origin = await emit_event(
         session, company_id=company_id, entity_id=child_eid, entity_type="item",
         event_type="item.split_from",
@@ -3552,33 +3988,21 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                          event_type="item.pricing.set", data={"price_type": price_type, "new_price": price_val},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
-    if child_cost_total is not None:
+    if carve.part_goods is not None:
         await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
-                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": child_cost_total},
+                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": carve.part_goods},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
 
     # --- reduce the mother ---
-    new_parent_qty = max(0.0, round(parent_qty - child_qty, 10))
+    new_parent_qty = round(parent_qty - child_qty, 10)
+    adjusted: dict = {"new_qty": new_parent_qty, "landed_costs": carve.rest_landed}
+    if carve.rest_goods is not None:
+        adjusted["cost_base"] = carve.rest_goods
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
-                     event_type="item.quantity.adjusted", data={"new_qty": new_parent_qty},
+                     event_type="item.quantity.adjusted", data=adjusted,
                      actor_id=user_id, location_id=None, source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
-    if child_cost_total is not None and parent_cost_total:
-        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
-                         event_type="item.pricing.set",
-                         data={"price_type": "cost_total", "new_price": max(0.0, round(parent_cost_total - child_cost_total, 10))},
-                         actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
-    # Secondary measures are NOT conserved: the child keeps its (uncapped) value and
-    # the mother floors at 0 (e.g. child weight 20 of a 15ct mother -> mother 0ct).
-    fields_changed: dict[str, dict] = {}
-    if child_weight is not None and parent_weight is not None:
-        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": max(0.0, round(parent_weight - child_weight, 10))}
-    if ch_pieces is not None and parent_pieces is not None:
-        new_attrs = dict(parent_attrs)
-        new_attrs["pieces"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
-        fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
     if fields_changed:
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.updated", data={"fields_changed": fields_changed},
@@ -3592,13 +4016,13 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     }
     if parent_pieces is not None and ch_pieces is not None:
         child_detail["pieces_before"] = _to_int_pieces(parent_pieces)
-        child_detail["pieces_after"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
+        child_detail["pieces_after"] = pieces_after
     if parent_weight is not None and child_weight is not None:
         child_detail["weight_before"] = parent_weight
-        child_detail["weight_after"] = max(0.0, round(parent_weight - child_weight, 10))
-    if child_cost_total is not None and parent_cost_total:
-        child_detail["cost_before"] = parent_cost_total
-        child_detail["cost_after"] = max(0.0, round(parent_cost_total - child_cost_total, 10))
+        child_detail["weight_after"] = weight_after
+    if carve.rest_goods is not None:
+        child_detail["cost_before"] = float(parent.state.get("cost_total") or 0)
+        child_detail["cost_after"] = round_basis(carve.rest_goods + sum(carve.rest_landed.values()))
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.split",
                      data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty],
@@ -3606,6 +4030,48 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                      actor_id=user_id, location_id=None, source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={})
     return child_eid, child_sku
+
+
+async def restock_measures(session: AsyncSession, *, company_id, user_id, lot_id: str, lot_state: dict,
+                           new_qty: float, unit_map: dict, weight_delta: float | None = None,
+                           pieces_delta: int | None = None, source: str, idempotency_key: str,
+                           metadata: dict) -> None:
+    """Keep a lot's weight and pieces true when stock is added to or taken off it.
+
+    Call with the lot's state from before the quantity change, in the same transaction.
+    The measure the lot is sold by follows its new quantity. Any other known measure moves
+    by the signed delta stated for it; with no delta stated, or a result below zero, what
+    the lot now measures cannot be worked out, so the measure becomes unknown. An unknown
+    measure stays unknown, unless the lot held nothing before and the delta is all it holds.
+    Emits one ``item.updated`` when a measure changes; history is never rewritten.
+    """
+    sell_by = lot_state.get("sell_by") or ""
+    old_qty = float(lot_state.get("quantity") or 0)
+
+    def after(old: float | None, sold_by: bool, delta: float | None) -> float | None:
+        if sold_by:
+            return new_qty if old is not None else None
+        if delta is None:
+            return None
+        if old is None:
+            return delta if old_qty <= 1e-9 and delta > 0 else None
+        value = round(old + delta, 10)
+        return value if value >= 0 else None
+
+    fields_changed: dict[str, dict] = {}
+    old_weight = _read_float(lot_state, "weight")
+    weight = after(old_weight, is_weight_unit(sell_by, unit_map), weight_delta)
+    if weight != old_weight:
+        fields_changed["weight"] = {"old": lot_state.get("weight"), "new": weight}
+    old_pieces = _read_pieces(lot_state)
+    pieces = after(old_pieces, is_pieces_unit(sell_by, unit_map), pieces_delta)
+    if pieces != old_pieces:
+        fields_changed["pieces"] = {"old": old_pieces, "new": _to_int_pieces(pieces) if pieces is not None else None}
+    if fields_changed:
+        await emit_event(session, company_id=company_id, entity_id=lot_id, entity_type="item",
+                         event_type="item.updated", data={"fields_changed": fields_changed},
+                         actor_id=user_id, location_id=None, source=source,
+                         idempotency_key=idempotency_key, metadata_=metadata)
 
 
 @router.post("/{entity_id}/transform")
@@ -3649,7 +4115,14 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     refusal = negative_cost_error(payload.child_sku, effective_cost)
     if refusal:
         raise HTTPException(status_code=422, detail=refusal)
+    # Kept at the parent's cost, the child carries the parent's landed pools beside its goods
+    # cost; a cost the user restates is the child's goods cost entire.
+    child_landed = dict(parent.state.get("landed_costs") or {}) if effective_cost == parent_cost_total else {}
+    child_goods = round_basis(effective_cost - sum(float(v or 0) for v in child_landed.values()))
     parent_location_id = parent.state.get("location_id")
+    currency = settings.get("currency", "USD")
+    parent_account = parent.state.get(LOT_ACCOUNT_FIELD)
+    parent_booked = booked_value(parent, currency)
 
     child_eid = f"item:{uuid.uuid4()}"
     # Lock the code namespace so a concurrent allocator cannot mint the same barcode.
@@ -3668,6 +4141,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "attributes": {**parent_attrs},
         "barcode": child_barcode,
     })
+    if child_landed:
+        child_data["landed_costs"] = child_landed
     # A transform yields a DIFFERENT product, so no product-family identity carries.
     child_data.pop("gtin", None)
     child_data.pop("catalog_item_id", None)
@@ -3678,7 +4153,23 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_pieces is not None:
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
 
-    # 1. Create child
+    # 1. Mark parent archived (consumed by transform), first: goods an invoice holds
+    #    cannot be made into something else, and are refused before anything is written.
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "archived"},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"reason": "consumed_by_transform"},
+    )
+
+    # 2. Create child
     await emit_event(
         session,
         company_id=company_id,
@@ -3718,34 +4209,19 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     # 2. Sell prices are intentionally NOT copied — the child starts with no sell price (see the
     #    parent_price_keys note above). Only cost carries over.
 
-    # 2b. Set child cost via item.pricing.set (consistent with split/post_item flows)
+    # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=child_eid,
         entity_type="item",
         event_type="item.pricing.set",
-        data={"price_type": "cost_total", "new_price": effective_cost},
+        data={"price_type": "cost_total", "new_price": child_goods},
         actor_id=user.id,
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={"reason": "from_transform"},
-    )
-
-    # 4. Mark parent archived (consumed by transform)
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.status.set",
-        data={"new_status": "archived"},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={"reason": "consumed_by_transform"},
     )
 
     # 5. Emit transform event
@@ -3790,61 +4266,142 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         metadata_={},
     )
 
-    # 6. Auto JE
-    await create_for_item_transform(
-        session,
-        company_id=company_id,
-        user_id=user.id,
-        parent_entity_id=entity_id,
-        parent_cost_total=parent_cost_total,
-        parent_category=parent.state.get("category", ""),
-        child_category=payload.child_category,
-    )
+    # A cost the user restates changes the value the stock holds, so the change is booked
+    # on the lot's inventory account against stock gains or shrinkage, as a cost edit is.
+    if parent_account:
+        from celerp.services.auto_je import entry_day
+
+        child = (await session.execute(
+            select(Projection).where(Projection.company_id == company_id, Projection.entity_id == child_eid)
+            .execution_options(populate_existing=True)
+        )).scalars().one()
+        await book_lot_value(
+            session, company_id, user.id, parent_account, booked_value(child, currency) - parent_booked,
+            je_id=f"je:auto:{child_eid}:cost-restated:transform", idem=f"transform-restate:{child_eid}",
+            day=await entry_day(session, company_id),
+            metadata={"trigger": "item.cost_restated", "item_id": child_eid, "transformed_from": entity_id})
 
     await session.commit()
     return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
 
 
 
-@router.post("/merge")
-async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+# A merge sent with an idempotency key gets its result id from the key, so every
+# delivery of the same merge names the same item and the same journal entry.
+_MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
+
+_STALE_MERGE = "The merge or its items changed since it was reviewed. Review the merge again."
+_UNREVIEWED_MERGE = "Preview this merge first, then confirm it with the plan_fingerprint the preview returned."
+_UNDONE_MERGE = "This merge was undone. Review the merge again."
+
+
+def _merge_result_id(company_id, idempotency_key: str | None) -> str:
+    if not idempotency_key:
+        return f"item:{uuid.uuid4()}"
+    return f"item:{uuid.uuid5(_MERGE_ID_NAMESPACE, f'{company_id}:{idempotency_key}')}"
+
+
+def _check_merge_request(payload: MergeBody) -> None:
     _validate_sku(payload.resulting_sku)
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail=t("inventory.err_merge_min_two"))
     if len(set(payload.source_entity_ids)) != len(payload.source_entity_ids):
         raise HTTPException(status_code=422, detail=t("inventory.err_merge_duplicate"))
-
     if payload.target_sku_from not in payload.source_entity_ids:
-        raise HTTPException(
-            status_code=422,
-            detail="target_sku_from must identify one of the merge sources.",
-        )
+        raise HTTPException(status_code=422, detail="target_sku_from must identify one of the merge sources.")
 
+
+def _merge_request_digest(payload: MergeBody) -> str:
+    """What a merge asks for, whatever order its items are listed in. A retry under
+    the same idempotency key must ask for exactly this."""
+    canonical = {
+        "sources": sorted(payload.source_entity_ids),
+        "target": payload.target_sku_from,
+        "quantity": payload.resulting_quantity,
+        "cost_total": payload.resulting_cost_total,
+        "name": payload.resulting_name,
+        "sku": payload.resulting_sku,
+        "attributes": payload.resolved_attributes or {},
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _merge_fingerprint(payload: MergeBody, sources: list[Projection], reclass) -> str:
+    """Names what the merge asks for, the stock its plan was made from, and where its
+    value goes. Keyed, so it reveals nothing about cost to a role that cannot see cost."""
+    from celerp.config import settings as app_settings
+
+    basis = {
+        "request": _merge_request_digest(payload),
+        "sources": [[p.entity_id, p.state] for p in sorted(sources, key=lambda p: p.entity_id)],
+        "destination": reclass.destination,
+        "moves": {code: str(amount) for code, amount in reclass.moves.items()},
+        "currency": reclass.currency,
+    }
+    message = json.dumps(basis, sort_keys=True, default=str).encode()
+    return hmac.new(app_settings.jwt_secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+async def _merge_disclosure(session: AsyncSession, company_id, reclass, settings: dict, role: str) -> dict | None:
+    """The inventory accounts a merge moves value between, named as the chart names
+    them, for the person merging. The amounts are goods cost, so a role that cannot
+    see cost gets the accounts only."""
+    from celerp.services.posting_readiness import account_names
+
+    disclosure = reclass.disclosure()
+    if not disclosure:
+        return None
+    names = await account_names(session, company_id,
+                                [disclosure["destination"], *(m["account"] for m in disclosure["moves"])])
+    disclosure["destination_name"] = names[disclosure["destination"]]
+    hide = not role_has_permission(settings, role, "view_inventory_costs")
+    disclosure["moves"] = [{**m, "name": names[m["account"]], **({"amount": None} if hide else {})}
+                           for m in disclosure["moves"]]
+    return disclosure
+
+
+@dataclass
+class MergePlan:
+    """Everything a merge writes, decided once from the source items as they stand."""
+
+    sources: list[Projection]
+    create_data: dict
+    price_fields: dict
+    merged_sku: str
+    location_id: uuid.UUID | None
+    reclass: object
+    disclosure: dict | None
+    fingerprint: str
+
+
+async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, settings: dict, role: str,
+                      rows: dict[str, Projection]) -> MergePlan:
+    """The one merge plan, shared by the preview and the merge itself. ``rows`` are the
+    source items as read by the caller; the merge passes them locked."""
+    from celerp.connectors import ownership, registry
+    from celerp.services.auto_je import company_currency, merge_reclassification
+    from celerp_inventory.services import external_link_for_state, normalize_sku
+
+    reject_system_item_fields({"attributes": payload.resolved_attributes or {}})
     reject_price_change(
         price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
         role, settings,
     )
-    from celerp.connectors import ownership, registry
-
-    # Hold every product channel steady (connect and disconnect wait) before the
-    # item locks, so the link check below cannot race a connector change.
-    for platform in sorted(ownership.PRODUCT_CHANNEL_PLATFORMS):
-        await ownership.lock_connector_key(session, platform)
-    locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
-        proj = locked_sources.get(sid)
+        proj = rows.get(sid)
         if proj is None:
             raise HTTPException(status_code=404, detail=t("inventory.err_merge_item_missing", item=sid))
+        refuse_draft(proj.state or {}, sid)
         status = str((proj.state or {}).get("status") or "").lower()
-        if status == "draft":
-            raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
         if status == "merged":
             raise HTTPException(status_code=409, detail=t("inventory.err_merge_already_merged",
                                                                    item=(proj.state or {}).get("sku") or sid))
+        if not is_item_available(proj.state or {}):
+            sku = (proj.state or {}).get("sku") or sid
+            raise HTTPException(status_code=409,
+                                detail=f"Item '{sku}' is not on hand ({status or 'no status'}), so it cannot be merged.")
         source_projections.append(proj)
-
-    from celerp_inventory.services import external_link_for_state, normalize_sku
 
     try:
         connected = await ownership.connected_connector_platforms(session, company_id)
@@ -3863,7 +4420,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             status_code=409,
             detail=t("inventory.err_merge_linked", stores=", ".join(live)),
         )
-
     explicit_catalog_ids = {
         str((proj.state or {}).get("catalog_item_id"))
         for proj in source_projections
@@ -3949,7 +4505,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         )
 
     # Resolve target projection (SKU/barcode/name/prices come from this source).
-    target_proj = locked_sources[payload.target_sku_from]
+    target_proj = rows[payload.target_sku_from]
 
     def _get_expiry(proj: Projection) -> str | None:
         raw = proj.state.get("expires_at")
@@ -3961,21 +4517,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Compute defaults.
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
+    # One source of unknown weight leaves the merged weight unknown, never short.
     weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
-    total_weight = sum(weights) if weights else None
-    # Merged cost_total (issue #199): reconcile on the source TOTALS — if every source has a cost,
-    # the merged cost is their sum; if ANY source has no cost, the true total is unknowable, so the
-    # merged item carries NO cost (None) rather than silently counting the missing one as 0.
-    def _src_cost_total(p: Projection):
-        ct = p.state.get("cost_total")
-        if ct not in (None, ""):
-            return float(ct)
-        cp = p.state.get("cost_price")
-        if cp not in (None, ""):
-            return float(cp) * float(p.state.get("quantity") or 0)
-        return None  # unset
-    _src_costs = [_src_cost_total(p) for p in source_projections]
-    merged_cost_total = sum(_src_costs) if _src_costs and all(c is not None for c in _src_costs) else None
+    total_weight = sum(weights) if len(weights) == len(source_projections) else None
+    # The merged lot keeps the value its sources record, which is what the books carry
+    # for them (lot_origin.recorded_value): a source with no cost adds nothing.
+    merged_cost_total = float(sum(recorded_value(p.state) for p in source_projections))
 
     expiry_dates = sorted(e for p in source_projections if (e := _get_expiry(p)))
     earliest_expiry = expiry_dates[0] if expiry_dates else None
@@ -4078,28 +4625,37 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         _natural_qty = round(float(total_qty), _qty_dp) if _qty_dp is not None else float(total_qty)
         if resulting_qty != _natural_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
             raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
-    # A cost that differs from the sources' sum is a price write, so it takes the same
-    # set_inventory_prices gate as PATCH; sending the computed sum back is not a change.
-    if payload.resulting_cost_total is not None and payload.resulting_cost_total != merged_cost_total:
+    # A merge keeps the value of what it combines. Changing that value is a cost
+    # correction on the merged item, never part of the merge. A role that may not
+    # write prices is refused as for any price write, so its answer says nothing
+    # about the cost.
+    currency = await company_currency(session, company_id)
+    if payload.resulting_cost_total is not None and (
+        round_money(to_decimal(payload.resulting_cost_total), currency) != round_money(to_decimal(merged_cost_total), currency)
+    ):
         reject_price_change({"cost_total"}, role, settings)
-    resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
+        raise HTTPException(
+            status_code=422,
+            detail="A merge keeps the cost of the items it combines. To change the merged item's cost, "
+                   "merge first and then make a cost correction on the merged item.",
+        )
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
     # Update expiry_date attribute to earliest.
     if earliest_expiry:
         resolved_attrs["expiry_date"] = earliest_expiry
 
-    # Build item.created data from target projection.
     target_state = target_proj.state
-    new_entity_id = f"item:{uuid.uuid4()}"
     # The merged item is genuinely new, so its SKU can be the target's (default),
     # or a custom value the user typed (issue #190). SKU is a product-type that may
     # repeat across lots (per-lot identity is the barcode + entity_id), so no
     # uniqueness check is applied - consistent with create/rename.
     merged_sku = (payload.resulting_sku or "").strip() or str(target_state.get("sku") or "")
-    refusal = negative_cost_error(lot_label({"sku": merged_sku, "name": resulting_name}, new_entity_id), resulting_cost)
-    if refusal:
-        raise HTTPException(status_code=422, detail=refusal)
+    cost_refusal = negative_cost_error(
+        lot_label({"sku": merged_sku, "name": resulting_name}, _merge_result_id(company_id, payload.idempotency_key)),
+        merged_cost_total)
+    if cost_refusal:
+        raise HTTPException(status_code=422, detail=cost_refusal)
     if catalog_anchor is not None and normalize_sku(merged_sku) != normalize_sku(
         (catalog_anchor.state or {}).get("sku")
     ):
@@ -4107,13 +4663,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             status_code=409,
             detail=t("inventory.err_merge_keep_sku"),
         )
-    # The merged item is a new physical lot, so it mints a FRESH barcode rather than
-    # inheriting the target's: the source items are deactivated (status="merged") but
-    # keep their barcodes, so copying the target's here would collide with the still
-    # indexed source under uq_projection_company_item_barcode. allocate_internal_codes
-    # locks the company's code namespace, so a concurrent create/split/merge cannot
-    # mint the same barcode.
-    merged_barcode = (await allocate_internal_codes(session, company_id))[0]
     create_data: dict = {
         "sku": merged_sku,
         "name": resulting_name,
@@ -4122,14 +4671,17 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "status": "available",
         "allow_splitting": splitting_allowed(target_state),
         "attributes": resolved_attrs,
-        "barcode": merged_barcode,
     }
     if merged_catalog_id:
         create_data["catalog_item_id"] = merged_catalog_id
+    # The merged lot keeps the surviving lot's inventory account; value held in any
+    # other account moves into it with the merge.
+    reclass = merge_reclassification(target_state, [p.state for p in source_projections], currency)
+    create_data[LOT_ACCOUNT_FIELD] = reclass.destination
 
     # The merged item is the same product as the target, so carry the target's product
     # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical
-    # unit (a fresh barcode is minted above), so it starts with no physical tag.
+    # unit (the merge mints a fresh barcode), so it starts with no physical tag.
     for field in ("category", "location_id", "description", "unit", "tax_codes", "gtin"):
         val = target_state.get(field)
         if val is not None:
@@ -4140,9 +4692,102 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     weight_unit = target_state.get("weight_unit")
     if weight_unit:
         create_data["weight_unit"] = weight_unit
-    # Create the new merged item.
+
+    # Pricing for the merged money fields (issue #199). Each *_price field is a PER-UNIT
+    # price, so it is reconciled on the source TOTALS (unit × qty): if every source has the price set,
+    # the merged total is their sum (stored back as a unit = total / merged_qty); if ANY source lacks
+    # the price, the merged item carries NO value for it (omit) rather than copying the target's price
+    # or treating the missing one as 0. cost_total is already a total (computed above).
+    price_fields: dict = {"cost_total": merged_cost_total}
+    _price_keys = {
+        k for p in source_projections for k in p.state
+        if k.endswith("_price") and k != "cost_price"
+    }
+    _merge_qty = float(resulting_qty) or 0.0
+    for pk in _price_keys:
+        src_totals = []
+        for p in source_projections:
+            unit = p.state.get(pk)
+            src_totals.append(None if unit in (None, "") else float(unit) * float(p.state.get("quantity") or 0))
+        if src_totals and all(t is not None for t in src_totals):
+            merged_total = sum(src_totals)
+            price_fields[pk] = round(merged_total / _merge_qty, 10) if _merge_qty else merged_total
+        # else: at least one source lacks this price → omit (merged item has no value for it)
+
     raw_loc = target_state.get("location_id")
-    emit_location_id = uuid.UUID(str(raw_loc)) if raw_loc else None
+    return MergePlan(
+        sources=source_projections,
+        create_data=create_data,
+        price_fields=price_fields,
+        merged_sku=merged_sku,
+        location_id=uuid.UUID(str(raw_loc)) if raw_loc else None,
+        reclass=reclass,
+        disclosure=await _merge_disclosure(session, company_id, reclass, settings, role),
+        fingerprint=_merge_fingerprint(payload, source_projections, reclass),
+    )
+
+
+@router.post("/merge/preview")
+async def preview_merge(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    """What merging these items would do to the books, before the user confirms. Send
+    the same body the merge will be confirmed with (every field but ``idempotency_key``
+    and ``plan_fingerprint`` counts): the merge refuses if the request or its items
+    change between this preview and the confirmation."""
+    _check_merge_request(payload)
+    rows = {p.entity_id: p for p in (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_(payload.source_entity_ids)))).scalars()}
+    plan = await _plan_merge(session, company_id, payload, settings, role, rows)
+    return {"inventory_reclassification": plan.disclosure, "plan_fingerprint": plan.fingerprint}
+
+
+@router.post("/merge")
+async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Merge the items into one new item. Preview the merge first with POST
+    /items/merge/preview and confirm it with the ``plan_fingerprint`` that preview
+    returned: a merge without one is refused, and so is one whose items changed since
+    the preview. A retry of the same request under the same ``idempotency_key``
+    returns the first merge's result without a new preview."""
+    _check_merge_request(payload)
+    from celerp.connectors import ownership
+    from celerp.services.account_roles import current_settings
+    from celerp.services.auto_je import create_for_merge_reclassification
+
+    # Hold every product channel steady (connect and disconnect wait) before the
+    # item locks, so the link check in the plan cannot race a connector change.
+    for platform in sorted(ownership.PRODUCT_CHANNEL_PLATFORMS):
+        await ownership.lock_connector_key(session, platform)
+    locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
+    request_digest = _merge_request_digest(payload)
+    if payload.idempotency_key:
+        # A repeat delivery of a merge that already happened gets its result again. Read
+        # under the item locks, so a delivery still in flight finishes first.
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            meta = replay.metadata_ or {}
+            if replay.event_type != "item.created" or meta.get("merge_request") != request_digest:
+                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
+            if await _merge_undone(session, company_id, replay.entity_id):
+                raise HTTPException(status_code=409, detail=_UNDONE_MERGE)
+            return {"id": replay.entity_id, "inventory_reclassification": meta.get("inventory_reclassification")}
+
+    # Plan again under the locks, from the settings as last committed, and refuse if
+    # the items are no longer what the user reviewed.
+    settings = await current_settings(session, company_id)
+    plan = await _plan_merge(session, company_id, payload, settings, role, locked_sources)
+    if payload.plan_fingerprint is None:
+        raise HTTPException(status_code=422, detail=_UNREVIEWED_MERGE)
+    if not hmac.compare_digest(payload.plan_fingerprint, plan.fingerprint):
+        raise HTTPException(status_code=409, detail=_STALE_MERGE)
+
+    new_entity_id = _merge_result_id(company_id, payload.idempotency_key)
+    # The merged item is a new physical lot, so it mints a FRESH barcode rather than
+    # inheriting the target's: the source items are deactivated (status="merged") but
+    # keep their barcodes, so copying the target's here would collide with the still
+    # indexed source under uq_projection_company_item_barcode. allocate_internal_codes
+    # locks the company's code namespace, so a concurrent create/split/merge cannot
+    # mint the same barcode.
+    create_data = {**plan.create_data, "barcode": (await allocate_internal_codes(session, company_id))[0]}
     await emit_event(
         session,
         company_id=company_id,
@@ -4151,10 +4796,11 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         event_type="item.created",
         data=create_data,
         actor_id=user.id,
-        location_id=emit_location_id,
+        location_id=plan.location_id,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={"merged_from": payload.source_entity_ids},
+        idempotency_key=payload.idempotency_key or f"merge:{new_entity_id}",
+        metadata_={"merged_from": payload.source_entity_ids, "merge_request": request_digest,
+                   "inventory_reclassification": plan.disclosure},
     )
 
     # Carry attached files from every source onto the merged item (dedup by id; keep one hero)
@@ -4162,7 +4808,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     from datetime import datetime as _dt, timezone as _tz
     _seen_files: set[str] = set()
     _hero_used = False
-    for proj in source_projections:
+    for proj in plan.sources:
         for f in (proj.state.get("files") or []):
             fid = f.get("id")
             if not fid or fid in _seen_files:
@@ -4193,34 +4839,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"merge:{new_entity_id}:file:{fid}",
                 metadata_={"reason": "from_merge"},
             )
 
-    # Emit pricing events for the merged money fields (issue #199). Each *_price field is a PER-UNIT
-    # price, so it is reconciled on the source TOTALS (unit × qty): if every source has the price set,
-    # the merged total is their sum (stored back as a unit = total / merged_qty); if ANY source lacks
-    # the price, the merged item carries NO value for it (omit) rather than copying the target's price
-    # or treating the missing one as 0. cost_total is already a total (computed above).
-    price_fields: dict = {}
-    if resulting_cost is not None:
-        price_fields["cost_total"] = resulting_cost
-    _price_keys = {
-        k for p in source_projections for k in p.state
-        if k.endswith("_price") and k != "cost_price"
-    }
-    _merge_qty = float(resulting_qty) or 0.0
-    for pk in _price_keys:
-        src_totals = []
-        for p in source_projections:
-            unit = p.state.get(pk)
-            src_totals.append(None if unit in (None, "") else float(unit) * float(p.state.get("quantity") or 0))
-        if src_totals and all(t is not None for t in src_totals):
-            merged_total = sum(src_totals)
-            price_fields[pk] = round(merged_total / _merge_qty, 10) if _merge_qty else merged_total
-        # else: at least one source lacks this price → omit (merged item has no value for it)
 
-    for price_type, price_val in price_fields.items():
+    for price_type, price_val in plan.price_fields.items():
         await emit_event(
             session,
             company_id=company_id,
@@ -4231,12 +4855,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"merge:{new_entity_id}:price:{price_type}",
             metadata_={"reason": "from_merge"},
         )
 
     # Emit item.merged marker on the new item for history display.
-    source_skus = {p.entity_id: str(p.state.get("sku") or p.entity_id) for p in source_projections}
+    source_skus = {p.entity_id: str(p.state.get("sku") or p.entity_id) for p in plan.sources}
     await emit_event(
         session,
         company_id=company_id,
@@ -4246,18 +4870,18 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         data={
             "source_entity_ids": payload.source_entity_ids,
             "source_skus": source_skus,
-            "resulting_qty": float(resulting_qty),
+            "resulting_qty": float(plan.create_data["quantity"]),
         },
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=str(uuid.uuid4()),
+        idempotency_key=f"merge:{new_entity_id}:marker",
         metadata_={},
     )
 
     # Deactivate all source items: qty=0, is_available=False, merged_into=new item.
-    new_sku = merged_sku or new_entity_id
-    for proj in source_projections:
+    new_sku = plan.merged_sku or new_entity_id
+    for proj in plan.sources:
         await emit_event(
             session,
             company_id=company_id,
@@ -4268,16 +4892,94 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 "merged_into": new_entity_id,
                 "merged_into_sku": new_sku,
                 "original_qty": float(proj.state.get("quantity") or 0),
+                "original_status": str(proj.state.get("status") or "available"),
+                "original_status_doc_id": proj.state.get("status_doc_id"),
+                "original_status_doc_number": proj.state.get("status_doc_number"),
+                "original_status_line_entity_id": proj.state.get("status_line_entity_id"),
             },
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"merge:{new_entity_id}:source:{proj.entity_id}",
             metadata_={},
         )
 
+    await create_for_merge_reclassification(
+        session, company_id=company_id, user_id=user.id, merged_id=new_entity_id, merged_sku=new_sku,
+        source_ids=payload.source_entity_ids, reclass=plan.reclass,
+        ts=business_date_at(datetime.now(timezone.utc), settings.get("timezone")),
+    )
+
     await session.commit()
-    return {"id": new_entity_id}
+    return {"id": new_entity_id, "inventory_reclassification": plan.disclosure}
+
+
+async def _latest_item_event(session: AsyncSession, company_id, entity_id: str):
+    from celerp.models.ledger import LedgerEntry
+    return (await session.execute(
+        select(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
+        .order_by(LedgerEntry.id.desc()).limit(1)
+    )).scalar_one_or_none()
+
+
+async def _merge_undone(session: AsyncSession, company_id, entity_id: str) -> bool:
+    from celerp.models.ledger import LedgerEntry
+    return (await session.execute(select(LedgerEntry.id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+        LedgerEntry.event_type == "item.merge_undone").limit(1))).first() is not None
+
+
+@router.post("/{entity_id}/undo-merge")
+async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Undo a merge: the merged items hold their own stock again, each on the inventory
+    account it was in before, and the merge's reclassification entry is reversed.
+
+    Only while nothing has happened to the merged item or its sources since the merge;
+    after that the merge is part of what followed and stays."""
+    merged = (await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}))
+    if merged is None or merged.entity_type != "item":
+        raise HTTPException(status_code=404, detail=f"Item '{entity_id}' not found.")
+    marker = await _latest_item_event(session, company_id, entity_id)
+    if marker is None or marker.event_type != "item.merged":
+        raise HTTPException(status_code=409, detail=(
+            "This merge can no longer be undone: the merged item has changed since it was made."))
+    source_ids = list(marker.data["source_entity_ids"])
+    locked = await _lock_items_for_physical_mutation(session, company_id, [entity_id, *source_ids])
+    marker = await _latest_item_event(session, company_id, entity_id)
+    if marker is None or marker.event_type != "item.merged" or entity_id not in locked:
+        raise HTTPException(status_code=409, detail=(
+            "This merge can no longer be undone: the merged item has changed since it was made."))
+    restores = []
+    for sid in source_ids:
+        last = await _latest_item_event(session, company_id, sid)
+        if sid not in locked or last is None or last.event_type != "item.source_deactivated" \
+                or (last.data or {}).get("merged_into") != entity_id:
+            raise HTTPException(status_code=409, detail=(
+                "This merge can no longer be undone: one of the merged items has changed since it was made."))
+        if not (last.data or {}).get("original_status"):
+            raise HTTPException(status_code=409, detail=(
+                "This merge was made before merges could be undone, so the items' earlier state is not on record."))
+        restores.append((sid, last.data))
+
+    from celerp.services.auto_je import void_for_merge_reclassification
+    await void_for_merge_reclassification(session, company_id=company_id, user_id=user.id, merged_id=entity_id)
+    for sid, data in restores:
+        await emit_event(
+            session, company_id=company_id, entity_id=sid, entity_type="item", event_type="item.unmerged",
+            data={"merged_into": entity_id, "restored_status": data["original_status"],
+                  "source_doc_id": data.get("original_status_doc_id"),
+                  "doc_number": data.get("original_status_doc_number"),
+                  "source_line_entity_id": data.get("original_status_line_entity_id")},
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=f"merge-undo:{entity_id}:{sid}", metadata_={},
+        )
+    await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="item", event_type="item.merge_undone",
+        data={"source_entity_ids": source_ids}, actor_id=user.id, location_id=None, source="api",
+        idempotency_key=f"merge-undo:{entity_id}", metadata_={},
+    )
+    await session.commit()
+    return {"id": entity_id, "restored": source_ids}
 
 
 @router.post("/{entity_id}/adjust")
@@ -4334,7 +5036,7 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
         entity_id=entity_id,
         entity_type="item",
         event_type="item.status.set",
-        data=payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True), **_kept(payload.new_status)},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -4345,9 +5047,37 @@ async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depend
     return {"event_id": entry.id}
 
 
+async def assert_reservable(session: AsyncSession, company_id, entity_id: str, quantity: float,
+                            release: bool = False) -> None:
+    """A reservation holds part of an available lot: it grows only on an available lot, it
+    moves by a positive quantity, and it stays between nothing and the lot's quantity.
+    Judged on the locked row, so two reservations racing on one lot never over-commit it."""
+    row = await lock_item(session, company_id, entity_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
+    state = row.state or {}
+    refuse_draft(state, entity_id)
+    sku = state.get("sku") or entity_id
+    status = status_value(state.get("status"))
+    if not release and status != "available":
+        raise HTTPException(status_code=409, detail=refusal(
+            "item.reserve_not_available", f"{sku} is {status}: only available stock can be reserved.",
+            sku=sku, status=status))
+    change = -quantity if release else quantity
+    held = float(state.get("quantity") or 0)
+    reserved = float(state.get("reserved_quantity") or 0) + change
+    if quantity <= 0 or not 0 <= reserved <= held:
+        raise HTTPException(status_code=422, detail=refusal(
+            "item.reserve_out_of_range",
+            f"{sku} holds {held:g} with {reserved - change:g} reserved: a reservation change of "
+            f"{change:g} would leave {reserved:g}, outside 0 to {held:g}.",
+            sku=sku, held=f"{held:g}", reserved=f"{reserved - change:g}", change=f"{change:g}",
+            result=f"{reserved:g}"))
+
+
 @router.post("/{entity_id}/reserve")
 async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await assert_not_draft(session, company_id, entity_id, "reserve")
+    await assert_reservable(session, company_id, entity_id, payload.quantity)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -4367,6 +5097,7 @@ async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(
 
 @router.post("/{entity_id}/unreserve")
 async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    await assert_reservable(session, company_id, entity_id, payload.quantity, release=True)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -4386,14 +5117,14 @@ async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depend
 
 @router.post("/{entity_id}/expire")
 async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await assert_not_draft(session, company_id, entity_id, "expire")
+    await assert_expirable(session, company_id, entity_id)
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.expired",
-        data={},
+        data=_kept("expired"),
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -4474,13 +5205,16 @@ async def undo_import_batch(
     __: None = require_permission("edit_inventory"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo an import: remove the items it created, in one step. Refused, with nothing
-    changed, when the import did more than create those items (it is not reversible),
-    or an item was changed or used since."""
+    """Undo an import: remove the items it created and take off the books exactly the
+    opening stock it booked for them, in one step. Refused, with nothing changed, when the
+    import did more than create those items (it is not reversible), an item was changed or
+    used since, or its opening stock was booked another way, or the import's entry cannot be
+    voided (a locked period)."""
     from datetime import datetime, timezone as _tz
 
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
+    from celerp.services.auto_je import _void_je_if_posted
 
     try:
         batch_uuid = uuid.UUID(batch_id)
@@ -4503,17 +5237,35 @@ async def undo_import_batch(
 
     entity_ids = batch.entity_ids or []
     rows = await lock_projections(session, company_id, entity_ids)
+    entries = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:")))).scalars().all()
+    unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
+    if unexpected:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_entry_changed",
+            "message": "This import cannot be undone because the entry booking its opening stock was changed.",
+            "entity_ids": unexpected,
+        })
 
-    # Only what the import itself wrote may be on the items: their creation.
+    # Only what the import itself wrote may be on the items: their creation, and the
+    # inventory account the import's own entry booked them into.
     created_by_import = set(batch.idempotency_keys or [])
+    booked_by_import: set[str] = set()
     modified = {eid for eid, row in rows.items() if row.entity_type != "item"}
-    for eid, event_type, key in (await session.execute(
-        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key)
+    for eid, event_type, key, meta in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key, LedgerEntry.metadata_)
         .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids)))).all():
         if event_type == "item.created" and key in created_by_import:
             continue
+        if event_type == RECORDED and (meta or {}).get("recorded_by") == "opening stock":
+            booked_by_import.add(eid)
+            continue
         modified.add(eid)
-    modified |= await mentioned_elsewhere(session, company_id, {e: [e] for e in entity_ids})
+    modified |= {eid for eid, row in rows.items()
+                 if (row.state or {}).get(LOT_ACCOUNT_FIELD) and eid not in booked_by_import}
+    modified |= await depended_on(session, company_id, {e: [e] for e in entity_ids},
+                                  besides=[e.entity_id for e in entries])
     if modified:
         raise HTTPException(
             status_code=409,
@@ -4524,6 +5276,11 @@ async def undo_import_batch(
             },
         )
 
+    # The entry comes off first: a locked period refuses it before anything is removed.
+    for entry in entries:
+        await _void_je_if_posted(
+            session, company_id=company_id, user_id=user.id, doc_id=str(batch.id), je_id=entry.entity_id,
+            idem_key=f"import-undo:{entry.entity_id}", reason="Import undone", trigger="item.import-undone")
     await erase_items(session, company_id, entity_ids)
     batch.status = "undone"
     # Release the operation so the same source can be imported again as a new entry.
@@ -4644,8 +5401,6 @@ async def export_items_csv(
 
 
 def setup_api_routes(app) -> None:
-    # Scanning module disabled until properly finished
-    # from celerp_inventory.routes_scanning import router as scanning_router
     from celerp_inventory.routes_attachments import router as attachments_router
     # attachments_router first: its specific sub-paths (e.g. /files/{id}) must
     # be registered before the catch-all /{entity_id} route in the main router.
@@ -4654,4 +5409,3 @@ def setup_api_routes(app) -> None:
     from celerp.importers.sinks import register_sink
     from celerp_inventory.migration_sink import SINK
     register_sink(SINK)
-

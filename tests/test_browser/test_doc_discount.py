@@ -169,3 +169,28 @@ def test_header_discount_apply_and_remove(page, ui_server, api, discount_doc_id)
     page.wait_for_selector("#doc-header-discount-row", state="detached", timeout=5000)
     assert "1,050" in page.locator("#doc-total").inner_text() or "1050" in page.locator("#doc-total").inner_text()
     assert _poll(api, discount_doc_id, lambda d: float(d.get("discount") or 0) == 0), "discount not cleared"
+
+
+def test_discount_with_tax_and_shipping_shows_one_set_of_figures(page, ui_server, api):
+    """$100 line, 10% tax, $5 shipping, 10% header discount: tax $9.00 and total $104.00, live
+    and after a reload (the stored figures), never the tax scaled by the discount twice."""
+    r = api.post("/docs", json={
+        "doc_type": "invoice", "status": "draft", "shipping": 5.0,
+        "line_items": [{"name": "A", "sku": "A1", "quantity": 1, "unit_price": 100.0,
+                        "line_total": 100.0, "tax_rate": 10}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("#doc-total", timeout=8000)
+    _apply_disc(page, 10, "percentage")
+    _total_has(page, "104.00")
+    assert _poll(api, doc_id, lambda d: abs(float(d.get("tax") or 0) - 9) < 0.01
+                 and abs(float(d.get("total") or 0) - 104) < 0.01), "stored tax/total wrong"
+
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("#doc-total", timeout=8000)
+    assert page.locator("#doc-total").inner_text().replace(",", "").endswith("104.00")
+    assert page.locator("#doc-shipping").inner_text().endswith("5.00")
+    taxes = page.locator("#doc-tax-rows .total-value").all_inner_texts()
+    assert [t[-4:] for t in taxes] == ["9.00"], taxes

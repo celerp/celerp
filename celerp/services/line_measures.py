@@ -16,6 +16,7 @@ way, so the rules live here:
 
 from __future__ import annotations
 
+from celerp.accounting_roles import refusal
 from celerp.services.units import is_pieces_unit, is_weight_unit
 
 
@@ -26,6 +27,29 @@ def splitting_allowed(state: dict) -> bool:
     blocks. Single source of truth for the split default across every consumer.
     """
     return state.get("allow_splitting") is not False
+
+
+# What a user was doing when a lot that may not be split stood in the way, as the verb
+# the refusal names (each a translated phrase of its own).
+_SPLIT_ACTIONS = {
+    "return": refusal("lots.split_action.return", "return"),
+    "ship": refusal("lots.split_action.ship", "ship"),
+    "reserve": refusal("lots.split_action.reserve", "reserve"),
+    "take_back": refusal("lots.split_action.take_back", "take back"),
+    "write_off": refusal("lots.split_action.write_off", "write off"),
+    "invoice": refusal("lots.split_action.invoice", "invoice"),
+}
+
+
+def splitting_off(sku: str, action: str) -> dict:
+    """The one refusal for moving part of a lot whose Allow Splitting is off. ``action``
+    is a key of _SPLIT_ACTIONS; the whole parcel can always move."""
+    verb = _SPLIT_ACTIONS[action]
+    return refusal(
+        "lots.splitting_off",
+        f"Allow Splitting is off for {sku}. To {verb['message']} part of it, turn on Allow "
+        f"Splitting for the item, or {verb['message']} the whole parcel.",
+        sku=sku, action=verb)
 
 
 def _g(value) -> str:
@@ -64,18 +88,22 @@ def _classify(line: dict, unit_map: dict | None, meta: dict) -> tuple[bool, bool
 def resolve_line_measures(line: dict, *, unit_map: dict | None = None, item_meta: dict | None = None):
     """Resolve the displayable (pieces, weight, weight_unit, qty_is_pieces,
     qty_is_weight) for a line, falling back to the parcel item when the line
-    itself has no stored measure."""
+    itself has no stored measure and is for the whole parcel."""
     meta = item_meta or {}
     qty_is_pieces, qty_is_weight = _classify(line, unit_map, meta)
     # For the measure the quantity IS, the value is the line's own quantity (the
-    # invoiced amount); the other measure falls back to the parcel item.
+    # invoiced amount). The other measure falls back to the parcel item only when the
+    # line takes all of it: what a part of a parcel measures is unknown, never the whole's.
     line_qty = line.get("quantity")
+    lot_qty = meta.get("quantity")
+    whole_lot = (line_qty is not None and lot_qty is not None
+                 and abs(float(line_qty) - float(lot_qty)) <= 1e-9)
     pieces = line.get("pieces")
     if pieces is None:
-        pieces = line_qty if qty_is_pieces else meta.get("pieces")
+        pieces = line_qty if qty_is_pieces else (meta.get("pieces") if whole_lot else None)
     weight = line.get("weight")
     if weight is None:
-        weight = line_qty if qty_is_weight else meta.get("weight")
+        weight = line_qty if qty_is_weight else (meta.get("weight") if whole_lot else None)
     weight_unit = line.get("weight_unit") or meta.get("weight_unit") or ""
     if not weight_unit and qty_is_weight:
         # A weight-sold item has no separate weight_unit — its unit IS the sell_by.

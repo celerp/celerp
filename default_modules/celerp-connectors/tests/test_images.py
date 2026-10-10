@@ -115,7 +115,7 @@ async def test_download_emit_success_emits_event():
     emit = AsyncMock()
     with respx.mock, \
          patch("celerp.services.attachments.store_upload", new=AsyncMock(return_value=meta)), \
-         patch("celerp.events.engine.emit_event", new=emit):
+         patch("celerp.services.attachments.emit_event", new=emit):
         respx.get("https://x.test/img.jpg").mock(
             return_value=httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"}))
         result = await download_and_emit_file(sess, *_ARGS)
@@ -140,7 +140,7 @@ async def test_download_emit_guesses_mime_when_header_missing():
 
     with respx.mock, \
          patch("celerp.services.attachments.store_upload", new=_store), \
-         patch("celerp.events.engine.emit_event", new=AsyncMock()):
+         patch("celerp.services.attachments.emit_event", new=AsyncMock()):
         respx.get("https://x.test/img.jpg").mock(return_value=httpx.Response(200, content=b"abc"))  # no content-type
         result = await download_and_emit_file(sess, *_ARGS)
     assert result is True

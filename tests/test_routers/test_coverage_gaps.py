@@ -97,8 +97,8 @@ async def test_docs_credit_note_validation(client):
     """Covers credit_note: total exceeds original → 409; valid CN → 200."""
     tok = await _reg(client)
 
-    # Create original invoice
-    inv_id = await _doc(client, tok, total=50)
+    # Create the original invoice; a credit note credits an issued invoice
+    inv_id = await _doc(client, tok, total=50, finalize=True)
 
     # Credit note without original_doc_id is allowed (link can be added later)
     r1 = await client.post("/docs", headers=_h(tok), json={

@@ -35,7 +35,7 @@ from celerp.models.projections import Projection
 from celerp.routers import companies
 from test_helpers import make_authed_token
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.process]
 
 _ITEM = "item:race"
 _DRAFT = "item:draft"
@@ -371,3 +371,95 @@ def test_handed_settings_copy_as_plain_dicts():
     view.authority = RequestAuthority(company_id=uuid.uuid4(), user_id=uuid.uuid4(), role="owner")
     for clone in (copy.copy(view), copy.deepcopy(view), dict(view)):
         assert type(clone) is dict and clone == view
+
+
+# Production run movements, each from the state that makes it valid: the steps an owner
+# takes first, then the operator's movement on the run.
+_RUN_MOVES = {
+    "return": (("issue",), "return", lambda lot: {}),
+    "undo_receipt": (("issue", "receive"), "undo-receipt", lambda lot: {"lot_item_id": lot}),
+    "reopen": (("issue", "complete"), "reopen", lambda lot: {}),
+    "cancel": ((), "cancel", lambda lot: {"reason": "not needed"}),
+    "start": ((), "start", lambda lot: {}),
+    "hold": ((), "hold", lambda lot: {"reason": "waiting"}),
+    "resume": (("hold",), "resume", lambda lot: {}),
+    "schedule": ((), "schedule", lambda lot: {"due_date": "2026-04-01"}),
+}
+
+
+async def _run_events(factory, company_id) -> tuple[dict, int]:
+    async with factory() as s:
+        runs = {r.entity_id: dict(r.state or {}) for r in (await s.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type.in_(("item", "mfg_order"))))).scalars()}
+        events = (await s.execute(select(func.count()).select_from(LedgerEntry).where(
+            LedgerEntry.company_id == company_id))).scalar_one()
+    return runs, events
+
+
+async def _seed_run(factory, client, c, steps) -> tuple[str, str]:
+    """A run making 2 of a product from 10 of a component, taken through ``steps`` by the
+    owner; returns the run and the first lot it received, if any."""
+    from test_helpers import provision_company_books
+
+    async with factory() as s:
+        await provision_company_books(s, c["company_id"])
+        await s.commit()
+    owner_h = c["h"]["owner"]
+
+    async def post(path, body):
+        r = await client.post(path, json=body, headers=owner_h)
+        assert r.status_code == 200, (path, r.text)
+        return r.json()
+
+    raw = (await post("/items", {"sku": "RAW", "name": "Raw", "quantity": 10, "sell_by": "piece",
+                                 "status": "available", "cost_total": 100.0}))["id"]
+    product = (await post("/items", {"sku": "FG", "name": "Made", "quantity": 0, "sell_by": "piece",
+                                     "status": "available", "cost_total": 0.0}))["id"]
+    r = await client.put(f"/manufacturing/items/{product}/recipe", headers=owner_h, json={
+        "output_qty": 1, "components": [{"item_id": raw, "quantity": 5}], "labor": [], "overhead": []})
+    assert r.status_code == 200, r.text
+    order = (await post(f"/manufacturing/items/{product}/build", {"quantity": 2}))["id"]
+    for step in steps:
+        await post(f"/manufacturing/{order}/{step}", {"quantity": 1} if step == "receive" else {})
+    async with factory() as s:
+        state = (await s.get(Projection, {"company_id": c["company_id"], "entity_id": order})).state or {}
+    return order, next(iter(state.get("received_lots") or []), "")
+
+
+@pytest.mark.parametrize("move", sorted(_RUN_MOVES))
+async def test_run_movement_refused_when_manufacturing_access_is_revoked_first(committed_engine, move):
+    steps, path, body = _RUN_MOVES[move]
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c = await _seed(factory)
+    async with _app_client(factory) as (client, pending):
+        order, lot = await _seed_run(factory, client, c, steps)
+        before = await _run_events(factory, c["company_id"])
+        changed, wrote = await _race(
+            committed_engine,
+            lambda held: _direct(factory, held, _revoke(c["company_id"], "manage_manufacturing", "operator")),
+            lambda held: _http(pending, held, lambda: client.post(
+                f"/manufacturing/{order}/{path}", json=body(lot), headers=c["h"]["operator"])),
+        )
+    _ok(changed)
+    _refused(wrote, 403)
+    assert await _run_events(factory, c["company_id"]) == before
+
+
+@pytest.mark.parametrize("move", sorted(_RUN_MOVES))
+async def test_run_movement_first_commits_and_the_revocation_waits(committed_engine, move):
+    steps, path, body = _RUN_MOVES[move]
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    c = await _seed(factory)
+    async with _app_client(factory) as (client, pending):
+        order, lot = await _seed_run(factory, client, c, steps)
+        _, before = await _run_events(factory, c["company_id"])
+        wrote, changed = await _race(
+            committed_engine,
+            lambda held: _http(pending, held, lambda: client.post(
+                f"/manufacturing/{order}/{path}", json=body(lot), headers=c["h"]["operator"])),
+            lambda held: _direct(factory, held, _revoke(c["company_id"], "manage_manufacturing", "operator")),
+        )
+    _ok(wrote)
+    _ok(changed)
+    _, after = await _run_events(factory, c["company_id"])
+    assert after > before

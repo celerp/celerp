@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "Konnte nicht erstellt werden: {error}",
+  "labels.could_not_delete": "Konnte nicht gelöscht werden: {error}",
+  "labels.could_not_save": "Konnte nicht gespeichert werden: {error}",
+  "labels.created": "„{name}“ erstellt.",
   "labels.delete_template_confirm": "Vorlage „{name}“ löschen?",
   "labels.edit_name": "Bearbeiten: {name}",
   "labels.height_example": "z. B. 30",
+  "labels.name_required": "Vorlagenname erforderlich.",
   "labels.new_template_name": "Neuer Vorlagenname",
   "labels.print_labels": "Etiketten drucken",
   "labels.print_labels_heading": "Etiketten drucken – {n} Artikel",
   "labels.remove_field": "Feld entfernen",
   "labels.selected": "Ausgewählt: {ids}{more}",
+  "labels.template_deleted": "Vorlage gelöscht.",
+  "labels.template_not_found": "Vorlage nicht gefunden.",
   "labels.width_example": "z. B. 50"
 }

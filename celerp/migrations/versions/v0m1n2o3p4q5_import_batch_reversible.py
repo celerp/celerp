@@ -7,7 +7,7 @@ Imports recorded before this revision cannot be shown to have had no other effec
 so they are recorded as not reversible.
 
 Revision ID: v0m1n2o3p4q5
-Revises: u8j9k0l1m2n3
+Revises: e9f0a1b2c3d4
 Create Date: 2026-10-02
 """
 
@@ -15,7 +15,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "v0m1n2o3p4q5"
-down_revision = "u8j9k0l1m2n3"
+down_revision = "e9f0a1b2c3d4"
 branch_labels = None
 depends_on = None
 

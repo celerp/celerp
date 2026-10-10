@@ -8,15 +8,17 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, StrictBool
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
+from celerp.held_back import held_back
 from celerp.models.company import User
 from celerp.services.auth import (
     get_current_user, is_install_owner, require_install_owner,
 )
+from celerp.services.permissions import require_permission
 
 router = APIRouter()
 
@@ -54,6 +56,17 @@ async def restart_server(
     """
     background_tasks.add_task(_send_sigterm)
     return {"ok": True, "restarting": True}
+
+
+# ── Last start ───────────────────────────────────────────────────────────────
+
+
+@router.get("/start-report", dependencies=[require_permission("manage_company_settings")])
+async def start_report(request: Request) -> dict:
+    """What Doctor shows first: why the last start held the records back (each failed
+    step with its error), or nothing when the records are current."""
+    cause = held_back(request.app)
+    return {"held_back": cause.report() if cause is not None else None}
 
 
 # ── Updates ───────────────────────────────────────────────────────────────────

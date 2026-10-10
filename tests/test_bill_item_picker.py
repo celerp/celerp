@@ -13,7 +13,6 @@ import uuid
 import pytest
 from fasthtml.common import to_xml
 
-from test_cost_restatement import auth, ids  # noqa: F401  (auth and ids are fixtures)
 from test_form_submitted_twice import _Request, routes  # noqa: F401  (routes is a fixture)
 
 

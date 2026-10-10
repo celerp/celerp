@@ -50,7 +50,7 @@ pip install celerp
 celerp init        # sets up the database and launches Celerp
 ```
 
-Open **http://localhost:8080**. Done.
+Open **http://localhost:8080** and enter the one-time setup code `celerp init` printed on the first sign-up page.
 Your office can securely access the system at your IP address :8080.
 
 No PostgreSQL to install: `celerp init` uses your existing PostgreSQL server if one is
@@ -118,7 +118,7 @@ The setup form asks for your business type. Modules can be toggled any time at *
 Every feature above is a module on one loader API, and you can build against the same API. A module is a Python package you drop into Celerp's `modules/` folder; it adds its own tables, API routes, and UI pages, no fork or build step.
 
 - [**celerp-module-template**](https://github.com/celerp/celerp-module-template) - a working example module you can run in about ten minutes, plus a lint script
-- [**Build a module**](https://www.celerp.com/docs/modules) - the guide
+- [**Build a module**](https://celerp.com/build) - the guide
 - [**community-modules**](https://github.com/celerp/community-modules) - a directory of community-built modules, and how to list yours
 
 ---

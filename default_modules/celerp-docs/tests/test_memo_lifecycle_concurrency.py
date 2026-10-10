@@ -31,11 +31,12 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
-from celerp_accounting.routes import seed_chart_of_accounts
-from celerp_accounting.models import Account
+from celerp_accounting.routes import seed_chart_of_accounts_hook
+from celerp_accounting.models import Account, BankAccount
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.lot_origin import recognize_opening_lots
 
 
 def _factory(engine):
@@ -49,7 +50,7 @@ async def _seed_company(factory):
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@life.test", name="Race User",
                    auth_hash="x"))
         await s.flush()
-        await seed_chart_of_accounts(s, company_id)
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
 
@@ -58,6 +59,7 @@ async def _cleanup(factory, company_id, user_id):
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
         await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.execute(delete(User).where(User.id == user_id))
@@ -79,6 +81,7 @@ async def _seed_item(factory, company_id, user, *, sku, name, qty, barcode) -> s
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        await recognize_opening_lots(s, company_id, [entity_id], user.id, f"seed:{entity_id}")
         await s.commit()
     return entity_id
 
@@ -150,7 +153,7 @@ async def _record_payment_seq(factory, company_id, user, memo_id, amount):
     async with factory() as s:
         await record_payment(
             memo_id, DocPaymentBody(amount=amount, payment_date="2026-06-20", method="cash",
-                                    bank_account="1110"),
+                                    bank_account="1111"),
             company_id=company_id, _=None, user=user, session=s)
 
 
@@ -371,7 +374,7 @@ async def test_close_record_payment_race_no_silent_unclose(_db_engine):
             try:
                 outcome["pay"] = await record_payment(
                     memo_id, DocPaymentBody(amount=5, payment_date="2026-06-21", method="cash",
-                                            bank_account="1110"),
+                                            bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is an allowed outcome
                 outcome["pay"] = exc
@@ -727,7 +730,7 @@ async def test_reopen_payment_race_serialized(_db_engine):
             try:
                 outcome["pay"] = await record_payment(
                     memo_id, DocPaymentBody(amount=3, payment_date="2026-06-22", method="cash",
-                                            bank_account="1110"),
+                                            bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (still closed) is an allowed outcome
                 outcome["pay"] = exc
@@ -818,7 +821,7 @@ async def test_payment_lock_order_no_abba_deadlock(_db_engine):
             try:
                 outcome["A"] = await record_payment(
                     memo_id, DocPaymentBody(amount=total, payment_date="2026-07-01",
-                                            method="cash", bank_account="1110"),
+                                            method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (already/fully paid) is allowed
                 outcome["A"] = exc
@@ -829,7 +832,7 @@ async def test_payment_lock_order_no_abba_deadlock(_db_engine):
             try:
                 outcome["B"] = await bulk_payment(
                     BulkPaymentBody(doc_ids=[memo_id], amount=total, payment_date="2026-07-01",
-                                    method="cash", bank_account="1110"),
+                                    method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (already/fully paid) is allowed
                 outcome["B"] = exc
@@ -905,7 +908,7 @@ async def test_close_bulk_payment_race_no_silent_unclose(_db_engine):
             try:
                 outcome["bulk"] = await bulk_payment(
                     BulkPaymentBody(doc_ids=[memo_id], amount=total, payment_date="2026-07-02",
-                                    method="cash", bank_account="1110"),
+                                    method="cash", bank_account="1111"),
                     company_id=company_id, _=None, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is allowed
                 outcome["bulk"] = exc

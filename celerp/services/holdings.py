@@ -166,8 +166,9 @@ def consignment_holdings(
     An item is still held when it came from one of those docs and it still carries
     ``consignment_flag == "in"`` (the flag clears when the goods are fully returned to
     the supplier). It came from a doc when its own id, or the id of any lot it was split
-    or transformed from (``split_from`` / ``transformed_from``, followed back to the
-    received lot), is in the doc's ``received_item_ids``. Value is the
+    or transformed from or returned by a customer from (``split_from`` /
+    ``transformed_from`` / ``returned_from``, followed back to the received lot), is in
+    the doc's ``received_item_ids``. Value is the
     item's ``cost_total``, which already tracks remaining quantity after partial returns,
     else cost_price x quantity, else None.
     """
@@ -184,7 +185,7 @@ def consignment_holdings(
                 return True
             seen.add(item_id)
             state = by_id.get(item_id) or {}
-            item_id = str(state.get("split_from") or state.get("transformed_from") or "")
+            item_id = str(state.get("split_from") or state.get("transformed_from") or state.get("returned_from") or "")
         return False
 
     out: dict[str, float | None] = {}

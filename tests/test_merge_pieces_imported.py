@@ -19,6 +19,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import merge_items
 
 
 async def _token(client) -> str:
@@ -54,8 +55,7 @@ async def _pieces(client, headers, item_id: str):
 
 
 async def _merge(client, headers, source_ids: list[str], target_id: str) -> str:
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": source_ids, "target_sku_from": target_id},
         headers=headers,
     )

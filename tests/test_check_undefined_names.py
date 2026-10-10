@@ -127,3 +127,13 @@ def test_comprehension_target_resolves() -> None:
 
 def test_builtins_resolve() -> None:
     assert not _names("def f(xs):\n    return len(list(xs))\n")
+
+
+def test_assignment_expression_in_a_comprehension_resolves() -> None:
+    """``:=`` inside a comprehension binds in the enclosing function (PEP 572)."""
+    src = (
+        "def f(xs, g):\n"
+        "    hits = [y for x in xs if (y := g(x))]\n"
+        "    return hits, y\n"
+    )
+    assert not _names(src)

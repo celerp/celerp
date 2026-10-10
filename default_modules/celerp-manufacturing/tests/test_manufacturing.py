@@ -80,12 +80,19 @@ async def test_build_issue_receive_restocks_product_and_posts_je(client, session
     assert not any(i.get("name") in (None, "") for i in items)  # no nameless throwaway item
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
-    je = next(e for e in ledger if run in (e["data"].get("memo") or ""))
-    entries = je["data"]["entries"]
-    assert [x["account"] for x in entries].count("1130-P") == 2
-    _balanced(entries)
-    je_row = (await session.execute(select(LedgerEntry).where(LedgerEntry.id == je["id"]))).scalar_one()
-    assert je_row.metadata_["trigger"] == "mfg.order.completed" and je_row.metadata_["order_id"] == run
+    jes = {e["data"]["memo"].split(" ")[0]: e for e in ledger
+           if run in (e["data"].get("memo") or "") and e["event_type"] == "acc.journal_entry.created"}
+    # Issuing moves the components, entered by hand, from opening inventory into work in progress;
+    # receiving moves that value on to the output, which is produced stock.
+    assert sorted(jes) == ["Components", "Output"]
+    for memo, legs, trigger in (("Components", {"1130-OB": (False, True), "1130-WIP": (True, False)}, "issue"),
+                                ("Output", {"1130-WIP": (False, True), "1130-P": (True, False)}, "receive")):
+        entries = jes[memo]["data"]["entries"]
+        assert {x["account"]: (x["debit"] > 0, x["credit"] > 0) for x in entries} == legs
+        assert sum(x["debit"] for x in entries) == 800.0
+        _balanced(entries)
+        je_row = (await session.execute(select(LedgerEntry).where(LedgerEntry.id == jes[memo]["id"]))).scalar_one()
+        assert je_row.metadata_["trigger"] == f"mfg.order.{trigger}" and je_row.metadata_["order_id"] == run
 
 
 @pytest.mark.asyncio
@@ -132,14 +139,19 @@ async def test_non_splittable_output_creates_lot_under_product(client):
 
 
 @pytest.mark.asyncio
-async def test_cancel_after_issue_sets_cancelled_not_in_production(client):
+async def test_cancel_before_issue_sets_cancelled_and_after_issue_is_refused(client):
     token = await _register(client)
     gold = await _item(client, token, "GC", quantity=100, cost_total=100)
     ring = await _item(client, token, "RC", quantity=0)
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
-    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 1})).json()["id"]
+    issued = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token),
+                                json={"quantity": 1})).json()["id"]
+    assert (await client.post(f"/manufacturing/{issued}/issue", headers=_h(token))).status_code == 200
+    r = await client.post(f"/manufacturing/{issued}/cancel", headers=_h(token), json={"reason": "operator stop"})
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "mfg.cancel_moved", r.text
+    assert (await client.get(f"/manufacturing/{issued}", headers=_h(token))).json()["status"] == "in_progress"
 
-    await client.post(f"/manufacturing/{run}/issue", headers=_h(token))
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 1})).json()["id"]
     r = await client.post(f"/manufacturing/{run}/cancel", headers=_h(token), json={"reason": "operator stop"})
     assert r.status_code == 200
     state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()

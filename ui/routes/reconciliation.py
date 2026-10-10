@@ -14,6 +14,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from celerp.accounting_roles import account_label
 from celerp.importers import tabular
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -25,7 +26,7 @@ from ui.components.table import (
     party_options, searchable_select,
 )
 from ui.config import get_token as _token
-from ui.i18n import t, get_lang
+from ui.i18n import t
 
 
 _MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -188,7 +189,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
-        Option(f"{a['code']} {a['name']}", value=a["code"])
+        Option(account_label(a), value=a["code"])
         for a in chart
         if a.get("account_type") in ("expense", "cogs", "asset", "liability")
     ]
@@ -242,7 +243,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
-        Option(f"{a['code']} {a['name']}", value=a["code"])
+        Option(account_label(a), value=a["code"])
         for a in chart
         if a.get("account_type") in ("expense", "cogs", "asset", "liability", "revenue")
     ]

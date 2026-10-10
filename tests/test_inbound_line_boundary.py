@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from celerp.services.company_lock import locked_company
-from test_cost_restatement import _item, _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _item, _state
 from test_receipt_accounting import _doc, _receive
 
 

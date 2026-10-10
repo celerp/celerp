@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 # Imported at module level so tests can patch celerp.middleware.is_draining
 # and celerp.middleware.get_session_ctx
 from celerp.db import get_session_ctx
+from celerp.held_back import HeldBack, held_back
 from celerp.services.runtime_state import is_draining
 from ui.i18n import t
 
@@ -209,7 +210,8 @@ async def _refresh_bearer_validated(token: str) -> str | None:
 
     Fails closed: any DB or validation error yields no refreshed token.
     """
-    from celerp.services.auth import validate_access_token, issue_token_pair
+    from celerp.credentials import issue_token_pair
+    from celerp.services.auth import validate_access_token
     from fastapi import HTTPException
 
     try:
@@ -253,16 +255,34 @@ def log_unhandled_exception(request: Request, exc: Exception) -> None:
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health")
+# What still changes while the stored records are not current: signing in and out,
+# reading notices, enabling or installing the module that holds them back, updating
+# Celerp, and the repairs that bring them current. Nothing here changes a business record:
+# the doctor is allowed for its report, and refuses its repairs itself (run_doctor).
+_HELD_BACK_ALLOWED_PREFIXES = ("/auth/", "/notifications", "/companies/me/modules/", "/system/restart",
+                               "/system/update", "/ledger/rebuild", "/admin/doctor")
+_HELD_BACK_REFUSED_SUFFIXES = ("/purge-data",)
+
+
+def _refused_while_held_back(scope: Scope, path: str) -> HeldBack | None:
+    """Why a change to records is refused: the last start could not bring them current."""
+    cause = held_back(scope.get("app"))
+    if cause is None or (path.startswith(_HELD_BACK_ALLOWED_PREFIXES)
+                         and not path.endswith(_HELD_BACK_REFUSED_SUFFIXES)):
+        return None
+    return cause
 
 
 class DrainMiddleware:
-    """Return 503 on write requests while the cluster is draining.
+    """Return 503 on write requests while the cluster is draining, or while the last
+    start could not bring the stored records current (``app.state.data_current``).
 
     Reads the drain flag from ``SystemRuntimeState`` on every write request.
     Fails open (passes the request through) if the DB is unreachable so that
     a DB hiccup doesn't hard-block all mutations.
 
-    Safe paths (bypass): /__celerp/*, /health.
+    Safe paths (bypass): /__celerp/*, /health. While the records are not current,
+    only the sign-in, notice, module, update and repair paths above still accept writes.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -277,6 +297,10 @@ class DrainMiddleware:
         path = scope.get("path", "")
         if method not in _WRITE_METHODS or any(path.startswith(p) for p in _DRAIN_BYPASS_PREFIXES):
             await self.app(scope, receive, send)
+            return
+
+        if (cause := _refused_while_held_back(scope, path)) is not None:
+            await JSONResponse(status_code=503, content={"detail": cause.refusal()})(scope, receive, send)
             return
 
         try:

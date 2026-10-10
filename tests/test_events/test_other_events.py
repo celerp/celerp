@@ -8,7 +8,6 @@ import pytest
 from celerp_accounting.projections import apply_accounting_event
 from celerp_docs.doc_projections import apply_documents_event
 from celerp.projections.handlers.marketplace import apply_marketplace_event
-from celerp.projections.handlers.scanning import apply_scanning_event
 from celerp.projections.handlers.system import apply_system_event
 
 
@@ -69,14 +68,6 @@ def test_accounting_flow() -> None:
     assert state["status"] == "open"
 
 
-def test_scanning_flow() -> None:
-    state = apply_scanning_event({}, "scan.barcode", {"code": "c", "raw": {}})
-    assert state["last_code"] == "c"
-
-    state = apply_scanning_event(state, "scan.resolved", {"code": "c", "entity_id": "item:1", "entity_type": "item"})
-    assert state["resolved_entity_id"] == "item:1"
-
-
 def test_system_flow() -> None:
     state = apply_system_event({}, "sys.company.created", {"name": "A", "slug": "a"})
     assert state["slug"] == "a"
@@ -106,7 +97,6 @@ def test_system_flow() -> None:
         (apply_documents_event, "doc.nope"),
         (apply_marketplace_event, "mp.nope"),
         (apply_accounting_event, "acc.nope"),
-        (apply_scanning_event, "scan.nope"),
         (apply_system_event, "sys.nope"),
     ],
 )

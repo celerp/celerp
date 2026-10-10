@@ -96,6 +96,36 @@ def test_backup_failure_changes_nothing(cfg_dir):
     assert update.read_state()["failed_versions"] == ["1.1.0"]
 
 
+@pytest.mark.parametrize("step", ["preflight", "dump"])
+def test_an_update_refused_for_the_database_is_tried_again_once_it_is_fixed(cfg_dir, monkeypatch, step):
+    """The refusal names what to change in the database; the release itself did not fail."""
+    class RefusedOnce(FakeSteps):
+        refused = False
+
+        def preflight(self):
+            self._refuse_once("preflight")
+
+        def dump(self, path):
+            self._refuse_once("dump")
+            super().dump(path)
+
+        def _refuse_once(self, name):
+            if name == step and not self.refused:
+                self.refused = True
+                raise ValueError("Remove or move these database objects, then try again: view v.")
+
+    monkeypatch.setattr(update, "self_update_blockers", lambda: [])
+    monkeypatch.setattr(update, "available_update", lambda: "1.1.0")
+    steps = RefusedOnce()
+    result, _ = update.run_update("1.1.0", steps)
+    assert (result["outcome"], result["detail"]) == (
+        update.FAILED, "Remove or move these database objects, then try again: view v")
+    assert "in_progress" not in update.read_state()
+    assert steps.calls == []
+    assert update.request_available(automatic=True) == "1.1.0"
+    assert update.run_update("1.1.0", steps)[0]["outcome"] == update.OK
+
+
 def test_install_failure_discards_the_staged_release_without_touching_database(cfg_dir):
     class Partial(FakeSteps):
         def stage(self, target):

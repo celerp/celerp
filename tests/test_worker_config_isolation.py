@@ -11,10 +11,18 @@ corrupted the file mid-write, and a torn read raised tomllib.TOMLDecodeError,
 
 resolve_worker_config recomputes the path per worker whenever the inherited value
 is one of our own temp paths, so two workers can never collide.
+
+The data directory has the same rule (resolve_worker_data_dir). It defaulted to
+the checkout's own ./data, shared by every worker and by any app booted from the
+same checkout: a System Recovery run there wrote its in-progress marker, and the
+maintenance gate then answered 503 to every API request of the running suite.
 """
 from __future__ import annotations
 
-from conftest_support import is_own_test_config, resolve_worker_config
+from pathlib import Path
+
+from celerp.config import settings
+from conftest_support import is_own_test_config, resolve_worker_config, resolve_worker_data_dir
 
 _TMP = "/tmp"
 
@@ -60,3 +68,23 @@ class TestIsOwnTestConfig:
 
     def test_wrong_prefix_in_tmp_is_not_ours(self):
         assert is_own_test_config(f"{_TMP}/some-other-file.toml", _TMP) is False
+
+
+def _own_data(worker: str) -> str:
+    return f"{_TMP}/celerp-test-data-{worker}"
+
+
+class TestResolveWorkerDataDir:
+    def test_unset_env_gets_per_worker_dir(self):
+        assert resolve_worker_data_dir(None, "gw2", _TMP) == _own_data("gw2")
+
+    def test_inherited_main_dir_is_recomputed_for_the_worker(self):
+        assert resolve_worker_data_dir(_own_data("main"), "gw1", _TMP) == _own_data("gw1")
+
+    def test_external_data_dir_is_left_untouched(self):
+        assert resolve_worker_data_dir("/srv/celerp-data", "gw0", _TMP) == "/srv/celerp-data"
+
+
+def test_the_suite_never_uses_the_checkout_data_dir():
+    """An app booted from this checkout writes ./data; the suite must not read it."""
+    assert Path(settings.data_dir).resolve() != Path("data").resolve()

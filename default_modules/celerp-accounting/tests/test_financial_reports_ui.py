@@ -1062,7 +1062,7 @@ async def test_gl_csv_single_call_with_backend_lines(ui_client):
     bank = [l for l in lines if l.startswith("1111")]
     assert any("Opening balance" in l and "100.0" in l for l in bank)
     # Debit-normal: opening 100 + 40 debit = 140 running on the detail row
-    assert any(l.endswith("140.0") and "Adjustment" in l for l in bank)
+    assert any(l.endswith("140.00") and "Adjustment" in l for l in bank)
     # Credit-normal account: the 40 credit INCREASES the running balance
     sales = [l for l in lines if l.startswith("4100") and "Adjustment" in l]
-    assert sales and any(l.endswith("140.0") for l in sales)
+    assert sales and any(l.endswith("140.00") for l in sales)

@@ -59,6 +59,7 @@ from ui.routes.migrations import (
     sign_in_fields,
     upload_again_page,
     wizard_page,
+    wizard_table,
 )
 
 DOWNLOAD = "/company-backup/download"
@@ -350,7 +351,7 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
         request,
         auth_header(preview.get("company_name", ""), t("company_backup.preview_subtitle")),
         flash(error) if error else "",
-        Table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows]), cls="data-table"),
+        wizard_table(Tbody(*[Tr(Td(k), Td(v)) for k, v in rows])),
         *_plan_lines(mode, preview),
         *_scope_lines(preview),
         P(t("company_backup.nothing_written"), cls="form-hint"),

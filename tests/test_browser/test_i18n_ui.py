@@ -19,23 +19,20 @@ def test_language_picker_visible_in_settings(page, ui_server):
 
 
 def test_language_setting_persists(page, ui_server, api):
-    """I18N-02: POST language=en via API → company.settings.language == 'en'."""
-    # Patch company language setting via API (direct)
+    """I18N-02: the language is chosen from the header switcher, not company settings: a
+    company settings save naming it is refused as unknown, and the settings page loads."""
     r = api.patch("/companies/me", json={"settings": {"language": "en"}})
-    assert r.status_code in {200, 204}, f"PATCH /companies/me failed: {r.text}"
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "company.setting_unknown"
 
-    # Load settings page and verify no crash
     page.goto(f"{ui_server}/settings?tab=company", wait_until="domcontentloaded")
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
     assert "Traceback" not in body
 
-    # Verify via API that setting was stored
     r2 = api.get("/companies/me")
     assert r2.status_code == 200
-    settings = r2.json().get("settings", {})
-    assert settings.get("language", "en") == "en", \
-        f"Language setting not persisted: {settings}"
+    assert "language" not in r2.json().get("settings", {})
 
 
 def test_lang_switcher_in_topbar(page, ui_server):

@@ -117,7 +117,8 @@ def test_note_link_shows_while_demo_items_exist_and_goes_when_none(page: Page, f
     assert link.get_attribute("href") == _DEMO_URL
     ids = [i["id"] for i in _untouched(fresh_company)]
     assert len(ids) == 3, ids
-    assert fresh_company.post("/items/bulk/delete", json={"entity_ids": ids}).status_code == 200
+    r = fresh_company.post("/items/bulk/delete", json={"entity_ids": ids, "untouched_samples_only": True})
+    assert r.status_code == 200 and r.json()["deleted"] == 3, r.text
     page.reload()
     expect(page.locator("h1.page-title")).to_be_visible()
     expect(page.locator("#demo-note")).to_have_count(0)

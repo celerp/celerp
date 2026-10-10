@@ -259,7 +259,7 @@ describe("app-main startup", () => {
     expect(events.filter((e) => /^(spawn|execFileSync|message)/.test(e))).toEqual([
       "spawnSync:-m celerp compatibility",
       "execFileSync:-m celerp migrate",
-      "spawn:-m uvicorn celerp.main:app",
+      process.platform === "win32" ? "spawn:-m uvicorn celerp.main:app" : "spawn:-m celerp.desktop_child uvicorn",
     ]);
     expect(after["modules/celerp-inventory/__init__.py"]).not.toEqual(before["modules/celerp-inventory/__init__.py"]);
   });

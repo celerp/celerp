@@ -56,6 +56,14 @@ async def ui_client():
         yield c
 
 
+def _delete_answer(n: int, moved: list[dict] | None = None) -> dict:
+    """The items API's Delete answer: ``n`` drafts erased, plus the ``moved`` ones kept as Deleted."""
+    items = [{"entity_id": f"item:{i}", "sku": f"S{i}", "outcome": "deleted", "referenced_by": [], "has_files": False}
+             for i in range(n)]
+    items += [{"outcome": "moved_to_deleted", **m} for m in moved or []]
+    return {"deleted": n, "moved_to_deleted": len(moved or []), "items": items}
+
+
 def _authed(token: str | None = None, role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token."""
     return {"celerp_token": token or make_test_token(role=role)}
@@ -3119,7 +3127,7 @@ class TestDocumentPolish:
 
 class TestWriteoffListDetail:
     """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
-    (GDR 2f), the account picker is filtered to expense/cogs/equity chart accounts (function-level
+    (GDR 2f), the account picker is filtered to expense and equity chart accounts (function-level
     filter mirrored from the API), and every render path stays column-aligned."""
 
     _WO_CHART = [
@@ -3207,7 +3215,7 @@ class TestWriteoffListDetail:
         assert "/lists/list:WO-1/action/undo-write-off" in html
 
     @pytest.mark.asyncio
-    async def test_account_picker_limited_to_expense_cogs_equity(self, ui_client):
+    async def test_account_picker_limited_to_expense_and_equity(self, ui_client):
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
             patch("ui.api_client.get_chart",
@@ -3217,8 +3225,9 @@ class TestWriteoffListDetail:
                 "/lists/list:WO-1/writeoff-line/ln-abc/account/edit", cookies=_authed())
         assert r.status_code == 200
         html = r.content.decode()
-        # Expense / cogs / equity codes are offered; asset (1130) and revenue (4000) are not.
-        assert "6100" in html and "5100" in html and "3200" in html
+        # Expense and equity codes are offered; cost of sales (5100), asset (1130) and revenue (4000) are not.
+        assert "6100" in html and "3200" in html
+        assert "5100" not in html
         assert "1130" not in html
         assert "4000" not in html
 
@@ -4342,6 +4351,23 @@ class TestListsCreateBlank:
         assert r.json()["ok"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["line.protected_held", "docs.some_other_refusal"])
+    async def test_save_lines_refusal_returns_the_translated_reason(self, ui_client, key):
+        """A refused save answers 400 with the translated reason; the page puts the stored lines back
+        for every refusal (tests/test_browser/test_line_save_refusal.py)."""
+        from ui.api_client import _api_error
+        detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
+        refused = _api_error(409, {"detail": detail}, "")
+        with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=refused)):
+            r = await ui_client.post(
+                "/docs/doc:INV-2026-0001/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+                cookies=_authed(),
+            )
+        assert r.status_code == 400
+        assert r.json() == {"error": r.json()["error"]} and r.json()["error"]
+
+    @pytest.mark.asyncio
     async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
         """POST /lists/{id}/lines saves only the submitted page slice via
         api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
@@ -4376,6 +4402,18 @@ class TestListsCreateBlank:
             )
         assert r.status_code == 409
         assert r.json()["code"] == "stale_version"
+
+    @pytest.mark.asyncio
+    async def test_line_confirms_read_right_for_one_line(self, ui_client):
+        """The line-action confirms carry a one-line form, so selecting one line never reads
+        "Set 1 lines", and Delete selected has a confirm of its own."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert r.status_code == 200
+        for text in ("Set 1 line as reserved?", "Set {n} lines as reserved?",
+                     "Set 1 line as available?", "Delete 1 line?", "Delete {n} lines?"):
+            assert text in r.text, text
+        assert "celerpCount(_L.confirm_delete_lines" in r.text
 
     @pytest.mark.asyncio
     async def test_save_lines_unauthorized_redirects(self, ui_client):
@@ -4993,47 +5031,6 @@ class TestSprint5ItemActions:
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert b"Merging" in r.content
-    async def test_merge_items_route_success(self, ui_client):
-        with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new123"})):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "10"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 204
-        assert "HX-Redirect" in r.headers
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_missing_target(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": ""},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert t("inv.source_items_and_target_selection_are_required").encode() in r.content
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_missing_sources(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": [], "target_sku_from": "item:target"},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert t("inv.source_items_and_target_selection_are_required").encode() in r.content
-
-    @pytest.mark.asyncio
-    async def test_merge_items_route_api_error(self, ui_client):
-        from ui.api_client import APIError
-        with patch("ui.api_client.merge_items", new=AsyncMock(side_effect=APIError(400, "merge conflict"))):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 200
-        assert b"merge conflict" in r.content
 
     # ── Duplicate ─────────────────────────────────────────────────────────────
 
@@ -5461,7 +5458,7 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_row_menu_delete_returns_200_removes_row(self, ui_client):
         """DELETE /api/items/{id} returns 200 empty body so htmx removes the row."""
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 1, "kept": 0})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(1))):
             r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
         assert r.content == b""
@@ -5474,13 +5471,26 @@ class TestItemActionRouteCompleteness:
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
-    async def test_row_menu_delete_api_error_returns_inline_error_row(self, ui_client):
-        """On API error, DELETE returns a Tr with an error cell so the row shows the error."""
+    async def test_row_menu_delete_api_error_keeps_the_row_and_raises_a_toast(self, ui_client):
+        """On API error, DELETE leaves the row in place and says why in an error toast."""
         from ui.api_client import APIError
         with patch("ui.api_client.bulk_delete", new=AsyncMock(side_effect=APIError(403, "permission denied"))):
             r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
-        assert b"permission denied" in r.content
+        assert r.headers["HX-Reswap"] == "none"
+        assert "permission denied" in r.headers["HX-Trigger"]
+        assert r.content == b""
+
+    def test_row_menu_offers_delete_only_for_a_draft(self):
+        """Only a draft can be deleted, so stock rows carry no Delete (the bulk bar's rule)."""
+        from ui.components.table import data_table
+        from fasthtml.common import to_xml
+        schema = [{"key": "sku", "label": "SKU"}]
+        rows = [{"entity_id": "item:d", "sku": "D", "status": "draft"},
+                {"entity_id": "item:a", "sku": "A", "status": "available"}]
+        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
+        assert "htmx.ajax('DELETE','/api/items/item:d'" in html
+        assert "/api/items/item:a'" not in html
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_calls_bulk_delete_with_correct_id(self, ui_client):
@@ -5488,7 +5498,7 @@ class TestItemActionRouteCompleteness:
         captured = {}
         async def _mock(token, entity_ids):
             captured["entity_ids"] = entity_ids
-            return {"deleted": len(entity_ids)}
+            return _delete_answer(len(entity_ids))
         with patch("ui.api_client.bulk_delete", new=_mock):
             await ui_client.delete("/api/items/gc:TEST-001", cookies=_authed())
         assert captured["entity_ids"] == ["gc:TEST-001"]
@@ -5498,7 +5508,7 @@ class TestItemActionRouteCompleteness:
         from ui.components.table import data_table
         from fasthtml.common import to_xml
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
-        rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget"}]
+        rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True))
         assert "htmx.ajax('DELETE','/api/items/gc:ROW-001'" in html, \
             "row-menu delete must use htmx.ajax DELETE to /api/items/{id} (same as bulk pattern)"
@@ -5512,7 +5522,7 @@ class TestItemActionRouteCompleteness:
         from ui.components.table import data_table
         from fasthtml.common import to_xml
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
-        rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget"}]
+        rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
         assert "htmx.ajax('DELETE','/api/items/item:demo-abc123'" in html, \
             "row-menu delete with entity_type='inventory' must target /api/items/{id}, not /api/inventorys/{id}"
@@ -5546,53 +5556,6 @@ class TestItemActionRouteCompleteness:
         children = captured["payload"]["children"]
         assert len(children) == 3
         assert sorted(c["quantity"] for c in children) == [2.0, 3.0, 5.0]
-
-    # ── merge (additional coverage) ──────────────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_merge_redirects_to_new_item(self, ui_client):
-        with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new999"})):
-            r = await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "5"},
-                cookies=_authed(),
-            )
-        assert r.headers.get("HX-Redirect") == "/inventory/item:new999"
-
-    @pytest.mark.asyncio
-    async def test_merge_passes_correct_args(self, ui_client):
-        captured = {}
-        async def _mock(token, source_entity_ids, target_sku_from, resulting_quantity=None,
-                        resulting_cost_total=None, resulting_name=None, resulting_sku=None,
-                        resolved_attributes=None, idempotency_key=None):
-            captured.update({
-                "sources": source_entity_ids,
-                "target": target_sku_from,
-                "qty": resulting_quantity,
-                "sku": resulting_sku,
-            })
-            return {"id": "item:new1"}
-        with patch("ui.api_client.merge_items", new=_mock):
-            await ui_client.post(
-                "/api/items/merge",
-                data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a",
-                      "resulting_quantity": "8", "resulting_sku": "CUSTOM-1"},
-                cookies=_authed(),
-            )
-        assert captured["target"] == "item:a"
-        assert captured["sources"] == ["item:a", "item:b"]
-        assert captured["qty"] == 8.0
-        assert captured["sku"] == "CUSTOM-1"  # custom SKU flows through
-
-    @pytest.mark.asyncio
-    async def test_merge_invalid_qty_shows_error(self, ui_client):
-        r = await ui_client.post(
-            "/api/items/merge",
-            data={"source_entity_ids": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_quantity": "notanumber"},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert t("error.invalid_resulting_quantity").encode() in r.content
 
 
 class TestSplitCardLiveRefresh:
@@ -6407,7 +6370,7 @@ class TestInventoryBulkActions:
 
     @pytest.mark.asyncio
     async def test_bulk_delete_success(self, ui_client):
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(2))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab", headers={"content-type": "application/x-www-form-urlencoded"},
@@ -6417,11 +6380,52 @@ class TestInventoryBulkActions:
         assert b"Deleted: 2." in r.content
 
     @pytest.mark.asyncio
+    async def test_bulk_delete_names_each_item_moved_to_deleted(self, ui_client):
+        moved = [{"entity_id": "item:r", "sku": "REF-1", "referenced_by": ["QUO-7"], "has_files": False},
+                 {"entity_id": "item:f", "sku": "FILE-1", "referenced_by": [], "has_files": True}]
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(1, moved))):
+            r = await ui_client.post(
+                "/api/items/bulk/delete",
+                content=b"selected=item%3A0&selected=item%3Ar&selected=item%3Af",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"Deleted: 1. Moved to Deleted: 2." in r.content
+        toast = json.loads(r.headers["hx-trigger"])["celerpToast"]
+        assert "REF-1 moved to Deleted, still referenced by QUO-7." in toast["message"]
+        assert "FILE-1 moved to Deleted, it still holds files." in toast["message"]
+        assert toast["persist"] is True
+
+    @pytest.mark.asyncio
+    async def test_row_menu_delete_says_when_the_item_moved_to_deleted(self, ui_client):
+        moved = [{"entity_id": "item:r", "sku": "REF-1", "referenced_by": ["QUO-7"], "has_files": False}]
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(0, moved))):
+            r = await ui_client.delete("/api/items/item:r", cookies=_authed())
+        assert r.status_code == 200
+        toast = json.loads(r.headers["hx-trigger"])["celerpToast"]
+        assert toast["message"] == "REF-1 moved to Deleted, still referenced by QUO-7."
+
+    @pytest.mark.asyncio
+    async def test_bulk_restore_deleted_reports_the_count(self, ui_client):
+        restore = AsyncMock(return_value={"restored": 2})
+        with patch("ui.api_client.bulk_restore_deleted", new=restore):
+            r = await ui_client.post(
+                "/api/items/bulk/restore-deleted",
+                content=b"selected=item%3Aa&selected=item%3Ab",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"Restored to draft: 2." in r.content
+        assert restore.await_args.args[1] == ["item:a", "item:b"]
+
+    @pytest.mark.asyncio
     async def test_bulk_delete_passes_ids(self, ui_client):
         captured = {}
         async def _mock(token, entity_ids, untouched_samples_only=False):
             captured["ids"] = entity_ids
-            return {"deleted": 2, "kept": 0}
+            return _delete_answer(2)
         with patch("ui.api_client.bulk_delete", new=_mock):
             await ui_client.post(
                 "/api/items/bulk/delete",
@@ -6683,8 +6687,9 @@ class TestBulkActionsPhase1to5:
         assert b"Merge" in r.content
         assert b"Archive" in r.content
         assert b"Expire" in r.content
-        # Delete only offered when viewing archived/expired items
-        assert b'value="delete"' not in r.content
+        # Delete is in the dropdown on every view; the table script shows it only while
+        # every selected row is a draft (test_browser/test_bulk_delete_drafts.py).
+        assert b'value="delete"' in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_module_action_in_dropdown(self, ui_client):
@@ -7039,7 +7044,7 @@ class TestBulkSelectionClear:
     @pytest.mark.asyncio
     async def test_bulk_delete_success_sends_selection_clear_trigger(self, ui_client):
         """Delete success response must include HX-Trigger: celerpSelectionClear."""
-        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2, "kept": 0})):
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value=_delete_answer(2))):
             r = await ui_client.post(
                 "/api/items/bulk/delete",
                 content=b"selected=item%3Aa&selected=item%3Ab",
@@ -8323,6 +8328,40 @@ class TestNikolaiFixedBugs:
         assert b"error" in r.content.lower() or b"Invalid" in r.content
         mock_patch.assert_not_called()
 
+    # ── Opening balance date ──────────────────────────────────────────────────
+
+    def test_company_tab_shows_the_opening_balance_date_or_dashes(self):
+        """The date the opening balances are stated at is a click-to-edit row; unset shows --."""
+        from ui.routes.settings import _company_settings_card
+        from fasthtml.common import to_xml
+        html = to_xml(_company_settings_card({"settings": {"opening_balance_date": "2026-03-31"}}))
+        assert "Opening balances as at" in html and "2026-03-31" in html
+        assert "/settings/company/opening_balance_date/edit" in html
+        empty = to_xml(_company_settings_card({"settings": {}}))
+        assert "/settings/company/opening_balance_date/edit" in empty and "--" in empty
+
+    @pytest.mark.asyncio
+    async def test_company_tab_opening_balance_date_edit_is_a_date_input(self, ui_client):
+        with patch("ui.api_client.get_company",
+                   new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})):
+            r = await ui_client.get("/settings/company/opening_balance_date/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b'type="date"' in r.content and b'value="2026-03-31"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_company_tab_opening_balance_date_saves_through_the_books(self, ui_client):
+        with (
+            patch("ui.api_client.get_company",
+                  new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})),
+            patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
+        ):
+            r = await ui_client.patch("/settings/company/opening_balance_date",
+                                      data={"value": "2026-03-31"}, cookies=_authed())
+        assert r.status_code == 200
+        mock_patch.assert_awaited_once()
+        assert mock_patch.await_args.args[1] == {"opening_balance_date": "2026-03-31"}
+        assert b"2026-03-31" in r.content
+
     # ── Timezone display ──────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
@@ -9300,7 +9339,9 @@ class TestModulesUI:
         assert body.index("Import A") < body.index("Default Mod")
 
     @pytest.mark.asyncio
-    async def test_source_shield_renders_for_marketplace_and_default(self, ui_client):
+    async def test_source_shield_renders_for_defaults_only(self, ui_client):
+        """A Marketplace install carries no shield: its recorded origin is
+        advisory, so only the defaults Celerp ships are marked."""
         rows = [
             {"name": "market-mod", "label": "Market Mod", "version": "1.0", "author": "X",
              "enabled": False, "running": False, "is_default": False,
@@ -9311,7 +9352,7 @@ class TestModulesUI:
         ]
         body = await self._render_modules(ui_client, rows)
         assert "trust-icon--default" in body            # gold default shield
-        assert body.count("module-source-icon") == 2    # one per row, none elsewhere
+        assert body.count("module-source-icon") == 1    # the default row only
 
     @pytest.mark.asyncio
     async def test_source_shield_absent_for_sideloaded(self, ui_client):
@@ -9341,10 +9382,9 @@ class TestModulesUI:
     @pytest.mark.asyncio
     async def test_source_column_shows_label_and_shields_defaults_only(self, ui_client):
         """The Local Modules table carries a leftmost Source column with an
-        explicit text label per row (never blank). Shields mark verified
-        provenance only (bundled defaults, marketplace); community and
-        sideloaded rows carry no shield - the Source column already states
-        their origin in words."""
+        explicit text label per row (never blank). Only bundled defaults carry
+        a shield; community and sideloaded rows carry none - the Source column
+        already states their origin in words."""
         rows = [
             {"name": "comm-mod", "label": "Community Mod", "version": "1.0", "author": "X",
              "enabled": False, "running": False, "is_default": False,
@@ -9361,7 +9401,7 @@ class TestModulesUI:
         assert 'data-filter-value="Community"' in body
         assert 'data-filter-value="Sideloaded"' in body
         assert 'data-filter-value="Default"' in body
-        # Only the verified-provenance shield renders; community rows carry none.
+        # Only the default shield renders; community rows carry none.
         assert "trust-icon--community" not in body
         assert "trust-icon--default" in body
 
@@ -9638,8 +9678,8 @@ class TestModulesUI:
         assert "/login" in r.headers.get("location", "")
 
 
-# The token a marketplace Download hands back for celerp-budgeting.
-_PAID_TOK = "celerp-budgeting-" + "0" * 32
+# The reference a marketplace Download hands back for celerp-budgeting.
+_PAID_REF = "mp_" + "a" * 32
 
 _CATALOG_FIXTURE = [
     {"id": "celerp-budgeting", "name": "Budgeting", "description": "Budgets and forecasting.",
@@ -9653,8 +9693,11 @@ _CATALOG_FIXTURE = [
 ]
 
 
-_DOWNLOAD_HANDLERS = {"community_download", "community_import",
-                      "modules_marketplace_download", "modules_marketplace_install"}
+# Each download handler and the name it keeps the download under.
+_DOWNLOAD_HANDLERS = {"community_download": "download_token",
+                      "community_import": "download_token",
+                      "modules_marketplace_download": "download_ref",
+                      "modules_marketplace_install": "download_ref"}
 
 
 def _archive_host(seen: list[str]):
@@ -9828,7 +9871,7 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_community_download_stages_and_offers_import(self, ui_client):
         """Download stages the author's archive and swaps the row to a Downloaded
-        state with an Import button carrying that download's token."""
+        state with an Import button carrying the download reference."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
@@ -9863,13 +9906,13 @@ class TestMarketplaceUI:
         tree = ast.parse(inspect.getsource(page))
         handlers = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)
                     and n.name in _DOWNLOAD_HANDLERS}
-        assert set(handlers) == _DOWNLOAD_HANDLERS
+        assert set(handlers) == set(_DOWNLOAD_HANDLERS)
         for name, fn in handlers.items():
             assigned = {t.id for n in ast.walk(fn) if isinstance(n, (ast.Assign, ast.AnnAssign))
                         for t in ast.walk(n.targets[0] if isinstance(n, ast.Assign) else n.target)
                         if isinstance(t, ast.Name)}
-            assert {"session_token", "download_token"} <= assigned, name
-            assert not {"token", "download"} & assigned, name
+            assert {"session_token", _DOWNLOAD_HANDLERS[name]} <= assigned, name
+            assert not {"token", "download", "ref"} & assigned, name
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("zone", ["", "1"], ids=["row", "resumed-zone"])
@@ -10188,19 +10231,19 @@ class TestMarketplaceUI:
     @pytest.mark.asyncio
     async def test_marketplace_download_stages_and_offers_install(self, ui_client):
         """Download stages the licensed archive and swaps the row to an Install
-        button carrying that download's token."""
+        button carrying the download reference."""
         with (
             patch("ui.marketplace_catalog.fetch_catalog", new=AsyncMock(return_value=(_CATALOG_FIXTURE, False))),
             patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
             patch("ui.api_client.module_licenses", new=AsyncMock(return_value=["celerp-budgeting"])),
             patch("ui.api_client.marketplace_download",
-                  new=AsyncMock(return_value={"ok": True, "token": _PAID_TOK})),
+                  new=AsyncMock(return_value={"ok": True, "ref": _PAID_REF})),
         ):
             r = await ui_client.post("/modules/marketplace-download",
                                      data={"slug": "celerp-budgeting"}, cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content
-        assert _PAID_TOK.encode() in r.content                # token passed to install
+        assert _PAID_REF.encode() in r.content                # reference passed to install
         assert b">Install<" in r.content
 
     @pytest.mark.asyncio
@@ -10234,11 +10277,11 @@ class TestMarketplaceUI:
             patch("ui.api_client.marketplace_install", new=install),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
                                      cookies=_authed())
         assert r.status_code == 200
         assert r.headers.get("HX-Redirect") == "/modules?tab=local"
-        assert install.await_args.args[1] == _PAID_TOK          # exactly this download
+        assert install.await_args.args[1] == _PAID_REF          # exactly this download
 
     @pytest.mark.asyncio
     async def test_marketplace_install_failure_keeps_install_button(self, ui_client):
@@ -10254,7 +10297,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(422, "The downloaded package does not match the requested module."))),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-install" in r.content   # Install button still there
@@ -10274,7 +10317,7 @@ class TestMarketplaceUI:
                   new=AsyncMock(side_effect=APIError(410, "This download has expired. Download it again."))),
         ):
             r = await ui_client.post("/modules/marketplace-install",
-                                     data={"slug": "celerp-budgeting", "token": _PAID_TOK},
+                                     data={"slug": "celerp-budgeting", "ref": _PAID_REF},
                                      cookies=_authed())
         assert r.status_code == 200
         assert b"/modules/marketplace-download" in r.content
@@ -12462,6 +12505,14 @@ class TestCatalogConsolidationEndpoint:
 
     _UNITS = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
 
+    @staticmethod
+    def _by_text(items):
+        """GET /items returning ``items`` for a text search; no lot carries the text as a
+        barcode or RFID tag."""
+        async def _list(_t, params):
+            return {"items": [] if "barcode" in params or "rfid_epc" in params else items}
+        return _list
+
     @pytest.mark.asyncio
     async def test_catalog_search_consolidates_splittable_lots(self, ui_client):
         items = [
@@ -12473,7 +12524,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=W", cookies=_authed())
         assert r.status_code == 200
@@ -12492,7 +12543,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=DIA", cookies=_authed())
         assert r.status_code == 200
@@ -12511,6 +12562,8 @@ class TestCatalogConsolidationEndpoint:
         ]
 
         async def _list(_t, params):
+            if "barcode" in params or "rfid_epc" in params:
+                return {"items": []}
             return {"items": sold if params.get("status") == "sold" else []}
 
         with (
@@ -14319,16 +14372,20 @@ class TestProFormaLabel:
 
     def test_status_label_proforma_for_draft_invoice(self):
         """When doc_type='invoice' and status='draft', label is 'Pro Forma'."""
-        doc_type = "invoice"
-        status = "draft"
-        status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
-        assert status_label == "Pro Forma"
+        from ui.routes.documents import _doc_status_label
+        assert _doc_status_label("invoice", "draft") == "Pro Forma"
 
     def test_status_label_draft_for_non_invoice(self):
         """Other doc types still show 'Draft' for draft status."""
+        from ui.routes.documents import _doc_status_label
         for dt in ("credit_note", "memo", "receipt"):
-            status_label = "Pro Forma" if dt == "invoice" and "draft" == "draft" else "draft".replace("_", " ").title()
-            assert status_label == "Draft", f"{dt} should show Draft"
+            assert _doc_status_label(dt, "draft") == "Draft", f"{dt} should show Draft"
+
+    def test_status_label_is_the_catalog_label(self):
+        """Every other status reads from the doc_status catalog, not the raw slug."""
+        from ui.routes.documents import _doc_status_label
+        assert _doc_status_label("invoice", "partial") == "Partially Paid"
+        assert _doc_status_label("bill", "partially_received") == "Partially Received"
 
     def test_invoice_status_cards_include_proforma(self):
         """Invoice status cards show Pro Forma, All Issued, Awaiting Payment, Overdue, Paid, Void.
@@ -14926,12 +14983,12 @@ class TestBuildWorkflowVersioning:
         pkg = (REPO_ROOT / 'electron/package.json').read_text()
         assert 'signIgnore' not in pkg
 
-    def test_build_workflow_dev_pipeline_trigger(self):
+    def test_build_workflow_publishes_no_dev_release(self):
+        # Development builds stay workflow artifacts; no shared prerelease channel.
         from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
-        assert 'develop' in workflow
-        assert 'dev-latest' in workflow
-        assert 'prerelease: true' in workflow
+        assert 'dev-latest' not in workflow
+        assert 'prerelease: true' not in workflow
 
     def test_electron_main_disallows_prerelease(self):
         from test_helpers import REPO_ROOT
@@ -16989,9 +17046,9 @@ class TestItemRowColumnParity:
 
     When /api/items/{id}/row is used to replace a list-page row (via HX-Retarget),
     the returned <tr> must contain exactly the same <td data-col=...> columns that
-    data_table renders - including hidden-but-present columns (those not in show_cols
-    are rendered with style="display:none"). Missing or extra columns cause a visual
-    column shift for that row.
+    data_table renders, in the same order - including columns the table's script hides
+    (it re-applies their visibility after the row is swapped in). Missing, extra or
+    reordered columns cause a visual column shift for that row.
     """
 
     _SCHEMA = [
@@ -17041,6 +17098,7 @@ class TestItemRowColumnParity:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
@@ -17056,7 +17114,7 @@ class TestItemRowColumnParity:
         assert tr is not None, "item_row must return a <tr>"
         row_data_cols = [td["data-col"] for td in tr.find_all("td") if td.get("data-col")]
 
-        assert sorted(row_data_cols) == sorted(table_data_cols), (
+        assert row_data_cols == table_data_cols, (
             f"item_row columns {row_data_cols} != data_table columns {table_data_cols}. "
             f"Missing from row: {set(table_data_cols) - set(row_data_cols)}. "
             f"Extra in row: {set(row_data_cols) - set(table_data_cols)}."
@@ -17207,20 +17265,30 @@ class TestInboundPerLineStatus:
         assert "badge--not_received" in html
         assert "Not Received" in html
 
-    def test_bill_received_shows_in_stock_badge(self):
-        """Stock line with entity_id on a received bill must show real item status ('In Stock')."""
+    def test_bill_line_badge_says_what_this_bill_received(self):
+        """A received line says what this bill did for it, never the catalog item's status:
+        a line in part received says how much, and a return on another line changes nothing."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+
+        def _line(sku, qty, received, **extra):
+            return {"sku": sku, "name": sku, "quantity": qty, "unit_price": 10, "line_total": qty * 10,
+                    "receive_as": "stock", "entity_id": f"item:{sku}", "quantity_received": received, **extra}
+
         doc = self._make_bill_finalized(line_items=[
-            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
-             "receive_as": "stock", "entity_id": "item:received-1"},
+            _line("FULL", 5, 5), _line("PART", 5, 3), _line("NONE", 5, 0),
+            _line("BACK", 2, 2, return_status="returned"),
+            _line("SOME", 4, 4, return_status="partial_returned"),
         ])
-        # Use "received" status - items are in inventory at this point
-        doc["status"] = "received"
-        html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
-        assert "badge--available" in html
-        assert "In Stock" in html
-        assert "Not Received" not in html
+        doc["status"] = "partial_returned"
+        # The catalog says otherwise for every line; the badge must not follow it.
+        html = to_xml(_doc_detail(doc, item_status_map={f"item:{s}": "available" for s in
+                                                        ("FULL", "PART", "NONE", "BACK", "SOME")}))
+        badges = [td.get_text(" ", strip=True)
+                  for td in BeautifulSoup(html, "html.parser").select("td.col-item-status")]
+        assert badges == ["Received", "Received 3 of 5", "Not Received", "Returned", "Part returned"]
+        assert "In Stock" not in html
 
     def test_bill_expense_line_shows_no_status_badge(self):
         """Expense line must not show any status badge."""
@@ -19866,16 +19934,24 @@ class TestAPIErrorStructuredDetail:
         assert isinstance(e.data, dict)
         assert e.data["conflicts"] == conflicts
 
-    def test_apierror_message_less_dict_detail_passes_through(self):
-        """{"errors": [...]} details (fulfill/revert/reserve) must NOT be unwrapped:
-        their consumers json-dump the dict themselves."""
+    def test_apierror_errors_list_detail_renders_plain_and_keeps_its_payload(self):
+        """{"errors": [...]} details (fulfill/revert/reserve) render as plain text; the
+        payload itself rides on APIError.data for callers that branch on it."""
         from ui.api_client import APIError, _raise
-        detail = {"errors": [{"entity_id": "item:x", "error": "not available"}]}
+        detail = {"errors": ["RAW-1: not available"]}
         with pytest.raises(APIError) as exc:
             _raise(self._resp(detail))
         e = exc.value
-        assert e.detail == detail
-        assert e.data is None
+        assert e.detail == "RAW-1: not available"
+        assert e.data == detail
+
+    def test_apierror_field_map_detail_passes_through(self):
+        """A field-by-field detail map stays a dict for its page to lay out."""
+        from ui.api_client import APIError, _raise
+        detail = {"company_name": "Required"}
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp(detail))
+        assert exc.value.detail == detail and exc.value.data is None
 
     def test_apierror_preserves_top_level_code_with_string_detail(self):
         """A scan_run_conflict body - a machine `code` beside a plain-string detail -

@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import os
 import zipfile
-from pathlib import Path
 
 import pytest
 
@@ -251,53 +250,53 @@ def test_free_install_writes_no_marker(module_dir):
     assert not (module_dir / "my-module" / PREMIUM_MARKER).exists()
 
 
-# ── concurrency: landing dir must not collide across simultaneous installs ────
+# ── concurrency: two installs of one slug land exactly one module ─────────────
 
-def test_concurrent_installs_of_same_slug_use_distinct_landing_dirs(module_dir):
-    """os.getpid() is identical across threads in the same process, so two
-    installs of the SAME slug racing through asyncio.to_thread used to share
-    one landing dir - one call's cleanup/replace could clobber the other's
-    in-flight copy. Capture the landing (copytree destination) each of two
-    overlapping install_from_zip calls actually uses and assert they differ."""
-    import shutil as _shutil
+def test_concurrent_installs_of_same_slug_land_exactly_one(module_dir):
+    """Two installs of the same slug that reach the install lock together end with
+    one complete install and one canonical already-exists refusal, and leave no
+    landing dir behind."""
+    import contextlib
     import threading
 
-    real_copytree = _shutil.copytree
-    landings: list[Path] = []
-    lock = threading.Lock()
-    both_entered = threading.Barrier(2, timeout=5)
+    from celerp.modules import importer
 
-    def _capturing_copytree(src, dst, *a, **kw):
-        with lock:
-            landings.append(Path(dst))
-        both_entered.wait()  # force real overlap between the two threads
-        return real_copytree(src, dst, *a, **kw)
+    real_lock = importer._one_install_at_a_time
+    both_arrived = threading.Barrier(2, timeout=5)
 
-    manifest_a = MANIFEST.replace("my-module", "same-slug")
-    manifest_b = manifest_a  # identical name -> identical target, same collision class
+    @contextlib.contextmanager
+    def _arrive_together():
+        both_arrived.wait()
+        with real_lock():
+            yield
 
-    results = {}
-    errors = {}
+    manifest = MANIFEST.replace("my-module", "same-slug")
+    results: dict[str, dict] = {}
+    errors: dict[str, Exception] = {}
 
-    def _install(key, manifest):
+    def _install(key):
         try:
-            results[key] = install_from_zip(_zip_bytes({"__init__.py": manifest}))
-        except Exception as exc:  # noqa: BLE001 - capture for assertion below
+            results[key] = install_from_zip(_zip_bytes({"__init__.py": manifest, "data.txt": "payload"}))
+        except Exception as exc:  # noqa: BLE001 - captured for the assertions below
             errors[key] = exc
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(_shutil, "copytree", _capturing_copytree)
-        t1 = threading.Thread(target=_install, args=("a", manifest_a))
-        t2 = threading.Thread(target=_install, args=("b", manifest_b))
-        t1.start(); t2.start()
-        t1.join(timeout=10); t2.join(timeout=10)
+        mp.setattr(importer, "_one_install_at_a_time", _arrive_together)
+        threads = [threading.Thread(target=_install, args=(key,)) for key in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
 
-    assert len(landings) == 2
-    assert landings[0] != landings[1], "concurrent installs used the SAME landing dir"
-    # Exactly one wins (the second hits the importer's own name collision,
-    # which is correct/expected for two installs of the true same slug) - the
-    # point under test is that neither corrupts the other's temp copy.
-    assert len(results) + len(errors) == 2
+    assert len(results) == 1 and len(errors) == 1, (results, errors)
+    assert next(iter(results.values()))["name"] == "same-slug"
+    error = next(iter(errors.values()))
+    assert isinstance(error, ModuleImportError)
+    assert str(error) == "A module named 'same-slug' already exists. Remove it first, then import."
+    installed = module_dir / "same-slug"
+    assert (installed / "__init__.py").read_text() == manifest
+    assert (installed / "data.txt").read_text() == "payload"
+    assert not list(module_dir.glob(".same-slug.incoming-*"))
 
 
 def test_replace_onto_populated_target_reports_already_exists(module_dir, monkeypatch):
@@ -376,6 +375,19 @@ def test_folder_install_defaults_to_sideloaded_source(module_dir, tmp_path):
     sidecar = module_dir / "my-module" / META_FILENAME
     assert sidecar.exists()
     assert json.loads(sidecar.read_text())["source"] == "sideloaded"
+
+
+@pytest.mark.parametrize("premium", [True, False])
+def test_install_metadata_holds_only_provenance(premium, module_dir):
+    """The install metadata records where a module came from and when, nothing
+    else."""
+    import json
+    from celerp.modules.meta import META_FILENAME
+    name = "celerp-provenance-paid"
+    install_from_zip(_zip_bytes({"__init__.py": f"PLUGIN_MANIFEST = {{'name': {name!r}, "
+                                                 "'version': '1.0.0'}\n"}, root=f"{name}/"),
+                     official=True, premium=premium, source="marketplace")
+    assert set(json.loads((module_dir / name / META_FILENAME).read_text())) == {"source", "installed_at"}
 
 
 def test_read_meta_returns_empty_on_missing_file(tmp_path):

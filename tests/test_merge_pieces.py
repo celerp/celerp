@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import merge_items
 
 _UNSET = object()  # sentinel: source has no `pieces` attribute at all
 
@@ -55,8 +56,7 @@ async def _seed(client, headers, sku: str, pieces, *, qty: float = 32.0) -> str:
 
 
 async def _merge(client, headers, source_ids: list[str], target_id: str) -> str:
-    r = await client.post(
-        "/items/merge",
+    r = await merge_items(client,
         json={"source_entity_ids": source_ids, "target_sku_from": target_id},
         headers=headers,
     )

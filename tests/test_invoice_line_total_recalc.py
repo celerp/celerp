@@ -263,6 +263,7 @@ class TestHeaderDiscount:
                "line_items": [line], "subtotal": 1000.0, "tax": 45.0, "total": 945.0,
                "total_amount": 945.0, "discount": 10, "discount_type": "percentage",
                "discount_amount": 100.0}
+        doc.pop("tax_amount")  # a document stores its tax as `tax`
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
             r = await ui_client.get("/docs/d:hd2", cookies=_authed())
         assert r.status_code == 200

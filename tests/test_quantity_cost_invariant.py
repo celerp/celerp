@@ -14,17 +14,7 @@ import uuid
 import pytest
 
 from celerp_inventory.projections import apply_item_event
-from test_cost_restatement import (  # noqa: F401  (auth and ids are fixtures)
-    _cogs,
-    _cogs_adjustments,
-    _item,
-    _merge,
-    _sell,
-    _set_cost,
-    _state,
-    auth,
-    ids,
-)
+from test_cost_restatement import _cogs, _cogs_adjustments, _item, _merge, _sell, _set_cost, _state
 
 
 def _apply(state: dict, *events: tuple[str, dict]) -> dict:
@@ -33,8 +23,8 @@ def _apply(state: dict, *events: tuple[str, dict]) -> dict:
     return state
 
 
-def _landed(bill: str, unit: float) -> tuple[str, dict]:
-    return "item.landed_cost.applied", {"source_bill_id": bill, "kind": "freight", "unit_amount": unit}
+def _landed(bill: str, amount: float) -> tuple[str, dict]:
+    return "item.landed_cost.allocated", {"source_bill_id": bill, "kind": "freight", "amount": amount}
 
 
 async def _emit(session, auth, item_id: str, event_type: str, data: dict) -> None:
@@ -81,7 +71,7 @@ def test_explicit_cost_base_wins():
 def test_landed_cost_at_zero_quantity_keeps_the_unit_cost():
     state = _apply({}, ("item.created", {"sku": "A", "quantity": 0}),
                    ("item.pricing.set", {"price_type": "cost_price", "new_price": 12.5}),
-                   _landed("bill:1", 2.0))
+                   _landed("bill:1", 8.0))
     assert state["cost_price"] == 12.5
     assert state.get("cost_total") is None
     state = _apply(state, ("item.quantity.adjusted", {"new_qty": 4}))
@@ -90,18 +80,20 @@ def test_landed_cost_at_zero_quantity_keeps_the_unit_cost():
 
 def test_clearing_goods_cost_keeps_landed_cost():
     state = _apply({}, ("item.created", {"sku": "A", "quantity": 4, "cost_total": 40.0}),
-                   _landed("bill:1", 2.0),
+                   _landed("bill:1", 8.0),
                    ("item.pricing.set", {"price_type": "cost_total", "new_price": None}))
     assert (state["cost_base"], state["cost_landed"], state["cost_total"]) == (0.0, 8.0, 8.0)
 
 
 def test_consumption_relieves_cost_with_the_units():
     state = _apply({}, ("item.created", {"sku": "A", "quantity": 10, "cost_total": 100.0}),
-                   _landed("bill:1", 1.0),
+                   _landed("bill:1", 10.0),
                    ("item.consumed", {"quantity_consumed": 4}))
     assert (state["cost_base"], state["cost_landed"], state["cost_total"]) == (60.0, 6.0, 66.0)
     state = _apply(state, ("item.consumed", {"quantity_consumed": 6}))
-    assert state["cost_price"] == 10.0 and state.get("cost_total") is None
+    # Used up, the lot keeps its whole unit cost, freight included, for stock that comes back.
+    assert state["cost_price"] == 11.0 and state.get("cost_total") is None
+    assert "landed_costs" not in state
 
 
 # -- Audit: shortfall and undo ------------------------------------------------
@@ -203,7 +195,7 @@ async def _promoted_lot(client, session, auth) -> str:
     r = await client.patch(f"/items/{item_id}", headers=auth["headers"],
                            json={"fields_changed": {"cost_price": {"old": None, "new": 12.5}}})
     assert r.status_code == 200, r.text
-    await _emit(session, auth, item_id, *_landed("bill:x", 2.0))
+    await _emit(session, auth, item_id, *_landed("bill:x", 8.0))
     state = await _state(session, auth, item_id)
     assert state["cost_price"] == 12.5 and state.get("cost_total") is None
     await _adjust(client, auth, item_id, 4)

@@ -25,7 +25,7 @@ from ui.components.report_kit import (
 )
 from ui.components.shell import toast_header
 from ui.components.table import EMPTY, bulk_toolbar, fmt_money
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 # What the journal can be narrowed by: one search box. The API takes this name and
 # both books read it back under it, so a filtered page, its print sheet and its
@@ -296,7 +296,7 @@ def journal_void_toast(result: dict) -> dict:
     message = t("acct.bulk_void_result", n=len(results) - len(refused))
     if refused:
         reasons = " ".join(dict.fromkeys(
-            str(r.get("detail") or "").strip() for r in refused if r.get("detail")))
+            refusal_text(r.get("detail")).strip() for r in refused if r.get("detail")))
         message = f"{message} {t('acct.bulk_void_refused', n=len(refused), reasons=reasons)}"
     return toast_header(message.strip(), "error" if refused else "success")
 

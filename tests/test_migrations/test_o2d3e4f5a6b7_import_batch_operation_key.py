@@ -18,13 +18,17 @@ from .conftest import run_migration_ops
 MODULE = "o2d3e4f5a6b7_add_import_batch_operation_key"
 
 
-def test_revision_follows_migration_runs():
+def test_revision_follows_its_parent_in_a_single_line_of_history():
     from alembic.script import ScriptDirectory
 
     from celerp.alembic_config import build_alembic_config
 
     script = ScriptDirectory.from_config(build_alembic_config())
-    assert script.get_revision("o2d3e4f5a6b7").down_revision == "n1c2d3e4f5a6"
+    assert len(script.get_heads()) == 1
+    rev = script.get_revision("o2d3e4f5a6b7")
+    assert rev.down_revision == "n1c2d3e4f5a6"
+    ids = [r.revision for r in script.walk_revisions()]
+    assert len(ids) == len(set(ids)), "a revision id is declared twice"
 
 
 @pytest.fixture()

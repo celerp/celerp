@@ -135,7 +135,7 @@ async def test_historical_receipt_records_what_it_added_to_the_lot_without_new_s
     # The live receipt takes only the four still to come.
     r = await _receive(client, token, bill, loc, 5)
     assert r.status_code == 422, r.text
-    assert "at most 4 more can be received" in r.json()["detail"]
+    assert "at most 4 more can be received" in r.json()["detail"]["message"]
     assert (await _receive(client, token, bill, loc, 4)).status_code == 200
 
 
@@ -270,6 +270,43 @@ async def test_historical_deliveries_of_one_line_are_one_sold_lot_each(client, s
     assert await _events(session, company_id, "item.fulfilled") == 2
 
 
+@pytest.mark.asyncio
+async def test_a_sold_lot_is_stock_of_the_product_its_line_names_and_never_of_a_guess(client, session):
+    """RED before the change: the sold lot named no product, so Demand Planning took it for a
+    product of its own. A line whose item names no product (units split off under their own
+    SKU) leaves its lot unlinked and the company is told once."""
+    from celerp.models.notification import Notification
+    from celerp_docs.routes import record_historical_delivery
+
+    token, company_id = await _register(client)
+    _bill_id, item, _loc = await _bill(client, token)
+    stock = (await client.post("/items", headers=_h(token), json={
+        "status": "available", "sku": "BULK", "name": "Bulk", "quantity": 10, "sell_by": "piece"})).json()["id"]
+    r = await client.post(f"/items/{stock}/split", headers=_h(token), json={"children": [{"sku": "PART-1", "quantity": 4}]})
+    assert r.status_code == 200, r.text
+    part = r.json()["children"][0]["id"]
+    r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "line_items": [
+        {"item_id": item, "sku": "WID", "name": "Widget", "quantity": 5, "unit_price": 10, "line_total": 50},
+        {"item_id": part, "sku": "PART-1", "name": "Part", "quantity": 3, "unit_price": 10, "line_total": 30}],
+        "total": 80})
+    invoice = r.json()["id"]
+    assert (await client.post(f"/docs/{invoice}/finalize", headers=_h(token))).status_code == 200
+    lines = _delivery(item, 2, 8) + [{**_delivery(part, 1, 2)[0], "line": 1}]
+
+    for _ in range(2):  # the same delivery again changes nothing
+        await record_historical_delivery(session, company_id, invoice, lines=lines, actor_id=_user(token),
+                                         source="migration", idempotency_key=f"m:{invoice}:delivered")
+        await session.commit()
+
+    assert (await _state(session, company_id, lines[0]["lot_id"]))["catalog_item_id"] == item
+    unlinked = await _state(session, company_id, lines[1]["lot_id"])
+    assert not unlinked.get("catalog_item_id") and not unlinked.get("parent_item_id"), unlinked
+    assert await _events(session, company_id, "item.updated", lines[0]["lot_id"]) == 1
+    notices = (await session.execute(select(Notification).where(
+        Notification.company_id == company_id, Notification.title == "Delivered goods with no product"))).scalars().all()
+    assert len(notices) == 1 and "PART-1" in notices[0].body and "WID" not in notices[0].body, notices
+
+
 # ── Live receipts read the bill's receipt state ───────────────────────────────
 
 @pytest.mark.asyncio
@@ -289,7 +326,7 @@ async def test_partial_receipts_up_to_the_line_then_nothing_more(client, session
 
     r = await _receive(client, token, bill, loc, 1)
     assert r.status_code == 422, r.text
-    assert "at most 0 more can be received" in r.json()["detail"]
+    assert "at most 0 more can be received" in r.json()["detail"]["message"]
     assert await _stock_and_books(session, company_id) == full
     assert await _events(session, company_id, "doc.received", bill) == 2
 
@@ -305,7 +342,7 @@ async def test_over_receipt_is_refused_before_any_stock_is_written(client, sessi
 
     r = await _receive(client, token, bill, loc, 7)
     assert r.status_code == 422, r.text
-    assert "at most 6 more can be received" in r.json()["detail"]
+    assert "at most 6 more can be received" in r.json()["detail"]["message"]
     assert await _stock_and_books(session, company_id) == before
     assert await _events(session, company_id, "item.created") == parcels
 

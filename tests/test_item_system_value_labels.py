@@ -49,4 +49,4 @@ async def test_a_company_unit_shows_as_named(owner_ui):
 def test_every_item_status_and_system_unit_has_a_label_in_every_locale(lang):
     cat = i18n._cached_load(lang)
     assert [s for s in _ITEM_STATUSES if not cat.get(f"enum.item_status.{s}")] == []
-    assert [u["name"] for u in DEFAULT_UNITS if not cat.get(f"unit.{u['name']}")] == []
+    assert [u["name"] for u in DEFAULT_UNITS if not cat.get(f"enum.unit.{u['name']}")] == []

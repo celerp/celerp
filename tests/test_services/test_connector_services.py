@@ -44,7 +44,8 @@ def _patch_upsert(outcome="created"):
         return outcome
 
     with patch("celerp.db.SessionLocal", return_value=_mock_session_ctx()), \
-         patch("celerp.events.engine.connector_upsert", new=_fake):
+         patch("celerp.events.engine.connector_upsert", new=_fake), \
+         patch("celerp_inventory.services.current_settings", new=AsyncMock(return_value={})):
         yield captured
 
 

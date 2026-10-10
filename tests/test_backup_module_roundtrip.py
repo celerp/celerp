@@ -40,11 +40,13 @@ def _archive(path, members: list[tuple[str, bytes]]):
     import json
 
     from celerp import __version__
+    from celerp.config import settings
+    from celerp.services.backup import dump_database
 
     meta = json.dumps({"celerp_version": __version__, "pg_version": "16",
                        "created_at": "2026-06-04T00:00:00Z", "company_name": "T"}).encode()
     with tarfile.open(path, mode="w:gz") as tar:
-        for name, body in [("database.dump", b"PGDMP"), ("meta.json", meta), *members]:
+        for name, body in [("database.dump", dump_database(settings.database_url)), ("meta.json", meta), *members]:
             info = tarfile.TarInfo(name)
             info.size = len(body)
             tar.addfile(info, io.BytesIO(body))

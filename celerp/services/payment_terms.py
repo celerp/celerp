@@ -19,8 +19,10 @@ DEFAULT_PAYMENT_TERMS: list[dict] = [
 
 
 def company_payment_terms(settings: dict | None) -> list[dict]:
-    """The company's payment terms, else the defaults."""
-    return (settings or {}).get("payment_terms") or DEFAULT_PAYMENT_TERMS
+    """The company's payment terms, an explicitly saved empty list included; the
+    defaults only while none were ever saved."""
+    terms = (settings or {}).get("payment_terms")
+    return terms if terms is not None else DEFAULT_PAYMENT_TERMS
 
 
 def due_date_for_terms(issue_date: str | None, payment_terms_name: str | None, terms_list: list[dict]) -> str | None:

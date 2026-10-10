@@ -499,6 +499,10 @@ def test_tomli_declared_for_pre_311():
     assert any('python_version < "3.11"' in d for d in tomli_specs)
 
 
+# ---------------------------------------------------------------------------
+# ensure_connect_identity
+# ---------------------------------------------------------------------------
+
 def test_ensure_connect_identity_persists_pair_in_one_rmw(tmp_path, monkeypatch):
     mod, _ = _reload_config(tmp_path, monkeypatch)
     calls = 0

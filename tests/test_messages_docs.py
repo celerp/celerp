@@ -107,9 +107,9 @@ def test_online_payment_pause_is_translated():
 
 _REWRITTEN = [
     "doc.could_not_load_selected_documents", "doc.csv_decode_error", "doc.csv_missing_sku_or_description",
-    "doc.share_failed", "documents.allow_split_warn", "documents.audit_lines_locked",
+    "doc.share_failed", "documents.allow_split_warn",
     "documents.could_not_set_available", "documents.could_not_set_reserved", "documents.docs_skipped",
-    "documents.document_not_found", "documents.duplicate_item_on_document", "documents.failed_to_create_document",
+    "documents.document_not_found", "documents.duplicate_item_on_document",
     "documents.import_failed", "documents.invalid_returned_quantity", "documents.line_item_not_found",
     "documents.list_not_found", "documents.lookup_error", "documents.reprice_failed",
     "documents.reprice_missing_item_tip", "documents.reprice_partial_many", "documents.reprice_partial_one",

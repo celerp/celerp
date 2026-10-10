@@ -13,10 +13,11 @@ import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, flash, page_header, page_title
-from ui.config import COOKIE_NAME
+from celerp.accounting_roles import account_label
 from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
-from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum
+from ui.components.table import EMPTY, add_new_option, searchable_select, display_enum, fmt_money
 
+from ui.components.posting_accounts import account_picker, distinct_name
 from ui.routes.accounting_import import ACCOUNT_TYPES
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
@@ -28,7 +29,7 @@ CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 _ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
-from ui.i18n import t
+from ui.i18n import refusal_text, role_label, t
 
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
@@ -43,6 +44,7 @@ def _accounting_settings_tabs(active: str) -> FT:
         ("chart", t("settings_accounting.chart_of_accounts")),
         ("rules", t("page.reconciliation_rules")),
         ("period-lock", t("page.period_lock")),
+        ("posting-accounts", t("posting.tab")),
     ]
     return Div(
         *[
@@ -300,6 +302,108 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     )
 
 
+# Older stock with no inventory account edits through the same routes
+# as a role, keyed "older-stock:<item id>".
+_OLDER_STOCK = "older-stock:"
+_POSTING_BADGE = {"ready": "active", "unused": "inactive"}
+
+
+def _posting_display_cell(key: str, account: dict | None, error: str | None = None) -> FT:
+    """The account a role posts to; a click swaps in the picker (click-to-edit)."""
+    return Td(
+        Span(account_label(account) or EMPTY),
+        P(error, cls="cell-error") if error else None,
+        hx_get=f"/settings/accounting/posting-accounts/{key}/edit",
+        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+        title=t("settings.click_to_edit"), cls="cell cell--text cell--clickable",
+    )
+
+
+def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label: str,
+                       confirm: str | None = None) -> FT:
+    """The picker in place of the account. A change saves and swaps in the updated
+    row, after ``confirm`` when the choice is final; Escape puts the display cell back
+    without saving."""
+    restore_url = f"/settings/accounting/posting-accounts/{key}/display"
+    esc_js = (
+        f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
+        f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}"
+    )
+    return Td(
+        Div(
+            account_picker("value", candidates, value=code or "", aria_label=label,
+                           hx_patch=f"/settings/accounting/posting-accounts/{key}",
+                           hx_target="closest tr", hx_swap="outerHTML", hx_trigger="change", autofocus=True,
+                           hx_confirm=confirm),
+            cls="cell-input-wrap", onkeydown=esc_js,
+        ),
+        cls="cell cell--editing",
+    )
+
+
+def _posting_role_row(row: dict, error: str | None = None) -> FT:
+    status = row["status"]
+    return Tr(
+        Td(role_label(row["role"], row["label"])),
+        _posting_display_cell(row["role"], row, error),
+        Td(Span(t(f"posting.status_{status}"), cls=f"badge badge--{_POSTING_BADGE.get(status, 'overdue')}"),
+           P(refusal_text(row["problem"]), cls="text-muted") if row.get("problem") else None),
+        Td(", ".join(row.get("earlier") or []) or EMPTY),
+        id=f"posting-{row['role']}",
+    )
+
+
+def _older_lot(data: dict, key: str) -> dict | None:
+    item_id = key.removeprefix(_OLDER_STOCK)
+    return next((lot for lot in (data.get("older_stock") or {}).get("lots", []) if lot["item_id"] == item_id), None)
+
+
+def _older_lot_label(lot: dict) -> str:
+    """An older lot by its SKU, and its name when that says something more."""
+    return t("posting.older_stock", sku=lot["sku"], name=distinct_name(lot["sku"], lot["name"])).strip()
+
+
+def _older_stock_row(lot: dict, currency: str, error: str | None = None, recorded: dict | None = None) -> FT:
+    """One older lot with no inventory account. Once its account is chosen the
+    row shows it and is no longer editable: the lot's cost then moves through that
+    account, and moving the lot to another account later would leave its value behind."""
+    key = f"{_OLDER_STOCK}{lot['item_id']}"
+    return Tr(
+        Td(_older_lot_label(lot)),
+        Td(Span(account_label(recorded) or EMPTY)) if recorded
+        else _posting_display_cell(key, None, error),
+        Td(P(t("posting.older_stock_recorded") if recorded
+             else t("posting.older_stock_value", value=fmt_money(lot["value"], currency)), cls="text-muted")),
+        Td(EMPTY),
+    )
+
+
+def _posting_row(data: dict, key: str, error: str | None = None) -> FT | None:
+    if key.startswith(_OLDER_STOCK):
+        lot = _older_lot(data, key)
+        return _older_stock_row(lot, (data.get("older_stock") or {}).get("currency"), error) if lot else None
+    row = next((r for r in data.get("roles", []) if r["role"] == key), None)
+    return _posting_role_row(row, error) if row else None
+
+
+def _posting_accounts_tab(data: dict) -> FT:
+    older = data.get("older_stock") or {}
+    lots = older.get("lots", [])
+    return Div(
+        H3(t("posting.tab"), cls="section-title"),
+        P(t("posting.panel_hint"), cls="text-muted mb-md"),
+        Div(Table(
+            Thead(Tr(Th(t("posting.col_role")), Th(t("posting.col_account")), Th(t("th.status")),
+                     Th(t("posting.col_earlier")))),
+            Tbody(*[_posting_role_row(r) for r in data.get("roles", [])],
+                  *[_older_stock_row(lot, older.get("currency")) for lot in lots]),
+            cls="data-table posting-accounts",
+        ), cls="table-scroll-wrap"),
+        P(t("posting.older_stock_hint"), cls="text-muted mt-sm", id="older-stock-hint") if lots else None,
+        cls="settings-card",
+    )
+
+
 def _chart_table(chart: list[dict]) -> FT:
     def _row(a: dict) -> FT:
         code = a.get("code", "")
@@ -507,6 +611,13 @@ def setup_routes(app):
             except Exception:
                 lock_data = {}
             content = _period_lock_tab(lock_data)
+        elif tab == "posting-accounts":
+            try:
+                content = _posting_accounts_tab(await api.get_posting_accounts(token))
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                content = Div(P(str(e.detail), cls="error-banner"), cls="settings-card")
         else:
             content = _bank_accounts_tab(banks)
             tab = "bank-accounts"
@@ -930,6 +1041,75 @@ def setup_routes(app):
         except APIError as e:
             return P(str(e.detail), cls="error-banner")
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=chart"})
+
+    @app.get("/settings/accounting/posting-accounts/{key}/edit")
+    async def posting_account_edit(request: Request, key: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            data = await api.get_posting_accounts(token)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        if key.startswith(_OLDER_STOCK):
+            lot = _older_lot(data, key)
+            if lot is None:
+                return P(t("posting.unknown_role"), cls="cell-error")
+            label = _older_lot_label(lot)
+            return _posting_edit_cell(key, (data.get("older_stock") or {}).get("candidates", []), None, label,
+                                      confirm=t("posting.older_stock_confirm", lot=label))
+        row = next((r for r in data.get("roles", []) if r["role"] == key), None)
+        if row is None:
+            return P(t("posting.unknown_role"), cls="cell-error")
+        return _posting_edit_cell(key, row["candidates"], row.get("code"), role_label(key, row["label"]))
+
+    @app.get("/settings/accounting/posting-accounts/{key}/display")
+    async def posting_account_display(request: Request, key: str):
+        """The display cell again (the Escape cancel handler)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            data = await api.get_posting_accounts(token)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        if key.startswith(_OLDER_STOCK):
+            # An older lot shown here has no account yet; its own name is not one.
+            if _older_lot(data, key) is None:
+                return P(t("posting.unknown_role"), cls="cell-error")
+            return _posting_display_cell(key, None)
+        current = next((r for r in data.get("roles", []) if r["role"] == key), None)
+        if current is None:
+            return P(t("posting.unknown_role"), cls="cell-error")
+        return _posting_display_cell(key, current)
+
+    @app.patch("/settings/accounting/posting-accounts/{key}")
+    async def posting_account_patch(request: Request, key: str):
+        """Save the chosen account and return the updated row in place. A refusal
+        (an account the role cannot use) is shown on the row with the reason."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        form = await request.form()
+        code = str(form.get("value", "")).strip()
+        try:
+            if key.startswith(_OLDER_STOCK):
+                lot = _older_lot(await api.get_posting_accounts(token), key)
+                data = await api.set_older_stock_account(token, key.removeprefix(_OLDER_STOCK), code)
+                if lot is not None:
+                    chosen = next((c for c in (data.get("older_stock") or {}).get("candidates", [])
+                                   if c["code"] == code), {"code": code})
+                    return _older_stock_row(lot, "", recorded=chosen)
+            else:
+                data = await api.set_posting_account(token, key, code)
+            error = None
+        except APIError as e:
+            error = str(e.detail)
+            try:
+                data = await api.get_posting_accounts(token)
+            except APIError as e2:
+                return P(str(e2.detail), cls="cell-error")
+        return _posting_row(data, key, error) or P(t("posting.unknown_role"), cls="cell-error")
 
     @app.get("/settings/accounting/chart/{code}/cash-flow/edit")
     async def cash_flow_field_edit(request: Request, code: str):

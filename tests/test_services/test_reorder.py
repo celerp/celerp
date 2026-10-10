@@ -123,6 +123,20 @@ async def test_suggest_from_velocity(session):
 
 
 @pytest.mark.asyncio
+async def test_stock_given_back_no_longer_counts_as_used(session):
+    co = await _company(session, "BackCo")
+    eid = "item:back-1"
+    await _emit(session, co.id, eid, "item.created", {"sku": "K", "name": "A", "quantity": 100})
+    await _emit(session, co.id, eid, "item.consumed", {"quantity_consumed": 180})
+    # An ordinary count adjustment is not usage either way.
+    await _emit(session, co.id, eid, "item.quantity.adjusted", {"new_qty": 50})
+    await _emit(session, co.id, eid, "item.quantity.adjusted", {"new_qty": 140, "quantity_returned": 90})
+    assert await suggest_reorder(session, co.id, eid) == {"reorder_point": 7, "reorder_qty": 14}
+    await _emit(session, co.id, eid, "item.quantity.adjusted", {"new_qty": 230, "quantity_returned": 90})
+    assert await suggest_reorder(session, co.id, eid) == {"reorder_point": None, "reorder_qty": None}
+
+
+@pytest.mark.asyncio
 async def test_suggest_no_history_is_blank(session):
     co = await _company(session, "BlankCo")
     eid = "item:blank-1"

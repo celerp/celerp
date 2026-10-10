@@ -4,15 +4,17 @@
 """Each user reads notices for themselves: a read receipt per user replaces the one
 read flag every user shared.
 
-A personal notice its user had read keeps that state as a receipt. The shared flag
-cannot say who read a company-wide notice, so those start unread for everyone once.
+A personal notice its user had read keeps that state as a receipt. A company-wide
+notice already read stays read for every current member of its company, so old
+notices do not come back as unread. A downgrade puts the shared flag back on every
+notice someone has read, personal or company-wide.
 
 The notices table is created from the models at start, not by a revision, so a new
 installation has nothing to convert here. A start of this version before the upgrade
 ran has already created the receipts table from the models, so it is created only when
-missing, and the old flag is converted wherever it still exists. The DDL is plain SQL
-on purpose: the stamp repair (celerp.migrations._auto_stamp) must never take a
-receipts table made at start as proof this revision ran.
+missing, and the old flag is converted wherever it still exists. The stamp repair
+(celerp.migrations._auto_stamp) reads the dropped flag: while it is still there this
+revision has not run, whatever tables a start created.
 
 Revision ID: w1n2o3p4q5r6
 Revises: v0m1n2o3p4q5
@@ -42,31 +44,38 @@ def upgrade() -> None:
     conn = op.get_bind()
     if not _exists(conn, "notifications"):
         return
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS notification_reads (
-            notification_id UUID NOT NULL REFERENCES notifications (id) ON DELETE CASCADE,
-            user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-            read_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
-            PRIMARY KEY (notification_id, user_id)
+    if not _exists(conn, "notification_reads"):
+        op.create_table(
+            "notification_reads",
+            sa.Column("notification_id", sa.Uuid(),
+                      sa.ForeignKey("notifications.id", ondelete="CASCADE"), primary_key=True),
+            sa.Column("user_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+            sa.Column("read_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         )
-    """)
     if _has_read_flag(conn):
         op.execute(
             "INSERT INTO notification_reads (notification_id, user_id) "
             "SELECT id, user_id FROM notifications WHERE read AND user_id IS NOT NULL "
             "ON CONFLICT DO NOTHING"
         )
-        op.execute("ALTER TABLE notifications DROP COLUMN read")
+        op.execute(
+            "INSERT INTO notification_reads (notification_id, user_id) "
+            "SELECT n.id, uc.user_id FROM notifications n "
+            "JOIN user_companies uc ON uc.company_id = n.company_id AND uc.is_active "
+            "WHERE n.read AND n.user_id IS NULL "
+            "ON CONFLICT DO NOTHING"
+        )
+        op.drop_column("notifications", "read")
 
 
 def downgrade() -> None:
     conn = op.get_bind()
     if not _exists(conn, "notification_reads"):
         return
-    op.execute("ALTER TABLE notifications ADD COLUMN read BOOLEAN DEFAULT false NOT NULL")
+    op.add_column("notifications", sa.Column("read", sa.Boolean(), server_default=sa.false(), nullable=False))
     op.execute(
-        "UPDATE notifications SET read = true WHERE user_id IS NOT NULL AND EXISTS "
+        "UPDATE notifications SET read = true WHERE EXISTS "
         "(SELECT 1 FROM notification_reads r WHERE r.notification_id = notifications.id "
-        "AND r.user_id = notifications.user_id)"
+        "AND (notifications.user_id IS NULL OR r.user_id = notifications.user_id))"
     )
-    op.execute("DROP TABLE notification_reads")
+    op.drop_table("notification_reads")

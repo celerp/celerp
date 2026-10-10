@@ -35,13 +35,17 @@ def _body(name: str) -> str:
 
 
 async def notify_demoted_modules(session: AsyncSession, demoted_names: list[str]) -> int:
-    """Create a company-wide bell notice for each demoted module, per company, deduped
-    on the unread notice (persistent-until-fixed, exactly like the banner it replaces).
-    Caller commits. Returns the number of notifications created."""
+    """Create a company-wide bell notice for each demoted module, per company.
+
+    Deduped on the standing notice so at most one stands per company per module:
+    a still-demoted module re-notifies on the next boot only after the prior one
+    was dismissed (persistent-until-fixed, exactly like the banner it replaces),
+    and a reboot while it still stands creates nothing new. Caller commits.
+    Returns the number of notifications created."""
     from celerp.notifications import service as notif_service
 
     created = 0
     for name in demoted_names:
         created += await notif_service.notify_every_company(
-            session, _CATEGORY, _title(name), _body(name), action_url="/modules", priority="high")
+            session, _CATEGORY, _title(name), _body(name), action_url="/modules")
     return created

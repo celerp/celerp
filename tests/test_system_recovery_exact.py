@@ -13,6 +13,7 @@ import io
 import json
 import re
 import shutil
+import subprocess
 import tarfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -22,13 +23,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from company_backup_support import company, owner, token
-from migration_support import auth, code_config, real_client, real_engine  # noqa: F401
+from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 
 from celerp.services.backup_import import _clear_restored_connector_state as _real_clear
 from celerp.services.backup_import import _reconcile_connectors as _real_revoke
 from celerp.services.session_tracker import end_all_sessions as _real_end_sessions
 
-pytestmark = pytest.mark.asyncio
 
 SAFETY_WARNING = "Celerp couldn't make a safety copy before restoring"
 SOURCE_DUMP = b"SOURCE-DUMP"
@@ -106,7 +106,7 @@ def _closure(names: list[str]) -> list[str]:
 
 
 class _Recovery:
-    """Stubs the database side of a recovery (dump, pg_restore, schema reconcile, connector
+    """Stubs the database side of a recovery (dump, dump check, pg_restore, schema reconcile, connector
     and session steps) and records each step with whether writes were paused and the
     connector maintenance guard held at that moment."""
 
@@ -177,7 +177,9 @@ class _Recovery:
             return None
 
         monkeypatch.setattr(backup, "dump_database", _dump)
-        monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+        monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: None)
+        monkeypatch.setattr(backup, "write_restore_script", shutil.copyfile)
+        monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
         monkeypatch.setattr(backup_import, "_dispose_engine", _none)
 
         def _recorder(name):
@@ -635,6 +637,9 @@ async def test_recovery_invalid_archive_makes_no_safety_and_no_change(rec, tmp_p
         _archive(tmp_path / "hardlink.celerp-backup", {"attachments/a.pdf": b"A"},
                  extra=(_special("modules/celerp-example-new/b.py", tarfile.LNKTYPE, "attachments/a.pdf"),)),
         _archive(tmp_path / "device.celerp-backup", extra=(_special("ai_uploads/dev", tarfile.CHRTYPE),)),
+        _archive(tmp_path / "modules-string.celerp-backup", modules="celerp-inventory"),
+        _archive(tmp_path / "modules-number.celerp-backup", modules=[7]),
+        _archive(tmp_path / "modules-path.celerp-backup", modules=["../celerp-inventory"]),
     ]
     for path in bad:
         result = await backup_import.run_recovery(path)
@@ -653,7 +658,7 @@ async def test_recovery_stages_and_validates_files_before_destruction(rec, tmp_p
     rec.seed()
     before = rec.trees()
     seen: dict = {}
-    restore = backup_import._run_pg_restore
+    restore = backup_import._run_restore_script
 
     async def _restore(dump, url):
         staged = {p.name: p for p in (rec.data / "recovery-staging").rglob("*") if p.is_file()}
@@ -662,7 +667,7 @@ async def test_recovery_stages_and_validates_files_before_destruction(rec, tmp_p
         seen["dest"] = rec.trees()
         await restore(dump, url)
 
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
     result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
     assert result.ok is True, result.error
     assert seen["staged"] == {"new.pdf": SOURCE_FILES["attachments/new.pdf"], "new.txt": b"SOURCE-AI"}
@@ -884,7 +889,7 @@ def _inject(monkeypatch, boundary: str) -> list[str]:
     from celerp import config
     from celerp.services import backup_import, session_tracker
     target = {
-        "pg_restore": (backup_import, "_run_pg_restore", False),
+        "pg_restore": (backup_import, "_run_restore_script", False),
         "schema": (backup_import, "_reconcile_schema", False),
         "connector_cleanup": (backup_import, "_clear_restored_connector_state", True),
         "session_rotation": (session_tracker, "end_all_sessions", True),
@@ -1115,7 +1120,7 @@ async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp
     rec.seed()
     before, modules = rec.trees(), _enabled()
     tok = await _install_owner(real_engine)
-    real_restore = backup_import._run_pg_restore
+    real_restore = backup_import._run_restore_script
     broken = [True]
 
     async def _restore(dump, url):
@@ -1123,7 +1128,7 @@ async def test_recovery_that_cannot_be_undone_keeps_installation_closed(rec, tmp
         if broken:
             raise RuntimeError("disk full")
 
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
     result = await backup_import.run_recovery(_archive(tmp_path / "src.celerp-backup", SOURCE_FILES))
     assert result.ok is False and "restart Celerp" in result.error
     assert backup_import.recovery_incomplete() is True
@@ -1226,14 +1231,14 @@ async def test_boot_finishes_unfinished_recovery_before_schema_init(rec, tmp_pat
     blocker = await _break_schema_init(committed_engine)
     safety = _archive(tmp_path / "safety.celerp-backup", SOURCE_FILES)
     backup_import._mark_recovery_started(safety, [])
-    stub_restore = backup_import._run_pg_restore
+    stub_restore = backup_import._run_restore_script
 
     async def _restore(dump, url):
         await stub_restore(dump, url)
         async with committed_engine.begin() as conn:
             await conn.execute(text(f'DROP TABLE "{blocker}"'))
 
-    monkeypatch.setattr(backup_import, "_run_pg_restore", _restore)
+    monkeypatch.setattr(backup_import, "_run_restore_script", _restore)
     main_mod, verified = _boot_to_schema(monkeypatch, committed_engine)
 
     async with main_mod.lifespan(None):
@@ -1322,6 +1327,31 @@ def test_migrate_does_not_report_done_while_the_recovery_is_unfinished(tmp_path,
 def running_254(monkeypatch):
     import celerp
     monkeypatch.setattr(celerp, "__version__", "2.5.4")
+
+
+@pytest.mark.parametrize("entry", ["recovery", "confirmed recovery", "bootstrap recovery"])
+async def test_every_recovery_checks_its_backup_again_once_locked(rec, tmp_path, monkeypatch, entry):
+    """What the database lets Celerp install can change while a backup waits to be restored,
+    so its dump is checked again under the locks, before the marker and the first revoke."""
+    from celerp.services import backup, backup_import
+    archive = _archive(tmp_path / "src.celerp-backup")
+    monkeypatch.setattr(backup, "check_backup_dump", lambda path, url: rec.record(f"check {Path(path).parent.name}"))
+    real_mark = backup_import._mark_recovery_started
+    monkeypatch.setattr(backup_import, "_mark_recovery_started",
+                        lambda *a: (rec.record("marker"), real_mark(*a))[1])
+    if entry == "bootstrap recovery":
+        result = await backup_import.bootstrap_recovery(archive)
+    else:
+        if entry == "confirmed recovery":
+            rec.fail_safety()
+        result = await backup_import.run_recovery(archive)
+        if entry == "confirmed recovery":
+            result = await backup_import.continue_recovery(result.confirmation_id, result.archive_digest)
+    assert result.ok is True, result.error
+    names = rec.names()
+    staged = next(name for name in names if name.startswith("check "))
+    locked = [i for i, (name, _, guard) in enumerate(rec.calls) if name == staged and guard]
+    assert locked and locked[-1] < names.index("marker") < names.index("revoke"), rec.calls
 
 
 @pytest.mark.parametrize("kind", ["local", "cloud"])
@@ -1419,3 +1449,1249 @@ async def test_own_or_older_copys_recovery_is_resumed(rec, tmp_path, running_254
     assert rec.names().index("revoke") < rec.names().index("pg_restore")
     assert rec.restored[-1] == SOURCE_DUMP
     assert rec.tree("ai_uploads") == {"new.txt": b"SOURCE-AI"}
+
+
+# ── A recovery replaces the whole database ───────────────────────────────────
+
+async def _execute(engine, sql: str) -> None:
+    from sqlalchemy import text
+    async with engine.begin() as conn:
+        await conn.execute(text(sql))
+
+
+async def _tables(engine) -> set[str]:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return {r[0] for r in await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))}
+
+
+async def _company_names(engine) -> set[str]:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return {r[0] for r in await conn.execute(text("SELECT name FROM companies"))}
+
+
+async def test_recovery_into_a_database_with_tables_the_backup_lacks(tmp_path, monkeypatch, code_config,
+                                                                     real_engine):
+    """An older backup has no table a newer release added; the newer table references
+    one the backup restores, and the recovery still replaces the database."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await _execute(real_engine, "CREATE TABLE zz_newer (company_id uuid REFERENCES companies(id))")
+    await _execute(real_engine, "INSERT INTO zz_newer SELECT id FROM companies")
+    result = await backup_import.run_recovery(source)
+    assert result.ok is True, result.error
+    assert "zz_newer" not in await _tables(real_engine)
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+async def test_failed_recovery_of_a_backup_with_extra_tables_is_put_back(tmp_path, monkeypatch, code_config,
+                                                                          real_engine):
+    """A backup holding a module table this installation lacks fails after its restore;
+    putting the installation back from the safety archive removes that table again."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, "CREATE TABLE zz_module (company_id uuid REFERENCES companies(id))")
+    source = await backup_export.export_full()
+    await _execute(real_engine, "DROP TABLE zz_module")
+    await company(real_engine, user, "Beta Trading", "beta")
+    failed = _inject(monkeypatch, "schema")
+    result = await backup_import.run_recovery(source)
+    assert failed == ["schema"]
+    assert result.ok is False and "put back" in result.error, result.error
+    assert backup_import.recovery_incomplete() is False
+    assert "zz_module" not in await _tables(real_engine)
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+@pytest.mark.parametrize("safety", [True, False], ids=["with safety archive", "without safety archive"])
+async def test_a_backup_whose_late_table_data_is_unreadable(tmp_path, monkeypatch, code_config, real_engine,
+                                                            real_client, safety):
+    """A damaged block at the end of the dump is found while the backup is prepared, by
+    reading all of its data, so the recovery is refused before the safety archive, the
+    marker and any connector revoke, with or without a safety archive."""
+    from sqlalchemy import text
+
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    tok = await token(real_engine, user, await company(real_engine, user, "Alpha Trading", "alpha"))
+    await _execute(real_engine, "CREATE TABLE zz_late (n int, body text)")
+    try:
+        await _execute(real_engine, "INSERT INTO zz_late SELECT g, md5(g::text) || md5((g * 7)::text) "
+                                    "FROM generate_series(1, 5000) g")
+        members = _members(await backup_export.export_full())
+        dump = bytearray(members["database.dump"])
+        dump[-20000:-19900] = bytes(100)
+        damaged = tmp_path / "damaged.celerp-backup"
+        with tarfile.open(damaged, "w:gz") as tar:
+            for name, body in {**members, "database.dump": bytes(dump)}.items():
+                _add(tar, name, body)
+        await company(real_engine, user, "Beta Trading", "beta")
+        connector_calls = _record_connector_calls(monkeypatch)
+        if not safety:
+            rec.fail_safety()
+
+        result = await backup_import.run_recovery(damaged)
+        assert result.ok is False and not result.needs_confirmation, result
+        assert result.error.startswith("This backup file is damaged and cannot be restored: pg_restore failed"), \
+            result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 200
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text("SELECT count(*) FROM zz_late"))).scalar() == 5000
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_late")
+
+
+async def test_recovery_stopped_after_the_database_was_emptied_is_finished_at_next_start(
+        tmp_path, monkeypatch, code_config, committed_engine):
+    """A recovery that stopped between emptying the database and restoring it is finished
+    from its marked archive at the next start, not opened as a fresh installation.
+    The test empties a database of its own, so a failure leaves the shared one intact."""
+    import celerp.db
+    from celerp.config import settings
+    from celerp.services import backup_export, backup_import
+    monkeypatch.setattr(celerp.db, "engine", committed_engine)
+    monkeypatch.setattr(celerp.db, "SessionLocal", maker(committed_engine))
+    monkeypatch.setattr(settings, "database_url", committed_engine.url.render_as_string(hide_password=False))
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(committed_engine)
+    await company(committed_engine, user, "Alpha Trading", "alpha")
+    safety = await backup_export.export_full()
+    backup_import._mark_recovery_started(safety, [])
+    await _execute(committed_engine, "DROP TABLE companies CASCADE")
+    await backup_import.finish_incomplete_recovery()
+    assert backup_import.recovery_incomplete() is False
+    assert await _company_names(committed_engine) == {"Alpha Trading"}
+
+
+async def test_backup_from_2_5_3_keeps_the_restored_companies_modules(rec, real_engine, tmp_path, running_254):
+    """2.5.3 recorded an empty module list when it did not record the set."""
+    from celerp.services import backup_import
+    _set_enabled(["celerp-inventory", "celerp-contacts"])
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    result = await backup_import.run_recovery(_archive(tmp_path / "v253.celerp-backup", modules=[], version="2.5.3"))
+    assert result.ok is True, result.error
+    assert set(_enabled()) == set(_closure(["celerp-inventory", "celerp-contacts"]))
+
+
+async def test_backup_with_no_modules_enables_no_modules(tmp_path, monkeypatch, code_config, real_engine):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-labels"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": []})
+    source = await backup_export.export_full()
+    await _execute(real_engine, """UPDATE companies SET settings = '{"enabled_modules": ["celerp-labels"]}'""")
+    result = await backup_import.run_recovery(source)
+    assert result.ok is True, result.error
+    assert _enabled() == []
+
+
+# Objects a restore would not replace exactly: (create, the name the refusal gives, a lookup
+# that holds while they exist, drop).
+UNSUPPORTED = {
+    "enum": (["CREATE TYPE zz_status AS ENUM ('open', 'done')"], "type zz_status",
+             "to_regtype('zz_status') IS NOT NULL", ["DROP TYPE IF EXISTS zz_status"]),
+    "domain": (["CREATE DOMAIN zz_qty AS int CHECK (VALUE >= 0)"], "type zz_qty",
+               "to_regtype('zz_qty') IS NOT NULL", ["DROP DOMAIN IF EXISTS zz_qty"]),
+    "composite type": (["CREATE TYPE zz_pair AS (a int, b int)"], "type zz_pair",
+                       "to_regtype('zz_pair') IS NOT NULL", ["DROP TYPE IF EXISTS zz_pair"]),
+    "function": (["CREATE FUNCTION zz_one() RETURNS int LANGUAGE sql AS 'SELECT 1'"], "function zz_one()",
+                 "to_regprocedure('zz_one()') IS NOT NULL", ["DROP FUNCTION IF EXISTS zz_one()"]),
+    "procedure": (["CREATE PROCEDURE zz_noop() LANGUAGE sql AS 'SELECT 1'"], "zz_noop()",
+                  "to_regprocedure('zz_noop()') IS NOT NULL", ["DROP PROCEDURE IF EXISTS zz_noop()"]),
+    "view": (["CREATE VIEW zz_names AS SELECT name FROM companies"], "view zz_names",
+             "to_regclass('zz_names') IS NOT NULL", ["DROP VIEW IF EXISTS zz_names"]),
+    "materialized view": (["CREATE MATERIALIZED VIEW zz_one_row AS SELECT 1 AS one"], "materialized view zz_one_row",
+                          "to_regclass('zz_one_row') IS NOT NULL", ["DROP MATERIALIZED VIEW IF EXISTS zz_one_row"]),
+    "trigger": (["CREATE FUNCTION zz_touch() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+                 "CREATE TRIGGER zz_touch BEFORE UPDATE ON companies FOR EACH ROW EXECUTE FUNCTION zz_touch()"],
+                "trigger zz_touch on table companies",
+                "EXISTS (SELECT FROM pg_trigger WHERE tgname = 'zz_touch')",
+                ["DROP TRIGGER IF EXISTS zz_touch ON companies", "DROP FUNCTION IF EXISTS zz_touch()"]),
+    "rule": (["CREATE RULE zz_keep AS ON DELETE TO companies DO INSTEAD NOTHING"], "rule zz_keep on table companies",
+             "EXISTS (SELECT FROM pg_rewrite WHERE rulename = 'zz_keep')", ["DROP RULE IF EXISTS zz_keep ON companies"]),
+    "schema": (["CREATE SCHEMA zz", "CREATE TABLE zz.jobs (id int)"], "schema zz",
+               "to_regclass('zz.jobs') IS NOT NULL", ["DROP SCHEMA IF EXISTS zz CASCADE"]),
+    "foreign key from another schema": (
+        ["CREATE SCHEMA zz", "CREATE TABLE zz.links (company_id uuid REFERENCES public.companies(id))"],
+        "on table zz.links", "to_regclass('zz.links') IS NOT NULL", ["DROP SCHEMA IF EXISTS zz CASCADE"]),
+    "view in another schema": (
+        ["CREATE SCHEMA zz", "CREATE VIEW zz.names AS SELECT name FROM public.companies"],
+        "on view zz.names", "to_regclass('zz.names') IS NOT NULL", ["DROP SCHEMA IF EXISTS zz CASCADE"]),
+}
+
+
+async def _create(engine, kind: str) -> None:
+    for sql in UNSUPPORTED[kind][0]:
+        await _execute(engine, sql)
+
+
+async def _drop(engine, kind: str) -> None:
+    for sql in UNSUPPORTED[kind][3]:
+        await _execute(engine, sql)
+
+
+async def _exists(engine, kind: str) -> bool:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return (await conn.execute(text(f"SELECT {UNSUPPORTED[kind][2]}"))).scalar()
+
+
+def _assert_nothing_started(rec: "_Recovery", connector_calls: list[str], staged: list[Path]) -> None:
+    from celerp.services import backup_import
+    assert backup_import.recovery_incomplete() is False
+    assert connector_calls == []
+    assert rec.safety_archives() == []
+    rec.cloud_snapshot.assert_not_awaited()
+    assert rec.staging() == staged
+
+
+@pytest.mark.parametrize("kind", list(UNSUPPORTED))
+async def test_a_recovery_into_a_database_holding_other_objects_changes_nothing(
+        tmp_path, monkeypatch, code_config, real_engine, kind):
+    """Refused, naming the object, before the safety archive, the marker and any connector
+    revoke; once the owner removes it, the same recovery runs."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    await _create(real_engine, kind)
+    try:
+        result = await backup_import.run_recovery(source)
+        assert result.ok is False and result.error.startswith("System Recovery did not start: "), result.error
+        assert UNSUPPORTED[kind][1] in result.error, result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        assert await _exists(real_engine, kind)
+    finally:
+        await _drop(real_engine, kind)
+    result = await backup_import.run_recovery(source)
+    assert result.ok is True, result.error
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+@pytest.mark.parametrize("entry", ["bootstrap recovery", "confirmed recovery"])
+async def test_every_recovery_checks_the_database_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, entry):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    if entry == "confirmed recovery":
+        rec.fail_safety()
+        pending = await backup_import.run_recovery(source)
+        assert pending.needs_confirmation is True, pending.error
+    await _create(real_engine, "view")
+    try:
+        if entry == "bootstrap recovery":
+            result = await backup_import.bootstrap_recovery(source)
+        else:
+            result = await backup_import.continue_recovery(pending.confirmation_id, pending.archive_digest)
+        assert result.ok is False and "view zz_names" in result.error, result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+    finally:
+        await _drop(real_engine, "view")
+
+
+@pytest.mark.parametrize("kind", list(UNSUPPORTED))
+async def test_a_backup_holding_other_objects_is_refused_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, kind):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _create(real_engine, kind)
+    try:
+        source = await backup_export.export_full()
+    finally:
+        await _drop(real_engine, kind)
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    result = await backup_import.run_recovery(source)
+    assert result.ok is False, result.error
+    assert result.error.startswith("This backup holds database objects Celerp does not restore. Remove them from "
+                                   "the database the backup was taken from, then try again: "), result.error
+    _assert_nothing_started(rec, connector_calls, [])
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+async def _is_superuser(engine) -> bool:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return (await conn.execute(text("SELECT current_setting('is_superuser') = 'on'"))).scalar()
+
+
+async def _exists_sql(engine, predicate: str) -> bool:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        return (await conn.execute(text(f"SELECT {predicate}"))).scalar()
+
+
+def _update_steps():
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    return update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+
+
+@pytest.mark.parametrize("extension", ["pg_trgm", "uuid-ossp"])
+@pytest.mark.parametrize("entry", ["recovery", "update rollback"])
+async def test_a_backup_using_an_extension_this_database_can_install_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine, entry, extension):
+    import asyncio
+
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, f'CREATE EXTENSION "{extension}"')
+    try:
+        if entry == "recovery":
+            source = await backup_export.export_full()
+            await company(real_engine, user, "Beta Trading", "beta")
+            result = await backup_import.run_recovery(source)
+            assert result.ok is True, result.error
+        else:
+            steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.preflight)
+            await asyncio.to_thread(steps.dump, dump)
+            await company(real_engine, user, "Beta Trading", "beta")
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, f"EXISTS (SELECT FROM pg_extension WHERE extname = '{extension}')")
+    finally:
+        await _execute(real_engine, f'DROP EXTENSION IF EXISTS "{extension}"')
+
+
+@pytest.mark.parametrize("entry", ["recovery", "update"])
+async def test_a_backup_using_an_extension_this_database_cannot_install_is_refused_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, entry):
+    """Here the role may not create extensions, so a restore could not put pg_trgm back."""
+    from celerp import runtime
+    from celerp.services import backup_export, backup_import, update
+    if await _is_superuser(real_engine):
+        pytest.skip("a superuser can install every available extension")
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, "CREATE EXTENSION pg_trgm")
+    grant = "EXECUTE format('{} CREATE ON DATABASE %I {} CURRENT_USER', current_database())"
+    try:
+        source = await backup_export.export_full() if entry == "recovery" else None
+        await company(real_engine, user, "Beta Trading", "beta")
+        await _execute(real_engine, "DO $$ BEGIN " + grant.format("REVOKE", "FROM") + "; END $$")
+        refusal = ("This backup uses database extensions that Celerp's database user cannot install here. "
+                   "Remove them from {}, or have a database administrator allow that user to install them, "
+                   "then try again: pg_trgm")
+        if entry == "recovery":
+            connector_calls = _record_connector_calls(monkeypatch)
+            result = await backup_import.run_recovery(source)
+            assert result.ok is False and result.error == refusal.format(
+                "the database the backup was taken from"), result.error
+            _assert_nothing_started(rec, connector_calls, [])
+        else:
+            monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+            monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+            steps = _update_steps()
+            with pytest.raises(ValueError, match="pg_trgm"):
+                steps.preflight()
+            result, children = update.run_update("1.1.0", steps)
+            assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+            assert _refusal_shown(update) == refusal.format("this database")
+            assert not runtime.release_dir("1.1.0").exists()
+            assert "in_progress" not in update.read_state()
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        assert await _exists_sql(real_engine, "EXISTS (SELECT FROM pg_extension WHERE extname = 'pg_trgm')")
+    finally:
+        await _execute(real_engine, "DO $$ BEGIN " + grant.format("GRANT", "TO") + "; END $$")
+        await _execute(real_engine, "DROP EXTENSION IF EXISTS pg_trgm")
+
+
+@pytest.fixture
+async def zz_role(admin):
+    """A role of this test's own; roles belong to the whole server, not to one database."""
+    import uuid
+    name = f"zz_reader_{uuid.uuid4().hex[:8]}"
+    await _execute(admin, f"CREATE ROLE {name}")
+    yield name
+    await _execute(admin, f"DROP ROLE IF EXISTS {name}")
+
+
+def _policy_for(role: str) -> str:
+    return f"EXISTS (SELECT FROM pg_policies WHERE policyname = 'zz_readers' AND roles = ARRAY['{role}']::name[])"
+
+
+async def _autocommit(engine, *statements: str) -> None:
+    from sqlalchemy import text
+    async with engine.connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        for sql in statements:
+            await conn.execute(text(sql))
+
+
+@pytest.mark.parametrize("kind", ["policy role", "collation", "tablespace"])
+async def test_a_backup_needing_what_this_server_lacks_is_refused_before_anything_changes(
+        tmp_path, monkeypatch, code_config, real_engine, admin, zz_role, kind):
+    """A policy's role, a collation or a tablespace the backup's tables use but this server
+    lacks is found with the rest of the backup, so the owner meets the refusal before the
+    marker and any connector revoke, not in the restore; once added, the backup restores."""
+    from celerp.services import backup_export, backup_import
+    name = zz_role.replace("reader", kind[:4])
+    use, drop, add, gone, found, exists = {
+        "policy role": (
+            f"CREATE POLICY zz_readers ON companies TO {zz_role} USING (true)", "DROP POLICY zz_readers ON companies",
+            [f"CREATE ROLE {zz_role}"], [f"DROP ROLE IF EXISTS {zz_role}"],
+            f"policy zz_readers on companies (role {zz_role})", _policy_for(zz_role)),
+        "collation": (
+            f"CREATE INDEX zz_names ON companies (name COLLATE pg_catalog.{name})", "DROP INDEX zz_names",
+            [f"CREATE COLLATION pg_catalog.{name} (locale = 'C')"], [f"DROP COLLATION IF EXISTS pg_catalog.{name}"],
+            f"collation {name}", "to_regclass('zz_names') IS NOT NULL"),
+        "tablespace": (
+            f"CREATE INDEX zz_names ON companies (name) TABLESPACE {name}", "DROP INDEX zz_names",
+            ["SET allow_in_place_tablespaces = on", f"CREATE TABLESPACE {name} LOCATION ''",
+             f"GRANT CREATE ON TABLESPACE {name} TO {real_engine.url.username}"],
+            [f"DROP TABLESPACE IF EXISTS {name}"], f"tablespace {name}",
+            f"(SELECT spcname FROM pg_class JOIN pg_tablespace t ON t.oid = reltablespace "
+            f"WHERE relname = 'zz_names') = '{name}'"),
+    }[kind]
+    if kind == "tablespace" and await _exists_sql(admin, "current_setting('server_version_num')::int < 150000"):
+        pytest.skip("a tablespace inside the data directory needs PostgreSQL 15")
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    if kind != "policy role":
+        await _autocommit(admin, *add)
+    try:
+        await _execute(real_engine, use)
+        source = await backup_export.export_full()
+        await _execute(real_engine, drop)
+        await _autocommit(admin, *gone)
+        await company(real_engine, user, "Beta Trading", "beta")
+        connector_calls = _record_connector_calls(monkeypatch)
+        result = await backup_import.run_recovery(source)
+        assert result.ok is False
+        assert result.error == (
+            "This backup needs database roles, collations or tablespaces this database does not "
+            "have. Add them here, or stop using them in the database the backup was taken from, then try "
+            f"again: {found}"), result.error
+        _assert_nothing_started(rec, connector_calls, [])
+        assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+        await _autocommit(admin, *add)
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, exists)
+    finally:
+        await _execute(real_engine, "DROP POLICY IF EXISTS zz_readers ON companies")
+        await _execute(real_engine, "DROP INDEX IF EXISTS zz_names")
+        if kind != "policy role":
+            await _autocommit(admin, *gone)
+
+
+async def test_a_backup_from_a_sql_ascii_install_with_thai_text_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine, admin):
+    """Installs from before 2.5.1 on Linux and macOS may have a SQL_ASCII database; pg_restore
+    brings their text into this one's encoding."""
+    import subprocess
+    import uuid
+
+    from sqlalchemy import make_url
+
+    from celerp.services import backup, backup_export, backup_import
+    from test_helpers import DATABASE_URL
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "บริษัท Exim", "exim")
+    source = await backup_export.export_full()
+    name = f"zz_ascii_{uuid.uuid4().hex[:8]}"
+    await _autocommit(admin, f"CREATE DATABASE {name} ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C' "
+                             f"TEMPLATE template0 OWNER {real_engine.url.username}")
+    try:
+        url = make_url(DATABASE_URL).set(database=name, drivername="postgresql")
+        legacy = tmp_path / "legacy.dump"
+        members = _members(source)
+        legacy.write_bytes(members["database.dump"])
+        subprocess.run([backup._find_pg_tool("pg_restore"), "--no-owner", "-d",
+                        url.render_as_string(hide_password=False), str(legacy)], check=True)
+        legacy.write_bytes(backup.dump_database(url.render_as_string(hide_password=False)))
+        script = subprocess.run([backup._find_pg_tool("pg_restore"), "-f", "-", str(legacy)],
+                                capture_output=True, check=True).stdout
+        assert b"SET client_encoding = 'SQL_ASCII';" in script and "บริษัท Exim".encode() in script
+        members["database.dump"] = legacy.read_bytes()
+    finally:
+        await _autocommit(admin, f"DROP DATABASE IF EXISTS {name}")
+    with tarfile.open(source, "w:gz") as tar:
+        for member, body in members.items():
+            _add(tar, member, body)
+    await company(real_engine, user, "Beta Trading", "beta")
+    result = await backup_import.run_recovery(source)
+    assert result.ok is True, result.error
+    assert await _company_names(real_engine) == {"บริษัท Exim"}
+
+
+async def test_an_update_while_pgclientencoding_is_set_is_not_refused(
+        tmp_path, monkeypatch, code_config, real_engine):
+    """pg_dump writes its archive in the client encoding the environment names; the update
+    restores into the database it dumped."""
+    import asyncio
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Café Müller", "cafe")
+    monkeypatch.setenv("PGCLIENTENCODING", "LATIN1")
+    steps, dump = _update_steps(), tmp_path / "database.dump"
+    await asyncio.to_thread(steps.preflight)
+    await asyncio.to_thread(steps.dump, dump)
+    await company(real_engine, user, "Beta Trading", "beta")
+    await asyncio.to_thread(steps.restore, dump, "1.1.0")
+    assert await _company_names(real_engine) == {"Café Müller"}
+
+
+async def test_a_backup_whose_table_comment_mentions_collate_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, "COMMENT ON TABLE companies IS 'sorted COLLATE nosuch here'")
+    try:
+        source = await backup_export.export_full()
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        await _execute(real_engine, "COMMENT ON TABLE companies IS NULL")
+
+
+@pytest.mark.parametrize("entry", ["recovery", "update rollback"])
+async def test_a_backup_with_a_policy_for_a_role_this_server_has_is_restored(
+        tmp_path, monkeypatch, code_config, real_engine, admin, zz_role, entry):
+    """An update restores the database it dumped, whose policy roles PostgreSQL keeps from
+    being dropped, so only a recovery from another server can miss one."""
+    import asyncio
+
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _execute(real_engine, f"CREATE POLICY zz_readers ON companies TO {zz_role} USING (true)")
+    try:
+        if entry == "recovery":
+            source = await backup_export.export_full()
+            await company(real_engine, user, "Beta Trading", "beta")
+            result = await backup_import.run_recovery(source)
+            assert result.ok is True, result.error
+        else:
+            steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.preflight)
+            await asyncio.to_thread(steps.dump, dump)
+            await company(real_engine, user, "Beta Trading", "beta")
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, _policy_for(zz_role))
+        with pytest.raises(Exception, match="cannot be dropped because some objects depend on it"):
+            await _execute(admin, f"DROP ROLE {zz_role}")
+    finally:
+        await _execute(real_engine, "DROP POLICY IF EXISTS zz_readers ON companies")
+
+
+async def test_a_recovery_without_room_for_the_restore_changes_nothing(tmp_path, monkeypatch, code_config, real_engine):
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    _free_space(monkeypatch, 2**30)
+    result = await backup_import.run_recovery(source)
+    assert result.ok is False, result.error
+    assert result.error.startswith("Not enough free disk space to restore this backup"), result.error
+    _assert_nothing_started(rec, connector_calls, [])
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+async def test_a_safety_archive_that_could_not_be_restored_stops_the_recovery(
+        tmp_path, monkeypatch, code_config, real_engine):
+    """A publication is no object in the public schema to refuse, but a safety archive
+    holding it is not one Celerp could put back."""
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    await _execute(real_engine, "CREATE PUBLICATION zz_feed")
+    try:
+        result = await backup_import.run_recovery(source)
+    finally:
+        await _execute(real_engine, "DROP PUBLICATION IF EXISTS zz_feed")
+    assert result.ok is False, result.error
+    assert "The safety backup of this installation could not be restored: " in result.error, result.error
+    assert "PUBLICATION - zz_feed" in result.error, result.error
+    assert backup_import.recovery_incomplete() is False
+    assert connector_calls == []
+    rec.cloud_snapshot.assert_not_awaited()
+    assert rec.staging() == []
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+
+async def test_a_recovery_puts_back_every_table_part_exactly(tmp_path, monkeypatch, code_config, real_engine):
+    """Keys, unique and check constraints, foreign keys, defaults, identity and owned sequences,
+    a standalone sequence, indexes and a partitioned table are a Celerp database's own parts."""
+    from sqlalchemy import text
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    parts = """SELECT conrelid::regclass::text || ' ' || pg_get_constraintdef(oid) FROM pg_constraint
+                WHERE connamespace = 'public'::regnamespace
+               UNION ALL SELECT indexdef FROM pg_indexes WHERE schemaname = 'public'
+               UNION ALL SELECT format('%s.%s %s %s', table_name, column_name, column_default, is_identity)
+                 FROM information_schema.columns WHERE table_schema = 'public'
+               UNION ALL SELECT format('%s %s', sequencename, last_value) FROM pg_sequences WHERE schemaname = 'public'"""
+    for sql in ["CREATE SEQUENCE zz_numbers START 40",
+                "CREATE TABLE zz_parts (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, n serial,"
+                " code text UNIQUE, qty int CHECK (qty >= 0) DEFAULT nextval('zz_numbers'),"
+                " company_id uuid REFERENCES companies(id) ON DELETE CASCADE)",
+                "CREATE INDEX zz_parts_qty ON zz_parts (qty)",
+                "CREATE TABLE zz_log (at int, note text) PARTITION BY RANGE (at)",
+                "CREATE TABLE zz_log_1 PARTITION OF zz_log FOR VALUES FROM (0) TO (100)",
+                "INSERT INTO zz_parts (code, company_id) SELECT 'a', id FROM companies",
+                "INSERT INTO zz_log VALUES (1, 'x')"]:
+        await _execute(real_engine, sql)
+    try:
+        async with real_engine.connect() as conn:
+            before = sorted((await conn.execute(text(parts))).scalars())
+        source = await backup_export.export_full()
+        await _execute(real_engine, "DROP TABLE zz_parts, zz_log")
+        await _execute(real_engine, "DROP SEQUENCE zz_numbers")
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        async with real_engine.connect() as conn:
+            assert sorted((await conn.execute(text(parts))).scalars()) == before
+            assert (await conn.execute(text("SELECT count(*) FROM zz_log"))).scalar() == 1
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_parts, zz_log")
+        await _execute(real_engine, "DROP SEQUENCE IF EXISTS zz_numbers")
+
+
+# Parts of Celerp's own tables a restore puts back: (create, a lookup that holds while they
+# exist, drop).
+TABLE_PARTS = {
+    "check constraint not yet validated": (
+        ["ALTER TABLE companies ADD CONSTRAINT zz_named CHECK (name <> '') NOT VALID"],
+        "EXISTS (SELECT FROM pg_constraint WHERE conname = 'zz_named' AND NOT convalidated)",
+        ["ALTER TABLE companies DROP CONSTRAINT IF EXISTS zz_named"]),
+    "index comment": (
+        ["CREATE INDEX zz_by_name ON companies (name)", "COMMENT ON INDEX zz_by_name IS 'by name'"],
+        "obj_description(to_regclass('zz_by_name'), 'pg_class') = 'by name'", ["DROP INDEX IF EXISTS zz_by_name"]),
+    "constraint comment": (
+        ["ALTER TABLE companies ADD CONSTRAINT zz_named CHECK (name <> '')",
+         "COMMENT ON CONSTRAINT zz_named ON companies IS 'named'"],
+        "(SELECT obj_description(oid, 'pg_constraint') FROM pg_constraint WHERE conname = 'zz_named') = 'named'",
+        ["ALTER TABLE companies DROP CONSTRAINT IF EXISTS zz_named"]),
+    "extended statistics": (
+        ["CREATE STATISTICS zz_stats ON id, name FROM companies", "COMMENT ON STATISTICS zz_stats IS 'stats'"],
+        "(SELECT obj_description(oid, 'pg_statistic_ext') FROM pg_statistic_ext WHERE stxname = 'zz_stats') = 'stats'",
+        ["DROP STATISTICS IF EXISTS zz_stats"]),
+    "row security": (
+        ["ALTER TABLE companies ENABLE ROW LEVEL SECURITY"],
+        "(SELECT relrowsecurity FROM pg_class WHERE oid = 'companies'::regclass)",
+        ["ALTER TABLE companies DISABLE ROW LEVEL SECURITY"]),
+    "row security policy": (
+        ["ALTER TABLE companies ENABLE ROW LEVEL SECURITY", "CREATE POLICY zz_all ON companies USING (true)",
+         "COMMENT ON POLICY zz_all ON companies IS 'all'"],
+        "(SELECT obj_description(oid, 'pg_policy') FROM pg_policy WHERE polname = 'zz_all') = 'all'",
+        ["DROP POLICY IF EXISTS zz_all ON companies", "ALTER TABLE companies DISABLE ROW LEVEL SECURITY"]),
+}
+
+
+@pytest.mark.parametrize("part", list(TABLE_PARTS))
+async def test_a_recovery_puts_back_a_table_part(tmp_path, monkeypatch, code_config, real_engine, part):
+    from celerp.services import backup_export, backup_import
+    create, lookup, drop = TABLE_PARTS[part]
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    for sql in create:
+        await _execute(real_engine, sql)
+    try:
+        source = await backup_export.export_full()
+        await company(real_engine, user, "Beta Trading", "beta")
+        result = await backup_import.run_recovery(source)
+        assert result.ok is True, result.error
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert await _exists_sql(real_engine, lookup)
+    finally:
+        for sql in drop:
+            await _execute(real_engine, sql)
+
+
+@pytest.mark.parametrize("entry", ["recovery", "update rollback"])
+async def test_a_database_set_up_by_celerp_is_restored(tmp_path, monkeypatch, code_config, real_engine, entry):
+    """The default privileges Celerp grants its own database user at setup belong to the
+    installation; a restore leaves them as they are."""
+    import asyncio
+
+    from celerp import cli
+    from celerp.services import backup, backup_export, backup_import
+    from test_helpers import DATABASE_URL
+    pg_url = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    # Setup runs these statements as the database administrator; here the test's own role runs them.
+    monkeypatch.setattr(cli, "_psql", lambda sql, db, *flags: subprocess.run(
+        [backup._find_pg_tool("psql"), "-X", "-v", "ON_ERROR_STOP=1", *flags, "-c", sql, "-d", pg_url],
+        capture_output=True, text=True))
+    _set_enabled(["celerp-inventory"])
+    _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    role = cli._parse_db_url(DATABASE_URL)
+    assert cli._fix_ownership_statements(role["user"], role["dbname"]) is None
+    try:
+        if entry == "recovery":
+            source = await backup_export.export_full()
+            await company(real_engine, user, "Beta Trading", "beta")
+            result = await backup_import.run_recovery(source)
+            assert result.ok is True, result.error
+        else:
+            steps, dump = _update_steps(), tmp_path / "database.dump"
+            await asyncio.to_thread(steps.preflight)
+            await asyncio.to_thread(steps.dump, dump)
+            await company(real_engine, user, "Beta Trading", "beta")
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        for kind in ("TABLES", "SEQUENCES"):
+            await _execute(real_engine, f"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON {kind} "
+                                        f"FROM {role['user']}")
+
+
+def _refusal_shown(update) -> str:
+    """Why the update did not start, as the install owner's update card gets it; other users
+    get only the reason code."""
+    assert "detail" not in update.status(owner=False)["last_result"]
+    return update.status(owner=True)["last_result"]["detail"]
+
+
+@pytest.mark.parametrize("kind", ["view", "enum", "foreign key from another schema"])
+async def test_an_update_of_a_database_holding_other_objects_stops_before_anything_changes(
+        tmp_path, monkeypatch, real_engine, kind):
+    from celerp import runtime
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    await _create(real_engine, kind)
+    try:
+        with pytest.raises(ValueError) as refused:
+            steps.preflight()
+        result, children = update.run_update("1.1.0", steps)
+        assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+        shown = _refusal_shown(update)
+        assert shown == str(refused.value).rstrip(".")
+        assert shown.startswith("Celerp restores only its own tables") and UNSUPPORTED[kind][1] in shown, shown
+        assert not update.dump_path().exists()
+        assert not runtime.release_dir("1.1.0").exists()
+        assert "in_progress" not in update.read_state()
+        assert await _exists(real_engine, kind)
+    finally:
+        await _drop(real_engine, kind)
+
+
+async def test_an_update_without_room_to_roll_back_stops_before_anything_changes(tmp_path, monkeypatch, real_engine):
+    from celerp import runtime
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    _free_space(monkeypatch, 2**30)
+    result, children = update.run_update("1.1.0", steps)
+    assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+    assert _refusal_shown(update).startswith("Not enough free disk space to restore this backup")
+    assert not runtime.release_dir("1.1.0").exists()
+    assert "in_progress" not in update.read_state()
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+# ── A database restore is all or nothing ─────────────────────────────────────
+
+async def _restore_target(engine, tmp_path: Path) -> Path:
+    """Dump a database with Alpha and a module table, then change it: Beta, and a module
+    table the dump lacks whose foreign key points into a table the dump recreates."""
+    import asyncio
+
+    from celerp.services import backup
+    from test_helpers import DATABASE_URL
+    user = await owner(engine)
+    await company(engine, user, "Alpha Trading", "alpha")
+    await _execute(engine, "CREATE TABLE zz_source (company_id uuid REFERENCES companies(id))")
+    await _execute(engine, "INSERT INTO zz_source SELECT id FROM companies")
+    dump = tmp_path / "database.dump"
+    dump.write_bytes(await asyncio.to_thread(backup.dump_database, DATABASE_URL))
+    await _execute(engine, "DROP TABLE zz_source")
+    await company(engine, user, "Beta Trading", "beta")
+    await _execute(engine, "CREATE TABLE zz_extra (company_id uuid REFERENCES companies(id))")
+    await _execute(engine, "INSERT INTO zz_extra SELECT id FROM companies")
+    return dump
+
+
+async def _restore(dump: Path, runner=None) -> None:
+    import asyncio
+
+    from celerp.services import backup
+    from test_helpers import DATABASE_URL
+    await asyncio.to_thread(backup.restore_database_file, dump, DATABASE_URL, runner=runner)
+
+
+async def _assert_unchanged(engine, tables: set[str]) -> None:
+    from sqlalchemy import text
+    assert tables <= await _tables(engine)  # the fence may add its own instance_meta
+    assert await _company_names(engine) == {"Alpha Trading", "Beta Trading"}
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT count(*) FROM zz_extra"))).scalar() == 2
+
+
+def _tool(command: list[str]) -> str:
+    return Path(command[0]).stem
+
+
+def _psql_never_runs(command, **kwargs):
+    assert _tool(command) != "psql", "psql ran after pg_restore failed"
+    return subprocess.run(command, **kwargs)
+
+
+async def test_a_restore_replaces_the_database_exactly(tmp_path, real_engine):
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        await _restore(dump)
+        assert "zz_extra" not in await _tables(real_engine)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        from sqlalchemy import text
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text("SELECT count(*) FROM zz_source"))).scalar() == 1
+        assert list(tmp_path.iterdir()) == [dump]
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+def _fails_after_restoring_data(dump: Path):
+    """A statement failing after the emptying and after every row was restored."""
+    def runner(command, **kwargs):
+        if _tool(command) == "psql":
+            with (kwargs["cwd"] / command[command.index("-f") + 1]).open("a") as script:
+                script.write("SELECT 1/0;\n")
+        return subprocess.run(command, **kwargs)
+    return runner
+
+
+def _cut_short(dump: Path):
+    """pg_restore writes part of the script, then fails reading the rest of the dump."""
+    dump.write_bytes(dump.read_bytes()[: dump.stat().st_size // 2])
+    return _psql_never_runs
+
+
+def _disk_full(dump: Path):
+    """The disk fills while pg_restore writes the script."""
+    def runner(command, **kwargs):
+        if "-f" in command:
+            command = [*command]
+            command[command.index("-f") + 1] = "/dev/full"
+        return _psql_never_runs(command, **kwargs)
+    return runner
+
+
+def _not_a_dump(dump: Path):
+    dump.write_bytes(b"not a dump")
+    return _psql_never_runs
+
+
+@pytest.mark.parametrize("break_restore", [_fails_after_restoring_data, _cut_short, _disk_full, _not_a_dump],
+                         ids=["a statement fails after the data", "the dump is cut short",
+                              "the disk is full", "the dump is unreadable"])
+async def test_a_failed_restore_changes_nothing(tmp_path, real_engine, break_restore):
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        tables = await _tables(real_engine)
+        with pytest.raises(RuntimeError, match="failed"):
+            await _restore(dump, break_restore(dump))
+        await _assert_unchanged(real_engine, tables)
+        assert list(tmp_path.iterdir()) == [dump]
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+def _free_space(monkeypatch, free: int) -> None:
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(2 * free, free, free))
+
+
+async def test_an_update_without_room_for_its_last_dump_is_refused_before_dumping_again(
+        tmp_path, monkeypatch, code_config, real_engine):
+    """A refusal for disk space names what the owner can change, so it is not recorded and
+    the next window tries again. The last update's dump, which the next one replaces, shows
+    there is still no room without taking another full dump."""
+    import asyncio
+
+    from celerp.services import backup, update
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    steps, dump = _update_steps(), update.dump_path()
+    dump.parent.mkdir(parents=True)
+    await asyncio.to_thread(steps.dump, dump)
+    _free_space(monkeypatch, dump.stat().st_size * 10 + 2**30 - 1)
+    dumps, data = [], dump.read_bytes()
+    monkeypatch.setattr(backup, "dump_database", lambda *args, **kwargs: dumps.append(args) or data)
+    for _ in range(2):
+        result, children = await asyncio.to_thread(update.run_update, "1.1.0", steps)
+        assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+        assert result["detail"].startswith("Not enough free disk space to restore this backup"), result
+    assert dumps == []
+    assert update.read_state().get("failed_versions", []) == []
+
+
+@pytest.mark.parametrize("short", [1, 0], ids=["one byte short", "exactly enough"])
+async def test_a_restore_needs_ten_times_the_dump_and_1_gib_free_beside_it(tmp_path, monkeypatch, real_engine, short):
+    """The script pg_restore writes beside the dump measured up to 6.7 times its size, on the
+    disk the database usually lives on."""
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        tables = await _tables(real_engine)
+        _free_space(monkeypatch, dump.stat().st_size * 10 + 2**30 - short)
+        if short:
+            with pytest.raises(ValueError, match="Not enough free disk space to restore this backup"):
+                await _restore(dump)
+            await _assert_unchanged(real_engine, tables)
+        else:
+            await _restore(dump)
+            assert await _company_names(real_engine) == {"Alpha Trading"}
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp_path, real_engine):
+    """The dump recreates zz_status, which a table outside public uses, so its drop fails, and the
+    error names that failure."""
+    await _execute(real_engine, "CREATE TYPE zz_status AS ENUM ('open', 'done')")
+    try:
+        dump = await _restore_target(real_engine, tmp_path)
+        await _execute(real_engine, "CREATE SCHEMA zz")
+        await _execute(real_engine, "CREATE TABLE zz.jobs (status public.zz_status)")
+        tables = await _tables(real_engine)
+        with pytest.raises(RuntimeError, match=r"psql failed \(exit 3\): .*ERROR:  cannot drop type public.zz_status"):
+            await _restore(dump)
+        await _assert_unchanged(real_engine, tables)
+    finally:
+        await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+        await _execute(real_engine, "DROP TYPE IF EXISTS zz_status")
+
+
+@pytest.fixture
+async def admin(real_engine):  # noqa: F811
+    """A connection as a database administrator, which owns schema public (PostgreSQL 14
+    and older give it to the bootstrap superuser) and may create roles. Where Celerp's role
+    is not one, ADMIN_DATABASE_URL names one, connected here to the test's own database."""
+    import os
+
+    from sqlalchemy import make_url
+    from sqlalchemy.ext.asyncio import create_async_engine
+    url = os.environ.get("ADMIN_DATABASE_URL")
+    if url is None:
+        yield real_engine
+        return
+    engine = create_async_engine(make_url(url).set(database=real_engine.url.database))
+    yield engine
+    await engine.dispose()
+
+
+def _windows_line_ends(command, **kwargs):
+    """The tools as on Windows, where pg_restore ends the lines it prints with CRLF."""
+    result = subprocess.run(command, **kwargs)
+    result.stdout = result.stdout.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    return result
+
+
+@pytest.mark.parametrize("runner", [None, _windows_line_ends], ids=["lf", "crlf"])
+async def test_a_restore_leaves_the_public_schema_alone(tmp_path, real_engine, admin, runner):
+    """A backup of a database whose public schema comment was cleared carries that comment,
+    which only the schema's owner may set; the restore replaces the tables and leaves the
+    schema as it is."""
+    from sqlalchemy import text
+    comment = "SELECT obj_description('public'::regnamespace, 'pg_namespace')"
+    async with real_engine.connect() as conn:
+        before = (await conn.execute(text(comment))).scalar()
+    await _execute(admin, "COMMENT ON SCHEMA public IS NULL")
+    try:
+        dump = await _restore_target(real_engine, tmp_path)
+        await _execute(admin, "COMMENT ON SCHEMA public IS 'kept'")
+        await _restore(dump, runner)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text(comment))).scalar() == "kept"
+    finally:
+        await _execute(admin, f"COMMENT ON SCHEMA public IS {'NULL' if before is None else repr(before)}")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+async def test_a_restore_leaves_other_schemas_alone(tmp_path, real_engine):
+    from sqlalchemy import text
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        await _execute(real_engine, "CREATE SCHEMA zz")
+        await _execute(real_engine, "CREATE TABLE zz.jobs (id int)")
+        await _execute(real_engine, "INSERT INTO zz.jobs VALUES (1)")
+        await _restore(dump)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text("SELECT count(*) FROM zz.jobs"))).scalar() == 1
+    finally:
+        await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+# Objects outside public that depend on a public table: (create, lookup that holds while they exist).
+OUTSIDE = {
+    "foreign key": ("CREATE TABLE zz.links (company_id uuid REFERENCES public.companies(id))",
+                    "SELECT count(*) FROM pg_constraint WHERE conrelid = 'zz.links'::regclass AND contype = 'f'"),
+    "view": ("CREATE VIEW zz.names AS SELECT name FROM public.companies", "SELECT count(*) FROM zz.names"),
+}
+
+
+@pytest.mark.parametrize("kind", list(OUTSIDE))
+async def test_a_restore_that_would_change_another_schema_changes_nothing(tmp_path, real_engine, kind):
+    """Called directly, without the check a recovery or an update makes first, the restore's
+    own transaction still refuses."""
+    from sqlalchemy import text
+    create, lookup = OUTSIDE[kind]
+    dump = await _restore_target(real_engine, tmp_path)
+    try:
+        await _execute(real_engine, "CREATE SCHEMA zz")
+        await _execute(real_engine, create)
+        tables = await _tables(real_engine)
+        with pytest.raises(RuntimeError, match=r"psql failed \(exit 1\): ERROR:  cannot drop desired"):
+            await _restore(dump)
+        await _assert_unchanged(real_engine, tables)
+        async with real_engine.connect() as conn:
+            assert (await conn.execute(text(lookup))).scalar() == (1 if kind == "foreign key" else 2)
+    finally:
+        await _execute(real_engine, "DROP SCHEMA IF EXISTS zz CASCADE")
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine):
+    """psql is killed at its time limit while its transaction has already emptied part of
+    the database; the server rolls the transaction back."""
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from test_helpers import DATABASE_URL
+    dump = await _restore_target(real_engine, tmp_path)
+    blocker = create_async_engine(DATABASE_URL)
+    try:
+        tables = await _tables(real_engine)
+        async with blocker.connect() as conn, conn.begin():
+            await conn.execute(text("LOCK TABLE zz_extra IN ACCESS SHARE MODE"))
+
+            def runner(command, **kwargs):
+                return subprocess.run(command, **{**kwargs, "timeout": 3 if _tool(command) == "psql" else 60})
+
+            with pytest.raises(RuntimeError, match="psql timed out"):
+                await _restore(dump, runner)
+        async with real_engine.connect() as conn:
+            for _ in range(100):
+                if not (await conn.execute(text(
+                        "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'psql'"))).scalar():
+                    break
+                await asyncio.sleep(0.1)
+        await _assert_unchanged(real_engine, tables)
+        await _restore(dump)
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert "zz_extra" not in await _tables(real_engine)
+    finally:
+        await blocker.dispose()
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")
+
+
+# Without a psql that runs nothing starts: no marker, no safety archive, no connector or cloud call.
+
+# The error each kind of unusable psql gives.
+PSQL = {
+    "missing": "psql not found",
+    "not executable": "psql could not run",
+    "failing": "psql failed (exit 127)",
+}
+
+
+def _without_psql(monkeypatch, tmp_path: Path, psql: str = "missing") -> Path:
+    from celerp.config import settings
+    from celerp.services import backup
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("pg_dump", "pg_restore"):
+        (bin_dir / tool).symlink_to(backup._find_pg_tool(tool))
+    if psql != "missing":
+        (bin_dir / "psql").write_text("#!/bin/sh\necho 'libpq.so.5: cannot open shared object file' >&2\nexit 127\n")
+        (bin_dir / "psql").chmod(0o755 if psql == "failing" else 0o644)
+    monkeypatch.setattr(settings, "pg_bin_dir", str(bin_dir))
+    return bin_dir
+
+
+def _record_connector_calls(monkeypatch) -> list[str]:
+    from celerp.services import backup_import
+    calls = []
+    for name in ("_current_connectors", "_reconcile_connectors"):
+        real = getattr(backup_import, name)
+
+        async def _recorded(*a, _real=real, _name=name, **kw):
+            calls.append(_name)
+            return await _real(*a, **kw)
+        monkeypatch.setattr(backup_import, name, _recorded)
+    return calls
+
+
+@pytest.mark.parametrize("psql", list(PSQL))
+@pytest.mark.parametrize("entry", ["system recovery", "bootstrap recovery", "confirmed recovery"])
+async def test_a_recovery_without_psql_changes_nothing_and_can_be_repeated(
+        tmp_path, monkeypatch, code_config, real_engine, entry, psql):
+    from celerp.config import settings
+    from celerp.services import backup_export, backup_import
+    _set_enabled(["celerp-inventory"])
+    rec = _Recovery(tmp_path, monkeypatch, real_database=True)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    source = await backup_export.export_full()
+    await company(real_engine, user, "Beta Trading", "beta")
+    connector_calls = _record_connector_calls(monkeypatch)
+    if entry == "confirmed recovery":
+        rec.fail_safety()
+        pending = await backup_import.run_recovery(source)
+        assert pending.needs_confirmation is True, pending.error
+
+    async def _start():
+        if entry == "system recovery":
+            return await backup_import.run_recovery(source)
+        if entry == "bootstrap recovery":
+            return await backup_import.bootstrap_recovery(source)
+        return await backup_import.continue_recovery(pending.confirmation_id, pending.archive_digest)
+
+    staged = rec.staging()
+    _without_psql(monkeypatch, tmp_path, psql)
+    result = await _start()
+    assert result.ok is False and PSQL[psql] in result.error, result.error
+    assert backup_import.recovery_incomplete() is False
+    assert connector_calls == []
+    assert rec.safety_archives() == []
+    rec.cloud_snapshot.assert_not_awaited()
+    assert rec.staging() == staged
+    assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
+
+    monkeypatch.setattr(settings, "pg_bin_dir", "")
+    result = await _start()
+    assert result.ok is True, result.error
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+
+@pytest.mark.parametrize("psql", list(PSQL))
+async def test_an_update_without_psql_stops_before_anything_changes(tmp_path, monkeypatch, real_engine, psql):
+    """Nothing is recorded, so the next automatic update tries the same version again."""
+    from celerp import runtime
+    from celerp.config import settings
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(update, "installed_version", lambda: "1.0.0")
+    _without_psql(monkeypatch, tmp_path, psql)
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    user = await owner(real_engine)
+    await company(real_engine, user, "Alpha Trading", "alpha")
+    result, children = update.run_update("1.1.0", steps)
+    assert (result["outcome"], result["reason"], children) == (update.FAILED, "backup_failed", ())
+    assert not update.dump_path().exists()
+    assert not runtime.release_dir("1.1.0").exists()
+    assert update.read_state() == {}
+    assert await _company_names(real_engine) == {"Alpha Trading"}
+
+    monkeypatch.setattr(settings, "pg_bin_dir", "")
+    monkeypatch.setattr(update, "self_update_blockers", lambda: [])
+    monkeypatch.setattr(update, "refresh_check", lambda: {"latest": "1.1.0", "error": ""})
+    monkeypatch.setattr(update, "request_update", lambda target: None)
+    assert update.request_available(automatic=True) == "1.1.0"
+
+
+@pytest.mark.parametrize("psql", list(PSQL))
+async def test_an_update_rollback_after_a_failed_restore_can_be_repeated(tmp_path, monkeypatch, real_engine, psql):
+    """The rollback an update runs (SupervisorSteps.restore): a failed attempt changes
+    nothing, and the next start repeats it."""
+    import asyncio
+
+    from celerp.config import settings
+    from celerp.services import update
+    from test_helpers import DATABASE_URL
+    dump = await _restore_target(real_engine, tmp_path)
+    steps = update.SupervisorSteps(
+        {"server": {"api_port": 1, "ui_port": 2}, "database": {"url": DATABASE_URL}, "backup": {}},
+        lambda root: {}, spawn_api=None, spawn_ui=None, wait_ready=None)
+    try:
+        tables = await _tables(real_engine)
+        _without_psql(monkeypatch, tmp_path, psql)
+        with pytest.raises(RuntimeError, match=re.escape(PSQL[psql])):
+            await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        await _assert_unchanged(real_engine, tables)
+        monkeypatch.setattr(settings, "pg_bin_dir", "")
+        await asyncio.to_thread(steps.restore, dump, "1.1.0")
+        assert await _company_names(real_engine) == {"Alpha Trading"}
+        assert "zz_extra" not in await _tables(real_engine)
+    finally:
+        await _execute(real_engine, "DROP TABLE IF EXISTS zz_source, zz_extra")

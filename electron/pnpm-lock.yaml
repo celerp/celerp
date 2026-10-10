@@ -11,6 +11,9 @@ patchedDependencies:
   app-builder-lib@25.1.8:
     hash: f7ldcjrhu6ephhdmcpvo42mz6u
     path: patches/app-builder-lib@25.1.8.patch
+  embedded-postgres@17.9.0-beta.16:
+    hash: vbkgyurwv53qfixwq6grwcr3z4
+    path: patches/embedded-postgres@17.9.0-beta.16.patch
 
 importers:
 
@@ -27,7 +30,7 @@ importers:
         version: 6.8.3
       embedded-postgres:
         specifier: ^17.9.0-beta.16
-        version: 17.9.0-beta.16
+        version: 17.9.0-beta.16(patch_hash=vbkgyurwv53qfixwq6grwcr3z4)
     devDependencies:
       electron:
         specifier: ^30.0.0
@@ -3786,7 +3789,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  embedded-postgres@17.9.0-beta.16:
+  embedded-postgres@17.9.0-beta.16(patch_hash=vbkgyurwv53qfixwq6grwcr3z4):
     dependencies:
       async-exit-hook: 2.0.1
       pg: 8.20.0

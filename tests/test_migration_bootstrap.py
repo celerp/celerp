@@ -23,6 +23,7 @@ from migration_support import (
     count,
     fake_bytes,
     fake_spec,
+    finalize_run,
     load_run,
     maker,
     migration_env,  # noqa: F401 - fixture
@@ -207,7 +208,7 @@ async def test_migration_start_creates_clean_inactive_company_without_seed_hooks
     await migrations.run_migration(run_id)
     assert (await load_run(real_engine, run_id)).status == "ready_to_finalize"
     async with maker(real_engine)() as s:
-        await migrations.finalize(s, await creator_run(s, run_id))
+        await finalize_run(s, await creator_run(s, run_id))
     async with maker(real_engine)() as s:
         company = await s.get(Company, company_id)
         assert company.is_active is True
@@ -225,7 +226,7 @@ async def test_migration_start_creates_clean_inactive_company_without_seed_hooks
             {"source_type": "Payment", "count": 1, "coverage_class": "mapped", "target": "settlement"}]))
     await migrations.run_migration(run_id)
     async with maker(real_engine)() as s:
-        await migrations.finalize(s, await creator_run(s, run_id))
+        await finalize_run(s, await creator_run(s, run_id))
     assert await count(real_engine, "locations", "company_id = :c AND is_default AND name = 'Head Office'",
                        c=company_id) == 1
     assert await count(real_engine, "locations", "company_id = :c", c=company_id) == 1

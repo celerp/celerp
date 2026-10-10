@@ -65,7 +65,8 @@ def test_outbound_docs_use_invoice_line_layout(page, ui_server, api, doc_type):
 def test_print_view_preserves_weight_unit(page, ui_server, api, doc_type):
     """The /print view must show the weight WITH its unit (sourced from the parcel),
     for every invoice-layout doc type — previously only invoices were enriched, so a
-    memo printed the weight value with no unit."""
+    memo printed the weight value with no unit. The line takes the whole parcel: only
+    then is the parcel's weight the line's own (a part of a parcel has no known weight)."""
     r = api.post("/items", json={"status": "available", 
         "sku": f"RZ-WU-{doc_type}", "name": "Weighted Widget", "quantity": 5,
         "sell_by": "piece", "weight": 4.5, "weight_unit": "carat",
@@ -74,8 +75,8 @@ def test_print_view_preserves_weight_unit(page, ui_server, api, doc_type):
     d = api.post("/docs", json={
         "doc_type": doc_type, "status": "draft",
         "line_items": [{"sku": f"RZ-WU-{doc_type}", "entity_id": item_id,
-                        "quantity": 2, "unit_price": 1.0, "line_total": 2.0}],
-        "total": 2.0,
+                        "quantity": 5, "unit_price": 1.0, "line_total": 5.0}],
+        "total": 5.0,
     })
     doc_id = d.json()["id"]
     page.goto(f"{ui_server}/docs/{doc_id}/print", wait_until="domcontentloaded")

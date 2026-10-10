@@ -27,7 +27,7 @@ def _item(**overrides) -> dict:
         "quantity": 5, "status": "available",
         "cost_price": 100.0, "cost_total": 120.0,
         "cost_base": 100.0, "cost_landed": 20.0,
-        "landed_contributions": [{"name": "freight", "amount": 20.0}],
+        "landed_costs": {"bill:x::freight": 20.0},
     }
     base.update(overrides)
     return base
@@ -54,7 +54,7 @@ def test_visibility_strips_location_id_companion():
 
 
 def test_visibility_strips_cost_derived_keys():
-    """AC2: cost_base, cost_landed, and landed_contributions are cost-DATA companions
+    """AC2: cost_base, cost_landed, and landed_costs are cost-DATA companions
     of the goods cost. A caller without view_inventory_costs must not see them, or the
     goods cost leaks through the derived keys the base cost strip missed."""
     out = apply_field_visibility(
@@ -65,7 +65,7 @@ def test_visibility_strips_cost_derived_keys():
     assert "cost_total" not in out
     assert "cost_base" not in out
     assert "cost_landed" not in out
-    assert "landed_contributions" not in out
+    assert "landed_costs" not in out
     # A cost-permitted caller keeps every cost key.
     ok = apply_field_visibility(
         [_item()], "manager", _SCHEMA, can_see_costs=True,
@@ -73,7 +73,7 @@ def test_visibility_strips_cost_derived_keys():
     )[0]
     assert ok["cost_base"] == 100.0
     assert ok["cost_landed"] == 20.0
-    assert ok["landed_contributions"] == [{"name": "freight", "amount": 20.0}]
+    assert ok["landed_costs"] == {"bill:x::freight": 20.0}
 
 
 def test_visibility_draft_author_keeps_cost_derived():
@@ -89,7 +89,7 @@ def test_visibility_draft_author_keeps_cost_derived():
     )[0]
     assert draft["cost_base"] == 100.0
     assert draft["cost_landed"] == 20.0
-    assert draft["landed_contributions"] == [{"name": "freight", "amount": 20.0}]
+    assert draft["landed_costs"] == {"bill:x::freight": 20.0}
     # A non-draft item is still stripped for the same author.
     avail = apply_field_visibility(
         [_item(status="available")], "manager", _SCHEMA, can_see_costs=False,
@@ -97,4 +97,4 @@ def test_visibility_draft_author_keeps_cost_derived():
     )[0]
     assert "cost_base" not in avail
     assert "cost_landed" not in avail
-    assert "landed_contributions" not in avail
+    assert "landed_costs" not in avail

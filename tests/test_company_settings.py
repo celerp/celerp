@@ -3,8 +3,9 @@
 """Tests: company settings read-back, settings persistence, and accounting API availability.
 
 Covers:
-  - PATCH /companies/me stores settings fields (currency, timezone, fiscal_year_start,
-    tax_id, phone, address) and GET /companies/me returns them
+  - PATCH /companies/me stores the general settings (timezone, tax_id, phone, address)
+    and PATCH /companies/me/books the books settings (currency, fiscal_year_start);
+    GET /companies/me returns them
   - Merging: PATCH with a subset does not clobber other settings keys
   - api_client._flatten_company exposes tax_id, phone, address at top level
   - Accounting routes exist (chart, P&L, balance sheet, trial balance)
@@ -50,8 +51,8 @@ async def test_patch_company_currency_roundtrips(client):
     """currency stored in settings dict is returned by GET /companies/me."""
     token = await _register(client)
     r = await client.patch(
-        "/companies/me",
-        json={"settings": {"currency": "EUR"}},
+        "/companies/me/books",
+        json={"currency": "EUR"},
         headers=_auth(token),
     )
     assert r.status_code == 200
@@ -67,10 +68,11 @@ async def test_patch_company_tax_id_phone_address(client):
     """tax_id, phone, address stored in settings are returned by GET."""
     token = await _register(client)
 
+    r = await client.patch("/companies/me/books", json={"currency": "THB", "fiscal_year_start": "01-01"},
+                           headers=_auth(token))
+    assert r.status_code == 200, r.text
     settings = {
-        "currency": "THB",
         "timezone": "Asia/Bangkok",
-        "fiscal_year_start": "01-01",
         "tax_id": "1234567890123",
         "phone": "+66-2-123-4567",
         "address": "123 Main St\nBangkok 10110",
@@ -84,6 +86,7 @@ async def test_patch_company_tax_id_phone_address(client):
     assert s["tax_id"] == "1234567890123"
     assert s["phone"] == "+66-2-123-4567"
     assert s["address"] == "123 Main St\nBangkok 10110"
+    assert (s["currency"], s["fiscal_year_start"]) == ("THB", "01-01")
 
 
 @pytest.mark.asyncio
@@ -95,19 +98,15 @@ async def test_patch_company_merge_does_not_clobber(client):
     """
     token = await _register(client)
 
-    # First patch: set currency and tax_id
-    await client.patch(
-        "/companies/me",
-        json={"settings": {"currency": "USD", "tax_id": "999888777"}},
-        headers=_auth(token),
-    )
+    # First: the currency through the books, tax_id through company settings
+    assert (await client.patch("/companies/me/books", json={"currency": "USD"},
+                               headers=_auth(token))).status_code == 200
+    assert (await client.patch("/companies/me", json={"settings": {"tax_id": "999888777"}},
+                               headers=_auth(token))).status_code == 200
 
     # Second patch: update only timezone
-    await client.patch(
-        "/companies/me",
-        json={"settings": {"currency": "USD", "tax_id": "999888777", "timezone": "UTC"}},
-        headers=_auth(token),
-    )
+    assert (await client.patch("/companies/me", json={"settings": {"timezone": "UTC"}},
+                               headers=_auth(token))).status_code == 200
 
     r = await client.get("/companies/me", headers=_auth(token))
     s = r.json()["settings"]

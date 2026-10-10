@@ -197,10 +197,21 @@ def test_install_without_pip_route_shows_only_the_reason(page, ui_server):
 
 def test_failed_update_is_reported_while_still_on_offer(page, ui_server):
     failed = {"ok": False, "outcome": "rolled_back", "from": "1.0.0", "to": "1.1.0",
-              "reason": "install failed", "at": "x", "notified": True}
+              "reason": "install_failed", "at": "x", "notified": True}
     _open_card(page, ui_server, _status(last_result=failed))
     assert page.locator(".update-card__release").text_content() == (
-        "Could not update to v1.1.0: install failed. Your data was not changed.")
+        "Could not update to v1.1.0: the new version could not be installed. Your data was not changed.")
+
+
+def test_refused_update_says_why_and_what_to_do(page, ui_server):
+    failed = {"ok": False, "outcome": "failed", "from": "1.0.0", "to": "1.1.0", "reason": "backup_failed",
+              "detail": "Celerp restores only its own tables and sequences in the public schema. Remove or "
+                        "move these database objects, then try again: view zz_names",
+              "at": "x", "notified": True}
+    _open_card(page, ui_server, _status(last_result=failed))
+    assert page.locator(".update-card__release").text_content() == (
+        "Could not update to v1.1.0: Celerp restores only its own tables and sequences in the public schema. "
+        "Remove or move these database objects, then try again: view zz_names. Your data was not changed.")
 
 
 def test_not_checked_yet_is_not_shown_as_up_to_date(page, ui_server):

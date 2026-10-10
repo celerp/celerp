@@ -19,9 +19,10 @@ provably consistent with; alembic upgrade applies the rest.
 The walker recognises these DDL signatures:
   - create_table: table exists
   - add_column: column exists in the table
+  - drop_column: column no longer exists in the table
   - create_index: index exists on the table
   - create_unique_constraint: looks at indexes (unique impls differ)
-  - alter_column / drop_column / data backfills: cannot introspect
+  - alter_column / drop_table / data backfills: cannot introspect
     safely — we trust the stamp for these (caller skips the stamp repair
     and lets alembic run normally).
 
@@ -53,7 +54,7 @@ from celerp.migrations._auto_stamp import (
 
 
 @contextlib.contextmanager
-def _pg_inspector_for_models():
+def _pg_inspector_for_models(drop_tables=()):
     """create_all the full model schema into an isolated Postgres schema and
     yield an inspector over it. Mirrors the production dev-startup path
     (create_all on Postgres), so the stamp walker is tested against real
@@ -75,6 +76,9 @@ def _pg_inspector_for_models():
     engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
     try:
         metadata.create_all(engine)
+        with engine.begin() as conn:
+            for table in drop_tables:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
         yield inspect(engine)
     finally:
         engine.dispose()
@@ -108,6 +112,23 @@ def downgrade():
         sigs = extract_signatures(mig)
         assert RevisionSignature(rev="abc123", kind="add_column",
                                  table="users", column="email") in sigs
+
+    def test_extracts_drop_column(self, tmp_path):
+        """op.drop_column in an upgrade yields a column-dropped signature;
+        the same call in a downgrade yields nothing."""
+        mig = tmp_path / "abc124_drop_flag.py"
+        mig.write_text('''
+revision = "abc124"
+down_revision = "abc123"
+
+def upgrade():
+    op.drop_column("notices", "read")
+
+def downgrade():
+    op.drop_column("notices", "seen")
+''')
+        assert extract_signatures(mig) == [
+            RevisionSignature(rev="abc124", kind="drop_column", table="notices", column="read")]
 
     def test_extracts_from_annotated_revision(self, tmp_path):
         """Newer alembic templates emit `revision: str = "..."` (AnnAssign).
@@ -241,9 +262,8 @@ def downgrade():
             assert isinstance(sigs, list)
             for s in sigs:
                 assert s.rev != ""
-                assert s.kind in ("add_column", "create_table",
-                                  "create_index", "create_unique_constraint",
-                                  "alter_column")
+                assert s.kind in ("add_column", "create_table", "drop_column",
+                                  "create_index", "create_unique_constraint")
 
 
 # ── find_safe_stamp ───────────────────────────────────────────────────────────
@@ -438,22 +458,93 @@ class TestFindSafeStamp:
         result = find_safe_stamp(revs, sigs_by_rev, inspector)
         assert result == "rev1"
 
-    def test_a_present_change_does_not_cover_a_missing_one_below_it(self):
-        """A database can hold a newer revision's column while missing an older
-        revision's table. The stamp stops below the older gap, so the missing
-        revision runs and the present one is stepped past when it re-applies."""
+    def test_applied_revision_between_two_gaps_does_not_cover_the_older_gap(self):
+        """A database holding one revision's change while missing a newer and an
+        older one is safe only up to the older gap. Stamping at the applied
+        revision would mark the older missing revision as done and never run it."""
         from unittest.mock import MagicMock
         inspector = self._make_inspector(("users", ["id", "email"]))
         revs = [MagicMock(revision=f"rev{i}") for i in (4, 3, 2, 1)]  # newest first
         sigs_by_rev = {
             "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="users")],
-            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="refunds")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="runs")],
             "rev3": [RevisionSignature(rev="rev3", kind="add_column",
                                         table="users", column="email")],
-            "rev4": [RevisionSignature(rev="rev4", kind="add_column",
-                                        table="refunds", column="recorded_on")],
+            "rev4": [RevisionSignature(rev="rev4", kind="create_table", table="refunds")],
         }
         assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+
+    def test_a_column_still_present_stops_its_drop(self):
+        """A revision that drops a column is applied only once the column is
+        gone, even when the table it creates already exists."""
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(("notices", ["id", "read"]), ("notice_reads", ["notice_id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="notice_reads"),
+                     RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+
+    def test_a_dropped_column_is_applied_once_gone(self):
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(("notices", ["id"]), ("notice_reads", ["notice_id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="notice_reads"),
+                     RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev2"
+
+    def test_a_missing_table_is_no_proof_its_column_was_dropped(self):
+        """A table absent from the live schema proves nothing about a column
+        drop on it: a damaged or partly created schema must not stamp past it."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+        metadata = sa.MetaData()
+        sa.Table("users", metadata, sa.Column("id", sa.Integer))
+        sa.Table("notices", metadata, sa.Column("id", sa.Integer))
+        inspector = self._make_inspector(("users", ["id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+        assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev1"
+
+    def test_an_unreadable_column_list_is_no_proof_a_column_was_dropped(self):
+        """A live column read that fails proves nothing: the walk must not stamp
+        past a column drop it could not check."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+        metadata = sa.MetaData()
+        sa.Table("notices", metadata, sa.Column("id", sa.Integer))
+        inspector = self._make_inspector(("notices", ["id", "read"]))
+        inspector.get_columns.side_effect = RuntimeError("column read failed")
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev1"
+
+    def test_a_drop_of_a_column_the_kernel_still_has_is_no_evidence(self):
+        """A column dropped long ago and added back by the current models is not
+        expected to be absent."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+        metadata = sa.MetaData()
+        sa.Table("notices", metadata, sa.Column("id", sa.Integer), sa.Column("read", sa.Boolean))
+        inspector = self._make_inspector(("notices", ["id", "read"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="notices")],
+            "rev2": [RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev2"
 
 
 class TestRealMigrationsVsSchema:
@@ -494,6 +585,30 @@ class TestRealMigrationsVsSchema:
             f"Walker stuck at base against a fully-create_all'd schema. "
             f"signatures found: {list(sigs_by_rev.keys())[:5]}..."
         )
+
+
+    def test_module_models_loaded_in_the_app_do_not_move_the_stamp(self):
+        """System Recovery reconciles inside the running app, where modules have
+        registered their tables on the shared Base. A backup whose modules never
+        created those tables must get the same stamp as a bare kernel schema."""
+        import celerp_accounting.models  # noqa: F401
+        import celerp_labels.models  # noqa: F401
+        from alembic.script import ScriptDirectory
+        cfg = build_alembic_config()
+        revs = list(ScriptDirectory.from_config(cfg).walk_revisions())
+        versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
+        sigs_by_rev = {s[0].rev: s for s in map(extract_signatures, versions_dir.glob("*.py")) if s}
+        module_tables = ("accounts", "bank_accounts", "bank_statement_lines", "label_templates",
+                         "marketplace_configs", "reconciliation_rules", "reconciliation_sessions")
+
+        with _pg_inspector_for_models() as ins:
+            with_module_tables = find_safe_stamp(
+                revs, sigs_by_rev, ins, expected_metadata=load_kernel_metadata())
+        with _pg_inspector_for_models(drop_tables=module_tables) as ins:
+            kernel_only = find_safe_stamp(
+                revs, sigs_by_rev, ins, expected_metadata=load_kernel_metadata())
+
+        assert kernel_only == with_module_tables
 
 
 class TestCliStampsBehindOnDevSchema:

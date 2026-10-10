@@ -10,13 +10,28 @@ same origin without CORS issues.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 
 import ui.api_client as api
 from ui.config import get_token as _token
-from ui.i18n import get_lang, localize_notification
+from ui.i18n import refusal_text
+
+
+def _in_reader_language(content: bytes) -> bytes:
+    """The notice list with each keyed notice's title and body in the reader's language;
+    a notice with no keys is shown as stored."""
+    data = json.loads(content)
+    for item in data.get("items") or []:
+        keys = item.pop("i18n", None) or {}
+        for part in ("title", "body"):
+            if keys.get(part):
+                item[part] = refusal_text({"message": item[part], "message_key": keys[part],
+                                           "params": keys.get("params") or {}})
+    return json.dumps(data).encode()
 
 
 def setup_routes(app):
@@ -30,14 +45,10 @@ def setup_routes(app):
         async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
                 r = await c.get("/notifications", params=params)
+                content = _in_reader_language(r.content) if r.status_code == 200 else r.content
+                return Response(content=content, media_type="application/json", status_code=r.status_code)
             except (httpx.ConnectError, httpx.TimeoutException):
                 return Response('{"items":[],"unread_count":0}', media_type="application/json", status_code=200)
-        if r.status_code != 200:
-            return Response(content=r.content, media_type="application/json", status_code=r.status_code)
-        data = r.json()
-        lang = get_lang(request)
-        data["items"] = [localize_notification(n, lang) for n in data.get("items", [])]
-        return JSONResponse(data)
 
     @app.post("/notifications/read-all")
     async def proxy_notifications_read_all(request: Request) -> Response:

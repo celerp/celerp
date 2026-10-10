@@ -106,3 +106,52 @@ class TestSubscriptionsUI:
             r = await ui_client.get("/subscriptions/bad-id", cookies=_authed())
         assert r.status_code == 302
         assert "/subscriptions" in r.headers["location"]
+
+
+async def _active_subscription(ui) -> str:
+    r = await ui.api.post("/docs", json={
+        "doc_type": "subscription_invoice", "contact_id": "contact:test-001",
+        "frequency": "monthly", "start_date": "2026-01-01",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0}],
+    })
+    assert r.status_code in (200, 201), r.text
+    eid = r.json()["id"]
+    assert (await ui.api.post(f"/subscriptions/{eid}/activate")).status_code == 200
+    return eid
+
+
+class TestSubscriptionActions:
+    """Lifecycle buttons on the detail page, through the UI to the real API."""
+
+    async def test_a_refused_action_says_why_and_stays_on_the_page(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        assert (await owner_ui.api.post(f"/subscriptions/{eid}/cancel")).status_code == 200
+        r = await owner_ui.post(f"/subscriptions/{eid}/generate")
+        assert r.status_code == 200
+        assert "location" not in r.headers and "HX-Redirect" not in r.headers
+        assert "Cannot generate from a cancelled subscription" in r.headers["HX-Trigger"]
+
+    async def test_generate_sent_twice_with_its_key_creates_one_document(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        for _ in range(2):
+            await owner_ui.post(f"/subscriptions/{eid}/generate", data={"idempotency_key": "gen-once"})
+        sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
+        assert len(sub["generated_doc_ids"]) == 1
+
+    async def test_an_unknown_action_is_not_found_and_calls_nothing(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        with patch("ui.api_client._client", side_effect=AssertionError("API called")):
+            r = await owner_ui.post(f"/subscriptions/{eid}/delete")
+        assert r.status_code == 404
+
+    async def test_the_detail_page_buttons_post_in_place(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        html = (await owner_ui.get(f"/subscriptions/{eid}")).text
+        assert f'hx-post="/subscriptions/{eid}/generate"' in html
+        assert "idempotency_key" in html
+
+    async def test_a_done_action_returns_to_the_subscription(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        r = await owner_ui.post(f"/subscriptions/{eid}/pause")
+        assert r.status_code == 204 and r.headers["HX-Redirect"] == f"/subscriptions/{eid}"
+        assert (await owner_ui.api.get(f"/docs/{eid}")).json()["status"] == "paused"

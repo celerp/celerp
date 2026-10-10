@@ -3,6 +3,7 @@
 
 from contextlib import asynccontextmanager
 import asyncio
+import importlib
 import logging
 import math
 import sys
@@ -18,23 +19,32 @@ from slowapi.util import get_remote_address
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
-from celerp.db import engine, lifecycle_engine, mask_db_credentials
+from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
 from celerp.projections.engine import UnhandledEventsError
 from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
-from celerp.gateway.state import load_commercial_context
 load_cloud_config()
 load_backup_config()
-load_commercial_context()
+importlib.import_module("celerp.gateway.state").load_commercial_context()
 assert_secure_jwt()
 # Read before ensure_instance_id() writes the id.
 _FIRST_BOOT = not settings.gateway_instance_id
 _BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
+from celerp.held_back import (
+    NOT_CURRENT,
+    SAVING_STEP,
+    TITLE as HELD_BACK_TITLE,
+    UNOWNED_STEP,
+    UPDATE_STEP,
+    Failure,
+    HeldBack,
+    module_start_step,
+    unowned_error,
+)
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from ui.i18n import I18nMiddleware, t
-from celerp.models.base import Base
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
@@ -187,6 +197,125 @@ async def _verify_runtime_dependencies() -> None:
     await adopt_legacy_connector_configs()
 
 
+async def _hold_back(app: FastAPI, cause: HeldBack) -> bool:
+    """Record why this start held the records back and tell every company, in the
+    notification bell. Returns False (the records are not current)."""
+    app.state.held_back = cause
+    try:
+        from celerp.db import LifecycleSessionLocal as _NoticeSession
+        from celerp.notifications.service import notify_every_company
+        async with _NoticeSession() as _sess:
+            await notify_every_company(_sess, "system", HELD_BACK_TITLE, cause.notice()["message"],
+                                       action_url=cause.action_url, i18n=cause.notice_keys())
+            await _sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception("Could not post the held-back notice")
+    return False
+
+
+async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
+    """Startup data steps, in order: projections are rebuilt when the handlers that
+    wrote them computed state differently (the upgrade guard), then the loaded
+    modules' on_modules_ready hooks and the one-time backfills change data, reading
+    those projections. A step that ran on stale projections would change the wrong
+    state, so the order is fixed here and nowhere else, and those steps run only once
+    the projections are current.
+
+    Returns whether the stored records are current, and records it as
+    ``app.state.data_current``: while it is False, changes to records are refused
+    (``DrainMiddleware``) and nothing that reads the projections to change data runs.
+    ``app.state.held_back`` records why (``celerp.held_back``)."""
+    # Upgrade guard: after a develop build, or a change in projection semantics,
+    # rebuild projections with this build's handlers (now that all handlers are
+    # registered). Gated by markers so it runs once per change. A failure must not
+    # block boot: the markers stay as they were and the next boot retries.
+    app.state.data_current = False
+    try:
+        from celerp.db import LifecycleSessionLocal as _GuardSession
+        from celerp.modules.loader import event_owners
+        from celerp.services.dev_release_guard import run_upgrade_guard
+        async with _GuardSession() as _guard_sess:
+            guard = await run_upgrade_guard(_guard_sess)
+            await _guard_sess.commit()
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Projection upgrade failed; the next start retries")
+        return await _hold_back(app, HeldBack((Failure(UPDATE_STEP, f"{type(exc).__name__}: {exc}"),)))
+    if not guard["current"]:
+        disabled, unowned = event_owners(set(guard.get("unknown_event_types") or ()))
+        failures: tuple[Failure, ...] = ()
+        if unowned:
+            failures = (Failure(UNOWNED_STEP, unowned_error(unowned)),)
+        elif not disabled:
+            failures = (Failure(UPDATE_STEP, NOT_CURRENT),)
+        return await _hold_back(app, HeldBack(failures, tuple(disabled)))
+
+    if modules_ready:
+        # Allow modules to backfill data for existing companies (e.g. seed
+        # chart of accounts when accounting module is first enabled on an
+        # instance that already has companies).
+        from celerp.modules.loader import module_label
+        from celerp.modules.slots import fire_lifecycle as _fire
+        from celerp.db import LifecycleSessionLocal as _LifecycleSession
+        # Each hook runs in its own savepoint (fire_lifecycle), so one that
+        # fails rolls back only its own work and never takes the app down. Until
+        # a start runs every hook the records are not current: changes stay
+        # refused and the next start runs the hooks again. Seed hooks can replay
+        # large ledgers, so they run on the unbounded lifecycle engine, not the
+        # timeout-bounded request pool.
+        async with _LifecycleSession() as _sess:
+            try:
+                failed = [Failure(module_start_step(module_label(module)), error)
+                          for module, error in await _fire("on_modules_ready", session=_sess)]
+                await _sess.commit()
+            except Exception as exc:
+                await _sess.rollback()
+                logging.getLogger(__name__).exception("on_modules_ready hooks could not be saved")
+                failed = [Failure(SAVING_STEP, f"{type(exc).__name__}: {exc}")]
+        if failed:
+            return await _hold_back(app, HeldBack(tuple(failed)))
+
+    # One-time backfill: stamp the status→document pairing on items sold, memo'd,
+    # or consigned in before that field shipped, so their inventory status links
+    # to its document. Marker-gated (runs once); non-fatal like the guard above.
+    try:
+        from celerp.db import LifecycleSessionLocal as _BackfillSession
+        from celerp.services.status_doc_backfill import run_status_doc_backfill
+        async with _BackfillSession() as _bf_sess:
+            await run_status_doc_backfill(_bf_sess)
+            await _bf_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Status-doc backfill failed (non-fatal); pre-existing sold/memo items "
+            "may show their status without a document link until a later boot"
+        )
+
+    # One-time backfill: post the missing COGS JE for invoices finalized before
+    # COGS moved into the finalize JE and never fulfilled since. Marker-gated
+    # (runs once; retries stragglers while any doc is locked or errored);
+    # non-fatal like the backfill above.
+    try:
+        from celerp.db import LifecycleSessionLocal as _CogsSession
+        from celerp.services.cogs_backfill import run_cogs_backfill
+        async with _CogsSession() as _cogs_sess:
+            await run_cogs_backfill(_cogs_sess)
+            await _cogs_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "COGS backfill failed (non-fatal); affected invoices keep their "
+            "missing COGS until a later boot retries"
+        )
+
+    app.state.data_current, app.state.held_back = True, None
+    try:
+        from celerp.db import LifecycleSessionLocal as _NoticeSession
+        from celerp.notifications.service import clear_every_company
+        async with _NoticeSession() as _sess:
+            await clear_every_company(_sess, "system", HELD_BACK_TITLE)
+            await _sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception("Could not clear the held-back notice")
+    return True
+
 _SHUTDOWN_GRACE_S = 10
 
 
@@ -265,19 +394,38 @@ async def _serve(_app: FastAPI, held):
     # stops early below leaves an older copy refusing the database.
     try:
         await asyncio.to_thread(held.admit)
-        async with lifecycle_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await create_tables(lifecycle_engine)
     except Exception as exc:
         _refuse_start(exc)
 
     # Load modules (none when no module tree exists)
     _loaded_modules = []
+    _enabled: set[str] = set()
     if _MODULE_DIR:
         from celerp.modules.loader import load_all, register_api_routes
         from celerp.config import read_config as _read_config
+        if not update_verify:
+            # Registration's starter records are kept by the starter modules, which are
+            # enabled here before the module list is read (once per install). A failure
+            # must not block boot; the next start retries.
+            try:
+                from celerp.db import LifecycleSessionLocal as _StarterSession
+                from celerp.services.starter_modules import enable_starter_modules
+                async with _StarterSession() as _starter_sess:
+                    await enable_starter_modules(_starter_sess)
+                    await _starter_sess.commit()
+            except Exception:
+                logging.getLogger(__name__).exception("Enabling the starter modules failed (non-fatal)")
+            # Fetch the free verdict of every installed celerp- module that has
+            # none, in the background while online, so it loads later without
+            # the relay.
+            import threading
+            from celerp.modules.loader import fetch_missing_free_verdicts
+            threading.Thread(target=fetch_missing_free_verdicts, args=(_MODULE_DIR,),
+                             name="free-verdicts", daemon=True).start()
         _enabled_env = _os.environ.get("ENABLED_MODULES", "")
         if _enabled_env:
-            _enabled: set[str] = set(_enabled_env.split(","))
+            _enabled = set(_enabled_env.split(","))
         else:
             # Fall back to the module list saved in config.toml.
             _cfg = _read_config()
@@ -298,8 +446,7 @@ async def _serve(_app: FastAPI, held):
             # Module models register on Base.metadata at import time (a module
             # that is not running has its tables taken off again). Run
             # create_all again so module tables are created (idempotent).
-            async with lifecycle_engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+            await create_tables(lifecycle_engine)
             # The UI process offers only the modules recorded here as running.
             from celerp.modules.outcome import publish as _publish_outcome
             async with lifecycle_engine.begin() as conn:
@@ -314,82 +461,42 @@ async def _serve(_app: FastAPI, held):
                 await _verify_runtime_dependencies()
                 yield
                 return
-            # Allow modules to backfill data for existing companies (e.g. seed
-            # chart of accounts when accounting module is first enabled on an
-            # instance that already has companies).
-            from celerp.modules.slots import fire_lifecycle as _fire
-            from celerp.db import LifecycleSessionLocal as _LifecycleSession
-            # Best-effort, like the two sibling blocks below: fire_lifecycle
-            # rolls a failed hook back to its own savepoint, and if the commit
-            # itself fails, roll back and log at ERROR rather than let that
-            # crash boot - the manufacturing seed hook, for one, must never be
-            # able to take the app down. Seed hooks can replay large ledgers, so they run on the
-            # unbounded lifecycle engine, not the timeout-bounded request pool.
-            async with _LifecycleSession() as _sess:
-                try:
-                    await _fire("on_modules_ready", session=_sess)
-                    await _sess.commit()
-                except Exception:
-                    await _sess.rollback()
-                    logging.getLogger(__name__).exception(
-                        "on_modules_ready hooks failed (non-fatal); their data was rolled back"
-                    )
-
-            # A bundled default whose content no longer matches the first-party
-            # lock is demoted to untrusted. Surface that in the notification bell
-            # (deduped, company-wide) so it is visible from any page rather than
-            # only on /modules. Best-effort - a notify failure must never block boot.
-            try:
-                from celerp.modules.loader import demoted_first_party
-                _demoted = demoted_first_party(_enabled)
-                if _demoted:
-                    from celerp.modules.demotion import notify_demoted_modules
-                    async with _LifecycleSession() as _dsess:
-                        await notify_demoted_modules(_dsess, _demoted)
-                        await _dsess.commit()
-            except Exception:
-                logging.getLogger(__name__).debug(
-                    "Demoted-module notification skipped (non-fatal)", exc_info=True)
-
-            # A module table its manifest does not place in or out of a company backup
-            # blocks the backups of companies holding its rows; say so in the bell.
-            try:
-                from celerp.services.company_backup import notify_undeclared_module_tables
-                async with _LifecycleSession() as _usess:
-                    await notify_undeclared_module_tables(_usess)
-                    await _usess.commit()
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "Company backup declaration check skipped (non-fatal)", exc_info=True)
-
     if update_verify:
         await _verify_runtime_dependencies()
         yield
         return
 
-    # Register kernel projection handler for sys.* events (not module-owned)
-    from celerp.modules.slots import register as register_slot
-    register_slot("projection_handler", {
-        "prefix": "sys.",
-        "handler": "celerp.projections.handlers.system:apply_system_event",
-        "_module": "_kernel",
-    })
+    data_current = await _bring_data_current(_app, modules_ready=bool(_enabled))
 
-    # Develop→release guard: on a version change, rebuild projections with the
-    # release's handlers (now that all handlers are registered). Gated by a
-    # marker so it runs once per version. Non-fatal: a failure must not block
-    # boot — the marker stays unset and a later boot retries.
-    try:
-        from celerp.db import LifecycleSessionLocal as _GuardSession
-        from celerp.services.dev_release_guard import run_upgrade_guard
-        async with _GuardSession() as _guard_sess:
-            await run_upgrade_guard(_guard_sess)
-            await _guard_sess.commit()
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "Develop→release upgrade guard failed (non-fatal); projections may be "
-            "stale until rebuilt via doctor or /ledger/rebuild"
-        )
+    if _enabled:
+        # A bundled default whose content no longer matches the first-party
+        # lock is demoted to untrusted. Surface that in the notification bell
+        # (deduped, company-wide) so it is visible from any page rather than
+        # only on /modules. Best-effort - a notify failure must never block boot.
+        try:
+            from celerp.modules.loader import demoted_first_party
+            _demoted = demoted_first_party(_enabled)
+            if _demoted:
+                from celerp.db import LifecycleSessionLocal as _DemotionSession
+                from celerp.modules.demotion import notify_demoted_modules
+                async with _DemotionSession() as _dsess:
+                    await notify_demoted_modules(_dsess, _demoted)
+                    await _dsess.commit()
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Demoted-module notification skipped (non-fatal)", exc_info=True)
+
+        # A module table its manifest does not place in or out of a company backup
+        # blocks the backups of companies holding its rows; say so in the bell.
+        try:
+            from celerp.db import LifecycleSessionLocal as _UndeclaredSession
+            from celerp.services.company_backup import notify_undeclared_module_tables
+            async with _UndeclaredSession() as _usess:
+                await notify_undeclared_module_tables(_usess)
+                await _usess.commit()
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Company backup declaration check skipped (non-fatal)", exc_info=True)
 
     # Expired backup uploads and downloads a stopped process left behind are removed, and
     # so are the attachment files of a company restore that stopped before it committed,
@@ -412,37 +519,6 @@ async def _serve(_app: FastAPI, held):
     # payments close for good, a kept one's reopen). Until then they stay closed.
     from celerp.services.payments import reconcile_payments_loop
     background = [asyncio.create_task(reconcile_payments_loop())]
-
-    # One-time backfill: stamp the status→document pairing on items sold, memo'd,
-    # or consigned in before that field shipped, so their inventory status links
-    # to its document. Marker-gated (runs once); non-fatal like the guard above.
-    try:
-        from celerp.db import LifecycleSessionLocal as _BackfillSession
-        from celerp.services.status_doc_backfill import run_status_doc_backfill
-        async with _BackfillSession() as _bf_sess:
-            await run_status_doc_backfill(_bf_sess)
-            await _bf_sess.commit()
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "Status-doc backfill failed (non-fatal); pre-existing sold/memo items "
-            "may show their status without a document link until a later boot"
-        )
-
-    # One-time backfill: post the missing COGS JE for invoices finalized before
-    # COGS moved into the finalize JE and never fulfilled since. Marker-gated
-    # (runs once; retries stragglers while any doc is locked or errored);
-    # non-fatal like the backfill above.
-    try:
-        from celerp.db import LifecycleSessionLocal as _CogsSession
-        from celerp.services.cogs_backfill import run_cogs_backfill
-        async with _CogsSession() as _cogs_sess:
-            await run_cogs_backfill(_cogs_sess)
-            await _cogs_sess.commit()
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "COGS backfill failed (non-fatal); affected invoices keep their "
-            "missing COGS until a later boot retries"
-        )
 
     # A partner-packaged install with an unconsumed deployment credential
     # associates with its partner through the explicit relay seam before the
@@ -513,20 +589,26 @@ async def _serve(_app: FastAPI, held):
         outbound_queue_loop,
     )
     await adopt_legacy_connector_configs()
-    background.append(asyncio.create_task(outbound_queue_loop()))
-
-    # Connector reconciliation scheduler: a daily incremental sync per connector,
-    # backstopping any realtime webhooks missed while offline. No-op without a
-    # relay session (self-hosted instances skip token fetch).
     from celerp.connectors.daily_scheduler import scheduler_loop_all
     from celerp.connectors.relay_token import fetch_context as _connector_token_fetcher
-    background.append(asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher)))
-
-    # Reorder low-stock alert scheduler: a daily per-company scan that notifies
-    # once per dip when items reach their reorder point (no-op for companies with
-    # alerts disabled or no reorder points set).
     from celerp.services.reorder import reorder_alert_loop
-    background.append(asyncio.create_task(reorder_alert_loop()))
+    # Outbound stock delivery, the daily connector reconciliation and the reorder
+    # alerts all read the projections to change data or tell other systems, so
+    # none starts while they are not current; the next start that brings them
+    # current starts them.
+    if data_current:
+        background += [
+            # Near-real-time outbound stock delivery.
+            asyncio.create_task(outbound_queue_loop()),
+            # Connector reconciliation: a daily incremental sync per connector,
+            # backstopping any realtime webhooks missed while offline. No-op without
+            # a relay session (self-hosted instances skip token fetch).
+            asyncio.create_task(scheduler_loop_all(token_fetcher=_connector_token_fetcher)),
+            # Reorder low-stock alerts: a daily per-company scan that notifies once
+            # per dip when items reach their reorder point (no-op for companies with
+            # alerts disabled or no reorder points set).
+            asyncio.create_task(reorder_alert_loop()),
+        ]
 
     # Update checks: reports the last update attempt once, then checks hourly and,
     # when automatic updates are on, installs overnight in the owner's time zone.

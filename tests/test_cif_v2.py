@@ -182,3 +182,20 @@ def test_a_migration_item_starts_only_in_a_status_the_item_writer_accepts():
     for lifecycle in ("memo_out", "production", "sold", "void", "merged"):
         with pytest.raises(ValidationError, match="status"):
             CIFItem.model_validate({**item, "status": lifecycle})
+
+
+@pytest.mark.parametrize("expected,actual,shown", [
+    ("57.00", "57.0", ("57.00", "57.00", "0.00")),
+    ("57.0", "57.125", ("57.000", "57.125", "0.125")),
+    ("12", "12", ("12", "12", "0")),
+])
+def test_a_verify_row_writes_its_three_figures_to_the_same_decimal_places(expected, actual, shown):
+    """The source figure, Celerp's figure and their difference are written to one
+    number of decimal places, the most any of them carries, so the verify table never
+    shows 57.00 beside 57.0 and never hides a difference by rounding it away."""
+    from celerp.services.migrations import _row
+
+    row = _row(ReconciliationExpectation(measure=ReconciliationMeasure.BANK_CASH, key="bank-1",
+                                         currency="USD", expected=Decimal(expected),
+                                         tolerance=CIFTolerance(kind="exact")), Decimal(actual))
+    assert (row["source"], row["celerp"], row["difference"]) == shown
