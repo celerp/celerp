@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "Unknown error",
   "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships.",
   "docs.void_already_void": "This document is already void. To bring it back, unvoid it.",
-  "docs.unvoid_not_void": "This document is not void, so there is nothing to unvoid."
+  "docs.unvoid_not_void": "This document is not void, so there is nothing to unvoid.",
+  "doc_import.settlement_not_issued": "Document {number} is {status} but says it was paid. A {status} document holds no payment: import it as issued, or import it without the paid amount.",
+  "docs.payment_not_issued": "Document {number} is {status}, so it cannot take a payment. Payments are recorded on issued documents: finalize a draft, or unvoid a void document, first.",
+  "docs.payment_status_refused": "Document {number} is {status}, so it cannot take a payment.",
+  "docs.bulk_payment_none_payable": "None of these documents awaits payment. Choose issued documents that still owe money."
 }

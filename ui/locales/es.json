@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "Error desconocido",
   "documents.cost_moved_with_goods": "El lote {sku} estaba reservado para la factura {doc}. El costo de la factura {doc} se registrará cuando se envíe.",
   "docs.void_already_void": "Este documento ya está anulado. Para recuperarlo, deshaga la anulación.",
-  "docs.unvoid_not_void": "Este documento no está anulado, así que no hay anulación que deshacer."
+  "docs.unvoid_not_void": "Este documento no está anulado, así que no hay anulación que deshacer.",
+  "doc_import.settlement_not_issued": "El documento {number} está en {status} pero indica que fue pagado. Un documento en {status} no tiene pagos: impórtelo como emitido o sin el importe pagado.",
+  "docs.payment_not_issued": "El documento {number} está en {status}, así que no puede recibir un pago. Los pagos se registran en documentos emitidos: primero finalice el borrador o deshaga la anulación del documento anulado.",
+  "docs.payment_status_refused": "El documento {number} está en {status}, así que no puede recibir un pago.",
+  "docs.bulk_payment_none_payable": "Ninguno de estos documentos espera un pago. Elija documentos emitidos que aún tengan saldo pendiente."
 }

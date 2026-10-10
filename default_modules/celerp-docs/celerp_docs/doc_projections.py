@@ -55,6 +55,11 @@ def _recalc_list_totals(state: dict) -> dict:
     return state
 
 
+# A document in one of these statuses was never issued, or no longer stands: it holds no
+# payment, and nothing it is paid makes it read as paid.
+UNISSUED_STATUSES = frozenset({"draft", "void"})
+
+
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
     """Return document-currency paid and outstanding balances. Goods sent back to the supplier
     owe nothing: what their return took off accounts payable (``returned_credit``) comes off
@@ -163,6 +168,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
         current.setdefault("files", [])
+        if current["status"] in UNISSUED_STATUSES and (current.get("amount_paid") or current.get("payments")):
+            # An older import could store a draft or void document as paid; no payment was
+            # ever recorded on it, so it holds none.
+            current["amount_paid"] = 0.0
+            current.pop("payments", None)
+            _, outstanding = _payment_balances(current, 0)
+            current["amount_outstanding"] = 0.0 if current["status"] == "void" else to_stored_float(outstanding)
     elif event_type == "doc.pushed":
         # Outbound write-back: record the id the platform returned so this doc is never
         # pushed (created) there again. Field matches list_unsynced_invoices' skip check.
@@ -294,8 +306,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         paid, outstanding = _payment_balances(
             current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
         current["amount_paid"] = to_stored_float(paid)
-        current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = payment_status(current, paid, outstanding)
+        # A draft or void document never reads as paid: the payment stays on record (so it
+        # can be voided) and the document keeps its own status. A void one owes nothing.
+        if current.get("status", "draft") not in UNISSUED_STATUSES:
+            current["amount_outstanding"] = to_stored_float(outstanding)
+            current["status"] = payment_status(current, paid, outstanding)
+        elif current.get("status") == "draft":
+            current["amount_outstanding"] = to_stored_float(outstanding)
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({

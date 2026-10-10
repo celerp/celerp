@@ -33,7 +33,7 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import buy_consignment
 from celerp_docs.doc_money import document_money
-from celerp_docs.doc_projections import payment_status, received_line_index
+from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status, received_line_index
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
@@ -1118,6 +1118,20 @@ def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) 
 # The statuses in which a document takes a payment (apply_doc_payment).
 PAYABLE_STATUSES = frozenset({"sent", "final", "partial", "paid", "received", "partially_received",
                               "partial_returned", "returned", "awaiting_payment"})
+
+
+def not_payable(state: dict) -> dict:
+    """The refusal of a payment on a document whose status takes none: a draft is issued
+    first, a void document unvoided first."""
+    number = str(state.get("doc_number") or state.get("ref_id") or "")
+    status = str(state.get("status") or "draft")
+    if status in UNISSUED_STATUSES:
+        return refusal("docs.payment_not_issued",
+                       f"Document {number} is {status}, so it cannot take a payment. Payments are recorded on "
+                       f"issued documents: finalize a draft, or unvoid a void document, first.",
+                       number=number, status=status)
+    return refusal("docs.payment_status_refused",
+                   f"Document {number} is {status}, so it cannot take a payment.", number=number, status=status)
 
 
 def _payable_balance(state: dict) -> Decimal:
@@ -2695,12 +2709,20 @@ async def check_imported_snapshot(session, company_id, entity_id: str, data: dic
     anything is written: more paid (refunded, on a credit note) than its total or less than
     0, which no posting could book without inventing a figure, or a credit note in another
     currency or rate than its invoice, refused as creating one is (credit_note_currency),
-    whichever of the two comes in first. Shared by the single and the batch import."""
+    whichever of the two comes in first. A draft or void document that says it was paid
+    is refused too: only an issued document holds a payment. Shared by the single and the
+    batch import."""
     doc_type = data.get("doc_type")
-    if doc_type not in ("invoice", "credit_note"):
-        return
     currency = str(data.get("currency") or base_currency).upper()
     number = str(data.get("doc_number") or data.get("ref_id") or entity_id.removeprefix("doc:"))
+    status = str(data.get("status") or "draft")
+    if status in UNISSUED_STATUSES and (to_decimal(data.get("amount_paid") or 0) != 0 or data.get("payments")):
+        raise HTTPException(status_code=422, detail=refusal(
+            "doc_import.settlement_not_issued",
+            f"Document {number} is {status} but says it was paid. A {status} document holds no payment: "
+            f"import it as issued, or import it without the paid amount.", number=number, status=status))
+    if doc_type not in ("invoice", "credit_note"):
+        return
     paid = round_money(to_decimal(data.get("amount_paid") or 0), currency)
     total = round_money(to_decimal(data.get("total") or 0), currency)
     params = {"number": number, "paid": f"{paid} {currency}", "total": f"{total} {currency}"}
@@ -3384,7 +3406,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
         raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
     if doc_state.get("status") not in PAYABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Cannot record payment in current status")
+        raise HTTPException(status_code=409, detail=not_payable(doc_state))
     # Replay guard for referenced (online) payments: the same Stripe intent
     # delivered twice records exactly once.
     reference = body.get("reference")
@@ -4332,13 +4354,19 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
         raise HTTPException(status_code=422, detail="All documents must belong to the same contact")
 
     payable = []
+    refused: list[dict] = []
     for doc_id, state in docs:
+        if state.get("status") in UNISSUED_STATUSES:
+            refused.append({"doc_id": doc_id, "reason": not_payable(state)})
+            continue
         if not (is_awaiting_payment(state.get("doc_type"), state.get("status")) and is_owed(state)):
             continue
         currency = str(state.get("currency") or "USD").upper()
         payable.append((doc_id, state, currency, _payable_balance(state)))
     if not payable:
-        raise HTTPException(status_code=409, detail="No documents in payable status")
+        raise HTTPException(status_code=409, detail=refused[0]["reason"] if len(refused) == 1 else refusal(
+            "docs.bulk_payment_none_payable",
+            "None of these documents awaits payment. Choose issued documents that still owe money."))
 
     currencies = {currency for _, _, currency, _ in payable}
     if len(currencies) != 1:
@@ -4362,7 +4390,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
 
     remaining = tender
     allocations = []
-    skipped: list[dict] = []
+    skipped: list[dict] = list(refused)
     for doc_id, _state, _, outstanding in payable:
         if remaining <= 0:
             break

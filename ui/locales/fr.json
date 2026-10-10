@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "Erreur inconnue",
   "documents.cost_moved_with_goods": "Le lot {sku} était réservé à la facture {doc}. Le coût de la facture {doc} sera comptabilisé à son expédition.",
   "docs.void_already_void": "Ce document est déjà annulé. Pour le rétablir, annulez l'annulation.",
-  "docs.unvoid_not_void": "Ce document n'est pas annulé, il n'y a donc aucune annulation à défaire."
+  "docs.unvoid_not_void": "Ce document n'est pas annulé, il n'y a donc aucune annulation à défaire.",
+  "doc_import.settlement_not_issued": "Le document {number} est {status} mais indique qu'il a été payé. Un document {status} ne porte aucun paiement : importez-le comme émis, ou sans le montant payé.",
+  "docs.payment_not_issued": "Le document {number} est {status} et ne peut donc pas recevoir de paiement. Les paiements sont enregistrés sur des documents émis : finalisez d'abord le brouillon, ou annulez l'annulation du document annulé.",
+  "docs.payment_status_refused": "Le document {number} est {status} et ne peut donc pas recevoir de paiement.",
+  "docs.bulk_payment_none_payable": "Aucun de ces documents n'attend de paiement. Choisissez des documents émis qui ont encore un solde dû."
 }

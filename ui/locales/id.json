@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "Kesalahan tidak diketahui",
   "documents.cost_moved_with_goods": "Lot {sku} disisihkan untuk faktur {doc}. Biaya faktur {doc} akan dicatat saat dikirim.",
   "docs.void_already_void": "Dokumen ini sudah dibatalkan. Untuk memulihkannya, batalkan pembatalannya.",
-  "docs.unvoid_not_void": "Dokumen ini tidak dibatalkan, jadi tidak ada pembatalan yang perlu diurungkan."
+  "docs.unvoid_not_void": "Dokumen ini tidak dibatalkan, jadi tidak ada pembatalan yang perlu diurungkan.",
+  "doc_import.settlement_not_issued": "Dokumen {number} berstatus {status} tetapi menyatakan sudah dibayar. Dokumen {status} tidak memuat pembayaran: impor sebagai dokumen terbit, atau impor tanpa jumlah yang dibayar.",
+  "docs.payment_not_issued": "Dokumen {number} berstatus {status}, jadi tidak dapat menerima pembayaran. Pembayaran dicatat pada dokumen terbit: finalisasi draf, atau batalkan pembatalan dokumen yang dibatalkan, terlebih dahulu.",
+  "docs.payment_status_refused": "Dokumen {number} berstatus {status}, jadi tidak dapat menerima pembayaran.",
+  "docs.bulk_payment_none_payable": "Tidak ada dokumen ini yang menunggu pembayaran. Pilih dokumen terbit yang masih memiliki saldo terutang."
 }

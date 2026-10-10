@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "Errore sconosciuto",
   "documents.cost_moved_with_goods": "Il lotto {sku} era riservato alla fattura {doc}. Il costo della fattura {doc} sarà registrato alla spedizione.",
   "docs.void_already_void": "Questo documento è già annullato. Per ripristinarlo, revoca l'annullamento.",
-  "docs.unvoid_not_void": "Questo documento non è annullato, quindi non c'è alcun annullamento da revocare."
+  "docs.unvoid_not_void": "Questo documento non è annullato, quindi non c'è alcun annullamento da revocare.",
+  "doc_import.settlement_not_issued": "Il documento {number} è {status} ma risulta pagato. Un documento {status} non contiene pagamenti: importalo come emesso, oppure senza l'importo pagato.",
+  "docs.payment_not_issued": "Il documento {number} è {status}, quindi non può ricevere un pagamento. I pagamenti si registrano su documenti emessi: prima finalizza la bozza o revoca l'annullamento del documento annullato.",
+  "docs.payment_status_refused": "Il documento {number} è {status}, quindi non può ricevere un pagamento.",
+  "docs.bulk_payment_none_payable": "Nessuno di questi documenti è in attesa di pagamento. Scegli documenti emessi con un saldo ancora da pagare."
 }

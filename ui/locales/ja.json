@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "不明なエラー",
   "documents.cost_moved_with_goods": "ロット {sku} は請求書 {doc} 用に確保されていました。請求書 {doc} の原価は出荷時に計上されます。",
   "docs.void_already_void": "この書類はすでに無効です。元に戻すには、無効を取り消してください。",
-  "docs.unvoid_not_void": "この書類は無効になっていないため、取り消す無効はありません。"
+  "docs.unvoid_not_void": "この書類は無効になっていないため、取り消す無効はありません。",
+  "doc_import.settlement_not_issued": "書類 {number} は {status} ですが、支払済みとなっています。{status} の書類は支払を持てません。発行済みとしてインポートするか、支払額なしでインポートしてください。",
+  "docs.payment_not_issued": "書類 {number} は {status} のため、支払を受けられません。支払は発行済みの書類に記録します。先に下書きを確定するか、無効の書類の無効を取り消してください。",
+  "docs.payment_status_refused": "書類 {number} は {status} のため、支払を受けられません。",
+  "docs.bulk_payment_none_payable": "これらの書類に支払待ちのものはありません。未払残高のある発行済みの書類を選んでください。"
 }

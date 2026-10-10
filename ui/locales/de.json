@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "Unbekannter Fehler",
   "documents.cost_moved_with_goods": "Los {sku} war für Rechnung {doc} zurückgelegt. Die Kosten von Rechnung {doc} werden beim Versand gebucht.",
   "docs.void_already_void": "Dieses Dokument ist bereits storniert. Um es wiederherzustellen, heben Sie die Stornierung auf.",
-  "docs.unvoid_not_void": "Dieses Dokument ist nicht storniert, daher gibt es keine Stornierung aufzuheben."
+  "docs.unvoid_not_void": "Dieses Dokument ist nicht storniert, daher gibt es keine Stornierung aufzuheben.",
+  "doc_import.settlement_not_issued": "Dokument {number} ist {status}, gibt aber an, bezahlt zu sein. Ein Dokument im Status {status} enthält keine Zahlung: Importieren Sie es als ausgestellt oder ohne den bezahlten Betrag.",
+  "docs.payment_not_issued": "Dokument {number} ist {status} und kann daher keine Zahlung annehmen. Zahlungen werden auf ausgestellten Dokumenten erfasst: Schließen Sie zuerst einen Entwurf ab oder heben Sie die Stornierung eines stornierten Dokuments auf.",
+  "docs.payment_status_refused": "Dokument {number} ist {status} und kann daher keine Zahlung annehmen.",
+  "docs.bulk_payment_none_payable": "Keines dieser Dokumente wartet auf Zahlung. Wählen Sie ausgestellte Dokumente, die noch offen sind."
 }

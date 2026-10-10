@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "ያልታወቀ ስህተት",
   "documents.cost_moved_with_goods": "ሎት {sku} ለደረሰኝ {doc} ተይዞ ነበር። የደረሰኝ {doc} ወጪ ሲላክ ይሰላል።",
   "docs.void_already_void": "ይህ ሰነድ አስቀድሞ ተሰርዟል። እንደገና ለመመለስ፣ ስረዛውን ይቀልብሱ።",
-  "docs.unvoid_not_void": "ይህ ሰነድ አልተሰረዘም፣ ስለዚህ የሚቀለበስ ስረዛ የለም።"
+  "docs.unvoid_not_void": "ይህ ሰነድ አልተሰረዘም፣ ስለዚህ የሚቀለበስ ስረዛ የለም።",
+  "doc_import.settlement_not_issued": "ሰነድ {number} {status} ነው ግን እንደተከፈለ ይገልጻል። {status} ሰነድ ክፍያ አይይዝም፦ እንደተሰጠ ያስገቡት፣ ወይም ያለ የተከፈለው መጠን ያስገቡት።",
+  "docs.payment_not_issued": "ሰነድ {number} {status} ነው፣ ስለዚህ ክፍያ ሊቀበል አይችልም። ክፍያዎች በተሰጡ ሰነዶች ላይ ይመዘገባሉ፦ መጀመሪያ ረቂቁን ያጠናቅቁ፣ ወይም የተሰረዘውን ሰነድ ስረዛ ይቀልብሱ።",
+  "docs.payment_status_refused": "ሰነድ {number} {status} ነው፣ ስለዚህ ክፍያ ሊቀበል አይችልም።",
+  "docs.bulk_payment_none_payable": "ከእነዚህ ሰነዶች አንዳቸውም ክፍያ አይጠብቁም። አሁንም ገንዘብ ያለባቸውን የተሰጡ ሰነዶች ይምረጡ።"
 }

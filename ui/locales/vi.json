@@ -4621,5 +4621,9 @@
   "shell.unknown_error": "Lỗi không xác định",
   "documents.cost_moved_with_goods": "Lô {sku} đã được giữ cho hóa đơn {doc}. Giá vốn của hóa đơn {doc} sẽ được ghi nhận khi giao hàng.",
   "docs.void_already_void": "Chứng từ này đã bị hủy. Để khôi phục, hãy bỏ hủy chứng từ.",
-  "docs.unvoid_not_void": "Chứng từ này chưa bị hủy, nên không có gì để bỏ hủy."
+  "docs.unvoid_not_void": "Chứng từ này chưa bị hủy, nên không có gì để bỏ hủy.",
+  "doc_import.settlement_not_issued": "Chứng từ {number} ở trạng thái {status} nhưng ghi là đã thanh toán. Chứng từ {status} không có khoản thanh toán: hãy nhập như chứng từ đã phát hành, hoặc nhập không kèm số tiền đã trả.",
+  "docs.payment_not_issued": "Chứng từ {number} ở trạng thái {status} nên không thể nhận thanh toán. Thanh toán được ghi trên chứng từ đã phát hành: hãy hoàn tất bản nháp, hoặc bỏ hủy chứng từ đã hủy, trước.",
+  "docs.payment_status_refused": "Chứng từ {number} ở trạng thái {status} nên không thể nhận thanh toán.",
+  "docs.bulk_payment_none_payable": "Không chứng từ nào trong số này đang chờ thanh toán. Hãy chọn chứng từ đã phát hành còn số dư phải trả."
 }
