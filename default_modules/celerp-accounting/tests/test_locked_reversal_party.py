@@ -86,6 +86,15 @@ async def _journal(client, tok) -> dict[str, dict]:
     return {e["je_id"]: e for e in r.json()["entries"]}
 
 
+async def _aging(client, tok, code: str, party: str) -> float:
+    """What the aging report shows outstanding for one party: AR aging for the
+    receivable, AP aging for the payable. The report takes no as-of date."""
+    kind, key = ("ar", "customer_id") if code == AR else ("ap", "supplier_id")
+    r = await client.get(f"/reports/{kind}-aging", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    return sum(line["total"] for line in r.json()["lines"] if line[key] == party)
+
+
 def _doc_lines(ledger: dict, doc: str) -> list[dict]:
     return [line for line in ledger["lines"] if line["je_id"].startswith(f"je:auto:{doc}:")]
 
@@ -121,6 +130,8 @@ async def _assert_party_reconciles(client, tok, code: str, doc: str, party: str,
     total = sum([(await _ledger(client, tok, code, contact_id=p))["closing_balance"] for p in parties])
     assert abs(total - whole["closing_balance"]) < 0.01
 
+    assert await _aging(client, tok, code, party) == 0, f"{party} has nothing outstanding in aging"
+
     # The locked period still shows the original amount on the party.
     before = await _ledger(client, tok, code, contact_id=party, date_to=LOCK)
     assert abs(abs(before["closing_balance"]) - amount) < 0.01, before
@@ -133,6 +144,7 @@ async def test_a_voided_locked_invoice_reverses_on_its_customer(client):
     customer = await _contact(client, tok, "Buyer", "customer")
     doc = await _finalized(client, tok, "invoice", customer, 400.0)
     await _lock(client, tok)
+    assert await _aging(client, tok, AR, customer) == 400.0, "aged while it is owed"
     await _void(client, tok, doc)
     await _tb(client, tok)
     await _assert_party_reconciles(client, tok, AR, doc, customer, 400.0)
@@ -145,6 +157,7 @@ async def test_a_voided_locked_bill_reverses_on_its_supplier(client):
     supplier = await _contact(client, tok, "Vendor", "vendor")
     doc = await _finalized(client, tok, "bill", supplier, 250.0)
     await _lock(client, tok)
+    assert await _aging(client, tok, AP, supplier) == 250.0, "aged while it is owed"
     await _void(client, tok, doc)
     await _tb(client, tok)
     await _assert_party_reconciles(client, tok, AP, doc, supplier, 250.0)
@@ -155,6 +168,7 @@ async def test_a_voided_locked_credit_note_reverses_on_its_customer(client):
     customer = await _contact(client, tok, "Returner", "customer")
     doc = await _finalized(client, tok, "credit_note", customer, 60.0)
     await _lock(client, tok)
+    assert await _aging(client, tok, AR, customer) == 0, "AR aging ages invoices, not credit notes"
     await _void(client, tok, doc)
     await _tb(client, tok)
     await _assert_party_reconciles(client, tok, AR, doc, customer, 60.0)
