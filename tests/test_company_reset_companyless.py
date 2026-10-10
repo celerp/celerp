@@ -31,6 +31,7 @@ START = "/auth/start-company"
 READ = "/company-backups/start-company/read"
 RESTORE = "/company-backups/start-company/restore"
 HAS_COMPANY = t("auth.has_company", "en")
+OTHER_RESTORE_RUNNING = t(OTHER_RESTORE_RUNNING, "en")
 
 
 def _relay(monkeypatch):
