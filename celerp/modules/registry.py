@@ -130,9 +130,14 @@ def dependency_closure(names) -> list[str]:
     return _install_closure(sorted(names))
 
 
+def uses_own_list(company_settings: dict[str, Any] | None) -> bool:
+    """Whether the company has chosen its own set (otherwise it uses the installation's list)."""
+    return bool(company_settings) and _SETTINGS_KEY in company_settings
+
+
 def company_modules(company_settings: dict[str, Any] | None) -> set[str]:
     """The company's set, starting from the installation's list on a first choice."""
-    if company_settings and _SETTINGS_KEY in company_settings:
+    if uses_own_list(company_settings):
         return get_enabled(company_settings)
     return set(_configured_load_set())
 

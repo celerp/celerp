@@ -115,6 +115,16 @@ def _require(r: httpx.Response, what: str) -> httpx.Response:
     return r
 
 
+def _require_imported(r: httpx.Response, what: str) -> None:
+    """An import answers 200 even when it refuses its rows, so a row counts as created
+    only when the response says so; anything else stops the seed with the reason."""
+    _require(r, what)
+    body = r.json()
+    if body.get("created") != 1 or body.get("errors"):
+        print(f"Seeding failed at {what}: {body.get('errors') or body}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _rows(r: httpx.Response) -> list[dict]:
     return r.json()["items"]
 
@@ -145,12 +155,12 @@ async def seed_items(client: httpx.AsyncClient, token: str) -> list[str]:
             "data": {
                 "sku": sku, "name": name, "category": category,
                 "quantity": qty, "cost_total": cost * qty, "retail_price": retail,
-                "wholesale_price": wholesale, "status": "available",
+                "wholesale_price": wholesale, "status": "available", "sell_by": "piece",
             },
             "source": "seed",
             "idempotency_key": f"seed:item:{sku}",
         }]
-        _require(await client.post("/items/import/batch", json={"records": records}, headers=headers), f"item {sku}")
+        _require_imported(await client.post("/items/import/batch", json={"records": records}, headers=headers), f"item {sku}")
         entity_ids.append(eid)
         created += 1
     print(f"Items: {created} created, {skipped} skipped")
@@ -197,7 +207,7 @@ async def _advance(client: httpx.AsyncClient, headers: dict, doc_id: str, steps:
             if outstanding > 0:
                 _require(await client.post(f"/docs/{doc_id}/payment", json={
                     "amount": outstanding, "payment_date": doc.get("date") or date.today().isoformat(),
-                    "bank_account": "1110", "idempotency_key": f"{key}:payment",
+                    "bank_account": "1111", "idempotency_key": f"{key}:payment",
                 }, headers=headers), f"recording payment on {key}")
 
 

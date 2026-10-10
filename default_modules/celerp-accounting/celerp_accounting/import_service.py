@@ -17,13 +17,21 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal
 from celerp.events.engine import emit_event
 from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.company_lock import lock_chart
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
 from ui.i18n import t
+from celerp_accounting.chart_rules import (
+    check_new_account,
+    checked_account_code,
+    checked_account_name,
+    checked_account_type,
+)
 
 JOURNAL_CREATED = "acc.journal_entry.created"
 
@@ -141,13 +149,21 @@ async def create_chart_account(
     parent_code: str | None,
     cash_flow_category: str | None = None,
     is_active: bool = True,
+    code_generated: bool = False,
 ) -> Account:
-    """Add one chart-of-accounts row; an account code already in use is refused."""
+    """Add one chart-of-accounts row; an account code already in use is refused, and
+    so is a parent the new account cannot sit under. ``code_generated`` marks a code an
+    importer made up because the source account had none."""
+    # Under the chart lock, so a second add of the same code waits for the first and
+    # then sees it, instead of failing on the unique index.
+    await lock_chart(session, company_id)
     existing = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
     if existing:
-        raise HTTPException(status_code=409, detail=t("error.account_code_used", code=code))
+        raise HTTPException(status_code=409, detail=refusal(
+            "chart.code_exists", f"Account code {code} already exists", code=code))
+    await check_new_account(session, company_id, account_type=account_type, parent_code=parent_code)
     acc = Account(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -157,38 +173,41 @@ async def create_chart_account(
         parent_code=parent_code,
         cash_flow_category=cash_flow_category,
         is_active=is_active,
+        code_generated=code_generated,
     )
     session.add(acc)
     return acc
 
 
-async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -> str:
-    """The next free bank code under 1110, with no limit on how many there are.
-
-    The first nine are 1111 to 1119. After those come 1119-0010, 1119-0011, ...: the
-    leading number stays a bank code (range tests read it), and the zero-padded
-    suffix keeps every bank code sorting in the order the accounts were added, all
-    before 1120. Past 9,999 bank accounts the codes stay unique and valid but no
-    longer sort in that order."""
-    used = set(
-        (
-            await session.execute(
-                select(Account.code).where(
-                    Account.company_id == company_id,
-                    Account.code.like("111%"),
-                )
-            )
-        ).scalars().all()
-    )
-    n = 1
-    while _bank_code(n) in used:
-        n += 1
-    return _bank_code(n)
+async def add_posting_account(
+    session: AsyncSession, company_id: uuid.UUID, *, code: str, name: str, account_type: str,
+) -> None:
+    """A top-level account added through ``ChartAccess.add_account``, checked as an
+    account added in Settings is."""
+    await create_chart_account(session, company_id, code=checked_account_code(code),
+                               name=checked_account_name(name),
+                               account_type=checked_account_type(account_type), parent_code=None)
+    await session.flush()
 
 
-def _bank_code(n: int) -> str:
-    """The *n*th automatic bank code (see next_bank_account_code)."""
-    return f"111{n}" if n < 10 else f"1119-{n:04d}"
+async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID, parent_code: str | None) -> str:
+    """The first free code numbered beneath ``parent_code``: 1111, 1112, ... under
+    1110; 1015-1, 1015-2, ... under a code not ending in 0; BANK-1, BANK-2, ... for
+    a bank with no parent account."""
+    if not parent_code:
+        stem = "BANK-"
+    elif parent_code.isdigit() and parent_code.endswith("0"):
+        stem = parent_code[:-1]
+    else:
+        stem = f"{parent_code}-"
+    used = set((await session.execute(
+        select(Account.code).where(Account.company_id == company_id, Account.code.like(f"{stem}%"))
+    )).scalars().all())
+    for i in range(1, 100):
+        code = f"{stem}{i}"
+        if code not in used:
+            return code
+    raise HTTPException(status_code=400, detail=f"No available account codes under {parent_code}")
 
 
 async def add_bank_account(
@@ -196,6 +215,7 @@ async def add_bank_account(
     company_id: uuid.UUID,
     *,
     code: str,
+    parent_code: str | None,
     account_name: str,
     bank_name: str,
     account_number: str,
@@ -203,8 +223,8 @@ async def add_bank_account(
     currency: str,
     opening_balance: float,
 ) -> BankAccount:
-    """A bank account and, when its chart code is new, its chart row under 1110. An
-    existing chart code must be an active asset account."""
+    """A bank account and, when its chart code is new, its chart row under ``parent_code``.
+    An existing chart code must be an active asset account."""
     existing_acc = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
@@ -212,7 +232,7 @@ async def add_bank_account(
         await require_money_account(session, company_id, code)
     else:
         await create_chart_account(
-            session, company_id, code=code, name=account_name, account_type="asset", parent_code="1110",
+            session, company_id, code=code, name=account_name, account_type="asset", parent_code=parent_code,
         )
     bank = BankAccount(
         id=uuid.uuid4(),

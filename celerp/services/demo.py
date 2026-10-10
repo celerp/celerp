@@ -1589,6 +1589,31 @@ def reconcile_vertical_defaults(settings: dict, previous_vertical: str | None, t
     return out
 
 
+# The operation the sample stock is booked and removed under. It names no sample item:
+# a record mentioning one marks that item used (_untouched_demo_items).
+_SAMPLE_STOCK = "sample-stock"
+
+
+async def has_own_books(session: AsyncSession, company_id: uuid.UUID) -> bool:
+    """True once the company has posted a journal entry of its own, any entry other
+    than the sample stock setup booked or the removal of those samples. An entry posted
+    and later voided was posted: its void keeps it in the books."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    operation = sa.func.coalesce(LedgerEntry.metadata_["operation"].as_string(), "")
+    return (await session.scalar(sa.select(Projection.entity_id).join(LedgerEntry, sa.and_(
+        LedgerEntry.company_id == Projection.company_id, LedgerEntry.entity_id == Projection.entity_id,
+        LedgerEntry.event_type == "acc.journal_entry.created",
+    )).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.state["status"].as_string().in_(("posted", "void")),
+        operation != _SAMPLE_STOCK,
+    ).limit(1))) is not None
+
+
 async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
     """Every item the demo seeder created for the company, touched or not."""
     import sqlalchemy as sa
@@ -1603,12 +1628,49 @@ async def demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[st
     )).scalars().all())
 
 
+async def _not_sample_fixtures(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> set[str]:
+    """The given ids holding a ledger row that is not a sample fixture: anything other
+    than a row the demo seeder wrote or the books recording where its stock sits."""
+    import sqlalchemy as sa
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.lot_origin import KEPT, RECORDED
+
+    return set((await session.execute(
+        sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(entity_ids),
+            LedgerEntry.source != "demo",
+            LedgerEntry.event_type.not_in((RECORDED, KEPT)),
+        ).distinct()
+    )).scalars().all())
+
+
 async def delete_demo_items(session: AsyncSession, company_id: uuid.UUID, entity_ids: list[str]) -> None:
-    """Remove the given items completely: their projection and every ledger row.
+    """Remove the given sample items completely: their projection and every ledger row,
+    after taking the stock they hold off the books (lot_origin.remove_opening_lots).
 
-    Runs inside the caller's transaction and does not commit."""
-    from celerp.services.item_erasure import erase_items
+    Only sample fixtures go: an item holding any other record is refused
+    (``demo.not_sample_fixture``), and so is one with history inside the locked period
+    (item_erasure.require_unlocked_history). Runs inside the caller's transaction and does
+    not commit."""
+    from fastapi import HTTPException
 
+    from celerp.accounting_roles import refusal
+    from celerp.services.item_erasure import erase_items, require_unlocked_history
+    from celerp.services.lot_origin import remove_opening_lots
+
+    if not entity_ids:
+        return
+    other = await _not_sample_fixtures(session, company_id, entity_ids)
+    if other:
+        raise HTTPException(status_code=409, detail=refusal(
+            "demo.not_sample_fixture",
+            f"Nothing was erased. {len(other)} of the selected items hold records that are not sample "
+            "data, so they are not removed as samples. Open each item and use Delete, Archive or "
+            "Write Off Stock instead.",
+            count=len(other)))
+    await require_unlocked_history(session, company_id, entity_ids)
+    await remove_opening_lots(session, company_id, entity_ids, None, _SAMPLE_STOCK)
     await erase_items(session, company_id, entity_ids)
 
 
@@ -1616,40 +1678,22 @@ async def _untouched_demo_items(session: AsyncSession, company_id: uuid.UUID, en
     """The demo items that are still exactly as seeded and used nowhere.
 
     An item is touched when any of its ledger rows came from somewhere other than
-    the demo seeder, and used when another record (a document line, a movement, a
-    note) mentions its id or its SKU. Demo ids and SKUs all contain "demo-", so one
-    case-insensitive pass per table finds every candidate mention."""
+    the demo seeder, the books recording where its stock sits aside, and used when
+    another record (a document line, a movement, a note) mentions its id or its SKU
+    (item_erasure.depended_on)."""
     import sqlalchemy as sa
-    from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
+    from celerp.services.item_erasure import depended_on
 
-    touched = set((await session.execute(
-        sa.select(LedgerEntry.entity_id).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.entity_id.in_(entity_ids),
-            LedgerEntry.source != "demo",
-        ).distinct()
-    )).scalars().all())
+    touched = await _not_sample_fixtures(session, company_id, entity_ids)
     skus = dict((await session.execute(
         sa.select(Projection.entity_id, Projection.state["sku"].as_string()).where(
             Projection.company_id == company_id, Projection.entity_id.in_(entity_ids),
         )
     )).all())
-    mentions: list[str] = []
-    for model, column in ((Projection, Projection.state), (LedgerEntry, LedgerEntry.data)):
-        mentions.extend((await session.execute(
-            sa.select(sa.cast(column, sa.Text)).where(
-                model.company_id == company_id,
-                model.entity_id.not_in(entity_ids),
-                sa.cast(column, sa.Text).ilike("%demo-%"),
-            )
-        )).scalars().all())
-
-    def used(entity_id: str) -> bool:
-        needles = [entity_id] + ([f'"{skus[entity_id]}"'] if skus.get(entity_id) else [])
-        return any(needle in text for text in mentions for needle in needles)
-
-    return [eid for eid in entity_ids if eid not in touched and not used(eid)]
+    used = await depended_on(session, company_id, {
+        eid: [eid] + ([f'"{skus[eid]}"'] if skus.get(eid) else []) for eid in entity_ids})
+    return [eid for eid in entity_ids if eid not in touched and eid not in used]
 
 
 async def untouched_demo_item_ids(session: AsyncSession, company_id: uuid.UUID) -> list[str]:
@@ -1661,6 +1705,8 @@ async def untouched_demo_item_ids(session: AsyncSession, company_id: uuid.UUID) 
 
 async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UUID) -> tuple[int, int]:
     """Delete the demo items the user never edited or used; the rest stay as they are.
+    A sample with history inside the locked period stays too, since erasing it would
+    change the locked books (item_erasure.locked_history).
 
     Runs inside the caller's transaction and does not commit. Returns how many demo
     items were deleted and how many were kept.
@@ -1668,10 +1714,13 @@ async def delete_untouched_demo_items(session: AsyncSession, company_id: uuid.UU
     The items are locked before they are checked, so an edit either commits first and
     the check sees it (the item is kept), or waits and finds the item gone."""
     from celerp.services.company_lock import lock_projections
+    from celerp.services.item_erasure import locked_history
 
     demo_ids = await demo_item_ids(session, company_id)
     await lock_projections(session, company_id, demo_ids)
     removable = await _untouched_demo_items(session, company_id, demo_ids) if demo_ids else []
+    _lock, locked = await locked_history(session, company_id, removable)
+    removable = [eid for eid in removable if eid not in locked]
     await delete_demo_items(session, company_id, removable)
     return len(removable), len(demo_ids) - len(removable)
 
@@ -1691,7 +1740,10 @@ async def replace_demo_items(
     not commit. Returns how many demo items were replaced and how many were kept."""
     import sqlalchemy as sa
     from celerp.models.company import Location
+    from celerp.projections.engine import ProjectionEngine
 
+    if not ProjectionEngine.replayable("item.created"):
+        return {"replaced": 0, "kept": 0}  # demo items change only through the loaded Inventory module
     replaced, kept = await delete_untouched_demo_items(session, company_id)
     if replaced:
         default_location = (await session.execute(
@@ -1725,8 +1777,11 @@ async def seed_demo_items(
 ) -> None:
     """Seed vertical-aware demo items and default price lists in company settings.
 
-    A demo SKU already held by an item is skipped, so seeding never duplicates a SKU."""
+    A demo SKU already held by an item is skipped, so seeding never duplicates a SKU.
+    The stock seeded is booked as opening stock (lot_origin.recognize_opening_lots)."""
+    from celerp.projections.engine import ProjectionEngine
     from celerp.services.company_lock import locked_company
+    from celerp.services.lot_origin import recognize_opening_lots
 
     # Seed default price lists into company settings if not already set
     company = await locked_company(session, company_id)
@@ -1746,19 +1801,19 @@ async def seed_demo_items(
         if "terms_conditions" not in settings:
             settings["terms_conditions"] = terms_conditions_for(vertical)
         company.settings = settings
+    if not ProjectionEngine.replayable("item.created"):
+        return  # starter items are written only through the loaded Inventory module
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
     taken = await _skus_in_use(session, company_id, [data["sku"] for data in items])
+    seeded: list[str] = []
     for data in items:
         sku = data["sku"]
         if sku in taken:
             continue
         entity_id = f"item:demo-{uuid.uuid4()}"
         prices = data.get("prices") or {}
-        # Build price fields keyed by lowercase price list name + "_price".
-        # These go directly into the item.created payload so they land at top-level
-        # in projection state even when the inventory module (and its item.pricing.set
-        # handler) is not yet loaded - which is always the case during initial
-        # registration (modules are enabled after the setup wizard completes).
+        # Build price fields keyed by lowercase price list name + "_price", carried in the
+        # item.created payload so each price lands on the item as it is created.
         price_fields = {
             f"{pl_name.lower()}_price": float(pv)
             for pl_name, pv in prices.items()
@@ -1784,7 +1839,7 @@ async def seed_demo_items(
             payload["location_id"] = str(default_location_id)
         # Strip None values to keep event data clean
         payload = {k: v for k, v in payload.items() if v is not None}
-        await emit_event(
+        entry = await emit_event(
             session,
             company_id=company_id,
             entity_id=entity_id,
@@ -1796,6 +1851,8 @@ async def seed_demo_items(
             source="demo",
             idempotency_key=f"demo:item:{company_id}:{sku}",
         )
+        seeded.append(entry.entity_id)
+    await recognize_opening_lots(session, company_id, seeded, actor_id, _SAMPLE_STOCK)
 
 
 async def seed_self_contacts(
@@ -1817,9 +1874,12 @@ async def seed_self_contacts(
     Called from both the initial registration flow and the create-additional-company flow.
     """
     import logging as _logging
+    from celerp.projections.engine import ProjectionEngine
     from celerp.services.company_lock import locked_company
     _log = _logging.getLogger(__name__)
 
+    if not ProjectionEngine.replayable("crm.contact.created"):
+        return  # the own contact is written only through the loaded Contacts module
     entity_id = f"contact:{uuid.uuid4()}"
     try:
         await emit_event(

@@ -110,7 +110,7 @@ async def test_ai_query_requires_session_token(session):
 async def test_ai_query_success(auth_client):
     c, headers = auth_client
     mock_result = AgentResult(answer="You have 3 items.", model_used="claude-haiku-4-5", tools_called=["dashboard_kpis"], pending_actions=[])
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=mock_result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=mock_result)):
         r = await c.post("/ai/query", json={"query": "how many items"}, headers=headers)
     if r.status_code != 200:
         print(f"\nFAIL detail: {r.status_code} {r.text[:300]}")
@@ -125,7 +125,7 @@ async def test_ai_query_success(auth_client):
 async def test_ai_query_error_502(auth_client):
     c, headers = auth_client
     mock_result = AgentResult(answer="", model_used="claude-haiku-4-5", tools_called=[], pending_actions=[], error="API timeout")
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=mock_result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=mock_result)):
         r = await c.post("/ai/query", json={"query": "test"}, headers=headers)
     assert r.status_code == 502
     assert "timeout" in r.json()["detail"]
@@ -223,7 +223,7 @@ async def test_ai_tier_multi_file_allowed(auth_client):
     file_ids = upload.json()["file_ids"]
 
     mocked = AsyncMock(return_value=mock_result)
-    with patch("celerp_ai.routes.run_agent", mocked):
+    with patch("celerp.ai.service.run_agent", mocked):
         r = await c.post(
             "/ai/query",
             json={"query": "process these", "file_ids": file_ids},
@@ -264,7 +264,7 @@ async def test_estimate_credits_is_per_unique_file_not_pages(auth_client):
     c, headers = auth_client
     with (
         patch("celerp_ai.routes._load_file_http") as mock_load,
-        patch("celerp_ai.routes.count_pages", return_value=15),
+        patch("celerp.ai.page_count.count_pages", return_value=15),
     ):
         mock_load.return_value = (b"pdf", {
             "content_type": "application/pdf",

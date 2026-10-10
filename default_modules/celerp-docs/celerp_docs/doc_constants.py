@@ -22,14 +22,37 @@ FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
 # List docs reserve via a separate list-type predicate in routes.py, never through this map.
 RESERVABLE_DOC_STATUSES: dict[str, frozenset[str]] = dict(FULFILLABLE_STATUSES)
 
-# Item statuses that indicate a line item has been fulfilled.
-# Used by revert-to-draft guard (Fix 1) and line-delete guard (Fix 3).
-FULFILLED_ITEM_STATUSES: frozenset[str] = frozenset({"sold", "memo_out"})
+# Per-doc-type allowlist for revert-lines (Set as available on shipped lines): the statuses
+# in which goods this document shipped may be taken back. Draft, void, closed and converted
+# documents are terminal for it. A distinct named map, today equal to the fulfillable set.
+REVERTIBLE_STATUSES: dict[str, frozenset[str]] = dict(FULFILLABLE_STATUSES)
 
 # Doc types where goods are received via POST /receive (creates inventory parcels).
 # These docs must NOT use fulfill-lines / revert-lines — those endpoints are outbound-only.
 # Revert-to-draft for these types allows additional statuses (received, partially_received).
 INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
+
+# Per-doc-type allowlist of the statuses POST /receive takes goods in. An issued purchase
+# document receives in every status its payments and earlier receipts or returns can move it
+# to; a void, closed or converted one receives nothing. A purchase order may receive while
+# still a draft (its receipt books its own entry), and so may a consignment (consigned goods
+# are not owned, so their receipt books nothing); a draft bill has not been issued, so it
+# receives nothing. The finalized view offers Receive Goods from the same map.
+_RECEIVING_STATUSES = frozenset({
+    "final", "sent", "awaiting_payment", "partial", "paid",
+    "received", "partially_received", "partial_returned", "returned",
+})
+RECEIVABLE_STATUSES: dict[str, frozenset[str]] = {
+    "bill": _RECEIVING_STATUSES,
+    "consignment_in": _RECEIVING_STATUSES | {"draft"},
+    "purchase_order": _RECEIVING_STATUSES | {"draft"},
+}
+
+# Statuses a purchase document sends goods back to its supplier in (POST /return-items): once
+# goods have come in on it, and until all of them have gone back.
+SUPPLIER_RETURN_STATUSES: frozenset[str] = frozenset({
+    "received", "partially_received", "partial_returned", "awaiting_payment",
+})
 
 # Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
 # These are recurring template docs - they should never show a fulfill button.
@@ -53,19 +76,19 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
     "customer_id": "contact_id", "customer_name": "contact_name", "receiver": "contact_name",
 }
 
-# State that only lifecycle operations write: finalize, send, payment, receive,
-# fulfil, convert, close and void, plus the record identity the ledger assigns.
+# State that only lifecycle operations write: finalize, send, payment, credit,
+# receive, fulfil, convert, close and void, plus the record identity the ledger assigns.
 # Ordinary creation never carries any of it, since a new document or list is an
 # unpaid draft, and import-upsert never rewrites it. Only the snapshot import
 # routes bring in an issued record, behind their own permission checks.
 LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
-    "status", "finalized", "amount_paid", "amount_outstanding", "payments",
+    "status", "finalized", "amount_paid", "amount_outstanding", "payments", "credited",
     "sent_to", "sent_via", "finalized_at", "sent_at", "issued_at", "accepted_at",
-    "received_items", "received_item_ids", "returned_items", "return_received_items",
+    "received_items", "received_item_ids", "returned_items", "returned_credit", "return_received_items",
     "fulfilled_items", "fulfillment_status", "fulfilled_at", "fulfilled_by", "fulfill_cycle",
-    "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "linked",
+    "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "source_memo_id", "linked",
     "result", "close_reason", "void_reason", "revert_count", "files",
-    "pre_close_status", "pre_void_status", "pre_void_fulfillment",
+    "pre_close_status", "pre_void_status", "pre_void_fulfillment", "pre_receipt_status", "pre_convert_status",
     "entity_type", "company_id", "doc_number",
 })
 
@@ -104,3 +127,8 @@ NON_FINANCIAL_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
 # Statuses where Send is suppressed even for sendable doc types. A closed memo is
 # settled paperwork: re-sending it would silently un-close it, so Send is hidden.
 NO_SEND_STATUSES: frozenset[str] = frozenset({"paid", "void", "closed"})
+
+# Account classes a write-off may post to: expense for spoilage, samples and shrinkage, equity for
+# owner drawings and family use. Never cogs: cost of sales belongs to sold stock alone. Shared by the
+# API check and the UI picker so the two never diverge.
+WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "equity"})

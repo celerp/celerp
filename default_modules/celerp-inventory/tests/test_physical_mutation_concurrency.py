@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
@@ -34,6 +35,7 @@ from celerp_inventory.routes import (
     SplitChild,
     TransformBody,
     merge_items,
+    preview_merge,
     split_item,
     transform_item,
 )
@@ -42,7 +44,8 @@ from celerp_inventory.routes import (
 async def _seed_company(factory):
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="Restructure Co", slug=f"restructure-{company_id.hex[:8]}"))
+        s.add(Company(id=company_id, name="Restructure Co", slug=f"restructure-{company_id.hex[:8]}",
+                      settings={}))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@restructure.test", name="Race User",
                    auth_hash="x"))
         await s.commit()
@@ -56,7 +59,7 @@ async def _seed_item(factory, company_id, user, sku: str, quantity: float) -> st
             s, company_id=company_id, entity_id=entity_id, entity_type="item",
             event_type="item.created",
             data={"sku": sku, "name": sku, "quantity": quantity, "sell_by": "piece",
-                  "cost_total": quantity * 10, "status": "available"},
+                  "cost_total": quantity * 10, "status": "available", LOT_ACCOUNT_FIELD: "1130-P"},
             actor_id=user.id, location_id=None, source="test",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
@@ -121,6 +124,22 @@ async def _race(factory, monkeypatch, calls) -> list[dict | BaseException]:
 def _route_kwargs(company_id, user, session):
     return {"company_id": company_id, "_": None, "role": "owner", "settings": {}, "user": user,
             "session": session}
+
+
+def _merge_kwargs(company_id, user, session):
+    """A merge reads the company's settings itself, under its locks."""
+    return {k: v for k, v in _route_kwargs(company_id, user, session).items() if k != "settings"}
+
+
+async def _previewed(factory, company_id, user, **fields) -> MergeBody:
+    """A merge request carrying the fingerprint of its preview, as the merge requires."""
+    from celerp.services.account_roles import current_settings
+
+    body = MergeBody(**fields)
+    async with factory() as s:
+        kwargs = {k: v for k, v in _route_kwargs(company_id, user, s).items() if k != "user"}
+        preview = await preview_merge(body, **{**kwargs, "settings": await current_settings(s, company_id)})
+    return body.model_copy(update={"plan_fingerprint": preview["plan_fingerprint"]})
 
 
 def _split(entity_id, qty, company_id, user):
@@ -199,11 +218,11 @@ async def test_concurrent_merges_consume_sources_once(_db_engine, monkeypatch):
         a = await _seed_item(factory, company_id, user, "PART", 2)
         b = await _seed_item(factory, company_id, user, "PART", 3)
 
-        def _merge(order):
-            body = MergeBody(source_entity_ids=order, target_sku_from=a)
-            return lambda s: merge_items(body, **_route_kwargs(company_id, user, s))
+        async def _merge(order):
+            body = await _previewed(factory, company_id, user, source_entity_ids=order, target_sku_from=a)
+            return lambda s: merge_items(body, **_merge_kwargs(company_id, user, s))
 
-        results = await _race(factory, monkeypatch, [_merge([a, b]), _merge([b, a])])
+        results = await _race(factory, monkeypatch, [await _merge([a, b]), await _merge([b, a])])
         failures = [r for r in results if isinstance(r, BaseException)]
         assert len(failures) == 1, f"exactly one merge of the same sources must succeed: {results!r}"
         assert isinstance(failures[0], HTTPException) and failures[0].status_code == 409, repr(failures[0])
@@ -225,7 +244,7 @@ async def test_merge_rejects_duplicate_source_ids(_db_engine):
         body = MergeBody(source_entity_ids=[a, a], target_sku_from=a)
         async with factory() as s:
             with pytest.raises(HTTPException) as exc:
-                await merge_items(body, **_route_kwargs(company_id, user, s))
+                await merge_items(body, **_merge_kwargs(company_id, user, s))
             await s.rollback()
         assert exc.value.status_code == 422
         items = await _items(factory, company_id)

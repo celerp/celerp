@@ -308,10 +308,7 @@ def setup_routes(app):
             if r.status_code != 200:
                 ct = r.headers.get("content-type", "")
                 if ct.startswith("application/json"):
-                    try:
-                        detail = r.json().get("detail", t("auth.import_failed"))
-                    except Exception:
-                        detail = t("auth.import_failed_unreadable")
+                    detail = api.error_text(r, t("auth.import_failed_unreadable"))
                 else:
                     detail = r.text[:300] or t("auth.import_failed")
                 return auth_shell(
@@ -574,7 +571,7 @@ def setup_routes(app):
                 r = await c.post("/auth/password-reset/confirm", json={"token": token, "new_password": new_password})
             if r.status_code == 200:
                 return RedirectResponse("/login", status_code=302)
-            detail = r.json().get("detail", t("auth.reset_failed"))
+            detail = api.error_text(r, t("auth.reset_failed"))
             return auth_shell(_reset_password_form(token=token, error=detail), title=page_title("page.reset_password"))
         except Exception as e:
             return auth_shell(_reset_password_form(token=token, error=t("auth.server_error", e=e)), title=page_title("page.reset_password"))

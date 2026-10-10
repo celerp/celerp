@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import logging
 import mimetypes
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -77,14 +75,13 @@ async def download_and_emit_file(
     tag: str,
     is_hero: bool,
 ) -> bool:
-    """Download a remote file URL, store it, and emit item.file.attached.
+    """Download a remote file URL, store it, and attach it to the item.
 
     Returns True if stored successfully, False if download failed.
     Skips if URL already stored (idempotent).
     """
     from celerp.models.projections import Projection
-    from celerp.events.engine import emit_event
-    from celerp.services.attachments import store_upload
+    from celerp.services.attachments import attach_file, store_upload
     from fastapi import UploadFile
     from starlette.datastructures import Headers
 
@@ -127,29 +124,6 @@ async def download_and_emit_file(
         log.warning("connector: failed to store %s: %s", filename, exc)
         return False
 
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.file.attached",
-        data={
-            "entity_id": entity_id,
-            "entity_type": "item",
-            "file_id": meta["id"],
-            "filename": meta["filename"],
-            "mime": meta["mime"],
-            "size": meta["size"],
-            "url": meta.get("url", ""),
-            "document_tag": tag,
-            "description": None,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            "is_hero": is_hero,
-        },
-        actor_id=actor_id,
-        location_id=None,
-        source="connector",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+    await attach_file(session, company_id, "item", entity_id, meta, actor_id, source="connector",
+                      document_tag=tag, is_hero=is_hero)
     return True

@@ -8,8 +8,10 @@ Runs on real PostgreSQL across two connections. The first transaction holds its 
 while the second starts; whichever holds the locks first wins:
 
 - delete first: the run waits, then finds the item gone and is refused, leaving nothing;
-- run first: the Delete waits for the run to be saved, then deletes the item as it always
-  does, and issuing that run later is refused instead of consuming a missing item.
+- run first: the Delete waits for the run to be saved, then finds the item named by the
+  run and moves it to Deleted instead of erasing it, so the run still names it.
+
+Delete only takes a draft, so the item here is a draft.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
-_PART = "item:part"
+_PART, _PRODUCT = "item:part", "item:product"
 
 
 async def _seed(factory):
@@ -48,7 +50,12 @@ async def _seed(factory):
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="admin", is_active=True))
         await emit_event(
             s, company_id=company_id, entity_id=_PART, entity_type="item", event_type="item.created",
-            data={"sku": "PART", "name": "Part", "quantity": 5, "sell_by": "piece", "status": "available"},
+            data={"sku": "PART", "name": "Part", "quantity": 5, "sell_by": "piece", "status": "draft"},
+            actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
+        )
+        await emit_event(
+            s, company_id=company_id, entity_id=_PRODUCT, entity_type="item", event_type="item.created",
+            data={"sku": "MADE", "name": "Made", "quantity": 0, "sell_by": "piece", "status": "available"},
             actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
         )
         await s.commit()
@@ -56,7 +63,8 @@ async def _seed(factory):
 
 
 def _create(s, company_id, user):
-    payload = mfg.MfgOrderCreate(description="Run", inputs=[mfg.MfgInput(item_id=_PART, quantity=1)])
+    payload = mfg.MfgOrderCreate(description="Run", inputs=[mfg.MfgInput(item_id=_PART, quantity=1)],
+                                 output_item_id=_PRODUCT)
     return mfg.create_order(payload, company_id=company_id, user=user, _=None, session=s)
 
 
@@ -126,50 +134,22 @@ async def test_delete_first_refuses_the_waiting_run(committed_engine):
 
     deleted, created = await _race(committed_engine, factory, company_id, user, _delete, _create)
 
-    assert deleted == {"deleted": 1, "kept": 0}
+    assert (deleted["deleted"], deleted["moved_to_deleted"]) == (1, 0)
     assert isinstance(created, HTTPException) and created.status_code == 422, created
     assert created.detail == t("manufacturing.err_item_unknown", "en")
     part, runs, run_events = await _state(factory, company_id)
     assert part is None and runs == [] and run_events == 0
 
 
-async def test_run_first_is_saved_and_the_delete_waits_for_it(committed_engine):
+async def test_run_first_is_saved_and_the_delete_waits_then_keeps_the_item_as_deleted(committed_engine):
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
 
     created, deleted = await _race(committed_engine, factory, company_id, user, _create, _delete)
 
     assert not isinstance(created, HTTPException), created
-    assert deleted == {"deleted": 1, "kept": 0}
-    part, runs, _ = await _state(factory, company_id)
-    assert part is None
-    assert [r.state["inputs"][0]["item_id"] for r in runs] == [_PART]
-
-    async with factory() as s:
-        with pytest.raises(HTTPException) as exc:
-            await mfg.issue_order(created["id"], None, company_id=company_id, user=user, _=None, session=s)
-        assert exc.value.status_code == 404
-        await s.rollback()
-    async with factory() as s:
-        consumed = (await s.execute(select(func.count()).select_from(LedgerEntry).where(
-            LedgerEntry.company_id == company_id, LedgerEntry.entity_id == _PART))).scalar_one()
-    assert consumed == 0
-
-
-async def test_delete_first_refuses_a_waiting_issue(committed_engine):
-    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
-    company_id, user = await _seed(factory)
-    async with factory() as s:
-        run_id = (await _create(s, company_id, user))["id"]
-
-    def _issue(s, company_id, user):
-        return mfg.issue_order(run_id, None, company_id=company_id, user=user, _=None, session=s)
-
-    deleted, issued = await _race(committed_engine, factory, company_id, user, _delete, _issue)
-
-    assert deleted == {"deleted": 1, "kept": 0}
-    assert isinstance(issued, HTTPException) and issued.status_code == 404, issued
-    async with factory() as s:
-        run = await s.get(Projection, {"company_id": company_id, "entity_id": run_id})
-        assert run.state.get("status") == "planned"
-        assert all(float(i.get("issued_qty") or 0) == 0 for i in run.state["inputs"])
+    assert not isinstance(deleted, HTTPException), deleted
+    assert (deleted["deleted"], deleted["moved_to_deleted"]) == (0, 1)
+    part, runs, run_events = await _state(factory, company_id)
+    assert part is not None and part.state["status"] == "deleted"
+    assert [r.state["inputs"][0]["item_id"] for r in runs] == [_PART] and run_events == 1

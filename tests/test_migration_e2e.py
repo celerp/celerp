@@ -12,7 +12,9 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from migration_support import OWNER_EMAIL, count, load_run, maker, real_engine, upload_parts  # noqa: F401
+from migration_support import (  # noqa: F401
+    OWNER_EMAIL, count, finalize_run, load_run, maker, real_engine, upload_parts,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -316,6 +318,7 @@ async def test_manager_on_account_money_reaches_the_customer_statement(real_engi
     from datetime import date
     from decimal import Decimal as D
 
+    from celerp.models.migration import MigrationRun
     from celerp_accounting.routes import statement_of_account
     from fixtures.manager_io import specs
     from fixtures.manager_io.encoder import write_manager_file
@@ -357,6 +360,9 @@ async def test_manager_on_account_money_reaches_the_customer_statement(real_engi
     assert held[("ar_by_customer", ref("CA"))] == D("-15")
     assert held[("ar_control", ref("@BalanceSheetAccountsReceivableAccount"))] == D("-15")
     assert held[("bank_cash", ref("OPB"))] == D("625")
+    # Once the migration is finished, the customer's statement reads the same position.
+    async with maker(real_engine)() as s:
+        await finalize_run(s, await s.get(MigrationRun, run.id))
     async with maker(real_engine)() as s:
         statement = await statement_of_account(customer, company_id=run.company_id, _=None, session=s)
     assert D(str(statement["closing_balance"])) == D("-15")
@@ -502,7 +508,7 @@ async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatc
     _passing(run)
     async with maker(real_engine)() as s:
         run = await s.get(MigrationRun, run.id)
-        await migrations.finalize(s, run)
+        await finalize_run(s, run)
     async with maker(real_engine)() as s:
         run = await s.get(MigrationRun, run.id)
         company = await s.get(Company, run.company_id)

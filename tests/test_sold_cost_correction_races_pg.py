@@ -13,8 +13,9 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from test_cost_restatement import _doc_cogs, _fulfil, _invoice, _item, _state, company_auth
+from test_cost_restatement import _doc_cogs, _fulfil, _invoice, _item, _state
 from test_fresh_authority_races_pg import _app_client, _race
+from test_helpers import company_auth
 
 pytestmark = pytest.mark.asyncio
 

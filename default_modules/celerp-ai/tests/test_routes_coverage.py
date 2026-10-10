@@ -174,7 +174,7 @@ async def test_get_file_wrong_company(auth_client, session):
 async def test_quota_status_local(auth_client):
     """No gateway configured returns local=True."""
     c, h = auth_client
-    with patch("celerp_ai.routes.get_quota_status", AsyncMock(return_value=None)):
+    with patch("celerp.ai.quota.get_quota_status", AsyncMock(return_value=None)):
         r = await c.get("/ai/quota-status", headers=h)
     assert r.status_code == 200
     assert r.json()["local"] is True
@@ -184,7 +184,7 @@ async def test_quota_status_local(auth_client):
 async def test_quota_status_with_data(auth_client):
     c, h = auth_client
     mock_status = {"used": 15, "limit": 200, "topup_credits": 50, "resets_at": "2026-05-01", "tier": "ai"}
-    with patch("celerp_ai.routes.get_quota_status", AsyncMock(return_value=mock_status)):
+    with patch("celerp.ai.quota.get_quota_status", AsyncMock(return_value=mock_status)):
         r = await c.get("/ai/quota-status", headers=h)
     data = r.json()
     assert data["remaining"] == 235  # 200 + 50 - 15
@@ -232,8 +232,8 @@ async def test_conversation_lifecycle(auth_client):
 async def test_conversation_list_include_protected_uses_history_surface(auth_client):
     c, h = auth_client
     history = AsyncMock(return_value=[])
-    with patch("celerp_ai.routes.list_conversation_history", history), \
-         patch("celerp_ai.routes.list_conversations", AsyncMock()) as ordinary:
+    with patch("celerp.ai.conversations.list_conversation_history", history), \
+         patch("celerp.ai.conversations.list_conversations", AsyncMock()) as ordinary:
         r = await c.get("/ai/conversations?limit=100&include_protected=true", headers=h)
     assert r.status_code == 200
     history.assert_awaited_once()
@@ -296,7 +296,7 @@ async def test_conversation_query_reads_only(auth_client):
         answer="42 items in stock", model_used="glm", tools_called=["dashboard_kpis"],
         pending_actions=[],
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "how many items"})
     assert r.status_code == 200
     data = r.json()
@@ -322,7 +322,7 @@ async def test_conversation_query_returns_pending_action(auth_client):
         answer="I can create that contact.", model_used="glm", tools_called=[],
         pending_actions=[_pending()],
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "add Acme"})
     assert r.status_code == 200
     data = r.json()
@@ -366,7 +366,7 @@ async def test_conversation_query_error(auth_client):
         answer="", model_used="glm", tools_called=[], pending_actions=[],
         error="The AI service took too long to respond. Please try again.",
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "test"})
     assert r.status_code == 200
     assert r.json()["error"] == result.error
@@ -388,7 +388,7 @@ async def _propose_action(c, h, conv_id, name="create_contact", call_id="call_1"
         answer="I can create that contact.", model_used="glm", tools_called=[],
         pending_actions=[_pending(name=name, call_id=call_id)],
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "add Acme"})
     pa = r.json()["pending_actions"][0]
     return pa["message_id"], pa["id"]
@@ -403,8 +403,8 @@ async def test_confirm_action_executes_pending(auth_client):
     message_id, tool_call_id = await _propose_action(c, h, conv_id)
 
     exec_mock = AsyncMock(return_value={"ok": True, "status": 201, "data": {"id": "new"}, "error": None})
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
-         patch("celerp_ai.routes.execute_agent_capability", exec_mock):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
+         patch("celerp.ai.tools.execute_agent_capability", exec_mock):
         r = await c.post(
             f"/ai/conversations/{conv_id}/confirm", headers=h,
             json={"message_id": message_id, "tool_call_id": tool_call_id},
@@ -415,8 +415,8 @@ async def test_confirm_action_executes_pending(auth_client):
     assert exec_mock.await_count == 1
 
     # Re-confirming the same action finds nothing pending.
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
-         patch("celerp_ai.routes.execute_agent_capability", exec_mock):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
+         patch("celerp.ai.tools.execute_agent_capability", exec_mock):
         r = await c.post(
             f"/ai/conversations/{conv_id}/confirm", headers=h,
             json={"message_id": message_id, "tool_call_id": tool_call_id},
@@ -436,8 +436,8 @@ async def test_confirm_action_names_action_and_route_rejection(auth_client):
     message_id, tool_call_id = await _propose_action(c, h, conv_id)
 
     rejected = {"ok": False, "status": 422, "data": {"detail": "Invalid currency code: ZZZZ"}}
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
-         patch("celerp_ai.routes.execute_agent_capability", AsyncMock(return_value=rejected)):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
+         patch("celerp.ai.tools.execute_agent_capability", AsyncMock(return_value=rejected)):
         r = await c.post(
             f"/ai/conversations/{conv_id}/confirm", headers=h,
             json={"message_id": message_id, "tool_call_id": tool_call_id},
@@ -457,7 +457,7 @@ async def test_confirm_action_capability_unavailable(auth_client):
     conv_id = r.json()["id"]
     message_id, tool_call_id = await _propose_action(c, h, conv_id)
 
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={}):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value={}):
         r = await c.post(
             f"/ai/conversations/{conv_id}/confirm", headers=h,
             json={"message_id": message_id, "tool_call_id": tool_call_id},
@@ -493,7 +493,7 @@ async def test_batch_submit_and_status(auth_client):
 
     # Test batch status 404 for unknown job (covers the GET route)
     fake_id = str(uuid.uuid4())
-    with patch("celerp_ai.routes.get_batch_job", AsyncMock(return_value=None)):
+    with patch("celerp.ai.batch.get_batch_job", AsyncMock(return_value=None)):
         r = await c.get(f"/ai/batch/{fake_id}", headers=h)
     assert r.status_code == 404
 
@@ -512,7 +512,7 @@ async def test_batch_submit_and_status(auth_client):
     mock_job.created_at = datetime.now(timezone.utc)
     mock_job.completed_at = datetime.now(timezone.utc)
 
-    with patch("celerp_ai.routes.get_batch_job", AsyncMock(return_value=mock_job)):
+    with patch("celerp.ai.batch.get_batch_job", AsyncMock(return_value=mock_job)):
         r = await c.get(f"/ai/batch/{mock_job.id}", headers=h)
     assert r.status_code == 200
     data = r.json()
@@ -560,7 +560,7 @@ async def test_mixed_attachments_run_agent_in_chat_mode(auth_client):
     mocked = AsyncMock(return_value=AgentResult(
         answer="Reviewed both files.", model_used="fake", tools_called=[], pending_actions=[],
     ))
-    with patch("celerp_ai.routes.run_agent", mocked):
+    with patch("celerp.ai.service.run_agent", mocked):
         r = await c.post(
             f"/ai/conversations/{conv_id}/query", headers=h,
             json={"query": "review these together", "file_ids": [jpg, csv]},
@@ -578,8 +578,8 @@ async def test_query_with_images_creates_job(auth_client):
     conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
     ids = [await _upload(c, h, f"r{i}.jpg", b"fake jpeg", "image/jpeg") for i in range(2)]
     run_batch = AsyncMock()
-    with patch("celerp_ai.routes.run_batch", run_batch), \
-         patch("celerp_ai.routes.run_agent", AsyncMock(side_effect=AssertionError("agent must not run"))):
+    with patch("celerp.ai.batch.run_batch", run_batch), \
+         patch("celerp.ai.service.run_agent", AsyncMock(side_effect=AssertionError("agent must not run"))):
         r = await c.post(
             f"/ai/conversations/{conv_id}/query", headers=h,
             json={"query": "", "file_ids": ids, "document_mode": "receipts"},
@@ -669,8 +669,8 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
         contacts=[{"id": "c-1", "name": "acme supplies", "contact_type": "vendor"}],
         items=[{"id": "i-1", "name": "Paper A4", "sku": "PAP-A4"}],
     )
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
-         patch("celerp_ai.routes.execute_agent_capability", executor):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", executor):
         r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
         assert r.status_code == 200, r.text
         first = r.json()
@@ -716,8 +716,8 @@ async def test_proposal_flags_total_mismatch(auth_client, session):
         "create_doc_docs_post", "list_contacts_crm_contacts_get",
         "create_contact_crm_contacts_post",
     )
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
-         patch("celerp_ai.routes.execute_agent_capability", _executor()):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", _executor()):
         r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
     assert r.status_code == 200, r.text
     actions = r.json()["pending_actions"]
@@ -767,8 +767,8 @@ async def test_unknown_vendor_dependency_resolves_across_confirmations(auth_clie
             return {"ok": True, "status": 201, "data": {"id": "doc:bill-1"}}
         raise AssertionError(capability["name"])
 
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
-         patch("celerp_ai.routes.execute_agent_capability", _exec):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", _exec):
         proposed = (await c.post(
             f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h,
         )).json()
@@ -822,7 +822,7 @@ async def test_proposals_require_finished_job_and_documents(auth_client, session
     r = await c.post(f"/ai/conversations/{other}/jobs/{job_id}/proposals", headers=h)
     assert r.status_code == 404
 
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={}):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value={}):
         r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "capability_unavailable"
 
@@ -835,7 +835,7 @@ async def test_dismiss_all_is_atomic_and_idempotent(auth_client):
         answer="Three changes.", model_used="glm", tools_called=[],
         pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b"), _pending(call_id="call_c")],
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         created = await c.post(
             f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do all"},
         )
@@ -854,6 +854,27 @@ async def test_dismiss_all_is_atomic_and_idempotent(auth_client):
     assert [a["id"] for a in thread["messages"][-1]["pending_actions"]] == ["call_b"]
 
 
+@pytest.mark.asyncio
+async def test_dismiss_one_action_persists_and_a_second_dismiss_is_409(auth_client):
+    """Dismissing one proposal removes it from the reloaded thread and runs nothing."""
+    c, h = auth_client
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    message_id, call_id = await _propose_action(c, h, conv_id)
+    url = f"/ai/conversations/{conv_id}/dismiss"
+    first = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_id": call_id})
+    assert first.status_code == 200
+    assert first.json() == {"dismissed": True, "tool_call_id": call_id}
+    thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
+    assert thread["messages"][-1]["pending_actions"] == []
+    again = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_id": call_id})
+    assert again.status_code == 409
+    confirm = await c.post(f"/ai/conversations/{conv_id}/confirm", headers=h,
+                           json={"message_id": message_id, "tool_call_id": call_id})
+    assert confirm.status_code == 409
+    contacts = (await c.get("/crm/contacts", headers=h)).json()["items"]
+    assert [x for x in contacts if x.get("name") == "Acme"] == []
+
+
 # ── POST /ai/conversations/{id}/confirm-all ──────────────────────────────────
 
 @pytest.mark.asyncio
@@ -867,7 +888,7 @@ async def test_confirm_all_executes_in_order(auth_client):
         pending_actions=[_pending(name="create_contact", call_id="call_a"),
                          _pending(name="create_doc", call_id="call_b")],
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do both"})
     message_id = r.json()["pending_actions"][0]["message_id"]
 
@@ -883,8 +904,8 @@ async def test_confirm_all_executes_in_order(auth_client):
         return {"ok": True, "status": 201, "data": {"id": "doc-1"}}
 
     caps = {"create_contact": {"method": "POST"}, "create_doc": {"method": "POST"}}
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
-         patch("celerp_ai.routes.execute_agent_capability", _exec):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", _exec):
         r = await c.post(f"/ai/conversations/{conv_id}/confirm-all", headers=h, json={"message_id": message_id})
         assert r.status_code == 200, r.text
         body = r.json()
@@ -910,7 +931,7 @@ async def test_confirm_all_selection_runs_only_selected_in_order(auth_client):
         answer="Three changes.", model_used="glm", tools_called=[],
         pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b"), _pending(call_id="call_c")],
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do all"})
     message_id = r.json()["pending_actions"][0]["message_id"]
 
@@ -926,8 +947,8 @@ async def test_confirm_all_selection_runs_only_selected_in_order(auth_client):
 
     caps = {"create_contact": {"method": "POST"}}
     url = f"/ai/conversations/{conv_id}/confirm-all"
-    with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
-         patch("celerp_ai.routes.execute_agent_capability", _exec):
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", _exec):
         r = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_c", "call_a", "ghost"]})
         assert r.status_code == 200, r.text
         body = r.json()
@@ -953,7 +974,7 @@ async def test_list_conversations_reports_pending_count(auth_client):
         answer="Two changes.", model_used="glm", tools_called=[],
         pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b")],
     )
-    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
         await c.post(f"/ai/conversations/{busy}/query", headers=h, json={"query": "do both"})
     counts = {x["id"]: x["pending_count"] for x in (await c.get("/ai/conversations", headers=h)).json()}
     assert counts[busy] == 2 and counts[quiet] == 0

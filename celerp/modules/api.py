@@ -40,7 +40,8 @@ async def api_request(
     if not is_app_local_path(path):
         raise ValueError(f"api_request takes a path inside Celerp, such as /companies/me, not {path!r}.")
     scheme, _, credential = request.headers.get("authorization", "").partition(" ")
-    token = credential.strip() if scheme.lower() == "bearer" else ui.config.get_token(request)
+    token = credential.strip() if scheme.lower() == "bearer" else ""
+    token = token or ui.config.get_token(request)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     async with httpx.AsyncClient(base_url=ui.config.API_BASE, timeout=_API_REQUEST_TIMEOUT,
                                  follow_redirects=False, trust_env=False) as client:
@@ -50,18 +51,27 @@ async def api_request(
 def read_resource(module_file: str, relative_path: str) -> bytes:
     """Read a file shipped with the calling module.
 
-    ``module_file`` is the caller's own ``__file__``; ``relative_path`` names a file
-    in that file's folder or below it, such as "templates/invoice.html". Raises
-    ValueError for any other file.
+    Call it from the module's own code. ``module_file`` is the caller's own
+    ``__file__``; ``relative_path`` names a file in that file's folder or below it,
+    such as "templates/invoice.html". Raises ValueError for any other file or caller.
     """
-    caller = Path(sys._getframe(1).f_code.co_filename).resolve()
-    if Path(module_file).resolve() != caller:
+    from celerp.modules.loader import admitted_module_root
+
+    frame = sys._getframe(1)
+    name = frame.f_globals.get("__name__")
+    root = admitted_module_root(name) if isinstance(name, str) else None
+    if root is None:
+        raise ValueError("read_resource reads files shipped with a loaded module only.")
+    caller = Path(frame.f_code.co_filename).resolve()
+    if Path(module_file).resolve() != caller or not caller.is_relative_to(root.resolve()):
         raise ValueError("read_resource takes the calling file's own __file__.")
     if Path(relative_path).is_absolute():
         raise ValueError(f"read_resource takes a path relative to the module, not {relative_path!r}.")
     target = (caller.parent / relative_path).resolve()
     if not target.is_relative_to(caller.parent):
         raise ValueError(f"{relative_path!r} is not inside the module.")
+    if not target.is_file():
+        raise ValueError(f"{relative_path!r} is not a file shipped with the module.")
     return target.read_bytes()
 
 
@@ -74,20 +84,22 @@ async def ai_query(
     """Run an AI query for a company through the active Celerp service.
 
     ``db_session`` is the database session of the request the query is made for;
-    the query runs only for that request's company and for a user allowed to use
-    the AI assistant. ``session_token`` is optional: without it, the installation's
-    own Celerp Connect session is used.
+    the query runs only for that request's company and for the user its signed
+    access token names, who must be allowed to use the AI assistant.
+    ``session_token`` is optional: without it, the installation's own Celerp
+    Connect session is used.
     """
-    from celerp.services.permissions import assert_role_permission, read_authority, request_authority
+    from celerp.services.auth import signed_request_context
+    from celerp.services.permissions import assert_role_permission, read_authority
     from celerp.session_gate import require_active_session, validate_session_token
 
-    authority = request_authority(db_session, company_id) if db_session is not None else None
-    if authority is None:
+    caller = await signed_request_context(db_session) if db_session is not None else None
+    if caller is None or str(caller.company_id) != str(company_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="AI queries run only for the company of the signed-in request.",
         )
-    role, settings = await read_authority(db_session, authority.company_id, authority.user_id)
+    role, settings = await read_authority(db_session, caller.company_id, caller.user.id)
     assert_role_permission(settings, role, "use_ai_assistant")
     if session_token is None:
         await require_active_session()
@@ -99,7 +111,7 @@ async def ai_query(
     result: AIResponse = await run_query(
         query=query,
         session=db_session,
-        company_id=authority.company_id,
+        company_id=caller.company_id,
     )
     return {
         "answer": result.answer,

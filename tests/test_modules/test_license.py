@@ -331,3 +331,113 @@ def test_is_premium_path_marker_file(tmp_path):
     assert not is_premium_path(mod)
     (mod / PREMIUM_MARKER).write_text("")
     assert is_premium_path(mod)
+
+
+# ── is_free_official / record_free_verdict ───────────────────────────────────
+
+def _listing(monkeypatch, detail):
+    class _Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps(detail).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _Reply())
+
+
+@pytest.mark.parametrize("detail", [
+    {"is_official": True, "price_monthly": 0, "price_once": None},
+    {"is_official": True, "price_monthly": "19.0", "price_once": None},
+    {"is_official": True, "price_monthly": None, "price_once": "49"},
+    {"is_official": "false", "price_monthly": None, "price_once": None},
+    {"is_official": 1, "price_monthly": None, "price_once": None},
+], ids=["zero_price", "price_monthly_str", "price_once_str", "official_str", "official_int"])
+def test_listing_not_plainly_free_and_official_records_no_verdict(tmp_path, monkeypatch, detail):
+    from celerp.modules.license import is_free_official
+    _listing(monkeypatch, detail)
+    assert not is_free_official("celerp-x", "https://relay.example.com", tmp_path)
+    assert not (tmp_path / "license_cache" / "celerp-x.free.json").exists()
+
+
+def test_listing_free_and_official_records_its_verdict(tmp_path, monkeypatch):
+    from celerp.modules.license import is_free_official
+    _listing(monkeypatch, {"is_official": True, "price_monthly": None, "price_once": None})
+    assert is_free_official("celerp-x", "https://relay.example.com", tmp_path)
+    assert (tmp_path / "license_cache" / "celerp-x.free.json").is_file()
+
+
+def test_interrupted_free_verdict_write_leaves_no_verdict(tmp_path, monkeypatch):
+    import celerp.modules.license as lic
+
+    def _fail(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(lic.os, "replace", _fail)
+    lic.record_free_verdict("celerp-x", tmp_path)
+    assert list((tmp_path / "license_cache").iterdir()) == []
+
+
+def test_concurrent_verdict_writers_both_succeed(tmp_path, monkeypatch, caplog):
+    import os
+
+    import celerp.modules.license as lic
+
+    real_replace = os.replace
+
+    def _other_writer_lands_first(src, dst):
+        monkeypatch.setattr(lic.os, "replace", real_replace)
+        lic.record_free_verdict("celerp-x", tmp_path)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(lic.os, "replace", _other_writer_lands_first)
+    with caplog.at_level("WARNING", logger="celerp.modules.license"):
+        lic.record_free_verdict("celerp-x", tmp_path)
+
+    assert "Could not write" not in caplog.text
+    assert [p.name for p in (tmp_path / "license_cache").iterdir()] == ["celerp-x.free.json"]
+
+
+# ── adopt_legacy_license_cache ───────────────────────────────────────────────
+
+def _legacy_dir(tmp_path, monkeypatch) -> Path:
+    legacy = tmp_path / "legacy" / "license_cache"
+    legacy.mkdir(parents=True)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "legacy"))
+    return legacy
+
+
+def test_one_unreadable_legacy_entry_does_not_stop_the_rest(tmp_path, monkeypatch):
+    from celerp.modules.license import adopt_legacy_license_cache
+    legacy = _legacy_dir(tmp_path, monkeypatch)
+    good = []
+    for i, bad in enumerate(["dir", "dangling"]):
+        name = f"celerp-good{i}.json"
+        (legacy / name).write_text('{"licensed": true}')
+        good.append(name)
+        if bad == "dir":
+            (legacy / f"celerp-bad{i}.json").mkdir()
+        else:
+            (legacy / f"celerp-bad{i}.json").symlink_to(tmp_path / "missing")
+    (legacy / "celerp-good9.json").write_text('{"licensed": true}')
+    good.append("celerp-good9.json")
+
+    adopt_legacy_license_cache(tmp_path / "data")
+
+    assert sorted(p.name for p in (tmp_path / "data" / "license_cache").iterdir()) == good
+
+
+@pytest.mark.parametrize("name", ["celerp-x.not-free.json", "celerp-x.free.json",
+                                  "celerp-x.other.json"])
+def test_only_plain_licence_entries_leave_the_old_cache_dir(name, tmp_path, monkeypatch):
+    from celerp.modules.license import adopt_legacy_license_cache
+    legacy = _legacy_dir(tmp_path, monkeypatch)
+    (legacy / name).write_text('{"free": false}')
+    (legacy / "celerp-y.json").write_text('{"licensed": true}')
+
+    adopt_legacy_license_cache(tmp_path / "data")
+
+    assert [p.name for p in (tmp_path / "data" / "license_cache").iterdir()] == ["celerp-y.json"]

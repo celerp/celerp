@@ -21,12 +21,14 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
+from ui.components.deleted_items import deleted_items, deleted_label, is_deleted
 from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import import_icon
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
-from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
+from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
+from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
+from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
 from ui.security import not_permitted_redirect
@@ -35,13 +37,13 @@ from ui.module_slots import (
     connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
 )
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, builtin_label_keys, cost_columns
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, COST_SCHEMA_KEYS, SYSTEM_ITEM_KEYS, builtin_label_keys, cost_columns
 from celerp.services.field_schema import union_category_attr_keys as _union_category_attr_keys
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, is_price_item_key, price_key, price_lists_in, resolve_price
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from celerp.importers.tabular import known_headers
 from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, unit_label
+from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
 from celerp_inventory.services import (
@@ -454,8 +456,8 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         """Strip abbreviation in parens from a unit label: 'Carat (ct)' -> 'Carat'."""
         return re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
 
-    sell_by_display = _unit_display_name(sell_by_label)
-    weight_display = _unit_display_name(weight_unit_label)
+    sell_by_display = display_unit(preview.get("sell_by"), _unit_display_name(sell_by_label))
+    weight_display = display_unit(preview.get("weight_unit"), _unit_display_name(weight_unit_label))
 
     # QTY is always shown. Weight/pieces columns follow one symmetric rule:
     #   - weight-type sell_by: qty IS weight, so the weight column is a read-only mirror of
@@ -718,10 +720,11 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
 
 
 def _parse_params(request: Request) -> dict:
-    return _parse_query(request.query_params)
+    return _page_state(request.query_params)
 
 
-def _parse_query(q: QueryParams) -> dict:
+def _page_state(q) -> dict:
+    """The inventory list state carried by query params ``q``."""
     try:
         per_page = int(q.get("per_page", _DEFAULT_PER_PAGE))
     except (ValueError, TypeError):
@@ -995,6 +998,111 @@ _CLEAR_SELECTION_JS = """(function(){
 })();"""
 
 
+async def _catalog_channels(company: dict, role: str) -> tuple[set, list[dict]]:
+    """The company's connected connectors, and the catalog channels the role sees."""
+    from celerp.modules.slots import get as get_slot
+
+    connected = await connected_connector_ids(
+        str(company.get("id") or ""), required_connectors("catalog_channel", "send_to_targets", "bulk_action"))
+    settings = company.get("settings") or {}
+    return connected, [ch for ch in get_slot("catalog_channel")
+                       if module_contribution_visible(ch, settings, role, connected)]
+
+
+def _inventory_table(
+    p: dict,
+    items: list[dict],
+    schema: list[dict],
+    cat_schemas: dict,
+    col_prefs: dict,
+    company: dict,
+    locations: list[dict],
+    units: list[dict],
+    category_label_map: dict,
+    *,
+    role: str,
+    catalog_channels: list[dict],
+) -> tuple[list[dict], list[str], dict]:
+    """The inventory table for page state ``p``: its effective schema, its visible columns,
+    and the ``data_table`` arguments that draw it. The list page draws the table from these
+    arguments and the single-row reload draws its row from the same ones (``data_row``), so
+    a reloaded row always has the page's cells and row menu. Marks the draft rows of
+    ``items`` whose locked amount fields stay authorable."""
+    active_cat = p.get("category", "")
+    eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+    # Patch location_name in eff_schema to be editable with resolved options
+    loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
+    eff_schema = [
+        {**f, "type": "select", "options": loc_names, "editable": True} if f.get("key") == "location_name"
+        else f
+        for f in eff_schema
+    ]
+    _cs = company.get("settings") or {}
+    _draft_unlocked = sorted(
+        _locked_edit_keys(eff_schema, role, _cs) - _locked_edit_keys(eff_schema, role, _cs, is_draft=True)
+    )
+    eff_schema = _apply_edit_permission(eff_schema, role, _cs)
+    if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
+        eff_schema = eff_schema + [{
+            "key": "_channels", "label": "Channels", "type": "text",
+            "editable": False, "required": False, "options": [],
+            "visible_to_roles": [], "position": 2.5, "show_in_table": True,
+            "virtual": True, "paired_with": "name", "sortable": False,
+        }]
+    # Draft rows stay authorable: when the transform above locked the amount or cost
+    # fields for this role, mark each DRAFT row so the table renders those cells
+    # click-to-edit anyway - the edit endpoints re-check status + permission
+    # server-side, so this is presentation only.
+    if _draft_unlocked:
+        for _it in items:
+            if _is_draft(_it):
+                _it["_row_editable_keys"] = _draft_unlocked
+    # Derived read-only money columns, appended to the schema whenever their scope is active
+    # (the same rule as _export_columns), so the column set follows from the page state alone
+    # and a single re-rendered row lines up with the header the page drew:
+    # - Under a contact holdings scope the meaningful per-row value is the scope value the
+    #   total is summed from (quoted memo price / consignment cost), not the catalog
+    #   price; surfacing it makes the rows visibly add up to the banner figure.
+    # - On the sold view, each row's realized per-unit sale price sits alongside the
+    #   wholesale/retail prices for direct comparison (derived server-side, list_items).
+    derived_money_cols = []
+    if p.get("on_memo_to"):
+        derived_money_cols.append(("holding_value", t("inventory.col_quoted"), 99))
+    elif p.get("consigned_from"):
+        derived_money_cols.append(("holding_value", t("th.cost"), 99))
+    if "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}:
+        derived_money_cols.append(("sold_price", t("chip.sold"), 98))
+    for _key, _label, _position in derived_money_cols:
+        eff_schema = eff_schema + [{
+            "key": _key, "label": _label, "type": "money",
+            "editable": False, "required": False, "options": [], "visible_to_roles": [],
+            "position": _position, "show_in_table": True,
+        }]
+
+    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
+    for _key, _label, _position in derived_money_cols:
+        if _key not in visible_cols:
+            # Saved column prefs predate this derived column, so force it visible.
+            visible_cols = visible_cols + [_key]
+    unit_names = [u["name"] for u in units if u.get("name")]
+    units_map = {u["name"]: u for u in units if u.get("name")}
+    currency = company.get("currency")
+    table_args = dict(
+        schema=_label_price_cols(eff_schema),
+        entity_type="inventory",
+        show_cols=visible_cols or None,
+        currency=currency,
+        cell_renderers=_inventory_cell_renderers(
+            eff_schema, unit_names, units_map, category_label_map, currency=currency,
+            can_edit_images=role_has_permission(_cs, role, "edit_inventory"),
+            catalog_channels=catalog_channels,
+            channel_query=urlencode(_base_state({**p, "cols": visible_cols})), settings=_cs, role=role,
+        ),
+        hidden_fields=set(_PAIRED_TABLE.values()),
+    )
+    return eff_schema, visible_cols, table_args
+
+
 async def _inventory_content(
     token: str,
     p: dict,
@@ -1062,6 +1170,8 @@ async def _inventory_content(
         attribute_facets = items_resp.get("attribute_facets", {})
         # Totals of the same filtered set as the rows, refreshed with them.
         aggregates = items_resp.get("aggregates") or {}
+        # Scoped barcode/RFID/GTIN/SKU values that matched no item (a scan with no lot).
+        not_found = items_resp.get("not_found") or []
     except APIError as e:
         # 401 belongs to the caller's auth handler; every other read failure gets
         # an explicit, retryable error - never a blank table pretending the
@@ -1072,18 +1182,9 @@ async def _inventory_content(
         return _inventory_content_error(p, lang)
     # Units and category display names come from the shared metadata snapshot,
     # not a per-render round-trip.
-    unit_names: list[str] = [u["name"] for u in units if u.get("name")]
-    units_map: dict[str, dict] = {u["name"]: u for u in units if u.get("name")}
     category_label_map: dict = category_labels(category_display_names)
-
-    from celerp.modules.slots import get as get_slot
     _settings = company.get("settings") or {}
-    connected_connectors = await connected_connector_ids(
-        str(company.get("id") or ""), required_connectors("catalog_channel", "send_to_targets", "bulk_action"))
-    catalog_channels = [
-        ch for ch in get_slot("catalog_channel")
-        if module_contribution_visible(ch, _settings, role, connected_connectors)
-    ]
+    connected_connectors, catalog_channels = await _catalog_channels(company, role)
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -1092,66 +1193,10 @@ async def _inventory_content(
     total_scoped = valuation.get("total_scoped_count", sum(category_counts.values()))
     count_by_status = valuation.get("count_by_status", {})
     active_cat = p.get("category", "")
-    eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-    # Patch location_name in eff_schema to be editable with resolved options
-    loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
-    eff_schema = [
-        {**f, "type": "select", "options": loc_names, "editable": True} if f.get("key") == "location_name"
-        else f
-        for f in eff_schema
-    ]
-    _cs = company.get("settings") or {}
-    _draft_unlocked = sorted(
-        _locked_edit_keys(eff_schema, role, _cs) - _locked_edit_keys(eff_schema, role, _cs, is_draft=True)
+    eff_schema, visible_cols, table_args = _inventory_table(
+        p, items, schema, cat_schemas, col_prefs, company, locations, units,
+        category_label_map, role=role, catalog_channels=catalog_channels,
     )
-    eff_schema = _apply_edit_permission(eff_schema, role, _cs)
-    if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
-        eff_schema = eff_schema + [{
-            "key": "_channels", "label": "Channels", "type": "text",
-            "editable": False, "required": False, "options": [],
-            "visible_to_roles": [], "position": 2.5, "show_in_table": True,
-            "virtual": True, "paired_with": "name", "sortable": False,
-        }]
-    # Draft rows stay authorable: when the transform above locked the amount or cost
-    # fields for this role, mark each DRAFT row so the table renders those cells
-    # click-to-edit anyway - the edit endpoints re-check status + permission
-    # server-side, so this is presentation only.
-    if _draft_unlocked:
-        for _it in items:
-            if _is_draft(_it):
-                _it["_row_editable_keys"] = _draft_unlocked
-    # Derived read-only money columns, appended to the schema when their values exist:
-    # - Under a contact holdings scope the meaningful per-row value is the scope value the
-    #   total is summed from (quoted memo price / consignment cost), not the catalog
-    #   price; surfacing it makes the rows visibly add up to the banner figure.
-    # - On the sold view, each row's realized per-unit sale price sits alongside the
-    #   wholesale/retail prices for direct comparison (derived server-side, list_items).
-    scope_value_label = ""
-    if p.get("on_memo_to"):
-        scope_value_label = t("inventory.col_quoted")
-    elif p.get("consigned_from"):
-        scope_value_label = t("th.cost")
-    if not (scope_value_label and any(i.get("holding_value") is not None for i in items)):
-        scope_value_label = ""
-    sold_view = "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}
-    show_sold_price = sold_view and any(i.get("sold_price") is not None for i in items)
-    derived_money_cols = []
-    if scope_value_label:
-        derived_money_cols.append(("holding_value", scope_value_label, 99))
-    if show_sold_price:
-        derived_money_cols.append(("sold_price", t("chip.sold"), 98))
-    for _key, _label, _position in derived_money_cols:
-        eff_schema = eff_schema + [{
-            "key": _key, "label": _label, "type": "money",
-            "editable": False, "required": False, "options": [], "visible_to_roles": [],
-            "position": _position, "show_in_table": True,
-        }]
-
-    visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
-    for _key, _label, _position in derived_money_cols:
-        if _key not in visible_cols:
-            # Saved column prefs predate this derived column, so force it visible.
-            visible_cols = visible_cols + [_key]
     # Inject resolved cols into URL state so sort links and pagination always carry
     # the exact column set being rendered, even when it came from col_prefs not URL params.
     p_with_cols = {**p, "cols": visible_cols}
@@ -1173,26 +1218,18 @@ async def _inventory_content(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
             cls="column-manager-row",
         ),
+        P(t("inventory.search_not_found", codes=", ".join(not_found)), cls="flash flash--warning")
+        if not_found else None,
         data_table(
-            _label_price_cols(eff_schema),
-            items,
-            entity_type="inventory",
-            show_cols=visible_cols or None,
+            rows=items,
             sort_key=p["sort"],
             sort_dir=p["dir"],
             sort_url="/inventory/content",
             extra_params=_base_state(p_with_cols),
-            currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(
-                eff_schema, unit_names, units_map, category_label_map, currency=currency,
-                can_edit_images=role_has_permission(_cs, role, "edit_inventory"),
-                catalog_channels=catalog_channels,
-                channel_query=urlencode(_base_state(p_with_cols)), settings=_settings, role=role,
-            ),
-            hidden_fields=set(_PAIRED_TABLE.values()),
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
+            **table_args,
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
         Script(SERVER_FILTER_JS),
@@ -1214,7 +1251,8 @@ async def _import_export_allowed(request: Request, token: str) -> bool:
 def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> dict:
     """Build a create payload from an existing item, carrying every field except
     id, status, location_name, created_at, updated_at (status is reset by the create
-    path) and barcode. Barcode is globally unique, so a copy never inherits the
+    path), barcode and the fields only the app sets (SYSTEM_ITEM_KEYS: a copy starts
+    with no files, lineage, documents or inventory account of its own). Barcode is globally unique, so a copy never inherits the
     source's: auto_barcode tells the create path to mint a fresh unique one from the
     shared sequence (the same reset a split child gets). Core columns and any *_price
     stay top-level; everything else goes into attributes. Without set_inventory_prices
@@ -1222,7 +1260,7 @@ def _duplicate_payload(source: dict, new_sku: str, *, can_set_prices: bool) -> d
     because the copy is a draft its creator may still cost. Shared by the single-item
     and bulk duplicate paths."""
     _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
-             "idempotency_key", "external_links", "_channel_state"}
+             "idempotency_key", "external_links", "_channel_state"} | SYSTEM_ITEM_KEYS
     _CORE = {"sku", "name", "quantity", "category", "location_id",
              "description", "unit", "sell_by", "tax_codes"}
     payload: dict = {"sku": new_sku, "auto_barcode": True}
@@ -1556,6 +1594,7 @@ def setup_routes(app):
                 category_attrs=cat_attrs,
                 col_labels=_import_field_labels(price_lists, cat_schemas),
                 mutex_groups=item_price_mutex_groups(price_lists),
+                skip_cols=spec.skip_cols,
             ),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
@@ -1624,6 +1663,7 @@ def setup_routes(app):
                     form_values=dict(form),
                     col_labels=_import_field_labels(price_lists, cat_schemas),
                     mutex_groups=item_price_mutex_groups(price_lists),
+                    skip_cols=spec.skip_cols,
                 ),
                 title=page_title("page.import_inventory"),
                 nav_active="inventory",
@@ -1851,6 +1891,7 @@ def setup_routes(app):
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp, category_names = [], {}, [], [], {}, {}, [], {}, {}
+        deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
         # Split preview for the item-detail split card; own try/except so a non-splittable item
         # (or any preview error) degrades to the disabled card rather than blanking the page.
         try:
@@ -1936,7 +1977,8 @@ def setup_routes(app):
             Span("", id="item-header-error"),
             Script(_SPLIT_DELTA_JS),
             Script(_BULK_SPLIT_JS),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, category_names, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings, connected_connectors=_item_connectors),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, category_names, price_lists=price_lists, cell_renderers=detail_renderers, base_price_list=base_price_list, split_preview=split_preview, role=_item_role, settings=_item_settings, connected_connectors=_item_connectors,
+                              deleted_parents=deleted_parents, manufacturing=module_active(_item_settings, "celerp-manufacturing")),
             title=page_title("page.item_detail"),
             nav_active="inventory",
             request=request,
@@ -1970,8 +2012,10 @@ def setup_routes(app):
         name = item.get("name") or item.get("sku") or entity_id
 
         from ui.components.activity import activity_table
+        deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
         table = activity_table(activities, title="", section_cls="", subject_entity_id=entity_id,
-                               currency=currency, category_names=category_names, resizable=True)
+                               currency=currency, category_names=category_names, resizable=True,
+                               deleted=deleted_parents)
         pages = max(1, (total + per_page - 1) // per_page)
         pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
 
@@ -2027,8 +2071,17 @@ function celerpPrintLabel(entityId, templateId) {
         """Fetch item + item list + currency and render the Manufacturing section."""
         item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         items = (await api.list_items(token, {"limit": 1000})).get("items", [])
+        # A component the list hides (deleted, archived) is read on its own, so its row
+        # still names it: "SKU [Deleted]" for a deleted one.
+        listed = {it.get("id") or it.get("entity_id") for it in items}
+        unlisted = [c.get("item_id") for c in (item.get("recipe") or {}).get("components", [])
+                    if c.get("item_id") and c.get("item_id") not in listed]
+        try:
+            hidden = await api.get_items_metadata(token, unlisted) if unlisted else {}
+        except APIError:
+            hidden = {}  # the rows fall back to "(unavailable)", as before
         return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""),
-                               show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind)
+                               show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind, hidden=hidden)
 
     def _recipe_saved_status(msg: str | None = None, kind: str = "saved"):
         return Div(msg if msg is not None else t("inventory.saved_check"), id="recipe-save-status", cls=f"recipe-save-status hint {kind}", hx_swap_oob="true")
@@ -2048,13 +2101,14 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     async def _production_block_response(token: str, entity_id: str, flash_msg: str | None = None,
-                                         flash_kind: str = "success"):
+                                         flash_kind: str = "success", kept_keys: dict[str, str] | None = None):
         item, company, hub = await asyncio.gather(
             api.get_item(token, entity_id), api.get_company(token),
             api.manufacturing_item_hub(token, entity_id),
         )
         cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
-        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind)
+        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind,
+                                 kept_keys=kept_keys)
 
     @app.get("/api/items/{entity_id}/production-block")
     async def production_block(request: Request, entity_id: str):
@@ -2068,11 +2122,13 @@ function celerpPrintLabel(entityId, templateId) {
                 return P(t("error.session_expired"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="production-block")
 
-    _RUN_ACTIONS = {
-        "start": api.start_mfg_order, "complete": lambda tok, rid: api.complete_mfg_order(tok, rid),
-        "hold": lambda tok, rid: api.hold_mfg_order(tok, rid), "resume": api.resume_mfg_order,
-        "cancel": lambda tok, rid: api.cancel_mfg_order(tok, rid),
-    }
+    # The client call each action makes, looked up when it is made. "undo:<lot id>" names the receipt to undo.
+    _RUN_ACTIONS = {"start": "start_mfg_order", "complete": "complete_mfg_order", "hold": "hold_mfg_order",
+                    "resume": "resume_mfg_order", "cancel": "cancel_mfg_order", "return": "return_mfg_materials",
+                    "reopen": "reopen_mfg_order", "undo": "undo_mfg_receipt"}
+    # The undo actions change nothing the run's row shows, so they say what they did.
+    _RUN_ACTION_DONE = {"return": "inventory.wo_returned", "undo": "inventory.wo_receipt_undone",
+                        "reopen": "inventory.wo_reopened"}
 
     @app.post("/api/items/{entity_id}/runs/{run_id}/act")
     async def run_action(request: Request, entity_id: str, run_id: str):
@@ -2081,16 +2137,25 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
-        fn = _RUN_ACTIONS.get(str(form.get("action") or ""))
+        action, _, lot = str(form.get("action") or "").partition(":")
+        fn = getattr(api, _RUN_ACTIONS[action]) if action in _RUN_ACTIONS else None
         if fn is None:
             return await _production_block_response(token, entity_id)
         try:
-            await fn(token, run_id)
-            return await _production_block_response(token, entity_id)
+            # The run's action list carries the key it was rendered with, so a choice sent
+            # again after a lost answer is recorded once; the refreshed block brings new keys.
+            key = required_operation_key(form, str(form.get("action")))
+            await (fn(token, run_id, lot, idempotency_key=key) if action == "undo"
+                   else fn(token, run_id, idempotency_key=key))
+            done = _RUN_ACTION_DONE.get(action)
+            return await _production_block_response(token, entity_id, flash_msg=t(done) if done else None)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.session_expired"), cls="cell-error")
-            return await _production_block_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
+            # Whether it happened is not known (the answer may have been lost): the run's
+            # action list keeps its key, so sending it again is the same action.
+            return await _production_block_response(token, entity_id, flash_msg=refusal_text(e.data or e.detail),
+                                                    flash_kind="error", kept_keys={run_id: kept_operation_key(form, e)})
 
     @app.post("/api/items/{entity_id}/recipe-section")
     async def recipe_section_edit(request: Request, entity_id: str):
@@ -2172,9 +2237,11 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         try:
-            output_qty = float(str(form.get("output_qty", "1")) or 1)
+            output_qty = float(str(form.get("output_qty", "")))
         except ValueError:
-            return _recipe_saved_status(t("inventory.not_saved_output_qty_number"), "error")
+            output_qty = 0.0
+        if not output_qty > 0:
+            return _recipe_saved_status(t("inventory.not_saved_quantity_positive"), "error")
         try:
             item = await api.get_item(token, entity_id)
             recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
@@ -2344,6 +2411,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
+        items += (await deleted_items(token, [c.get("item_id") for c in (item.get("recipe") or {}).get("components", [])])).values()
         cat = item.get("category") or ""
         category = category_label(cat, (await api.get_category_labels(token)).get(cat)) if cat else ""
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2383,7 +2451,7 @@ function celerpPrintLabel(entityId, templateId) {
             from ui.components.table import display_cell
             _f = next((x for x in schema if x.get("key") == field), {})
             return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
-                                cell_type=_f.get("type", "text"), editable=False)
+                                cell_type=_f.get("type", "text"), editable=False, domain="item_status")
         if field in _locked_edit_keys(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item)):
             # Amount fields and sell_by (edit_inventory_amounts) and prices
             # (set_inventory_prices): this GET is the single edit-entry chokepoint, so
@@ -2418,7 +2486,7 @@ function celerpPrintLabel(entityId, templateId) {
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
         # Apply unit-field override (sell_by, purchase_unit, weight_unit → searchable select)
-        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
+        if field in _UNIT_FIELDS:
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
@@ -2427,7 +2495,7 @@ function celerpPrintLabel(entityId, templateId) {
                 unit_names = []
                 weight_unit_names = []
             cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
-        label_map: dict | None = None
+        label_map: dict | None = _unit_labels(field, options)
         if field == "category":
             label_map = await api.get_category_labels(token)
         elif field == "inventory_type":
@@ -2441,8 +2509,6 @@ function celerpPrintLabel(entityId, templateId) {
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
             escape_js = (
                 f"if(event.key==='Escape'){{"
-                f"var _sw=document.querySelector('.table-scroll-wrap');"
-                f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
                 f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
                 f"event.preventDefault();}}"
             )
@@ -2520,7 +2586,7 @@ function celerpPrintLabel(entityId, templateId) {
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
-                            label_map=label_map, placeholder=_placeholder)
+                            label_map=label_map, placeholder=_placeholder, domain="item_status")
 
     _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
                                       "weight": "weight_unit", "weight_unit": "weight",
@@ -2607,9 +2673,14 @@ function celerpPrintLabel(entityId, templateId) {
                 try:
                     value = float(str(value) or 0)
                 except (ValueError, TypeError):
+                    value = None
+                # A component a recipe uses must be more than nothing (the API refuses it too).
+                if value is None or (section == "components" and not value > 0):
                     edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
                                             cell_type="number", restore_url=restore_url)
                     edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                    if value is not None:
+                        edit_td.attrs["title"] = t("inventory.not_saved_quantity_positive")
                     return edit_td
             try:
                 item = await api.get_item(token, entity_id)
@@ -2739,7 +2810,7 @@ function celerpPrintLabel(entityId, templateId) {
                 unit_formatted = fmt_money(new_cost_price, currency) if new_cost_price != 0 else "--"
                 unit_inner = Span(unit_formatted, cls="cell-money") if unit_formatted != "--" else Span("--")
                 sell_by = (flat.get("sell_by") or "").strip()
-                annotation = Span(f"/ {unit_label(sell_by)}", cls="cell-price-unit") if sell_by else ""
+                annotation = Span(f"/ {display_unit(sell_by)}", cls="cell-price-unit") if sell_by else ""
                 unit_td = Td(
                     unit_inner, annotation,
                     id=f"cell-{safe_id}-cost_price",
@@ -2940,7 +3011,7 @@ function celerpPrintLabel(entityId, templateId) {
                 formatted = fmt_money(val, currency) if val not in (None, "", "--") else "--"
             except (ValueError, TypeError):
                 formatted = "--"
-            annotation = Span(f"/ {unit_label(sell_by)}", cls="cell-price-unit") if sell_by else ""
+            annotation = Span(f"/ {display_unit(sell_by)}", cls="cell-price-unit") if sell_by else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
             safe_id = entity_id.replace(":", "-")
             price_td = Td(
@@ -2982,7 +3053,7 @@ function celerpPrintLabel(entityId, templateId) {
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
-                            label_map=label_map, placeholder=_placeholder)
+                            label_map=label_map, placeholder=_placeholder, domain="item_status")
 
     # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit, purchase_unit+purchase_conversion_factor) ─────────
 
@@ -3053,99 +3124,35 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.get("/api/items/{entity_id}/row")
     async def item_row(request: Request, entity_id: str):
-        """Return the full <tr> for one item. Used after category change to reload attribute columns."""
+        """Return the full <tr> for one item, as the list page it sits on draws it (the
+        page state comes from the page's URL). Used after category change to reload
+        attribute columns."""
         token = _token(request)
         if not token:
             return Response("", status_code=401)
+        from urllib.parse import urlsplit
+        from starlette.datastructures import QueryParams
+        from ui.components.table import data_row, table_columns
+
+        p = _page_state(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query))
         try:
-            schema, item, cat_schemas, loc_resp, units_resp = await asyncio.gather(
-                api.get_item_schema(token),
-                api.get_item(token, entity_id),
-                api.get_all_category_schemas(token),
-                api.get_locations(token),
-                api.get_units(token),
-            )
+            (schema, cat_schemas, col_prefs, company, locations, units, cat_labels), item = (
+                await asyncio.gather(_load_inventory_view_metadata(token), api.get_item(token, entity_id)))
+            # The row as the list endpoint returns it in this page's scope (its holding or
+            # sold value included), falling back to the item itself outside any scope.
+            scoped = await api.list_items(token, {
+                "skus": item.get("sku", ""), "limit": 50,
+                **{k: p[k] for k in ("status", "on_memo_to", "consigned_from") if p.get(k)}})
         except APIError as e:
             return Response(str(e.detail), status_code=500)
-        unit_names = [u["name"] for u in units_resp if u.get("name")]
-        units_map = {u["name"]: u for u in units_resp if u.get("name")}
-        category_label_map = await api.get_category_labels(token)
-        try:
-            company = await api.get_company(token)
-            currency = (company.get("currency") or "").strip() or None
-        except Exception:
-            company, currency = {}, None
-        active_cat = item.get("category", "")
-        eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-        eff_schema = _apply_edit_permission(eff_schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
-        col_prefs: dict = {}
-        try:
-            col_prefs = await api.get_column_prefs(token)
-        except Exception:
-            pass
-        visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
-        visible_cols_set = set(visible_cols) if visible_cols else None
-        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency)
-        from ui.components.table import display_cell
-        safe_id = entity_id.replace(":", "-")
-        flat = _flatten_item_attrs(item)
-        # Render ALL schema columns (minus paired secondaries), matching data_table behaviour.
-        # Columns not in visible_cols are still rendered but hidden via style="display:none" so
-        # that the td count matches the header and JS column toggling works correctly.
-        all_cols = [f for f in eff_schema if f["key"] not in _PAIRED_SECONDARY_KEYS]
-        data_cells = []
-        for f in all_cols:
-            col_hidden = visible_cols_set is not None and f["key"] not in visible_cols_set
-            if f["key"] in cell_renderers:
-                td = cell_renderers[f["key"]](entity_id, flat)
-            else:
-                td = display_cell(
-                    entity_id=entity_id,
-                    field=f["key"],
-                    value=flat.get(f["key"], ""),
-                    cell_type=f.get("type", "text"),
-                    options=f.get("options"),
-                    editable=f.get("editable", True),
-                    currency=currency,
-                )
-            if col_hidden:
-                # Inject display:none to match what data_table JS would apply
-                td.attrs["style"] = "display:none"
-            data_cells.append(td)
-        # Checkbox cell (matches data_table output)
-        checkbox_td = Td(
-            Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
-                  autocomplete="off",
-                  data_entity_id=entity_id,
-                  data_sku=flat.get("sku", ""),
-                  data_name=flat.get("name", ""),
-                  data_qty=str(flat.get("quantity", 0)),
-                  data_weight=str(flat.get("weight", "") or ""),
-                  data_weight_unit=flat.get("weight_unit", ""),
-                  data_sell_by=flat.get("sell_by", ""),
-                  data_status=str(flat.get("status", "") or "").lower(),
-            ),
-            cls="col-checkbox",
-        )
-        # Action cell (matches data_table output)
-        action_td = Td(
-            Div(
-                Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
-                Div(
-                    A(t("btn.edit"), href=f"/inventory/{entity_id}", cls="row-menu-item"),
-                    Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                           onclick=f"if(!confirm('Delete this item? This cannot be undone.'))return;"
-                                   f"htmx.ajax('DELETE','/api/items/{entity_id}',"
-                                   f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
-                    cls="row-menu-dropdown", id=f"menu-{safe_id}",
-                ),
-                cls="row-menu",
-            ),
-            cls="col-actions",
-        )
-        status_val = str(flat.get("status", "") or "").lower()
-        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
-        return Tr(checkbox_td, *data_cells, action_td, id=f"row-{safe_id}", cls=row_cls)
+        row = next((r for r in scoped.get("items", []) if r.get("id") == entity_id), None) \
+            or _flatten_item_attrs(item)
+        role = _get_role(request)
+        _, catalog_channels = await _catalog_channels(company, role)
+        _, _, args = _inventory_table(p, [row], schema, cat_schemas, col_prefs, company, locations,
+                                      units, category_labels(cat_labels), role=role, catalog_channels=catalog_channels)
+        columns = table_columns(args.pop("schema"), args.pop("show_cols"), args.pop("hidden_fields"))
+        return data_row(row, columns, **args)
 
     async def _paired_display(token: str, entity_id: str, field: str, role: str = "owner", settings: dict | None = None):
         """Return a display cell TD for the pair/triple containing `field`."""
@@ -3218,7 +3225,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return await _paired_display(token, entity_id, field, _get_role(request), _pe_settings)
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Field-specific overrides
-        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
+        if field in _UNIT_FIELDS:
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
@@ -3250,7 +3257,7 @@ function celerpPrintLabel(entityId, templateId) {
         restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
-                             restore_url=restore_url)
+                             label_map=_unit_labels(field, options), restore_url=restore_url)
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-display")
     async def field_paired_display_cell(request: Request, entity_id: str, field: str):
@@ -3273,16 +3280,19 @@ function celerpPrintLabel(entityId, templateId) {
 
     def _current_list_query(request: Request) -> dict:
         """The list the owner is on (search, tab, filters), from the page htmx names."""
-        return _parse_query(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query))
+        return _page_state(QueryParams(urlsplit(request.headers.get("hx-current-url", "")).query))
 
     def _bulk_destructive_success(request: Request, message: str, redirect_qs: str = "",
-                                  cls: str = "flash--success") -> Response:
+                                  cls: str = "flash--success", notice: str = "") -> Response:
         """Return a bulk-action result response that clears the client-side selection.
 
         Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
         and the toolbar before the table reloads.  Used for bulk actions (merge, delete,
         archive, expire, duplicate) that reload the table; `cls` selects the flash
-        variant (success, or warning for a partial-success count).
+        variant (success, or warning for a partial-success count). Clearing the
+        selection hides the toolbar that holds the flash, so a ``notice`` the user must
+        read (what a merge did to the books) is also raised as a toast that stays until
+        dismissed.
         """
         from starlette.responses import HTMLResponse
         # Without a result filter of its own the table reloads the list the owner is on
@@ -3298,7 +3308,9 @@ function celerpPrintLabel(entityId, templateId) {
             hx_swap="outerHTML",
             **({"hx_push_url": f"/inventory{redirect_qs}"} if redirect_qs else {}),
         )
-        return HTMLResponse(to_xml(content), headers={"HX-Trigger": "celerpSelectionClear"})
+        headers = (toast_header(f"{message} {notice}", persist=True, celerpSelectionClear=True) if notice
+                   else {"HX-Trigger": "celerpSelectionClear"})
+        return HTMLResponse(to_xml(content), headers=headers)
 
     def _bulk_toast_error(msg: str) -> Response:
         """Surface a bulk-action error as the standard lower-right toast (no inline swap), so
@@ -3456,9 +3468,38 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         message = t("inventory.bulk_deleted", n=result["deleted"])
-        if result["kept"]:
-            message += " " + t("settings.business_type_changes.demo_kept", count=result["kept"])
-        return _bulk_destructive_success(request, message, cls="flash--warning" if result["kept"] else "flash--success")
+        if on_demo_list:
+            if result["kept"]:
+                message += " " + t("settings.business_type_changes.demo_kept", count=result["kept"])
+            return _bulk_destructive_success(request, message, cls="flash--warning" if result["kept"] else "flash--success")
+        # Each item kept as Deleted is named with the reason, so nothing moves silently.
+        moved = [_moved_to_deleted_line(i) for i in result["items"] if i["outcome"] == "moved_to_deleted"]
+        if moved:
+            message = f'{message} {t("inventory.bulk_moved_to_deleted", n=len(moved))}'
+        return _bulk_destructive_success(request, message, cls="flash--warning" if moved else "flash--success",
+                                         notice=" ".join(moved))
+
+    def _moved_to_deleted_line(item: dict) -> str:
+        """One item Delete moved to Deleted, with what still names it or the files it holds."""
+        sku = item["sku"] or item["entity_id"]
+        if item["referenced_by"]:
+            return t("inventory.moved_to_deleted_referenced", sku=sku, refs=", ".join(item["referenced_by"]))
+        return t("inventory.moved_to_deleted_files", sku=sku)
+
+    @app.post("/api/items/bulk/restore-deleted")
+    async def bulk_item_restore_deleted(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.bulk_restore_deleted(token, entity_ids)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        return _bulk_destructive_success(request, t("inventory.bulk_restored_deleted", n=result["restored"]))
 
     # ── Bulk expire ──────────────────────────────────────────────────────
 
@@ -3543,18 +3584,19 @@ function celerpPrintLabel(entityId, templateId) {
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
         resulting_sku = str(form.get("resulting_sku", "")).strip() or None
+        idempotency_key = str(form.get("idempotency_key", "")).strip() or None
+        plan_fingerprint = str(form.get("plan_fingerprint", "")).strip() or None
         if len(entity_ids) < 2:
             return Div(P(t("inv.select_at_least_2_items_to_merge"), cls="flash flash--warning"), id="bulk-action-result")
         if not target_sku_from:
             return Div(P(t("inv.target_item_selection_is_required"), cls="flash flash--warning"), id="bulk-action-result")
-        # Fetch items to compute totals and resolve attribute conflicts
+        # Fetch items to name the merged SKU in the post-merge filter.
         items = []
         for eid in entity_ids:
             try:
                 items.append(await api.get_item(token, eid))
             except APIError as e:
                 return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
-        total_qty = sum(float(it.get("quantity", 0) or 0) for it in items)
         # Attribute conflict resolution lives entirely in the merge endpoint (schema-aware: dropdowns
         # and custom attributes collapse to the "Mixed" system value, numeric fields drop). The UI
         # must not duplicate that logic.
@@ -3563,8 +3605,9 @@ function celerpPrintLabel(entityId, templateId) {
                 token,
                 source_entity_ids=entity_ids,
                 target_sku_from=target_sku_from,
-                resulting_quantity=total_qty,
                 resulting_sku=resulting_sku,
+                idempotency_key=idempotency_key,
+                plan_fingerprint=plan_fingerprint,
             )
         except APIError as e:
             # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
@@ -3574,7 +3617,38 @@ function celerpPrintLabel(entityId, templateId) {
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
         target_sku = resulting_sku or (target_item.get("sku", "") if target_item else "")
         redirect_qs = f"?q={target_sku}" if target_sku else ""
-        return _bulk_destructive_success(request, t("inv.items_merged_successfully"), redirect_qs)
+        moved = _merge_reclass_sentence(result.get("inventory_reclassification"), done=True)
+        return _bulk_destructive_success(request, t("inv.items_merged_successfully"), redirect_qs, notice=moved)
+
+    @app.post("/api/items/merge/preview")
+    async def item_merge_preview(request: Request):
+        """The inventory accounts the pending merge moves value between, as one sentence
+        for the merge confirmation (empty when the items share an account), and the
+        fingerprint the confirmation sends back so a changed item or request stops the merge."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        target_sku_from = str(form.get("target_sku_from", "")).strip()
+        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
+        try:
+            preview = await api.preview_merge(token, entity_ids, target_sku_from, resulting_sku)
+        except APIError as e:
+            return JSONResponse({"error": str(e.detail)}, status_code=e.status)
+        return JSONResponse({"message": _merge_reclass_sentence(preview.get("inventory_reclassification")),
+                             "plan_fingerprint": preview.get("plan_fingerprint")})
+
+    @app.post("/api/items/{entity_id}/undo-merge")
+    async def item_undo_merge(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.undo_merge(token, entity_id)
+        except APIError as e:
+            return _bulk_toast_error(e.detail)
+        return Div(P(t("inv.merge_undone"), cls="flash flash--success"), id="merge-undo")
 
     async def _next_transform_sku(token: str, parent_sku: str) -> str:
         """Suggest a fresh child SKU for a TRANSFORM (a new, distinct product derived from
@@ -3770,7 +3844,7 @@ function celerpPrintLabel(entityId, templateId) {
         fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
 
         unit_select = Select(
-            *[Option(u, value=u, selected=(u == parent_sell_by)) for u in unit_names],
+            *[Option(display_unit(u), value=u, selected=(u == parent_sell_by)) for u in unit_names],
             name="child_sell_by",
             cls="form-input form-input--xs",
             onchange="transformUnitChanged(this)",
@@ -3790,8 +3864,8 @@ function celerpPrintLabel(entityId, templateId) {
             _sp_static_td(item.get("sku", "")),
             _sp_static_td(parent_name),
             _sp_static_td(parent_category),
-            _sp_static_td(f"{fmt(parent_qty)} {parent_sell_by}", num=True),
-            _sp_static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--", num=True),
+            _sp_static_td(f"{fmt(parent_qty)} {display_unit(parent_sell_by)}", num=True),
+            _sp_static_td(f"{fmt(parent_weight)} {display_unit(parent_weight_unit)}" if parent_weight is not None else "--", num=True),
             _sp_static_td(str(int(parent_pieces)) if parent_pieces is not None else "--", num=True),
         ]
         if can_see_cost:
@@ -4367,6 +4441,17 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
+    @app.post("/api/items/{entity_id}/restore-deleted")
+    async def item_restore_deleted(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.bulk_restore_deleted(token, [entity_id])
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
     @app.post("/api/items/{entity_id}/make-available")
     async def item_make_available(request: Request, entity_id: str):
         token = _token(request)
@@ -4627,56 +4712,6 @@ function celerpPrintLabel(entityId, templateId) {
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         return _split_redirect(orig_sku, [])   # children share the parent SKU
 
-    @app.post("/api/items/merge")
-    async def item_merge(request: Request):
-        token = _token(request)
-        if not token:
-            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        form = await request.form()
-        source_entity_ids = [v.strip() for v in form.getlist("source_entity_ids") if v.strip()]
-        target_sku_from = str(form.get("target_sku_from", "")).strip()
-        if not source_entity_ids or not target_sku_from:
-            return Span(t("inv.source_items_and_target_selection_are_required"), cls="flash flash--error")
-        raw_qty = str(form.get("resulting_quantity", "")).strip()
-        raw_cost = str(form.get("resulting_cost_total", "")).strip()
-        resulting_name = str(form.get("resulting_name", "")).strip() or None
-        resulting_sku = str(form.get("resulting_sku", "")).strip() or None
-        try:
-            resulting_quantity = float(raw_qty) if raw_qty else None
-        except ValueError:
-            return Span(t("error.invalid_resulting_quantity"), cls="flash flash--error")
-        try:
-            resulting_cost_total = float(raw_cost) if raw_cost else None
-        except ValueError:
-            return Span(t("inv.invalid_resulting_cost_price"), cls="flash flash--error")
-        # Collect resolved attributes for string conflicts.
-        resolved_attributes: dict = {}
-        for key, val in form.multi_items():
-            if key.startswith("resolved_attr_"):
-                attr_key = key[len("resolved_attr_"):]
-                resolved_attributes[attr_key] = str(val)
-            elif key.startswith("numeric_attr_"):
-                attr_key = key[len("numeric_attr_"):]
-                try:
-                    resolved_attributes[attr_key] = str(float(val))
-                except (TypeError, ValueError):
-                    pass
-        try:
-            result = await api.merge_items(
-                token,
-                source_entity_ids=source_entity_ids,
-                target_sku_from=target_sku_from,
-                resulting_quantity=resulting_quantity,
-                resulting_cost_total=resulting_cost_total,
-                resulting_name=resulting_name,
-                resulting_sku=resulting_sku,
-                resolved_attributes=resolved_attributes or None,
-            )
-        except APIError as e:
-            return Span(str(e.detail), cls="flash flash--error")
-        new_id = result.get("id", "")
-        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
-
     @app.post("/api/items/{entity_id}/duplicate")
     async def item_duplicate(request: Request, entity_id: str):
         token = _token(request)
@@ -4874,19 +4909,20 @@ function celerpPrintLabel(entityId, templateId) {
             hx_swap="outerHTML"
 
         Returning an empty 200 causes htmx to replace the row element with
-        nothing, removing it from the DOM immediately without a page reload.
+        nothing, removing it from the DOM immediately without a page reload. A refusal
+        leaves the row in place and says why in a toast, and an item moved to Deleted
+        rather than erased says so in a toast that stays until dismissed.
         """
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.bulk_delete(token, [entity_id])
+            result = await api.bulk_delete(token, [entity_id])
         except APIError as e:
-            return Tr(
-                Td(Span(str(e.detail), cls="flash flash--error"), colspan="100"),
-                id=f"row-{entity_id.replace(':', '-')}",
-            )
-        return Response("", status_code=200)
+            return _bulk_toast_error(e.detail)
+        moved = [_moved_to_deleted_line(i) for i in result["items"] if i["outcome"] == "moved_to_deleted"]
+        return Response("", status_code=200,
+                        headers=toast_header(" ".join(moved), "info", persist=True) if moved else None)
 
     @app.delete("/api/items/{entity_id}/attachments/{att_id}")
     async def item_delete_attachment(request: Request, entity_id: str, att_id: str):
@@ -4971,14 +5007,18 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     action_options.append(Option(t("inv.expire"), value="expire"))
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inv.duplicate"), value="duplicate"))
-    # Restore and Delete only shown when viewing archived/expired items; Delete also on
-    # the demo items list, which the dashboard's "Remove demo items" link opens.
+    # Restore only shown when viewing archived/expired items
     active_status = (p or {}).get("status", "")
     if active_status in ("archived", "expired"):
         action_options.append(Option(t("inv.restore"), value="restore"))
-    if active_status in ("archived", "expired") or (p or {}).get("filter") == DEMO_ITEMS_FILTER:
-        action_options.append(Option(t("btn.delete"), value="delete"))
-    # JS shows/hides these two based on the actual checked rows' statuses (updateBulkToolbar).
+    if active_status == "deleted" and role_has_permission(settings or {}, role, "adjust_inventory"):
+        action_options.append(Option(t("inv.restore"), value="restore_deleted"))
+    # JS shows/hides these three based on the actual checked rows' statuses (updateBulkToolbar).
+    # On the demo items list, which the dashboard's "Remove demo items" link opens, Delete
+    # removes the untouched samples in any status, so it stays shown there.
+    if role_has_permission(settings or {}, role, "adjust_inventory"):
+        on_demo_list = (p or {}).get("filter") == DEMO_ITEMS_FILTER
+        action_options.append(Option(t("btn.delete"), value="delete", data_samples="1" if on_demo_list else None))
     if role_has_permission(settings or {}, role, "edit_inventory"):
         action_options.append(Option(t("inventory.make_available"), value="make_available"))
     if role_has_permission(settings or {}, role, "revert_items_to_draft"):
@@ -5188,43 +5228,43 @@ def _bulk_context_templates(
 _VERTICAL_STATUS_TABS: dict[str, list[tuple[str, str]]] = {
     "gemstones": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "watches_accessories": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "artwork": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "coins_precious_metals": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("memo_out", "inventory.status_on_memo"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "wine_spirits": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"),
-        ("sold", "chip.sold"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "food_beverage": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"),
-        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
     "agricultural": [
         ("", "chip.available"), ("reserved", "inventory.status_reserved"),
-        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("all", "doc.all"),
+        ("sold", "chip.sold"), ("expired", "chip.expired"), ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
     ],
 }
 # The inventory search label per status filter: one whole sentence each, so every
 # language can word it naturally. Any other status gets the plain "Search inventory".
 _STATUS_SEARCH_LABELS: dict[str, str] = {
     s: f"inventory.search_{s}"
-    for s in ("available", "reserved", "sold", "archived", "all", "expired", "memo_out", "draft")
+    for s in ("available", "reserved", "sold", "archived", "all", "expired", "memo_out", "draft", "deleted")
 }
 
 _DEFAULT_STATUS_TABS: list[tuple[str, str]] = [
     ("", "chip.available"), ("reserved", "inventory.status_reserved"), ("sold", "chip.sold"),
-    ("archived", "chip.archived"), ("all", "doc.all"),
+    ("archived", "chip.archived"), ("deleted", "chip.deleted"), ("all", "doc.all"),
 ]
 
 # Status card definitions (status_key, label_key, color) per vertical; the label
@@ -5379,6 +5419,7 @@ def _valuation_bar(aggregates: dict, currency: str | None = None, lang: str = "e
     def _per_unit(label: str, unit: str, value) -> FT:
         # The unit heads the chip ("Quantity (piece): 8"): unit names are company data with
         # no plural forms, so "8 piece" cannot be made to agree with its count.
+        unit = display_unit(unit)
         return Span(f"{label} ({unit}): {fmt_qty(value)}" if unit else f"{label}: {fmt_qty(value)}", cls="val-chip")
 
     chips = [Span(f"{t('th.items', lang)}: {int(aggregates.get('item_count') or 0):,}", cls="val-chip")]
@@ -5454,6 +5495,8 @@ def _inventory_type_tabs(p: dict) -> FT:
         )
 
     return Div(*[_tab(it, label) for it, label in _TABS], cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
+# Item fields whose value is a unit name: edited by a unit select, shown via display_unit.
+_UNIT_FIELDS: frozenset[str] = frozenset({"sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"})
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "gross_weight": "gross_weight_unit", "purchase_unit": "purchase_conversion_factor"}
 # Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
@@ -5585,7 +5628,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 decimals = _umap.get(sell_by, {}).get("decimals", "")
                 return Td(
                     Span(
-                        f"{fmt} {sell_by}" if fmt not in ("", None) else EMPTY,
+                        f"{fmt} {display_unit(sell_by)}" if fmt not in ("", None) else EMPTY,
                         title=t("inventory.derived_from_qty"),
                         cls="cell-derived" if fmt not in ("", None) else "cell-derived cell-empty",
                     ),
@@ -5723,7 +5766,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             # A read-only cell suppresses the unit annotation next to "--": there is
             # no value the unit could belong to and no edit affordance to hint at.
             annotate = sell_by and (editable or formatted != "--")
-            annotation = Span(f"/ {unit_label(sell_by)}", cls="cell-price-unit") if annotate else ""
+            annotation = Span(f"/ {display_unit(sell_by)}", cls="cell-price-unit") if annotate else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
             _safe_eid = entity_id.replace(":", "-")
             attrs: dict = {
@@ -6161,6 +6204,14 @@ _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
 }
 
 
+def _unit_labels(field: str, options) -> dict | None:
+    """Option labels for a unit picker: each unit by its display name. The add-new option
+    already carries its label."""
+    if field not in _UNIT_FIELDS:
+        return None
+    return {u: display_unit(u) for u in options or () if isinstance(u, str)}
+
+
 def _apply_unit_field_override(
     field: str, cell_type: str, options, allow_custom: bool, unit_names: list[str],
     weight_unit_names: list[str] | None = None,
@@ -6372,7 +6423,9 @@ def _recipe_api_payload(recipe: dict) -> dict:
         except (TypeError, ValueError):
             return 0.0
     return {
-        "output_qty": _num(recipe.get("output_qty")) or 1.0,
+        # Sent as stored: a recipe saved with nothing as its output is refused until it is
+        # corrected, never quietly changed to 1.
+        "output_qty": _num(recipe.get("output_qty", 1)),
         "components": [
             {"item_id": c.get("item_id"), "sku": c.get("sku"), "quantity": _num(c.get("quantity")), "unit": c.get("unit")}
             for c in recipe.get("components", []) if c.get("item_id")
@@ -6695,9 +6748,13 @@ def _worksheet_unit_label(unit: str) -> str:
 
 def _component_label(c: dict, by_id: dict[str, dict]) -> str:
     """SKU plus name for a recipe component. Imported-recipe rows carry only a SKU, so the name
-    is resolved from the item list at render; an item that no longer exists shows its SKU alone."""
+    is resolved from the item list at render; an item that no longer exists shows its SKU alone,
+    and a deleted one its SKU and the "[Deleted]" mark."""
+    it = by_id.get(c.get("item_id") or "") or {}
     sku = c.get("sku") or c.get("item_id") or ""
-    name = c.get("name") or (by_id.get(c.get("item_id") or "") or {}).get("name") or ""
+    if is_deleted(it):
+        return deleted_label(it.get("sku") or sku)
+    name = c.get("name") or it.get("name") or ""
     return f"{sku} - {name}".strip(" -") or EMPTY
 
 
@@ -6730,7 +6787,7 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
                 Tbody(*[Tr(
                     Td(_component_label(c, by_id)),
                     Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
-                    Td(c.get("unit") or EM),
+                    Td(display_unit(c.get("unit")) or EM),
                 ) for c in comps]),
                 cls="ws-tbl",
             ),
@@ -6789,7 +6846,7 @@ def _worksheet_print_view(entity_id: str, item: dict, items: list[dict], today: 
                 ),
                 Div(
                     Div(t("inventory.production_worksheet_title")),
-                    Div(t("inventory.ws_output", qty=f"{float(recipe.get('output_qty') or 1):g}")),
+                    Div(t("inventory.ws_output", qty=f"{float(recipe.get('output_qty', 1)):g}")),
                     Div(today, cls="ws-muted"),
                     cls="ws-meta",
                 ),
@@ -6816,8 +6873,9 @@ def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
 
     def _row(inp: dict) -> FT:
         it = by_id.get(inp.get("item_id") or "") or {}
+        sku = it.get("sku") or inp.get("item_id") or EM
         return Tr(
-            Td(it.get("sku") or inp.get("item_id") or EM),
+            Td(deleted_label(sku) if is_deleted(it) else sku),
             Td(it.get("name") or EM),
             Td(f"{float(inp.get('quantity') or 0):g}", cls="ws-num"),
             Td(f"{float(inp.get('issued_qty') or 0):g}", cls="ws-num"),
@@ -6851,8 +6909,12 @@ def _run_sheet_print_view(order: dict, items: list[dict], today: str) -> FT:
 
 
 def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
-                    show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+                    show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success",
+                    hidden: dict[str, dict] | None = None) -> FT:
     """The Manufacturing tab: Materials / Labor / Overhead tables + Cost Summary.
+
+    ``hidden`` holds the components the item list leaves out, keyed by id: they label
+    their rows but are never offered in the picker.
 
     The persisted recipe is the single source of truth: every change saves immediately.
     Values use the system-standard double-click-to-edit cells (same as item and document
@@ -6893,13 +6955,15 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
     def _comp_row(i, c):
         cid = c.get("item_id", "")
-        it = by_id.get(cid)
+        it = by_id.get(cid) or (hidden or {}).get(cid)
         orphan = it is None
         label = f"{c.get('sku') or cid} - {it.get('name', '')}".strip(" -") if it else t("inventory.unavailable_suffix", name=c.get('sku') or cid)
+        if is_deleted(it):
+            label = deleted_label(it.get('sku') or cid)
         return Tr(
             Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
             _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
-            Td(c.get("unit") or EMPTY, cls="comp-unit-cell"),
+            Td(display_unit(c.get("unit")) or EMPTY, cls="comp-unit-cell"),
             # Unit cost + extended cost are read-only: they come from the component's catalog cost.
             Td(_recipe_money(c.get("unit_cost"), currency), cls="recipe-amount"),
             Td(_recipe_money(c.get("line_cost"), currency), cls="recipe-amount"),
@@ -7079,7 +7143,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             Div(
                 Label(t("inventory.output_qty_label"), For="output_qty"),
                 Input(type="number", id="output_qty", name="output_qty",
-                      value=f"{recipe.get('output_qty', 1) or 1:g}", min="0.001", step="any", cls="cell--number", **_save),
+                      value=f"{float(recipe.get('output_qty', 1)):g}", min="0.001", step="any", cls="cell--number", **_save),
                 P(t("inventory.unit_cost_formula"), cls="hint"),
                 cls="detail-card recipe-block",
             ),
@@ -7104,7 +7168,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
 
 def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
-                      flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+                      flash_msg: str | None = None, flash_kind: str = "success",
+                      kept_keys: dict[str, str] | None = None) -> FT:
     """The product Manufacturing-tab production hub: open demand for this product (with coverage) +
     its work orders. Both tables are client-sortable and Excel-filterable with from/to due-date
     filters, and paginate when long. Completed/cancelled work orders are hidden by default via the
@@ -7154,7 +7219,8 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         return Span(s.replace("_", " ").title(), cls=f"badge badge--{s.replace('_', '-')}",
                     **({"title": help_txt} if help_txt else {}))
 
-    def _wo_action_select(rid: str, status: str) -> FT:
+    def _wo_action_select(run: dict) -> FT:
+        rid, status = run.get("id"), run.get("status", "planned")
         opts = [Option(t("inventory.wo_action"), value="", disabled=True, selected=True)]
         if status == "planned":
             opts.append(Option(t("btn.start"), value="start"))
@@ -7163,12 +7229,20 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         if status == "on_hold":
             opts.append(Option(t("btn.resume"), value="resume"))
         if status not in ("completed", "cancelled"):
+            # Each step of a run can be taken back: its receipts, then the materials it holds.
+            opts += [Option(t("inventory.wo_undo_receipt", lot=r.get("sku") or r.get("lot_item_id")),
+                            value=f"undo:{r.get('lot_item_id')}") for r in run.get("receipts") or []]
+            if any(float(i.get("issued_qty") or 0) > 0 for i in run.get("inputs") or []):
+                opts.append(Option(t("inventory.wo_return"), value="return"))
             opts.append(Option(t("btn.cancel"), value="cancel"))
-        if len(opts) == 1:  # closed run - no further actions
+        if status == "completed":
+            opts.append(Option(t("btn.reopen"), value="reopen"))
+        if len(opts) == 1:  # a cancelled run - no further actions
             return empty_mark()
         return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
                       hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
-                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this")
+                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this",
+                      hx_vals=operation_key_vals((kept_keys or {}).get(rid, "")))
 
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
@@ -7186,8 +7260,11 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             Td(run.get("source_contact_name") or EMPTY),
             Td(f"{qty:g}", cls="cell--number"),
             Td(run.get("source_due") or (run.get("created_at") or "")[:10] or EMPTY, cls="cell--center"),
-            Td(_wo_status_badge(status)),
-            Td(_wo_action_select(rid, status), cls="cell--actions"),
+            Td(_wo_status_badge(status),
+               # A run whose materials' value its history cannot prove moves nothing until reconciled.
+               A(t("inventory.wo_needs_reconciling"), href=f"/manufacturing/runs/{rid}/reconcile",
+                 cls="table-link ml-sm") if run.get("wip_unresolved") else ""),
+            Td(_wo_action_select(run), cls="cell--actions"),
             cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )
 
@@ -7241,9 +7318,16 @@ def _item_detail_tabs(
     role: str = "owner",
     settings: dict | None = None,
     connected_connectors: set[str] | None = None,
+    *,
+    deleted_parents: dict[str, dict] | None = None,
+    manufacturing: bool,
 ) -> FT:
-    """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
-    tabs = [("details", t("th.details")), ("pricing", t("page.pricing")), ("manufacturing", t("nav.manufacturing")), ("activity", t("inventory.tab_activity"))]
+    """Tabbed item detail: Details | Pricing | Manufacturing | Activity. The Manufacturing
+    tab exists only while the manufacturing module is on; asking for it otherwise shows Details."""
+    tabs = [("details", t("th.details")), ("pricing", t("page.pricing")),
+            *([("manufacturing", t("nav.manufacturing"))] if manufacturing else []), ("activity", t("inventory.tab_activity"))]
+    if active_tab not in {key for key, _ in tabs}:
+        active_tab = "details"
     tab_bar = Div(
         *[
             A(
@@ -7287,7 +7371,9 @@ def _item_detail_tabs(
         )
     elif active_tab == "activity":
         panel = Div(
-            _ledger_table(ledger, entity_id=entity_id, currency=currency, category_names=category_names),
+            _undo_merge_block(entity_id, ledger),
+            _ledger_table(ledger, entity_id=entity_id, currency=currency, category_names=category_names,
+                          deleted=deleted_parents),
             cls="detail-grid detail-grid--single",
         )
     else:
@@ -7567,6 +7653,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
                 editable=f.get("editable", True),
                 currency=currency,
                 label_map=_inventory_type_labels() if key == "inventory_type" else None,
+                domain="item_status",
             )
         return Tr(
             Td(field_label(f), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
@@ -7582,12 +7669,41 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
     )
 
 
+def _merge_reclass_sentence(disclosure: dict | None, *, done: bool = False) -> str:
+    """The merge's inventory reclassification in words: how much moves from which
+    inventory account into the surviving one. A role that cannot see cost is told the
+    accounts without the amounts. Empty when the merge moves nothing."""
+    if not disclosure:
+        return ""
+    moves = disclosure["moves"]
+    to = disclosure["destination_name"]
+    tense = "done" if done else "pending"
+    if any(m["amount"] is None for m in moves):
+        return t(f"inv.merge_reclass_accounts_{tense}", accounts=", ".join(m["name"] for m in moves), to=to)
+    parts = ", ".join(t("inv.merge_reclass_move", amount=fmt_money(m["amount"], disclosure["currency"]),
+                        account=m["name"]) for m in moves)
+    return t(f"inv.merge_reclass_{tense}", moves=parts, to=to)
+
+
+def _undo_merge_block(entity_id: str, ledger: list[dict]) -> FT | str:
+    """Undo for a merge result, offered while the merge is still the item's latest event
+    (the API explains any other reason it cannot be undone)."""
+    if not ledger or ledger[0].get("event_type") != "item.merged":
+        return ""
+    return Div(
+        Button(t("inv.undo_merge"), type="button", cls="btn btn--secondary btn--sm",
+               hx_post=f"/api/items/{entity_id}/undo-merge", hx_target="#merge-undo", hx_swap="outerHTML",
+               hx_confirm=t("inv.undo_merge_confirm")),
+        id="merge-undo", style="margin-bottom:0.75rem",
+    )
+
+
 def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None,
-                  category_names: dict | None = None) -> FT:
+                  category_names: dict | None = None, deleted: dict[str, dict] | None = None) -> FT:
     from ui.components.activity import activity_table
     history_url = f"/inventory/{entity_id}/history" if entity_id else None
     return activity_table(ledger, max_display=10, subject_entity_id=entity_id, currency=currency,
-                          category_names=category_names, history_url=history_url, resizable=True)
+                          category_names=category_names, history_url=history_url, resizable=True, deleted=deleted)
 
 
 # ---------------------------------------------------------------------------
@@ -8030,6 +8146,18 @@ function batchSplitSubmit_{safe_id}(form) {{
     _RESTORABLE = {"archived", "expired"}
     if item_status == "draft":
         lifecycle_cards = []
+    elif item_status == "deleted":
+        lifecycle_cards = [Div(
+            Form(
+                Strong(t("inv.u21a9_restore"), cls="action-card-title"),
+                Div(Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"), cls="action-card-row"),
+                P(t("inventory.restore_deleted_hint"), cls="action-card-hint"),
+                hx_post=f"/api/items/{entity_id}/restore-deleted",
+                hx_target="#item-action-error",
+                hx_swap="outerHTML",
+            ),
+            cls="action-card",
+        )]
     elif item_status in _RESTORABLE:
         lifecycle_cards = [restore_card]
     else:

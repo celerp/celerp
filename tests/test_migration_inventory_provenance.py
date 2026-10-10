@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from fixtures.manager_io import specs
 from fixtures.manager_io.support import INVENTORY, ref
-from migration_support import OWNER_EMAIL, auth, maker, real_client, real_engine  # noqa: F401 - fixtures
+from migration_support import OWNER_EMAIL, auth, finalize_run, maker, real_client, real_engine  # noqa: F401 - fixtures
 from test_migration_e2e import _maps, _passing, _projections, migrate
 
 MODES = [{"mode": "full_history"}, {"mode": "cutover", "cutover_date": specs.LIFECYCLE_CUTOVER.isoformat()}]
@@ -54,20 +54,19 @@ class Books:
 async def _migrated(real_engine, monkeypatch, tmp_path, decisions=MODES[0], source: Path = INVENTORY) -> Books:
     from celerp.models.company import Company, User
     from celerp.models.migration import MigrationRun
-    from celerp.services import migrations
-    from celerp.services.auth import issue_token_pair
+    from celerp.credentials import issue_token_pair
 
     run, rejected = await migrate(real_engine, source.read_bytes(), source.name, decisions, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
     async with maker(real_engine)() as s:
-        await migrations.finalize(s, await s.get(MigrationRun, run.id))
+        await finalize_run(s, await s.get(MigrationRun, run.id))
     maps = {(m.source_type, m.source_external_id): m.target_entity_id for m in await _maps(real_engine, run)}
     items = await _projections(real_engine, run, "item")
     async with maker(real_engine)() as s:
         user = await s.scalar(select(User).where(User.email == OWNER_EMAIL))
         token = (await issue_token_pair(s, user=user,
-                                        company_id=run.company_id))["access_token"]
+                                        company_id=run.company_id, expected_snonce=None))["access_token"]
     return Books(real_engine, run, maps, token, items[maps[("InventoryItem", ref("WID"))]]["location_id"])
 
 
@@ -114,10 +113,6 @@ async def _position(books: Books) -> dict:
             recognized.add(recognition.group(1))
         for line in lines:
             net = _d(line.get("debit")) - _d(line.get("credit"))
-            # A supplier return takes the goods off the payable but leaves the bill's own
-            # balance as it was: the supplier now owes that credit back.
-            if ":rtn:" in je_id and line.get("account") in ap:
-                net = D(0)
             for name, codes in (("inventory", inventory), ("ar", ar), ("ap", ap)):
                 if line.get("account") in codes:
                     balances[name] += net
@@ -351,7 +346,7 @@ async def test_migration_lifecycle_uses_canonical_domain_code_only(real_engine, 
     bill = await _doc(books, "BILLG")
     assert _lot_additions(bill) == {wid: (10.0, 40.0)}
     async with maker(real_engine)() as s:
-        assert await _returnable_quantities(s, books.run.company_id, bill) == {wid: 10.0}
+        assert await _returnable_quantities(s, books.run.company_id, books.id("PurchaseInvoice", "BILLG"), bill) == {wid: 10.0}
         invoice_id = books.id("SalesInvoice", "INVE")
         lot = await _sold_lot(books, "INVE")
         items = await _projections(real_engine, books.run, "item")
@@ -454,28 +449,29 @@ async def test_imported_invoice_cogs_corrected_like_a_native_invoice(real_engine
     cost of INV-P's sold lot failed outright.
 
     INV-E recognized 10.00 for 2 widgets, the cost of the lot its delivery became: its
-    delivery is reverted (the goods come back at 10.00 and nothing is corrected, since
-    10.00 is recognized for goods not shipped), then shipped again from the same lot, and
-    still nothing is corrected.
+    delivery is reverted (the goods come back at 10.00 and the invoice gives that cost of
+    sales back to the inventory books), then shipped again from the same lot, which
+    recognizes the 10.00 again.
 
     INV-P recognized 25.00 for 5 widgets, 15.00 of it for the 3 delivered from a lot
     costing 15.00. Correcting that lot to 15.25 leaves 15.25 for what was shipped and the
     10.00 recognized for the 2 never delivered, 25.25 in all: 0.25 more cost of sales,
-    taken off inventory. Stock on hand is untouched."""
+    against stock gains, since the lot is no longer in stock. Stock on hand and the
+    inventory books are untouched."""
     books = await _migrated(real_engine, monkeypatch, tmp_path)
     invoice, lot = books.id("SalesInvoice", "INVE"), await _sold_lot(books, "INVE")
     start = await _position(books)
     r = await real_client.post(f"/docs/{invoice}/revert-lines", headers=books.headers, json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     reverted = await _position(books)
-    assert _moved(start, reverted) == ((D("2"), D("10.00")), D("0.00"))
+    assert _moved(start, reverted) == ((D("2"), D("10.00")), D("10.00"))
     r = await real_client.post(f"/docs/{invoice}/fulfill-lines", headers=books.headers, json={"line_entity_ids": [lot]})
     assert r.status_code == 200, r.text
     shipped = await _position(books)
-    assert _moved(reverted, shipped) == ((D("-2"), D("-10.00")), D("0.00"))
+    assert _moved(reverted, shipped) == ((D("-2"), D("-10.00")), D("-10.00"))
 
     partial = await _sold_lot(books, "INVP")
     r = await real_client.patch(f"/items/{partial}", headers=books.headers,
                                 json={"fields_changed": {"cost_total": {"old": None, "new": 15.25}}})
     assert r.status_code == 200, r.text
-    assert _moved(shipped, await _position(books)) == ((D("0"), D("0.00")), D("-0.25"))
+    assert _moved(shipped, await _position(books)) == ((D("0"), D("0.00")), D("0.00"))

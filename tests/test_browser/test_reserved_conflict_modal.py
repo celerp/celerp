@@ -19,7 +19,11 @@ pytestmark = pytest.mark.browser
 
 
 def _create_item(api, sku, qty=1):
-    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": qty, "sell_by": "piece"})
+    """A non-splittable lot: the picker still offers it while another record holds it, so the
+    document's own refusal is what the page shows. A splittable lot held elsewhere is never
+    offered at all."""
+    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku, "quantity": qty,
+                                 "sell_by": "piece", "allow_splitting": False})
     assert r.status_code in {200, 201}, f"create item failed: {r.text}"
     return r.json()["id"]
 

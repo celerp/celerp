@@ -57,41 +57,11 @@ def test_mac_has_zip_target():
 
 
 # ---------------------------------------------------------------------------
-# main.js: installing a downloaded update
+# app-main.js source
 # ---------------------------------------------------------------------------
 
 def _main_src() -> str:
     return _MAIN.read_text()
-
-
-def test_main_kill_subprocesses_before_quit_and_install():
-    """main.js must kill uiProcess/apiProcess before calling quitAndInstall.
-
-    ShipIt (Squirrel.Mac) aborts if the app process is still alive when it tries
-    to replace the bundle. Killing child processes first lets the OS reap them
-    before ShipIt does its check.
-    """
-    src = _main_src()
-    # Find the install-update handler block
-    match = re.search(r'ipcMain\.on\(["\']install-update["\'].*?}\);', src, re.DOTALL)
-    assert match, "ipcMain.on('install-update', ...) handler not found in main.js"
-    handler = match.group(0)
-    assert "uiProcess" in handler and ".kill()" in handler, (
-        "install-update handler must kill uiProcess before calling quitAndInstall."
-    )
-    assert "apiProcess" in handler and ".kill()" in handler, (
-        "install-update handler must kill apiProcess before calling quitAndInstall."
-    )
-    assert "quitAndInstall" in handler, (
-        "install-update handler must call autoUpdater.quitAndInstall()."
-    )
-    # The kill must come before quitAndInstall in source order
-    kill_pos = handler.index(".kill()")
-    quit_pos = handler.index("quitAndInstall")
-    assert kill_pos < quit_pos, (
-        "uiProcess/apiProcess must be killed BEFORE quitAndInstall is called, "
-        "otherwise ShipIt sees the app still running and aborts the install."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,37 +155,6 @@ def test_main_initial_check_deferred_until_did_finish_load():
     assert check_idx != -1, (
         "checkForUpdates() is not called inside the did-finish-load handler. "
         "Initial update checks may fire before the renderer is ready."
-    )
-
-
-def test_build_yml_delete_checks_http_status():
-    """build.yml asset deletion must check HTTP status and fail on 5xx errors.
-
-    Using curl -s without status checking means a failed delete (5xx) goes unnoticed,
-    and the subsequent publish step may fail with 'asset already exists'.
-    Using -f/-fsS would fail on 404 (asset not yet uploaded on first build), so we
-    check the status code explicitly and only fail on >= 500.
-    """
-    yml = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
-    clear_idx = yml.find("Clear existing release assets")
-    assert clear_idx != -1, "Asset-clearing step not found in build.yml"
-    # Scan to the end of this step (the next `- name:` or EOF) rather than a fixed-size
-    # window - the delete loop sits near the end of the step and a short slice misses it.
-    next_step = yml.find("\n      - name:", clear_idx + 1)
-    step_block = yml[clear_idx: next_step if next_step != -1 else len(yml)]
-    assert "%{http_code}" in step_block, (
-        "build.yml DELETE step does not capture HTTP status code. "
-        "Use curl -w '%{http_code}' and fail on >= 500."
-    )
-    assert ">= 500" in step_block or "-ge 500" in step_block, (
-        "build.yml DELETE step does not fail on 5xx responses. "
-        "A server-side delete failure will silently allow a stale asset to remain."
-    )
-    assert "tr -d" in step_block and r"\r" in step_block, (
-        "build.yml DELETE step does not strip \\r from curl output. "
-        "On Windows Git Bash, curl -w '%{http_code}' appends \\r, causing "
-        "[ \"204\\r\" -ge 500 ] to exit with code 3 (integer expression expected). "
-        "Pipe through | tr -d '\\r'."
     )
 
 
@@ -406,13 +345,13 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
     assert 'xcrun stapler validate "$MOUNT_POINT/Celerp.app"' in verify
     assert 'if [[ "$GITHUB_REF" == refs/tags/v* ]]' in verify
 
-    # Both dev artifact upload and tag publication are downstream of this build step.
-    assert verify_idx < workflow.index("- name: Upload artifacts (dev builds only)")
+    # Both the artifact upload and tag publication are downstream of this build step.
+    assert verify_idx < workflow.index("- name: Upload artifacts")
     assert "publish-release:" in workflow
     publish_idx = workflow.index("  publish-release:")
     publish_block = workflow[publish_idx:publish_idx + 300]
     needs_line = next(l for l in publish_block.splitlines() if l.strip().startswith("needs:"))
-    assert needs_line.strip() == "needs: [build, openapi-asset]"
+    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]"
 
 
 def test_build_workflow_exports_versioned_openapi_before_publish():
@@ -457,10 +396,75 @@ def test_windows_installer_check_covers_every_starting_point():
     assert 'if ($code -ne 2) { Fail "older installer over 999.0.0' in run
 
 
-def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
+def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
+    """Every build platform checks the packaged default modules against the lock
+    with the packaged Python, then boots the packaged app with every module in
+    the lock enabled."""
+    steps = _workflow("build.yml")["jobs"]["build"]["steps"]
+    names = [s.get("name") for s in steps]
+    by_name = dict(zip(names, steps))
+    check = by_name["Check bundled modules in the packaged artifact"]
+    assert "if" not in check
+    assert ('PYTHONPATH="$RES/app" "$PY" scripts/check_packaged_modules.py \\\n'
+            '  "$RES/app/default_modules" --lock default_modules/first_party.lock.json'
+            in check["run"])
+    for label, py in (("macos-latest)", "python-arm64/python/bin/python3"),
+                      ("windows-latest)", "python-x64/python/python.exe"),
+                      ("*)", "python-x64/python/bin/python3")):
+        assert f'PY="$RES/{py}"' in check["run"].split(label, 1)[1].split(";;", 1)[0]
+
+    unix = by_name["Boot smoke (launch the packaged app, require db:ok)"]
+    win = by_name["Boot smoke (Windows, require db:ok)"]
+    for smoke in (unix, win):
+        assert names.index(check["name"]) < names.index(smoke["name"])
+        # A hung app fails the step with its log instead of holding the runner for hours.
+        assert smoke["timeout-minutes"] == 15
+    assert ('json.load(open("../default_modules/first_party.lock.json"))' in unix["run"]
+            and "export ENABLED_MODULES" in unix["run"])
+    # A boot that never gets ready shows the app's output and logs, then ends the app,
+    # which may not act on SIGTERM; the readiness poll itself cannot block.
+    assert 'curl -fs --max-time 5 "http://127.0.0.1:$API_PORT/health/ready"' in unix["run"]
+    failed = unix["run"].split('if [ -z "$ok" ]; then', 1)[1].split("\nfi\n", 1)[0]
+    assert failed.index("-path '*celerp-data/logs/*'") < failed.index('kill -9 "$APP_PID"')
+    assert "wait" not in failed
+    # The force-quit check reads the database's data directory from the running
+    # database; the app does not keep its data under $HOME on every runner.
+    assert 'PG_PIDFILE="$PG_DATA/postmaster.pid"' in unix["run"] and 'find "$HOME"' not in unix["run"].split("boot smoke OK")[1]
+    # Linux and macOS: a force-quit app (SIGKILL) must leave no API or database running.
+    assert 'kill -9 "$ELECTRON"' in unix["run"] and "left the API or the database running" in unix["run"]
+    assert ('Get-Content "..\\default_modules\\first_party.lock.json" -Raw | ConvertFrom-Json'
+            in win["run"])
+    assert "set ENABLED_MODULES=$enabled" in win["run"]
+    # Windows: the job object ends the API and the database when the app is force-quit.
+    assert "taskkill /IM Celerp.exe /F" in win["run"] and "left the API or the database running" in win["run"]
+
+
+def test_packaged_upgrade_smoke_runs_in_the_tag_release_and_on_demand_only():
+    """A tag's release build calls the check on its own binaries; a manual run names
+    its build. Both take the same candidate checks before either platform."""
+    build = _workflow("build.yml")
+    assert "schedule" not in build[True]  # YAML 1.1 reads the bare key `on` as True
+    assert build[True]["workflow_dispatch"]["inputs"]["platforms"]["options"] == ["all", "windows", "linux", "mac"]
     wf = _workflow("packaged-upgrade-smoke.yml")
-    triggers = wf[True]  # YAML 1.1 reads the bare key `on` as True
-    assert set(triggers) == {"schedule", "workflow_dispatch"}
-    steps = [s.get("name") for s in wf["jobs"]["upgrade"]["steps"]]
+    triggers = wf[True]
+    assert set(triggers) == {"workflow_call", "workflow_dispatch"}
+    for trigger in ("workflow_call", "workflow_dispatch"):
+        assert triggers[trigger]["inputs"]["candidate_run"]["required"] is True
+        assert triggers[trigger]["inputs"]["previous"]["default"] == ""
+    candidate = wf["jobs"]["candidate"]
+    assert "if" not in candidate
+    check = candidate["steps"][-1]
+    assert check["run"] == 'python3 scripts/upgrade_candidate.py check "$CANDIDATE_RUN"'
+    assert check["env"]["CANDIDATE_RUN"] == "${{ inputs.candidate_run }}"
+    upgrade = wf["jobs"]["upgrade"]
+    assert upgrade["needs"] == "candidate"
+    # scripts/release_gate.py finds these jobs by name before PyPI publishes.
+    assert upgrade["name"] == "upgrade (${{ matrix.os }})"
+    assert upgrade["env"]["CANDIDATE_RUN"] == "${{ needs.candidate.outputs.run }}"
+    runs = "\n".join(s.get("run", "") for s in upgrade["steps"])
+    assert "gh run list" not in runs and "dev-latest" not in runs
+    assert 'python3 scripts/upgrade_candidate.py newer "$(version candidate)" "$PREVIOUS_VERSION"' in runs
+    assert "python scripts/upgrade_candidate.py newer $new $env:PREVIOUS_VERSION" in runs
+    steps = [s.get("name") for s in upgrade["steps"]]
     assert "Previous, candidate, downgrade, reopen (Linux, data)" in steps
     assert "Previous, candidate, downgrade, in-app update run (Windows, install)" in steps

@@ -155,15 +155,21 @@ async def test_a_bank_account_is_restored_only_onto_an_active_asset_account(clie
 # ── Cash (1110), which has no bank account ────────────────────────────────────
 
 @pytest.mark.parametrize("change", [{"is_active": False}, {"account_type": "liability"}])
-async def test_cash_can_be_archived_or_retyped_in_a_company_that_never_connected_online_payments(
+async def test_cash_in_a_company_that_never_connected_online_payments_is_kept_only_by_its_posting_role(
         client, change):
+    """Online payments add no rule of their own to Cash: in a company that never connected
+    them, the only thing keeping 1110 an active asset account is that it is the posting
+    account for Cash and cash equivalents."""
     tok = await _register(client)
 
     r = await client.patch("/accounting/accounts/1110", headers=_h(tok), json=change)
 
-    assert r.status_code == 200, r.text
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail.startswith("Account 1110 is the posting account for Cash and cash equivalents")
+    assert "nline payments" not in detail
     acc = await _chart_account(client, tok, "1110")
-    assert {k: acc[k] for k in change} == change
+    assert (acc["account_type"], acc["is_active"]) == ("asset", True)
 
 
 # ── the rule every posting meets ──────────────────────────────────────────────
@@ -178,4 +184,5 @@ async def test_a_journal_entry_on_an_inactive_account_is_refused(client):
             {"account": "1111", "debit": 0, "credit": 10}]})
 
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_account_archived", "en", code="6190")
+    assert r.json()["detail"]["message_key"] == "posting.destination.inactive"
+    assert r.json()["detail"]["params"] == {"code": "6190"}

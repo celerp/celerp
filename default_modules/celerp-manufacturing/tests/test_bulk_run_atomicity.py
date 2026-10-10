@@ -71,7 +71,7 @@ async def test_a_run_refused_after_its_components_were_issued_is_skipped_whole(c
     assert r.status_code == 200, r.text
     assert r.json()["done"] == [good]
     assert [s["id"] for s in r.json()["skipped"]] == [refused]
-    assert "draft item" in r.json()["skipped"][0]["reason"]
+    assert "PEND is a draft, not stock yet" in r.json()["skipped"][0]["reason"]
     assert await _qty(client, token, gold) == 9.0
     assert await _status(client, token, good) == "completed"
     assert await _status(client, token, refused) != "completed"
@@ -88,14 +88,14 @@ async def test_a_run_whose_completion_entry_fails_keeps_nothing(client, monkeypa
     refused = await _run_of(client, token, ring, gold)
     good = await _run_of(client, token, chain, gold)
 
-    real = auto_je.create_for_mfg_completed
+    real = auto_je.create_for_mfg_movement
 
-    async def refuse_first(session, *, order_id, **kw):
-        if order_id == refused:
+    async def refuse_first(session, *, order_id, movement, **kw):
+        if order_id == refused and movement.startswith("complete:"):
             raise auto_je.UnbalancedJournalEntry(f"Auto JE for {order_id} completion: does not balance")
-        return await real(session, order_id=order_id, **kw)
+        return await real(session, order_id=order_id, movement=movement, **kw)
 
-    monkeypatch.setattr(auto_je, "create_for_mfg_completed", refuse_first)
+    monkeypatch.setattr(auto_je, "create_for_mfg_movement", refuse_first)
 
     r = await client.post("/manufacturing/bulk-action", headers=_h(token),
                           json={"run_ids": [refused, good], "action": "complete"})

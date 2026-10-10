@@ -42,10 +42,12 @@ _MIN_HOURS_BETWEEN_SCANS = 23       # at most one digest per company per day
 _SCAN_HOUR_UTC = 8                  # run the scan when the UTC hour matches
 _EXPIRING_WINDOW_DAYS = 30          # expiring-lot look-ahead window
 
-# Outbound event types and where each stores its quantity in the ledger `data`.
+# Outbound event types, where each stores its quantity in the ledger `data`, and its sign:
+# stock given back after it was consumed no longer counts as used.
 _OUTBOUND_QTY_KEYS = {
-    "item.fulfilled": "quantity_fulfilled",
-    "item.consumed": "quantity_consumed",
+    "item.fulfilled": ("quantity_fulfilled", 1),
+    "item.consumed": ("quantity_consumed", 1),
+    "item.quantity.adjusted": ("quantity_returned", -1),
 }
 
 
@@ -103,11 +105,9 @@ async def suggest_reorder(
 
     total_out = 0.0
     for event_type, data in rows:
-        key = _OUTBOUND_QTY_KEYS.get(event_type)
-        if not key:
-            continue
+        key, sign = _OUTBOUND_QTY_KEYS[event_type]
         try:
-            total_out += float((data or {}).get(key, 0) or 0)
+            total_out += sign * float((data or {}).get(key, 0) or 0)
         except (TypeError, ValueError):
             continue
 

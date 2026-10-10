@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import uuid
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -74,11 +75,58 @@ async def make_authed_token(session, user_id: str, company_id: str, role: str) -
     going through the login gate (which allows only one active session per user).
     The user, its ``UserCompany`` membership and the company must already exist.
     """
-    from celerp.services.auth import create_access_token
+    from celerp.credentials import create_access_token
     from celerp.services.session_tracker import get_nonce
     snonce = await get_nonce(session, str(user_id))
     token, _ = create_access_token(str(user_id), str(company_id), role, snonce=snonce)
     return token
+
+
+@asynccontextmanager
+async def signed_request(session, company_id, user_id, role: str = "operator"):
+    """Run the body as a request *user_id* signed with its own access token: the
+    real get_auth_context dependency, entered on *session*."""
+    from starlette.requests import Request
+
+    from celerp.services.auth import get_auth_context
+    token = await make_authed_token(session, str(user_id), str(company_id), role)
+    request = Request({"type": "http", "method": "POST", "path": "/module/route", "headers": [],
+                       "query_string": b""})
+    dependency = get_auth_context(request, token, session)
+    await dependency.__anext__()
+    try:
+        yield
+    finally:
+        await dependency.aclose()
+
+
+async def provision_company_books(session, company_id) -> None:
+    """Give a company created directly in a test what provisioning gives every new
+    company: each module's starter data, including the chart of accounts and its
+    posting accounts. Tests that post to the ledger need it."""
+    from celerp.modules import slots
+
+    await slots.fire_lifecycle("on_company_created", session=session, company_id=company_id)
+    await session.flush()
+
+
+TZ = "Pacific/Kiritimati"  # the timezone of the company company_auth creates
+
+
+async def company_auth(session, cid, uid) -> dict:
+    """A company with its books and an admin, and the admin's request headers."""
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+
+    session.add(Company(id=cid, name="CostCo", slug=f"costco-{cid.hex[:8]}",
+                        settings={"currency": "USD", "timezone": TZ}))
+    session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    await provision_company_books(session, cid)
+    await session.commit()
+    token = await make_authed_token(session, str(uid), str(cid), "admin")
+    return {"headers": {"Authorization": f"Bearer {token}"}, "company_id": cid, "user_id": uid}
 
 
 async def ensure_user(session, user_id) -> None:
@@ -138,6 +186,53 @@ async def default_location_id(client, headers: dict) -> str:
         if it.get("is_default"):
             return it["id"]
     return items[0]["id"]
+
+
+async def merge_items(client, *, json: dict, headers: dict | None = None):
+    """Merge the way a user does: preview the merge, then confirm it with the preview's
+    fingerprint. A refused preview leaves the merge to give its own refusal."""
+    if "plan_fingerprint" not in json:
+        preview = await client.post("/items/merge/preview", headers=headers, json=json)
+        if preview.status_code == 200:
+            json = {**json, "plan_fingerprint": preview.json()["plan_fingerprint"]}
+    return await client.post("/items/merge", headers=headers, json=json)
+
+
+async def sell_item(client, headers: dict, item_id: str, unit_price: float = 150.0) -> str:
+    """Sell all of a lot the way a user does: an invoice for it, finalized, then
+    fulfilled. A status edit cannot mark stock sold. Returns the invoice id."""
+    r = await client.get(f"/items/{item_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    item = r.json()
+    qty = float(item.get("quantity") or 1)
+    r = await client.post("/docs", headers=headers, json={"doc_type": "invoice", "total": unit_price * qty, "line_items": [
+        {"entity_id": item_id, "sku": item.get("sku"), "name": item.get("name") or "Item", "quantity": qty,
+         "unit_price": unit_price, "sell_by": item.get("sell_by") or "piece"}]})
+    assert r.status_code == 200, r.text
+    inv = r.json()["id"]
+    for path, body in ((f"/docs/{inv}/finalize", {}), (f"/docs/{inv}/fulfill-lines", {"line_entity_ids": [item_id]})):
+        r = await client.post(path, headers=headers, json=body)
+        assert r.status_code == 200, r.text
+    return inv
+
+
+async def reserve_item(client, headers: dict, item_id: str, unit_price: float = 150.0) -> str:
+    """Reserve a lot the way a user does: on a finalized invoice that names it. A status
+    edit cannot reserve stock. Returns the invoice id."""
+    r = await client.get(f"/items/{item_id}", headers=headers)
+    assert r.status_code == 200, r.text
+    item = r.json()
+    qty = float(item.get("quantity") or 1)
+    r = await client.post("/docs", headers=headers, json={"doc_type": "invoice", "total": unit_price * qty, "line_items": [
+        {"entity_id": item_id, "sku": item.get("sku"), "name": item.get("name") or "Item", "quantity": qty,
+         "unit_price": unit_price, "sell_by": item.get("sell_by") or "piece"}]})
+    assert r.status_code == 200, r.text
+    inv = r.json()["id"]
+    for path, body in ((f"/docs/{inv}/finalize", {}),
+                       (f"/docs/{inv}/reserve-lines", {"new_status": "reserved", "line_entity_ids": [item_id]})):
+        r = await client.post(path, headers=headers, json=body)
+        assert r.status_code == 200, r.text
+    return inv
 
 
 async def create_location(client, headers: dict, name: str = "Warehouse 2") -> str:
@@ -263,6 +358,39 @@ def _bundled_pluggable_names() -> set[str]:
     }
 
 
+def in_language(lang: str, detail) -> str:
+    """A refusal as a reader in ``lang`` sees it."""
+    from ui import i18n
+
+    i18n.set_lang(lang)
+    try:
+        return i18n.refusal_text(detail)
+    finally:
+        i18n.set_lang("en")
+
+
+def notice_in(lang: str, item: dict) -> dict:
+    """A notice from ``GET /notifications`` as the bell lists it to a reader in ``lang``."""
+    from ui.routes.notifications import _in_reader_language
+
+    from ui import i18n
+
+    i18n.set_lang(lang)
+    try:
+        return json.loads(_in_reader_language(json.dumps({"items": [dict(item)]}).encode()))["items"][0]
+    finally:
+        i18n.set_lang("en")
+
+
+def sidebar_label(item: str, lang: str) -> str:
+    """A sidebar item's label as a sentence names it: without its icon."""
+    import re
+
+    from ui import i18n
+
+    return re.sub(r"^\W+", "", i18n.t(item, lang))
+
+
 def real_agent_app() -> FastAPI:
     """The real Celerp API surface with every first-party module enabled.
 
@@ -278,3 +406,16 @@ def real_agent_app() -> FastAPI:
     register_api_routes(app, loaded)
     app.openapi_schema = None
     return app
+
+
+@contextmanager
+def invoices_booking_one_lot_twice():
+    """Finalize invoices the way releases before the double booking check did, so a test can
+    build the data such a release left behind: two open invoices that both booked one lot."""
+    from unittest.mock import patch
+
+    async def _unchecked(*_args, **_kwargs) -> None:
+        return None
+
+    with patch("celerp_docs.routes._refuse_unfillable_invoice_lines", _unchecked):
+        yield

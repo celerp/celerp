@@ -14,6 +14,7 @@ import pytest
 from PIL import Image
 
 from celerp.services import attachments as att_svc
+from test_helpers import merge_items
 
 
 def _png(width: int = 640, height: int = 400, color=(200, 30, 30)) -> bytes:
@@ -441,7 +442,7 @@ async def test_merged_item_keeps_the_file_thumbnail(client):
     a = await _item(client, h, "THUMB-MERGE-A")
     b = await _item(client, h, "THUMB-MERGE-B")
     file_id = await _upload(client, h, a, _png())
-    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 200, r.text
     merged_id = r.json()["id"]
     r = await client.get(f"/items/{merged_id}/files/{file_id}/thumbnail", headers=h)

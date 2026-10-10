@@ -862,7 +862,7 @@ async def test_import_blank_leading_lines_find_or_ask_for_the_header(client, tmp
 @pytest.mark.parametrize("field,value", [
     ("cost_base", 1.0),
     ("cost_landed", 500.0),
-    ("landed_contributions", {"bill:x::freight": 50.0}),
+    ("landed_costs", {"bill:x::freight": 50.0}),
     ("reserved_quantity", 5),
     ("fulfilled_for_docs", ["doc:x"]),
     ("status_doc_id", "doc:x"),
@@ -885,5 +885,5 @@ async def test_import_refuses_fields_the_app_manages(client, session, event_type
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 0
-    assert any(field in e for e in body["errors"]), body["errors"]
+    assert any(f"set by the app and cannot be entered: {field}." in e["message"] for e in body["errors"]), body["errors"]
     assert (await client.get(f"/items/{entity_id}", headers=headers)).status_code == 404

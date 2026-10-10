@@ -17,7 +17,7 @@ COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 # goods cost leaks through a value computed off it. Kept separate from COST_ITEM_KEYS,
 # which also drives the draft cost carve-out; writing one of these restates the goods
 # cost, so pricing.is_price_item_key gates them like cost_total.
-COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", "landed_contributions"})
+COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", "landed_costs"})
 
 
 def restricted_field_keys(role: str, field_schema: list[dict]) -> set[str]:

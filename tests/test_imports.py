@@ -14,7 +14,6 @@ def test_event_type_values() -> None:
     assert EventType.CRM_CONTACT_CREATED == "crm.contact.created"
     assert EventType.MFG_ORDER_CREATED == "mfg.order.created"
     assert EventType.DOC_CREATED == "doc.created"
-    assert EventType.SCAN_BARCODE == "scan.barcode"
     assert EventType.MP_LISTING_CREATED == "mp.listing.created"
     assert EventType.ACC_JOURNAL_ENTRY_CREATED == "acc.journal_entry.created"
     assert EventType.SYS_COMPANY_CREATED == "sys.company.created"
@@ -26,7 +25,7 @@ def test_event_type_values() -> None:
     assert EventType.DOC_PAYMENT_REFUND_REVERSED == "doc.payment.refund_reversed"
     assert EventType.DOC_PAYMENT_STRIPE_RELEASED == "doc.payment.stripe_released"
     assert EventType.ACC_RECONCILIATION_REOPENED == "acc.reconciliation.reopened"
-    assert len(EventType) == 115
+    assert len(EventType) == 118
 
 
 def test_log_level_default_is_info() -> None:

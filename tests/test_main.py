@@ -225,3 +225,19 @@ async def test_lifespan_gateway_teardown():
 
     settings.gateway_token = original_token
     settings.celerp_public_url = original_public
+
+
+def test_the_app_mounts_each_route_once_and_its_api_schema_builds_without_warnings():
+    import warnings
+    from collections import Counter
+
+    from celerp.ai.tools import _api_routes
+    from celerp.main import app
+
+    mounted = Counter((path, frozenset(methods)) for path, methods, _ in _api_routes(app))
+    assert [key for key, n in mounted.items() if n > 1] == []
+    app.openapi_schema = None
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        app.openapi()
+    assert [str(w.message) for w in caught if "Duplicate Operation ID" in str(w.message)] == []

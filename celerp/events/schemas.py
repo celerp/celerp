@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from celerp.schemas.numbers import PositiveFloat
+
 # The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
 # boundary, the interactive routes, the allocation service, and the scanner share one
 # source of truth. reject_comma_sku is re-exported here because
@@ -128,6 +130,8 @@ def _normalize_updated_codes(fields_changed: dict) -> None:
 
 class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
+    # Set by an edit that archives stock the company keeps (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
     @classmethod
     def normalize_for_storage(cls, data: dict) -> None:
@@ -150,6 +154,10 @@ class ItemStatusSet(BaseModel):
     new_status: str
     # Set by revert-to-draft only.
     reason: str | None = None
+    # When a move between draft and stock happened: the business day its entry carries.
+    ts: str | None = None
+    # Set by Archive: the lot keeps its stock on the books (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
 
 class ItemTransferred(BaseModel):
@@ -168,6 +176,9 @@ class ItemQuantityAdjusted(BaseModel):
     reason: str | None = None
     source_list_id: str | None = None
     prior_qty: float | None = None
+    # The value the audit booked for the change, in the books' currency: what the lot recorded
+    # before less what it records after (lot_origin.value_moved), negative for stock counted up.
+    value: float | None = None
     # Set only when returning consigned goods to a supplier: None once nothing is left on
     # hand, "in" while a partial balance remains. Omitted by ordinary stock adjustments,
     # which must leave the item's consignment status untouched.
@@ -177,15 +188,22 @@ class ItemQuantityAdjusted(BaseModel):
     # stock position carries the source's value. Omitted by ordinary stock adjustments,
     # which leave the lot's cost alone.
     cost_base: float | None = None
+    # The lot's landed cost pools ("<source_bill_id>::<kind>" -> amount) after the adjustment,
+    # set only when part of the lot leaves as a lot of its own (a split, a return to the
+    # supplier) and keeps what carve_cost left it. Omitted, the pools stay put beside an
+    # explicit cost_base and otherwise follow the quantity.
+    landed_costs: dict[str, float] | None = None
+    # Set only when stock consumed earlier is given back (materials returned from production):
+    # the quantity no longer counts as used.
+    quantity_returned: float | None = None
 
 
-class ItemLandedCostApplied(BaseModel):
-    # Absolute per-unit landed cost for one (source bill, kind); overwrite-safe so re-running the
-    # allocation with changed freight self-corrects. unit_amount=0 clears the contribution.
+class ItemLandedCostAllocated(BaseModel):
+    # The absolute landed amount one (source bill, kind) puts on a lot, in the books' currency;
+    # overwrite-safe so re-running the allocation self-corrects. amount=0 removes it.
     source_bill_id: str
     kind: str                       # freight | insurance | duty | import_vat
-    unit_amount: float
-    currency_rate: float | None = None   # bill conversion rate used (reproducibility)
+    amount: float
 
 
 class ItemFulfilled(BaseModel):
@@ -203,6 +221,8 @@ class ItemFulfillmentReversed(BaseModel):
 
 class ItemExpired(BaseModel):
     reason: str | None = None
+    # Set by Expire: the lot keeps its stock on the books (lot_origin.in_stock).
+    inventory_on_books: bool | None = None
 
 
 class ItemWrittenOff(BaseModel):
@@ -215,6 +235,15 @@ class ItemWrittenOff(BaseModel):
     cost_total: float
     reason: str | None = None
     source_list_id: str | None = None
+
+
+class ItemReturnedToSupplier(BaseModel):
+    # Goods sent back to the supplier they came from leave stock. The lot that goes back is
+    # the whole lot, or the part carved off for it; source_doc_id is the receiving document.
+    source_doc_id: str
+    qty: float
+    # Present on consigned goods only: they stop being held on consignment.
+    consignment_flag: str | None = None
 
 
 class ItemSplit(BaseModel):
@@ -283,10 +312,29 @@ class ItemPatched(_SkuGuard):
 
 class ItemSourceDeactivated(BaseModel):
     merged_into: str
+    # What the source was before the merge, restored if the merge is undone.
+    original_status: str | None = None
+    original_status_doc_id: str | None = None
+    original_status_doc_number: str | None = None
+
+
+class ItemMergeUndone(BaseModel):
+    """On a merge result whose merge was undone: its sources hold the stock again."""
+    source_entity_ids: list[str]
+
+
+class ItemUnmerged(BaseModel):
+    """On a merge source when its merge is undone."""
+    merged_into: str
+    restored_status: str
+    source_doc_id: str | None = None
+    doc_number: str | None = None
 
 
 class ItemConsumed(BaseModel):
     quantity_consumed: float
+    # The landed pools the lot keeps, each to the cent; absent, they follow the units.
+    landed_costs: dict[str, float] | None = None
 
 
 class ItemProduced(BaseModel):
@@ -301,6 +349,37 @@ class ItemCostAdjusted(BaseModel):
     manufacturing_order_id: str | None = None   # the run that re-costed the lot (audit trail)
 
 
+class ItemInventoryAccountRecorded(BaseModel):
+    # A lot from before lots recorded their inventory account: the account the upgrade
+    # placed it on, or the one the user picked for it. Only a lot with no account can take one.
+    inventory_account_code: str
+
+
+class ItemConsignorPayableRecorded(BaseModel):
+    # A consigned lot's first sale: the account what the company owes its consignor for
+    # the goods is recognized on, and the consignor it is owed to. Only a lot with none
+    # recorded can take one.
+    consignor_payable_code: str
+    consignor_id: str
+
+
+class ItemConsignmentBought(BaseModel):
+    # Consigned goods bought on a vendor bill: the lot becomes the company's own, valued at
+    # the bill's cost on the inventory account the bill debited, for the units it held then.
+    cost_total: float
+    quantity: float
+    inventory_account_code: str
+    consignment_doc_id: str
+    bill_doc_id: str
+
+
+class ItemInventoryOnBooksRecorded(BaseModel):
+    # A lot an older release archived or expired at the user's request that the books
+    # show still holds the company's stock, recognized once on upgrade
+    # (lot_origin.normalize_legacy_inventory_origins).
+    pass
+
+
 # --- Manufacturing recipe (materials + labor + overhead) attached to an item ---
 # The recipe is the single source of truth for how a manufactured item is built.
 # Interpretation (cost roll-up, expansion) lives in celerp-manufacturing; the schema
@@ -309,7 +388,7 @@ class ItemCostAdjusted(BaseModel):
 class ComponentSpec(BaseModel):
     item_id: str                       # entity_id of the input inventory item
     sku: str | None = None             # denormalized for display; resolved server-side
-    quantity: float                    # qty of this component per recipe batch (output_qty)
+    quantity: PositiveFloat            # qty of this component per recipe batch (output_qty)
     unit: str | None = None
 
 
@@ -328,7 +407,7 @@ class OverheadLine(BaseModel):
 
 
 class RecipeSpec(BaseModel):
-    output_qty: float = 1              # units one batch of this recipe yields
+    output_qty: PositiveFloat = 1      # units one batch of this recipe yields
     components: list[ComponentSpec] = Field(default_factory=list)
     labor: list[LaborLine] = Field(default_factory=list)
     overhead: list[OverheadLine] = Field(default_factory=list)
@@ -647,6 +726,12 @@ class PaymentBatchRecorded(BaseModel):
     remaining: float
 
 
+class LineActionRecorded(BaseModel):
+    owner_id: str
+    action: str
+    line_ids: list[str]
+
+
 class DocPaymentRefunded(BaseModel):
     amount: float
     reason: str | None = None
@@ -701,6 +786,7 @@ class DocPaymentDeleted(BaseModel):
 class DocConverted(BaseModel):
     target_doc_id: str
     target_doc_type: str
+    pre_convert_status: str | None = None
 
 
 class DocConvertedToBill(BaseModel):
@@ -882,6 +968,9 @@ class MfgOrderStarted(BaseModel):
 
 class MfgOrderCompleted(BaseModel):
     completed_by: str | None = None
+    # Value moved out of work in progress at completion: into the finished lots, and to waste.
+    transferred: str | None = None
+    wasted: str | None = None
 
 
 class MfgOrderCancelled(BaseModel):
@@ -900,6 +989,9 @@ class MfgOrderIssued(BaseModel):
     # Components issued from stock into a run (decrements the components). Partial issues allowed.
     items: list[dict[str, Any]] = Field(default_factory=list)
     issued_by: str | None = None
+    # The stock value that left with the components, and the account it went to.
+    value: str | None = None
+    wip_account_code: str | None = None
 
 
 class MfgOrderReceived(BaseModel):
@@ -908,6 +1000,30 @@ class MfgOrderReceived(BaseModel):
     quantity: float
     lot_item_id: str | None = None
     received_by: str | None = None
+    # The work in progress value the received lot carries.
+    value: str | None = None
+
+
+class MfgOrderWipOpened(BaseModel):
+    # An older run's work in progress, reconstructed from its own history: in all, and each
+    # component's value ({item_id, value}).
+    issued: str
+    components: list[dict[str, Any]] = Field(default_factory=list)
+    transferred: str
+    receipts: list[dict[str, Any]] = Field(default_factory=list)
+    wip_account_code: str | None = None
+
+
+class MfgOrderWipUnresolved(BaseModel):
+    # An older run whose work in progress cannot be proved from its history.
+    reason: str
+
+
+class MfgOperationRecorded(BaseModel):
+    # What one keyed action on many runs or demand lines was asked and answered, so the
+    # same key sent again gives the same answer and changes nothing.
+    action: str
+    result: dict
 
 
 class MfgOrderScheduled(BaseModel):
@@ -918,34 +1034,8 @@ class MfgOrderScheduled(BaseModel):
 
 
 # The standalone BOM entity was retired (recipes live on the inventory item). Its bom.* event
-# schemas are gone too: nothing emits them, and historical bom.* events replay through the
-# projection engine's default merge handler, which does not validate against EVENT_SCHEMA_MAP.
-RETIRED_EVENT_TYPES = frozenset({"bom.created", "bom.updated", "bom.deleted"})
-
-# -----------------
-# Scanning
-# -----------------
-
-
-class ScanBarcode(BaseModel):
-    code: str
-    location_id: str | None = None
-    raw: dict[str, Any] = Field(default_factory=dict)
-
-
-class ScanRfid(ScanBarcode):
-    pass
-
-
-class ScanNfc(ScanBarcode):
-    pass
-
-
-class ScanResolved(BaseModel):
-    code: str
-    entity_id: str
-    entity_type: str
-
+# schemas are gone too: nothing emits them, and historical bom.* events replay as that release
+# applied them (celerp.projections.retired).
 
 # -----------------
 # Marketplace
@@ -1008,6 +1098,11 @@ class JELine(BaseModel):
     # posted amounts are the only ones such a line carries.
     fx_currency: str | None = None
     fx_rate: float | None = None
+    # The posting roles the line served when it was written, set once by the
+    # journal boundary and never rewritten: what a line meant does not change when
+    # a role later points at another account. Absent on lines posted before roles
+    # existed; an empty list is a line deliberately left unclassified.
+    account_roles: list[str] | None = None
 
 
 class AccJournalEntryFx(BaseModel):
@@ -1052,6 +1147,10 @@ class AccJournalEntryVoided(BaseModel):
     # check evaluates the entry's own date; a void without it is checked
     # against today and could mutate a locked period.
     ts: str | None = None
+    # The date the reversal posts on when the entry is not voided in place: set at the
+    # event boundary (posting_dates.void_reversal) from the date the user picked, or
+    # today when the entry's own period is locked. The entry stays in its own period.
+    reversed_on: str | None = None
 
 
 class AccPeriodClosed(BaseModel):
@@ -1243,21 +1342,28 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.status.set": ItemStatusSet,
     "item.transferred": ItemTransferred,
     "item.quantity.adjusted": ItemQuantityAdjusted,
-    "item.landed_cost.applied": ItemLandedCostApplied,
+    "item.landed_cost.allocated": ItemLandedCostAllocated,
     "item.fulfilled": ItemFulfilled,
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
     "item.written_off": ItemWrittenOff,
+    "item.returned_to_supplier": ItemReturnedToSupplier,
     "item.split": ItemSplit,
     "item.split_from": ItemSplitFrom,
     "item.transform": ItemTransform,
     "item.transformed_from": ItemTransformedFrom,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
+    "item.merge_undone": ItemMergeUndone,
+    "item.unmerged": ItemUnmerged,
     "item.patched": ItemPatched,
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,
     "item.cost_adjusted": ItemCostAdjusted,
+    "item.inventory_account.recorded": ItemInventoryAccountRecorded,
+    "item.consignor_payable.recorded": ItemConsignorPayableRecorded,
+    "item.consignment.bought": ItemConsignmentBought,
+    "item.inventory_on_books.recorded": ItemInventoryOnBooksRecorded,
     "item.recipe.set": ItemRecipeSet,
     "item.workflow.set": ItemWorkflowSet,
     "item.reserved": ItemReserved,
@@ -1314,6 +1420,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.refund_reversed": DocPaymentRefundReversed,
     "doc.payment.stripe_released": DocPaymentStripeReleased,
     "payment_batch.recorded": PaymentBatchRecorded,
+    "line_action.recorded": LineActionRecorded,
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,
@@ -1353,12 +1460,9 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.issued": MfgOrderIssued,
     "mfg.order.received": MfgOrderReceived,
     "mfg.order.scheduled": MfgOrderScheduled,
-
-    # Scanning
-    "scan.barcode": ScanBarcode,
-    "scan.rfid": ScanRfid,
-    "scan.nfc": ScanNfc,
-    "scan.resolved": ScanResolved,
+    "mfg.order.wip_opened": MfgOrderWipOpened,
+    "mfg.order.wip_unresolved": MfgOrderWipUnresolved,
+    "mfg.operation.recorded": MfgOperationRecorded,
 
     # Marketplace
     "mp.listing.created": MpListingCreated,

@@ -131,7 +131,8 @@ def test_default_module_tables_keep_their_names(module_dir, monkeypatch):
     """A first-party module's tables are part of Celerp's own schema."""
     table = f"other{_tag()}_records"
     name, _inner = _module(module_dir, prefix=None, init_table=table)
-    monkeypatch.setattr(loader, "is_first_party", lambda path: True)
+    monkeypatch.setattr(loader, "_first_party_lock",
+                        lambda: {name: loader.module_content_digest(module_dir / name)})
 
     _start(module_dir, name)
 

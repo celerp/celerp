@@ -10,7 +10,8 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
-from ui.i18n import current_lang, t
+from celerp.services.company_settings import BOOKS_KEYS, GENERAL
+from ui.i18n import current_lang, refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def timeout_message() -> str:
     return t("api.timed_out")
 
 
-def error_text(exc: Exception) -> str:
+def call_failure_text(exc: Exception) -> str:
     """What to show for a failed call: the API's own reason, else the unreachable copy."""
     return exc.detail if isinstance(exc, APIError) else t("api.unreachable")
 
@@ -235,6 +236,12 @@ def _anon_client(timeout: float | httpx.Timeout = 10.0) -> httpx.AsyncClient:
     return _local_client(None, timeout=timeout, follow_redirects=True, bulk=False)
 
 
+def _no_response(status: int, message: str) -> APIError:
+    """The request went out and no answer came back. The body carries the message as
+    well as the code, so a caller showing ``e.data`` shows the message."""
+    return APIError(status, message, {"code": NO_RESPONSE, "detail": message})
+
+
 @asynccontextmanager
 async def _local_error_mapping():
     """Map httpx transport errors to the shared APIError statuses/copy.
@@ -252,11 +259,11 @@ async def _local_error_mapping():
     except httpx.PoolTimeout as exc:
         raise APIError(503, saturation_message()) from exc
     except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
-        raise APIError(504, timeout_message(), {"code": NO_RESPONSE}) from exc
+        raise _no_response(504, timeout_message()) from exc
     except httpx.TimeoutException as exc:
         raise APIError(504, timeout_message()) from exc
     except (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
-        raise APIError(503, _connect_message(), {"code": NO_RESPONSE}) from exc
+        raise _no_response(503, _connect_message()) from exc
     except httpx.TransportError as exc:
         raise APIError(503, _connect_message()) from exc
 
@@ -320,6 +327,49 @@ async def _bulk_api_client(token: str, timeout: float | httpx.Timeout = 10.0):
             yield c
 
 
+def _api_error(status: int, body, text: str) -> APIError:
+    """The APIError an error response raises: ``detail`` is the plain string the sites
+    render, in the user's language; ``data`` keeps the structured payload for callers
+    that branch on it.
+
+    A refusal (``message``) or a list of them (``errors``) renders through refusal_text.
+    A body that is not JSON (a proxy's error page) reads as a plain generic sentence.
+    Any other dict detail (a field-by-field map) passes through for its page to lay out;
+    an error body carrying fields beyond ``detail`` (a machine ``code``) rides on data."""
+    if not isinstance(body, dict):
+        return APIError(status, t("error.unexpected_error_body"))
+    detail = body.get("detail", text)
+    if isinstance(detail, dict) and ("message" in detail or "errors" in detail):
+        return APIError(status, refusal_text(detail) or t("error.unexpected_error_body"), data=detail)
+    if isinstance(detail, list):
+        # A request validation error: name the rejected fields in a sentence and
+        # carry the original list on data.
+        fields = ", ".join(dict.fromkeys(
+            str(e["loc"][-1]) for e in detail if isinstance(e, dict) and e.get("loc")))
+        return APIError(status, t("error.invalid_input_fields", fields=fields) if fields
+                        else t("error.invalid_input"), data=body)
+    if isinstance(detail, str):
+        detail = refusal_text(detail)
+    return APIError(status, detail, data=body if set(body) - {"detail"} else None)
+
+
+def error_message(e: APIError) -> str:
+    """An APIError as the plain sentence a page shows: the rendered refusal, else the
+    error's own text, else a generic sentence; never a raw payload or an empty string."""
+    text = refusal_text(e.data) or (e.detail if isinstance(e.detail, str) else "")
+    return text or t("error.unexpected_error_body")
+
+
+def error_text(r: httpx.Response, fallback: str) -> str:
+    """An error response's ``detail`` as the user reads it, for pages that call the API
+    with their own client: ``fallback`` when the body carries none."""
+    try:
+        body = r.json()
+    except ValueError:
+        return fallback
+    return refusal_text(body.get("detail") if isinstance(body, dict) else None) or fallback
+
+
 def _raise(r: httpx.Response) -> httpx.Response:
     if r.is_redirect:
         raise APIError(r.status_code, t("error.unexpected_redirect"))
@@ -328,28 +378,8 @@ def _raise(r: httpx.Response) -> httpx.Response:
             body = r.json()
         except Exception:
             body = None
-        detail = body.get("detail", r.text) if isinstance(body, dict) else r.text
-        data = None
-        if isinstance(detail, dict) and "message" in detail:
-            # Structured detail (message + extras): keep detail a plain string for
-            # the sites that render it, carry the full payload on APIError.data.
-            # Dict details WITHOUT a message key (e.g. {"errors": [...]} from
-            # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
-            data = detail
-            detail = detail.get("message") or r.text
-        elif isinstance(detail, list):
-            # A request validation error: name the rejected fields in a sentence and
-            # carry the original list on APIError.data.
-            data = body
-            fields = ", ".join(dict.fromkeys(
-                str(e["loc"][-1]) for e in detail if isinstance(e, dict) and e.get("loc")))
-            detail = t("error.invalid_input_fields", fields=fields) if fields else t("error.invalid_input")
-        elif isinstance(body, dict) and set(body) - {"detail"}:
-            # An error body carrying structured fields beyond `detail` (a top-level
-            # machine "code" like scan_run_conflict, with a plain-string detail):
-            # keep detail the string the sites render, carry the whole body on
-            # APIError.data so callers can branch on the code.
-            data = body
+        err = _api_error(r.status_code, body, r.text)
+        detail = err.detail
         if r.status_code == 401:
             # 401 is expected during fresh init / token expiry; not a warning
             logger.debug("API 401: %s", detail)
@@ -359,7 +389,7 @@ def _raise(r: httpx.Response) -> httpx.Response:
             logger.debug("API 409: %s", detail)
         else:
             logger.warning("API %s: %s", r.status_code, detail)
-        raise APIError(r.status_code, detail, data=data)
+        raise err
     return r
 
 
@@ -488,13 +518,12 @@ async def start_company(email: str, password: str, company_name: str) -> tuple[s
         return data["access_token"], data["refresh_token"]
 
 
-async def change_password(token: str, current_password: str, new_password: str) -> str:
-    """Change password for the authenticated user. Returns detail message."""
+async def change_password(token: str, current_password: str, new_password: str) -> None:
+    """Change password for the authenticated user."""
     async with _api_client(token) as c:
-        r = _raise(await c.post("/auth/change-password", json={
+        _raise(await c.post("/auth/change-password", json={
             "current_password": current_password, "new_password": new_password,
         }))
-        return r.json()["detail"]
 
 
 async def setup_code_required() -> bool:
@@ -767,7 +796,7 @@ async def reactivate_company(token: str, company_id: str) -> dict:
 def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
-    for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email",
+    for k in ("currency", "timezone", "fiscal_year_start", "opening_balance_date", "tax_id", "phone", "address", "vertical", "email",
               "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
               "line_item_identifier"):
         if k not in data:
@@ -802,14 +831,13 @@ async def get_commercial_state(token: str, timeout: float = 3.0) -> dict:
 
 async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Only the changed settings keys are sent (the API merges them),
-    so keys owned by dedicated endpoints are never echoed back through this door.
+    so keys owned by dedicated endpoints are never echoed back through this door; the
+    books settings go to their own route.
     Dashboard preferences are one nested dict, merged here with its current value;
     top-level fields (name, slug) are patched directly."""
-    _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
-                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
-                        "line_item_identifier", "getting_started_dismissed"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
-    settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
+    settings_patch = {k: v for k, v in data.items() if k in GENERAL}
+    books_patch = {k: v for k, v in data.items() if k in BOOKS_KEYS}
     dashboard_patch = {}
     # Map default_per_page to per_page for storage
     for k in _DASHBOARD_FIELDS:
@@ -817,8 +845,10 @@ async def patch_company(token: str, data: dict) -> dict:
             storage_key = "per_page" if k == "default_per_page" else k
             dashboard_patch[storage_key] = data[k]
     direct_patch = {k: v for k, v in data.items()
-                    if k not in _SETTINGS_FIELDS and k not in _DASHBOARD_FIELDS}
+                    if k not in GENERAL and k not in BOOKS_KEYS and k not in _DASHBOARD_FIELDS}
     async with _api_client(token) as c:
+        if books_patch:
+            _raise(await c.patch("/companies/me/books", json=books_patch))
         if dashboard_patch:
             current = _raise(await c.get("/companies/me")).json()
             settings_patch["dashboard"] = {**((current.get("settings") or {}).get("dashboard") or {}), **dashboard_patch}
@@ -1528,30 +1558,39 @@ async def reopen_doc(token: str, entity_id: str, idempotency_key: str | None = N
         return _raise(await c.post(f"/docs/{entity_id}/reopen", json={"idempotency_key": idempotency_key})).json()
 
 
-async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
+async def fulfill_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                        line_entity_ids: list[str] | None = None, idempotency_key: str | None = None) -> dict:
+    """Ship the chosen lines, named by line id (or, on older rows, by their item)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={"line_entity_ids": line_entity_ids})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "idempotency_key": idempotency_key})).json()
 
 
-async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str],
-                          quantities: dict[str, float] | None = None) -> dict:
-    """Revert whole lines, or pass quantities={item_id: qty_coming_back} to take back only
-    part of a lot; the remainder stays out with the customer."""
-    payload: dict = {"line_entity_ids": line_entity_ids}
-    if quantities:
-        payload["quantities"] = quantities
+async def set_lines_available(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                              line_entity_ids: list[str] | None = None,
+                              quantities: dict[str, float] | None = None,
+                              idempotency_key: str | None = None, is_list: bool = False) -> dict:
+    """Set as available in one request: lines holding stock give it back, lines that shipped
+    take their goods back. quantities={line_id: qty_coming_back} takes back only part of a
+    memo line; the rest stays out with the customer."""
+    base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json=payload)).json()
+        return _raise(await c.post(f"{base}/{entity_id}/set-available", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "quantities": quantities or None, "idempotency_key": idempotency_key})).json()
 
 
-async def reserve_lines(token: str, entity_id: str, line_entity_ids: list[str],
-                        new_status: str, is_list: bool = False) -> dict:
+async def reserve_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                        line_entity_ids: list[str] | None = None, new_status: str,
+                        idempotency_key: str | None = None, is_list: bool = False) -> dict:
     """Set lines reserved or available (ledger-neutral). is_list routes to the list router,
     whose reserve-lines wrapper serves list rows (the docs router 404s them)."""
     base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
-        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines",
-                                   json={"line_entity_ids": line_entity_ids, "new_status": new_status})).json()
+        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "new_status": new_status, "idempotency_key": idempotency_key})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None,
@@ -1565,6 +1604,11 @@ async def receive_return(token: str, entity_id: str, items: list[dict], notes: s
 async def undo_receive_return(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/receive-return")).json()
+
+
+async def return_goods(token: str, entity_id: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/return-items", json=data)).json()
 
 
 async def undo_receive_goods(token: str, entity_id: str) -> dict:
@@ -1900,29 +1944,14 @@ async def create_subscription(token: str, data: dict) -> dict:
         return _raise(await c.post("/docs", json=data)).json()
 
 
-async def pause_subscription(token: str, entity_id: str) -> dict:
+SUBSCRIPTION_ACTIONS = ("activate", "generate", "pause", "resume", "cancel")
+
+
+async def subscription_action(token: str, entity_id: str, action: str, body: dict | None = None) -> dict:
+    if action not in SUBSCRIPTION_ACTIONS:
+        raise ValueError(f"Unknown subscription action: {action}")
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/pause")).json()
-
-
-async def resume_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/resume")).json()
-
-
-async def cancel_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
-
-
-async def generate_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/generate")).json()
-
-
-async def activate_subscription(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/activate")).json()
+        return _raise(await c.post(f"/subscriptions/{entity_id}/{action}", json=body)).json()
 
 
 # ---------------------------------------------------------------------------
@@ -1945,12 +1974,14 @@ async def manufacturing_to_make(token: str) -> dict:
         return _raise(await c.get("/manufacturing/to-make")).json()
 
 
-async def manufacturing_make_work_orders(token: str, lines: list[dict], complete: bool = False) -> dict:
+async def manufacturing_make_work_orders(token: str, lines: list[dict], complete: bool = False, *,
+                                         idempotency_key: str) -> dict:
     """Create one work order per selected demand line (each {item_id, doc_id}), linked 1:1 to its
-    source order, for the line's shortfall. With complete=True, also issue/receive/close each."""
+    source order, for the line's shortfall. With complete=True, also issue/receive/close each.
+    The key names the user's action: sending it again makes nothing more."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing/to-make/make",
-                                   json={"lines": lines, "complete": complete})).json()
+        return _raise(await c.post("/manufacturing/to-make/make", json={
+            "lines": lines, "complete": complete, "idempotency_key": idempotency_key})).json()
 
 
 async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
@@ -1960,11 +1991,12 @@ async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
                                    json={"item_ids": item_ids})).json()
 
 
-async def manufacturing_bulk_run_action(token: str, run_ids: list[str], action: str) -> dict:
-    """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once."""
+async def manufacturing_bulk_run_action(token: str, run_ids: list[str], action: str, *,
+                                        idempotency_key: str) -> dict:
+    """Apply a lifecycle action (start/issue/return/complete/hold/resume/cancel) to many runs at once."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing/bulk-action",
-                                   json={"run_ids": run_ids, "action": action})).json()
+        return _raise(await c.post("/manufacturing/bulk-action", json={
+            "run_ids": run_ids, "action": action, "idempotency_key": idempotency_key})).json()
 
 
 async def manufacturing_item_hub(token: str, item_id: str) -> dict:
@@ -1989,53 +2021,109 @@ async def recost_dependents(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/manufacturing/items/{entity_id}/recost-dependents")).json()
 
 
-async def build_item(token: str, item_id: str, quantity: float, complete: bool = False) -> dict:
+# Every call below changes a run or stock, so each takes the key of the user's action, minted
+# by the page before it sends and sent again unchanged on a retry: the server then records
+# the action once. A new action gets a new key.
+
+
+async def build_item(token: str, item_id: str, quantity: float, complete: bool = False, *,
+                     idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/items/{item_id}/build",
-                                   json={"quantity": quantity, "complete": complete})).json()
+        return _raise(await c.post(f"/manufacturing/items/{item_id}/build", json={
+            "quantity": quantity, "complete": complete, "idempotency_key": idempotency_key})).json()
 
 
-async def start_mfg_order(token: str, order_id: str) -> dict:
+async def start_mfg_order(token: str, order_id: str, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/start")).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/start",
+                                   json={"idempotency_key": idempotency_key})).json()
 
 
-async def issue_mfg_order(token: str, order_id: str, items: list[dict] | None = None) -> dict:
+async def issue_mfg_order(token: str, order_id: str, items: list[dict] | None = None, *,
+                          idempotency_key: str) -> dict:
     """Issue components into a run (decrements them; auto-advances to In Progress). None = issue all."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/issue", json={"items": items})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/issue",
+                                   json={"items": items, "idempotency_key": idempotency_key})).json()
 
 
-async def receive_mfg_order(token: str, order_id: str, quantity: float | None = None) -> dict:
+async def receive_mfg_order(token: str, order_id: str, quantity: float | None = None, *,
+                            idempotency_key: str) -> dict:
     """Receive finished goods from a run as a discrete lot. None = receive all remaining."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/receive", json={"quantity": quantity})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/receive",
+                                   json={"quantity": quantity, "idempotency_key": idempotency_key})).json()
 
 
-async def complete_mfg_order(token: str, order_id: str, data: dict | None = None) -> dict:
+async def complete_mfg_order(token: str, order_id: str, data: dict | None = None, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/complete", json=data or {})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/complete",
+                                   json={**(data or {}), "idempotency_key": idempotency_key})).json()
 
 
-async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
+async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None, *, idempotency_key: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/cancel", json={"reason": reason})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/cancel",
+                                   json={"reason": reason, "idempotency_key": idempotency_key})).json()
 
 
-async def hold_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
+async def return_mfg_materials(token: str, order_id: str, *, idempotency_key: str) -> dict:
+    """Return everything issued to a run to the lots it came from."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/hold", json={"reason": reason})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/return",
+                                   json={"idempotency_key": idempotency_key})).json()
 
 
-async def resume_mfg_order(token: str, order_id: str) -> dict:
+async def undo_mfg_receipt(token: str, order_id: str, lot_item_id: str, *, idempotency_key: str) -> dict:
+    """Undo one receipt of a run: its lot leaves stock and its value goes back to the run."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/resume")).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/undo-receipt",
+                                   json={"lot_item_id": lot_item_id, "idempotency_key": idempotency_key})).json()
 
 
-async def schedule_mfg_order(token: str, order_id: str, fields: dict) -> dict:
+async def mfg_reconcile_needs(token: str, order_id: str) -> dict:
+    """Why a run needs reconciling, and the components whose value reconciling it records."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/manufacturing/{order_id}/reconcile")).json()
+
+
+async def reconcile_mfg_order(token: str, order_id: str, data: dict, *, idempotency_key: str) -> dict:
+    """Record the value of each component in a run needing reconciliation and the account it comes off."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/reconcile",
+                                   json={**data, "idempotency_key": idempotency_key})).json()
+
+
+async def repair_mfg_output(token: str, order_id: str, *, idempotency_key: str) -> dict:
+    """Discard what an older release recorded as received from a run without making any stock."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/repair-output",
+                                   json={"idempotency_key": idempotency_key})).json()
+
+
+async def reopen_mfg_order(token: str, order_id: str, *, idempotency_key: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/reopen",
+                                   json={"idempotency_key": idempotency_key})).json()
+
+
+async def hold_mfg_order(token: str, order_id: str, reason: str | None = None, *, idempotency_key: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/hold",
+                                   json={"reason": reason, "idempotency_key": idempotency_key})).json()
+
+
+async def resume_mfg_order(token: str, order_id: str, *, idempotency_key: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/resume",
+                                   json={"idempotency_key": idempotency_key})).json()
+
+
+async def schedule_mfg_order(token: str, order_id: str, fields: dict, *, idempotency_key: str) -> dict:
     """Set scheduling fields (due_date / planned_start / priority) on a run."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/schedule", json=fields)).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/schedule",
+                                   json={**fields, "idempotency_key": idempotency_key})).json()
 
 
 # ── Work Centers (manufacturing master data) ──────────────────────────────────
@@ -2068,42 +2156,6 @@ async def update_mfg_settings(token: str, mfg: dict) -> dict:
     """Persist the manufacturing settings block under company.settings.manufacturing."""
     async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me", json={"settings": {"manufacturing": mfg}})).json()
-
-
-# ---------------------------------------------------------------------------
-# BOM
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Scanning disabled — module not yet complete
-# ---------------------------------------------------------------------------
-
-# async def scan_once(token: str, code: str, location_id: str | None = None) -> dict:
-#     async with _api_client(token) as c:
-#         payload: dict = {"code": code}
-#         if location_id:
-#             payload["location_id"] = location_id
-#         return _raise(await c.post("/scanning/scan", json=payload)).json()
-#
-#
-# async def resolve_scan(token: str, code: str) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.get(f"/scanning/resolve/{code}")).json()
-#
-#
-# async def start_batch(token: str, location_id: str | None = None) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post("/scanning/batch", json={"location_id": location_id})).json()
-#
-#
-# async def complete_batch(token: str, batch_id: str) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post(f"/scanning/batch/{batch_id}/complete")).json()
-#
-#
-# async def scan_batch(token: str, scans: list[dict]) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post("/scanning/scan/batch", json={"scans": scans})).json()
 
 
 # ---------------------------------------------------------------------------
@@ -2142,12 +2194,13 @@ async def _stream_get(token: str, path: str, *, params: dict | None = None,
         body = await resp.aread()
         await resp.aclose()
         await client.aclose()
+        text = body.decode("utf-8", "replace")
         try:
             import json as _json
-            detail = _json.loads(body).get("detail", body.decode("utf-8", "replace"))
-        except Exception:
-            detail = body.decode("utf-8", "replace")
-        raise APIError(resp.status_code, detail)
+            parsed = _json.loads(body)
+        except ValueError:
+            parsed = None
+        raise _api_error(resp.status_code, parsed, text)
     headers = {
         k: resp.headers[k]
         for k in ("content-length", "content-disposition", "content-type")
@@ -2475,11 +2528,6 @@ async def set_item_price(token: str, entity_id: str, price_type: str, new_price:
         return _raise(await c.post(f"/items/{entity_id}/price", json={"price_type": price_type, "new_price": new_price})).json()
 
 
-async def set_item_status(token: str, entity_id: str, status: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/status", json={"status": status})).json()
-
-
 async def reserve_item(token: str, entity_id: str, quantity: float, reference: str | None = None) -> dict:
     async with _api_client(token) as c:
         payload: dict = {"quantity": quantity}
@@ -2528,32 +2576,43 @@ async def split_preview(token: str, entity_id: str, child_sku: str | None = None
         return _raise(await c.get(f"/items/{entity_id}/split-preview", params=params)).json()
 
 
+def _merge_body(source_entity_ids: list[str], target_sku_from: str, resulting_sku: str | None) -> dict:
+    """What a merge asks for. The preview and the confirmation send the same body, so
+    the fingerprint the preview returns matches only the merge the user reviewed."""
+    body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
+    if resulting_sku is not None:
+        body["resulting_sku"] = resulting_sku
+    return body
+
+
 async def merge_items(
     token: str,
     source_entity_ids: list[str],
     target_sku_from: str,
-    resulting_quantity: float | None = None,
-    resulting_cost_total: float | None = None,
-    resulting_name: str | None = None,
+    plan_fingerprint: str | None,
     resulting_sku: str | None = None,
-    resolved_attributes: dict | None = None,
     idempotency_key: str | None = None,
 ) -> dict:
-    body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
-    if resulting_quantity is not None:
-        body["resulting_quantity"] = resulting_quantity
-    if resulting_cost_total is not None:
-        body["resulting_cost_total"] = resulting_cost_total
-    if resulting_name is not None:
-        body["resulting_name"] = resulting_name
-    if resulting_sku is not None:
-        body["resulting_sku"] = resulting_sku
-    if resolved_attributes:
-        body["resolved_attributes"] = resolved_attributes
+    """Confirm a merge with the fingerprint of the preview the user reviewed."""
+    body = _merge_body(source_entity_ids, target_sku_from, resulting_sku)
+    if plan_fingerprint:
+        body["plan_fingerprint"] = plan_fingerprint
     if idempotency_key:
         body["idempotency_key"] = idempotency_key
     async with _api_client(token) as c:
         return _raise(await c.post("/items/merge", json=body)).json()
+
+
+async def preview_merge(token: str, source_entity_ids: list[str], target_sku_from: str,
+                        resulting_sku: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/items/merge/preview",
+                                   json=_merge_body(source_entity_ids, target_sku_from, resulting_sku))).json()
+
+
+async def undo_merge(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/items/{entity_id}/undo-merge")).json()
 
 
 async def bulk_set_status(token: str, entity_ids: list[str], status: str) -> dict:
@@ -2595,6 +2654,11 @@ async def bulk_delete(token: str, entity_ids: list[str], untouched_samples_only:
     async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/delete", json={
             "entity_ids": entity_ids, "untouched_samples_only": untouched_samples_only})).json()
+
+
+async def bulk_restore_deleted(token: str, entity_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/items/bulk/restore-deleted", json={"entity_ids": entity_ids})).json()
 
 
 async def bulk_expire(token: str, entity_ids: list[str]) -> dict:
@@ -3226,19 +3290,19 @@ async def module_licenses(token: str) -> list[str]:
 async def marketplace_download(token: str, slug: str) -> dict:
     """POST /companies/me/modules/marketplace-download - fetch a marketplace
     module from the relay and stage it for install (the download can take a
-    while). Returns the download's token, which the following Install names. The long fetch
-    rides the bulk pool so it cannot hold an interactive connection slot."""
+    while). Returns the download reference the following Install takes. The long
+    fetch rides the bulk pool so it cannot hold an interactive connection slot."""
     async with _bulk_api_client(token, timeout=90.0) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-download",
                                    json={"slug": slug})).json()
 
 
-async def marketplace_install(token: str, download: str) -> dict:
+async def marketplace_install(token: str, ref: str) -> dict:
     """POST /companies/me/modules/marketplace-install - install the marketplace
-    download ``download`` names. The module lands disabled, ready to enable."""
+    download *ref* names. The module lands disabled, ready to enable."""
     async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-install",
-                                   json={"token": download})).json()
+                                   json={"ref": ref})).json()
 
 
 async def installation_owner(token: str) -> bool:
@@ -3258,6 +3322,19 @@ async def restart_system(token: str) -> dict:
     """POST /system/restart - graceful restart; the process manager respawns."""
     async with _api_client(token) as c:
         return _raise(await c.post("/system/restart")).json()
+
+
+async def get_start_report(token: str) -> dict:
+    """GET /system/start-report - why the last start held the records back, if it did."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/system/start-report")).json()
+
+
+async def doctor_report(token: str) -> dict:
+    """POST /admin/doctor - the record checks as a report only (dry run, no repairs).
+    The checks scan every record, so they get the long timeout."""
+    async with _api_client(token, timeout=120.0) as c:
+        return _raise(await c.post("/admin/doctor")).json()
 
 
 # ---------------------------------------------------------------------------
@@ -3326,6 +3403,24 @@ async def get_period_lock(token: str) -> dict:
 async def set_period_lock(token: str, lock_date: str | None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/period-lock", json={"lock_date": lock_date})).json()
+
+
+async def get_posting_accounts(token: str) -> dict:
+    """GET each posting role's account and status, and older stock with no provable inventory account."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/posting-accounts")).json()
+
+
+async def set_posting_account(token: str, role: str, code: str) -> dict:
+    """PUT a posting role's account."""
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/accounting/posting-accounts/{role}", json={"code": code})).json()
+
+
+async def set_older_stock_account(token: str, item_id: str, code: str) -> dict:
+    """PUT the inventory account of older stock that records none."""
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/accounting/posting-accounts/older-stock/{item_id}", json={"code": code})).json()
 
 
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:
@@ -3711,9 +3806,21 @@ async def migration_reconciliation(token: str, run_id: str) -> dict:
 
 
 async def migration_run_action(token: str, run_id: str, action: str) -> dict:
-    """POST start, cancel, finalize or discard on a run; returns the API body."""
+    """POST start, cancel or discard on a run; returns the API body."""
     async with _api_client(token, timeout=30.0) as c:
         return _raise(await c.post(f"/migrations/{run_id}/{action}")).json()
+
+
+async def migration_posting_accounts(token: str, run_id: str) -> dict:
+    """GET the posting accounts finishing the run needs, with the accounts that can serve each."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/migrations/{run_id}/posting-accounts")).json()
+
+
+async def migration_finalize(token: str, run_id: str, posting_accounts: dict) -> dict:
+    """POST finalize with the chosen posting accounts and any accounts to add."""
+    async with _api_client(token, timeout=30.0) as c:
+        return _raise(await c.post(f"/migrations/{run_id}/finalize", json=posting_accounts)).json()
 
 
 async def migration_pack(token: str, run_id: str):

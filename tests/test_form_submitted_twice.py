@@ -17,7 +17,8 @@ import pytest
 from fasthtml.common import to_xml
 
 import ui.api_client as api_client
-from test_cost_restatement import _state, auth, ids  # noqa: F401  (auth and ids are fixtures)
+from test_cost_restatement import _state
+from test_helpers import sell_item
 from test_operation_retries import DATE, _final, _pay
 
 BANK = [{"chart_account_code": "1111", "bank_name": "Main", "account_name": "Main"}]
@@ -221,11 +222,8 @@ async def test_a_return_received_twice_from_one_form_is_received_once(client, se
         "status": "available", "sku": sku, "name": "Widget", "quantity": 2, "cost_price": 40.0,
         "sell_by": "piece"})
     assert r.status_code == 200, r.text
-    await client.post(f"/items/{r.json()['id']}/status", headers=auth["headers"], json={"new_status": "sold"})
+    inv = await sell_item(client, auth["headers"], r.json()["id"], unit_price=50.0)
     line = {"name": "Widget", "sku": sku, "quantity": 2, "unit_price": 50.0}
-    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": [line]})
-    inv = r.json()["id"]
-    await client.post(f"/docs/{inv}/finalize", headers=auth["headers"])
     cn = await _final(client, auth, "credit_note", 100.0, original_doc_id=inv, line_items=[line])
     doc = (await client.get(f"/docs/{cn}", headers=auth["headers"])).json()
     fields = _form(documents._render_receive_return_section(doc), f"/docs/{cn}/receive-return")

@@ -8,7 +8,7 @@ file and then find the item gone when it records the upload. The upload is refus
 item stays deleted with no event left for it, and the stored file and its thumbnail are
 deleted again. Runs on real PostgreSQL with local storage, the Delete committing while
 the upload is under way. The other way round, an upload that holds the item first is
-saved and the Delete waits for it, then deletes the item as usual.
+saved and the Delete waits for it, then moves the item to Deleted with its files kept.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ async def _seed(factory) -> tuple[uuid.UUID, types.SimpleNamespace]:
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="admin", is_active=True))
         await emit_event(
             s, company_id=company_id, entity_id=_ITEM, entity_type="item", event_type="item.created",
-            data={"sku": "X", "name": "X", "quantity": 1, "sell_by": "piece", "status": "available"},
+            data={"sku": "X", "name": "X", "quantity": 1, "sell_by": "piece", "status": "draft"},
             actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
         )
         await s.commit()
@@ -185,7 +185,7 @@ async def test_an_upload_whose_commit_lands_then_fails_keeps_its_file(committed_
 
 
 @pytest.mark.parametrize("door", [_attachments_door, _files_door], ids=["attachments", "files"])
-async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_waits(committed_engine, tmp_path, monkeypatch, door):
+async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_keeps_it_as_deleted(committed_engine, tmp_path, monkeypatch, door):
     _local_files(monkeypatch, tmp_path)
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user = await _seed(factory)
@@ -202,6 +202,10 @@ async def test_an_upload_holding_the_item_first_is_saved_and_the_delete_waits(co
         deleted = await asyncio.wait_for(delete, timeout=30)
 
     assert uploaded and stored
-    assert deleted == {"deleted": 1, "kept": 0}
-    assert await _rows(committed_engine, company_id, "projections") == 0
-    assert await _rows(committed_engine, company_id, "ledger") == 0
+    assert [(i["outcome"], i["has_files"]) for i in deleted["items"]] == [("moved_to_deleted", True)]
+    async with committed_engine.connect() as conn:
+        status = (await conn.execute(text(
+            "SELECT state::jsonb ->> 'status' FROM projections WHERE company_id = :c AND entity_id = :e"),
+            {"c": company_id, "e": _ITEM})).scalar_one()
+    assert status == "deleted"
+    assert any(stored[0] in path for path in _company_files(tmp_path, company_id))

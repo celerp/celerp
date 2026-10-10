@@ -12,6 +12,7 @@ import json
 import uuid
 from collections.abc import Sequence
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +22,9 @@ from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.journal_accounts import require_line_destinations
 from celerp_docs.routes import (
+    RECORD_NOW,
     DocImportRecord,
     DocPatch,
     _assert_doc_import_permissions,
@@ -32,6 +35,14 @@ from celerp_docs.routes import (
     _import_metadata,
     _lock_imported_contact,
     _require_doc_rate_http,
+    check_imported_snapshot,
+    import_treatment,
+    imported_booked_now,
+    imported_opening_snapshot,
+    imported_settlement_free,
+    import_digest,
+    refuse_reused_import_key,
+    settle_imported_credit,
     write_doc_patch,
 )
 
@@ -92,8 +103,20 @@ async def import_doc_records(
         # for one made in the app, by its id; with upsert on, either is updated.
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != DOC_CREATED or replay.entity_id != rec.entity_id:
+            if replay is None:
                 outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: idempotency key belongs to another operation")
+                continue
+            # With upsert off the row must be the record its key first imported; with it on,
+            # only the record itself, whose contents the update then replaces.
+            try:
+                if not upsert:
+                    refuse_reused_import_key(replay, event_type=DOC_CREATED, entity_id=rec.entity_id,
+                                             data=rec.data, batch=True)
+                elif (replay.event_type, replay.entity_id) != (DOC_CREATED, rec.entity_id):
+                    refuse_reused_import_key(replay, event_type=DOC_CREATED, entity_id=rec.entity_id,
+                                             data=rec.data)
+            except HTTPException as exc:
+                outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: {failure_reason(exc)}")
                 continue
             if not upsert:
                 outcome.add(rec.entity_id, "skipped")
@@ -111,9 +134,10 @@ async def import_doc_records(
                 if upserting:
                     status = await _upsert_doc(session, company_id, user, role, settings, rec)
                 else:
-                    status = await _create_doc(
-                        session, company_id, user, rec, base_currency, post_ledger=post_ledger,
+                    entry = await create_imported_doc(
+                        session, company_id, user, role, settings, rec, base_currency, post_ledger=post_ledger,
                     )
+                    status = "skipped" if getattr(entry, "was_deduped", False) else "created"
         except Exception as exc:
             outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
             continue
@@ -141,32 +165,48 @@ async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportR
     return "skipped" if result.get("event_id") is None else "updated"
 
 
-async def _create_doc(
-    session, company_id, user, rec: DocImportRecord, base_currency: str, *, post_ledger: bool,
-) -> OutcomeStatus:
-    """Write one imported document and, when it is issued, its accounting entry."""
+async def create_imported_doc(
+    session, company_id, user, role: str, settings: dict, rec: DocImportRecord, base_currency: str, *,
+    post_ledger: bool,
+):
+    """Write one imported document and, when it is issued into live books, what its import
+    treatment books for it (import_treatment): nothing when the opening balances hold it,
+    otherwise the entries the app posts for it (_import_auto_je). Shared by the single and
+    batch imports; returns the doc.created entry."""
     await _lock_imported_contact(session, company_id, "doc", rec.data)
     await _assert_import_number_free(session, company_id, "doc", rec.data)
-    if auto_je.import_auto_je_kind(rec.data) is not None:
+    if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
+    await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
+    treatment = import_treatment(rec.entity_id, rec.data, post_ledger=post_ledger)
+    data = imported_settlement_free(rec.data)
+    received: list[dict] = []
+    if post_ledger:
+        kind = auto_je.imported_issue_kind(data)
+        if kind == "bill":
+            await require_line_destinations(session, company_id, data.get("line_items"))
+        if treatment == RECORD_NOW and kind in ("purchase_order", "bill"):
+            data, received = imported_booked_now(data)
+        else:
+            data = await imported_opening_snapshot(session, company_id, data)
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=rec.entity_id,
         entity_type="doc",
         event_type=DOC_CREATED,
-        data=rec.data,
+        data=data,
         actor_id=user.id,
         location_id=None,
         source=rec.source,
         idempotency_key=rec.idempotency_key,
-        metadata_=_import_metadata(rec.source_ts),
+        metadata_=_import_metadata(rec.source_ts, data, post_ledger=post_ledger,
+                                   request=import_digest(rec.entity_id, rec.data), treatment=treatment),
     )
     if getattr(entry, "was_deduped", False):
-        return "skipped"
-    if post_ledger:
-        await _import_auto_je(
-            session, company_id, user.id, entry.entity_id, rec.data,
-            base_currency=base_currency,
-        )
-    return "created"
+        return entry
+    await settle_imported_credit(session, company_id, user.id, entry.entity_id, data)
+    if treatment == RECORD_NOW:
+        await _import_auto_je(session, company_id, user, role, settings, entry.entity_id, data, received,
+                              key=rec.idempotency_key, base_currency=base_currency)
+    return entry

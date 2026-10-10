@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Marketplace catalog, relay-steered.
 
-The catalog is public data: index.json in github.com/celerp/community-modules.
+The catalog is public data: index-v2.json in github.com/celerp/community-modules.
 The app fetches it from the relay (which serves a cached copy; the repo stays
 the public source of truth anyone can fork), falling back to the repo directly
-and then to the local cache. Shipped clients are long-lived, so the relay
+and then to the local cache. It reads only the v2 catalog, whose Community
+listings pin the exact commit a download fetches; the v1 feed (index.json) is
+for older clients and is never read here, not even as a fallback, and the v2
+cache is its own file. Shipped clients are long-lived, so the relay
 endpoint is the ONE url baked into a release; listings, hashes, and future
 download descriptors are all catalog data the server can steer. Fetched only
 when the user opens the Marketplace tab, treated as untrusted input (size cap,
@@ -21,12 +24,13 @@ from pathlib import Path
 
 import httpx
 
+from celerp.config import settings
 from celerp.services import staged_downloads
 from ui.config import RELAY_URL
 
 CATALOG_SOURCES = (
-    f"{RELAY_URL}/marketplace/catalog",
-    "https://raw.githubusercontent.com/celerp/community-modules/main/index.json",
+    f"{RELAY_URL}/marketplace/catalog/v2",
+    "https://raw.githubusercontent.com/celerp/community-modules/main/index-v2.json",
 )
 MAX_CATALOG_BYTES = 512 * 1024
 TIERS = ("official", "verified", "community")
@@ -40,11 +44,11 @@ _URL_FIELDS = ("repo", "homepage", "feedback")
 
 
 def _data_dir() -> Path:
-    return Path(os.getenv("CELERP_DATA_DIR") or os.getenv("DATA_DIR") or "./data")
+    return Path(settings.data_dir)
 
 
 def _cache_path() -> Path:
-    return _data_dir() / "marketplace-catalog.json"
+    return _data_dir() / "marketplace-catalog-v2.json"
 
 
 def _ack_path() -> Path:
@@ -53,7 +57,8 @@ def _ack_path() -> Path:
 
 def _clean(entry) -> dict | None:
     """Validate one catalog entry; None drops it. Untrusted input: strings are
-    length-capped, URLs must be https, unknown tiers are dropped."""
+    length-capped, URLs must be https, unknown tiers are dropped, and so is a
+    community listing without the exact commit it pins."""
     if not isinstance(entry, dict):
         return None
     out: dict = {}
@@ -100,12 +105,14 @@ def _clean(entry) -> dict | None:
     commit = entry.get("commit")
     if _valid_commit(commit):
         out["commit"] = commit
+    elif out["tier"] == "community":
+        return None
     return out
 
 
 def _parse(raw: bytes) -> list[dict]:
     doc = json.loads(raw)
-    if not isinstance(doc, dict) or doc.get("schema_version") != 1:
+    if not isinstance(doc, dict) or doc.get("schema_version") != 2:
         raise ValueError("unsupported catalog format")
     entries = doc.get("modules")
     if not isinstance(entries, list) or len(entries) > 500:

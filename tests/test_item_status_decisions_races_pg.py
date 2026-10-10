@@ -215,7 +215,7 @@ async def test_a_draft_cannot_be_circulated_by_a_change_racing_revert_to_draft(c
                                        lambda s: circulate(s, company_id, user))
 
     assert not isinstance(reverted, BaseException), reverted
-    _refused(circulated, 422)
+    _refused(circulated, 409)
     assert (await _state(committed_engine, company_id))["status"] == "draft"
 
 

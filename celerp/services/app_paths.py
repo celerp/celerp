@@ -12,14 +12,10 @@ from __future__ import annotations
 def is_app_local_path(path) -> bool:
     """True only for a non-empty, single-leading-slash, in-app relative path.
 
-    Rejects any scheme (`https:`, `javascript:`) and protocol-relative `//host`,
-    so a redirect target or a link built from untrusted input (a `?next=` value,
-    a third-party search provider's row, a module's link template) can only stay
-    inside this app, never bounce to an external site or execute a script URL. A
-    backslash is rejected too: browsers normalise `\\` to `/`, so
-    `/\\evil.example` resolves off-site just like `//evil.example`. ASCII control
-    chars (0x00-0x1F, 0x7F) are rejected as never-legitimate and unsafe to place
-    in a link.
+    Rejects any scheme (`https:`, `javascript:`), a protocol-relative `//host`,
+    a backslash, and ASCII control chars (0x00-0x1F, 0x7F), so a redirect target
+    or link (a `?next=` value, a search provider's row, a module's link template)
+    stays inside this app.
     """
     return (
         isinstance(path, str)

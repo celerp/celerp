@@ -102,6 +102,6 @@ async def test_cta_language_outside_the_catalogs_asks_in_english(client):
     token = await _register(client, "lang")
     asked = AsyncMock(return_value=None)
     with patch("celerp.routers.stars.get_star_cta", new=asked):
-        r = await client.get("/stars/cta", headers=_h(token), params={"medium": "footer", "lang": "xx-evil"})
+        r = await client.get("/stars/cta", headers=_h(token), params={"medium": "footer", "lang": "xx-other"})
     assert r.status_code == 200
     asked.assert_awaited_once_with("footer", "en")

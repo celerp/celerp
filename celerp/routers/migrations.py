@@ -26,9 +26,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from python_multipart.exceptions import MultipartParseError
 from python_multipart.multipart import MultipartParser, parse_options_header
@@ -44,13 +42,13 @@ from celerp.routers.auth import companyless_login, hold_direct_slot, limiter
 from celerp.services import bootstrap
 from celerp.services import migration_scan_store as store
 from celerp.services import migrations
+from celerp.services import posting_readiness
 from celerp.services.auth import (
     HAS_COMPANY,
     MIN_PASSWORD_LENGTH,
     AuthContext,
     get_auth_context,
     hold_companyless_login,
-    issue_token_pair,
     validate_password,
 )
 from celerp.services.permissions import role_has_permission
@@ -59,28 +57,7 @@ from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
-
-
-class _MigrationRoute(APIRoute):
-    """Answers a refused migration request with its own detail.
-
-    The app-wide 404 handler replaces every 404 detail with a generic one; a migration the caller
-    cannot see must still say "Migration not found.", so migration errors become responses here.
-    """
-
-    def get_route_handler(self):
-        handler = super().get_route_handler()
-
-        async def route(request: Request) -> Response:
-            try:
-                return await handler(request)
-            except (migrations.MigrationError, store.ScanStoreError) as exc:
-                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
-
-        return route
-
-
-router = APIRouter(prefix="/migrations", tags=["migrations"], route_class=_MigrationRoute)
+router = APIRouter(prefix="/migrations", tags=["migrations"])
 
 OWNER_ONLY = "migration.err_owner_only"
 BOOTSTRAPPED = "migration.err_bootstrapped"
@@ -111,6 +88,12 @@ class StartCompanyStartIn(BaseModel):
     password: str
     scan_token: str
     company_name: str
+
+
+class FinalizeIn(BaseModel):
+    """Posting-account choices; ``posting_readiness.apply_choices`` checks them so every problem is explained."""
+    roles: Any = None
+    add_accounts: Any = None
 
 
 class BootstrapStartIn(BaseModel):
@@ -327,6 +310,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
     The bootstrap lock serializes racing starts; the loser re-checks and is refused. If the
     response is lost after the commit, the owner signs in and is taken back to the run.
     The setup code is consumed only after the commit."""
+    from celerp.credentials import issue_token_pair
     required = False
     async with _start_errors(session):
         await ensure_not_bootstrapped(session)
@@ -346,7 +330,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         run_id = run.id
         # The first owner has no other company, so they are signed in to the staged one;
         # its token reaches the migration routes only. Issuing the tokens commits.
-        tokens = await issue_token_pair(session, user=user, company_id=run.company_id)
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
     if required:
         try:
             await asyncio.to_thread(bootstrap.clear_setup_code)
@@ -455,6 +439,7 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
     that company. The login is held until the commit, so of two starts one creates the
     company and the other is told the login already has one; a start whose answer was
     lost is the same, and signing in lands on the company being moved in."""
+    from celerp.credentials import issue_token_pair
     async with _start_errors(session):
         user = await companyless_login(session, payload.email, payload.password)
         await hold_direct_slot(session)
@@ -471,7 +456,7 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
         awaiting = await _turn_on_modules(plan)
         run = await _stage(session, user=user, company_name=company_name, scan=scan, plan=plan, awaiting=awaiting)
         run_id = run.id
-        tokens = await issue_token_pair(session, user=user, company_id=run.company_id)
+        tokens = await issue_token_pair(session, user=user, company_id=run.company_id, expected_snonce=None)
     await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
     return {**tokens, "run_id": str(run_id), "preparing": awaiting}
 
@@ -554,12 +539,21 @@ async def cancel_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_cont
     return await migrations.run_view(session, run)
 
 
+@router.get("/{run_id}/posting-accounts")
+async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+                               session: AsyncSession = Depends(get_session)) -> dict:
+    """The posting accounts finishing this migration will set, and the choices for each."""
+    run = await _owned_run(session, run_id, ctx)
+    return {"roles": await posting_readiness.readiness(session, run.company_id) or []}
+
+
 @router.post("/{run_id}/finalize")
-async def finalize_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
+async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
+                       ctx: AuthContext = Depends(get_auth_context),
                        session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
     try:
-        await migrations.finalize(session, run)
+        await migrations.finalize(session, run, body.model_dump() if body else None)
     except BaseException:
         await session.rollback()
         raise

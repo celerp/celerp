@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "สร้างไม่ได้: {error}",
+  "labels.could_not_delete": "ลบไม่ได้: {error}",
+  "labels.could_not_save": "บันทึกไม่ได้: {error}",
+  "labels.created": "สร้าง '{name}' แล้ว",
   "labels.delete_template_confirm": "ลบเทมเพลต '{name}' หรือไม่",
   "labels.edit_name": "แก้ไข: {name}",
   "labels.height_example": "เช่น 30",
+  "labels.name_required": "ต้องระบุชื่อเทมเพลต",
   "labels.new_template_name": "ชื่อเทมเพลตใหม่",
   "labels.print_labels": "พิมพ์ป้ายกำกับ",
   "labels.print_labels_heading": "พิมพ์ฉลาก - {n} รายการ",
   "labels.remove_field": "ลบฟิลด์",
   "labels.selected": "เลือกแล้ว: {ids}{more}",
+  "labels.template_deleted": "ลบเทมเพลตแล้ว",
+  "labels.template_not_found": "ไม่พบเทมเพลต",
   "labels.width_example": "เช่น 50"
 }

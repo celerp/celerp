@@ -41,10 +41,6 @@ def clean_state(tmp_path):
     slots.clear()
     loader._loaded.clear()
     loader._load_errors.clear()
-    # Remove any test module packages added to sys.modules
-    for key in list(sys.modules.keys()):
-        if key.startswith("test_mod_") or key.startswith("good_module") or key.startswith("bad_module"):
-            sys.modules.pop(key, None)
 
 
 def _scan(pkg: Path, dotted: str) -> set[str]:
@@ -123,6 +119,19 @@ class TestLoadAll:
         assert len(nav) == 1
         assert nav[0]["label"] == "Test"
         assert nav[0]["_module"] == "slot-mod"
+
+    def test_loading_a_module_again_registers_its_slots_once(self, tmp_path):
+        """A second load pass replaces a module's slot entries rather than adding a
+        second copy, so a lifecycle hook still runs once per event."""
+        manifest = (
+            '{"name": "again-mod", "version": "1.0", '
+            '"slots": {"nav": {"label": "Again", "href": "/again", "order": 50}}}'
+        )
+        _make_module(tmp_path, "again-mod", manifest)
+        slots.register("nav", {"label": "Again", "href": "/again", "_module": "again-mod"})
+        load_all(tmp_path, {"again-mod"})
+        load_all(tmp_path, {"again-mod"})
+        assert [e["href"] for e in slots.get("nav") if e["_module"] == "again-mod"] == ["/again"]
 
     def test_multiple_modules_all_loaded(self, tmp_path):
         for i in range(3):
@@ -234,14 +243,17 @@ class TestPremiumLicenseGate:
         (pkg / PREMIUM_MARKER).write_text("")
         return pkg
 
-    def test_no_gateway_token_skips_check_dev_mode(self, tmp_path, monkeypatch):
-        """Never-activated instance (no gateway_token at all): the check is
-        skipped gracefully, not treated as a license failure."""
+    def test_no_gateway_token_still_checks_the_license(self, tmp_path, monkeypatch):
+        """Never-activated instance (no gateway_token at all): the license is
+        decided offline, so with no stored license the module is not loaded."""
         from celerp.config import settings as _s
+        from celerp.modules import loader as _loader
         monkeypatch.setattr(_s, "gateway_token", "")
+        monkeypatch.setattr(_s, "data_dir", tmp_path / "data")
         self._make_premium_module(tmp_path)
         result = load_all(tmp_path, {"paid-mod"})
-        assert len(result) == 1
+        assert result == []
+        assert "no valid license" in _loader.load_errors()["paid-mod"]
 
     def test_no_premium_module_makes_zero_token_exchanges(self, tmp_path, monkeypatch):
         """No premium module present -> the relay token exchange (a blocking

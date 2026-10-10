@@ -39,19 +39,23 @@ async def test_invoice_lifecycle_with_payment_and_je(client):
 @pytest.mark.asyncio
 async def test_manufacturing_flow_and_dashboard(client):
     token = await _register(client)
-    item = await client.post("/items", headers=_auth(token), json={"sku": "RAW-1", "name": "Raw", "quantity": 5, "sell_by": "piece", "status": "available"})
+    item = await client.post("/items", headers=_auth(token), json={"sku": "RAW-1", "name": "Raw", "quantity": 5, "sell_by": "piece", "status": "available", "cost_price": 10.0})
     item_id = item.json()["id"]
+    made = await client.post("/items", headers=_auth(token), json={"sku": "FG-1", "name": "FG", "quantity": 0, "sell_by": "piece", "status": "available"})
 
     order = await client.post(
         "/manufacturing",
         headers=_auth(token),
-        json={"description": "Build", "inputs": [{"item_id": item_id, "quantity": 2}], "expected_outputs": [{"sku": "FG-1", "name": "FG", "quantity": 1}]},
+        json={"description": "Build", "inputs": [{"item_id": item_id, "quantity": 2}], "output_item_id": made.json()["id"]},
     )
     assert order.status_code == 200
     order_id = order.json()["id"]
 
     assert (await client.post(f"/manufacturing/{order_id}/issue", headers=_auth(token))).status_code == 200
     assert (await client.post(f"/manufacturing/{order_id}/complete", headers=_auth(token), json={})).status_code == 200
+    run = (await client.get(f"/manufacturing/{order_id}", headers=_auth(token))).json()
+    assert run["status"] == "completed" and run["received_qty"] == 1.0
+    assert (await client.get(f"/items/{run['receipts'][0]['lot_item_id']}", headers=_auth(token))).json()["cost_total"] == 20.0
 
     kpis = (await client.get("/dashboard/kpis", headers=_auth(token))).json()
     assert "manufacturing" in kpis

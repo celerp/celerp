@@ -12,6 +12,7 @@ savepoint session), so the first item is durably visible to the second write."""
 
 from __future__ import annotations
 
+import functools
 import uuid
 
 import pytest
@@ -23,7 +24,6 @@ from celerp.inventory_codes import BarcodeConflictError, RfidEpcConflictError
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp_inventory.services import _update_from_connector
 
 
 def _item_kwargs(company_id, entity_id, sku, barcode=None):
@@ -245,12 +245,14 @@ async def test_connector_records_duplicate_barcodes_and_update_heals_lookup(_db_
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id = await _company(factory, "CN")
 
+    from celerp_inventory.services import update_item_from_connector
+
     async def _sync(idem_key, sku, barcode):
         async with factory() as s:
             outcome = await connector_upsert(
                 s, company_id=company_id, entity_type="item", event_type="item.created",
                 idem_key=idem_key, data={"sku": sku, "name": sku, "quantity": 1, "barcode": barcode},
-                update=lambda entity_id, data, key: _update_from_connector(s, company_id, entity_id, data, key),
+                update=functools.partial(update_item_from_connector, company_id=company_id),
             )
             await s.commit()
         return outcome

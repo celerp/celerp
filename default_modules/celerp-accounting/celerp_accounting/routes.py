@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -18,20 +20,38 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
+from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.db import get_session
 from celerp.events.engine import emit_event, write_period_lock
+from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting import import_service
+from celerp_accounting.account_tree import account_tree_lines
+from celerp_accounting.chart_rules import (
+    change_account,
+    checked_account_code,
+    checked_account_name,
+    checked_account_type,
+    checked_code_length,
+    parent_problem,
+    posting_targets,
+    trimmed_text,
+)
 from celerp_accounting.import_service import AccImportRecord
-from celerp_accounting.ledger_accounts import check_account_change, require_money_account, require_open_account
+from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
+from celerp.accounting_roles import AccountRole, refusal
+from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.attachments import (
+    company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
+)
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
+from celerp.services.journal_accounts import require_destinations
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
     checked_exchange_rate, currency_dp, round_money, to_base, to_decimal, to_stored_float,
@@ -39,6 +59,8 @@ from celerp.services.money import (
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import t
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -57,9 +79,10 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1130-INS", "name": "Inventory - Insurance Clearing", "account_type": "asset", "parent_code": "1130"},
     {"code": "1130-DTY", "name": "Inventory - Import Duty Clearing", "account_type": "asset", "parent_code": "1130"},
     {"code": "1130-IVT", "name": "Inventory - Non-Recoverable Import VAT Clearing", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-WIP", "name": "Inventory - Work in Progress", "account_type": "asset", "parent_code": "1130"},
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
-    {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000"},
+    {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000", "cash_flow_category": "investing"},
     {"code": "1210", "name": "Property, Plant and Equipment", "account_type": "asset", "parent_code": "1200"},
     {"code": "1220", "name": "Accumulated Depreciation", "account_type": "asset", "parent_code": "1200"},
     {"code": "1230", "name": "Intangible Assets", "account_type": "asset", "parent_code": "1200"},
@@ -67,14 +90,15 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "2000", "name": "Liabilities", "account_type": "liability", "parent_code": None},
     {"code": "2100", "name": "Current Liabilities", "account_type": "liability", "parent_code": "2000"},
     {"code": "2110", "name": "Accounts Payable", "account_type": "liability", "parent_code": "2100"},
+    {"code": "2115", "name": "Consignor Payable", "account_type": "liability", "parent_code": "2100"},
     {"code": "2120", "name": "VAT Payable (Output VAT)", "account_type": "liability", "parent_code": "2100"},
     {"code": "2130", "name": "Withholding Tax Payable", "account_type": "liability", "parent_code": "2100"},
     {"code": "2140", "name": "Accrued Expenses", "account_type": "liability", "parent_code": "2100"},
     {"code": "2150", "name": "Social Security Payable", "account_type": "liability", "parent_code": "2100"},
-    {"code": "2200", "name": "Non-Current Liabilities", "account_type": "liability", "parent_code": "2000"},
+    {"code": "2200", "name": "Non-Current Liabilities", "account_type": "liability", "parent_code": "2000", "cash_flow_category": "financing"},
     {"code": "2210", "name": "Long-term Loans", "account_type": "liability", "parent_code": "2200"},
     # --- Equity ---
-    {"code": "3000", "name": "Equity", "account_type": "equity", "parent_code": None},
+    {"code": "3000", "name": "Equity", "account_type": "equity", "parent_code": None, "cash_flow_category": "financing"},
     {"code": "3100", "name": "Registered Capital", "account_type": "equity", "parent_code": "3000"},
     {"code": "3200", "name": "Retained Earnings", "account_type": "equity", "parent_code": "3000"},
     {"code": "3300", "name": "Current Year Earnings", "account_type": "equity", "parent_code": "3000"},
@@ -111,10 +135,6 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
 # accounts screen holds the same list and a test keeps the two in lockstep.
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 
-# The account types the reports know how to sign and classify. Same arrangement as
-# the list above: this module is authoritative, the chart of accounts screen holds a
-# copy for its dropdown, and a test keeps the two in lockstep.
-ACCOUNT_TYPES = ("asset", "liability", "equity", "revenue", "cogs", "expense", "other")
 
 
 class AccountCreate(BaseModel):
@@ -122,7 +142,7 @@ class AccountCreate(BaseModel):
     name: str
     account_type: str  # asset|liability|equity|revenue|expense|cogs
     parent_code: str | None = None
-    cash_flow_category: str | None = None  # unset means "derive it from type and code"
+    cash_flow_category: str | None = None  # unset means "the parent account's section"
 
 
 class AccountPatch(BaseModel):
@@ -165,6 +185,18 @@ class ChartImportResult(BaseModel):
     skipped_codes: list[str]
 
 
+def _seeded_account(company_id: uuid.UUID, entry: dict) -> Account:
+    return Account(
+        id=uuid.uuid4(),
+        company_id=company_id,
+        code=entry["code"],
+        name=entry["name"],
+        account_type=entry["account_type"],
+        parent_code=entry["parent_code"],
+        cash_flow_category=entry.get("cash_flow_category"),
+    )
+
+
 async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -> None:
     """Seed Thai default chart of accounts for a new company. Idempotent."""
     from sqlalchemy import select as _select
@@ -177,15 +209,10 @@ async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -
     for entry in THAI_CHART_OF_ACCOUNTS:
         if entry["code"] in existing_codes:
             continue
-        acc = Account(
-            id=uuid.uuid4(),
-            company_id=company_id,
-            code=entry["code"],
-            name=entry["name"],
-            account_type=entry["account_type"],
-            parent_code=entry["parent_code"],
-        )
-        session.add(acc)
+        session.add(_seeded_account(company_id, entry))
+
+
+_DEFAULT_BANK_CODE = "1111"
 
 
 async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUID) -> None:
@@ -196,22 +223,17 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
     company = await session.get(Company, company_id)
     currency = (company.settings or {}).get("currency", "THB") if company else "THB"
 
-    code = "1111"
+    code = _DEFAULT_BANK_CODE
     existing = (await session.execute(
         _select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
     if existing:
         return
 
-    acc = Account(
-        id=uuid.uuid4(),
-        company_id=company_id,
-        code=code,
-        name="Default Bank Account (Checking)",
-        account_type="asset",
-        parent_code="1110",
+    await import_service.create_chart_account(
+        session, company_id, code=code, name="Default Bank Account (Checking)",
+        account_type="asset", parent_code="1110",
     )
-    session.add(acc)
 
     bank = BankAccount(
         id=uuid.uuid4(),
@@ -226,10 +248,68 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
     session.add(bank)
 
 
+# Per role added after charts were first seeded, the seeded accounts whose presence,
+# exactly as seeded, shows a chart is Celerp's own and can take that role's account.
+_SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
+    AccountRole.WORK_IN_PROGRESS: ("1130", "1130-P", "1130-OB"),
+    AccountRole.CONSIGNOR_PAYABLE: ("2100", "2110"),
+}
+
+
+async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> frozenset:
+    """Add the seeded account of each role added after the chart was written, only where
+    the chart is provably Celerp's own seeded one: the role's anchor accounts are present
+    exactly as seeded and nothing holds the role's code yet. A chart from a migration or a
+    restored backup is never extended; its company chooses the account in Posting
+    Accounts. An existing account is never changed. Returns the roles whose account was
+    added, which the caller may then map to it."""
+    from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS
+    from sqlalchemy import select as _select
+
+    company = await locked_company(session, company_id)
+    settings = dict(company.settings or {}) if company is not None else {}
+    if company is None or SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup"):
+        return frozenset()
+    mapped = settings.get(ROLES_KEY) or {}
+    wanted = {role: anchors for role, anchors in _SEEDED_ANCHORS.items() if not mapped.get(role.value)}
+    if not wanted:
+        return frozenset()
+    await lock_chart(session, company_id)
+    chart = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS}
+    codes = {code for role, anchors in wanted.items() for code in (*anchors, SEEDED_TARGETS[role])}
+    rows = {a.code: a for a in (await session.execute(_select(Account).where(
+        Account.company_id == company_id, Account.code.in_(codes)))).scalars()}
+
+    def as_seeded(code: str) -> bool:
+        row, want = rows.get(code), chart[code]
+        return row is not None and row.is_active and (row.account_type, row.parent_code) == (
+            want["account_type"], want["parent_code"])
+
+    added = set()
+    for role, anchors in wanted.items():
+        code = SEEDED_TARGETS[role]
+        if code in rows or not all(as_seeded(a) for a in anchors):
+            continue
+        session.add(_seeded_account(company_id, chart[code]))
+        added.add(role)
+    if added:
+        await session.flush()
+    return frozenset(added)
+
+
 async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
-    """Lifecycle hook called via on_company_created slot."""
+    """Lifecycle hook called via on_company_created slot. A new company's lots record
+    their inventory account from the start, so it is marked as never needing the
+    older-stock upgrade."""
+    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, INVENTORY_ORIGIN_SCHEMA, UNGUESSED_ROLES
+    from celerp.models.company import Company
+    from celerp.services.account_roles import reconcile_company
+
     await seed_chart_of_accounts(session, company_id)
     await _seed_default_bank_account(session, company_id)
+    await reconcile_company(session, company_id, UNGUESSED_ROLES)
+    company = await session.get(Company, company_id)
+    company.settings = {**(company.settings or {}), INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
 
 
 async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
@@ -238,21 +318,55 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     Seeds the chart of accounts for every company, active or deactivated, that has none
     yet. This handles the case where accounting is enabled after the company was already
     created (e.g. first-run with no modules, then preset applied), and a deactivated
-    company then works when it is reactivated. A company staged for a migration is left
-    alone: its chart comes from the imported books.
+    company then works when it is reactivated. A chart seeded by an older release gets
+    the accounts seeded since, where it is provably Celerp's own (_add_seeded_accounts).
+    Then every company's posting accounts are
+    reconciled with its chart (account_roles.reconcile_company), and a company left
+    without an account its workflows need gets one notice pointing at the fix. Stock from
+    before lots recorded their inventory account is then placed once, in one savepoint per
+    company and only once the company runs Accounting (until then its books are not
+    kept, so placing would strand its sold and archived stock): as opening stock when Accounting is being turned on now
+    (lot_origin.open_inventory_origins), otherwise by the upgrade of older books, which
+    also decides whether stock an older release archived is still on them
+    (lot_origin.normalize_legacy_inventory_origins). A company that fails to upgrade
+    keeps none of that work, is logged, and is retried on the next start. A company
+    staged for a migration is left alone: its chart and posting accounts come from the
+    imported books when the migration is finalized.
     """
+    from celerp.accounting_roles import INVENTORY_ORIGIN_KEY, UNGUESSED_ROLES
     from celerp.models.company import Company
+    from celerp.modules.registry import uses_module
     from celerp.services import migrations
+    from celerp.services.account_roles import current_settings, reconcile_company
+    from celerp.services.lot_origin import (
+        normalize_legacy_inventory_origins,
+        open_inventory_origins,
+    )
+    from celerp.services.posting_readiness import notify_unmapped
     from sqlalchemy import select as _select
 
-    company_ids = (await session.execute(
+    unseeded = set((await session.execute(
         _select(Company.id).where(~_select(Account.id).where(Account.company_id == Company.id).exists())
-    )).scalars().all()
-    for company_id in company_ids:
+    )).scalars().all())
+    for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars().all():
         if await migrations.is_company_migration_staged(session, company_id):
             continue
-        await seed_chart_of_accounts(session, company_id)
-        await _seed_default_bank_account(session, company_id)
+        if company_id in unseeded:
+            await seed_chart_of_accounts(session, company_id)
+            await _seed_default_bank_account(session, company_id)
+            claim = UNGUESSED_ROLES
+        else:
+            claim = await _add_seeded_accounts(session, company_id)
+        if await reconcile_company(session, company_id, claim):
+            await notify_unmapped(session, company_id)
+        settings = await current_settings(session, company_id)
+        if INVENTORY_ORIGIN_KEY in settings or not uses_module(settings, "celerp-accounting"):
+            continue
+        place = open_inventory_origins if company_id in unseeded else normalize_legacy_inventory_origins
+        try:
+            await place(session, company_id)
+        except Exception:
+            logger.exception("Older stock of company %s was not placed; retrying on the next start", company_id)
 
 
 def _account_to_dict(acc: Account) -> dict:
@@ -264,19 +378,8 @@ def _account_to_dict(acc: Account) -> dict:
         "parent_code": acc.parent_code,
         "is_active": acc.is_active,
         "cash_flow_category": acc.cash_flow_category,
+        "code_generated": acc.code_generated,
     }
-
-
-def _checked_account_type(value: str) -> str:
-    """The account's type, which decides its sign on every report. A type outside
-    the known set has no honest sign convention, so it is refused rather than
-    guessed at."""
-    if value not in ACCOUNT_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail=t("settings_accounting.account_type_invalid", types=_enum_labels("account_type", ACCOUNT_TYPES)),
-        )
-    return value
 
 
 def _enum_labels(domain: str, values) -> str:
@@ -297,51 +400,16 @@ def _checked_cash_flow_category(value: str | None) -> str | None:
     return value
 
 
-_ACCOUNT_CODE_MAX = 32  # Account.code column width
 _CHART_IMPORT_MAX = 2000  # accounts in one chart file
-
-
-def _trimmed_text(value: Any, what: str) -> str:
-    """A text field, trimmed. The database cannot store a NUL character, so one
-    is refused here with the field's name rather than failing the whole write."""
-    if not isinstance(value, str):
-        raise HTTPException(status_code=422, detail=t("acct.err_not_text", field=what))
-    if "\x00" in value:
-        raise HTTPException(status_code=422, detail=t("acct.err_control_char", field=what))
-    return value.strip()
-
-
-def _checked_account_code(value: Any) -> str:
-    """The account code, trimmed. Postings and parents refer to accounts by code,
-    so a blank or over-long one is refused rather than stored or cut short."""
-    code = _trimmed_text(value, t("acct.field_account_code"))
-    if not code:
-        raise HTTPException(status_code=422, detail=t("settings_accounting.code_required"))
-    if len(code) > _ACCOUNT_CODE_MAX:
-        raise HTTPException(
-            status_code=422, detail=t("settings_accounting.code_too_long", max=_ACCOUNT_CODE_MAX),
-        )
-    return code
 
 
 def _checked_parent_code(value: Any) -> str | None:
     """The parent account code, trimmed; missing or blank means no parent."""
     if value is None:
         return None
-    parent = _trimmed_text(value, t("acct.field_parent_code"))
-    if len(parent) > _ACCOUNT_CODE_MAX:
-        raise HTTPException(
-            status_code=422, detail=t("acct.err_parent_code_too_long", max=_ACCOUNT_CODE_MAX),
-        )
-    return parent or None
+    return checked_code_length(trimmed_text(value, "parent_code"), "parent_code") or None
 
 
-def _checked_account_name(value: Any) -> str:
-    """The account name, trimmed. Every report labels the account with it."""
-    name = _trimmed_text(value, t("acct.field_account_name"))
-    if not name:
-        raise HTTPException(status_code=422, detail=t("settings_accounting.name_required"))
-    return name
 
 
 _ACTIVE_WORDS = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
@@ -374,16 +442,18 @@ class ChartImportPlan:
     errors: list[str]
 
 
-def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> ChartImportPlan:
+def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: dict[str, list[str]]) -> ChartImportPlan:
     """Decide every row of a chart import against the chart it will produce.
 
-    ``existing`` maps each code already in the chart to its parent code. A row
+    ``existing`` maps each code already in the chart to its row (parent_code,
+    account_type, is_active); ``targets`` is posting_targets() of the company's
+    settings, the accounts nothing can sit under. A row
     whose code is already there is kept as it is and listed once, whatever else
     the row says. A new row is added only if its fields are valid and its parent
     is in the chart or is another row being added, so the order of rows in the
     file never matters. A parent that is nowhere, or that could not be added
-    itself, makes the row invalid, and so does a chain of parents that runs into
-    a loop.
+    itself, makes the row invalid, and so does a parent that is inactive or of a
+    type the row cannot sit under, and a chain of parents that runs into a loop.
     """
     row_errors: dict[int, str] = {}
     skipped_codes: list[str] = []
@@ -399,9 +469,9 @@ def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> Ch
         raw_code = rec.get("code")
         shown = raw_code.strip() if isinstance(raw_code, str) else None
         try:
-            code = _checked_account_code(raw_code)
+            code = checked_account_code(raw_code)
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, shown)}: {exc.detail}"
+            row_errors[i] = f"{label(i, shown)}: {failure_reason(exc)}"
             continue
         if code in existing:
             skipped_codes.append(code)
@@ -409,13 +479,13 @@ def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> Ch
         try:
             valid[i] = {
                 "code": code,
-                "name": _checked_account_name(rec.get("name")),
-                "account_type": _checked_account_type(rec.get("account_type")),
+                "name": checked_account_name(rec.get("name")),
+                "account_type": checked_account_type(rec.get("account_type")),
                 "parent_code": _checked_parent_code(rec.get("parent_code")),
                 "is_active": _parsed_is_active(rec.get("is_active")),
             }
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, code)}: {exc.detail}"
+            row_errors[i] = f"{label(i, code)}: {failure_reason(exc)}"
 
     in_file: dict[str, list[int]] = {}
     for i, rec in enumerate(records):
@@ -435,14 +505,24 @@ def plan_chart_import(records: list[Any], existing: dict[str, str | None]) -> Ch
         bad: dict[int, str] = {}
         for i, row in valid.items():
             parent = row["parent_code"]
-            if parent is None or parent in existing or parent in adding:
+            if parent is None:
+                continue
+            if parent in existing or parent in adding:
+                problem = parent_problem(
+                    row["account_type"], existing.get(parent) or valid[adding[parent]], parent, targets,
+                )
+                if problem:
+                    bad[i] = f"{label(i, row['code'])}: {problem}"
                 continue
             if parent in in_file:
                 bad[i] = f"{label(i, row['code'])}: its parent {parent} in this file could not be added."
             else:
                 bad[i] = f"{label(i, row['code'])}: its parent {parent} is not in the chart or in this file."
         if not bad:
-            parents = {**existing, **{row["code"]: row["parent_code"] for row in valid.values()}}
+            parents = {
+                **{code: acc["parent_code"] for code, acc in existing.items()},
+                **{row["code"]: row["parent_code"] for row in valid.values()},
+            }
             for i, row in valid.items():
                 chain = [row["code"]]
                 seen = {row["code"]}
@@ -488,24 +568,34 @@ async def seed_chart_endpoint(
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Seed the default chart of accounts for this company. Only adds missing accounts."""
+    """Seed the default chart of accounts for this company. Only adds missing accounts,
+    each as one added by hand is; a default account whose parent cannot take it now
+    (inactive, or posted to by a role) is left out and listed."""
+    await lock_chart(session, company_id)
     existing_codes = set(
         (await session.execute(
             select(Account.code).where(Account.company_id == company_id)
         )).scalars().all()
     )
     added = 0
+    not_added: list[str] = []
+
+    async def seeded(code: str, create) -> bool:
+        """Run ``create``; an account the chart refuses now is listed instead."""
+        try:
+            await create
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            not_added.append(code)
+            return False
+        return True
+
     for entry in THAI_CHART_OF_ACCOUNTS:
         if entry["code"] not in existing_codes:
-            session.add(Account(
-                id=uuid.uuid4(),
-                company_id=company_id,
-                code=entry["code"],
-                name=entry["name"],
-                account_type=entry["account_type"],
-                parent_code=entry["parent_code"],
-            ))
-            added += 1
+            added += await seeded(entry["code"], import_service.create_chart_account(
+                session, company_id, code=entry["code"], name=entry["name"], account_type=entry["account_type"],
+                parent_code=entry["parent_code"], cash_flow_category=entry.get("cash_flow_category")))
     # Ensure at least one bank account exists (backfill for existing companies)
     existing_bank = (
         await session.execute(
@@ -513,10 +603,10 @@ async def seed_chart_endpoint(
         )
     ).scalar_one_or_none()
     if not existing_bank:
-        await _seed_default_bank_account(session, company_id)
+        await seeded(_DEFAULT_BANK_CODE, _seed_default_bank_account(session, company_id))
 
     await session.commit()
-    return {"added": added, "already_existed": len(existing_codes)}
+    return {"added": added, "already_existed": len(existing_codes), "not_added": not_added}
 
 
 @router.post("/accounts")
@@ -527,9 +617,9 @@ async def create_account(
 ) -> dict:
     acc = await import_service.create_chart_account(
         session, company_id,
-        code=_checked_account_code(payload.code),
-        name=_checked_account_name(payload.name),
-        account_type=_checked_account_type(payload.account_type),
+        code=checked_account_code(payload.code),
+        name=checked_account_name(payload.name),
+        account_type=checked_account_type(payload.account_type),
         parent_code=_checked_parent_code(payload.parent_code),
         cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
     )
@@ -544,27 +634,17 @@ async def patch_account(
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    acc = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id, Account.code == code).with_for_update()
-        )
-    ).scalar_one_or_none()
-    if not acc:
-        raise HTTPException(status_code=404, detail=t("settings_accounting.account_not_found"))
-    account_type = _checked_account_type(payload.account_type) if payload.account_type is not None else None
-    await check_account_change(session, company_id, acc, account_type=account_type, is_active=payload.is_active)
-
-    if payload.name is not None:
-        acc.name = _checked_account_name(payload.name)
-    if account_type is not None:
-        acc.account_type = account_type
-    if payload.parent_code is not None:
-        acc.parent_code = _checked_parent_code(payload.parent_code)
-    if payload.is_active is not None:
-        acc.is_active = payload.is_active
-    if payload.cash_flow_category is not None:
-        acc.cash_flow_category = _checked_cash_flow_category(payload.cash_flow_category)
-
+    acc = await change_account(
+        session, company_id, code,
+        name=None if payload.name is None else checked_account_name(payload.name),
+        account_type=None if payload.account_type is None else checked_account_type(payload.account_type),
+        parent_code=... if payload.parent_code is None else _checked_parent_code(payload.parent_code),
+        is_active=payload.is_active,
+        cash_flow_category=(
+            ... if payload.cash_flow_category is None
+            else _checked_cash_flow_category(payload.cash_flow_category)
+        ),
+    )
     await session.commit()
     return _account_to_dict(acc)
 
@@ -585,10 +665,24 @@ async def _planned_chart_import(
             status_code=422,
             detail=t("acct.err_chart_import_too_many", count=len(body.records), max=_CHART_IMPORT_MAX),
         )
-    existing = dict((await session.execute(
-        select(Account.code, Account.parent_code).where(Account.company_id == company_id)
-    )).all())
-    return plan_chart_import(body.records, existing)
+    rows = (await session.execute(select(Account).where(Account.company_id == company_id))).scalars()
+    existing = {
+        a.code: {"parent_code": a.parent_code, "account_type": a.account_type, "is_active": a.is_active}
+        for a in rows
+    }
+    return plan_chart_import(body.records, existing, posting_targets(await current_settings(session, company_id)))
+
+
+def _parents_first(rows: list[dict]) -> list[dict]:
+    """The rows of a planned import ordered so each one comes after its parent when
+    the parent is being added too; otherwise in file order."""
+    ordered: list[dict] = []
+    pending = list(rows)
+    while pending:
+        waiting = {row["code"] for row in pending}
+        ordered += [row for row in pending if row["parent_code"] not in waiting]
+        pending = [row for row in pending if row["parent_code"] in waiting]
+    return ordered
 
 
 def _chart_import_result(plan: ChartImportPlan) -> ChartImportResult:
@@ -626,9 +720,12 @@ async def import_chart_accounts(
     # Hold the company lock so two imports of one file cannot both see a code as new,
     # and judge the caller's authority as it stands once nothing can change it.
     await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
+    await lock_chart(session, company_id)
     plan = await _planned_chart_import(request, body, company_id, session)
-    for row in plan.to_create:
-        session.add(Account(id=uuid.uuid4(), company_id=company_id, **row))
+    # Each account goes in as one added by hand does, so its parent is locked against a
+    # posting that has just checked it has nothing under it.
+    for row in _parents_first(plan.to_create):
+        await import_service.create_chart_account(session, company_id, **row)
     try:
         await session.commit()
     except IntegrityError:
@@ -858,6 +955,10 @@ async def _require_contact_filter(
         )
 
 
+# The id of the reversal row _je_rows adds for an entry voided out of a locked period.
+_REVERSAL_SUFFIX = ":reversal"
+
+
 async def _je_rows(
     session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
 ) -> list[tuple[str, dict, str]]:
@@ -881,11 +982,35 @@ async def _je_rows(
     for row in rows:
         state = row.state
         status = state.get("status")
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        day = str(ts_raw)[:10] if ts_raw else ""
+        if status == "void" and state.get("reversed_on"):
+            # Voided out of a locked period: the entry stays posted in its own period and
+            # its reversal posts on reversed_on (posting_dates.void_reversal).
+            out.append((row.entity_id, {**state, "status": "posted"}, day))
+            out.append((f"{row.entity_id}{_REVERSAL_SUFFIX}", _reversal_state(row.entity_id, state), state["reversed_on"]))
+            continue
         if status != "posted" and not (include_void and status == "void"):
             continue
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        out.append((row.entity_id, state, str(ts_raw)[:10] if ts_raw else ""))
+        out.append((row.entity_id, state, day))
     return out
+
+
+_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
+
+
+def _reversal_state(entity_id: str, state: dict) -> dict:
+    """The reversal of a journal entry on its reversed_on date: every line through the
+    same account and roles with debit and credit swapped."""
+    memo = state.get("memo") or ""
+    return {
+        **state,
+        "status": "posted",
+        "ts": state["reversed_on"],
+        "memo": f"Reversal of {memo}" if memo else "Reversal",
+        "reverses": entity_id,
+        "entries": [{_SWAPPED.get(k, k): v for k, v in line.items()} for line in state.get("entries") or []],
+    }
 
 
 async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
@@ -969,13 +1094,18 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     total - travel with the ref so the extended journal can name what was bought
     or sold on each posting. The projection row is already loaded whole here, so
     carrying them costs no extra read.
+
+    The reversal row of an entry voided out of a locked period has no creation
+    event of its own; it is the same document's posting undone, so it resolves to
+    the ref of the entry it reverses: same document, party and currency.
     """
     from celerp.models.ledger import LedgerEntry
 
     if not je_ids:
         return {}
+    reverses = {je_id: je_id.removesuffix(_REVERSAL_SUFFIX) for je_id in je_ids}
     ledger_events = []
-    for chunk in _id_chunks(je_ids):
+    for chunk in _id_chunks(sorted(set(reverses.values()))):
         ledger_events.extend((
             await session.execute(
                 select(LedgerEntry).where(
@@ -1063,10 +1193,10 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
             "doc": state,
         }
-    return refs
+    return {je_id: refs[original] for je_id, original in reverses.items() if original in refs}
 
 
-def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
+def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[str, str]) -> str:
     """The party a journal entry line belongs to, or "" when none resolves.
 
     A line may name its own contact, which is how a manual posting to a control
@@ -1076,12 +1206,12 @@ def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
     statement, so a line can never sit in one party's bucket on one report and
     another's on the next. Lines that resolve to nothing are reported under the
     empty string, so a filtered view can never quietly drop them from the
-    account's total.
+    account's total. A party merged into another contact reads as the contact that
+    survives it (merge_survivors), so merged contacts are one party on every report.
     """
     named = entry.get("contact")
-    if isinstance(named, str) and named:
-        return named
-    return (refs.get(je_id) or {}).get("contact_id") or ""
+    party = named if isinstance(named, str) and named else (refs.get(je_id) or {}).get("contact_id") or ""
+    return survivors.get(party, party)
 
 
 def _statement_kind(ref: dict) -> str:
@@ -1219,6 +1349,8 @@ async def _journal_payload(
             "status": state.get("status"),
             "je_type": state.get("je_type"),
             "void_reason": state.get("void_reason"),
+            # Set on an entry voided out of a locked period and on its reversal row.
+            "reversed_on": state.get("reversed_on"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
             "fx": entry_fx,
@@ -1482,6 +1614,9 @@ class ManualJECreate(BaseModel):
 
 class ManualJEVoidPayload(BaseModel):
     reason: str | None = None
+    # When the entry sits in a locked period, the open date its reversal posts on;
+    # the company's business date today when not given (posting_dates.correction_day).
+    reversal_date: str | None = None
 
 
 # A ceiling on how much writing one request can ask for, so a hand-built or mis-clicked
@@ -1493,6 +1628,7 @@ _BULK_VOID_LIMIT = 200
 class BulkJEVoidPayload(BaseModel):
     je_ids: list[str]
     reason: str | None = None
+    reversal_date: str | None = None
 
 
 @router.post("/journal-entries")
@@ -1513,16 +1649,7 @@ async def create_manual_journal_entry(
     await import_service.check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
 
-    accounts = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id)
-        )
-    ).scalars().all()
-    account_map = {a.code: a for a in accounts}
-    children_of: dict[str, list[str]] = {}
-    for a in accounts:
-        if a.parent_code:
-            children_of.setdefault(a.parent_code, []).append(a.code)
+    await require_destinations(session, company_id, {line.account for line in payload.entries})
 
     base = await _base_currency(session, company_id)
     # Every posting is stored in base currency, so the entry is balanced there,
@@ -1533,15 +1660,6 @@ async def create_manual_journal_entry(
     total_credit = Decimal(0)
     entries: list[dict] = []
     for index, line in enumerate(payload.entries):
-        acc = require_open_account(account_map.get(line.account), line.account)
-        children = children_of.get(line.account)
-        if children:
-            # Parent accounts are grouping rollups (the balance sheet sums their
-            # children); postings belong on leaf accounts.
-            raise HTTPException(
-                status_code=422,
-                detail=f"Account {line.account} is a parent account. Post to one of its sub-accounts: {', '.join(sorted(children))}.",
-            )
         if line.debit < 0 or line.credit < 0:
             raise HTTPException(status_code=422, detail=t("acct.err_je_negative"))
         line_fx = _validated_line_fx(base, line, index)
@@ -1667,7 +1785,8 @@ async def create_manual_journal_entry(
     }
 
 
-async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None) -> dict:
+async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None,
+                    reversal_date: str | None = None) -> dict:
     """Void one manual journal entry, committing it. Raises the refusal as HTTPException.
 
     Both the single-entry route and the bulk route go through here, so a rule about
@@ -1693,6 +1812,8 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
     data = je_void_data(reason, state)
+    if reversal_date:
+        data["reversed_on"] = reversal_date
     await emit_event(
         session,
         company_id=company_id,
@@ -1707,7 +1828,7 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         metadata_={},
     )
     await session.commit()
-    return {"je_id": entity_id, "status": "void", "void_reason": reason}
+    return {"je_id": entity_id, "status": "void", "void_reason": reason, "reversed_on": data.get("reversed_on")}
 
 
 @router.post("/journal-entries/bulk-void")
@@ -1741,7 +1862,7 @@ async def bulk_void_journal_entries(
         try:
             results.append(await _void_one(
                 session, company_id=company_id, actor_id=actor_id,
-                entity_id=entity_id, reason=payload.reason,
+                entity_id=entity_id, reason=payload.reason, reversal_date=payload.reversal_date,
             ))
         except HTTPException as exc:
             # Every entry starts from a clean session, whatever the one before it
@@ -1772,6 +1893,7 @@ async def void_manual_journal_entry(
     return await _void_one(
         session, company_id=company_id, actor_id=user.id,
         entity_id=entity_id, reason=payload.reason if payload else None,
+        reversal_date=payload.reversal_date if payload else None,
     )
 
 
@@ -1789,7 +1911,7 @@ async def account_ledger(
     running balance, closing balance and source doc links.
 
     contact_id narrows the account to one party, which is what turns a control
-    account into that party's subledger: 1120 filtered to a customer is that
+    account into that party's subledger: the receivable filtered to a customer is that
     customer's receivable, and every such line sums back to the control account.
     Lines with no resolvable party are reported under the empty string so a
     filtered view can never quietly exclude them from the account's total.
@@ -1827,6 +1949,7 @@ async def account_ledger(
         raise HTTPException(status_code=404, detail=t("settings_accounting.account_not_found"))
 
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+    survivors = await merge_survivors(session, company_id)
 
     account_type = account.account_type if account else "unknown"
     debit_normal = _is_debit_normal(account_type)
@@ -1842,7 +1965,7 @@ async def account_ledger(
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
                 continue
-            line_contact = _line_party(refs, je_id, entry)
+            line_contact = _line_party(refs, je_id, entry, survivors)
             if contact_id is not None and line_contact != contact_id:
                 continue
             amounts = _line_amounts(entry)
@@ -1990,6 +2113,7 @@ async def general_ledger(
         await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
         if contact_id is not None else {}
     )
+    survivors = await merge_survivors(session, company_id) if contact_id is not None else {}
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id)
@@ -2008,7 +2132,7 @@ async def general_ledger(
             amounts = _line_amounts(entry)
             if not code or amounts is None:
                 continue
-            if contact_id is not None and _line_party(party_refs, je_id, entry) != contact_id:
+            if contact_id is not None and _line_party(party_refs, je_id, entry, survivors) != contact_id:
                 continue
             d, c = amounts
             if date_from and ts < date_from:
@@ -2150,14 +2274,12 @@ async def balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
-    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Balance sheet as of a given date (default: all posted entries to date)."""
+    """Balance sheet as of a given date (default: all posted entries to date). Read only:
+    stock the books do not carry is reported by the books check (stock_on_books), never
+    booked here."""
     _require_iso_date(as_of, t("acct.field_as_of_date"))
-    from celerp.services.auto_je import upsert_opening_inventory_je
-    await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
-    await session.commit()
 
     posted = await _je_rows(session, company_id)
     accounts = (
@@ -2165,76 +2287,33 @@ async def balance_sheet(
             select(Account).where(Account.company_id == company_id).order_by(Account.code)
         )
     ).scalars().all()
-    account_map = {a.code: a for a in accounts}
 
     # Balance sheet uses all entries up to as_of
     balances = _build_balances(posted, date_from=None, date_to=as_of)
 
-    def _section(types: list[str], credit_normal: bool) -> tuple[list[dict], float]:
-        lines = []
-        # Collect all leaf balances first
-        leaf_lines: list[dict] = []
-        seen_codes: set[str] = set()
-        for code in sorted(balances):
-            acc = account_map.get(code)
-            if not acc or acc.account_type not in types:
-                continue
-            net = balances[code]
-            amount = float(-net) if credit_normal else float(net)
-            leaf_lines.append({"code": code, "name": acc.name, "account_type": acc.account_type, "amount": amount, "parent_code": acc.parent_code})
-            seen_codes.add(code)
+    def _section(types: set[str], credit_normal: bool) -> tuple[list[dict], float]:
+        lines, total = account_tree_lines(accounts, balances, types, credit_normal=credit_normal)
+        return lines, float(total)
 
-        # Also include child accounts that exist in account_map but have zero balance,
-        # so parent accounts with sub-accounts always expand correctly.
-        parent_codes_in_balance = {l["code"] for l in leaf_lines}
-        for acc in sorted(accounts, key=lambda a: a.code):
-            if acc.code in seen_codes:
-                continue
-            if acc.account_type not in types:
-                continue
-            if acc.parent_code in parent_codes_in_balance:
-                leaf_lines.append({"code": acc.code, "name": acc.name, "account_type": acc.account_type, "amount": 0.0, "parent_code": acc.parent_code})
-                seen_codes.add(acc.code)
-        leaf_lines.sort(key=lambda l: l["code"])
+    asset_lines, total_assets = _section({"asset"}, credit_normal=False)
+    liability_lines, total_liabilities = _section({"liability"}, credit_normal=True)
+    equity_lines, total_equity = _section({"equity"}, credit_normal=True)
 
-        # For accounts that have children in the result set, replace with parent + indented children.
-        child_codes = {l["code"] for l in leaf_lines if l.get("parent_code") and any(l2["code"] == l["parent_code"] for l2 in leaf_lines)}
-        for leaf in leaf_lines:
-            code = leaf["code"]
-            children = [l for l in leaf_lines if l.get("parent_code") == code]
-            if children:
-                # Parent total = its own directly-posted balance (legacy
-                # pre-sub-account entries) plus its children. The parent's own
-                # amount stays attributed to the parent, matching how the
-                # trial balance, general ledger, and ledger drilldown bucket
-                # by literal account code.
-                parent_total = leaf["amount"] + sum(c["amount"] for c in children)
-                lines.append({"code": code, "name": leaf["name"], "account_type": leaf["account_type"], "amount": parent_total, "is_parent": True})
-                for child in children:
-                    lines.append({**child, "is_child": True})
-            elif code not in child_codes:
-                lines.append(leaf)
-
-        total = sum(l["amount"] for l in lines if not l.get("is_child"))
-        return lines, total
-
-    asset_lines, total_assets = _section(["asset"], credit_normal=False)
-    liability_lines, total_liabilities = _section(["liability"], credit_normal=True)
-    equity_lines, total_equity = _section(["equity"], credit_normal=True)
-
-    # Retained earnings = net income (all revenue - COGS - expenses) accumulated to date.
-    # This equals Assets - Liabilities - explicit Equity by the accounting equation.
-    retained_earnings = total_assets - total_liabilities - total_equity
-    if abs(retained_earnings) >= 0.01:
+    # Net income not yet closed to the retained earnings account (all revenue - COGS -
+    # expenses since the last year-end close). This equals Assets - Liabilities -
+    # explicit Equity by the accounting equation. It is named apart from the retained
+    # earnings account, which has its own line once a year has been closed into it.
+    unclosed_income = total_assets - total_liabilities - total_equity
+    if abs(unclosed_income) >= 0.01:
         equity_lines.append({
             "code": "RE",
-            "name": "Retained Earnings",
+            "name": "Net income not yet closed",
             "account_type": "equity",
-            "amount": retained_earnings,
+            "amount": unclosed_income,
             "synthetic": True,
             "href_pnl": True,
         })
-        total_equity += retained_earnings
+        total_equity += unclosed_income
 
     total_l_e = total_liabilities + total_equity
 
@@ -2249,11 +2328,11 @@ async def balance_sheet(
 
 
 # The control accounts a party's balance lives on: receivable and payable. A
-# statement is these two accounts filtered to one party, which is what makes the
-# statements sum back to the balance sheet.
-_AR_CODE = "1120"
-_AP_CODE = "2110"
-_CONTROL_CODES = (_AR_CODE, _AP_CODE)
+# statement is the lines posted to them filtered to one party, which is what makes
+# the statements sum back to the balance sheet. A line is a control line by the role
+# it was posted for, or for an older line, by the accounts that have served the
+# role, so a statement keeps its history when the company changes the account.
+_CONTROL_ROLES = frozenset({AccountRole.RECEIVABLE.value, AccountRole.PAYABLE.value})
 
 
 @router.get("/soa/{contact_id}")
@@ -2288,22 +2367,15 @@ async def statement_of_account(
     contact_row = await _require_contact(session, company_id, contact_id)
     # Merge tombstones carry both deleted and merged_into, so the merge check
     # must come first or merged contacts would 404 instead of redirecting.
-    if contact_row.state.get("merged_into"):
-        # Follow the merge chain so bookmarked statements land on the surviving contact.
-        seen = {contact_id}
-        winner = contact_row.state["merged_into"]
-        while winner not in seen:
-            seen.add(winner)
-            row = await session.get(Projection, (company_id, winner))
-            nxt = row.state.get("merged_into") if row else None
-            if not nxt:
-                break
-            winner = nxt
-        return {"merged_into": winner}
+    survivors = await merge_survivors(session, company_id)
+    if contact_id in survivors:
+        # Bookmarked statements land on the surviving contact.
+        return {"merged_into": survivors[contact_id]}
     if contact_row.state.get("deleted"):
         raise HTTPException(status_code=404, detail=t("acct.err_contact_pick"))
 
     base = await _base_currency(session, company_id)
+    settings = await current_settings(session, company_id)
     posted = await _je_rows(session, company_id)
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
 
@@ -2313,9 +2385,9 @@ async def statement_of_account(
     for je_id, state, ts in posted:
         ref = refs.get(je_id) or {}
         for seq, entry in enumerate(state.get("entries", [])):
-            if entry.get("account") not in _CONTROL_CODES:
+            if not _CONTROL_ROLES.intersection(line_roles(settings, entry)):
                 continue
-            if _line_party(refs, je_id, entry) != contact_id:
+            if _line_party(refs, je_id, entry, survivors) != contact_id:
                 continue
             amounts = _line_amounts(entry)
             if amounts is None:
@@ -2498,15 +2570,20 @@ async def create_bank_account(
     if currency not in ISO_4217_CURRENCIES:
         raise HTTPException(status_code=422, detail=t("acct.err_currency_unknown", currency=payload.currency))
 
+    opening = bool(payload.opening_balance)
+    roles = [AccountRole.CASH_AND_EQUIVALENTS] + ([AccountRole.RETAINED_EARNINGS] if opening else [])
+    targets = await resolve_many(session, company_id, roles)
+    cash_header = targets[AccountRole.CASH_AND_EQUIVALENTS.value]
     # Resolve or auto-assign chart account code
     code = (
-        _checked_account_code(payload.account_code) if (payload.account_code or "").strip()
-        else await import_service.next_bank_account_code(session, company_id)
+        checked_account_code(payload.account_code) if (payload.account_code or "").strip()
+        else await import_service.next_bank_account_code(session, company_id, cash_header)
     )
 
     bank = await import_service.add_bank_account(
         session, company_id,
         code=code,
+        parent_code=cash_header,
         account_name=f"{payload.bank_name} ({payload.bank_type.replace('_', ' ').title()})",
         bank_name=payload.bank_name,
         account_number=payload.account_number,
@@ -2516,19 +2593,24 @@ async def create_bank_account(
     )
 
     # Create opening balance JE if opening_balance != 0
-    if payload.opening_balance and payload.opening_balance != 0.0:
+    if opening:
+        retained = targets[AccountRole.RETAINED_EARNINGS.value]
         je_id = _opening_je_id(bank.id)
         idem_c = f"opening:{bank.id}:c"
         idem_p = f"opening:{bank.id}:p"
         from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
-        today = datetime.now(timezone.utc).date().isoformat()
+        # The balance is as of the company's today, in its own timezone.
+        from celerp.models.company import Company
+        from celerp.services.business_time import business_date_at
+        company = await session.get(Company, company_id)
+        today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
         ob = float(payload.opening_balance)
-        # Debit the bank account, credit equity (retained earnings 3200)
+        # Debit the bank account, credit equity (the retained earnings account)
         entries = [
             {"account": code, "debit": ob, "credit": 0.0},
-            {"account": "3200", "debit": 0.0, "credit": ob},
+            {"account": retained, "debit": 0.0, "credit": ob},
         ] if ob > 0 else [
-            {"account": "3200", "debit": abs(ob), "credit": 0.0},
+            {"account": retained, "debit": abs(ob), "credit": 0.0},
             {"account": code, "debit": 0.0, "credit": abs(ob)},
         ]
         await emit_event(
@@ -2605,8 +2687,8 @@ async def patch_bank_account(
 # ---------------------------------------------------------------------------
 
 class TransferCreate(BaseModel):
-    from_bank_id: str
-    to_bank_id: str
+    from_bank_id: uuid.UUID
+    to_bank_id: uuid.UUID
     amount: FiniteFloat
     date: str  # ISO date "YYYY-MM-DD"
     description: str = ""
@@ -2627,7 +2709,7 @@ async def create_transfer(
     from_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.from_bank_id),
+                BankAccount.id == payload.from_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2639,7 +2721,7 @@ async def create_transfer(
     to_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.to_bank_id),
+                BankAccount.id == payload.to_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2647,11 +2729,12 @@ async def create_transfer(
     ).scalar_one_or_none()
     if not to_bank:
         raise HTTPException(status_code=404, detail="Destination bank account not found")
+    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
 
     je_id = f"je:transfer:{uuid.uuid4()}"
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
-    memo = payload.description or f"Transfer {payload.from_bank_id[:8]} → {payload.to_bank_id[:8]}"
+    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} → {str(payload.to_bank_id)[:8]}"
     entries = [
         {"account": to_bank.chart_account_code, "debit": payload.amount, "credit": 0.0},
         {"account": from_bank.chart_account_code, "debit": 0.0, "credit": payload.amount},
@@ -2669,8 +2752,8 @@ async def create_transfer(
             "entries": entries,
             "je_type": "transfer",
             "reference": payload.reference,
-            "from_bank_account_id": payload.from_bank_id,
-            "to_bank_account_id": payload.to_bank_id,
+            "from_bank_account_id": str(payload.from_bank_id),
+            "to_bank_account_id": str(payload.to_bank_id),
         },
         actor_id=user.id,
         location_id=None,
@@ -2695,8 +2778,8 @@ async def create_transfer(
 
     return {
         "je_id": je_id,
-        "from_bank_id": payload.from_bank_id,
-        "to_bank_id": payload.to_bank_id,
+        "from_bank_id": str(payload.from_bank_id),
+        "to_bank_id": str(payload.to_bank_id),
         "amount": payload.amount,
         "date": payload.date,
         "memo": memo,
@@ -2709,7 +2792,7 @@ async def create_transfer(
 # ---------------------------------------------------------------------------
 
 class ReconciliationStart(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     statement_date: str  # "YYYY-MM-DD"
     statement_balance: FiniteFloat
 
@@ -2746,10 +2829,23 @@ async def _recon_bank_and_entries(
     return bank, await _je_entries_for_account(db, company_id, bank.chart_account_code)
 
 
+def _cleared_je_ids(recon: ReconciliationSession, bank: BankAccount) -> set[str]:
+    """Book entries a session counts as cleared: those matched on it, plus the entry
+    that posted the bank's opening balance.
+
+    The opening balance is the balance brought forward, so it is cleared from the
+    start and never offered for matching. Its one source is that ledger entry, the
+    same one the bank list reads; the bank account's opening_balance column is never
+    added on top, so the balance cannot count twice, and an opening balance with no
+    posted entry counts nowhere (the bank list flags it as opening_unbacked).
+    """
+    return set(recon.reconciled_je_ids or []) | {_opening_je_id(bank.id)}
+
+
 def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> tuple[float, float]:
     """(matched balance, remaining difference) for a session."""
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    matched_balance = float(bank.opening_balance) + sum(e["amount"] for e in all_entries if e["je_id"] in reconciled_ids)
+    cleared = _cleared_je_ids(recon, bank)
+    matched_balance = sum(e["amount"] for e in all_entries if e["je_id"] in cleared)
     return matched_balance, float(recon.statement_balance) - matched_balance
 
 
@@ -2773,6 +2869,14 @@ def _recon_to_dict(r: ReconciliationSession) -> dict:
     }
 
 
+def _line_attachment(company_id, url: str) -> dict:
+    """One attachment a statement line holds: its stored file name as the id, with the URL
+    the company's attachment store serves it at. An entry that is not a file of this
+    company's store has no URL, so nothing outside the store is ever offered."""
+    name = company_file_name(company_id, url)
+    return {"id": name or url, "url": url if name else None}
+
+
 def _stmt_line_to_dict(l: BankStatementLine) -> dict:
     return {
         "id": str(l.id),
@@ -2785,7 +2889,7 @@ def _stmt_line_to_dict(l: BankStatementLine) -> dict:
         "reference": l.reference,
         "status": l.status,
         "matched_je_id": l.matched_je_id,
-        "attachment_ids": list(l.attachment_ids or []),
+        "attachments": [_line_attachment(l.company_id, url) for url in l.attachment_ids or []],
         "raw_csv_row": dict(l.raw_csv_row or {}),
         "created_at": l.created_at.isoformat(),
     }
@@ -2848,7 +2952,7 @@ async def start_reconciliation(
     bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.bank_account_id),
+                BankAccount.id == payload.bank_account_id,
                 BankAccount.company_id == company_id,
             ).with_for_update()
         )
@@ -2898,9 +3002,9 @@ async def get_reconciliation(
     recon = await _get_recon(db, session_id, company_id)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    unreconciled = [e for e in all_entries if e["je_id"] not in reconciled_ids]
-    reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
+    cleared = _cleared_je_ids(recon, bank)
+    unreconciled = [e for e in all_entries if e["je_id"] not in cleared]
+    reconciled = [e for e in all_entries if e["je_id"] in cleared]
     matched_balance, difference = _recon_balance(recon, bank, all_entries)
 
     d = _recon_to_dict(recon)
@@ -2909,7 +3013,7 @@ async def get_reconciliation(
         "all_entries": all_entries,
         "unreconciled_entries": unreconciled,
         "reconciled_entries": reconciled,
-        "book_balance": float(bank.opening_balance) + sum(e["amount"] for e in all_entries),
+        "book_balance": sum(e["amount"] for e in all_entries),
         "matched_balance": matched_balance,
         "difference": difference,
     })
@@ -3020,15 +3124,6 @@ def _capped(rows: list, cap: int = AGENT_WORKBENCH_CAP) -> tuple[list, bool]:
     return rows[:cap], len(rows) > cap
 
 
-async def _require_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> Account:
-    account = (await db.execute(
-        select(Account).where(Account.company_id == company_id, Account.code == code)
-    )).scalar_one_or_none()
-    if not account:
-        raise HTTPException(status_code=422, detail=t("acct.err_account_unknown", code=code))
-    return account
-
-
 @router.get(
     "/reconciliation/{session_id}/workbench",
     summary="Statement lines still to resolve, unreconciled book entries, and the remaining difference",
@@ -3048,11 +3143,11 @@ async def reconciliation_workbench(
             BankStatementLine.status.in_(("unmatched", "suggested")),
         ).order_by(BankStatementLine.line_date, BankStatementLine.created_at)
     )).scalars().all()
-    reconciled_ids = set(recon.reconciled_je_ids or [])
+    cleared = _cleared_je_ids(recon, bank)
     _, difference = _recon_balance(recon, bank, all_entries)
 
     open_lines, lines_truncated = _capped([_stmt_line_to_dict(l) for l in lines])
-    entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in reconciled_ids])
+    entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in cleared])
     return {
         "session": _recon_to_dict(recon),
         "bank_account": _bank_to_dict(bank),
@@ -3094,12 +3189,12 @@ class BulkConfirmPayload(BaseModel):
 
 
 class WriteOffPayload(BaseModel):
-    account_code: str = "6950"  # default to misc expenses
+    account_code: str | None = None  # unset: the company's general expense account
     memo: str = "Bank reconciliation adjustment"
 
 
 class ReconRuleCreate(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     match_field: str = "description"
     match_pattern: str
     match_type: str = "contains"
@@ -3299,6 +3394,7 @@ async def import_recon_file(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp.ai.files import load_file
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     try:
         content, meta = load_file(payload.file_id, company_id, user.id)
@@ -3357,8 +3453,8 @@ async def auto_match_recon(
     )).scalars().all()
 
     book_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
-    already_matched = set(recon.reconciled_je_ids or [])
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in already_matched]
+    cleared = _cleared_je_ids(recon, bank)
+    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared]
 
     stmt_dicts = [_stmt_line_to_dict(l) for l in stmt_lines]
     matches = auto_match(stmt_dicts, unmatched_entries)
@@ -3553,7 +3649,7 @@ async def create_je_from_line(
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
-    await _require_account(db, company_id, payload.account_code)
+    await require_destinations(db, company_id, {payload.account_code})
 
     line_amount = abs(float(sl.amount))
     if payload.amount is not None and abs(float(payload.amount) - line_amount) >= 0.005:
@@ -3638,6 +3734,10 @@ async def split_stmt_line(
 
     if not payload.splits:
         raise HTTPException(status_code=422, detail=t("acct.at_least_one_split_entry_required"))
+    if any(not s.get("account_code") for s in payload.splits):
+        raise HTTPException(status_code=422, detail=refusal(
+            "reconciliation.split.account_required", "Choose an account for every split."))
+    await require_destinations(db, company_id, {s["account_code"] for s in payload.splits})
 
     je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:split:{sl.id}")
     idem_c = je_idempotency_key(je_id, "recon_split", "c")
@@ -3723,25 +3823,30 @@ async def attach_to_line(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Attach a document to a statement line (stores file, returns attachment id)."""
-    import hashlib, os
-    from pathlib import Path
+    """Attach a document to a statement line, stored in the company's attachment store.
 
-    _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    data = await file.read()
-    att_id = hashlib.sha256(data).hexdigest()[:16]
-    # Store in static attachments dir (mirrors inventory attachment pattern)
-    att_dir = Path("static/attachments")
-    att_dir.mkdir(parents=True, exist_ok=True)
-    att_path = att_dir / att_id
-    att_path.write_bytes(data)
-
-    ids = list(sl.attachment_ids or [])
-    if att_id not in ids:
-        ids.append(att_id)
-        sl.attachment_ids = ids
-    await db.commit()
-    return {"attachment_id": att_id, "filename": file.filename}
+    The stored id is derived from the line and the content, so attaching the same file to
+    the same line again returns the attachment it already holds, and the same file on two
+    lines is two files that are removed independently."""
+    content = await file.read()
+    mime = upload_mime(file)
+    att_id = hashlib.sha256(str(line_id).encode() + content).hexdigest()[:32]
+    async with storing(db, company_id) as store:
+        _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
+        name = stored_file_name(att_id, mime)
+        held = next((u for u in sl.attachment_ids or [] if name and company_file_name(company_id, u) == name), None)
+        if held is not None:
+            return {"attachment_id": name, "url": held, "filename": file.filename}
+        try:
+            meta = await store.file(content, file.filename, mime, att_id=att_id)
+        except ValueError:
+            raise HTTPException(status_code=413, detail=refusal(
+                "accounting.statement_attachment_refused",
+                "This file cannot be attached. Attach a PDF, image, video, Word or text "
+                "file of at most 50 MB."))
+        sl.attachment_ids = [*(sl.attachment_ids or []), meta["url"]]
+    return {"attachment_id": company_file_name(company_id, meta["url"]), "url": meta["url"],
+            "filename": meta["filename"]}
 
 
 @router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}")
@@ -3753,9 +3858,25 @@ async def remove_line_attachment(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Remove an attachment from a statement line and delete its stored file."""
     _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    ids = [i for i in (sl.attachment_ids or []) if i != att_id]
-    sl.attachment_ids = ids
+    held = next((u for u in sl.attachment_ids or [] if _line_attachment(company_id, u)["id"] == att_id), None)
+    if held is None:
+        raise HTTPException(status_code=404, detail=refusal(
+            "accounting.statement_attachment_not_found",
+            "This statement line has no such attachment. Reload the line to see the "
+            "attachments it holds, then remove one of those."))
+    name = company_file_name(company_id, held)
+    if name is not None:
+        try:
+            await delete_stored_file(str(company_id), name.rpartition(".")[0], stored_file_type(name))
+        except Exception:
+            logger.warning("could not delete statement line attachment %s", name)
+            raise HTTPException(status_code=503, detail=refusal(
+                "accounting.statement_attachment_not_removed",
+                "The attachment file could not be deleted, so it is still on the line. "
+                "Try removing it again in a moment."))
+    sl.attachment_ids = [u for u in sl.attachment_ids if u != held]
     await db.commit()
     return {"removed": att_id}
 
@@ -3842,7 +3963,11 @@ async def write_off_difference(
         )
     if abs(difference) < 0.005:
         raise HTTPException(status_code=422, detail=t("acct.err_writeoff_nothing"))
-    await _require_account(db, company_id, payload.account_code)
+    if payload.account_code:
+        account_code = payload.account_code
+        await require_destinations(db, company_id, {account_code})
+    else:
+        account_code = await resolve(db, company_id, AccountRole.GENERAL_EXPENSE)
 
     idem_c = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "c")
     idem_p = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "p")
@@ -3851,7 +3976,7 @@ async def write_off_difference(
     bank_credit = max(-difference, 0)
     entries = [
         {"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit},
-        {"account": payload.account_code, "debit": bank_credit, "credit": bank_debit},
+        {"account": account_code, "debit": bank_credit, "credit": bank_debit},
     ]
 
     await emit_event(
@@ -3880,14 +4005,14 @@ async def write_off_difference(
 
 @router.get("/rules")
 async def get_recon_rules(
-    bank_account_id: str | None = None,
+    bank_account_id: uuid.UUID | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
     q = select(ReconciliationRule).where(ReconciliationRule.company_id == company_id)
     if bank_account_id:
-        q = q.where(ReconciliationRule.bank_account_id == uuid.UUID(bank_account_id))
+        q = q.where(ReconciliationRule.bank_account_id == bank_account_id)
     rows = (await db.execute(q.order_by(ReconciliationRule.created_at))).scalars().all()
     return {"items": [_rule_to_dict(r) for r in rows], "total": len(rows)}
 
@@ -3899,10 +4024,17 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    bank = (await db.execute(select(BankAccount.id).where(
+        BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
+    ))).scalar_one_or_none()
+    if bank is None:
+        raise HTTPException(status_code=404, detail=refusal(
+            "accounting.bank_not_found",
+            "That bank account was not found in this company. Choose one of the company's bank accounts."))
     rule = ReconciliationRule(
         id=uuid.uuid4(),
         company_id=company_id,
-        bank_account_id=uuid.UUID(payload.bank_account_id),
+        bank_account_id=payload.bank_account_id,
         match_field=payload.match_field,
         match_pattern=payload.match_pattern,
         match_type=payload.match_type,
@@ -3991,43 +4123,39 @@ async def _get_recon_and_line(
 # Cash flow statement
 # ---------------------------------------------------------------------------
 
-_CASH_PARENT = "1110"  # Cash and Cash Equivalents; bank accounts are seeded beneath it
-_NON_CURRENT_ASSET_FLOOR = 1200
-_NON_CURRENT_LIABILITY_FLOOR = 2200
+def _cash_codes(accounts, banks, settings: dict) -> set[str]:
+    """The accounts that hold cash: every bank account, and every account at any
+    depth under the company's current cash and cash equivalents header, the header
+    included. A former header is not cash once the header has moved. Cycle-safe."""
+    codes = {b.chart_account_code for b in banks}
+    children: dict[str, list[str]] = {}
+    for a in accounts:
+        if a.parent_code:
+            children.setdefault(a.parent_code, []).append(a.code)
+    header = role_map(settings).get(AccountRole.CASH_AND_EQUIVALENTS.value)
+    stack = [header] if header else []
+    seen: set[str] = set()
+    while stack:
+        code = stack.pop()
+        if code in seen:
+            continue
+        seen.add(code)
+        codes.add(code)
+        stack.extend(children.get(code, ()))
+    return codes
 
 
-def _code_number(code: str) -> int:
-    """Leading digits of an account code, for range tests. Codes carry suffixes
-    ("1130-P"), so the numeric part is read rather than the whole string."""
-    m = re.match(r"\d+", code or "")
-    return int(m.group()) if m else 0
-
-
-def _derived_cash_flow_category(account_type: str, code: str) -> str:
-    """Default classification for the account on the far side of a cash movement.
-
-    Working capital and trading accounts are operating; long-lived assets are
-    investing; borrowings and owner capital are financing. Correct for the seeded
-    chart, and overridable per account where a company's own chart differs.
-    """
-    if account_type in ("revenue", "expense", "cogs"):
-        return "operating"
-    num = _code_number(code)
-    if account_type == "asset":
-        return "investing" if num >= _NON_CURRENT_ASSET_FLOOR else "operating"
-    if account_type == "liability":
-        return "financing" if num >= _NON_CURRENT_LIABILITY_FLOOR else "operating"
-    if account_type == "equity":
-        return "financing"
+def _cash_flow_category(account_map: dict[str, Account], code: str) -> str:
+    """The account's own section, else the nearest parent account's, else operating.
+    Cycle-safe."""
+    seen: set[str] = set()
+    acc = account_map.get(code)
+    while acc is not None and acc.code not in seen:
+        if acc.cash_flow_category in CASH_FLOW_CATEGORIES:
+            return acc.cash_flow_category
+        seen.add(acc.code)
+        acc = account_map.get(acc.parent_code) if acc.parent_code else None
     return "operating"
-
-
-def _cash_flow_category(acc: Account | None, code: str) -> str:
-    """The account's own classification where it carries one, the derived default
-    where it does not."""
-    if acc is not None and acc.cash_flow_category in CASH_FLOW_CATEGORIES:
-        return acc.cash_flow_category
-    return _derived_cash_flow_category(acc.account_type if acc else "asset", code)
 
 
 def _split_cash_movement(
@@ -4089,9 +4217,7 @@ async def cash_flow(
     banks = (
         await session.execute(select(BankAccount).where(BankAccount.company_id == company_id))
     ).scalars().all()
-    cash_codes = {b.chart_account_code for b in banks}
-    cash_codes |= {a.code for a in accounts
-                   if a.code == _CASH_PARENT or a.parent_code == _CASH_PARENT}
+    cash_codes = _cash_codes(accounts, banks, await current_settings(session, company_id))
 
     base = await _base_currency(session, company_id)
     posted = await _je_rows(session, company_id)
@@ -4126,8 +4252,7 @@ async def cash_flow(
         period_cash += cash_delta
         if cash_delta != 0:
             for code, share in _split_cash_movement(cash_delta, sorted(contras), base):
-                acc = account_map.get(code)
-                cat = _cash_flow_category(acc, code)
+                cat = _cash_flow_category(account_map, code)
                 by_category[cat][code] = by_category[cat].get(code, Decimal(0)) + share
         for code, signed in contras:
             acc = account_map.get(code)
@@ -4214,6 +4339,61 @@ class PeriodLockPayload(BaseModel):
     lock_date: str | None  # ISO date or None to unlock
 
 
+class PostingAccountIn(BaseModel):
+    code: str
+
+
+async def _posting_accounts(session: AsyncSession, company_id) -> dict:
+    from celerp.services.posting_readiness import panel
+
+    return await panel(session, company_id) or {"roles": [], "older_stock": {"lots": [], "candidates": []}}
+
+
+@router.get("/posting-accounts")
+async def get_posting_accounts(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
+) -> dict:
+    """Each posting role's account and whether it can take new postings."""
+    return await _posting_accounts(session, company_id)
+
+
+@router.put("/posting-accounts/older-stock/{item_id}")
+async def set_older_stock_posting_account(
+    item_id: str,
+    payload: PostingAccountIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record the inventory account of older stock that records none."""
+    from celerp.services.lot_origin import choose_lot_account
+
+    await choose_lot_account(session, company_id, item_id, payload.code, user.id)
+    await session.commit()
+    return await _posting_accounts(session, company_id)
+
+
+@router.put("/posting-accounts/{role}")
+async def set_posting_account(
+    role: str,
+    payload: PostingAccountIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Point a role at another account for new postings. Balances already posted stay
+    where they are; the earlier account stays with the role for them."""
+    from celerp.services.account_roles import set_role
+
+    await set_role(session, company_id, role, payload.code, user.id)
+    await session.commit()
+    return await _posting_accounts(session, company_id)
+
+
 class CloseYearPayload(BaseModel):
     fiscal_year_end: str  # ISO date, e.g. "2025-12-31"
 
@@ -4264,8 +4444,15 @@ async def close_fiscal_year(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Close a fiscal year: zero revenue + expense accounts, transfer net income to Retained Earnings."""
-    company = await locked_company(session, company_id)
     year_end = payload.fiscal_year_end
+    try:
+        _require_iso_date(year_end, "fiscal_year_end")
+    except HTTPException:
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_invalid",
+            f"{year_end} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
+            value=year_end)) from None
+    company = await locked_company(session, company_id)
     # Build account balances through the year-end date
     posted = await _je_rows(session, company_id)
     balances = _build_balances(posted, None, year_end)
@@ -4298,12 +4485,11 @@ async def close_fiscal_year(
     if not closing_entries:
         raise HTTPException(status_code=422, detail=t("acct.err_close_nothing"))
 
-    # Net income goes to Retained Earnings (3200)
-    # If net income is positive (profit): credit 3200
-    # If net income is negative (loss): debit 3200
+    # Net income goes to the retained earnings account: a profit is credited, a
+    # loss debited.
     net_float = float(net_income)
     closing_entries.append({
-        "account": "3200",
+        "account": await resolve(session, company_id, AccountRole.RETAINED_EARNINGS),
         "debit": abs(net_float) if net_float < 0 else 0.0,
         "credit": net_float if net_float >= 0 else 0.0,
     })

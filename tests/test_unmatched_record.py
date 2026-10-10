@@ -115,7 +115,7 @@ async def test_an_invoice_that_cannot_take_it_is_refused_with_the_reason_and_the
     eid, _ = await _payable_invoice(client, tok)
     if reason == "paid":
         assert (await client.post(f"/docs/{eid}/payment", headers=_h(tok), json={
-            "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110"})).status_code == 200
+            "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111"})).status_code == 200
     await _park(_company_id(tok), amount_minor=200000 if reason == "too_small" else 107000,
                 currency="eur" if reason == "currency" else "usd")
     before = await _doc_state(client, tok, eid)
@@ -153,7 +153,7 @@ async def test_the_dropdown_offers_only_open_invoices_that_take_the_whole_paymen
     fits, _ = await _payable_invoice(client, tok)
     paid, _ = await _payable_invoice(client, tok)
     assert (await client.post(f"/docs/{paid}/payment", headers=_h(tok), json={
-        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1110"})).status_code == 200
+        "amount": 1070.0, "payment_date": "2026-07-13", "bank_account": "1111"})).status_code == 200
     small = (await client.post("/docs", headers=_h(tok), json={
         "doc_type": "invoice", "contact_name": "Buyer", "currency": "USD", "total": 500.0, "subtotal": 500.0,
         "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 500.0}]})).json()["id"]

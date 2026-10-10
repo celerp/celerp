@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-pg-tools-linux.sh — build relocatable pg_dump / pg_restore from source (Linux).
+# build-pg-tools-linux.sh - build relocatable pg_dump / pg_restore / psql from source (Linux).
 #
 # Runs inside a manylinux_2_28 container (glibc 2.28) so the result is portable
 # across modern distros (Ubuntu 20.04+/Debian 10+/RHEL 8+). Mirrors the macOS
@@ -9,7 +9,7 @@
 # Usage:  build-pg-tools-linux.sh <out_dir>      e.g. electron/pg-tools/linux
 # Required env: PG_VERSION, PG_SHA256, OPENSSL_VERSION, OPENSSL_SHA256
 #
-# Produces: <out_dir>/bin/{pg_dump,pg_restore} + <out_dir>/lib/{libpq,libssl,libcrypto}.so.*
+# Produces: <out_dir>/bin/{pg_dump,pg_restore,psql} + <out_dir>/lib/{libpq,libssl,libcrypto}.so.*
 # Self-contained except system glibc + libz (universal). Built --without readline
 # (GPL) / nls (LGPL gettext+iconv) / icu / lz4 / zstd → only PostgreSQL + OpenSSL.
 
@@ -61,7 +61,7 @@ OSSL_LIB="$(dirname "$(find "$OSSL_PREFIX" -name 'libssl.so.3' | head -1)")"
 # still validates the bundled $ORIGIN rpath rather than this path.
 export LD_LIBRARY_PATH="$OSSL_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# ── 3. libpq + pg_dump/pg_restore (client only; no server, no psql) ──────────
+# ── 3. libpq + pg_dump/pg_restore/psql (client only; no server) ─────────────
 tar xjf postgresql.tar.bz2
 cd "postgresql-${PG_VERSION}"
 ./configure \
@@ -72,11 +72,12 @@ cd "postgresql-${PG_VERSION}"
 make -C src/backend generated-headers
 make -C src/interfaces/libpq -j"$JOBS"
 make -C src/bin/pg_dump      -j"$JOBS"
+make -C src/bin/psql         -j"$JOBS"
 
 # ── 4. Collect — copy the REAL file behind each SONAME (no symlinks: safer for
 #      electron-builder extraResources packaging) ────────────────────────────
 rm -rf "$OUT_DIR"; mkdir -p "$OUT_DIR/bin" "$OUT_DIR/lib"
-cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore "$OUT_DIR/bin/"
+cp src/bin/pg_dump/pg_dump src/bin/pg_dump/pg_restore src/bin/psql/psql "$OUT_DIR/bin/"
 bundle() {  # copy real file behind $1 into lib/ named by its SONAME; echo soname
   local real soname
   real="$(readlink -f "$1")"
@@ -95,12 +96,12 @@ cp "$WORK/openssl-${OPENSSL_VERSION}/LICENSE.txt" "$LIC/openssl/LICENSE.txt"
 
 # ── 5. Relocate: RPATH=$ORIGIN-relative (strip build-machine paths) ───────────
 chmod -R u+w "$OUT_DIR/bin" "$OUT_DIR/lib"
-patchelf --set-rpath '$ORIGIN/../lib' "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore"
+patchelf --set-rpath '$ORIGIN/../lib' "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore" "$OUT_DIR/bin/psql"
 patchelf --set-rpath '$ORIGIN'        "$OUT_DIR/lib/$LIBPQ" "$OUT_DIR/lib/$LIBSSL" "$OUT_DIR/lib/$LIBCRYPTO"
 
 # ── 6. Audit: only bundled + universal system libs; RPATH must be $ORIGIN-based ─
 ALLOWED='^(libpq\.so|libssl\.so|libcrypto\.so|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libz\.so|ld-linux)'
-for f in "$OUT_DIR"/bin/pg_dump "$OUT_DIR"/bin/pg_restore "$OUT_DIR"/lib/*; do
+for f in "$OUT_DIR"/bin/* "$OUT_DIR"/lib/*; do
   bad="$(readelf -d "$f" | awk '/NEEDED/{gsub(/[][]/,"",$NF);print $NF}' | grep -vE "$ALLOWED" || true)"
   if [ -n "$bad" ]; then echo "AUDIT FAIL: $f needs non-bundled/non-system libs:" >&2; echo "$bad" >&2; exit 1; fi
   rp="$(readelf -d "$f" | grep -E 'R(UN)?PATH' | grep -v '\$ORIGIN' || true)"
@@ -111,4 +112,5 @@ done
 unset LD_LIBRARY_PATH
 "$OUT_DIR/bin/pg_dump" --version
 "$OUT_DIR/bin/pg_restore" --version
+"$OUT_DIR/bin/psql" --version
 echo "==> OK: linux tree at $OUT_DIR"

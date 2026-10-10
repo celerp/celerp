@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 
-from conftest_support import is_own_test_config, resolve_worker_config
+from conftest_support import (
+    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir)
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -35,6 +37,13 @@ os.environ["CELERP_CONFIG"] = resolve_worker_config(os.environ.get("CELERP_CONFI
 _cfg_start = os.environ["CELERP_CONFIG"]
 if is_own_test_config(_cfg_start) and os.path.exists(_cfg_start):
     os.remove(_cfg_start)
+
+# Per-worker data directory, emptied at start, for the same reason: the default ./data
+# is shared with every other worker and with any app booted from this checkout.
+_data_own = resolve_worker_data_dir(None, _worker)
+os.environ["DATA_DIR"] = resolve_worker_data_dir(os.environ.get("DATA_DIR"), _worker)
+if os.environ["DATA_DIR"] == _data_own:
+    shutil.rmtree(_data_own, ignore_errors=True)
 
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
@@ -79,7 +88,7 @@ def _provision_test_database() -> None:
         _tune_pg_server(url)
         worker = os.environ.get("PYTEST_XDIST_WORKER")
         if worker:
-            url = _create_worker_db(url, worker)
+            url = provision_worker_db(url, worker)
     else:
         from testcontainers.postgres import PostgresContainer
         global _PG_CONTAINER
@@ -102,30 +111,9 @@ def _provision_test_database() -> None:
         os.environ["CELERP_TEST_NULLPOOL"] = "1"
 
 
-def _create_worker_db(url: str, worker: str) -> str:
-    """CREATE DATABASE <base>_<worker> on the shared server; return its asyncpg URL."""
-    import re
-    from urllib.parse import urlsplit, urlunsplit
-    import psycopg2
-
-    parts = urlsplit(url.replace("+asyncpg", ""))
-    base_db = parts.path.lstrip("/") or "postgres"
-    worker_db = f"{base_db}_{re.sub(r'[^a-zA-Z0-9]', '', worker)}"
-    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                            password=parts.password, dbname=base_db)
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (worker_db,))
-            if not cur.fetchone():
-                cur.execute(f'CREATE DATABASE "{worker_db}"')
-    finally:
-        conn.close()
-    return urlunsplit(parts._replace(path=f"/{worker_db}")).replace(
-        "postgresql://", "postgresql+asyncpg://")
-
-
 _provision_test_database()
+
+import uuid
 
 import pytest
 import pytest_asyncio
@@ -145,12 +133,16 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
+# The `client` fixture patches celerp.gateway.state.get_session_token. The session
+# gate keeps its own reference from import time, so it is imported here, before any
+# patch is active, and checks the session a test actually seats.
+import celerp.session_gate  # noqa: E402,F401
 from ui.app import app as _ui_app
 
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -189,13 +181,6 @@ from celerp_manufacturing.routes import setup_api_routes as _setup_mfg
 from celerp_manufacturing.ui_routes import setup_ui_routes as _setup_mfg_ui
 _setup_mfg(app)
 _setup_mfg_ui(_ui_app)
-
-# Register connectors module routes onto the test app.
-_conn_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-connectors")
-if _os.path.abspath(_conn_src) not in [_os.path.abspath(p) for p in _sys.path]:
-    _sys.path.insert(0, _os.path.abspath(_conn_src))
-from celerp_connectors.routes import setup_api_routes as _setup_connectors
-_setup_connectors(app)
 
 # Register docs module routes onto the test app.
 _docs_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-docs")
@@ -248,20 +233,6 @@ from celerp_dashboard.setup import setup_api_routes as _setup_dashboard
 from celerp_dashboard.ui_routes import setup_ui_routes as _setup_dashboard_ui
 _setup_dashboard(app)
 _setup_dashboard_ui(_ui_app)
-
-# Register AI module routes onto the test app.
-_ai_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-ai")
-if _os.path.abspath(_ai_src) not in [_os.path.abspath(p) for p in _sys.path]:
-    _sys.path.insert(0, _os.path.abspath(_ai_src))
-from celerp_ai.setup import setup_api_routes as _setup_ai
-_setup_ai(app)
-
-# Register backup module routes onto the test app.
-_backup_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-backup")
-if _os.path.abspath(_backup_src) not in [_os.path.abspath(p) for p in _sys.path]:
-    _sys.path.insert(0, _os.path.abspath(_backup_src))
-from celerp_backup.setup import setup_api_routes as _setup_backup
-_setup_backup(app)
 
 # Register admin module routes onto the test app.
 _admin_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-admin")
@@ -376,6 +347,13 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
             "_module": "celerp-manufacturing",
         },
     },
+    {
+        "slot": "item_lineage_guard",
+        "contrib": {
+            "handler": "celerp_manufacturing.movements:guard_output_lineage",
+            "_module": "celerp-manufacturing",
+        },
+    },
     # The retired bom.* prefix is intentionally not registered — historical bom.* events fall
     # through to the projection engine's default merge handler on replay.
     {
@@ -439,6 +417,26 @@ def _reset_hot_path_caches():
     _drain_cache_bust()
     yield
     _drain_cache_bust()
+
+
+@pytest.fixture(autouse=True)
+def _forget_temp_imports(tmp_path_factory):
+    """Drop every package a test imported from a pytest temp directory.
+
+    Module fixtures live in temp directories. Once imported, a package stays in
+    sys.modules, and admission treats an imported name as taken by its folder,
+    so a later test's module of the same name in a fresh directory would be
+    refused. Forgetting them keeps each test's modules its own.
+    """
+    before = set(_sys.modules)
+    yield
+    root = _os.path.realpath(tmp_path_factory.getbasetemp())
+    for key in set(_sys.modules) - before:
+        mod = _sys.modules.get(key)
+        location = (getattr(mod, "__file__", None)
+                    or next(iter(getattr(mod, "__path__", None) or []), None))
+        if location and _os.path.realpath(location).startswith(root + _os.sep):
+            _sys.modules.pop(key, None)
 
 
 @pytest.fixture(autouse=True)
@@ -561,6 +559,16 @@ def _restore_import_path():
     before = list(_sys.path)
     yield
     _sys.path[:] = before
+
+
+@pytest.fixture(autouse=True)
+def _restore_bytecode_settings():
+    """Restore the process-wide bytecode settings after each test. Loading a module
+    turns bytecode writing off for the rest of the process; each test starts from
+    the settings the test run began with."""
+    before = (_sys.dont_write_bytecode, _sys.pycache_prefix)
+    yield
+    _sys.dont_write_bytecode, _sys.pycache_prefix = before
 
 
 @pytest.fixture(autouse=True)
@@ -751,6 +759,18 @@ async def session(_db_engine) -> AsyncSession:
         await conn.close()
 
 
+@pytest.fixture
+def ids():
+    """Fresh company and user ids for ``auth``."""
+    return {"company_id": uuid.uuid4(), "user_id": uuid.uuid4()}
+
+
+@pytest_asyncio.fixture
+async def auth(session, ids):
+    """A company with its books and an admin (test_helpers.company_auth), and the admin's request headers."""
+    return await company_auth(session, ids["company_id"], ids["user_id"])
+
+
 @pytest_asyncio.fixture
 async def client(session: AsyncSession):
     from httpx import ASGITransport, AsyncClient
@@ -806,6 +826,7 @@ async def client(session: AsyncSession):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
+    app.state.data_current = True  # a test that started on held-back records leaves none behind
     await _clear_tracker(session)
     _set_session_token(_saved_token or "")
 
@@ -858,3 +879,19 @@ def bundled_modules_unloaded(monkeypatch):
             table.to_metadata(core)
     monkeypatch.setattr(Base, "metadata", core)
     return dict(_DISABLED_MODULE_TABLES)
+
+
+@pytest.fixture
+def files_unchecked(monkeypatch):
+    """Skip the load-time check that a module's files are those admission read, so a
+    test can change them after admission and reach the checks that follow it."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "check_unchanged", lambda module: None)
+
+
+@pytest.fixture
+def docs_running(monkeypatch):
+    """Record Documents as loaded, as it is in an installation that takes online payments.
+    The harness mounts its routes directly, so the loader would otherwise not list it."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [*loader._loaded, {"name": "celerp-docs", "version": "1.0.0"}])

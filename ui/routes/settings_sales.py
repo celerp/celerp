@@ -14,7 +14,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY
 from ui.config import COOKIE_NAME
-from ui.i18n import t, get_lang
+from ui.i18n import doc_type_label, get_lang, t
 
 from ui.routes.settings import (
     _token,
@@ -23,28 +23,6 @@ from ui.routes.settings import (
     _terms_conditions_tab,
 )
 from ui.routes.settings_general import _section_breadcrumb
-
-# Doc-type display labels resolved at render time (R1/R3): the raw doc_type stays
-# canonical everywhere (persistence, URLs, comparisons); only the shown label is
-# translated, via ``t()`` in _doc_type_label below.
-_DOC_TYPE_LABEL_KEYS = {
-    "invoice": "settings.doc_type_invoice",
-    "purchase_order": "settings.doc_type_purchase_order",
-    "quotation": "settings_sales.doc_type_quotation",
-    "credit_note": "settings.doc_type_credit_note",
-    "bill": "settings.doc_type_bill",
-    "memo": "th.memo",
-    "shipping_doc": "settings_sales.doc_type_shipping_doc",
-    "list": "enum.doc_type.list",
-    "consignment_in": "settings.doc_type_consignment_in",
-}
-
-
-def _doc_type_label(dt: str) -> str:
-    """Human label for a doc_type, in the request language; unknown types fall
-    back to a title-cased form of the raw value."""
-    key = _DOC_TYPE_LABEL_KEYS.get(dt)
-    return t(key) if key else dt.replace("_", " ").title()
 
 _SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_note"})
 
@@ -72,7 +50,7 @@ def _numbering_tab(sequences: list[dict]) -> FT:
     edit_title = t("settings.click_to_edit")
     for seq in sequences:
         dt = seq["doc_type"]
-        label = _doc_type_label(dt)
+        label = doc_type_label(dt)
         rows.append(Tr(
             Td(label),
             Td(
@@ -347,7 +325,7 @@ def setup_routes(app):
 def _numbering_row(seq: dict) -> FT:
     """Render a single numbering table row (used for HTMX swap after edit)."""
     dt = seq["doc_type"]
-    label = _doc_type_label(dt)
+    label = doc_type_label(dt)
     edit_title = t("settings.click_to_edit")
     return Tr(
         Td(label),

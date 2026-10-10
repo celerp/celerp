@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from test_helpers import merge_items
 
 
 async def _register(client) -> str:
@@ -457,7 +458,7 @@ async def test_adjust_overwrites_to_count_posts_je_and_is_undoable(client):
     je = next(e for e in ledger if audit in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
     assert abs(sum(float(x.get("debit", 0) or 0) for x in entries) - sum(float(x.get("credit", 0) or 0) for x in entries)) < 1e-6
-    assert {"6970", "1130-P", "4300"} <= {x["account"] for x in entries}
+    assert {"6970", "1130-OB", "4300"} <= {x["account"] for x in entries}
 
     # Undo: quantities restored, audit reopened to finalized, JE voided.
     assert (await client.post(f"/lists/{audit}/undo-adjust", headers=_h(t))).status_code == 200
@@ -590,13 +591,16 @@ async def test_finalize_dedupes_duplicate_item_lines(client):
     iid = await _item(client, t, "DUP-1", loc=loc, qty=4, barcode="9001")
     audit = (await _audit(client, t, loc))["id"]
 
-    # Seeded with one line for the item; inject a second identical line via the editable-save path.
+    # Seeded with one line for the item; inject a second line for the same item via the
+    # editable-save path. The copy is a new row, so it carries no line id of its own.
     # A line_items patch pins the current version (the concurrency guard a real editor carries).
     state = await _state(client, t, audit)
     line = state["line_items"][0]
-    await client.patch(f"/lists/{audit}", headers=_h(t),
-                       json={"expected_version": state["version"],
-                             "fields_changed": {"line_items": {"old": [line], "new": [line, dict(line)]}}})
+    copy = {k: v for k, v in line.items() if k != "line_id"}
+    r = await client.patch(f"/lists/{audit}", headers=_h(t),
+                           json={"expected_version": state["version"],
+                                 "fields_changed": {"line_items": {"old": [line], "new": [line, copy]}}})
+    assert r.status_code == 200, r.text
     assert len((await _state(client, t, audit))["line_items"]) == 2  # duplicate present pre-finalize
 
     await _finalize(client, t, audit)
@@ -966,7 +970,7 @@ async def test_finalize_blocks_a_line_whose_item_was_merged_away(client):
     src = await _item(client, t, "MRG-1", loc=loc, qty=1, barcode="7201")
     other = await _item(client, t, "MRG-2", loc=loc, qty=1, barcode="7202")
     audit = (await _audit(client, t, loc))["id"]
-    r = await client.post("/items/merge", headers=_h(t),
+    r = await merge_items(client, headers=_h(t),
                           json={"source_entity_ids": [src, other], "target_sku_from": other})
     assert r.status_code == 200, r.text
     fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))

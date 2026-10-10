@@ -221,7 +221,7 @@ class TestChatView:
             "resets_at": None,
             "tier": "ai",
         }
-        with patch("celerp_ai.routes.get_quota_status",
+        with patch("celerp.ai.quota.get_quota_status",
                    new=AsyncMock(return_value=fake_status)):
             yield
         set_session_token("")

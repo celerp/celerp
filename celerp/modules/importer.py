@@ -36,7 +36,10 @@ import stat
 import tempfile
 import uuid
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Mapping
 
 from celerp.modules.meta import write_meta
 from ui.i18n import t
@@ -76,6 +79,12 @@ def _validate_name_chars(name: str) -> None:
         raise ModuleImportError(t("module_import.name_chars"))
 
 
+def is_reserved_name(name: str) -> bool:
+    """True for a name in the Marketplace namespace: ``celerp-`` or ``celerp_``,
+    in any letter case."""
+    return name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX))
+
+
 def _validate_name(name: str, *, official: bool = False) -> None:
     _validate_name_chars(name)
     # The celerp- names, in any letter case and in the celerp_ spelling, are
@@ -83,7 +92,7 @@ def _validate_name(name: str, *, official: bool = False) -> None:
     # one, and an official Marketplace install uses only the celerp- form.
     if official and not name.startswith(_RESERVED_PREFIX):
         raise ModuleImportError("Official module packages must use the 'celerp-' name prefix.")
-    if not official and name.lower().startswith((_RESERVED_PREFIX, _RESERVED_IMPORT_PREFIX)):
+    if not official and is_reserved_name(name):
         raise ModuleImportError(
             "Names starting with 'celerp-' or 'celerp_', in any letter case, are reserved "
             "for Marketplace modules. A module of your own needs a different name."
@@ -320,9 +329,8 @@ def table_prefix_problem(name: str, prefix: object,
     The migration runner scopes DDL by the prefix and the purge drops every table
     carrying it, so a prefix that captures a core table or overlaps another
     module's would put foreign data in reach. Checked wherever the prefix is
-    trusted (install, migrations, purge, backup attribution), because a module
-    copied in by hand never passed the install check. *installed* is the other
-    modules' prefixes, read from MODULE_DIR when not given.
+    used (install, migrations, purge, backup attribution). *installed* is the
+    other modules' prefixes, read from MODULE_DIR when not given.
     """
     if not isinstance(prefix, str) or not prefix:
         return ('"table_prefix" must name the tables the module owns '
@@ -498,9 +506,58 @@ def _one_install_at_a_time():
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+@dataclass(frozen=True)
+class InstalledModules:
+    """The installed modules as they stood at one moment: each name's manifest, from the
+    copy resolve_module_path picks over module_search_path, and the table prefixes
+    valid_table_prefixes accepts."""
+    manifests: Mapping[str, dict]
+    prefixes: Mapping[str, str]
+
+    def version(self, name: str) -> str | None:
+        """The version *name*'s manifest declares, or None when it declares none or only
+        blank text."""
+        version = self.manifests.get(name, {}).get("version")
+        return version if isinstance(version, str) and version.strip() else None
+
+
+def installed_modules() -> InstalledModules:
+    """Read the installed modules while no install or removal can land
+    (_one_install_at_a_time). With no writable module directory nothing can be
+    installed or removed, so the read needs no lock."""
+    try:
+        _module_dir()
+    except ModuleImportError:
+        return _read_installed()
+    with _one_install_at_a_time():
+        return _read_installed()
+
+
+def _read_installed() -> InstalledModules:
+    from celerp.modules.loader import module_search_path, read_manifest
+
+    manifests: dict[str, dict] = {}
+    for entry in filter(None, module_search_path().split(",")):
+        base = Path(entry)
+        if not base.is_dir():
+            continue
+        for child in sorted(base.iterdir()):
+            if child.name in manifests or not (child / "__init__.py").exists():
+                continue
+            try:
+                _validate_name_chars(child.name)
+            except ModuleImportError:
+                continue  # never a module name, so resolve_module_path never picks it
+            manifests[child.name] = read_manifest(child)
+    return InstalledModules(MappingProxyType(manifests), MappingProxyType(valid_table_prefixes()))
+
+
 def _finish(staged: Path, manifest: dict, *, official: bool = False,
-            premium: bool = False, source: str = "sideloaded") -> dict:
+            premium: bool = False, source: str = "sideloaded",
+            expected: tuple[str, str] | None = None) -> dict:
     name = str(manifest.get("name", ""))
+    if expected is not None and (name, str(manifest.get("version", ""))) != expected:
+        raise ModuleImportError(t("company.err_download_mismatch"))
     _validate_name(name, official=official)
     _check_min_version(manifest)
     with _one_install_at_a_time():
@@ -578,14 +635,17 @@ def _zip_root(zf: zipfile.ZipFile) -> str:
 
 
 def install_from_zip(data: bytes, *, official: bool = False,
-                     premium: bool = False, source: str = "sideloaded") -> dict:
+                     premium: bool = False, source: str = "sideloaded",
+                     expected: tuple[str, str] | None = None) -> dict:
     """Validate and install a module from zip bytes. Returns manifest summary.
 
-    `official` is set ONLY by the marketplace installer (relay-authenticated
-    download): it flips the celerp- prefix rule from forbidden to required.
+    `official` is set only by the marketplace installer: it flips the celerp-
+    prefix rule from forbidden to required.
     `premium` drops the license-gate marker for paid modules.
     `source` is recorded in the provenance sidecar and drives the source shield
-    and newest-first ordering on the modules page."""
+    and newest-first ordering on the modules page.
+    `expected` is the (name, version) the package must declare; a package
+    declaring anything else is refused and nothing is installed."""
     if len(data) > MAX_ARCHIVE_BYTES:
         raise ModuleImportError(t("module_import.too_large"))
     tmp_zip = None
@@ -630,7 +690,7 @@ def install_from_zip(data: bytes, *, official: bool = False,
                     shutil.copyfileobj(src, f, length=1024 * 256)
             module_root, manifest = _locate_module(out)
             return _finish(module_root, manifest, official=official,
-                           premium=premium, source=source)
+                           premium=premium, source=source, expected=expected)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

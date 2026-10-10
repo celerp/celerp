@@ -28,13 +28,15 @@ DDL signature is present in the live schema.
 DDL signatures handled:
   - create_table:  table exists in the schema
   - add_column:    column exists in the table
+  - drop_column:   the table exists and the column no longer does (a missing
+                   table or an unreadable column list proves nothing)
   - create_index:  index name exists in the table's indexes
   - create_unique_constraint: treated as create_index (Postgres/SQLite
                               both implement unique constraints as indexes)
 
 DDL signatures NOT introspected (trusted via stamp):
   - alter_column: type/default changes are hard to verify; trust the stamp
-  - drop_column / drop_table: we don't run downgrades; ignore
+  - drop_table: a dropped table carries no evidence; ignore
   - op.execute: data backfills cannot be verified safely; trust the stamp
 """
 from __future__ import annotations
@@ -46,7 +48,7 @@ from typing import Iterable
 
 # Signatures that can be verified by introspecting the live schema.
 VERIFIABLE_KINDS = frozenset({
-    "create_table", "add_column", "create_index", "create_unique_constraint",
+    "create_table", "add_column", "drop_column", "create_index", "create_unique_constraint",
 })
 
 
@@ -54,9 +56,9 @@ VERIFIABLE_KINDS = frozenset({
 class RevisionSignature:
     """One DDL operation in a revision that can be checked against the live schema."""
     rev: str
-    kind: str           # "create_table" | "add_column" | "create_index" | "create_unique_constraint"
+    kind: str           # "create_table" | "add_column" | "drop_column" | "create_index" | "create_unique_constraint"
     table: str          # the table the op targets
-    column: str | None = None  # for add_column, the new column name
+    column: str | None = None  # for add_column / drop_column, the column name
     extra: str | None = None   # index / constraint name
     columns: tuple[str, ...] = ()  # index / unique-constraint columns when literal
 
@@ -111,7 +113,7 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
     Returns an empty list for files that:
       - cannot be parsed (syntax errors)
       - have no `def upgrade():` (e.g. helper modules)
-      - contain only unverifiable ops (alter_column, op.execute, drops)
+      - contain only unverifiable ops (alter_column, op.execute, drop_table)
 
     Never raises. The walker degrades gracefully.
     """
@@ -179,6 +181,16 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
                         table=table, column=column, extra=None,
                     ))
 
+            elif op_name == "drop_column":
+                # op.drop_column('notifications', 'read')
+                table = _first_string_arg(stmt)
+                column = _str_arg(stmt.args[1]) if len(stmt.args) >= 2 else None
+                if table and column:
+                    sigs.append(RevisionSignature(
+                        rev=rev_id, kind="drop_column",
+                        table=table, column=column, extra=None,
+                    ))
+
             elif op_name == "create_index":
                 # op.create_index('ix_users_email', 'users', ['email'])
                 index_name = _first_string_arg(stmt)
@@ -210,7 +222,7 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
                         table=table, column=None, extra=constraint_name, columns=columns,
                     ))
 
-            # alter_column, drop_*, op.execute: not verifiable — skipped
+            # alter_column, drop_table, drop_index, op.execute: not verifiable, skipped
     return sigs
 
 
@@ -221,12 +233,13 @@ def _table_exists(inspector, table: str) -> bool:
         return False
 
 
-def _column_exists(inspector, table: str, column: str) -> bool:
+def _live_columns(inspector, table: str) -> set[str] | None:
+    """The live table's column names, or None when they cannot be read. Callers
+    treat None as unproven in either direction."""
     try:
-        cols = inspector.get_columns(table)
+        return {c.get("name") for c in inspector.get_columns(table)}
     except Exception:
-        return False
-    return any(c.get("name") == column for c in cols)
+        return None
 
 
 def _index_exists(
@@ -284,7 +297,7 @@ def _metadata_has_index(metadata, sig: RevisionSignature, *, unique_only: bool =
 
 
 def _signature_expected(metadata, sig: RevisionSignature) -> bool:
-    """Whether this historical create/add operation is still kernel schema."""
+    """Whether this historical operation still describes the kernel schema."""
     if metadata is None:
         return True
     table = metadata.tables.get(sig.table)
@@ -292,6 +305,8 @@ def _signature_expected(metadata, sig: RevisionSignature) -> bool:
         return table is not None
     if sig.kind == "add_column":
         return table is not None and sig.column in table.c
+    if sig.kind == "drop_column":
+        return table is not None and sig.column not in table.c
     if sig.kind == "create_index":
         return _metadata_has_index(metadata, sig)
     if sig.kind == "create_unique_constraint":
@@ -303,8 +318,11 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
     """Return True iff the live schema contains this signature's DDL."""
     if sig.kind == "create_table":
         return _table_exists(inspector, sig.table)
-    if sig.kind == "add_column":
-        return _table_exists(inspector, sig.table) and _column_exists(inspector, sig.table, sig.column)
+    if sig.kind in ("add_column", "drop_column"):
+        cols = _live_columns(inspector, sig.table) if _table_exists(inspector, sig.table) else None
+        if cols is None:
+            return False
+        return (sig.column in cols) == (sig.kind == "add_column")
     if sig.kind == "create_index":
         return _table_exists(inspector, sig.table) and _index_exists(
             inspector, sig.table, sig.extra, sig.columns)
@@ -315,13 +333,18 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
 
 
 def load_kernel_metadata():
-    """Register and return the current kernel model schema used by create_all."""
+    """Return the current kernel model schema. Loaded modules register their own
+    tables on the same Base; those are not the kernel's."""
+    from sqlalchemy import MetaData
     from celerp.models.base import Base
     import celerp.models  # noqa: F401
     import celerp.models.company  # noqa: F401
     import celerp.models.ledger  # noqa: F401
     import celerp.models.projections  # noqa: F401
-    return Base.metadata
+    kernel = MetaData()
+    for table in {m.local_table for m in Base.registry.mappers if m.class_.__module__.startswith("celerp.")}:
+        table.to_metadata(kernel)
+    return kernel
 
 
 def find_safe_stamp(
@@ -333,29 +356,29 @@ def find_safe_stamp(
 ) -> str:
     """Return the newest revision the current kernel schema safely proves.
 
-    Revisions are newest→oldest. A revision is proven only when it and every
-    older revision with schema evidence are applied: a newer change already
-    present never covers an older one that is missing. Data-only revisions
-    carry no schema evidence. When ``expected_metadata`` is supplied,
-    historical objects no longer owned by the current kernel are ignored; this
-    prevents a create_all database from being judged against obsolete
-    intermediate schema while still detecting a missing current column/index
-    in any older revision.
+    Revisions are newest→oldest. Data-only revisions carry no schema evidence.
+    A revision is proven when its changes and those of every older revision are
+    present, so the answer lies below the oldest gap: a revision applied above
+    an older missing one does not prove the older one ran.
+    When ``expected_metadata`` is supplied, historical objects no longer owned
+    by the current kernel are ignored; this prevents a create_all database from
+    being judged against obsolete intermediate schema while still detecting a
+    missing current column/index in any older revision.
     """
     revs = [r for r in revisions if getattr(r, "revision", None) is not None]
-    proven = "base"
-    saw_evidence = False
-
-    for rev in reversed(revs):
+    evidence = []  # (position, applied) for each revision with schema evidence
+    for i, rev in enumerate(revs):
         sigs = [
             sig for sig in sigs_by_rev.get(rev.revision, [])
             if _signature_expected(expected_metadata, sig)
         ]
-        if not sigs:
-            continue
-        saw_evidence = True
-        if not all(_signature_applied(inspector, sig) for sig in sigs):
-            return proven
-        proven = rev.revision
+        if sigs:
+            evidence.append((i, all(_signature_applied(inspector, sig) for sig in sigs)))
 
-    return revs[0].revision if saw_evidence else "base"
+    if not evidence:
+        return "base"
+    gaps = [i for i, applied in evidence if not applied]
+    if not gaps:
+        return revs[0].revision
+    below = [i for i, _ in evidence if i > max(gaps)]
+    return revs[below[0]].revision if below else "base"

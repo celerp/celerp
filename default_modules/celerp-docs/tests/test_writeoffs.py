@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 """Inventory write-off / disposal on the unified list lifecycle (list_type=writeoff): a draft list is
-seeded from an inventory selection, each line carries a quantity to remove, a destination expense/cogs/
+seeded from an inventory selection, each line carries a quantity to remove, a destination expense or
 equity account and a free-text reason, then the Write off stock terminal removes the stock (whole row or
 a carved child lot) and posts one balanced journal entry (Dr chosen account / Cr Inventory). Every
 written-off portion ends as a hidden `disposed` item row - the permanent disposal record. Undo voids the
@@ -182,7 +182,7 @@ async def test_writeoff_full_row_disposes_and_posts_je(client):
     debit = {x["account"]: float(x.get("debit", 0) or 0) for x in entries if float(x.get("debit", 0) or 0)}
     credit = {x["account"]: float(x.get("credit", 0) or 0) for x in entries if float(x.get("credit", 0) or 0)}
     assert debit == {EXP_A: 40.0}
-    assert credit == {"1130-P": 40.0}
+    assert credit == {"1130-OB": 40.0}
 
 
 @pytest.mark.asyncio
@@ -206,7 +206,7 @@ async def test_writeoff_partial_splits_child(client):
     je = await _je_for(client, t, wo)
     entries = je["data"]["entries"]
     assert {x["account"] for x in entries if float(x.get("debit", 0) or 0)} == {EXP_A}
-    assert {x["account"] for x in entries if float(x.get("credit", 0) or 0)} == {"1130-P"}
+    assert {x["account"] for x in entries if float(x.get("credit", 0) or 0)} == {"1130-OB"}
 
 
 @pytest.mark.asyncio
@@ -232,7 +232,7 @@ async def test_writeoff_two_lines_same_item_one_balanced_je(client):
     debit = {x["account"]: float(x.get("debit", 0) or 0) for x in entries if float(x.get("debit", 0) or 0)}
     credit = {x["account"]: float(x.get("credit", 0) or 0) for x in entries if float(x.get("credit", 0) or 0)}
     assert debit == {EXP_A: 20.0, EXP_B: 30.0}
-    assert credit == {"1130-P": 50.0}  # one summed inventory credit
+    assert credit == {"1130-OB": 50.0}  # one summed inventory credit
     assert abs(sum(debit.values()) - sum(credit.values())) < 1e-6
 
 
@@ -285,7 +285,7 @@ async def test_writeoff_exact_exhaustion_disposes_parent_no_phantom(client, firs
     assert je is not None
     credit = {x["account"]: float(x.get("credit", 0) or 0) for x in je["data"]["entries"]
               if float(x.get("credit", 0) or 0)}
-    assert credit == {"1130-P": 50.0}
+    assert credit == {"1130-OB": 50.0}
 
 
 # --- validation (function level) -------------------------------------------
@@ -350,20 +350,27 @@ async def test_writeoff_create_and_setline_require_edit_documents(client, sessio
 # --- weight/piece-tracked partial guard ------------------------------------
 
 @pytest.mark.asyncio
-async def test_writeoff_weighttracked_missing_weight_rejected(client):
-    """A partial discard of a weight-tracked parcel with no discarded weight cannot be carved: the split
-    primitive raises and the terminal returns 409 (nothing disposed, no JE)."""
+async def test_writeoff_weighed_parcel_missing_weight_leaves_weight_unknown(client):
+    """A partial discard of a weighed parcel sold by the piece, with no discarded weight stated, still
+    writes off: how the weight splits is unknown, so neither part keeps a weight (never a guess, never 0)."""
     t = await _register(client)
     loc = await _location(client, t)
-    a = await _item(client, t, "WO-WT", loc=loc, qty=10, cost_total=100, sell_by="gram")
+    r = await client.post("/items", headers=_h(t), json={
+        "status": "available", "sku": "WO-WT", "name": "WO-WT", "quantity": 10, "sell_by": "piece",
+        "inventory_type": "stocked", "location_id": loc, "cost_total": 100, "weight": 25, "weight_unit": "carat"})
+    assert r.status_code == 200, r.text
+    a = r.json()["id"]
     wo = (await _writeoff(client, t, [a]))["id"]
     await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=3, account=EXP_A)
     await _finalize(client, t, wo)
     r = await _terminal(client, t, wo)
-    assert r.status_code == 409, r.text
-    # Nothing moved: no JE, item untouched.
-    assert await _je_for(client, t, wo) is None
-    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+    assert r.status_code == 200, r.text
+    assert r.json()["value"] == 30.0
+    parent = (await client.get(f"/items/{a}", headers=_h(t))).json()
+    assert float(parent["quantity"]) == 7.0 and parent.get("weight") is None
+    disposed = (await client.get("/items?status=disposed", headers=_h(t))).json()["items"]
+    assert len(disposed) == 1 and float(disposed[0]["quantity"]) == 3.0 and disposed[0].get("weight") is None
+    assert await _je_for(client, t, wo) is not None
 
 
 # --- seeding / empty selection ---------------------------------------------
@@ -496,7 +503,7 @@ async def test_audit_adjustment_still_posts_after_refactor(client):
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
     je = next(e for e in ledger if audit in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
-    assert {"6970", "1130-P"} <= {x["account"] for x in entries}
+    assert {"6970", "1130-OB"} <= {x["account"] for x in entries}
     assert abs(sum(float(x.get("debit", 0) or 0) for x in entries)
                - sum(float(x.get("credit", 0) or 0) for x in entries)) < 1e-6
 
@@ -624,6 +631,23 @@ async def test_writeoff_line_account_override(client):
 
 
 @pytest.mark.asyncio
+async def test_writeoff_to_cost_of_sales_is_refused(client):
+    """Cost of sales belongs to sold stock alone, so a write-off naming the cost of sales account is
+    refused by name and class, and nothing leaves stock."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-COGS", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    r = await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4, account="5100")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "message": "Account 5100 is of type cogs. A write-off goes to an expense or equity account.",
+        "message_key": "posting.destination.not_write_off", "params": {"code": "5100", "type": "cogs"}}
+    assert (await _terminal(client, t, wo)).status_code == 422
+    assert await _je_for(client, t, wo) is None
+
+
+@pytest.mark.asyncio
 async def test_writeoff_account_absent_rejects(client, session):
     """A company whose COA lacks 6970: a qty'd line carrying the 6970 default reaches the terminal ->
     422, no JE, the item stays available (never a false success posting to a missing account)."""
@@ -692,11 +716,12 @@ async def test_writeoff_qty_exceeds_stock_rejects(client, session):
     assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
 
 
-# --- audit shrinkage now posts to 6970, and guards a company lacking it ---
+# --- audit shrinkage posts to the shrinkage role, and guards a company lacking its account ---
 
 @pytest.mark.asyncio
 async def test_audit_shrinkage_missing_account_rejects(client, session):
-    """Audit shrinkage on a company whose COA lacks 6970 -> 422, no phantom-account shrinkage JE."""
+    """Audit shrinkage on a company whose shrinkage account is gone -> 409 pointing at the posting
+    accounts, no phantom-account shrinkage JE."""
     t = await _register(client)
     loc = await _location(client, t)
     a = await _item(client, t, "AUD-NO6970", loc=loc, qty=10, cost_total=100)
@@ -705,7 +730,8 @@ async def test_audit_shrinkage_missing_account_rejects(client, session):
     await client.post(f"/lists/{audit}/finalize", headers=_h(t))
     assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 8})).status_code == 200
     r = await client.post(f"/lists/{audit}/adjust", headers=_h(t))
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
+    assert "not in the chart of accounts" in r.json()["detail"]["message"]
     # No shrinkage JE posted to a missing account.
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
     assert not [e for e in ledger if audit in (e["data"].get("memo") or "")]

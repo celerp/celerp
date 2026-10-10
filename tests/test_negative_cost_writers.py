@@ -17,7 +17,8 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_cost_restatement import _item, _merge, _state, company_auth
+from test_cost_restatement import _item, _state
+from test_helpers import company_auth
 
 MESSAGE = "a cost cannot be negative"
 
@@ -98,7 +99,7 @@ async def test_batch_import_refuses_a_created_row_with_a_negative_cost(client, s
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 0, body
-    assert body["errors"] == [f"Row (SKU={sku}): {sku}: {MESSAGE}"], body
+    assert [e["message"] for e in body["errors"]] == [f"Row (SKU={sku}): {sku}: {MESSAGE}"], body
     assert await _state(session, auth, entity_id) == {}
 
 
@@ -244,8 +245,9 @@ async def test_merge_refuses_a_negative_resulting_cost(client, session):
     a, b = await _item(client, auth, 10.0, sku="MRG-NEG"), await _item(client, auth, 20.0, sku="MRG-NEG")
     r = await client.post("/items/merge", headers=auth["headers"], json={
         "source_entity_ids": [a, b], "target_sku_from": a, "resulting_cost_total": -5})
+    # A merge keeps the sum of its parts' costs, so any other resulting cost is refused.
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == f"MRG-NEG: {MESSAGE}"
+    assert r.json()["detail"].startswith("A merge keeps the cost of the items it combines."), r.text
     assert (await _state(session, auth, a))["status"] != "merged"
 
 

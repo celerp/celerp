@@ -251,19 +251,15 @@ def sha256(data: bytes) -> str:
 
 @pytest.fixture
 def migration_env(tmp_path, monkeypatch):
-    """Mount the migrations router, point the data dir at tmp, register the fake
-    source and Manager adapter, register only the fake sink, and record scheduled
-    runner tasks instead of starting them."""
+    """Point the data dir at tmp, register the fake source and Manager adapter,
+    register only the fake sink, and record scheduled runner tasks instead of starting
+    them. The app already serves the migrations routes (celerp.main)."""
     from celerp.config import settings
     from celerp.importers import sinks
     from celerp.importers.adapters import registry
     from celerp.importers.adapters.manager_io.adapter import ManagerIOAdapter
-    from celerp.main import app
-    from celerp.routers.migrations import router
     from celerp.services import migrations
 
-    if not any(getattr(r, "path", "").startswith("/migrations") for r in app.routes):
-        app.include_router(router)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     adapter = FakeAdapter()
     monkeypatch.setattr(registry, "_ADAPTERS", (adapter, ManagerIOAdapter()))
@@ -298,7 +294,7 @@ async def real_engine(_db_engine, monkeypatch):
 
     engine = create_async_engine(
         DATABASE_URL, poolclass=NullPool,
-        connect_args={"server_settings": {"lock_timeout": "3000", "statement_timeout": "30000"}},
+        connect_args=celerp.db.REQUEST_CONNECT_ARGS,
     )
 
     from celerp.models.base import Base
@@ -335,6 +331,49 @@ async def count(engine, table: str, where: str = "", **params) -> int:
     async with engine.connect() as conn:
         sql = f"SELECT count(*) FROM {table}" + (f" WHERE {where}" if where else "")
         return (await conn.execute(text(sql), params)).scalar_one()
+
+
+@pytest_asyncio.fixture
+async def rules_bind(real_engine):
+    """Reach the database, for the test, as a role row security rules bind. A superuser or
+    a role allowed to bypass them reads and deletes every row whatever the rules say, so
+    where the database is reached as one, the test runs as a plain role made for it and
+    granted the schema's tables."""
+    from sqlalchemy import event
+
+    async def bypasses() -> bool:
+        async with real_engine.connect() as conn:
+            return (await conn.execute(text(
+                "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"))).scalar_one()
+
+    def as_role(dbapi_connection, _record):
+        # Committed, so a later rollback on the connection (such as setting its isolation
+        # level) does not undo it.
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f"SET ROLE {role}")
+        cursor.close()
+        dbapi_connection.commit()
+
+    role = None
+    if await bypasses():
+        role = f"rules_bind_{uuid.uuid4().hex[:12]}"
+        async with real_engine.begin() as conn:
+            schema = (await conn.execute(text("SELECT quote_ident(current_schema())"))).scalar_one()
+            for sql in (f"CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS NOLOGIN",
+                        f"GRANT USAGE, CREATE ON SCHEMA {schema} TO {role}",
+                        f"GRANT ALL ON ALL TABLES IN SCHEMA {schema} TO {role}",
+                        f"GRANT ALL ON ALL SEQUENCES IN SCHEMA {schema} TO {role}"):
+                await conn.execute(text(sql))
+        event.listen(real_engine.sync_engine, "connect", as_role)
+    try:
+        assert not await bypasses()
+        yield
+    finally:
+        if role:
+            event.remove(real_engine.sync_engine, "connect", as_role)
+            async with real_engine.begin() as conn:
+                await conn.execute(text(f"DROP OWNED BY {role}"))
+                await conn.execute(text(f"DROP ROLE {role}"))
 
 
 async def staged_run(engine, *, spec: dict | None = None, decisions: dict | None = None,
@@ -386,6 +425,36 @@ async def creator_run(session, run_id):
     run_id = uuid.UUID(str(run_id))
     creator = (await session.get(MigrationRun, run_id)).created_by_user_id
     return await migrations.get_owned_migration_run(session, run_id, creator)
+
+
+def posting_choices_from(readiness: list[dict]) -> dict:
+    """The posting accounts a user finishing a migration would pick: for each needed
+    role not already settled, the first account offered, or the proposed one to add."""
+    roles, add_accounts = {}, []
+    for row in readiness:
+        if not row["required"] or row["current"] or row["preselect"]:
+            continue
+        if row["candidates"]:
+            roles[row["role"]] = row["candidates"][0]["code"]
+        else:
+            add_accounts.append({**row["proposal"], "role": row["role"]})
+    return {"roles": roles, "add_accounts": add_accounts}
+
+
+async def finalize_run(session, run):
+    """Finish ``run`` the way a user would, choosing its posting accounts."""
+    from celerp.services import migrations
+    from celerp.services.posting_readiness import readiness
+
+    choices = posting_choices_from(await readiness(session, run.company_id) or [])
+    return await migrations.finalize(session, run, choices)
+
+
+async def finalize_body(client, headers: dict, run_id) -> dict:
+    """The finalize request body a user would send for ``run_id``."""
+    r = await client.get(f"/migrations/{run_id}/posting-accounts", headers=headers)
+    assert r.status_code == 200, r.text
+    return posting_choices_from(r.json()["roles"])
 
 
 @pytest_asyncio.fixture

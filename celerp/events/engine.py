@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 
 from fastapi import HTTPException
 from sqlalchemy import select, text
@@ -12,14 +12,17 @@ from sqlalchemy.exc import IntegrityError
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.projections.engine import ProjectionEngine
+from celerp.projections.engine import ITEM_BIRTHS, ProjectionEngine
 from celerp.services.document_lines import (
     assert_document_item_uniqueness,
+    assert_line_holds_respected,
     assert_new_references_eligible,
+    assert_protected_lines_kept,
     line_id_counts,
     linked_items,
+    normalize_line_ids,
 )
-from celerp.services.business_time import business_timezone
+from celerp.services.business_time import business_date_of
 from ui.i18n import t
 
 
@@ -142,14 +145,15 @@ async def find_event_by_idempotency(session, company_id, idempotency_key: str | 
 def write_period_lock(company, lock_date: str | None, user_id) -> None:
     """Lock *company*'s books through the ISO *lock_date*, recorded as set by *user_id*,
     or unlock them when *lock_date* is None. The caller holds the company row and commits."""
+    from celerp.services.company_settings import clear_change, record_change
+
     settings = dict(company.settings or {})
     if lock_date:
         settings["lock_date"] = lock_date
-        settings["lock_date_set_by"] = str(user_id)
-        settings["lock_date_set_at"] = datetime.now(timezone.utc).isoformat()
+        record_change(settings, "lock_date", user_id)
     else:
-        for key in ("lock_date", "lock_date_set_by", "lock_date_set_at"):
-            settings.pop(key, None)
+        settings.pop("lock_date", None)
+        clear_change(settings, "lock_date")
     company.settings = settings
 
 
@@ -167,30 +171,11 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
         lock_date = date.fromisoformat(lock_date_str)
     except (ValueError, TypeError):
         return
-    event_date_str = data.get("ts") or data.get("issue_date") or data.get("date")
-    if event_date_str:
-        try:
-            raw = str(event_date_str)
-            if "T" not in raw:
-                event_date = date.fromisoformat(raw[:10])
-            else:
-                instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                if instant.tzinfo is None or instant.utcoffset() is None:
-                    event_date = date.fromisoformat(raw[:10])
-                else:
-                    try:
-                        zone = business_timezone((company.settings or {}).get("timezone"))
-                    except ValueError as exc:
-                        raise HTTPException(status_code=422, detail=str(exc)) from exc
-                    event_date = instant.astimezone(zone).date()
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=422, detail=t("error.date_invalid", value=event_date_str)) from None
-    else:
-        try:
-            zone = business_timezone((company.settings or {}).get("timezone"))
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        event_date = datetime.now(timezone.utc).astimezone(zone).date()
+    event_date_str = data.get("reversed_on") or data.get("ts") or data.get("issue_date") or data.get("date")
+    try:
+        event_date = date.fromisoformat(business_date_of(event_date_str, (company.settings or {}).get("timezone")))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
@@ -249,7 +234,8 @@ async def _connector_entity_id(
 
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
-    external_identity: tuple[str, str] | None = None, update=None,
+    external_identity: tuple[str, str] | None = None, on_create: dict | None = None,
+    update=None,
 ) -> str:
     """Create-or-update a projection from a connector payload.
 
@@ -261,11 +247,14 @@ async def connector_upsert(
 
     ``idem_key`` (the stable platform id) is stored in projection state so a re-import
     resolves the SAME projection; the event's idempotency key varies with the content,
-    so an unchanged re-import dedups (no-op) while a changed one updates.
+    so an unchanged re-import dedups (no-op) while a changed one updates. ``on_create``
+    holds fields written only when the record is created (an item's starting status);
+    they are not part of the content, so a re-import never writes them again.
 
-    ``update(entity_id, data, idempotency_key)``, when given, writes the change to an
-    existing projection as a genuine update and returns the outcome; without it the
-    existing projection receives ``event_type`` again.
+    ``update`` applies a changed re-import to the existing projection the way an edit
+    would: ``await update(session, entity_id, data, event_idem)`` writes the change
+    under ``event_idem`` and returns False when nothing differs. Without it the
+    caller's ``event_type`` is emitted for the existing projection too.
     """
     import hashlib
     import json as _json
@@ -291,7 +280,9 @@ async def connector_upsert(
     if seen:
         return "noop"
     if existing_id and update is not None:
-        return await update(existing_id, data, event_idem)
+        return "updated" if await update(session, existing_id, data, event_idem) else "noop"
+    if not existing_id and on_create:
+        data = {**on_create, **data}
 
     await emit_event(
         session,
@@ -340,6 +331,169 @@ def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
     return str(probe.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 
 
+async def _record_lot_account(session, kwargs: dict, previous_state: dict | None) -> None:
+    """A new lot records the inventory account its value is booked into when its writer
+    books it: a receipt or a production run names the account it debits, a part of a lot
+    keeps the lot's, and stock entered with no purchase behind it takes the opening
+    inventory account when it is booked as opening stock (lot_origin.draft_boundary,
+    lot_origin.recognize_opening_lots). Stock a migration brings in keeps the account its
+    source books held it in. Nothing else is guessed: a snapshot of another system's item
+    records none until its stock is placed. No later event may change it: the lot's value
+    stays on that account for as long as the lot holds stock."""
+    from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+    from celerp.services.account_roles import source_lot_account
+
+    data = kwargs["data"]
+    if kwargs["event_type"] in ITEM_BIRTHS and previous_state is None:
+        if (kwargs["event_type"] == "item.created" and kwargs.get("source") == "migration"
+                and LOT_ACCOUNT_FIELD not in data and str(data.get("status") or "").lower() != "draft"):
+            code = await source_lot_account(session, kwargs["company_id"])
+            if code:
+                data[LOT_ACCOUNT_FIELD] = code
+        return
+    current = (previous_state or {}).get(LOT_ACCOUNT_FIELD)
+    if kwargs["event_type"] in ("item.inventory_account.recorded", "item.consignment.bought"):
+        # An older lot that recorded none takes the one the upgrade or the user places it on,
+        # and consigned goods take the one the bill that buys them debits.
+        if current:
+            raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
+        return
+    changed = data.get("fields_changed")
+    if LOT_ACCOUNT_FIELD in data:
+        written = data[LOT_ACCOUNT_FIELD]
+    elif isinstance(changed, dict) and LOT_ACCOUNT_FIELD in changed:
+        change = changed[LOT_ACCOUNT_FIELD]
+        written = change.get("new") if isinstance(change, dict) else change
+    else:
+        return
+    if written != current:
+        raise HTTPException(
+            status_code=422,
+            detail="An item's inventory account is recorded when its stock is booked and cannot be changed.",
+        )
+
+
+def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None:
+    """A consigned lot records the account its sale is owed to the consignor on when it is
+    first sold, and a lot born from it (a part of it, or goods a customer returns) keeps
+    it. No later event may change it: the payable recognized there is cleared there."""
+    from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD
+
+    if kwargs["event_type"] in ITEM_BIRTHS and previous_state is None:
+        return
+    current = (previous_state or {}).get(CONSIGNOR_PAYABLE_FIELD)
+    data = kwargs["data"]
+    if kwargs["event_type"] == "item.consignor_payable.recorded":
+        if current:
+            raise HTTPException(status_code=409, detail="This stock already records its consignor payable account.")
+        return
+    changed = data.get("fields_changed")
+    if CONSIGNOR_PAYABLE_FIELD in data:
+        written = data[CONSIGNOR_PAYABLE_FIELD]
+    elif isinstance(changed, dict) and CONSIGNOR_PAYABLE_FIELD in changed:
+        change = changed[CONSIGNOR_PAYABLE_FIELD]
+        written = change.get("new") if isinstance(change, dict) else change
+    else:
+        return
+    if written != current:
+        raise HTTPException(
+            status_code=422,
+            detail="The account a consigned item's sale is owed on is recorded when it is first sold and cannot be changed.",
+        )
+
+
+# Item events whose writer may say an archived or expired lot keeps its stock on the
+# books: Archive, Expire, and the upgrade that recognizes what older releases archived.
+_ON_BOOKS_WRITERS = frozenset({"item.status.set", "item.expired", "item.updated", "item.inventory_on_books.recorded"})
+
+
+def _guard_on_books(kwargs: dict) -> None:
+    """Whether retired stock stays on the books follows from the action that retired it
+    (projections._keep_on_books); nothing may enter it, an import or a field edit least
+    of all."""
+    from celerp.accounting_roles import ON_BOOKS_FIELD
+
+    data = kwargs["data"]
+    changed = data.get("fields_changed")
+    if (ON_BOOKS_FIELD in data and kwargs["event_type"] not in _ON_BOOKS_WRITERS) or (
+            isinstance(changed, dict) and ON_BOOKS_FIELD in changed):
+        raise HTTPException(
+            status_code=422,
+            detail="Whether archived or expired stock stays on the books is set by Archive and Expire "
+                   "and cannot be entered.",
+        )
+
+
+def _may_take_set_aside(event_type: str, data: dict) -> bool:
+    """Whether an item event is held to the goods finalized invoices have set aside
+    (auto_je.refuse_stranding_set_aside): every event but a shipment to a customer, the
+    one way set-aside goods are meant to leave. A shipment that takes goods another
+    invoice set aside moves that invoice's cost with them (auto_je.moved_costs) when both
+    invoices have a cost snapshot, and is held to them otherwise (_item_applied). Goods
+    sent out on memo are not shipped and are held to it."""
+    return event_type != "item.fulfilled" or (data or {}).get("doc_type") == "memo"
+
+
+async def _item_applied(session, entry: LedgerEntry, transition) -> None:
+    """Checks and effects of one live item event, on the state its row lock applied it to.
+
+    Births (item.created, item.snapshot) and changes are exclusive. A birth must find no
+    item: one that finds an item would overwrite it wholesale, bypassing every check an
+    edit carries. Any other change must find one: a change that finds none read an item
+    that was removed before it committed (a deleted draft, an undone import) or names
+    one that never existed, and writing it would make an item out of the change alone.
+    Replay applies events through ProjectionEngine directly and is not affected."""
+    from celerp.connectors.outbound_queue import enqueue_item_change
+    from celerp.modules.slots import get as get_slot, resolve_handler
+    from celerp.services.lot_origin import (
+        assert_draft_not_circulated,
+        book_draft_boundary,
+        book_value_change,
+        draft_boundary,
+        units_leaving,
+        value_boundary,
+    )
+
+    if transition.before is None and entry.event_type not in ITEM_BIRTHS:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if transition.before is not None and entry.event_type in ITEM_BIRTHS:
+        raise HTTPException(status_code=409, detail="This item already exists.")
+    assert_draft_not_circulated(entry.event_type, transition)
+    # Modules hold an item to what its lineage may still take (a production run's open
+    # output, for one); a handler that cannot be resolved fails the event, never skips it.
+    for handler in sorted({c["handler"] for c in get_slot("item_lineage_guard")}):
+        await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+    if units_leaving(transition.before, transition.after) > 1e-9:
+        from celerp.services.auto_je import recognized_cogs, refuse_stranding_set_aside
+
+        shipper = str((entry.data or {}).get("source_doc_id") or "") or None
+        if _may_take_set_aside(entry.event_type, entry.data):
+            await refuse_stranding_set_aside(
+                session, entry.company_id, entry.entity_id, transition.before, transition.after)
+        else:
+            # A shipping invoice takes the goods it holds itself. Goods another invoice
+            # holds move to it with their cost only when both have a cost snapshot
+            # (auto_je.moved_costs); goods held by an invoice finalized before snapshots
+            # existed, or taken by a shipment with no snapshot, are held to it like any
+            # other exit.
+            await refuse_stranding_set_aside(
+                session, entry.company_id, entry.entity_id, transition.before, transition.after,
+                exclude=shipper,
+                moves_cost=shipper is not None and await recognized_cogs(session, entry.company_id, shipper) is not None)
+    draft_move = await draft_boundary(session, entry, transition)
+    if draft_move is not None:
+        await book_draft_boundary(session, entry, draft_move)
+    value_change = await value_boundary(session, entry, transition)
+    if value_change is not None:
+        await book_value_change(session, entry, value_change)
+    # Durable connector work belongs to the same savepoint as the item event, so a
+    # caller that catches a failure here keeps neither. No network I/O occurs here;
+    # the worker re-reads current state before sending. ``outbound_queued`` tells
+    # the caller the event will reach a connected store.
+    entry.outbound_queued = await enqueue_item_change(session, entry, previous_state=transition.before)
+    await session.flush()
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False, **kwargs
 ) -> LedgerEntry:
@@ -364,8 +518,28 @@ async def emit_event(
     if _normalize is not None:
         _normalize(kwargs["data"])
 
+    # Every location the event names is one of this company's locations.
+    from celerp.services.locations import require_event_locations
+
+    await require_event_locations(
+        session, kwargs.get("company_id"), kwargs.get("location_id"), kwargs.get("data")
+    )
+
+    # A void of an entry in a locked period is dated to an open day instead of mutating
+    # the period: one rule for every void path.
+    if kwargs["event_type"] == "acc.journal_entry.voided":
+        from celerp.services.posting_dates import void_reversal
+
+        await void_reversal(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["data"])
+
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
+
+    # Every journal line, whoever produced it, passes the one account boundary.
+    if kwargs["event_type"] == "acc.journal_entry.created":
+        from celerp.services.journal_accounts import prepare_journal_entry
+
+        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"])
 
     # Enforce the line rules on every document and List write. Extract the post-change
     # line set by DATA SHAPE so every writer (create, patch, shared_import, update,
@@ -375,7 +549,9 @@ async def emit_event(
     #     or an import can carry the id of an item Undo removed); lines already on the
     #     stored document are carried forward, so an old document stays editable;
     #   - no line a write adds (counted per occurrence) may reference a draft item, and
-    #     none on an invoice or memo may reference an item reserved elsewhere;
+    #     none on an invoice or memo may reference an item reserved elsewhere or out on a
+    #     memo it was not made from, and none may take a lot the record holds for another
+    #     of its lines;
     #   - an OUTBOUND document (invoice, memo) never repeats a physical item; the
     #     doc-type scope lives in assert_document_item_uniqueness beside the invariant.
     # Rebuild/replay applies events via apply_event, never emit_event, so historical
@@ -397,6 +573,14 @@ async def emit_event(
             )
             same = proj is not None and proj.entity_type == kwargs.get("entity_type")
             stored = (proj.state or {}) if same else {}
+            # Every line carries a stable line id: new lines get one, lines already on the
+            # record keep theirs, and a malformed or repeated id is refused.
+            normalize_line_ids(line_set, stored.get("line_items"))
+            # A line that holds, shipped or received stock keeps its id, its item and (once
+            # shipped or received) its position.
+            await assert_protected_lines_kept(
+                session, kwargs.get("company_id"), kwargs.get("entity_id"), stored, line_set,
+            )
             known = line_id_counts(stored.get("line_items"))
             items = await linked_items(session, kwargs.get("company_id"), line_set, known=known)
             # Prefer the event's own doc_type; otherwise the stored document's. A List has
@@ -404,6 +588,10 @@ async def emit_event(
             doc_type = data.get("doc_type") or stored.get("doc_type")
             assert_new_references_eligible(
                 items, line_set, known=known, doc_type=doc_type, entity_id=kwargs.get("entity_id"),
+                source_memo_id=data.get("source_memo_id") or stored.get("source_memo_id"),
+            )
+            assert_line_holds_respected(
+                items, line_set, stored.get("line_items"), entity_id=kwargs.get("entity_id"),
             )
             await assert_document_item_uniqueness(
                 session, kwargs.get("company_id"), doc_type, line_set
@@ -469,14 +657,29 @@ async def emit_event(
                 session, kwargs["company_id"], kwargs["entity_id"], previous_item_state, after
             )
 
+    item = kwargs.get("entity_type") == "item"
+    if item and previous_item_state is not None:
+        from celerp.services.company_lock import lock_company
+
+        # Any change to an existing lot may take goods out of what is ready to ship, and
+        # is then judged against the invoices holding them (_item_applied) under the
+        # company lock. It is taken here, before the row lock the apply takes
+        # (company_lock.lock_company), whatever the change turns out to be.
+        await lock_company(session, kwargs["company_id"])
+    if item:
+        _guard_on_books(kwargs)
+        await _record_lot_account(session, kwargs, previous_item_state)
+        _record_consignor_payable(kwargs, previous_item_state)
+
     entry = LedgerEntry(**kwargs)
 
     # The event and its effect on the projection are one SAVEPOINT: a refused projection
-    # change (a change to an item that is gone) takes its ledger row with it, even when
-    # the caller catches the refusal and commits the rest of its work. A duplicate-
-    # idempotency collision likewise rolls back only this insert, NOT the caller's whole
-    # transaction. (A bare session.rollback() here would silently undo everything the
-    # caller already emitted, e.g. the doc.finalized event before its auto-JE.)
+    # change (a change to an item that is gone, or one the draft rule refuses on the state
+    # its row lock applied it to) takes its ledger row with it, even when the caller
+    # catches the refusal and commits the rest of its work. A duplicate-idempotency
+    # collision likewise rolls back only this insert, NOT the caller's whole transaction.
+    # (A bare session.rollback() here would silently undo everything the caller already
+    # emitted, e.g. the doc.finalized event before its auto-JE.)
     savepoint = await session.begin_nested()
     try:
         session.add(entry)
@@ -501,17 +704,9 @@ async def emit_event(
         original.was_deduped = True
         return original
     try:
-        await ProjectionEngine.apply_event(session, entry)
-        # Durable connector work belongs to the same savepoint as the item event, so a
-        # caller that catches a failure here keeps neither. No network I/O occurs here;
-        # the worker re-reads current state before sending. ``outbound_queued`` tells
-        # the caller the event will reach a connected store.
-        if entry.entity_type == "item":
-            from celerp.connectors.outbound_queue import enqueue_item_change
-            entry.outbound_queued = await enqueue_item_change(
-                session, entry, previous_state=previous_item_state
-            )
-            await session.flush()
+        transition = await ProjectionEngine.apply_event(session, entry)
+        if item:
+            await _item_applied(session, entry, transition)
     except BaseException:
         await savepoint.rollback()
         raise

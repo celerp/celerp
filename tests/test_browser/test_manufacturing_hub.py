@@ -127,3 +127,79 @@ def test_hub_work_orders_sort_filter_coverage(page, ui_server, api):
     page.locator("#wo-orders-table thead th[data-sort='3']").click()
     first_qty = page.locator("#wo-orders-table tbody tr.data-row:not(.enh-page-hidden) td:nth-child(4)").first.inner_text().strip()
     assert first_qty == "1", f"qty-ascending sort failed; first row qty={first_qty!r}"
+
+
+def _act(page, value: str) -> None:
+    """Choose ``value`` in the run's Action dropdown once the refreshed block offers it."""
+    page.wait_for_selector(f"#production-block .wo-action-select option[value='{value}']", state="attached",
+                           timeout=8000)
+    with page.expect_response(lambda r: r.url.endswith("/act") and r.request.method == "POST") as act:
+        page.locator("#production-block .wo-action-select").first.select_option(value=value)
+    assert act.value.ok, f"{value} failed: HTTP {act.value.status}"
+
+
+def test_every_step_of_a_run_can_be_taken_back_from_the_hub(page, ui_server, api):
+    """Complete a run, then take it all back from the same dropdown: Reopen, Undo the receipt,
+    Return the materials, Cancel. Stock ends where it started and each step says what it did."""
+    gold = api.post("/items", json={"status": "available", "sku": "UNDO-GOLD", "name": "Gold", "quantity": 100,
+                                    "sell_by": "gram", "cost_total": 8000, "inventory_type": "component"}).json()["id"]
+    ring = api.post("/items", json={"status": "available", "sku": "UNDO-RING", "name": "Ring", "quantity": 0,
+                                    "sell_by": "piece"}).json()["id"]
+    api.put(f"/manufacturing/items/{ring}/recipe",
+            json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
+    run_id = api.post(f"/manufacturing/items/{ring}/build", json={"quantity": 2}).json()["id"]
+    api.post(f"/manufacturing/{run_id}/start")
+
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#production-block .wo-action-select", timeout=10000)
+    block = page.locator("#production-block")
+
+    _act(page, "complete")
+    _poll_run_status(api, run_id, "completed")
+    lot = api.get(f"/manufacturing/{run_id}").json()["received_lots"][0]
+    assert api.get(f"/items/{gold}").json()["quantity"] == 90.0
+
+    # Completed runs are hidden by default; tick Completed in the Status funnel to see it.
+    page.wait_for_selector("#production-block .badge:has-text('Completed')", state="attached", timeout=8000)
+    page.locator("#wo-orders-table .colfilter[data-col='5']").click()
+    page.locator(".colfilter-pop .colfilter-item").filter(has_text="Completed").locator("input[type=checkbox]").check()
+    page.keyboard.press("Escape")
+    _act(page, "reopen")
+    _poll_run_status(api, run_id, "in_progress")
+    assert "Run reopened." in block.inner_text()
+
+    sku = api.get(f"/items/{lot}").json()["sku"]
+    assert block.locator(f".wo-action-select option:has-text('{sku}')").count() == 1
+    _act(page, f"undo:{lot}")
+    page.wait_for_selector("#production-block .flash:has-text('Receipt undone.')", timeout=8000)
+    assert api.get(f"/items/{lot}").json()["quantity"] == 0.0
+    assert block.locator(f"option[value='undo:{lot}']").count() == 0
+
+    _act(page, "return")
+    page.wait_for_selector("#production-block .flash:has-text('Materials returned to stock.')", timeout=8000)
+    assert api.get(f"/items/{gold}").json()["quantity"] == 100.0
+    assert block.locator("option[value='return']").count() == 0
+
+    _act(page, "cancel")
+    _poll_run_status(api, run_id, "cancelled")
+    page.screenshot(path=str(SHOTS / "hub-run-taken-back.png"), full_page=True)
+
+
+def test_a_refused_undo_says_why_on_the_page(page, ui_server, api):
+    """Cancelling a run that still holds materials is refused on the page, with the way forward."""
+    gold = api.post("/items", json={"status": "available", "sku": "REF-GOLD", "name": "Gold", "quantity": 100,
+                                    "sell_by": "gram", "cost_total": 8000, "inventory_type": "component"}).json()["id"]
+    ring = api.post("/items", json={"status": "available", "sku": "REF-RING", "name": "Ring", "quantity": 0,
+                                    "sell_by": "piece"}).json()["id"]
+    api.put(f"/manufacturing/items/{ring}/recipe",
+            json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
+    run_id = api.post(f"/manufacturing/items/{ring}/build", json={"quantity": 2}).json()["id"]
+    assert api.post(f"/manufacturing/{run_id}/issue", json={}).status_code == 200
+
+    page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#production-block .wo-action-select", timeout=10000)
+    _act(page, "cancel")
+    page.wait_for_selector("#production-block .flash--error", timeout=8000)
+    assert "Return its materials and undo its receipts first." in page.locator("#production-block").inner_text()
+    _poll_run_status(api, run_id, "in_progress")

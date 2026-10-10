@@ -45,6 +45,17 @@ async def _chart(client, h) -> dict[str, dict]:
     return {a["code"]: a for a in r.json()["items"]}
 
 
+async def _legacy_account(client, session, h, code, parent_code) -> None:
+    """A row from before parents were checked, which the chart can still hold."""
+    from celerp_accounting.models import Account
+
+    r = await client.get("/companies/me", headers=h)
+    assert r.status_code == 200, r.text
+    session.add(Account(id=uuid.uuid4(), company_id=uuid.UUID(r.json()["id"]), code=code,
+                        name=f"Legacy {code}", account_type="asset", parent_code=parent_code))
+    await session.commit()
+
+
 async def _import(client, h, records, **body):
     return await client.post(PATH, headers=h, json={"records": records, **body})
 
@@ -218,7 +229,7 @@ async def test_create_account_applies_the_same_code_and_name_rules(client, paylo
     h = await _reg(client)
     r = await client.post("/accounting/accounts", headers=h, json=payload)
     assert r.status_code == 422, r.text
-    assert message in r.json()["detail"]
+    assert message in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -227,14 +238,14 @@ async def test_account_parent_code_is_trimmed_and_length_checked(client):
     r = await client.post("/accounting/accounts", headers=h, json={
         "code": "8610", "name": "Long Parent", "account_type": "asset", "parent_code": "8" * 40})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_parent_code_too_long", "en", max=32)
+    assert "Parent code must be 32 characters" in r.json()["detail"]["message"]
     r = await client.post("/accounting/accounts", headers=h, json={
         "code": "8611", "name": "Blank Parent", "account_type": "asset", "parent_code": "  "})
     assert r.status_code == 200, r.text
     assert r.json()["parent_code"] is None
     r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": "8" * 40})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_parent_code_too_long", "en", max=32)
+    assert "Parent code must be 32 characters" in r.json()["detail"]["message"]
     r = await client.patch("/accounting/accounts/8611", headers=h, json={"parent_code": " 1000 "})
     assert r.status_code == 200, r.text
     assert (await _chart(client, h))["8611"]["parent_code"] == "1000"
@@ -249,7 +260,7 @@ async def test_bank_account_code_follows_the_account_code_rules(client):
             "currency": "USD", "opening_balance": 0}
     r = await client.post("/accounting/bank-accounts", headers=h, json={**bank, "account_code": "Q" * 33})
     assert r.status_code == 422, r.text
-    assert "32 characters" in r.json()["detail"]
+    assert "32 characters" in r.json()["detail"]["message"]
     r = await client.post("/accounting/bank-accounts", headers=h, json={**bank, "account_code": " 8620 "})
     assert r.status_code == 200, r.text
     assert "8620" in await _chart(client, h)
@@ -338,12 +349,10 @@ async def test_chart_import_cycle_is_invalid(client):
 
 
 @pytest.mark.asyncio
-async def test_chart_import_cycle_through_existing_account_is_invalid(client):
+async def test_chart_import_cycle_through_existing_account_is_invalid(client, session):
     h = await _reg(client)
     # An account already in the chart whose parent code names nothing yet.
-    r = await client.post("/accounting/accounts", headers=h, json={
-        "code": "8950", "name": "Existing", "account_type": "asset", "parent_code": "8960"})
-    assert r.status_code == 200, r.text
+    await _legacy_account(client, session, h, "8950", "8960")
     r = await _import(client, h, [_row("8960", "Closes The Loop", parent_code="8950")])
     body = r.json()
     assert body["created"] == 0
@@ -352,12 +361,10 @@ async def test_chart_import_cycle_through_existing_account_is_invalid(client):
 
 
 @pytest.mark.asyncio
-async def test_chart_import_row_under_a_loop_already_in_the_chart_is_invalid(client):
+async def test_chart_import_row_under_a_loop_already_in_the_chart_is_invalid(client, session):
     h = await _reg(client)
     # An account already in the chart that is its own parent.
-    r = await client.post("/accounting/accounts", headers=h, json={
-        "code": "8955", "name": "Own Parent", "account_type": "asset", "parent_code": "8955"})
-    assert r.status_code == 200, r.text
+    await _legacy_account(client, session, h, "8955", "8955")
     r = await _import(client, h, [
         _row("8956", "Under The Loop", parent_code="8955"),
         _row("8957", "Under That", parent_code="8956"),

@@ -160,3 +160,15 @@ async def test_a_module_that_failed_to_load_names_the_reason_and_what_to_do(ui_c
             patch("ui.routes.modules_page._modules_dir_display", return_value="/data/modules"):
         r = await ui_client.get("/modules", cookies=_cookies())
     assert json.dumps(t("modules.load_failed", "en", label="Bad Mod", error=reason))[1:-1] in r.text
+
+
+def test_zero_priced_marketplace_module_reads_paid():
+    from fasthtml.common import to_xml
+
+    from ui.routes.modules_page import _marketplace_row
+    row = to_xml(_marketplace_row({"id": "zero-mod", "name": "Zero", "tier": "official",
+                                   "author": "A", "license": "Proprietary",
+                                   "price_monthly": 0.0},
+                                  "en", set(), set(), owner=True))
+    assert 'hx-post="/modules/buy?slug=zero-mod&amp;kind=monthly"' in row
+    assert "/modules/marketplace-download" not in row

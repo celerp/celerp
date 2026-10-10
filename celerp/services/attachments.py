@@ -479,10 +479,17 @@ async def store_upload(
     Callers pass attachment_type="view_360" for 360 images uploaded as image/jpeg.
     """
     content = await file.read()
-    mime = file.content_type or (
-        mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
-    )
-    return await store_file(company_id, content, file.filename, mime, attachment_type)
+    return await store_file(company_id, content, file.filename, upload_mime(file), attachment_type)
+
+
+def upload_mime(file: UploadFile) -> str:
+    """The content type an upload is stored as: the one it was sent with, else (nothing
+    sent, or only the generic binary type) the one its name implies, else the generic
+    binary type the allowlist refuses."""
+    sent = file.content_type
+    if sent and sent != "application/octet-stream":
+        return sent
+    return mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
 
 
 async def store_file(
@@ -544,9 +551,9 @@ class CompanyFiles:
         self._stored: dict[str, str] = {}
 
     async def file(self, content: bytes, filename: str | None, mime: str,
-                   attachment_type: AttachmentType | None = None) -> dict:
+                   attachment_type: AttachmentType | None = None, *, att_id: str | None = None) -> dict:
         """Store file content as ``store_file`` does; returns its attachment metadata."""
-        meta = await store_file(self.company_id, content, filename, mime, attachment_type)
+        meta = await store_file(self.company_id, content, filename, mime, attachment_type, att_id=att_id)
         self._stored[meta["id"]] = meta["mime"]
         return meta
 
@@ -635,6 +642,22 @@ def item_file_role(
     return is_image and (as_hero or not has_hero), document_tag
 
 
+@asynccontextmanager
+async def discarded_if_refused(company_id, meta: dict):
+    """Delete the stored file (``meta`` from store_file) again if the block recording it fails.
+
+    Every path that stores a file and then records it runs the recording inside this, so
+    a refused or failed recording never leaves a stored file that nothing points to."""
+    try:
+        yield
+    except BaseException:
+        try:
+            await delete_stored_file(str(company_id), meta["id"], meta["mime"])
+        except Exception:
+            logger.warning("could not delete stored file %s after its attachment was refused", meta["id"])
+        raise
+
+
 async def attach_file(
     session: AsyncSession,
     company_id,
@@ -647,10 +670,12 @@ async def attach_file(
     idempotency_key: str | None = None,
     document_tag: str | None = None,
     is_hero: bool | None = None,
+    description: str | None = None,
 ):
     """Attach a stored file (``meta`` from store_file) to one contact, document or item.
 
-    Returns the ledger entry of the file-attached event."""
+    Returns the ledger entry of the file-attached event. When the attachment is refused
+    (the record is gone), the stored file is deleted again (discarded_if_refused)."""
     data = {
         "entity_id": entity_id,
         "entity_type": entity_type,
@@ -660,24 +685,25 @@ async def attach_file(
         "size": meta["size"],
         "url": meta.get("url", ""),
         "document_tag": document_tag,
-        "description": None,
+        "description": description,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     if is_hero is not None:
         data["is_hero"] = is_hero
-    return await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type=entity_type,
-        event_type=FILE_ATTACHED_EVENTS[entity_type],
-        data=data,
-        actor_id=actor_id,
-        location_id=None,
-        source=source,
-        idempotency_key=idempotency_key or str(uuid.uuid4()),
-        metadata_={},
-    )
+    async with discarded_if_refused(company_id, meta):
+        return await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type=entity_type,
+            event_type=FILE_ATTACHED_EVENTS[entity_type],
+            data=data,
+            actor_id=actor_id,
+            location_id=None,
+            source=source,
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
+            metadata_={},
+        )
 
 
 def thumbnail_id(att_id: str) -> str:

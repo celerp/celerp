@@ -6,9 +6,9 @@
 Two manufacturing imports naming the same run under different keys run on real
 PostgreSQL across two connections, in both orders, through the full HTTP stack. The
 first holds its commit until the second has started and is waiting on (or past) the
-lock. The second must see the first's run once it may write: it is counted skipped,
-the ledger holds one creation, and the run keeps the first import's details even when
-the second carries different ones. The same file sent twice at once (one key) is
+lock. The second must see the first's run once it may write: it is refused as a
+different record under the same id, the ledger holds one creation, and the run keeps
+the first import's details. The same file sent twice at once (one key) is
 created once too, and an import whose access is removed while it waits writes nothing.
 """
 
@@ -20,13 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_fresh_authority_races_pg import _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
+from test_fresh_authority_races_pg import _ITEM, _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
 
 pytestmark = pytest.mark.asyncio
 
 _RUN = "mfg:RACE-1"
-_FIRST = {"description": "First import", "inputs": [], "expected_outputs": [], "quantity": 5}
-_SECOND = {"description": "Second import", "inputs": [], "expected_outputs": [], "quantity": 99}
+_FIRST = {"description": "First import", "inputs": [], "output_item_id": _ITEM, "quantity": 5}
+_SECOND = {"description": "Second import", "inputs": [], "output_item_id": _ITEM, "quantity": 99}
 
 
 def _import(client, c, role, key, data):
@@ -63,10 +63,13 @@ async def test_one_run_imported_twice_at_once_under_different_keys_is_created_on
             lambda held: _http(pending, held, _import(client, c, "manager", lose_key, lose_data)),
         )
     assert _counts(won) == (1, 0, [])
-    assert _counts(lost) == (0, 1, [])
+    # The run already exists and differs from the waiting import, so that import is refused.
+    created, skipped, [error] = _counts(lost)
+    assert (created, skipped) == (0, 0) and error.endswith("it was not imported again."), error
     state, births = await _run(factory, c["company_id"])
-    assert births == [win_key]
-    assert state["description"] == win_data["description"] and state["quantity"] == win_data["quantity"]
+    assert births == [f"mfg:created:{win_key}"]
+    assert state["description"] == win_data["description"]
+    assert state["expected_outputs"][0]["quantity"] == win_data["quantity"]
 
 
 async def test_the_same_import_sent_twice_at_once_is_created_once(committed_engine):
@@ -81,7 +84,7 @@ async def test_the_same_import_sent_twice_at_once_is_created_once(committed_engi
     assert _counts(one) == (1, 0, [])
     assert _counts(two) == (0, 1, [])
     state, births = await _run(factory, c["company_id"])
-    assert births == ["key-same"] and state["description"] == _FIRST["description"]
+    assert births == ["mfg:created:key-same"] and state["description"] == _FIRST["description"]
 
 
 async def test_an_import_whose_access_is_removed_while_it_waits_writes_nothing(committed_engine):

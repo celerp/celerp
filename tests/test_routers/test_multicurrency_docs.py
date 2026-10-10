@@ -42,7 +42,7 @@ async def _make_invoice(client, h, currency="USD", conversion_rate=35.0):
 
 
 async def _set_base_currency(client, h, currency: str) -> None:
-    r = await client.patch("/companies/me", headers=h, json={"settings": {"currency": currency}})
+    r = await client.patch("/companies/me/books", headers=h, json={"currency": currency})
     assert r.status_code == 200, r.text
 
 
@@ -385,7 +385,7 @@ async def test_finalize_foreign_currency_without_rate_fails(client):
     h = _auth(token)
 
     # Set base currency to THB so USD docs are foreign
-    await client.patch("/companies/me", headers=h, json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=h, json={"currency": "THB"})
 
     r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice",
@@ -410,7 +410,7 @@ async def test_finalize_with_rate_creates_base_currency_jes(client, session):
     h = _auth(token)
 
     # Set base currency to THB
-    await client.patch("/companies/me", headers=h, json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=h, json={"currency": "THB"})
 
     r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice",
@@ -450,7 +450,7 @@ async def test_finalize_with_rate_revenue_entry_in_base(client, session):
     token = await _register(client)
     h = _auth(token)
 
-    await client.patch("/companies/me", headers=h, json={"settings": {"currency": "THB"}})
+    await client.patch("/companies/me/books", headers=h, json={"currency": "THB"})
 
     r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice",

@@ -171,7 +171,7 @@ async def test_a_document_created_while_undo_removes_the_item_is_refused(committ
     company_id, user, batch_id = await _seed(factory)
 
     locked, release = asyncio.Event(), asyncio.Event()
-    real_check = inventory.mentioned_elsewhere
+    real_check = inventory.depended_on
 
     async def _paused_check(*args, **kwargs):
         # Undo holds the company and the item and has found no reference yet.
@@ -179,7 +179,7 @@ async def test_a_document_created_while_undo_removes_the_item_is_refused(committ
         await release.wait()
         return await real_check(*args, **kwargs)
 
-    monkeypatch.setattr(inventory, "mentioned_elsewhere", _paused_check)
+    monkeypatch.setattr(inventory, "depended_on", _paused_check)
 
     async with factory() as undoer, factory() as creator:
         undo = asyncio.create_task(_undo(undoer, company_id, user, batch_id))

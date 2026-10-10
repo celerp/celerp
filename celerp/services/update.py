@@ -59,7 +59,8 @@ ROLLED_BACK = "rolled_back"  # the new version failed after the database changed
 ROLLBACK_FAILED = "rollback_failed"  # the database could not be restored; Celerp stays stopped until it is
 
 # Why an attempt did not install, as recorded in last_result["reason"]. Error
-# detail goes to the log only; everything recorded here can be shown to anyone.
+# detail goes to the log only, except why the database could not be backed up for
+# a rollback, which last_result["detail"] keeps for the install owner.
 # Why an update did not go ahead; each code is the message ``update.reason.<code>``.
 REASON_CODES = ("backup_failed", "install_failed", "migrate_failed", "verify_failed", "interrupted")
 
@@ -323,6 +324,8 @@ def status(*, owner: bool) -> dict:
         last_result = read_state().get("last_result")
     except UpdateStateError:
         last_result = None
+    if last_result and not owner:
+        last_result.pop("detail", None)
     return {
         "current": installed_version(),
         "latest": _check["latest"],
@@ -471,8 +474,11 @@ async def update_loop(restart: Callable[[], None]) -> None:
 
 
 class Steps:
-    """The work behind each update step. Every method raises on failure."""
+    """The work behind each update step. Every method raises on failure; `dump`
+    raises ValueError, in words for the install owner, for a database it could not
+    back up so that a rollback restores it exactly."""
 
+    def preflight(self) -> None: ...
     def dump(self, path: Path) -> None: ...
     def stage(self, target: str) -> None: ...
     def migrate(self, target: str) -> None: ...
@@ -489,21 +495,29 @@ def _mark(state: dict, current: str, target: str, step: str, reason: str = "") -
     write_state(state)
 
 
-def _finish(state: dict, current: str, target: str, outcome: str, reason: str = "") -> dict:
+def _result(current: str, target: str, outcome: str, reason: str) -> dict:
+    return {"ok": outcome == OK, "outcome": outcome, "from": current, "to": target,
+            "reason": reason, "at": _now(), "notified": False}
+
+
+def _finish(state: dict, current: str, target: str, outcome: str, reason: str = "", detail: str = "") -> dict:
     """Record the outcome. A failed rollback keeps the update in progress, so
-    every start retries it and nothing serves the half-restored database."""
-    result = {"ok": outcome == OK, "outcome": outcome, "from": current, "to": target,
-              "reason": reason, "at": _now(), "notified": False}
+    every start retries it and nothing serves the half-restored database. A
+    refusal with a detail names what to change in the database, so automatic
+    updates try the version again."""
+    result = _result(current, target, outcome, reason)
+    if detail:
+        result["detail"] = detail
     if outcome != ROLLBACK_FAILED:
         state.pop("in_progress", None)
     state["last_result"] = result
-    if outcome != OK:
+    if outcome != OK and not detail:
         failed = state.setdefault("failed_versions", [])
         if target not in failed:
             failed.append(target)
     write_state(state)
     level = logging.INFO if outcome == OK else logging.ERROR
-    log.log(level, "update %s -> %s: %s %s", current, target, outcome, reason)
+    log.log(level, "update %s -> %s: %s %s %s", current, target, outcome, reason, detail)
     return result
 
 
@@ -516,7 +530,7 @@ def _undo(steps: Steps, state: dict, current: str, target: str, reason: str) -> 
         steps.restore(dump, target)
     except Exception:
         log.exception("Restoring the database failed; it is retried at every start. The "
-                      "pre-update database is at %s (pg_restore --clean -d <url> %s).", dump, dump)
+                      "pre-update database is at %s.", dump)
         return _finish(state, current, target, ROLLBACK_FAILED, reason)
     runtime.discard(target)
     return _finish(state, current, target, ROLLED_BACK, reason)
@@ -532,6 +546,15 @@ def run_update(target: str, steps: Steps) -> tuple[dict, tuple]:
     """
     target = validate_target(target)
     current = installed_version()
+    # Not the release's fault, so the same version is tried again: a refusal names
+    # what to change in this database, and a missing tool records nothing.
+    try:
+        steps.preflight()
+    except ValueError as exc:
+        return _finish(read_state(), current, target, FAILED, "backup_failed", str(exc).rstrip(".")), ()
+    except Exception:
+        log.exception("update backup cannot start")
+        return _result(current, target, FAILED, "backup_failed"), ()
     state = read_state()
     dump = dump_path()
     dump.parent.mkdir(parents=True, exist_ok=True)
@@ -539,6 +562,8 @@ def run_update(target: str, steps: Steps) -> tuple[dict, tuple]:
     _mark(state, current, target, "backup")
     try:
         steps.dump(dump)
+    except ValueError as exc:
+        return _finish(state, current, target, FAILED, "backup_failed", str(exc).rstrip(".")), ()
     except Exception:
         log.exception("update backup failed")
         return _finish(state, current, target, FAILED, "backup_failed"), ()
@@ -654,13 +679,14 @@ raise SystemExit(child.wait())
 
 
 def _bound_run(command, *, env: dict | None = None, capture_output: bool = False,
-               timeout: float) -> subprocess.CompletedProcess:
+               timeout: float, cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Run a command whose process tree cannot outlive this supervisor."""
     env = dict(os.environ if env is None else env)
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(
             [sys.executable, "-E", "-S", "-c", _PARENT_BOUND_RUNNER, *map(str, command)],
             env=env,
+            cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=out if capture_output else None,
             stderr=err if capture_output else None,
@@ -792,12 +818,23 @@ class SupervisorSteps(Steps):
     def db_url(self) -> str:
         return self.cfg["database"]["url"]
 
+    def preflight(self) -> None:
+        self._backup.restore_tools()
+        # A rollback restores the dump taken next into this database.
+        self._backup.check_restore_target(self.db_url)
+        self._backup.check_database_extensions(self.db_url)
+        # The last update's dump, which the next one replaces, shows whether there is room.
+        if dump_path().exists():
+            self._backup.check_free_space(dump_path())
+
     def dump(self, path: Path) -> None:
         data = self._backup.dump_database(self.db_url, runner=_bound_run)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.chmod(path, 0o600)
+        self._backup.check_free_space(path)
+        self._backup.check_backup_dump(path, self.db_url, "this database")
 
     def stage(self, target: str) -> None:
         """Install `target` and its dependencies into a directory of its own,
@@ -852,9 +889,7 @@ class SupervisorSteps(Steps):
         from celerp.migrations.compatibility import mutating_scope
 
         with mutating_scope(sync_url(self.db_url), accept=target):
-            self._backup.restore_database_file(
-                path, self.db_url, clean_schema=True, runner=_bound_run
-            )
+            self._backup.restore_database_file(path, self.db_url, runner=_bound_run)
 
     def stop_cluster(self) -> None:
         """Stop the embedded database, so the next supervisor starts it with

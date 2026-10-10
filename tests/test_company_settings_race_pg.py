@@ -49,6 +49,9 @@ async def _seed(factory) -> tuple[uuid.UUID, uuid.UUID]:
                        type="warehouse", is_default=True))
         await s.commit()
     async with factory() as s:
+        from celerp_accounting.routes import seed_chart_of_accounts_hook
+
+        await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await demo.seed_demo_items(s, company_id, user_id, vertical=_START)
         await s.commit()
     return company_id, user_id
@@ -188,12 +191,12 @@ async def test_settings_save_never_reverts_a_type_change(committed_engine, monke
 
     await _race(
         committed_engine, lambda s: _hold_first_call(monkeypatch, s, "commit"),
-        lambda s: patch_me(payload=CompanyPatch(settings={"note_color": "blue"}),
+        lambda s: patch_me(payload=CompanyPatch(settings={"timezone": "Asia/Bangkok"}),
                            company_id=company_id, _=None, session=s),
         _type_change(company_id, user_id),
     )
 
-    assert (await _stored_settings(factory, company_id))["note_color"] == "blue"
+    assert (await _stored_settings(factory, company_id))["timezone"] == "Asia/Bangkok"
     await _assert_type_and_samples_agree(factory, company_id)
 
 

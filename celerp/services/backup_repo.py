@@ -29,7 +29,6 @@ from pathlib import Path
 import httpx
 
 from celerp.config import settings
-from celerp.gateway.state import fetch_relay_bearer, relay_http_url
 from celerp.services.backup import BackupResult, _parse_key, decrypt, dump_database, encrypt
 from ui.i18n import t
 
@@ -60,6 +59,7 @@ def _hash_file(path: Path) -> tuple[str, int]:
 
 @asynccontextmanager
 async def _relay():
+    from celerp.gateway.state import fetch_relay_bearer, relay_http_url
     from celerp.services.cloud_entitlement import stored_api_key
     if settings.cloud_disconnected:
         raise RuntimeError(t("error.cloud_backup_disconnected"))

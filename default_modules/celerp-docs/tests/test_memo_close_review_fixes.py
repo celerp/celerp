@@ -444,6 +444,10 @@ async def test_convert_unbound_sibling_credited_to_its_own_line(client):
                   for li in lines if li.get("sku") == sku_q)
     assert q_total == pytest.approx(50.0), (
         f"SKU-Q must bill discounted bound half (20) + sibling (30) = 50; got {q_total} from {lines!r}")
-    # Both physical lots for SKU-Q leave memo_out.
-    assert (await client.get(f"/items/{lot_b}", headers=h)).json().get("status") != "memo_out"
-    assert (await client.get(f"/items/{lot_c}", headers=h)).json().get("status") != "memo_out"
+    # Both physical lots for SKU-Q go to the invoice, and its finalize sells them.
+    for lot in (lot_b, lot_c):
+        state = (await client.get(f"/items/{lot}", headers=h)).json()
+        assert (state.get("status"), state.get("status_doc_id")) == ("memo_out", inv["id"])
+    assert (await client.post(f"/docs/{inv['id']}/finalize", headers=h)).status_code == 200
+    for lot in (lot_b, lot_c):
+        assert (await client.get(f"/items/{lot}", headers=h)).json().get("status") == "sold"

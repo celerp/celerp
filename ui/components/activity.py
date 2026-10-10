@@ -18,6 +18,7 @@ from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA, cost_columns
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from ui.i18n import t, get_lang, category_label, field_label, price_list_label
 from ui.components.table import EMPTY, fmt_money, fmt_rate
+from ui.components.deleted_items import deleted_label
 
 # Known ledger event types. The label for each is resolved at render time via
 # ``t("event.<event_type>")`` (see event_label); values here are those i18n keys,
@@ -29,7 +30,11 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.expired", "item.reserved", "item.unreserved", "item.pricing.set",
     "item.status.set", "item.split", "item.split_from", "item.merged",
     "item.transform", "item.transformed_from", "item.source_deactivated",
+    "item.merge_undone", "item.unmerged",
     "item.fulfilled", "item.fulfillment_reversed", "item.consumed", "item.produced",
+    "item.inventory_account.recorded", "item.consignor_payable.recorded", "item.consignment.bought",
+    "item.inventory_on_books.recorded",
+    "mfg.order.wip_opened", "mfg.order.wip_unresolved",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill",
     "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",
@@ -913,15 +918,23 @@ def _fulfil_verb(doc_type: str, reversed_: bool) -> str:
 
 
 def _lifecycle_rows_spec(e: dict, currency: str | None = None,
-                         category_names: dict | None = None) -> list[tuple[FT, str, str]] | None:
+                         category_names: dict | None = None,
+                         deleted: dict[str, dict] | None = None) -> list[tuple[FT, str, str]] | None:
     """For split/transform/merge events and doc-tied item events, return
     [(event_content, detail, anchor_suffix), ...] with linked SKUs/doc-numbers in the
     requested style. Returns None for non-lifecycle events (or legacy rows lacking the
-    enriched payload) so the caller falls back to generic rendering."""
+    enriched payload) so the caller falls back to generic rendering. A parent in
+    *deleted* is named "<SKU> [Deleted]"."""
     etype = str(e.get("event_type") or "")
     data = e.get("data") or {}
     if not isinstance(data, dict):
         return None
+
+    def _parent_link() -> FT:
+        pid, psku = data.get("parent_id"), str(data.get("parent_sku") or "")
+        if pid in (deleted or {}):
+            psku = deleted_label(deleted[pid].get("sku") or psku)
+        return _item_link(pid, psku)
 
     # Doc-tied item events: show a linkable doc number (sold/consigned/fulfilled/reversed).
     if etype in ("item.fulfilled", "item.fulfillment_reversed"):
@@ -959,7 +972,7 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None,
         return specs
 
     if etype == "item.split_from":
-        content = Span(f"{t('event.item.split_from')} ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
+        content = Span(f"{t('event.item.split_from')} ", _parent_link())
         return [(content, _origin_detail(data), "")]
 
     if etype == "item.transform":
@@ -979,7 +992,7 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None,
         return [(content, detail, "")]
 
     if etype == "item.transformed_from":
-        content = Span(f"{t('event.item.transformed_from')} ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
+        content = Span(f"{t('event.item.transformed_from')} ", _parent_link())
         return [(content, _origin_detail(data, with_category=True, category_names=category_names), "")]
 
     if etype == "item.merged":
@@ -1014,7 +1027,8 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                    subject_entity_id: str | None = None,
                    currency: str | None = None,
                    category_names: dict | None = None,
-                   resizable: bool = False) -> FT:
+                   resizable: bool = False,
+                   deleted: dict[str, dict] | None = None) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
 
     Columns: Event (linked to entity) | When (timestamp) | User | Details
@@ -1023,6 +1037,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
     origin row is shown; when None (dashboard), origin rows de-dup against the mother summary.
     currency: ISO code used to format money amounts in the Details column.
     category_names: ``category_labels`` of the company's category names (see detail_from_entry).
+    deleted: deleted items by id; a split or transform parent among them is marked "[Deleted]".
 
     title/empty_msg default to None so their text resolves in the request language
     at render time; a caller may still pass an explicit string to override.
@@ -1077,7 +1092,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
                 return []
 
         # Rich lifecycle rendering (split/transform/merge): linked SKUs + qty/pcs/wt deltas.
-        spec = _lifecycle_rows_spec(e, currency, category_names)
+        spec = _lifecycle_rows_spec(e, currency, category_names, deleted)
         if spec is not None:
             return [_assemble(e, content, detail, suffix) for content, detail, suffix in spec]
 

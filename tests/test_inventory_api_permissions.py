@@ -57,11 +57,11 @@ async def test_permitted_user_receives_items_and_valuation(client, session):
     assert valuation.status_code == 200, valuation.text
 
 
-_COST_KEYS = ("cost_base", "cost_landed", "landed_contributions")
+_COST_KEYS = ("cost_base", "cost_landed", "landed_costs")
 
 
 def _value(key: str):
-    return {"Freight::shipping": 1.0} if key == "landed_contributions" else 1.0
+    return {"bill:x::shipping": 1.0} if key == "landed_costs" else 1.0
 
 
 async def _available_item(client, ctx) -> str:
@@ -74,21 +74,25 @@ async def _available_item(client, ctx) -> str:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("key", _COST_KEYS)
-async def test_a_cost_the_goods_cost_derives_from_takes_the_price_permission_on_edit(client, session, key):
+async def test_a_cost_the_goods_cost_derives_from_is_refused_on_edit(client, session, key):
+    """A cost the goods cost is derived from is the app's to write: an edit naming one is
+    refused for a user without the price permission, and the goods cost is unchanged."""
     ctx = await perm_setup(client, session)
     eid = await _available_item(client, ctx)
     r = await client.patch(f"/items/{eid}", headers=ctx["operator_h"],
                            json={"fields_changed": {key: {"old": None, "new": _value(key)}}})
-    assert r.status_code == 403, r.text
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "item.app_owned_fields", r.text
     item = (await client.get(f"/items/{eid}", headers=ctx["admin_h"])).json()
     assert item["cost_total"] == 500.0
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("key", _COST_KEYS)
-async def test_a_cost_the_goods_cost_derives_from_takes_the_price_permission_on_create(client, session, key):
+async def test_a_cost_the_goods_cost_derives_from_is_refused_on_create(client, session, key):
+    """A create naming a cost the goods cost is derived from is refused for a user without
+    the price permission."""
     ctx = await perm_setup(client, session)
     r = await client.post("/items", headers=ctx["operator_h"], json={
         "sku": "COST-GATE-NEW", "name": "Cost gate", "quantity": 5, "location_id": ctx["location_id"],
         "sell_by": "piece", "status": "available", key: _value(key)})
-    assert r.status_code == 403, r.text
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "item.app_owned_fields", r.text

@@ -31,6 +31,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from celerp.db import REQUEST_CONNECT_ARGS
 from test_helpers import DATABASE_URL
 from ui.i18n import t
 
@@ -51,12 +52,7 @@ async def real_engine(_db_engine):
     engine = create_async_engine(
         DATABASE_URL,
         poolclass=NullPool,
-        connect_args={
-            "server_settings": {
-                "lock_timeout": "3000",
-                "statement_timeout": "30000",
-            }
-        },
+        connect_args=REQUEST_CONNECT_ARGS,
     )
 
     async def _truncate():
@@ -370,7 +366,7 @@ async def test_token_issuance_failure_rolls_back_bootstrap_rows(client, session)
     rows: the register is all-or-nothing through the single commit point."""
     from unittest.mock import AsyncMock, patch
 
-    with patch("celerp.routers.auth.issue_token_pair", new=AsyncMock(side_effect=RuntimeError("issuer down"))):
+    with patch("celerp.credentials.issue_token_pair", new=AsyncMock(side_effect=RuntimeError("issuer down"))):
         r = await client.post(
             "/auth/register",
             json={"company_name": "TokFail", "email": "tokfail@example.com", "name": "Owner", "password": "validpass1"},

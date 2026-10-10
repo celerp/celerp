@@ -12,7 +12,7 @@ Three tabs:
     listings from the catalog. They sit behind a one-step trust acknowledgment
     and carry no badge; the table uses the same schema as Installed Modules.
   - Marketplace: the official and verified catalog (community-modules
-    index.json, public data), served via the relay with repo-direct and
+    index-v2.json, public data), served via the relay with repo-direct and
     local-cache fallbacks; see ui.marketplace_catalog for why the relay
     endpoint is the one baked-in URL. Carries the List Your Modules entry point.
 
@@ -30,6 +30,8 @@ import logging
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+from celerp.modules.license import PAID_MODULE_REFUSAL, marketplace_flags
 
 import ui.api_client as api
 import ui.marketplace_catalog as catalog
@@ -53,7 +55,7 @@ _TEMPLATE_REPO = "https://github.com/celerp/celerp-module-template"
 _DOCS_URL = "https://celerp.com/docs/modules.html"
 # Where a seller lists a PAID module: the author dashboard (GitHub sign-in,
 # Stripe Connect, publish with a price). Distinct from the free community
-# registry, which only takes an index.json PR and carries no price.
+# registry, which only takes an index-v2.json PR and carries no price.
 _AUTHORS_URL = "https://www.celerp.com/authors"
 
 
@@ -216,10 +218,12 @@ def _local_panel(modules: list[dict], lang: str = "en",
         if not enabled:
             status_filter = t("modules.badge_disabled", lang)
             status_parts.append(Span(status_filter, cls="badge badge--inactive"))
+            if running and not m.get("is_default"):
+                status_parts.append(_restart_badge(lang, owner))
         elif running:
             status_filter = t("modules.badge_running", lang)
             status_parts.append(Span(status_filter, cls="badge badge--active"))
-        elif load_error and "license" in load_error.lower():
+        elif load_error == PAID_MODULE_REFUSAL:
             # A paid module present but not licensed on THIS computer (e.g. moved
             # from another machine): reframe the failure as the Connect upsell
             # rather than a dead red error - the moment-of-need conversion point.
@@ -278,9 +282,8 @@ def _local_panel(modules: list[dict], lang: str = "en",
             )
 
         # Provenance shield to the LEFT of the name (tags-left): gold for
-        # bundled defaults, one for Marketplace installs, nothing for community,
-        # a plain sideload or an unknown origin.
-        source_icon = _source_icon(m.get("source"), bool(m.get("is_default")), lang)
+        # bundled defaults, nothing for any other origin.
+        source_icon = _source_icon(bool(m.get("is_default")), lang)
         # The leftmost Source column states the origin in words - always filled,
         # even for a plain sideload - alongside the shield beside the name.
         source_label = _source_label(m.get("source"), bool(m.get("is_default")), lang)
@@ -547,23 +550,17 @@ def _trust_icon(tier: str, lang: str):
                 title=tip, aria_label=tip, role="img")
 
 
-def _source_icon(source: str | None, is_default: bool, lang: str):
-    """The provenance shield shown to the left of a module name, or None.
+def _source_icon(is_default: bool, lang: str):
+    """The gold shield shown to the left of a default module's name, or None.
 
-    Defaults (gold) and Marketplace installs carry one. It states where the
-    module came from and changes nothing about what the module may do.
-    Community, sideloaded, and unknown origins show no shield. The Source column
-    still states the origin in words.
+    Only the defaults Celerp ships carry one. Every other origin, Marketplace
+    included, shows no shield. The Source column states the origin in words.
     """
-    if is_default:
-        tier, key = "default", "modules.source_default"
-    elif source == "marketplace":
-        tier, key = "trusted", "modules.source_marketplace"
-    else:
+    if not is_default:
         return None
-    tip = t(key, lang)
+    tip = t("modules.source_default", lang)
     return Span(NotStr(_SHIELD_SVG),
-                cls=f"module-source-icon trust-icon trust-icon--{tier}",
+                cls="module-source-icon trust-icon trust-icon--default",
                 title=tip, aria_label=tip, role="img")
 
 
@@ -583,9 +580,9 @@ def _source_label(source: str | None, is_default: bool, lang: str) -> str:
 
 
 def _catalog_price(m: dict, lang: str) -> str:
-    if m.get("price_monthly"):
+    if m.get("price_monthly") is not None:
         return f"${m['price_monthly']:g}/mo"
-    if m.get("price_once"):
+    if m.get("price_once") is not None:
         return f"${m['price_once']:g}"
     return t("marketplace.free", lang)
 
@@ -758,7 +755,7 @@ def _checkout_consent(m: dict, lang: str) -> str:
 
 
 def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str],
-                     owner: bool, *, downloaded_token: str | None = None) -> FT:
+                     owner: bool, *, download_ref: str | None = None) -> FT:
     """One marketplace listing. The action cell follows ownership, matching the
     Community tab's Download then Install flow with a Buy step in front of paid
     modules: installed (nothing to do), paid-and-unowned (Buy), then - once free
@@ -767,7 +764,7 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
     the catalog price. Buying and installing are for the installation owner, so
     anyone else gets no action buttons."""
     row_id = f"marketplace-row-{m['id']}"
-    is_paid = bool(m.get("price_monthly") or m.get("price_once"))
+    _, is_paid = marketplace_flags(m)
     owned = m["id"] in licensed
     if m["id"] in installed:
         status_td = Td(Span(t("settings.installed", lang), cls="badge badge--active"),
@@ -783,9 +780,9 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
         # data-sharing, and licensing terms) sit on the Checkout page, where the
         # buyer consents and pays - see _checkout_consent - not in this table.
         buys = []
-        if m.get("price_monthly"):
+        if m.get("price_monthly") is not None:
             buys.append(_buy_btn(m["id"], "monthly", f"${m['price_monthly']:g}/mo", lang))
-        if m.get("price_once"):
+        if m.get("price_once") is not None:
             buys.append(_buy_btn(m["id"], "once", f"${m['price_once']:g} " + t("marketplace.once", lang), lang))
         status_td = Td("--", data_filter_value="--")
         action_td = Td(Div(*buys, style="display:flex;gap:8px;flex-wrap:wrap;"))
@@ -798,10 +795,10 @@ def _marketplace_row(m: dict, lang: str, installed: set[str], licensed: set[str]
                            data_filter_value=t("marketplace.owned", lang))
         else:
             status_td = Td("--", data_filter_value="--")
-        if downloaded_token:
+        if download_ref:
             action_td = Td(Button(t("btn.install", lang),
                 hx_post="/modules/marketplace-install",
-                hx_vals=json.dumps({"slug": m["id"], "token": downloaded_token}),
+                hx_vals=json.dumps({"slug": m["id"], "ref": download_ref}),
                 hx_target=f"#{row_id}", hx_swap="outerHTML", hx_disabled_elt="this",
                 cls="btn btn--sm btn--primary"))
         else:
@@ -1068,8 +1065,8 @@ def _community_table(community: list[dict], installed: set[str], lang: str,
 
 async def _community_and_installed(token: str) -> tuple[list[dict], set[str], bool]:
     """Fetch the catalog's community listings, the set of installed module
-    names, and whether this login owns the installation. Fetching listing metadata carries no trust risk; only installing a
-    community module runs its code, and that stays behind the acknowledgment."""
+    names, and whether this login owns the installation. Installing a community
+    module stays behind the acknowledgment."""
     modules_list, _ = await catalog.fetch_catalog()
     community = [m for m in modules_list if m["tier"] == "community"]
     installed: set[str] = set()
@@ -1550,12 +1547,12 @@ def setup_routes(app):
         slug = str(form.get("slug", ""))
         m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            download_token = (await api.marketplace_download(session_token, slug)).get("token")
+            download_ref = (await api.marketplace_download(session_token, slug)).get("ref")
         except APIError as e:
             return _toast(
                 _marketplace_row(m, lang, installed, licensed, owner), e.detail or str(e))
         return _marketplace_row(m, lang, installed, licensed, owner,
-                                downloaded_token=download_token)
+                                download_ref=download_ref)
 
     @app.post("/modules/marketplace-install")
     async def modules_marketplace_install(request: Request):
@@ -1571,16 +1568,16 @@ def setup_routes(app):
         lang = get_lang(request)
         form = await request.form()
         slug = str(form.get("slug", ""))
-        download_token = str(form.get("token", ""))
+        download_ref = str(form.get("ref", ""))
         m, installed, licensed, owner = await _marketplace_entry(session_token, slug)
         try:
-            await api.marketplace_install(session_token, download_token)
+            await api.marketplace_install(session_token, download_ref)
         except APIError as e:
             # A download that is gone (expired or already used) offers Download
             # again; any other failure keeps Install for a retry.
-            kept = None if e.status == 410 else download_token
+            kept = None if e.status == 410 else download_ref
             return _toast(
-                _marketplace_row(m, lang, installed, licensed, owner, downloaded_token=kept),
+                _marketplace_row(m, lang, installed, licensed, owner, download_ref=kept),
                 e.detail or str(e))
         # Installed: land on the Installed tab where the new module's row sits
         # with its Enable button - the next step in the flow - rather than

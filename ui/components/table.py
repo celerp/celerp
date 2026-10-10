@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from fasthtml.common import *
-from ui.i18n import t, field_label, unit_label
+from ui.i18n import t, field_label
 from celerp.services.field_schema import MIXED_VALUE
 # Canonical definitions live with the shared document renderer; re-exported
 # here for the UI's many call sites. EMPTY is the canonical empty-value
@@ -44,6 +44,18 @@ def display_enum(raw_value, domain: str | None = None) -> str:
     key = f"enum.{domain}.{raw}"
     translated = t(key)
     return translated if translated != key else fallback
+
+def display_unit(name, fallback: str | None = None) -> str:
+    """Display name for a unit. An app default unit (``enum.unit.<name>``) reads in the user's
+    language; a unit the company named shows as named, or as ``fallback`` when one is given.
+    DISPLAY ONLY: the unit name stays the stored value."""
+    raw = str(name or "")
+    key = f"enum.unit.{raw}"
+    translated = t(key) if raw else key
+    if translated != key:
+        return translated
+    return fallback if fallback is not None else raw
+
 
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
@@ -189,6 +201,10 @@ BULK_TOOLBAR_JS = """
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    // A table that carries its render's operation key sends it, so an action sent again
+    // after a lost answer is recorded once (see ui/components/operation_key.py).
+    var key=t.getAttribute('data-operation-key');
+    if(key){var k=document.createElement('input');k.type='hidden';k.name='idempotency_key';k.value=key;form.appendChild(k);}
     bar.querySelectorAll('.bulk-field[name]').forEach(function(f){
       var inp=document.createElement('input');inp.type='hidden';
       inp.name=f.getAttribute('name');inp.value=f.value;form.appendChild(inp);});
@@ -244,7 +260,7 @@ def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None)
     action list appears only when there is a selection for it to act on.
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
-    url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
+    url?ids=<csv> in a new tab. A table carrying `operation_key_attrs()` has its key posted too. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
     header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there).
 
     `confirm` text may contain `{n}`, replaced with the number selected at click time.
@@ -817,7 +833,7 @@ def paired_display_cell(
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
     Used for quantity+sell_by and weight+weight_unit so they share a column; the
-    secondary value is the unit, shown through ``unit_label``.
+    secondary value is the unit, shown through ``display_unit``.
     Each span is independently double-click-to-edit via the paired-edit endpoint,
     which returns an editable_cell whose restore_url points back to paired-display.
 
@@ -835,7 +851,7 @@ def paired_display_cell(
         pri_disp = format_fn(primary_value) if format_fn is not None else str(primary_value)
     else:
         pri_disp = EMPTY
-    sec_disp = unit_label(str(secondary_value)) if secondary_value not in (None, "") else EMPTY
+    sec_disp = display_unit(secondary_value) if secondary_value not in (None, "") else EMPTY
     both_empty = pri_disp == EMPTY and sec_disp == EMPTY
     pri_span = (
         Span(
@@ -885,9 +901,9 @@ def purchase_display_cell(
     """
     pu_edit = f"/api/items/{entity_id}/field/purchase_unit/paired-edit"
     cf_edit = f"/api/items/{entity_id}/field/purchase_conversion_factor/paired-edit"
-    pu_disp = unit_label(str(pu_val)) if pu_val not in (None, "") else EMPTY
+    pu_disp = display_unit(pu_val) if pu_val not in (None, "") else EMPTY
     cf_disp = str(cf_val) if cf_val not in (None, "") else EMPTY
-    sb_disp = unit_label(str(sb_val)) if sb_val not in (None, "") else EMPTY
+    sb_disp = display_unit(sb_val) if sb_val not in (None, "") else EMPTY
     return Td(
         Span(
             pu_disp,
@@ -973,17 +989,15 @@ def editable_cell(
     # REST surface moves both halves together instead of leaving the restore on core's.
     restore_url = restore_url or f"{patch_url}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
-    # Apply label_map to options for selects
+    # Apply label_map to options for selects; a (value, label) option already has its label.
     if options is not None and label_map:
-        options = [(o, label_map.get(o, o)) for o in options]
+        options = [(o, label_map.get(o, o)) if isinstance(o, str) else o for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # ESC: capture scroll position synchronously at keydown (before browser may reset it),
-    # then force-set _scrollSnap so the global htmx:afterSettle handler restores it.
+    # ESC: the restore request targets the cell, so the global htmx handler snapshots
+    # the table's scroll position before it and restores it when it settles.
     escape_js = (
         f"if(event.key==='Escape'){{"
-        f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"this._escaping=true;"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
@@ -993,8 +1007,6 @@ def editable_cell(
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
-        f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
     )
@@ -1275,6 +1287,122 @@ def display_cell(
     )
 
 
+def table_columns(schema: list[dict], show_cols: list[str] | None = None,
+                  hidden_fields: set | None = None) -> list[dict]:
+    """The columns ``data_table`` renders, in order.
+
+    Every schema column is rendered server-side; show_cols only controls the INITIAL JS
+    visibility state, and puts those columns first (in declared order), extras following.
+    This ensures the column manager can show any column without a round-trip, and page 2 /
+    HTMX navigation retains all columns. Fields rendered inside another cell (paired
+    secondaries etc.) are dropped."""
+    visible = list(schema)
+    if show_cols:
+        ordered = [f for key in show_cols for f in schema if f["key"] == key]
+        rest = [f for f in schema if f["key"] not in show_cols]
+        visible = ordered + rest
+    if hidden_fields:
+        visible = [f for f in visible if f["key"] not in hidden_fields]
+    return visible
+
+
+def data_row(
+    row: dict,
+    columns: list[dict],
+    *,
+    entity_type: str = "item",
+    currency: str | None = None,
+    show_row_menu: bool = True,
+    show_checkboxes: bool = True,
+    link_fn: dict[str, str] | None = None,
+    edit_url_tpl: str | None = None,
+    delete_url_tpl: str | None = None,
+    cell_renderers: dict | None = None,
+) -> FT:
+    """One body row of ``data_table``: checkbox, a cell per column of ``table_columns``,
+    and the row menu. Every path that renders or re-renders a row calls this, so a row
+    never differs from the one the table drew. Arguments as for ``data_table``."""
+    entity_id = row.get("id") or row.get("entity_id", "")
+    safe_id = entity_id.replace(":", "-")
+    _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
+    # Single-quoted JS string literal so the inline onclick stays all single
+    # quotes: a double quote here (e.g. from json.dumps) forces the whole
+    # attribute to escape its single quotes, mangling the htmx.ajax URL.
+    _confirm_delete_row = (
+        "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
+    )
+    action_cell = [] if not show_row_menu else [
+        Td(
+            Div(
+                Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
+                Div(
+                    A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
+                    # Only a draft, or one already Deleted, can be deleted (the bulk bar's
+                    # rule); stock is written off.
+                    *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
+                              onclick=f"if(!confirm({_confirm_delete_row}))return;"
+                                      f"htmx.ajax('DELETE','{_delete_url}',"
+                                      f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
+                      if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
+                    cls="row-menu-dropdown", id=f"menu-{safe_id}",
+                ),
+                cls="row-menu",
+            ),
+            cls="col-actions",
+        )
+    ]
+    status_val = str(row.get("status", "") or "").lower()
+    # autocomplete off: the stored selection decides the tick, never the browser
+    # restoring a form on Back or Forward.
+    checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
+                 autocomplete="off",
+                 data_entity_id=entity_id,
+                 data_sku=row.get("sku", ""),
+                 data_name=row.get("name", ""),
+                 data_qty=str(row.get("quantity", 0)),
+                 data_weight=str(row.get("weight", "") or ""),
+                 data_weight_unit=row.get("weight_unit", ""),
+                 data_sell_by=row.get("sell_by", ""),
+                 data_status=status_val,
+           ), cls="col-checkbox")] if show_checkboxes else []
+    row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
+    if str(row.get("inventory_type") or "") == "component":
+        row_cls += " data-row--component"  # visual cue for component (raw-material) items
+    # Search ranking cue: the row's identifier equals the search term exactly (q_exact,
+    # from the inventory search), named in the row title.
+    row_title: dict = {}
+    if row.get("q_exact"):
+        row_cls += " data-row--exact"
+        row_title["title"] = t(f"inventory.search_exact_{row['q_exact']}")
+    # Per-row editability escape: a row may carry _row_editable_keys naming fields
+    # that render click-to-edit even when the schema marked them read-only
+    # (used for draft items, whose amount fields stay authorable until commit).
+    row_editable = set(row.get("_row_editable_keys") or ())
+    return Tr(
+        *checkbox_td,
+        *[
+            cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
+            else display_cell(
+                entity_id=entity_id,
+                field=f["key"],
+                value=row.get(f["key"], ""),
+                cell_type=f.get("type", "text"),
+                options=f.get("options"),
+                editable=f.get("editable", True) or f["key"] in row_editable,
+                currency=currency,
+                link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
+                edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
+                domain=(f"{entity_type}_status" if f.get("type", "text") == "status" else None),
+            )
+            for f in columns
+        ],
+        *action_cell,
+        id=f"row-{safe_id}",
+        cls=row_cls,
+        **row_title,
+    )
+
+
 def data_table(
     schema: list[dict],
     rows: list[dict],
@@ -1316,19 +1444,7 @@ def data_table(
     delete_url_tpl: URL template for row-menu delete, with ``{entity_id}`` placeholder
                     (e.g. ``"/api/items/{entity_id}"``). Defaults to ``/api/items/{entity_id}``.
     """
-    # Render ALL schema columns server-side.
-    # show_cols only controls the INITIAL JS visibility state (not what HTML is rendered).
-    # This ensures the column manager can show any column without a round-trip,
-    # and page 2 / HTMX navigation retains all columns.
-    visible = list(schema)
-    # If show_cols provided, put those first (in declared order), extras follow
-    if show_cols:
-        ordered = [f for key in show_cols for f in schema if f["key"] == key]
-        rest = [f for f in schema if f["key"] not in show_cols]
-        visible = ordered + rest
-    # Drop fields that are rendered inside another cell (paired secondaries etc.)
-    if hidden_fields:
-        visible = [f for f in visible if f["key"] not in hidden_fields]
+    visible = table_columns(schema, show_cols, hidden_fields)
     if not rows:
         if q and q.strip():
             return Div(
@@ -1381,76 +1497,10 @@ def data_table(
     ))
 
     def _row(row: dict) -> FT:
-        import json as _json
-        entity_id = row.get("id") or row.get("entity_id", "")
-        safe_id = entity_id.replace(":", "-")
-        _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
-        # Single-quoted JS string literal so the inline onclick stays all single
-        # quotes: a double quote here (e.g. from json.dumps) forces the whole
-        # attribute to escape its single quotes, mangling the htmx.ajax URL.
-        _confirm_delete_row = (
-            "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
-        )
-        action_cell = [] if not show_row_menu else [
-            Td(
-                Div(
-                    Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
-                    Div(
-                        A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
-                        Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                               onclick=f"if(!confirm({_confirm_delete_row}))return;"
-                                       f"htmx.ajax('DELETE','{_delete_url}',"
-                                       f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
-                        cls="row-menu-dropdown", id=f"menu-{safe_id}",
-                    ),
-                    cls="row-menu",
-                ),
-                cls="col-actions",
-            )
-        ]
-        status_val = str(row.get("status", "") or "").lower()
-        # autocomplete off: the stored selection decides the tick, never the browser
-        # restoring a form on Back or Forward.
-        checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
-                     autocomplete="off",
-                     data_entity_id=entity_id,
-                     data_sku=row.get("sku", ""),
-                     data_name=row.get("name", ""),
-                     data_qty=str(row.get("quantity", 0)),
-                     data_weight=str(row.get("weight", "") or ""),
-                     data_weight_unit=row.get("weight_unit", ""),
-                     data_sell_by=row.get("sell_by", ""),
-                     data_status=status_val,
-               ), cls="col-checkbox")] if show_checkboxes else []
-        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
-        if str(row.get("inventory_type") or "") == "component":
-            row_cls += " data-row--component"  # visual cue for component (raw-material) items
-        # Per-row editability escape: a row may carry _row_editable_keys naming fields
-        # that render click-to-edit even when the schema marked them read-only
-        # (used for draft items, whose amount fields stay authorable until commit).
-        row_editable = set(row.get("_row_editable_keys") or ())
-        return Tr(
-            *checkbox_td,
-            *[
-                cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
-                else display_cell(
-                    entity_id=entity_id,
-                    field=f["key"],
-                    value=row.get(f["key"], ""),
-                    cell_type=f.get("type", "text"),
-                    options=f.get("options"),
-                    editable=f.get("editable", True) or f["key"] in row_editable,
-                    currency=currency,
-                    link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
-                    edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
-                    domain=(f"{entity_type}_status" if f.get("type", "text") == "status" else None),
-                )
-                for f in visible
-            ],
-            *action_cell,
-            id=f"row-{safe_id}",
-            cls=row_cls,
-        )
+        return data_row(row, visible, entity_type=entity_type, currency=currency,
+                        show_row_menu=show_row_menu, show_checkboxes=show_checkboxes,
+                        link_fn=link_fn, edit_url_tpl=edit_url_tpl, delete_url_tpl=delete_url_tpl,
+                        cell_renderers=cell_renderers)
 
     # JS: smart column defaults + localStorage persistence + drag-to-resize
     import json as _json
@@ -1559,7 +1609,9 @@ def data_table(
   if (!window[_VIS_SETTLE_KEY]) {{
     window[_VIS_SETTLE_KEY] = true;
     document.body.addEventListener('htmx:afterSettle', function(e) {{
-      if (e.detail && e.detail.target && e.detail.target.id === 'inventory-content') {{
+      var tid = e.detail && e.detail.target ? e.detail.target.id || '' : '';
+      // The whole content, or one row re-rendered in place (data_row draws every column).
+      if (tid === 'inventory-content' || tid.indexOf('row-') === 0) {{
         // Re-query the live table after each settle - the old `table` ref may be detached
         var liveTable = document.getElementById('data-table');
         if (liveTable) applyVis(liveTable);
@@ -1812,8 +1864,13 @@ function bulkActionChanged(action){
     _bulkImmediate('/api/items/bulk/revert-to-draft',null,null);return;
   }
   if(action==='delete'){
-    if(!confirm('Delete selected items? This cannot be undone.')) return;
+    // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
+    var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
+    if(!confirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.')) return;
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
+  }
+  if(action==='restore_deleted'){
+    _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
   }
   if(action==='duplicate'){
     if(!confirm('Duplicate selected items? A copy of each will be created.')) return;
@@ -1968,6 +2025,30 @@ function _populateMergeTargets(){
     if(skuInput){skuInput.style.display=isNewSku?'':'none';skuInput.value='';}
     if(skuArrow){skuArrow.style.display=isNewSku?'':'none';}
     if(isNewSku&&skuInput){skuInput.focus();}
+    // Items held in different inventory accounts: say how much value the merge moves
+    // between them before the user confirms.
+    var survivor=isNewSku?CelerpSelection.ids()[0]:sel.value;
+    var note=document.createElement('span');
+    note.id='merge-reclass-note';
+    note.style.fontSize='0.85rem';
+    note.style.display='none';
+    // The confirmation carries the fingerprint of a preview of exactly what it asks
+    // for, so the merge refuses if the items change after the user saw this.
+    function preview(resultingSku){
+      var pf=new FormData();
+      CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
+      pf.append('target_sku_from',survivor);
+      if(resultingSku) pf.append('resulting_sku',resultingSku);
+      return fetch('/api/items/merge/preview',{method:'POST',body:pf})
+        .then(function(r){return r.json();})
+        .then(function(d){return {message:(d&&(d.message||d.error))||'',fingerprint:(d&&d.plan_fingerprint)||''};})
+        .catch(function(){return {message:'',fingerprint:''};});
+    }
+    function show(p){note.textContent=p.message;note.style.display=p.message?'':'none';}
+    var planned=preview('');
+    planned.then(show);
+    // One key per confirmation, so a repeated click merges once.
+    var mergeKey='merge-'+(window.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random());
     var btnRow=document.createElement('div');
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
@@ -1981,23 +2062,37 @@ function _populateMergeTargets(){
         if(skuEl) skuEl.focus();
         return;
       }
-      var form=document.createElement('form');
-      CelerpSelection.ids().forEach(function(id){
-        var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
-        form.appendChild(inp);
-      });
-      var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';
-      t.value=isNewSku?CelerpSelection.ids()[0]:sel.value;
-      form.appendChild(t);
-      if(isNewSku){
-        var sk=document.createElement('input');sk.type='hidden';sk.name='resulting_sku';sk.value=skuEl.value.trim();
-        form.appendChild(sk);
+      var resultingSku=isNewSku?skuEl.value.trim():'';
+      // The typed SKU is part of the merge, so it is previewed with it. If what the
+      // merge moves changed since the user read it, show the new note and wait for
+      // another click.
+      var reviewed=planned;
+      if(resultingSku){
+        reviewed=preview(resultingSku).then(function(p){
+          if(p.message!==note.textContent){show(p);return null;}
+          return p;
+        });
       }
-      document.body.appendChild(form);
-      // Keep the form attached until the request finishes - removing it early detaches the htmx
-      // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
-      htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
-        .then(function(){form.remove();},function(){form.remove();});
+      reviewed.then(function(p){
+        if(!p) return;
+        var fingerprint=p.fingerprint;
+        var form=document.createElement('form');
+        CelerpSelection.ids().forEach(function(id){
+          var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+          form.appendChild(inp);
+        });
+        var fields={target_sku_from:survivor,idempotency_key:mergeKey,resulting_sku:resultingSku,plan_fingerprint:fingerprint};
+        Object.keys(fields).forEach(function(name){
+          if(!fields[name]) return;
+          var inp=document.createElement('input');inp.type='hidden';inp.name=name;inp.value=fields[name];
+          form.appendChild(inp);
+        });
+        document.body.appendChild(form);
+        // Keep the form attached until the request finishes - removing it early detaches the htmx
+        // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
+        htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+          .then(function(){form.remove();},function(){form.remove();});
+      });
     });
     var cancel=document.createElement('button');
     cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent='Cancel';
@@ -2009,6 +2104,7 @@ function _populateMergeTargets(){
       _clearBulkResult();
     });
     confirmDiv.appendChild(msg);
+    confirmDiv.appendChild(note);
     btnRow.appendChild(btn);
     btnRow.appendChild(cancel);
     confirmDiv.appendChild(btnRow);
@@ -2046,14 +2142,18 @@ function sendToTypeChanged(docType, docLabel){
     if(toolbar){if(n>0){toolbar.classList.add('is-active')}else{toolbar.classList.remove('is-active')}}
     if(clearBtn){clearBtn.style.display=n>0?'':'none'}
     var all=CelerpSelection.all();
-    var hasDraft=false,hasNonDraft=false;
+    // A deleted row is still a draft mistake: Delete erases it once nothing names it.
+    var hasDraft=false,hasDeleted=false,hasNonDraft=false;
     Object.keys(all).forEach(function(id){
-      if((all[id].status||'')==='draft'){hasDraft=true}else{hasNonDraft=true}
+      var s=all[id].status||'';
+      if(s==='draft'){hasDraft=true}else if(s==='deleted'){hasDeleted=true}else{hasNonDraft=true}
     });
     var makeAvailOpt=document.querySelector('#bulk-action-select option[value="make_available"]');
     var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
     if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
     if(revertOpt) revertOpt.hidden=!hasNonDraft;
+    var deleteOpt=document.querySelector('#bulk-action-select option[value="delete"]');
+    if(deleteOpt) deleteOpt.hidden=!(deleteOpt.hasAttribute('data-samples')||((hasDraft||hasDeleted)&&!hasNonDraft));
   }
   var table=document.getElementById('data-table');
   if(!table) return;
@@ -2096,22 +2196,24 @@ function sendToTypeChanged(docType, docLabel){
   // Guard: register body-level htmx handlers only once per page load
   if(!window.__celerpHtmxHandlers){
     window.__celerpHtmxHandlers=true;
-  // Preserve horizontal scroll position across any HTMX request that may replace
-  // the table or its scroll container (cell edits, sort, search, pagination, etc.).
-  // Save on htmx:beforeRequest AND eagerly exposed as window.__celerpScrollSnap so
-  // inline ESC handlers can set it synchronously before the browser resets scroll.
-  // Restore on htmx:afterSettle using requestAnimationFrame to run after browser reflow.
+  // Preserve horizontal scroll position across an HTMX request that may replace
+  // the table or its scroll container (cell edits, sort, search, pagination, etc.):
+  // its target holds the scroll container or sits inside it. Other requests (page
+  // chrome refreshes) leave the position alone, even when they settle after the
+  // user scrolled. Saved on htmx:beforeRequest for that request and restored when
+  // that same request settles, using requestAnimationFrame to run after browser reflow.
   window.__celerpScrollSnap=null;
   document.body.addEventListener('htmx:beforeRequest',function(e){
-    var sw=document.querySelector('.table-scroll-wrap');
-    if(sw){window.__celerpScrollSnap=sw.scrollLeft;}
+    var sw=document.querySelector('.table-scroll-wrap'),t=e.detail.target;
+    if(sw&&t&&(t.contains(sw)||sw.contains(t))){window.__celerpScrollSnap={xhr:e.detail.xhr,left:sw.scrollLeft};}
   });
   document.body.addEventListener('htmx:afterSettle',function(e){
-    if(window.__celerpScrollSnap!=null){
-      var s=window.__celerpScrollSnap;window.__celerpScrollSnap=null;
+    var snap=window.__celerpScrollSnap;
+    if(snap&&snap.xhr===e.detail.xhr){
+      window.__celerpScrollSnap=null;
       requestAnimationFrame(function(){
         var sw=document.querySelector('.table-scroll-wrap');
-        if(sw)sw.scrollLeft=s;
+        if(sw)sw.scrollLeft=snap.left;
       });
     }
   });

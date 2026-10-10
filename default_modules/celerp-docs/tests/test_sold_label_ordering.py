@@ -44,6 +44,19 @@ async def _memo(client, h, item_ids: list[str]) -> str:
     return r.json()["id"]
 
 
+async def _sell_from_memo(client, h, memo: str, item_ids: list[str]) -> str:
+    """The customer keeps the consigned items: the memo converts to an invoice, and finalizing
+    that invoice sells what is out on the memo."""
+    r = await client.post(f"/docs/{memo}/convert", headers=h)
+    assert r.status_code == 200, r.text
+    invoice = r.json()["target_doc_id"]
+    r = await client.post(f"/docs/{invoice}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+    for item_id in item_ids:
+        assert (await client.get(f"/items/{item_id}", headers=h)).json()["status"] == "sold"
+    return invoice
+
+
 def _label_for(doc: dict, eid: str):
     for li in doc.get("line_items") or []:
         if (li.get("entity_id") or li.get("item_id")) == eid:
@@ -56,10 +69,10 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     """A sold event that PRECEDES this memo's fulfillment reads "On Memo"; a genuine
     sold event AFTER this memo's fulfillment reads "Sold".
 
-    `stale` is sold (an earlier cycle), returned to stock, then fulfilled on THIS memo:
-    its sold ledger id is lower than this memo's fulfilled id, so the line is still out
-    on this memo and must read "On Memo". `fresh` is fulfilled on this memo and then sold:
-    its sold id is higher and it must read "Sold".
+    `stale` is sold (an earlier invoice), returned to stock, then fulfilled on
+    THIS memo: its sold ledger id is lower than this memo's fulfilled id, so the line is
+    still out on this memo and must read "On Memo". Converting this memo then sells
+    `fresh` after its fulfillment, so it must read "Sold".
 
     At merge-base the sold query has no ledger-id ordering vs the applicable fulfilled
     event, so ANY sold event on the item marks the line "Sold" -> `stale` wrongly reads
@@ -69,12 +82,22 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     stale = await _item(client, h, "SL-STALE")
     fresh = await _item(client, h, "SL-FRESH")
 
-    # `stale`: sold in a prior cycle, then returned to stock (available again) BEFORE this
-    # memo exists. The sold ledger event now predates this memo's fulfilled event.
-    assert (await client.post("/items/bulk/status", headers=h,
-                              json={"entity_ids": [stale], "status": "sold"})).status_code == 200
-    assert (await client.post("/items/bulk/status", headers=h,
-                              json={"entity_ids": [stale], "status": "available"})).status_code == 200
+    # `stale`: sold on an earlier invoice, then returned to stock (available again)
+    # BEFORE this memo exists. The sold ledger event now predates this memo's fulfilled event.
+    r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [
+        {"entity_id": stale, "sku": "S", "name": "S", "quantity": 1, "unit_price": 10, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    sale = r.json()["id"]
+    assert (await client.post(f"/docs/{sale}/finalize", headers=h)).status_code == 200
+    assert (await client.post(f"/docs/{sale}/fulfill-lines", headers=h,
+                              json={"line_entity_ids": [stale]})).status_code == 200
+    assert (await client.get(f"/items/{stale}", headers=h)).json()["status"] == "sold"
+    # The sale is taken back on the invoice that made it, not on the memo.
+    r = await client.post(f"/docs/{sale}/revert-lines", headers=h, json={"line_entity_ids": [stale]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{sale}/void", headers=h, json={"reason": "returned"})
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/items/{stale}", headers=h)).json()["status"] == "available"
 
     memo = await _memo(client, h, [stale, fresh])
     assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
@@ -83,13 +106,35 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h,
                               json={"line_entity_ids": [stale, fresh]})).status_code == 200
 
-    # A genuine post-consignment sale on `fresh` only (its sold id > its fulfilled id).
-    assert (await client.post("/items/bulk/status", headers=h,
-                              json={"entity_ids": [fresh], "status": "sold"})).status_code == 200
-
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, stale) == "On Memo", (
         f"a sale predating this memo's fulfillment must read On Memo; got "
         f"{_label_for(doc, stale)!r}")
+
+    # A genuine post-consignment sale (its sold id > its fulfilled id).
+    await _sell_from_memo(client, h, memo, [stale, fresh])
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, fresh) == "Sold", (
         f"a genuine post-fulfillment sale must read Sold; got {_label_for(doc, fresh)!r}")
+
+
+@pytest.mark.asyncio
+async def test_sale_taken_back_on_the_converted_invoice_reads_returned(client):
+    """A memo line sold through its converted invoice, then taken back on that invoice, is
+    back in stock: the memo row reads "Returned", not "Sold" beside an In Stock status."""
+    token = await _register(client)
+    h = _h(token)
+    kept = await _item(client, h, "SL-KEPT")
+    back = await _item(client, h, "SL-BACK")
+    memo = await _memo(client, h, [kept, back])
+    assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
+    assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h,
+                              json={"line_entity_ids": [kept, back]})).status_code == 200
+    invoice = await _sell_from_memo(client, h, memo, [kept, back])
+    r = await client.post(f"/docs/{invoice}/revert-lines", headers=h, json={"line_entity_ids": [back]})
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/items/{back}", headers=h)).json()["status"] == "available"
+
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
+    assert _label_for(doc, back) == "Returned"
+    assert _label_for(doc, kept) == "Sold"

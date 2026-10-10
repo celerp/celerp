@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from test_helpers import sell_item
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -139,9 +141,8 @@ async def test_export_items_csv_uses_list_pipeline(client):
     tok = await _reg(client)
     await _item(client, tok, name="Beta Gadget", sku="PIPE-B", category="Gadgets")
     await _item(client, tok, name="Alpha Gadget", sku="PIPE-A", category="Gadgets")
-    sold = await _item(client, tok, name="Gone Gadget", sku="PIPE-S", category="Gadgets")
-    r = await client.post(f"/items/{sold}/status", headers=_h(tok), json={"new_status": "sold"})
-    assert r.status_code == 200, r.text
+    sold = await _item(client, tok, name="Gone Gadget", sku="PIPE-S", category="Gadgets", quantity=1)
+    await sell_item(client, _h(tok), sold)
 
     def _skus(text: str) -> list[str]:
         reader = _csv_reader(text)
@@ -439,10 +440,9 @@ async def test_export_items_csv_accepts_category_attribute_in_all_view(client):
     """With no category filter the All view's column manager offers every category's
     attribute columns, so the export accepts them too and fills them from the item."""
     tok = await _reg(client)
-    r = await client.patch("/companies/me", headers=_h(tok), json={"settings": {"category_schemas": {
-        "Stones": [{"key": "grade", "label": "Grade", "type": "select", "options": ["A", "B"],
-                    "editable": True, "required": False}],
-    }}})
+    r = await client.patch("/companies/me/category-schema/Stones", headers=_h(tok), json={"fields": [
+        {"key": "grade", "label": "Grade", "type": "select", "options": ["A", "B"],
+         "editable": True, "required": False}]})
     assert r.status_code == 200, r.text
     r = await client.post("/items", headers=_h(tok), json={
         "status": "available", "sku": "STONE-1", "name": "Graded", "sell_by": "piece", "quantity": 1,

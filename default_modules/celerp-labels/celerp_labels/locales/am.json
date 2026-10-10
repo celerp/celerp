@@ -1,11 +1,18 @@
 {
+  "labels.could_not_create": "መፍጠር አልተቻለም፦ {error}",
+  "labels.could_not_delete": "መሰረዝ አልተቻለም፦ {error}",
+  "labels.could_not_save": "ማስቀመጥ አልተቻለም፦ {error}",
+  "labels.created": "'{name}' ተፈጥሯል።",
   "labels.delete_template_confirm": "አብነት '{name}' ይሰረዝ?",
   "labels.edit_name": "አርትዕ: {name}",
   "labels.height_example": "ለምሳሌ. 30",
+  "labels.name_required": "የአብነት ስም ያስፈልጋል።",
   "labels.new_template_name": "አዲስ የአብነት ስም",
   "labels.print_labels": "መለያዎችን አትም",
   "labels.print_labels_heading": "መለያዎችን አትም - የዕቃዎች ብዛት፦ {n}",
   "labels.remove_field": "አስወግድ መስክ",
   "labels.selected": "ተመርጧል: {ids}{more}",
+  "labels.template_deleted": "አብነቱ ተሰርዟል።",
+  "labels.template_not_found": "አብነቱ አልተገኘም።",
   "labels.width_example": "ለምሳሌ. 50"
 }

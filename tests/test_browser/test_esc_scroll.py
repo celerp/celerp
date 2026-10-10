@@ -80,3 +80,36 @@ def test_esc_does_not_reset_scroll(page, ui_server, seeded_user):
     assert scroll_after >= scroll_before - 5, (
         f"Scroll was reset after ESC: was {scroll_before}px, now {scroll_after}px"
     )
+
+
+def test_unrelated_request_does_not_reset_scroll(page, ui_server, seeded_user):
+    """A request that does not touch the table (a page-chrome refresh) and settles
+    after the user scrolled sideways leaves the scroll position alone."""
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+    page.wait_for_selector("table.data-table", timeout=5000)
+    page.wait_for_timeout(800)
+    page.evaluate("""
+        document.querySelector('table.data-table').style.setProperty('min-width', '3000px', 'important');
+        document.querySelector('.table-scroll-wrap').style.setProperty('width', '800px', 'important');
+        document.body.insertAdjacentHTML('beforeend', '<div id="unrelated-probe"></div>');
+    """)
+    held = []
+    page.route("**/unrelated-probe", lambda route: held.append(route))
+    page.evaluate("() => { htmx.ajax('GET', '/unrelated-probe', {target: '#unrelated-probe', swap: 'innerHTML'}); }")
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    assert held, "the unrelated request never started"
+
+    page.evaluate("document.querySelector('.table-scroll-wrap').scrollLeft = 400")
+    scroll_before = page.evaluate("document.querySelector('.table-scroll-wrap').scrollLeft")
+    assert scroll_before > 300
+    held[0].fulfill(status=200, content_type="text/html", body="<span id='probe-done'>done</span>")
+    page.wait_for_selector("#probe-done", timeout=5000)
+    page.wait_for_timeout(300)
+
+    scroll_after = page.evaluate("document.querySelector('.table-scroll-wrap').scrollLeft")
+    assert scroll_after >= scroll_before - 5, (
+        f"Scroll was reset by an unrelated request: was {scroll_before}px, now {scroll_after}px"
+    )

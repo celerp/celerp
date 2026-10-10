@@ -12,6 +12,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   shard:
     name: Test shard ${{ matrix.group }}
@@ -59,12 +63,18 @@ jobs:
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
         # pytest-split fans the suite across 6 parallel runners; each still uses -n auto
         # within its 2 cores.
-        # Process tests run in their own job so the count split stays even.
+        # Process tests run in their own job so the split stays even.
+        # The split balances measured time from tests/.test_durations (refresh it with
+        # --store-durations when a shard nears the cap); it sits under tests/ so the
+        # repo-wide name checks, which skip tests/, never read its test ids. A test missing
+        # from it counts as the average, so a split by count alone would put the slow
+        # backup and reset files in one shard.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           --timeout=30
           -m "not browser and not embedded_pg and not process"
-          --splits 6 --group ${{ matrix.group }}
+          --splits 6 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 
@@ -116,7 +126,7 @@ jobs:
   browser:
     name: Browser shard ${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +177,7 @@ jobs:
         # A shard takes about 6.5 minutes; the 13 minute cap leaves room for a slow runner
         # inside the 15 minute job limit.
         run: >
-          timeout 780 pytest tests/test_browser -m browser -o addopts=""
+          timeout 900 pytest tests/test_browser -m browser -o addopts=""
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
           --splits 6 --group ${{ matrix.group }}
 
@@ -223,7 +233,7 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
         run: >
           pytest tests/test_embedded_pg_modes.py tests/test_embedded_pg_manager.py
-          tests/test_embedded_pg_integration.py tests/test_default_modules_boot.py
+          tests/test_embedded_pg_integration.py tests/test_default_modules_boot.py tests/test_backup_dump_script.py
           --noconftest -o addopts="" -p no:cacheprovider --timeout=300 -q
 
   # Electron unit tests (incl. the L0 packaged-requires gate). Nothing ran these in

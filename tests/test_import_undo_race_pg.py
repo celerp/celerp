@@ -126,7 +126,7 @@ async def test_an_edit_waiting_on_an_undo_that_removes_the_item_does_not_bring_i
     company_id, user_id, batch_id = await _seed(factory)
 
     locked, release = asyncio.Event(), asyncio.Event()
-    real_check = inventory.mentioned_elsewhere
+    real_check = inventory.depended_on
 
     async def _paused_check(*args, **kwargs):
         # Undo has the company and the item locked and has read the item's history.
@@ -134,7 +134,7 @@ async def test_an_edit_waiting_on_an_undo_that_removes_the_item_does_not_bring_i
         await release.wait()
         return await real_check(*args, **kwargs)
 
-    monkeypatch.setattr(inventory, "mentioned_elsewhere", _paused_check)
+    monkeypatch.setattr(inventory, "depended_on", _paused_check)
 
     async with factory() as undoer, factory() as editor:
         undo = asyncio.create_task(_undo(undoer, company_id, user_id, batch_id))

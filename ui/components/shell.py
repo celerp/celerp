@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
-from celerp.services.update import CARD_REASONS, PIP_BLOCKERS
+from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs
 from ui.components.table import searchable_select
@@ -78,6 +78,57 @@ function _copiedFeedback(btn, restoreLabel) {
   btn.textContent = window.__shellI18n.copied;
   setTimeout(function() { btn.textContent = restoreLabel; }, 2000);
 }
+// Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
+// Each row is named by its line id; a page whose rows do not all carry one names them by
+// item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
+// the operation key the page was rendered with, so the same action sent again after a lost
+// answer is recorded once. Resolves true on success, keeping the server's toast for the
+// page the caller opens next; otherwise the reason is shown.
+async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
+  var fd = new FormData();
+  celerpLineSelection(rows).forEach(function(kv) { fd.append(kv[0], kv[1]); });
+  (fields || []).forEach(function(kv) { fd.append(kv[0], kv[1]); });
+  if (key) fd.append('idempotency_key', key);
+  var msg = fallbackMsg;
+  try {
+    var resp = await fetch(url, {method: 'POST', body: fd});
+    var t = null;
+    try { t = JSON.parse(resp.headers.get('HX-Trigger') || 'null'); } catch (e) {}
+    if (resp.status === 204) {
+      if (t && t.celerpToast) _celerpKeepToast(t.celerpToast);
+      return true;
+    }
+    if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message;
+  } catch (e) {
+  }
+  celerpToast(msg, 'error');
+  return false;
+}
+// One line action at a time: the second click of a double click, or a click while another
+// action's confirm or request is open, does nothing. ``run`` resolves true when the page is
+// reloading, which keeps the guard on until it has.
+var _celerpLineActionBusy = false;
+async function celerpLineActionOnce(e, run) {
+  if ((e && e.detail > 1) || _celerpLineActionBusy) return;
+  _celerpLineActionBusy = true;
+  var leaving = false;
+  try { leaving = await run(); } finally { if (!leaving) _celerpLineActionBusy = false; }
+}
+// The [name, value] pairs naming the chosen rows: line_id each when every row has one,
+// otherwise the item each row binds.
+function celerpLineSelection(rows) {
+  var byLine = rows.every(function(cb) { return cb.getAttribute('data-line-id'); });
+  var out = [];
+  rows.forEach(function(cb) {
+    var id = byLine ? cb.getAttribute('data-line-id') : cb.value;
+    if (id) out.push([byLine ? 'line_id' : 'selected', id]);
+  });
+  return out;
+}
+// A count message in the form that reads right for n: forms is {one, many}, each with {n}.
+function celerpCount(forms, n) {
+  return forms[n === 1 ? 'one' : 'many'].replace('{n}', n);
+}
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
@@ -107,6 +158,10 @@ function celerpToast(message, type, persist, action) {
   // is clicked; the rest auto-dismiss after 6s.
   if (!persist) setTimeout(function() { _dismissToast(toast); }, 6000);
 }
+// Keep a toast for the next page load, which shows it (a redirect or reload follows).
+function _celerpKeepToast(toast) {
+  try { sessionStorage.setItem('celerp_pending_toast', JSON.stringify(toast)); } catch(ex) {}
+}
 function _dismissToast(toast) {
   toast.classList.remove('toast--visible');
   setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
@@ -116,7 +171,9 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!hdr) return;
   try {
     var obj = JSON.parse(hdr);
-    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
+    // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
+    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
+    else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;
@@ -128,6 +185,13 @@ document.addEventListener('htmx:afterRequest', function(e) {
       document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
     }
   } catch(ex) {}
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var pending;
+  try { pending = sessionStorage.getItem('celerp_pending_toast'); sessionStorage.removeItem('celerp_pending_toast'); } catch(ex) {}
+  if (!pending) return;
+  try { var t = JSON.parse(pending); celerpToast(t.message, t.type || 'error', t.persist); } catch(ex) {}
 });
 
 function showGlobalUiError(message) {
@@ -620,6 +684,19 @@ document.addEventListener('click', function(e) {
     }
   });
 });
+// A tab strip wider than the screen scrolls sideways inside itself; bring its current
+// tab into view whenever the strip is drawn, without moving the page.
+function revealActiveTabs() {
+  document.querySelectorAll('.category-tabs').forEach(function(strip) {
+    var tab = strip.querySelector('.category-tab--active');
+    if (!tab || strip.scrollWidth <= strip.clientWidth) return;
+    var left = tab.offsetLeft - strip.offsetLeft;
+    if (left < strip.scrollLeft || left + tab.offsetWidth > strip.scrollLeft + strip.clientWidth)
+      strip.scrollLeft = left - (strip.clientWidth - tab.offsetWidth) / 2;
+  });
+}
+document.addEventListener('DOMContentLoaded', revealActiveTabs);
+document.addEventListener('htmx:afterSettle', revealActiveTabs);
 """
 
 
@@ -878,7 +955,8 @@ function _notifItemHtml(n) {
   var content = n.action_url
     ? '<a class="notif-item__link" href="' + _notifEsc(n.action_url) + '">' + inner + '</a>'
     : '<div class="notif-item__link">' + inner + '</div>';
-  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '" data-id="' + _notifEsc(n.id) + '">'
+  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread')
+    + (n.priority === 'high' ? ' notif-item--high' : '') + '" data-id="' + _notifEsc(n.id) + '">'
     + content
     + '<button class="notif-item__dismiss" type="button" title="' + window.__shellI18n.markAsRead + '" aria-label="' + window.__shellI18n.markAsRead + '">&times;</button>'
     + '</div>';
@@ -998,9 +1076,9 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         loadNotifications();
         if (data.priority === 'high' && Notification.permission === 'granted') {
-          // The stream carries the stored message key; show the rendered copy.
-          fetch('/notifications?limit=5').then(function(r) { return r.json(); }).then(function(d) {
-            var n = (d.items || []).find(function(x) { return x.id === data.id; });
+          // The listed notice is in the reader's language; the pushed one is as stored.
+          fetch('/notifications?limit=20').then(function(r) { return r.json(); }).then(function(d) {
+            var n = (d.items || []).find(function(i) { return i.id === data.id; });
             if (n) new Notification(n.title, { body: n.body });
           }).catch(function() {});
         }
@@ -1203,7 +1281,7 @@ document.addEventListener('DOMContentLoaded', function() {
       function resultText(r) {
         if (r.ok) return i18n.updateResultOk.replace('{version}', r.to);
         var text = r.outcome === 'rollback_failed' ? i18n.updateResultRollbackFailed : i18n.updateResultFailed;
-        return text.replace('{version}', r.to).replace('{reason}', r.reason || '');
+        return text.replace('{version}', r.to).replace('{reason}', r.detail || i18n.updateReasons[r.reason]);
       }
 
       function render(s) {
@@ -1802,6 +1880,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "updateResultFailed": t("shell.update_result_failed", lang),
         "updateResultRollbackFailed": t("shell.update_result_rollback_failed", lang),
         "updateBlocked": {code: t(f"shell.update_blocked_{code}", lang) for code in CARD_REASONS},
+        "updateReasons": {code: t(reason_key(code), lang) for code in REASON_CODES},
         "starOnGithub": t("shell.star_on_github", lang),
         "appreciateSupport": t("shell.appreciate_support", lang),
         "importHint": t("shell.import_hint", lang),
@@ -2045,11 +2124,24 @@ def search_help(lang: str = "en", panel_id: str = "global-search-help-panel") ->
                 Li(op("5-10"), " ", t("shell.search_help_range", lang)),
                 Li(op("field:"), " ", t("shell.search_help_scoped", lang)),
                 Li(op("field: 1-2"), " ", t("shell.search_help_scoped_range", lang)),
+                Li(op("field: a, b"), " ", t("shell.search_help_carry", lang), " ",
+                   Code("barcode: 1042, 1043"), " ", t("shell.search_help_carry_result", lang)),
+                Li(op("barcode:"), " ", t("shell.search_help_exact", lang), " ",
+                   Code("barcode: 1042"), " ", t("shell.search_help_exact_result", lang)),
+                Li(op("all:"), " ", t("shell.search_help_all", lang), " ",
+                   Code("barcode: 1042, all: ring"), " ", t("shell.search_help_all_result", lang)),
+                Li(op("Enter"), " ", t("shell.search_help_scan", lang), " ",
+                   Code("barcode: "), " ", t("shell.search_help_scan_result", lang)),
+                Li(op(t("inventory.search_not_found", lang, codes="1099")), " ",
+                   t("shell.search_help_not_found", lang), " ",
+                   Code("barcode: 1042, 1099"), " ", t("shell.search_help_not_found_result", lang)),
             ),
             Div(t("shell.search_help_example_label", lang),
                 Div(Code("bolt & 5-10"), " ", t("shell.search_help_example_result", lang)),
                 Div(Code("demantoid & ct_each: 1-2 & grade: 3"), " ",
                     t("shell.search_help_example_scoped_result", lang)),
+                Div(Code("barcode: 1042, 1043, 1044, 1045, 1046"), " ",
+                    t("shell.search_help_example_scan_result", lang)),
                 cls="global-search-help-example"),
             id=panel_id,
             cls="global-search-help-panel",
@@ -2376,10 +2468,28 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
     return str(best_match.get("key") or active) if best_match else active
 
 
+def module_nav(settings: dict | None) -> list[dict]:
+    """Nav entries of the modules running in this process that the company uses
+    (uses_module on its settings), in display order. Anything that shows or links
+    to a module's pages asks this, so a module that is off leaves no trace."""
+    from celerp.modules.registry import uses_module
+    try:
+        from celerp.modules.slots import get as get_slot
+        slot_items: list[dict] = get_slot("nav")
+    except Exception:
+        slot_items = []
+    return [item for item in sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
+            if uses_module(settings, item.get("_module"))]
+
+
+def module_active(settings: dict | None, name: str) -> bool:
+    """Whether module ``name`` is running here and the company uses it."""
+    return any(item.get("_module") == name for item in module_nav(settings))
+
+
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, settings: dict | None = None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
-    from celerp.modules.registry import uses_module
     from celerp.services.permissions import role_has_permission
     from ui.module_slots import slot_permission_allows
 
@@ -2388,26 +2498,13 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
     def _allowed(item: dict) -> bool:
         return slot_permission_allows(item, settings, role)
 
-    def _module_enabled(item: dict) -> bool:
-        """Kernel entries (no _module key) always show; a module's entries show
-        when the company uses the module (read from current settings)."""
-        return uses_module(settings, item.get("_module"))
-
-    # Collect all nav items from loaded modules
-    try:
-        from celerp.modules.slots import get as get_slot
-        slot_items: list[dict] = get_slot("nav")
-    except Exception:
-        slot_items = []
-
-    all_items_raw = sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
     # Drop what this company cannot see before deduplicating, not after. Two modules
     # may offer the same section: accounting and reports both declare "reports",
     # because the financial reports stay reachable when the reports module is off.
     # Deduplicating first lets a disabled module's entry win the key and then be
     # filtered out, taking the enabled module's entry with it and leaving the
     # section missing from the nav altogether.
-    visible = [item for item in all_items_raw if _allowed(item) and _module_enabled(item)]
+    visible = [item for item in module_nav(settings) if _allowed(item)]
 
     # Deduplicate by key (first occurrence wins - kernel entries are last, so module wins)
     seen_keys: set[str] = set()
@@ -2445,9 +2542,14 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
 
     sections: list[FT] = [_link(item) for item in top_level]
 
-    for group_label, items in grouped.items():
-        group_key = group_label.lower().replace(" ", "_")
-        is_active_group = group_label == active_group
+    for group, items in grouped.items():
+        group_key = group.lower().replace(" ", "_")
+        is_active_group = group == active_group
+        # A module's group is named by nav.group.<key>; a group no catalog names shows as declared.
+        label_key = f"nav.group.{group_key}"
+        group_label = t(label_key, lang)
+        if group_label == label_key:
+            group_label = group
         # Check if any item in the group declares a settings_href
         settings_href = next((i["settings_href"] for i in items if i.get("settings_href")), None)
         if settings_href:
@@ -2472,7 +2574,8 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         )
 
     # Blank install: only kernel entries visible — show a helpful prompt
-    has_module_nav = bool(slot_items)
+    from celerp.modules.slots import get as get_slot
+    has_module_nav = bool(get_slot("nav"))
     if not has_module_nav:
         empty_state: list[FT] = [Div(
             P(t("msg.no_modules_installed"), cls="sidebar-empty-title"),
@@ -2504,6 +2607,11 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
             A(t("nav.modules", lang), href="/modules",
               title=t("nav.modules_tip", lang),
               cls=f"nav-link {'nav-link--active' if active == 'modules' else ''}"),
+        )
+        settings_link.append(
+            A(t("nav.doctor", lang), href="/doctor",
+              title=t("nav.doctor_tip", lang),
+              cls=f"nav-link {'nav-link--active' if active == 'doctor' else ''}"),
         )
     if role_has_permission(settings, role, "manage_integrations"):
         settings_link.append(

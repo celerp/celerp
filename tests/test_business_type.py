@@ -39,8 +39,20 @@ async def _settings(client, h) -> dict:
 
 
 async def _patch_settings(client, h, patch_: dict) -> None:
-    r = await client.patch("/companies/me", json={"settings": patch_}, headers=h)
-    assert r.status_code == 200, r.text
+    """Save each setting through the route that owns it."""
+    for key, value in patch_.items():
+        if key in ("payment_terms", "purchasing_payment_terms"):
+            r = await client.patch(f"/companies/me/{key.replace('_', '-')}", json={"terms": value}, headers=h)
+        elif key == "terms_conditions":
+            r = await client.patch("/companies/me/terms-conditions", json={"templates": value}, headers=h)
+        elif key == "category_schemas":
+            for category, fields in value.items():
+                r = await client.patch(f"/companies/me/category-schema/{category}", json={"fields": fields}, headers=h)
+                assert r.status_code == 200, r.text
+            continue
+        else:
+            r = await client.patch("/companies/me", json={"settings": {key: value}}, headers=h)
+        assert r.status_code == 200, r.text
 
 
 async def _items(client, h) -> list[dict]:
@@ -141,7 +153,7 @@ async def test_existing_custom_category_schema_not_overwritten(client):
     await _patch_settings(client, h, {"category_schemas": {"diamond": custom}})
     await _set(client, h, "gemstones")
     schemas = (await _settings(client, h))["category_schemas"]
-    assert schemas["diamond"] == custom
+    assert [(f["key"], f["label"], f["type"]) for f in schemas["diamond"]] == [("my_field", "My field", "text")]
     assert "ruby" in schemas
 
 
@@ -204,7 +216,9 @@ async def test_generic_patch_rejects_vertical(client):
     h = await _owner(client)
     r = await client.patch("/companies/me", json={"settings": {"vertical": "gemstones"}}, headers=h)
     assert r.status_code == 422
-    assert "business-type" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "company.setting_has_own_route"
+    assert "business-type" in detail["message"]
     assert (await _settings(client, h)).get("vertical") is None
 
 
@@ -390,7 +404,9 @@ async def test_untouched_purchasing_terms_follow_the_type(client):
     h = await _owner(client)
     assert (await client.get("/companies/me/purchasing-payment-terms", headers=h)).status_code == 200
     await _set(client, h, "gemstones")
-    assert (await _settings(client, h))["purchasing_payment_terms"] == payment_terms_for("gemstones")
+    assert "purchasing_payment_terms" not in await _settings(client, h)
+    shown = (await client.get("/companies/me/purchasing-payment-terms", headers=h)).json()
+    assert shown == payment_terms_for("gemstones")
 
 
 @pytest.mark.asyncio
@@ -417,11 +433,12 @@ async def test_generic_payment_terms_are_the_list_users_see(client):
     import celerp.routers.companies as companies
     import celerp.services.payment_terms as payment_terms
     assert companies.DEFAULT_PAYMENT_TERMS is payment_terms.DEFAULT_PAYMENT_TERMS
-    h = await _owner(client)
-    await _patch_settings(client, h, {"payment_terms": []})
-    shown = (await client.get("/companies/me/payment-terms", headers=h)).json()
+    shown = payment_terms.company_payment_terms({})
     assert shown == payment_terms_for(None)
     assert "Net 90" in [t["name"] for t in shown]
+    h = await _owner(client)
+    await _patch_settings(client, h, {"payment_terms": []})
+    assert (await client.get("/companies/me/payment-terms", headers=h)).json() == []
 
 
 # -- restart reporting -------------------------------------------------------------

@@ -6,11 +6,10 @@ The importer writes one of these into every module folder at install time. It
 records where the module came from and when it landed, and it is the single
 source for two user-facing features on the modules page: the source label and
 shield next to each module name, and the newest-imported-first ordering. Both are
-display only; nothing reads the sidecar to decide what a module may do.
+display only. Module metadata does not affect admission.
 
-The sidecar is advisory: a folder without one (a pre-existing import, or a
-default module re-seeded by the desktop app) is simply treated as unknown
-provenance. Reads never raise - a missing or corrupt file degrades to ``{}``.
+A folder without one (a pre-existing import, or a default module re-seeded by
+the desktop app) is treated as unknown provenance. Reads never raise - a missing or corrupt file degrades to ``{}``.
 """
 from __future__ import annotations
 
@@ -21,11 +20,10 @@ from pathlib import Path
 META_FILENAME = ".celerp-meta.json"
 
 # The sources an uploaded package may record. "marketplace" is written only by
-# the Marketplace install, and a default module is known by its content (see the
-# loader), never by a sidecar.
+# the Marketplace install.
 IMPORT_SOURCES = {"community", "sideloaded"}
 
-# Every source the module list reports; a sidecar without one reads as "sideloaded".
+# Every source the module list reports; a file without one reads as "sideloaded".
 SOURCES = IMPORT_SOURCES | {"marketplace"}
 
 
@@ -41,7 +39,7 @@ def write_meta(pkg_dir: Path, *, source: str) -> None:
 
 
 def read_meta(pkg_dir: Path) -> dict:
-    """Return the sidecar's fields that hold a value of the right type: ``source``
+    """Return the file's fields that hold a value of the right type: ``source``
     when it is one of :data:`SOURCES`, ``installed_at`` when it is a string. Any
     other field or value is left out, as is the whole file when it is missing,
     unreadable or not a JSON object."""

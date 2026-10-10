@@ -33,10 +33,10 @@ from celerp.services.auth import (
     get_current_company_id,
     get_current_user,
     hash_password,
-    issue_token_pair,
     lock_issuance_company,
     usable_company_link,
     oauth2_scheme_optional,
+    password_needs_rehash,
     validate_access_token,
     validate_password,
     verify_password,
@@ -85,6 +85,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     those changes are all-or-nothing. Module lifecycle hooks retain their existing
     best-effort policy; the one-time setup code is consumed only after commit.
     """
+    from celerp.credentials import issue_token_pair
     required = ""
     try:
         # Cheap post-bootstrap fast path. This is only an optimization: the same
@@ -126,7 +127,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         )
         # Single commit point: the central issuer locks the auth state, registers the
         # initial access JTI, and commits the whole bootstrap as one transaction.
-        tokens = await issue_token_pair(session, user=user, company_id=company.id)
+        tokens = await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=None)
     except HTTPException:
         await session.rollback()
         raise
@@ -159,27 +160,15 @@ limiter = Limiter(key_func=get_remote_address)
 _PICK_ATTEMPTS = 3
 
 
-async def _issue_login_tokens(session: AsyncSession, user: User) -> dict:
-    """Sign *user* in to the company ``first_usable_company_link`` picks.
-
-    A company removed between the pick and the issuance issues nothing; the pick is
-    made again from what is left."""
-    for _ in range(_PICK_ATTEMPTS):
-        link = await first_usable_company_link(session, user.id)
-        if link is None:
-            raise HTTPException(status_code=401, detail=NO_COMPANY)
-        try:
-            return await issue_token_pair(session, user=user, company_id=link.company_id)
-        except CompanyUnavailable:
-            continue
-    raise CompanyUnavailable()
-
-
 async def authenticate(session: AsyncSession, email: str, password: str) -> User:
     """The active login these credentials belong to; a neutral 401 otherwise."""
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
+    # A legacy hash moves to the current scheme now; a legacy password shorter than
+    # the policy keeps its hash until the user changes it.
+    if password_needs_rehash(user.auth_hash) and len(password) >= MIN_PASSWORD_LENGTH:
+        user.auth_hash = hash_password(password)
     return user
 
 
@@ -211,9 +200,21 @@ async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) 
 @router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
+    from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
     await hold_direct_slot(session)
-    return await _issue_login_tokens(session, user)
+    # Signs in to the company first_usable_company_link picks. A company removed
+    # between the pick and the issuance issues nothing; the pick is made again
+    # from what is left.
+    for _ in range(_PICK_ATTEMPTS):
+        link = await first_usable_company_link(session, user.id)
+        if link is None:
+            raise HTTPException(status_code=401, detail=NO_COMPANY)
+        try:
+            return await issue_token_pair(session, user=user, company_id=link.company_id, expected_snonce=None)
+        except CompanyUnavailable:
+            continue
+    raise CompanyUnavailable()
 
 
 @router.post("/login-force")
@@ -221,6 +222,7 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first, in the
     same transaction as the new session."""
+    from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
     await hold_direct_slot(session, taking_over=True)
     link = await first_usable_company_link(session, user.id)
@@ -232,7 +234,7 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     from celerp.services.session_tracker import invalidate_all_sessions as _invalidate_all
     evicting_ip = request.client.host if request.client else None
     await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
-    return await issue_token_pair(session, user=user, company_id=link.company_id)
+    return await issue_token_pair(session, user=user, company_id=link.company_id, expected_snonce=None)
 
 
 class StartCompanyRequest(BaseModel):
@@ -247,6 +249,7 @@ async def start_company(request: Request, payload: StartCompanyRequest,
                         session: AsyncSession = Depends(get_session)) -> dict:
     """Create a company for a login that has none left, after its last company was reset,
     and sign it in as that company's owner."""
+    from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password)
     name = payload.company_name.strip()
     if not name:
@@ -255,7 +258,7 @@ async def start_company(request: Request, payload: StartCompanyRequest,
     if not await hold_companyless_login(session, user.id):
         raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
     company = await provision_additional_company(session, user=user, company_name=name)
-    return await issue_token_pair(session, user=user, company_id=company.id)
+    return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=None)
 
 
 class RefreshRequest(BaseModel):
@@ -273,6 +276,7 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     Every failure mode returns the same neutral "Invalid refresh token" so the
     caller learns nothing about which element failed.
     """
+    from celerp.credentials import issue_token_pair
     claims = decode_refresh_token(payload.refresh_token)
 
     try:
@@ -354,6 +358,7 @@ async def switch_company(
 
     Only succeeds if the user has an active entry in user_companies for that company.
     """
+    from celerp.credentials import issue_token_pair
     user = ctx.user
     link = (
         await session.execute(
