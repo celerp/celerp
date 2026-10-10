@@ -212,7 +212,7 @@ def _order_item_ids(data: dict) -> list[str]:
     """Every item a new run names: its components and the product it makes."""
     inputs = data.get("inputs", [])
     if not isinstance(inputs, list):
-        raise HTTPException(status_code=422, detail="A run's components must be a list")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_inputs_not_list"))
     ids = []
     for line in inputs:
         item_id = line.get("item_id") if isinstance(line, dict) else None
@@ -221,7 +221,7 @@ def _order_item_ids(data: dict) -> list[str]:
         ids.append(item_id)
     output = data.get("output_item_id")
     if not isinstance(output, str) or not output:
-        raise HTTPException(status_code=422, detail="A run must name the product it makes")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_output_required"))
     return [*ids, output]
 
 
@@ -270,7 +270,7 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
     if stored is not None:
         return stored
     if not quantity > 0:
-        raise HTTPException(status_code=422, detail="A run must make a quantity greater than zero")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_quantity_not_positive"))
     # Each line is checked as sent: a component listed twice is one component needing both
     # amounts (the run's projection adds them), so a negative line cannot hide inside a total.
     if any(not float(i.get("quantity") or 0) > 0 for i in data.get("inputs") or []):
@@ -1254,8 +1254,7 @@ async def _imported_before(session: AsyncSession, company_id, rec, fingerprint: 
             and older.data == rec.data:
         return True
     if await session.get(Projection, {"company_id": company_id, "entity_id": rec.entity_id}) is not None:
-        raise HTTPException(status_code=409, detail="A record with this id already exists and differs from this "
-                                                    "one; it was not imported again.")
+        raise HTTPException(status_code=409, detail=t("manufacturing.err_import_id_conflict"))
     return False
 
 
