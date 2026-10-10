@@ -855,15 +855,8 @@ def setup_routes(app):
                     id=f"company-{field}-input",
                     cls="cell-input cell-input--select", autofocus=True,
                 ),
-                Button(t("btn.save"), type="button",
-                       hx_patch=f"/settings/company/{field}",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       hx_include=f"#company-{field}-input",
-                       cls="btn btn--primary btn--xs ml-sm"),
-                Button(t("btn.cancel"), type="button",
-                       hx_get=f"/settings/company/{field}/display",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       cls="btn btn--secondary btn--xs ml-xs"),
+                *_company_cell_buttons(field),
+                onkeydown=_SAVE_CANCEL_KEYS,
                 cls="cell cell--editing",
             )
 
@@ -885,15 +878,7 @@ def setup_routes(app):
                     ),
                     cls="combobox-wrap",
                 ),
-                Button(t("btn.save"), type="button",
-                       hx_patch=f"/settings/company/{field}",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       hx_include=f"#company-{field}-input",
-                       cls="btn btn--primary btn--xs ml-sm"),
-                Button(t("btn.cancel"), type="button",
-                       hx_get=f"/settings/company/{field}/display",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       cls="btn btn--secondary btn--xs ml-xs"),
+                *_company_cell_buttons(field),
                 cls="cell cell--editing",
             )
 
@@ -919,15 +904,7 @@ def setup_routes(app):
                     ),
                     cls="combobox-wrap",
                 ),
-                Button(t("btn.save"), type="button",
-                       hx_patch=f"/settings/company/{field}",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       hx_include=f"#company-{field}-input",
-                       cls="btn btn--primary btn--xs ml-sm"),
-                Button(t("btn.cancel"), type="button",
-                       hx_get=f"/settings/company/{field}/display",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       cls="btn btn--secondary btn--xs ml-xs"),
+                *_company_cell_buttons(field),
                 cls="cell cell--editing",
             )
 
@@ -945,15 +922,8 @@ def setup_routes(app):
                 rows="3",
                 autofocus=True,
             ),
-            Button(t("btn.save"), type="button",
-                   hx_patch=f"/settings/company/{field}",
-                   hx_target="closest td", hx_swap="outerHTML",
-                   hx_include=f"#company-{field}-input",
-                   cls="btn btn--primary btn--xs ml-sm"),
-            Button(t("btn.cancel"), type="button",
-                   hx_get=f"/settings/company/{field}/display",
-                   hx_target="closest td", hx_swap="outerHTML",
-                   cls="btn btn--secondary btn--xs ml-xs"),
+            *_company_cell_buttons(field),
+            onkeydown=_SAVE_CANCEL_KEYS,
             cls="cell cell--editing",
         )
 
@@ -2744,6 +2714,31 @@ def _business_type_change_lines(changes: dict) -> list[str]:
         if count:
             lines.append(t(f"settings.business_type_changes.{key}", count=count))
     return lines
+
+
+# A company field's edit cell: Escape cancels and Enter saves, as its Cancel and Save buttons
+# do (GDR 2j). Enter in the address textarea starts a new line. The shell's own Escape handler
+# leaves an open edit cell to the cell.
+_SAVE_CANCEL_KEYS = (
+    "if(event.key==='Escape'){event.preventDefault();this.querySelector('.cell-cancel').click();}"
+    "else if(event.key==='Enter'&&event.target.matches('input,select')){"
+    "event.preventDefault();this.querySelector('.cell-save').click();}"
+)
+
+
+def _company_cell_buttons(field: str) -> tuple[FT, FT]:
+    """Save and Cancel for a company field's edit cell."""
+    return (
+        Button(t("btn.save"), type="button",
+               hx_patch=f"/settings/company/{field}",
+               hx_target="closest td", hx_swap="outerHTML",
+               hx_include=f"#company-{field}-input",
+               cls="btn btn--primary btn--xs ml-sm cell-save"),
+        Button(t("btn.cancel"), type="button",
+               hx_get=f"/settings/company/{field}/display",
+               hx_target="closest td", hx_swap="outerHTML",
+               cls="btn btn--secondary btn--xs ml-xs cell-cancel"),
+    )
 
 
 def _company_display_cell(field: str, value) -> FT:
