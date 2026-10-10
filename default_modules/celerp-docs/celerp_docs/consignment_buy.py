@@ -303,6 +303,31 @@ def _bill_receipts(state: dict, plan: _Plan, source: list[int]) -> tuple[list[di
     return items, lots
 
 
+async def _bought_lineage(session, company_id, roots: list[str]) -> dict[str, tuple[str, str | None]]:
+    """Each lot in the lineage of the lots a bill's receipts made (``roots``) -> (the parcel it
+    goes back from, the receipt lot its goods came in as). The parcel is the receipt lot for it
+    and the parts split off it, and the lot holding goods a customer returned for that lot and
+    its parts; the receipt lot is None for goods returned from a lot no receipt made."""
+    out: dict[str, tuple[str, str | None]] = {}
+    for row, parent, link in await lineage(session, company_id, roots):
+        if link is None:
+            out[row.entity_id] = (row.entity_id, row.entity_id)
+        elif link == "returned_from":
+            out[row.entity_id] = (row.entity_id, out[parent][1] if parent in out else None)
+        elif link == "split_from" and parent in out:
+            out[row.entity_id] = out[parent]
+    return out
+
+
+async def bought_receipt_lots(session, company_id, bill: dict) -> dict[str, str]:
+    """Lot holding goods a customer returned, which a bill bought from a consignment took over
+    (bought_parcels) -> the receipt lot those goods came in as, so they go back on that
+    receipt's line."""
+    return {parcel: receipt for parcel, receipt in (await _bought_lineage(
+        session, company_id, list(bill.get("received_item_ids") or []))).values()
+        if receipt is not None and parcel != receipt}
+
+
 async def bought_parcels(session, company_id, bill: dict) -> dict[str, tuple[float, float | None]]:
     """Lot -> (stock units, cost in the books' currency) a bill bought from a consignment took
     over: of each lot the consignment's receipts made, the units kept, held or sold
@@ -316,12 +341,7 @@ async def bought_parcels(session, company_id, bill: dict) -> dict[str, tuple[flo
     from that lot and never from the sold units, which have left."""
     roots = list(bill.get("received_item_ids") or [])
     receipts = [x for x in bill.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock"]
-    family: dict[str, str] = {}
-    for row, parent, link in await lineage(session, company_id, roots):
-        if link is None or link == "returned_from":
-            family[row.entity_id] = row.entity_id
-        elif link == "split_from" and parent in family:
-            family[row.entity_id] = family[parent]
+    family = {lot: parcel for lot, (parcel, _) in (await _bought_lineage(session, company_id, roots)).items()}
     cost: dict[str, float] = {}
     units: dict[str, float] = {}
     if family:

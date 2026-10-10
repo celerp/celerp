@@ -233,3 +233,73 @@ async def test_customer_returned_goods_partly_back_with_the_consignor_go_back_fr
     assert r.status_code in (409, 422), r.text
     assert len(await _posted(session, auth)) == entries
     await _settled(client, session, auth)
+
+
+async def _two_line_consign(client, session, auth) -> tuple[str, list[str]]:
+    """A consignment of 2 lines, 2 units each billed at 5: line 0 taxed at 10%, line 1 untaxed.
+    Both received at a recorded 4. Returns the consignment and the lot each line made."""
+    import uuid
+
+    skus, templates = [], []
+    for _ in range(2):
+        sku = f"CS-{uuid.uuid4().hex[:6]}"
+        r = await client.post("/items", headers=auth["headers"], json={
+            "sku": sku, "name": "Lot", "quantity": 0, "sell_by": "piece", "status": "available"})
+        assert r.status_code == 200, r.text
+        skus.append(sku)
+        templates.append(r.json()["id"])
+    lines = [
+        {"item_id": templates[0], "sku": skus[0], "name": "Taxed", "quantity": 2, "unit_price": 5.0,
+         "line_total": 10.0, "taxes": [{"code": "VAT", "rate": 10, "amount": 1.0}]},
+        {"item_id": templates[1], "sku": skus[1], "name": "Untaxed", "quantity": 2, "unit_price": 5.0,
+         "line_total": 10.0},
+    ]
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "consignment_in", "contact_id": "supplier:1", "line_items": lines,
+        "subtotal": 20.0, "tax": 1.0, "total": 21.0})
+    assert r.status_code == 200, r.text
+    con = r.json()["id"]
+    assert (await client.post(f"/docs/{con}/finalize", headers=auth["headers"])).status_code == 200
+    items = [{"item_id": templates[i], "sku": skus[i], "name": "Lot", "quantity_received": 2,
+              "po_line_index": i, "receive_as": "stock", "cost_price": 4.0} for i in range(2)]
+    r = await client.post(f"/docs/{con}/receive", headers=auth["headers"],
+                          json={"location_id": "", "received_items": items})
+    assert r.status_code == 200, r.text
+    return con, (await _state(session, auth, con))["received_item_ids"]
+
+
+async def test_customer_returned_goods_go_back_from_the_bill_with_their_own_lines_tax(client, session, auth):
+    """Line 0's 2 units sold and returned by the customer, then converted: the bill is 21, of
+    which 1 is line 0's tax. One returned unit goes back from the bill at 5 plus line 0's 10%
+    tax, 5.50, never the bill's blended rate; one unit of untaxed line 1 then goes back at 5.00.
+    The rest going back clears the bill to nothing owed."""
+    from test_consignment_in_sale import _customer_return
+
+    con, lots = await _two_line_consign(client, session, auth)
+    doc = await _sell(client, session, auth, lots[0])
+    returned = await _customer_return(client, session, auth, doc, lots[0], 2)
+    r = await client.post(f"/docs/{con}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    bill_id = r.json()["target_doc_id"]
+    bill = await _state(session, auth, bill_id)
+    assert (float(bill["total"]), float(bill["tax"])) == (21.0, 1.0)
+
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": returned, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    bill = await _state(session, auth, bill_id)
+    assert (float(bill["returned_credit"]), float(bill["amount_outstanding"])) == (5.5, 15.5)
+
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": lots[1], "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    bill = await _state(session, auth, bill_id)
+    assert (float(bill["returned_credit"]), float(bill["amount_outstanding"])) == (10.5, 10.5)
+
+    r = await client.post(f"/docs/{bill_id}/return-items", headers=auth["headers"], json={"items": [
+        {"item_id": returned, "quantity_returned": 1}, {"item_id": lots[1], "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    bill = await _state(session, auth, bill_id)
+    assert (float(bill["returned_credit"]), float(bill["amount_outstanding"])) == (21.0, 0.0)
+    assert await _books(session, auth, PAYABLE, PURCHASED, AP) == {PAYABLE: 0.0, PURCHASED: 0.0, AP: 0.0}
+    await _settled(client, session, auth)

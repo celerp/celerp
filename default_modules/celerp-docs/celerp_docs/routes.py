@@ -31,7 +31,7 @@ from celerp.models.company import Company
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
-from celerp_docs.consignment_buy import bought_parcels, buy_consignment
+from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
 from celerp_docs.doc_money import document_money
 from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
@@ -5866,6 +5866,10 @@ async def _bill_charge_rates(session: AsyncSession, company_id, doc_id: str, sta
     lots = await _receipt_lots(session, company_id, doc_id, state)
     by = _receipt_lots_by_line(state, lots) if lots is not None else None
     lot_line = {lot: i for i, held in by[0].items() for lot in held if lot not in by[1]} if by else {}
+    if state.get("source_consignment_id"):
+        # Goods a customer returned came in on the line of the receipt lot they were sold from.
+        lot_line.update({lot: lot_line[receipt] for lot, receipt in
+                         (await bought_receipt_lots(session, company_id, state)).items() if receipt in lot_line})
     return _BillCharges(lines=stock, lot_line=lot_line)
 
 
