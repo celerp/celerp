@@ -394,6 +394,7 @@ async def compute_doc_cogs(
     """
     result = CogsResult()
     payable: list[str] = []  # the consignor payable role's account, resolved once when needed
+    currency = await company_currency(session, company_id)
 
     async def sold_account(lot_id: str, state: dict) -> str:
         if not is_consigned(state) or state.get(CONSIGNOR_PAYABLE_FIELD):
@@ -456,7 +457,9 @@ async def compute_doc_cogs(
             lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost, "state": state}]
             provisional_qty = 0.0
             amount = unit_cost * line_qty
-        amount = max(0.0, amount)
+        # The line's cost is money from here on: rounded once to the cent, and every
+        # posting, claim, release and reversal of it uses that figure (_shares).
+        amount = to_stored_float(round_money(max(0.0, amount), currency))
         states = {lot["lot_entity_id"]: lot.pop("state") for lot in lots}
         states.setdefault(str(item_id), state)
         for lot_id, lot_state in states.items():
@@ -468,7 +471,7 @@ async def compute_doc_cogs(
             lot["account"] = await sold_account(lot["lot_entity_id"], states[lot["lot_entity_id"]]) if amount > 0 else None
         if amount > 0:
             parts = {lot["lot_entity_id"]: lot["qty"] * lot["unit_cost"] for lot in lots}
-            for lot_id, share in _shares(parts, amount).items():
+            for lot_id, share in _shares(parts, amount, currency).items():
                 code = await sold_account(lot_id, states[lot_id])
                 if is_consigned(states[lot_id]):
                     code = party_key(code, await consignor_of(session, company_id, lot_id, states[lot_id]))
@@ -491,13 +494,15 @@ async def record_consignor_payables(session, company_id, user_id, payables: dict
             idempotency_key=f"consignor-payable:{lot_id}", metadata_={})
 
 
-def _shares(parts: dict[str, float], amount: float) -> dict[str, float]:
-    """``amount`` split in proportion to ``parts``, or all on the first part when no
-    part carries weight."""
-    weight = sum(v for v in parts.values() if v > 0)
-    if weight <= 0:
-        return {next(iter(parts)): amount}
-    return {k: amount * v / weight for k, v in parts.items() if v > 0}
+def _shares(parts: dict[str, float], amount: float, currency: str) -> dict[str, float]:
+    """``amount`` rounded to the cent and split in proportion to ``parts`` in whole cents
+    (allocate_pro_rata), or all on the first part when no part carries weight. The shares
+    always sum to the rounded amount, so a cost claim is never re-derived unrounded."""
+    weighted = {k: v for k, v in parts.items() if v > 0}
+    if not weighted:
+        return {next(iter(parts)): to_stored_float(round_money(amount, currency))}
+    return {k: to_stored_float(share) for k, share in zip(
+        weighted, allocate_pro_rata(amount, [to_decimal(v) for v in weighted.values()], currency))}
 
 
 def _recognition_metadata(trigger: str, doc_id: str, allocations: dict | None) -> dict:
@@ -3199,6 +3204,7 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
         lot["lot_entity_id"] for recognized in books.recognized.values()
         for alloc in recognized.allocations.values() for lot in alloc.get("lots") or []})
     claims: list[UnshippedClaim] = []
+    currency = await company_currency(session, company_id)
     # What each lot still holds is shared by every claim on it, so one tally runs across
     # all invoices in finalize order: a later claim takes what an earlier one left, which
     # may be a part split off the lot it was allocated from.
@@ -3230,7 +3236,7 @@ async def unshipped_claims(session, company_id, *, exclude: str | None = None,
             # when another invoice ships them, at a cost of nothing.
             for key in dict.fromkeys(t[2] for t in taken):
                 mine = [t for t in taken if t[2] == key]
-                shares = _shares({t[0]: t[3] for t in mine}, by_key.get(key, 0.0))
+                shares = _shares({t[0]: t[3] for t in mine}, by_key.get(key, 0.0), currency)
                 claims += [UnshippedClaim(doc_id=doc_id, line=idx, lot_id=lot_id, qty=qty, key=key,
                                           amount=shares.get(lot_id, 0.0), on_hand=on_hand)
                            for lot_id, qty, _key, _weight, on_hand in mine]
@@ -3707,7 +3713,7 @@ async def _allocation_by_account(session, company_id, alloc: dict, amount: float
     for lot in lots:
         code = await _allocated_lot_key(session, company_id, lot, payable_codes)
         parts[code] = parts.get(code, 0.0) + float(lot.get("qty") or 0) * float(lot.get("unit_cost") or 0)
-    return _shares(parts, amount)
+    return _shares(parts, amount, await company_currency(session, company_id))
 
 
 async def _allocated_lot_key(session, company_id, lot: dict, payable_codes) -> str:
