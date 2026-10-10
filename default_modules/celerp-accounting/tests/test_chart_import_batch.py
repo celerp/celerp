@@ -195,18 +195,18 @@ async def test_chart_import_repeat_same_file_creates_nothing(client):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("row, message", [
-    (_row(""), "Enter an account code"),
-    (_row("   "), "Enter an account code"),
+    (_row(""), "code is required"),
+    (_row("   "), "code is required"),
     (_row("8" * 33), "32 characters"),
-    (_row("8500", ""), "Enter an account name"),
-    (_row("8500", "  "), "Enter an account name"),
-    (_row("8500", "Bad Type", "Current Asset"), "account type isn't recognized"),
-    (_row("8500", "No Type", ""), "account type isn't recognized"),
-    ({"code": 8500, "name": "Numeric", "account_type": "asset"}, "Account code must be plain text"),
+    (_row("8500", ""), "name is required"),
+    (_row("8500", "  "), "name is required"),
+    (_row("8500", "Bad Type", "Current Asset"), "Account type must be one of"),
+    (_row("8500", "No Type", ""), "Account type must be one of"),
+    ({"code": 8500, "name": "Numeric", "account_type": "asset"}, "code must be text"),
     ("not a row", "must be an object"),
-    (_row("8500", "Bad\x00Name"), "Account name contains a hidden control character"),
-    (_row("85\x0000"), "Account code contains a hidden control character"),
-    (_row("8500", parent_code="85\x0001"), "Parent account code contains a hidden control character"),
+    (_row("8500", "Bad\x00Name"), "Account name cannot contain a NUL character."),
+    (_row("85\x0000"), "Account code cannot contain a NUL character."),
+    (_row("8500", parent_code="85\x0001"), "Parent code cannot contain a NUL character."),
 ])
 async def test_chart_import_validates_code_name_type(client, row, message):
     h = await _reg(client)
@@ -221,9 +221,9 @@ async def test_chart_import_validates_code_name_type(client, row, message):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("payload, message", [
-    ({"code": "", "name": "Blank Code", "account_type": "asset"}, "Enter an account code"),
+    ({"code": "", "name": "Blank Code", "account_type": "asset"}, "code is required"),
     ({"code": "8" * 33, "name": "Long Code", "account_type": "asset"}, "32 characters"),
-    ({"code": "8600", "name": " ", "account_type": "asset"}, "Enter an account name"),
+    ({"code": "8600", "name": " ", "account_type": "asset"}, "name is required"),
 ])
 async def test_create_account_applies_the_same_code_and_name_rules(client, payload, message):
     h = await _reg(client)

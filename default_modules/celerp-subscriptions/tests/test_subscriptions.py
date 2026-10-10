@@ -11,6 +11,8 @@ import uuid
 
 import pytest
 
+from ui.i18n import t
+
 
 async def _register(client, name: str | None = None) -> str:
     addr = f"sub-{uuid.uuid4().hex[:8]}@test.test"
@@ -530,7 +532,7 @@ async def test_generate_in_a_locked_period_is_refused_and_writes_nothing(client,
 
     r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
     assert r.status_code == 422, r.text
-    assert "Period is locked through" in r.text
+    assert r.json()["detail"] == t("error.period_locked", "en", date=date.today().isoformat())
     assert (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"] == before
     assert await _generated(client, h, eid) == []
 
@@ -607,6 +609,6 @@ async def test_doctor_refuses_to_post_into_a_locked_period(client, session, auth
 
     r = await client.post("/admin/doctor?checks=missing_jes&fix=true", headers=auth["headers"])
     assert r.status_code == 422, r.text
-    assert "Unlock in Settings > Accounting" in r.json()["detail"]
+    assert r.json()["detail"] == t("error.period_locked", "en", date="2099-12-31")
     await session.rollback()
     assert await _journal_entries(session, client, auth["headers"], doc_id) == []
