@@ -1209,7 +1209,9 @@ a:hover { text-decoration: underline; }
 .search-clear:hover { background: var(--c-bg3); color: var(--c-text); }
 
 /* ─── Search help (?) tooltip (global bar + in-page search boxes) ─────── */
-.global-search-help-wrap { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); }
+/* The transform makes the wrap a stacking context, so the wrap itself carries the panel's
+   z-index; otherwise table rows and headers later on the page paint over the open panel. */
+.global-search-help-wrap { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); z-index: 90; }
 /* In-page search box with an attached (?): same absolute-anchored affordance,
    so the wrapper provides the positioning context and the input clears it. */
 .page-search-wrap { position: relative; display: inline-block; }
