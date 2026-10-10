@@ -2167,6 +2167,10 @@ async def finalize_document(
         # lot at the sibling lots that will actually be drawn; import/repair paths
         # stay on exact bound-lot pricing.
         await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, span_lots=True)
+        # A credit note an earlier release issued while this invoice was in draft is
+        # settled now that the invoice stands again.
+        from celerp_docs.legacy_credit_notes import settle_legacy_credit_notes  # noqa: PLC0415
+        await settle_legacy_credit_notes(session, company_id, invoice_id=entity_id)
         # Promote memo_out items to sold: memo→invoice conversion leaves items in memo_out.
         # Finalizing the invoice is the point at which the sale is confirmed.
         _cid = uuid.UUID(str(company_id))
@@ -2222,6 +2226,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
     _reject_if_closed(row.state, "void it")
+    if row.state.get("doc_type") == "credit_note":
+        await refuse_on_void_invoice(session, company_id, row.state)
     await _refuse_undo_under_credit_note(session, company_id, row.state, entity_id, "void")
     current_status = row.state.get("status")
     if current_status in ("paid", "partial") and not settled_by_credit_only(row.state):
@@ -2449,6 +2455,70 @@ def imported_settlement_free(data: dict) -> dict:
     return {k: v for k, v in data.items() if k != "credited"} if "credited" in data else data
 
 
+async def check_imported_snapshot(session, company_id, entity_id: str, data: dict, base_currency: str) -> None:
+    """Refuse (422) an imported invoice or credit note whose figures cannot be true, before
+    anything is written: more paid (refunded, on a credit note) than its total or less than
+    0, which no posting could book without inventing a figure, or a credit note in another
+    currency or rate than its invoice, refused as creating one is (credit_note_currency),
+    whichever of the two comes in first. Shared by the single and the batch import."""
+    doc_type = data.get("doc_type")
+    if doc_type not in ("invoice", "credit_note"):
+        return
+    currency = str(data.get("currency") or base_currency).upper()
+    number = str(data.get("doc_number") or data.get("ref_id") or entity_id.removeprefix("doc:"))
+    paid = round_money(to_decimal(data.get("amount_paid") or 0), currency)
+    total = round_money(to_decimal(data.get("total") or 0), currency)
+    params = {"number": number, "paid": f"{paid} {currency}", "total": f"{total} {currency}"}
+    if paid < 0:
+        raise HTTPException(status_code=422, detail=refusal(
+            "doc_import.paid_negative",
+            f"Document {number} says {params['paid']} was paid. The paid amount cannot be below 0.", **params))
+    if paid > total:
+        if doc_type == "invoice":
+            raise HTTPException(status_code=422, detail=refusal(
+                "doc_import.paid_over_total",
+                f"Invoice {number} says {params['paid']} was paid on a total of {params['total']}. The paid amount "
+                f"cannot exceed the invoice total: import any overpayment as a credit note.", **params))
+        raise HTTPException(status_code=422, detail=refusal(
+            "doc_import.refunded_over_total",
+            f"Credit note {number} says {params['paid']} was refunded on a total of {params['total']}. The "
+            f"refunded amount cannot exceed the credit note total.", **params))
+    if doc_type == "credit_note" and data.get("original_doc_id"):
+        invoice = await session.get(Projection, {"company_id": company_id, "entity_id": str(data["original_doc_id"])})
+        if invoice is not None and (invoice.state or {}).get("status") not in (None, "draft"):
+            credit_note_currency(invoice.state, base_currency, data.get("currency"), data.get("conversion_rate"))
+    elif doc_type == "invoice" and data.get("status") not in (None, "draft"):
+        for row in await _issued_credit_note_rows(session, company_id, entity_id):
+            credit_note_currency(data, base_currency, row.state.get("currency"), row.state.get("conversion_rate"))
+
+
+async def close_credit_on_void_invoice(session, company_id, user_id, cn_id: str) -> None:
+    """Close an issued credit note whose invoice is void. The sale it reversed no longer
+    stands, so it keeps only what it already paid out (refunded or applied), which its
+    entry still books against the receivable and that payout settled; what it still had
+    open is released (auto_je.release_credit_note_open) and is never refunded or applied
+    (refuse_on_void_invoice). Shared by every place a credit note meets a void invoice:
+    an import in either order and the settlement of earlier credit notes. Running it again
+    changes nothing."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id}, populate_existing=True)
+    note = (row.state if row else None) or {}
+    if note.get("status") in (None, "draft", "void"):
+        return
+    currency = str(note.get("currency") or "USD").upper()
+    left = round_money(to_decimal(note.get("amount_outstanding") or 0), currency)
+    if left <= 0:
+        return
+    company = await session.get(Company, company_id)
+    await auto_je.release_credit_note_open(
+        session, company_id=company_id, user_id=user_id, doc_id=cn_id, doc=note, amount=left,
+        base_currency=(company.settings.get("currency", "USD") if company else "USD"))
+    await emit_credit_settlement(
+        session, company_id, user_id, cn_id, note, outstanding=Decimal(0),
+        credited=round_money(to_decimal(note.get("credited") or 0), currency),
+        idempotency_key=f"credit-note-void-invoice:{cn_id}",
+        metadata={"credit_note_effect": "released", "released_amount": to_stored_float(left)})
+
+
 async def settle_imported_credit(session, company_id, user_id, entity_id: str, data: dict) -> None:
     """Record what each issued credit note settled between an imported invoice and the
     credit notes against it, once both are in, in either order. Both snapshots already
@@ -2458,7 +2528,13 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
     ``credited`` on both, through the same settlement step an issued credit note takes, so
     voiding it later puts it back. What the credit note claims beyond that, the invoice
     never took off its balance, so it stays open on the credit note as the customer's
-    credit."""
+    credit.
+
+    A credit note imported while its invoice is not issued in these books settled what it
+    claims on an invoice they do not hold: that comes off its credit against retained
+    earnings (auto_je.create_for_imported_used), as its refunded part does, and is
+    reversed once its invoice comes in and takes it off its own balance. One whose invoice
+    is void is closed (close_credit_on_void_invoice)."""
     if data.get("doc_type") == "credit_note" and data.get("original_doc_id"):
         pairs = [(str(data["original_doc_id"]), entity_id)]
     elif data.get("doc_type") == "invoice":
@@ -2469,15 +2545,24 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
         invoice = await session.get(Projection, {"company_id": company_id, "entity_id": invoice_id}, populate_existing=True)
         cn = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id}, populate_existing=True)
         inv, note = (invoice.state if invoice else None) or {}, (cn.state if cn else None) or {}
-        if inv.get("status") in (None, "draft", "void") or note.get("status") in (None, "draft", "void"):
+        if note.get("status") in (None, "draft", "void"):
             continue
-        currency = str(inv.get("currency") or "USD").upper()
+        currency = str(note.get("currency") or inv.get("currency") or "USD").upper()
 
         def money(state, key):
             return round_money(to_decimal(state.get(key) or 0), currency)
 
         claimed = max(Decimal(0), money(note, "total") - money(note, "amount_paid")
                       - money(note, "amount_outstanding") - money(note, "credited"))
+        if inv.get("status") in (None, "draft", "void"):
+            if claimed > 0 and cn_id == entity_id:
+                company = await session.get(Company, company_id)
+                await auto_je.create_for_imported_used(
+                    session, company_id=company_id, user_id=user_id, doc_id=cn_id, doc=note, amount=claimed,
+                    base_currency=(company.settings.get("currency", "USD") if company else "USD"))
+            if inv.get("status") == "void":
+                await close_credit_on_void_invoice(session, company_id, user_id, cn_id)
+            continue
         if claimed <= 0:
             continue
         settled = min(claimed, max(Decimal(0), money(inv, "total") - money(inv, "amount_paid")
@@ -2494,6 +2579,7 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
                                      credited=money(note, "credited") + settled,
                                      idempotency_key=f"credit-note-import:{cn_id}:credit-note",
                                      metadata=metadata if settled else {"imported": True})
+        await auto_je.void_imported_used(session, company_id=company_id, user_id=user_id, doc_id=cn_id)
 
 
 async def _refuse_undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str) -> None:
@@ -3170,6 +3256,27 @@ async def posted_books(session, company_id, entity_id: str, row: Projection, pay
         settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1))
 
 
+async def imported_payment_books(session, company_id, entity_id: str, row: Projection,
+                                 payment: dict) -> PaymentBooks | None:
+    """The books a void or delete of a payment an imported snapshot carried reverses on,
+    or None for any other payment. It was made before the import: its cash is in the
+    opening balances and the receivable it cleared came off against retained earnings at
+    the document's rate (auto_je.create_for_imported_paid), so undoing it puts that back
+    and never touches the bank. A refund of it is cash paid out here, so it goes through
+    the bank (posted_books)."""
+    indexes = (await auto_je.imported_payment_indexes(session, company_id, entity_id)).get(entity_id, set())
+    if payment.get("index") not in indexes:
+        return None
+    opening = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{entity_id}:opening-paid"})
+    if opening is None or (opening.state or {}).get("status") != "posted":
+        return None
+    company = await session.get(Company, company_id)
+    rate = float(row.state.get("conversion_rate") or 1)
+    return PaymentBooks(bank_account=await auto_je.resolve(session, company_id, AccountRole.RETAINED_EARNINGS),
+                        base_currency=(company.settings.get("currency", "USD") if company else "USD"),
+                        doc_rate=rate, settlement_rate=rate)
+
+
 async def _books_from_entry(session, company_id, entity_id: str, row: Projection, payment: dict) -> PaymentBooks:
     """The books an older Stripe payment posted on, read from its posted entry, or 422
     (``UNREADABLE_STRIPE_BOOKS``) when the entry does not show them. The ledger keeps
@@ -3352,6 +3459,8 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
     _reject_if_closed(row.state, "void a payment")
+    if row.state.get("doc_type") == "credit_note":
+        await refuse_on_void_invoice(session, company_id, row.state)
     payments = row.state.get("payments", [])
     # Payments are identified by their index FIELD, not list position.
     payment = next((p for p in payments if p.get("index") == payload.payment_index), None)
@@ -3366,8 +3475,10 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     given_back = float(payment.get("refunded") or 0)
     # The payment's own books, so the reversal is its mirror; read before anything is
     # written, so a payment whose books cannot be told is refused whole.
-    books = (await posted_books(session, company_id, entity_id, row, payment)
-             if payment.get("method") not in ("credit_note", "applied") else None)
+    books = None
+    if payment.get("method") not in ("credit_note", "applied"):
+        books = (await imported_payment_books(session, company_id, entity_id, row, payment)
+                 or await posted_books(session, company_id, entity_id, row, payment))
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -3387,6 +3498,9 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
             doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
             already_given_back=given_back,
         )
+        if doc_type == "credit_note":
+            await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=user.id,
+                                                        doc_id=entity_id, payment_index=payload.payment_index)
     else:
         # Credit-note settlement: void the paired payment on the other doc,
         # then void this application's AR transfer entry. No bank reversal is
@@ -3475,6 +3589,9 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                 idempotency_key=f"{_cnapply_id}:void:{payload.payment_index}",
                 metadata_={"trigger": "cn.application.voided", "doc_id": _inv_id, "cn_id": _cn_id},
             )
+        if _app_idx is not None:
+            await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=user.id,
+                                                        doc_id=_cn_id, payment_index=_app_idx)
 
     await session.commit()
     return {"event_id": entry.id}
@@ -3516,6 +3633,8 @@ async def delete_payment(
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
     _reject_if_closed(row.state, "delete a payment")
+    if row.state.get("doc_type") == "credit_note":
+        await refuse_on_void_invoice(session, company_id, row.state)
     payments = row.state.get("payments", [])
     # Payments are identified by their index FIELD, not list position.
     payment = next((p for p in payments if p.get("index") == payment_index), None)
@@ -3548,7 +3667,8 @@ async def delete_payment(
     # entry. If no unambiguous owner is found, nothing is voided - leaving a
     # posted entry beats voiding the wrong one.
     _p_date = str(payment.get("payment_date") or "")[:10]
-    _p_rate = float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1)
+    _p_rate = float((payment.get("books") or {}).get("settlement_rate") or payment.get("conversion_rate")
+                    or row.state.get("conversion_rate") or 1)
     _p_base = round(float(payment.get("amount") or 0) * _p_rate, 2)
 
     def _owns(state: dict) -> bool:
@@ -3560,9 +3680,14 @@ async def delete_payment(
             + [round(float(e.get("credit") or 0), 2) for e in state.get("entries", [])]
         return any(abs(m - _p_base) < 0.02 for m in magnitudes)
 
+    # A payment an imported snapshot carried has no payment entry of its own: what
+    # it settled is reversed against retained earnings below.
+    imported_books = await imported_payment_books(session, company_id, entity_id, row, payment)
     je_id = f"je:auto:{entity_id}:pay:{payment_index}"
     je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
-    if je_row is None or not _owns(je_row.state):
+    if imported_books is not None:
+        je_row = None
+    elif je_row is None or not _owns(je_row.state):
         _pay_rows = (await session.execute(
             _sa.select(Projection).where(
                 Projection.company_id == company_id,
@@ -3632,6 +3757,16 @@ async def delete_payment(
             idempotency_key=f"{je_id}:void:del:{payment_index}",
             metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
         )
+    if imported_books is not None:
+        await auto_je.void_for_doc_payment(
+            session, company_id=company_id, user_id=user.id, doc_id=entity_id, payment_index=payment_index,
+            amount=to_stored_float(_refundable(payment, str(row.state.get("currency") or "USD").upper())),
+            bank_account_code=imported_books.bank_account, doc_type=row.state.get("doc_type", "invoice"),
+            refund_date=payment.get("payment_date"), base_currency=imported_books.base_currency,
+            doc_rate=imported_books.doc_rate, settlement_rate=imported_books.settlement_rate)
+    if row.state.get("doc_type") == "credit_note":
+        await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=user.id,
+                                                    doc_id=entity_id, payment_index=payment_index)
 
     await return_unmatched(session, company_id, entity_id, payment.get("reference"))
     await session.commit()
@@ -5252,6 +5387,7 @@ async def import_doc(
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
     if auto_je.imported_issue_kind(body.data) is not None:
         _require_doc_rate_http(body.data, _imp_base_currency)
+    await check_imported_snapshot(session, company_id, body.entity_id, body.data, _imp_base_currency)
     if auto_je.imported_issue_kind(body.data) == "bill":
         await require_line_destinations(session, company_id, body.data.get("line_items"))
     data = await imported_opening_snapshot(session, company_id, imported_settlement_free(body.data))

@@ -562,6 +562,33 @@ async def _recognized_account(session, company_id, doc_id: str, role, settings: 
     return next(iter(codes)) if len(codes) == 1 else None
 
 
+async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *,
+                             releasing: bool = False) -> list[dict] | None:
+    """A credit note's issue lines (Dr revenue and output tax, Cr receivable, each on the
+    account its invoice recognized it on), or with *releasing* the same lines the other
+    way round. None when it carries no amount."""
+    total, tax, revenue = _sale_totals(doc, base_currency)
+    if not total:
+        return None
+    settings = await current_settings(session, company_id)
+    original = str(doc.get("original_doc_id") or "")
+    ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
+    sales = await _recognized_account(session, company_id, original, R.SALES_REVENUE, settings) if original else None
+    roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sales)) if not have]
+    acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else [])])
+
+    def side(amount: float, debit: bool) -> dict:
+        debit = debit != releasing
+        return {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
+
+    entries = [_line(sales or acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
+    if tax:
+        entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, **side(tax, True)))
+    entries.append(_origin_line(settings, ar, R.RECEIVABLE, **side(total, False)) if ar
+                   else _line(acc[R.RECEIVABLE], R.RECEIVABLE, **side(total, False)))
+    return entries
+
+
 async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_id: str, doc: dict,
                                            base_currency: str = "USD", ts: str | None = None,
                                            memo: str | None = None) -> None:
@@ -572,21 +599,10 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
     (credited_quantities), and goods that come back are booked by the return. Dated when
     the credit note was issued unless ``ts`` says otherwise, with ``memo`` replacing the
     standard one."""
-    total, tax, revenue = _sale_totals(doc, base_currency)
-    if not total:
+    entries = await _credit_note_lines(session, company_id, doc, base_currency)
+    if not entries:
         return
     cycle_suffix, je_type_key = _finalize_cycle(doc, "credit_note")
-    settings = await current_settings(session, company_id)
-    original = str(doc.get("original_doc_id") or "")
-    ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
-    sales = await _recognized_account(session, company_id, original, R.SALES_REVENUE, settings) if original else None
-    roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sales)) if not have]
-    acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else [])])
-    entries = [_line(sales or acc[R.SALES_REVENUE], R.SALES_REVENUE, debit=revenue)]
-    if tax:
-        entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, debit=tax))
-    entries.append(_origin_line(settings, ar, R.RECEIVABLE, credit=total) if ar
-                   else _line(acc[R.RECEIVABLE], R.RECEIVABLE, credit=total))
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -601,24 +617,36 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
     )
 
 
-async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str, doc: dict,
-                                   base_currency: str = "USD", ts: str | None = None,
-                                   memo: str | None = None) -> None:
-    """Bring a credit note's posted receivable to its invoice's rate. ``doc`` carries the
-    invoice's rate; what the credit note's posted entries took off the receivable at its
-    own rate, less what that rate makes of its total, moves the receivable back by the
-    difference against exchange gain or loss, so the credit note clears the receivable
-    at the rate its invoice raised it. Posts nothing when they agree."""
-    settings = await current_settings(session, company_id)
-    original = str(doc.get("original_doc_id") or "")
-    ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
-    ar = ar or await resolve(session, company_id, R.RECEIVABLE)
-    posted = [row for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
-              if (row.state or {}).get("status") == "posted"]
-    taken = sum((to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
-                 for row in posted for e in (row.state or {}).get("entries") or [] if e.get("account") == ar),
-                _Dec(0))
-    gap = taken - to_decimal(_sale_totals(doc, base_currency)[0])
+async def release_credit_note_open(session, *, company_id, user_id, doc_id: str, doc: dict, amount,
+                                   base_currency: str = "USD") -> None:
+    """Take back the part of a credit note's issue entry its open balance holds, once its
+    invoice is void: the sale it reversed no longer stands, so the credit nobody used is
+    released (Dr receivable, Cr revenue and output tax, in the issue entry's proportions)
+    and only what it already paid out stays booked. Posts nothing when nothing is open."""
+    currency = doc.get("currency", "USD")
+    total = to_decimal(round_money(doc.get("total", 0), currency))
+    amount = to_decimal(round_money(amount or 0, currency))
+    if amount <= 0 or total <= 0:
+        return
+    tax = to_decimal(round_money(to_decimal(doc.get("tax") or 0) * amount / total, currency))
+    share = {**doc, "total": to_stored_float(amount), "tax": to_stored_float(tax)}
+    entries = await _credit_note_lines(session, company_id, share, base_currency, releasing=True)
+    if not entries:
+        return
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:release",
+        idem_create=je_idempotency_key(doc_id, "credit_note.release", "c"),
+        idem_posted=je_idempotency_key(doc_id, "credit_note.release", "p"),
+        memo=f"Credit left open on {doc_id} released: its invoice is void",
+        entries=entries,
+        metadata_={"trigger": "doc.voided", "doc_id": doc_id},
+    )
+
+
+async def _restate_receivable(session, *, company_id, user_id, doc_id: str, settings: dict, ar: str, gap,
+                              je_id: str, op: str, memo: str, ts, metadata_: dict) -> None:
+    """Move the receivable back by ``gap`` (what an entry took off it less what it should
+    have) against exchange gain or loss. Posts nothing when ``gap`` is 0."""
     if not gap:
         return
     entries = [_origin_line(settings, ar, R.RECEIVABLE, debit=to_stored_float(max(gap, _Dec(0))),
@@ -626,47 +654,167 @@ async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str,
     role = _fx_difference_role(entries)
     acc = await resolve_many(session, company_id, [role])
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:fin:rate",
-        idem_create=je_idempotency_key(doc_id, "credit_note.rate", "c"),
-        idem_posted=je_idempotency_key(doc_id, "credit_note.rate", "p"),
-        memo=memo or f"Credit note {doc_id} brought to its invoice's rate",
-        ts=ts or doc.get("finalized_at") or doc.get("issue_date"),
-        entries=_balanced_with_fx_difference(entries, _line(acc[role], role)),
-        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        idem_create=je_idempotency_key(doc_id, op, "c"), idem_posted=je_idempotency_key(doc_id, op, "p"),
+        memo=memo, ts=ts, entries=_balanced_with_fx_difference(entries, _line(acc[role], role)),
+        metadata_=metadata_,
+    )
+
+
+async def _credit_note_payment_receivable(session, company_id, doc_id: str, payment: dict, ar: str):
+    """What a credit note's refund or application put back on the receivable for the credit
+    note, as its posted entry shows, or None when it has no posted entry."""
+    index = payment.get("index")
+    if payment.get("method") == "refund":
+        je_id = f"je:auto:{doc_id}:pay:{index}"
+    else:
+        je_id = f"je:auto:{payment.get('target_doc_id')}:cnapply:{doc_id}:{index}"
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if row is None or (row.state or {}).get("status") != "posted":
+        return None
+    lines = [e for e in (row.state or {}).get("entries") or [] if e.get("account") == ar and to_decimal(e.get("debit"))]
+    return sum((to_decimal(e.get("debit")) for e in lines), _Dec(0)) if lines else None
+
+
+async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str, doc: dict,
+                                   base_currency: str = "USD", ts: str | None = None,
+                                   memo: str | None = None) -> None:
+    """Bring a credit note's posted receivable to its invoice's rate. ``doc`` carries the
+    invoice's rate; what the credit note's posted entries took off the receivable at its
+    own rate, less what that rate makes of its total, moves the receivable back by the
+    difference against exchange gain or loss, so the credit note clears the receivable
+    at the rate its invoice raised it. Each active refund or application already posted
+    at the credit note's own rate has its receivable side restated the same way, on an
+    entry of its own (``payrate``) that undoing the refund or application takes back
+    (void_credit_note_payment_rate); the cash a refund paid stays what was paid. Posts
+    nothing when they agree, and nothing twice."""
+    settings = await current_settings(session, company_id)
+    original = str(doc.get("original_doc_id") or "")
+    ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
+    ar = ar or await resolve(session, company_id, R.RECEIVABLE)
+    posted = [row for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
+              if (row.state or {}).get("status") == "posted"]
+    if posted:
+        taken = sum((to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
+                     for row in posted for e in (row.state or {}).get("entries") or [] if e.get("account") == ar),
+                    _Dec(0))
+        await _restate_receivable(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, settings=settings, ar=ar,
+            gap=taken - to_decimal(_sale_totals(doc, base_currency)[0]), je_id=f"je:auto:{doc_id}:fin:rate",
+            op="credit_note.rate", memo=memo or f"Credit note {doc_id} brought to its invoice's rate",
+            ts=ts or doc.get("finalized_at") or doc.get("issue_date"),
+            metadata_={"trigger": "doc.finalized", "doc_id": doc_id})
+    rate = require_doc_rate(doc, base_currency)
+    for payment in doc.get("payments") or []:
+        if payment.get("status", "active") != "active" or payment.get("method") not in ("refund", "applied"):
+            continue
+        put_back = await _credit_note_payment_receivable(session, company_id, doc_id, payment, ar)
+        if put_back is None:
+            continue
+        index = payment.get("index")
+        should = to_decimal(to_base(float(payment.get("amount") or 0), rate, base_currency))
+        await _restate_receivable(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, settings=settings, ar=ar,
+            gap=should - put_back, je_id=f"je:auto:{doc_id}:payrate:{index}", op=f"credit_note.payrate:{index}",
+            memo=f"{'Refund' if payment.get('method') == 'refund' else 'Application'} {index} of credit note "
+                 f"{doc_id} brought to its invoice's rate",
+            ts=ts or payment.get("payment_date"),
+            metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": index})
+
+
+async def void_credit_note_payment_rate(session, *, company_id, user_id, doc_id: str, payment_index) -> bool:
+    """Take back what true_up_credit_note_rate restated of a credit note's refund or
+    application, once that refund or application is undone."""
+    return await _void_je_if_posted(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+        je_id=f"je:auto:{doc_id}:payrate:{payment_index}",
+        idem_key=je_idempotency_key(doc_id, f"credit_note.payrate:{payment_index}", "void"),
+        reason=f"Refund or application {payment_index} of {doc_id} undone", trigger="doc.payment.voided")
+
+
+async def _post_opening_settled(session, *, company_id, user_id, doc_id: str, doc: dict, amount, base_currency: str,
+                                op: str, suffix: str, memo: str) -> None:
+    """Settled before the import, at the document's rate: an invoice's part Cr receivable,
+    a credit note's Dr receivable, against retained earnings. The cash it moved is in the
+    opening balances, so only the receivable it left behind stands."""
+    amount = round_money(amount or 0, doc.get("currency", "USD"))
+    if amount <= 0:
+        return
+    amount = to_base(to_stored_float(amount), require_doc_rate(doc, base_currency), base_currency)
+    settings = await current_settings(session, company_id)
+    on_invoice = doc.get("doc_type") == "invoice"
+    invoice = doc_id if on_invoice else str(doc.get("original_doc_id") or "")
+    ar = await party_origin(session, company_id, invoice, R.RECEIVABLE, settings) if invoice else None
+    acc = await resolve_many(session, company_id, [R.RETAINED_EARNINGS, *([] if ar else [R.RECEIVABLE])])
+    receivable = (_origin_line(settings, ar, R.RECEIVABLE) if ar else _line(acc[R.RECEIVABLE], R.RECEIVABLE))
+    entries = [{**receivable, "debit": 0.0 if on_invoice else amount, "credit": amount if on_invoice else 0.0},
+               _line(acc[R.RETAINED_EARNINGS], R.RETAINED_EARNINGS,
+                     debit=amount if on_invoice else 0.0, credit=0.0 if on_invoice else amount)]
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:{suffix}",
+        idem_create=je_idempotency_key(doc_id, op, "c"),
+        idem_posted=je_idempotency_key(doc_id, op, "p"),
+        memo=memo,
+        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        entries=entries,
+        metadata_={"trigger": "doc.imported", "doc_id": doc_id},
     )
 
 
 async def create_for_imported_paid(session, *, company_id, user_id, doc_id: str, doc: dict,
                                    base_currency: str = "USD") -> None:
     """What an imported invoice or credit note says was already paid on it before the
-    import comes off the receivable against retained earnings, as other value the books
-    first recognize at an import does: the cash it moved is in the opening balances, so
-    only the receivable it left behind stands. An invoice's paid part is Cr receivable,
-    a credit note's (refunded before the import) Dr receivable. Not a payment and not
-    recognition: no payment is recorded, and a void (refused on a paid document) never
-    reverses it. Posts nothing when nothing was paid."""
-    paid = round_money(doc.get("amount_paid") or 0, doc.get("currency", "USD"))
-    if paid <= 0:
-        return
-    amount = to_base(to_stored_float(paid), require_doc_rate(doc, base_currency), base_currency)
-    settings = await current_settings(session, company_id)
-    invoice = doc_id if doc.get("doc_type") == "invoice" else str(doc.get("original_doc_id") or "")
-    ar = await party_origin(session, company_id, invoice, R.RECEIVABLE, settings) if invoice else None
-    acc = await resolve_many(session, company_id, [R.RETAINED_EARNINGS, *([] if ar else [R.RECEIVABLE])])
-    on_invoice = doc.get("doc_type") == "invoice"
-    receivable = (_origin_line(settings, ar, R.RECEIVABLE) if ar else _line(acc[R.RECEIVABLE], R.RECEIVABLE))
-    entries = [{**receivable, "debit": 0.0 if on_invoice else amount, "credit": amount if on_invoice else 0.0},
-               _line(acc[R.RETAINED_EARNINGS], R.RETAINED_EARNINGS,
-                     debit=amount if on_invoice else 0.0, credit=0.0 if on_invoice else amount)]
-    await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:opening-paid",
-        idem_create=je_idempotency_key(doc_id, "imported.paid", "c"),
-        idem_posted=je_idempotency_key(doc_id, "imported.paid", "p"),
-        memo=f"Paid on {doc_id} before it was imported",
-        ts=doc.get("finalized_at") or doc.get("issue_date"),
-        entries=entries,
-        metadata_={"trigger": "doc.imported", "doc_id": doc_id},
+    import (refunded, on a credit note) comes off the receivable against retained
+    earnings, as other value the books first recognize at an import does. Not a payment
+    and not recognition: no payment is recorded for it. Posts nothing when nothing was
+    paid."""
+    await _post_opening_settled(session, company_id=company_id, user_id=user_id, doc_id=doc_id, doc=doc,
+                                amount=doc.get("amount_paid"), base_currency=base_currency, op="imported.paid",
+                                suffix="opening-paid", memo=f"Paid on {doc_id} before it was imported")
+
+
+async def create_for_imported_used(session, *, company_id, user_id, doc_id: str, doc: dict, amount,
+                                   base_currency: str = "USD") -> None:
+    """What an imported credit note says it settled before the import, on an invoice these
+    books do not hold issued, comes off its credit against retained earnings, as its
+    refunded part does (create_for_imported_paid). Reversed by void_imported_used once its
+    invoice is in the books and takes it off its own balance."""
+    await _post_opening_settled(session, company_id=company_id, user_id=user_id, doc_id=doc_id, doc=doc,
+                                amount=amount, base_currency=base_currency, op="imported.used",
+                                suffix="opening-used", memo=f"Used on {doc_id} before it was imported")
+
+
+async def void_imported_used(session, *, company_id, user_id, doc_id: str) -> bool:
+    """Reverse what create_for_imported_used posted for a credit note, once its invoice
+    holds that settlement itself."""
+    return await _void_je_if_posted(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=f"je:auto:{doc_id}:opening-used",
+        idem_key=je_idempotency_key(doc_id, "imported.used", "void"),
+        reason=f"Settled on its invoice: {doc_id}", trigger="doc.imported")
+
+
+async def imported_payment_indexes(session, company_id, doc_id: str | None = None) -> dict[str, set[int]]:
+    """doc id -> the indexes of the payments an imported snapshot carried. They were made
+    before the import: their cash is in the opening balances and the receivable they
+    cleared left with the paid-before-import entry (create_for_imported_paid), so they
+    post no payment entry and undoing one reverses that entry, never the bank."""
+    from celerp.models.ledger import LedgerEntry
+
+    query = _select(LedgerEntry.entity_id, LedgerEntry.data, LedgerEntry.metadata_).where(
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.entity_type == "doc",
+        LedgerEntry.event_type == "doc.created",
     )
+    if doc_id is not None:
+        query = query.where(LedgerEntry.entity_id == doc_id)
+    found: dict[str, set[int]] = {}
+    for entity_id, data, meta in (await session.execute(query)).all():
+        if not (meta or {}).get(IMPORTED_SNAPSHOT):
+            continue
+        indexes = {int(p.get("index", i)) for i, p in enumerate((data or {}).get("payments") or [])}
+        if indexes:
+            found[entity_id] = indexes
+    return found
 
 
 _PURCHASE_TYPES = ("bill", "purchase_order")

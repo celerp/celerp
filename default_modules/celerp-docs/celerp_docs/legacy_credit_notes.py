@@ -24,15 +24,18 @@ settled, and each earlier credit note is then settled as one issued now would be
   takes the invoice's rate, and an entry already posted at its own rate is brought to
   the invoice's against exchange gain or loss.
 - A credit note in draft, void or deleted gives its invoice the reduction back.
-- An issued credit note whose invoice is void is voided with it, posting nothing (one
-  that already paid out is posted instead, keeping what is left open).
+- An issued credit note whose invoice is void is voided with it, posting nothing. One
+  that already paid out is posted and keeps only what it paid out; what it still had
+  open is released and the credit note is closed (close_credit_on_void_invoice).
+- An issued credit note whose invoice is in draft is posted and settled when the invoice
+  is issued again (the invoice's finalize runs this settlement for it).
 
 Document amounts and lines never change. The owner is told each outcome by credit note
 number, and each document touched is logged.
 
 Runs in the lifespan, gated by a marker so it runs once per database; a company staged for
-a migration, or a credit note that could not be settled, leaves the marker unset for the
-next start. Settling one twice changes nothing: the settlement it writes on the invoice is
+a migration, a credit note that could not be settled, or one still waiting for its invoice
+to be issued again leaves the marker unset for the next start. Settling one twice changes nothing: the settlement it writes on the invoice is
 what marks the pair settled.
 """
 
@@ -66,7 +69,7 @@ def _outcome(key: str, **params) -> dict:
     return refusal(f"{_NOTICE}.{key}", t(f"{_NOTICE}.{key}", "en", **params), **params)
 
 
-async def _legacy_effects(session: AsyncSession, company_id=None) -> dict:
+async def _legacy_effects(session: AsyncSession, company_id=None, invoice_id: str | None = None) -> dict:
     """Per (company, invoice, credit note), the last effect a credit note had on its
     invoice, for the pairs whose last effect is an earlier release's reduction: it says it
     reduced the balance and does not record by how much."""
@@ -76,6 +79,8 @@ async def _legacy_effects(session: AsyncSession, company_id=None) -> dict:
                                   LedgerEntry.metadata_["source_credit_note"].as_string().isnot(None))
     if company_id is not None:
         q = q.where(LedgerEntry.company_id == company_id)
+    if invoice_id is not None:
+        q = q.where(LedgerEntry.entity_id == invoice_id)
     last: dict = {}
     for e in (await session.execute(q.order_by(LedgerEntry.id))).scalars():
         last[(e.company_id, e.entity_id, str(e.metadata_["source_credit_note"]))] = e
@@ -156,40 +161,49 @@ async def _void_with_invoice(session, company_id, cn_id: str, note: dict) -> Non
 
 async def _post(session, company_id, cn_id: str, note: dict, inv: dict, label: str) -> None:
     """Post the credit note's entry at its full amount at its invoice's rate, or bring
-    one already posted at another rate to the invoice's."""
+    one already posted at another rate to the invoice's, with what its refunds and
+    applications already put back on the receivable (auto_je.true_up_credit_note_rate).
+    A refund keeps the books it posted on, so undoing it gives back the cash it paid."""
     from celerp.events.engine import emit_event
     from celerp.models.company import Company
     from celerp.services import auto_je
     from celerp.services.money import to_decimal
 
+    company = await session.get(Company, company_id)
+    base = (company.settings or {}).get("currency", "USD") if company else "USD"
     rate = inv.get("conversion_rate")
     if rate not in (None, "") and to_decimal(note.get("conversion_rate") or rate) != to_decimal(rate):
+        own = float(note.get("conversion_rate") or 1)
+        payments = [{**p, "books": p.get("books") or {"bank_account": p.get("bank_account"), "base_currency": base,
+                                                        "doc_rate": own, "settlement_rate": own}}
+                    if p.get("method") == "refund" else p for p in note.get("payments") or []]
+        changed = {"conversion_rate": {"old": note.get("conversion_rate"), "new": rate}}
+        if payments != (note.get("payments") or []):
+            changed["payments"] = {"old": note.get("payments"), "new": payments}
         await emit_event(session, company_id=company_id, entity_id=cn_id, entity_type="doc", event_type="doc.updated",
-                         data={"fields_changed": {"conversion_rate": {"old": note.get("conversion_rate"), "new": rate}},
-                               "takes_invoice_rate": True},
+                         data={"fields_changed": changed, "takes_invoice_rate": True},
                          actor_id=None, location_id=None, source="api",
                          idempotency_key=f"credit-note-backfill:{cn_id}:rate", metadata_={SOURCE: True})
         log.info("Earlier %s takes its invoice's rate %s instead of %s", label, rate, note.get("conversion_rate"))
-        note = {**note, "conversion_rate": rate}
-    company = await session.get(Company, company_id)
-    base = (company.settings or {}).get("currency", "USD") if company else "USD"
+        note = {**note, "conversion_rate": rate, "payments": payments}
     issued = str(note.get("finalized_at") or note.get("issue_date") or date.today().isoformat())[:10]
     open_day = await _first_open_day(session, company_id, issued)
     memo = (f"Credit note {_number(note, cn_id)} issued {issued}, posted on the first open day after "
             f"the locked period") if open_day else None
     if await _posted_entry(session, company_id, cn_id):
-        await auto_je.true_up_credit_note_rate(session, company_id=company_id, user_id=None, doc_id=cn_id, doc=note,
-                                               base_currency=base, ts=open_day, memo=memo)
         log.info("Earlier %s: its entry was already posted", label)
-        return
-    await auto_je.create_for_credit_note_finalized(session, company_id=company_id, user_id=None, doc_id=cn_id,
-                                                   doc=note, base_currency=base, ts=open_day, memo=memo)
-    log.info("Earlier %s posted on %s", label, open_day or issued)
+    else:
+        await auto_je.create_for_credit_note_finalized(session, company_id=company_id, user_id=None, doc_id=cn_id,
+                                                       doc=note, base_currency=base, ts=open_day, memo=memo)
+        log.info("Earlier %s posted on %s", label, open_day or issued)
+    await auto_je.true_up_credit_note_rate(session, company_id=company_id, user_id=None, doc_id=cn_id, doc=note,
+                                           base_currency=base, ts=open_day, memo=memo)
 
 
 async def _settle(session: AsyncSession, company_id, invoice_id: str, cn_id: str, effect) -> tuple[str, list] | None:
-    """Settle one credit note. Returns what was done ("settled" or "restored") with the
-    notice lines it adds, or None when it was left as it is."""
+    """Settle one credit note. Returns what was done ("settled", "restored", or "pending"
+    while its invoice is in draft) with the notice lines it adds, or None when it was
+    left as it is."""
     from celerp.models.projections import Projection
     from celerp.services.money import round_money, to_decimal
     from celerp_docs.routes import emit_credit_settlement, legacy_credit_reduction
@@ -199,9 +213,16 @@ async def _settle(session: AsyncSession, company_id, invoice_id: str, cn_id: str
     inv, note = (invoice.state if invoice else None) or {}, (cn.state if cn else None) or {}
     number = _number(note, cn_id)
     label = f"credit note {number} on invoice {_number(inv, invoice_id)}"
-    if inv.get("status") in (None, "draft"):
-        log.warning("Earlier %s left as it is: the invoice is %s", label, inv.get("status") or "missing")
+    if inv.get("status") is None:
+        log.warning("Earlier %s left as it is: the invoice is missing", label)
         return None
+    if inv.get("status") == "draft":
+        # Settled when the invoice is issued again (settle_legacy_credit_notes from the
+        # finalize). Until then an issued credit note stands open, so its entry posts.
+        if note.get("status") in _ISSUED:
+            await _post(session, company_id, cn_id, note, inv, label)
+        log.info("Earlier %s waits for its invoice to be issued again", label)
+        return "pending", []
     currency = str(inv.get("currency") or "USD").upper()
 
     def money(state, key):
@@ -217,8 +238,12 @@ async def _settle(session: AsyncSession, company_id, invoice_id: str, cn_id: str
             log.info("Earlier %s voided: its invoice is void", label)
             return "restored", [("voided", number)]
         if inv.get("status") == "void":
-            # It paid out before its invoice was voided: posted, it keeps what is left open.
+            # It paid out before its invoice was voided: posted, it keeps only what it paid
+            # out, and what it still had open is released (close_credit_on_void_invoice).
+            from celerp_docs.routes import close_credit_on_void_invoice
+
             await _post(session, company_id, cn_id, note, inv, label)
+            await close_credit_on_void_invoice(session, company_id, None, cn_id)
             log.warning("Earlier %s paid out %s before its invoice was voided", label, money(note, "amount_paid"))
             return "settled", [("settled", number)]
         log.info("Earlier %s is %s: gave the invoice back the %s it reduced", label,
@@ -252,23 +277,25 @@ async def _settle(session: AsyncSession, company_id, invoice_id: str, cn_id: str
     return "settled", lines
 
 
-async def settle_legacy_credit_notes(session: AsyncSession, company_id=None) -> dict:
-    """Settle every credit note an earlier release issued (one company's, or all). Caller
-    owns the transaction. A credit note that cannot be settled is logged and left."""
+async def settle_legacy_credit_notes(session: AsyncSession, company_id=None, invoice_id: str | None = None) -> dict:
+    """Settle every credit note an earlier release issued (one company's, or all, or the
+    ones on one invoice, as its finalize does). Caller owns the transaction. A credit
+    note that cannot be settled is logged and left; one whose invoice is in draft is
+    pending until the invoice is issued again."""
     from celerp.notifications.service import notify_once
     from celerp.services.migrations import is_company_migration_staged
 
     lines: dict = {}
-    settled = restored = errored = 0
+    settled = restored = errored = pending = 0
     staged: dict = {}
-    for (cid, invoice_id, cn_id), effect in (await _legacy_effects(session, company_id)).items():
+    for (cid, inv_id, cn_id), effect in (await _legacy_effects(session, company_id, invoice_id)).items():
         if cid not in staged:
             staged[cid] = await is_company_migration_staged(session, cid)
         if staged[cid]:
             continue
         try:
             async with session.begin_nested():
-                done = await _settle(session, cid, invoice_id, cn_id, effect)
+                done = await _settle(session, cid, inv_id, cn_id, effect)
         except HTTPException as exc:
             if exc.status_code == 503:
                 raise  # backup in progress: nothing lands, the next start retries
@@ -282,9 +309,11 @@ async def settle_legacy_credit_notes(session: AsyncSession, company_id=None) -> 
         if done is None:
             continue
         what, added = done
+        pending += what == "pending"
         settled += what == "settled"
         restored += what == "restored"
-        lines.setdefault(cid, []).extend(added)
+        if added:
+            lines.setdefault(cid, []).extend(added)
     for cid, found in lines.items():
         outcomes = []
         for key in ("settled", "restored", "voided"):
@@ -296,7 +325,8 @@ async def settle_legacy_credit_notes(session: AsyncSession, company_id=None) -> 
                           _outcome("body", outcomes=" ".join(o["message"] for o in outcomes))["message"],
                           i18n={"title": f"{_NOTICE}.title", "body": f"{_NOTICE}.body",
                                 "params": {"outcomes": outcomes}})
-    return {"settled": settled, "restored": restored, "errored": errored, "staged": any(staged.values())}
+    return {"settled": settled, "restored": restored, "errored": errored, "pending": pending,
+            "staged": any(staged.values())}
 
 
 async def legacy_credit_notes_hook(*, session: AsyncSession) -> None:
@@ -306,8 +336,8 @@ async def legacy_credit_notes_hook(*, session: AsyncSession) -> None:
     if await conn.run_sync(lambda c: get_meta(c, MARKER_KEY)):
         return
     out = await settle_legacy_credit_notes(session)
-    if not out["errored"] and not out["staged"]:
+    if not out["errored"] and not out["staged"] and not out["pending"]:
         await conn.run_sync(lambda c: set_meta(c, MARKER_KEY, "done"))
-    elif out["settled"] or out["errored"]:
-        log.info("Settled %d earlier credit note(s); %d failed (marker left unset; the next start retries)",
-                 out["settled"], out["errored"])
+    elif out["settled"] or out["errored"] or out["pending"]:
+        log.info("Settled %d earlier credit note(s); %d failed, %d wait for their invoice (marker left unset; "
+                 "the next start retries)", out["settled"], out["errored"], out["pending"])

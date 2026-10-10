@@ -33,6 +33,7 @@ from celerp_docs.routes import (
     _import_metadata,
     _lock_imported_contact,
     _require_doc_rate_http,
+    check_imported_snapshot,
     imported_opening_snapshot,
     imported_settlement_free,
     settle_imported_credit,
@@ -153,6 +154,7 @@ async def _create_doc(
     await _assert_import_number_free(session, company_id, "doc", rec.data)
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
+    await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
     data = imported_settlement_free(rec.data)
     if post_ledger:
         if auto_je.imported_issue_kind(data) == "bill":

@@ -71,7 +71,8 @@ async def _documents_with_posting_event(
     """Documents whose own history holds the event that posts their entry.
 
     Keyed by posting kind: "invoice" for a finalize (or a snapshot import that
-    posts an invoice on create), "purchase_order" for a received purchase order
+    posts an invoice on create), "credit_note" for a snapshot import that posts
+    an issued credit note on create, "purchase_order" for a received purchase order
     imported as a snapshot (an earlier release posted its receipt on import; the
     one-time correction of those imports, not this check, owns that entry, and an
     import now posts nothing), "receipt" for goods received on the document (each
@@ -84,8 +85,8 @@ async def _documents_with_posting_event(
     entries are neither owed nor safe to void without review."""
     from celerp.services.auto_je import IMPORTED_SNAPSHOT, imported_issue_kind
 
-    posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set(), "receipt": set()}
-    unrecorded: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
+    posted_by: dict[str, set[str]] = {"invoice": set(), "credit_note": set(), "purchase_order": set(), "receipt": set()}
+    unrecorded: dict[str, set[str]] = {"invoice": set(), "credit_note": set(), "purchase_order": set()}
     for entity_id, event_type, data, meta in (await session.execute(
         select(
             LedgerEntry.entity_id, LedgerEntry.event_type,
@@ -136,6 +137,9 @@ async def _check_missing_jes(
     )).scalars().all())
 
     posted_by, _ = await _documents_with_posting_event(session, company_id)
+    from celerp.services.auto_je import imported_payment_indexes
+
+    imported_payments = await imported_payment_indexes(session, company_id)
 
     from celerp.models.company import Company
     from celerp.services.money import checked_exchange_rate, require_doc_rate
@@ -192,15 +196,17 @@ async def _check_missing_jes(
                     existing_keys.add(fin_key)
                     fixed += 1
 
-            bank_pays = [
-                p for p in (state.get("payments") or [])
-                if p.get("status") == "active"
-                and p.get("method") not in ("credit_note", "applied")
-            ]
+            # What was paid before an import is booked by the paid-before-import entry,
+            # so neither the payments the snapshot carried nor its paid amount owe a
+            # payment entry.
+            opening_paid = je_idempotency_key(entity_id, "imported.paid", "c") in existing_keys
+            before_import = imported_payments.get(entity_id, set()) if opening_paid else set()
             bank_all = [
                 p for p in (state.get("payments") or [])
                 if p.get("method") not in ("credit_note", "applied")
+                and p.get("index", 0) not in before_import
             ]
+            bank_pays = [p for p in bank_all if p.get("status") == "active"]
             pay_key_prefix = f"je:{entity_id}:invoice.paid:"
             minted = sum(
                 1 for key in existing_keys
@@ -230,7 +236,7 @@ async def _check_missing_jes(
                         )
                         existing_keys.add(pay_key)
                         fixed += 1
-            elif not bank_pays and not (state.get("payments") or []):
+            elif not bank_pays and not (state.get("payments") or []) and not opening_paid:
                 amount_paid = float(state.get("amount_paid", 0) or 0)
                 agg_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
                 if amount_paid > 0 and agg_key not in existing_keys:
@@ -265,7 +271,7 @@ async def _check_missing_jes(
 # kinds one of whose events has to be in the document's own history for the
 # entry to be owed. The COGS backfill only ever followed a finalize entry.
 _RECOGNITION_CAUSE = {
-    "doc.finalized": ("invoice",),
+    "doc.finalized": ("invoice", "credit_note"),
     "doc.cogs_backfill": ("invoice",),
     "doc.received": ("purchase_order", "receipt"),
 }

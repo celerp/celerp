@@ -77,7 +77,7 @@ async def _refund(client, auth, cn, amount):
 async def _rerun_changes_nothing(session, auth):
     before = await _events(session, auth)
     again = await _backfill(session, auth)
-    assert again == {"settled": 0, "restored": 0, "errored": 0, "staged": False}, again
+    assert again == {"settled": 0, "restored": 0, "errored": 0, "pending": 0, "staged": False}, again
     assert await _events(session, auth) == before
 
 
