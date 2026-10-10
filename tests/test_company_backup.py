@@ -88,7 +88,7 @@ def _bk_not_running(monkeypatch, name: str) -> None:
 def _bk_unsupported() -> str:
     """The export refusal for a table of the test module: it names the module, never the table."""
     from celerp.modules.loader import module_label
-    return _bk_cb().UNSUPPORTED_MODULE.format(label=module_label(_BK_MODULE))
+    return t(_bk_cb().UNSUPPORTED_MODULE, "en", label=module_label(_BK_MODULE))
 
 
 def _bk_cb():
@@ -2347,7 +2347,7 @@ async def test_a_module_table_not_declared_names_the_module(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == _bk_cb().UNDECLARED.format(label=module_label(_BK_MODULE))
+        assert r.json()["detail"] == t(_bk_cb().UNDECLARED, "en", label=module_label(_BK_MODULE))
     finally:
         await _bk_drop(real_engine, "zz_Gadgets")
 
