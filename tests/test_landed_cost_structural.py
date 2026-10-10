@@ -175,13 +175,13 @@ def _callers(*targets: str) -> dict[tuple[str, str], set[str]]:
 _INV = "default_modules/celerp-inventory/celerp_inventory"
 _DOCS = "default_modules/celerp-docs/celerp_docs/routes.py"
 
-# Every function that carves a lot (carve_cost, or pools_kept for units leaving), and how the
+# Every function that carves a lot (carve_cost, or cost_kept for units leaving), and how the
 # value that leaves reaches the books. "value_moved": it posts value_moved itself.
 # "value_boundary": the quantity event is booked by lot_origin.value_boundary, which posts
 # value_moved. "lot_to_lot": the carve moves cost between lots on one account and posts
 # nothing; what each part carries is checked by its own callers below.
 _CARVERS = {
-    (f"{_INV}/services.py", "pools_kept"): "helper",
+    (f"{_INV}/services.py", "cost_kept"): "helper",
     (f"{_INV}/services.py", "adjust_item_quantity"): "value_boundary",
     (f"{_INV}/routes.py", "split_item"): "lot_to_lot",
     (f"{_INV}/routes.py", "split_off_child"): "lot_to_lot",
@@ -202,7 +202,7 @@ _SPLIT_CALLERS = {
 # A new way of carving a lot has to say how its value reaches the books, and one that takes
 # value off the books has to post value_moved: the set of carvers is closed.
 def test_every_carve_posts_through_value_moved():
-    carvers = _callers("carve_cost", "pools_kept")
+    carvers = _callers("carve_cost", "cost_kept")
     assert set(carvers) == set(_CARVERS), sorted(set(carvers) ^ set(_CARVERS))
     for key, how in _CARVERS.items():
         if how == "value_moved":

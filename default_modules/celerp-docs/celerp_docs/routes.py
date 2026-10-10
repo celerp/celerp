@@ -11824,7 +11824,7 @@ async def adjust_audit(
 
     from celerp.services.lot_origin import value_moved
     from celerp_inventory.projections import apply_item_event
-    from celerp_inventory.services import pools_kept
+    from celerp_inventory.services import cost_kept
 
     currency = await auto_je.company_currency(session, company_id)
     shrink_val = Decimal(0)
@@ -11853,7 +11853,7 @@ async def adjust_audit(
         if abs(cqf - live) < 1e-9:
             continue
         adjustment = {"new_qty": cqf, "reason": "audit", "source_list_id": entity_id, "prior_qty": live,
-                      **pools_kept(item.state, cqf, currency)}
+                      **cost_kept(item.state, cqf, currency)}
         # The undo puts back exactly the cost the lot had, once its unit cost is still what
         # the count left it at, so it is taken before the count moves the lot.
         l["prior_cost"] = {k: item.state[k] for k in ("cost_base", "landed_costs") if k in item.state}
