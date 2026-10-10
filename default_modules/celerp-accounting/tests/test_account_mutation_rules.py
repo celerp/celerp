@@ -16,6 +16,7 @@ import uuid
 import pytest
 
 from celerp.services.company_lock import locked_company
+from ui.i18n import refusal_text
 
 
 async def _reg(client, name="RulesCo") -> dict:
@@ -158,7 +159,7 @@ async def test_deactivating_a_role_target_is_refused_with_the_role_named(client,
     await _point_role(session, cid, "receivable", "1120")
     r = await _patch(client, h, "1120", is_active=False)
     assert r.status_code == 409, r.text
-    assert "Accounts receivable" in r.json()["detail"]
+    assert "Accounts receivable" in refusal_text(r.json()["detail"])
     assert (await _chart(client, h))["1120"]["is_active"] is True
 
 
@@ -170,7 +171,7 @@ async def test_retyping_a_role_target_to_a_type_the_role_cannot_use_is_refused(c
     await _point_role(session, cid, "sales_revenue", "8860")
     r = await _patch(client, h, "8860", account_type="expense")
     assert r.status_code == 409, r.text
-    assert "Sales revenue" in r.json()["detail"]
+    assert "Sales revenue" in refusal_text(r.json()["detail"])
     assert (await _chart(client, h))["8860"]["account_type"] == "revenue"
 
 

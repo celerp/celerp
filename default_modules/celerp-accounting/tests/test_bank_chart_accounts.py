@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -165,7 +165,7 @@ async def test_cash_in_a_company_that_never_connected_online_payments_is_kept_on
     r = await client.patch("/accounting/accounts/1110", headers=_h(tok), json=change)
 
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert detail.startswith("Account 1110 is the posting account for Cash and cash equivalents")
     assert "nline payments" not in detail
     acc = await _chart_account(client, tok, "1110")

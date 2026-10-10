@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from celerp.events.engine import emit_event
 from celerp.services.account_roles import PostingRoleError, resolve, resolve_many, set_role
+from ui.i18n import refusal_text
 from celerp.services.company_lock import locked_company
 
 
@@ -67,7 +68,7 @@ async def test_line_on_an_account_missing_from_the_chart_is_refused(client, sess
     with pytest.raises(HTTPException) as exc:
         await _post(session, cid, [{"account": "9999", "debit": 5}, {"account": "1120", "credit": 5}])
     assert exc.value.status_code == 422
-    assert "9999" in exc.value.detail
+    assert "9999" in refusal_text(exc.value.detail)
 
 
 @pytest.mark.asyncio

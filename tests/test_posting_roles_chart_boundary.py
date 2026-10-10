@@ -18,6 +18,7 @@ from celerp.accounting_roles import ROLE_TYPES, AccountRole
 from celerp.services.account_roles import set_role
 from celerp_accounting.chart_rules import change_account
 from celerp_accounting.import_service import create_chart_account
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -85,7 +86,7 @@ async def test_a_header_with_active_accounts_under_it_stays_active(session, auth
     with pytest.raises(HTTPException) as err:
         await change_account(session, cid, "9300", is_active=False)
     assert err.value.status_code == 409
-    assert "9300-1" in err.value.detail
+    assert "9300-1" in refusal_text(err.value.detail)
     await change_account(session, cid, "9300-1", is_active=False)
     assert (await change_account(session, cid, "9300", is_active=False)).is_active is False
 
@@ -98,7 +99,7 @@ async def test_an_account_cannot_be_switched_on_under_an_inactive_header(session
     with pytest.raises(HTTPException) as err:
         await change_account(session, cid, "9400-1", is_active=True)
     assert err.value.status_code == 422
-    assert "9400 is inactive" in err.value.detail
+    assert "9400 is inactive" in refusal_text(err.value.detail)
 
 
 async def test_a_chart_file_cannot_add_an_account_under_a_role_target(client, auth):
@@ -117,11 +118,12 @@ async def test_a_refused_type_is_named_without_a_wrong_article(session, auth):
     cid = auth["company_id"]
     with pytest.raises(HTTPException) as served:
         await change_account(session, cid, "1120", account_type="expense")
-    assert served.value.detail.endswith("; an account of type expense cannot serve it.")
+    assert refusal_text(served.value.detail).endswith("; an account of type Expense cannot serve it.")
     await _header(session, cid, "9300", "asset")
     with pytest.raises(HTTPException) as child:
         await change_account(session, cid, "9300", account_type="expense")
-    assert child.value.detail == "Account 9300-1 (asset) sits under 9300; it cannot sit under an account of type expense."
+    assert refusal_text(child.value.detail) == (
+        "Account 9300-1 (asset) sits under 9300; it cannot sit under an account of type Expense.")
     with pytest.raises(HTTPException) as parent:
         await create_chart_account(session, cid, code="9301", name="Fees", account_type="expense", parent_code="9300")
     assert parent.value.detail == "An account of type expense cannot sit under 9300, an account of type asset."
