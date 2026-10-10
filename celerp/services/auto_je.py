@@ -313,13 +313,20 @@ async def doc_lot_pool(session, company_id, doc_id: str | None, line_items: list
 
     ``lots`` maps entity id to a lot dict (pick.as_lot) carrying the document-level
     demand claim; ``attributed`` maps each line index to the holds of ``doc_id`` that
-    belong to it (pick.attribute_holds), so one line never draws another line's hold."""
-    from celerp_inventory.projections import demand_claim
+    belong to it (pick.attribute_holds), so one line never draws another line's hold.
+    Goods out with the customer on this document (a memo converted to it handed them
+    over) are its own, as its holds are; goods out on any other document are nobody's
+    to cost."""
+    from celerp_inventory.projections import OWN_RESERVED, demand_claim
+
+    def claim(state: dict) -> str | None:
+        if doc_id and state.get("status") == "memo_out" and state.get("status_doc_id") == doc_id:
+            return OWN_RESERVED
+        return demand_claim(state, doc_id)
 
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
-    lots = {r.entity_id: as_lot(r.entity_id, r.created_at, r.state or {}, demand_claim(r.state or {}, doc_id))
-            for r in rows}
+    lots = {r.entity_id: as_lot(r.entity_id, r.created_at, r.state or {}, claim(r.state or {})) for r in rows}
     held = {eid: lot["state"] for eid, lot in lots.items() if lot["claim"] == "reserved"}
     attributed, _orphans, _ambiguous = attribute_holds(line_items, held)
     return lots, attributed
