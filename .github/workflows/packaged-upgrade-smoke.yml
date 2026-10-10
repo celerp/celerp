@@ -2,7 +2,9 @@ name: Packaged Upgrade Smoke
 
 # The packaged app through a user's upgrade and downgrade: the latest release,
 # then the candidate over it, then the release again over the candidate, then the
-# candidate once more. Nightly and on demand, never per pull request.
+# candidate once more. Every tag's release build runs it on its own binaries
+# before anything is published (build.yml), and it runs on demand on any build;
+# never per pull request.
 #
 # Linux runs each copy over one data directory. The previous release registers
 # an owner, which writes the first ledger events, and creates a location; every
@@ -12,24 +14,29 @@ name: Packaged Upgrade Smoke
 # updater makes (--updated). The pip updater, its state file and a 2.5.0 data
 # directory are covered by scripts/e2e_update.py (E6).
 #
-# The candidate is one Build Binaries run, so Linux and Windows test the same
-# commit: the nightly build of main when it completes, or the run given as
-# candidate_run. Both take the same checks (scripts/upgrade_candidate.py) before
-# either platform starts: the run succeeded, it built the commit its branch
-# pointed at when the run was created, and it carries both platforms' binaries.
-# A failed or incomplete nightly build fails this workflow, it is never skipped.
-# Each platform then checks that the installed candidate is newer than the
-# previous release, so the job never tests a downgrade as an upgrade. Releases
-# before GUARDED_SINCE do not check the version of an install or of the data
-# before opening it, so with such a release as "previous" the downgrade step
-# reports what happened and asserts nothing.
+# The candidate is one Build Binaries run, candidate_run, so Linux and Windows
+# test the same commit: in a release, the tag's own run; on demand, any run. Both
+# take the same checks (scripts/upgrade_candidate.py) before either platform
+# starts: the run's Linux and Windows builds succeeded, it built the commit its
+# tag points at (or its branch pointed at when the run was created), and it
+# carries both platforms' binaries. The previous release is the latest published
+# one, never the draft a release build is filling. Each platform then checks that
+# the installed candidate is newer than the previous release, so the job never
+# tests a downgrade as an upgrade. Releases before GUARDED_SINCE do not check the
+# version of an install or of the data before opening it, so with such a release
+# as "previous" the downgrade step reports what happened and asserts nothing.
 
 on:
-  # Runs from the default branch's copy of this file only.
-  workflow_run:
-    workflows: ["Build Binaries"]
-    types: [completed]
-    branches: [main]
+  workflow_call:
+    inputs:
+      previous:
+        description: "Release tag to upgrade from (blank: the latest release)"
+        type: string
+        default: ""
+      candidate_run:
+        description: "Build Binaries run id to take the candidate from"
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       previous:
@@ -50,8 +57,6 @@ env:
 
 jobs:
   candidate:
-    # The nightly is the scheduled build; other builds of main are not candidates.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.check.outputs.run }}
@@ -66,12 +71,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS: ${{ inputs.previous }}
-          CANDIDATE_RUN: ${{ github.event.workflow_run.id || inputs.candidate_run }}
-          # The nightly must be a build of main; an ad hoc run may name any branch's build.
-          CANDIDATE_BRANCH: ${{ github.event_name == 'workflow_run' && 'main' || '' }}
-        run: python3 scripts/upgrade_candidate.py check "$CANDIDATE_RUN" $CANDIDATE_BRANCH
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        run: python3 scripts/upgrade_candidate.py check "$CANDIDATE_RUN"
 
   upgrade:
+    # scripts/release_gate.py finds these jobs by this name before PyPI publishes.
+    name: upgrade (${{ matrix.os }})
     needs: candidate
     strategy:
       fail-fast: false

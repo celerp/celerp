@@ -140,10 +140,12 @@ jobs:
 
       # PyPI cannot take a release back, so it follows the desktop builds of this
       # tag and commit: scripts/release_gate.py says when build.yml's run built every
-      # platform and attached the API schema. build.yml's release job waits for this
-      # workflow, so this waits for those jobs, never its whole run. Waits up to 4
-      # hours; anything else publishes nothing.
-      - name: Wait for the desktop builds of this commit
+      # platform, passed the packaged upgrade test on its Linux and Windows binaries
+      # and attached the API schema. A failed upgrade test publishes nothing here,
+      # as it leaves the GitHub release a draft. build.yml's release job waits for
+      # this workflow, so this waits for those jobs, never its whole run. Waits up
+      # to 4 hours; anything else publishes nothing.
+      - name: Wait for the desktop builds and upgrade test of this commit
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

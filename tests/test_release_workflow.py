@@ -3,8 +3,9 @@
 """The release workflows' own step scripts, run with the GitHub API stubbed.
 
 PyPI cannot take a release back, so it is published only after every desktop
-build of the same tag and commit succeeded, the GitHub release only after the
-PyPI release succeeded, and a version already released is never rebuilt. The
+build of the same tag and commit succeeded and those Linux and Windows binaries
+passed the packaged upgrade test, the GitHub release only after the PyPI release
+succeeded, and a version already released is never rebuilt. The
 GitHub API is a local server answering with the shapes and job names GitHub
 returns for a real release.
 """
@@ -115,6 +116,20 @@ def test_pypi_publishing_runs_only_on_a_tag_push():
     assert job.get("if") == "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
 
 
+def test_pypi_publishes_from_its_own_tag_push_workflow():
+    """PyPI's trusted publisher names publish.yml and its environment: the upload
+    must stay a job of publish.yml started by the tag push, never a workflow
+    another one calls or starts."""
+    wf = yaml.safe_load((_WORKFLOWS / "publish.yml").read_text())
+    assert wf[True] == {"push": {"tags": ["v*"]}, "workflow_dispatch": {"inputs": {"version": {
+        "description": "Version to build, for example 2.5.4", "required": True}}}}
+    job = wf["jobs"]["publish"]
+    assert job["environment"] == "pypi" and job["permissions"]["id-token"] == "write"
+    assert job["steps"][-1] == {"name": "Publish to PyPI", "uses": "pypa/gh-action-pypi-publish@release/v1"}
+    build = yaml.safe_load((_WORKFLOWS / "build.yml").read_text())["jobs"]
+    assert not any("publish.yml" in str(job.get("uses", "")) for job in build.values())
+
+
 
 
 _PYPI = "reached pypa/gh-action-pypi-publish"
@@ -131,6 +146,10 @@ def _matrix_job_names() -> dict[str, str]:
 
 _BUILD = _matrix_job_names()
 _LINUX, _WINDOWS, _MAC = _BUILD["ubuntu-latest"], _BUILD["windows-latest"], _BUILD["macos-latest"]
+# build.yml calls packaged-upgrade-smoke.yml as its upgrade-smoke job; GitHub names
+# a called workflow's jobs "<calling job> / <job>".
+_UPGRADE_CHECK = "upgrade-smoke / candidate"
+_UPGRADE_LINUX, _UPGRADE_WINDOWS = "upgrade-smoke / upgrade (ubuntu-latest)", "upgrade-smoke / upgrade (windows-latest)"
 
 
 class _GitHub(BaseHTTPRequestHandler):
@@ -186,7 +205,8 @@ def _job(name: str, conclusion: str | None = "success", attempt: int = 1) -> dic
 def _build_jobs(conclusions: dict[str, str | None] | None = None) -> list[dict]:
     """build.yml's jobs for a tag in GitHub's order, each succeeded unless given by
     name; "absent" leaves a job out. The release job is still waiting for PyPI."""
-    names = ["setup-matrix", "prepare-release", _LINUX, _WINDOWS, _MAC, "openapi-asset"]
+    names = ["setup-matrix", "prepare-release", _LINUX, _WINDOWS, _MAC, "openapi-asset",
+             _UPGRADE_CHECK, _UPGRADE_LINUX, _UPGRADE_WINDOWS]
     given = conclusions or {}
     jobs = [_job(n, given.get(n, "success")) for n in names if given.get(n) != "absent"]
     return jobs + [_job("publish-release", None)]
@@ -258,7 +278,7 @@ def test_pypi_is_not_published_when_a_required_job_is_duplicated(tmp_path, githu
 
 @pytest.mark.parametrize("job,conclusion", [
     ("openapi-asset", "failure"), ("setup-matrix", "cancelled"), ("prepare-release", "skipped"),
-    (_WINDOWS, "failure"), (_MAC, "cancelled"),
+    (_WINDOWS, "failure"), (_MAC, "cancelled"), (_UPGRADE_LINUX, "failure"), (_UPGRADE_WINDOWS, "skipped"),
 ])
 def test_pypi_is_not_published_when_a_prerequisite_did_not_succeed(tmp_path, github, job, conclusion):
     code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "in_progress", None)],
@@ -266,6 +286,33 @@ def test_pypi_is_not_published_when_a_prerequisite_did_not_succeed(tmp_path, git
     assert code != 0, out
     assert f"finished {conclusion}" in out
     assert _polls(github, "build.yml") == 1
+    assert _PYPI not in out
+
+
+@pytest.mark.parametrize("absent", [_UPGRADE_LINUX, _UPGRADE_WINDOWS])
+def test_pypi_is_not_published_when_a_finished_run_has_no_upgrade_test(tmp_path, github, absent):
+    code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "completed", "failure")],
+                                    {_BUILD_RUN: _build_jobs({absent: "absent"})})
+    assert code != 0, out
+    assert f"build.yml run {_BUILD_RUN} finished without {absent.split(' / ')[1]}" in out
+    assert _PYPI not in out
+
+
+def test_pypi_waits_for_the_upgrade_test_after_the_builds(tmp_path, github):
+    code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "in_progress", None)],
+                                    {_BUILD_RUN: _build_jobs({_UPGRADE_LINUX: None, _UPGRADE_WINDOWS: None})})
+    assert code != 0, out
+    assert "waiting for upgrade (ubuntu-latest), upgrade (windows-latest)" in out
+    assert _polls(github, "build.yml") == 240
+    assert _PYPI not in out
+
+
+@pytest.mark.parametrize("duplicate", ["upgrade (ubuntu-latest)", "other / upgrade (ubuntu-latest)"])
+def test_pypi_is_not_published_when_an_upgrade_test_is_duplicated(tmp_path, github, duplicate):
+    code, out, _ = _publish_to_pypi(tmp_path, github, [_workflow_run("build.yml", _BUILD_RUN, "in_progress", None)],
+                                    {_BUILD_RUN: _build_jobs() + [_job(duplicate)]})
+    assert code != 0, out
+    assert f"build.yml run {_BUILD_RUN} has 2 upgrade (ubuntu-latest) jobs" in out
     assert _PYPI not in out
 
 
@@ -340,8 +387,27 @@ def test_pypi_is_not_published_while_the_desktop_builds_never_finish(tmp_path, g
 
 
 def test_the_github_release_waits_for_every_build_prerequisite():
-    job = yaml.safe_load((_WORKFLOWS / "build.yml").read_text())["jobs"]["publish-release"]
-    assert {"prepare-release", "setup-matrix", "build", "openapi-asset"} <= set(job["needs"])
+    jobs = yaml.safe_load((_WORKFLOWS / "build.yml").read_text())["jobs"]
+    assert {"prepare-release", "setup-matrix", "build", "openapi-asset", "upgrade-smoke"} <= set(
+        jobs["publish-release"]["needs"])
+    # A failed upgrade test leaves the release a draft and opens the release-failure issue.
+    assert "upgrade-smoke" in jobs["notify-release-failure"]["needs"]
+
+
+def test_a_tag_build_upgrade_tests_its_own_linux_and_windows_binaries():
+    wf = yaml.safe_load((_WORKFLOWS / "build.yml").read_text())
+    smoke = wf["jobs"]["upgrade-smoke"]
+    assert smoke == {
+        "needs": ["build"],
+        "if": "${{ success() && startsWith(github.ref, 'refs/tags/v') }}",
+        "permissions": {"actions": "read", "contents": "read"},
+        "uses": "./.github/workflows/packaged-upgrade-smoke.yml",
+        "with": {"candidate_run": "${{ github.run_id }}"},
+    }
+    # Tag builds keep their binaries as workflow artifacts too, for the upgrade test.
+    upload = next(s for s in wf["jobs"]["build"]["steps"] if s.get("name") == "Upload artifacts")
+    assert "if" not in upload and upload["with"]["name"] == "binaries-${{ matrix.os }}"
+    assert "schedule" not in wf[True]
 
 
 @pytest.mark.parametrize("ref", ["", "@refs/tags/v9.9.9"], ids=["bare path", "path with ref"])
@@ -414,7 +480,7 @@ def test_the_github_release_reads_every_page_of_jobs(tmp_path, github):
 
 
 # ---------------------------------------------------------------------------
-# The nightly build and the candidate the packaged upgrade check installs
+# The build matrix and the candidate the packaged upgrade check installs
 # ---------------------------------------------------------------------------
 
 def _matrix(tmp_path: Path, event: str, platforms: str = "", ref_name: str = "main") -> list[str]:
@@ -427,45 +493,66 @@ def _matrix(tmp_path: Path, event: str, platforms: str = "", ref_name: str = "ma
     return [m["os"] for m in json.loads(line.removeprefix("matrix="))["include"]]
 
 
-@pytest.mark.parametrize("event,platforms,built", [
-    ("schedule", "", ["ubuntu-latest", "windows-latest"]),
-    ("workflow_dispatch", "linux-windows", ["ubuntu-latest", "windows-latest"]),
-    ("workflow_dispatch", "all", ["ubuntu-latest", "windows-latest", "macos-latest"]),
-    ("workflow_dispatch", "linux", ["ubuntu-latest"]),
-    ("pull_request", "", ["macos-latest"]),
-    ("push", "", ["ubuntu-latest", "windows-latest", "macos-latest"]),
+@pytest.mark.parametrize("event,platforms,ref_name,built", [
+    ("workflow_dispatch", "all", "main", ["ubuntu-latest", "windows-latest", "macos-latest"]),
+    ("workflow_dispatch", "linux", "main", ["ubuntu-latest"]),
+    ("pull_request", "", "main", ["macos-latest"]),
+    ("push", "", "bugfix", ["macos-latest"]),
+    ("push", "", "v9.9.9", ["ubuntu-latest", "windows-latest", "macos-latest"]),
 ])
-def test_the_nightly_builds_linux_and_windows_only(tmp_path, event, platforms, built):
-    assert _matrix(tmp_path, event, platforms) == built
+def test_each_event_builds_its_platforms(tmp_path, event, platforms, ref_name, built):
+    assert _matrix(tmp_path, event, platforms, ref_name) == built
 
 
 _CANDIDATE = 37700000001
-_HEAD, _OLD = "a" * 40, "b" * 40
+_HEAD, _OLD, _TAG_OBJECT = "a" * 40, "b" * 40, "d" * 40
 _REPO = "/repos/celerp/celerp"
 
 
 def _candidate_run(**fields) -> dict:
-    return {"id": _CANDIDATE, "name": "Build Binaries", "path": ".github/workflows/build.yml", "head_branch": "main",
-            "head_sha": _HEAD, "event": "schedule", "status": "completed", "conclusion": "success",
+    """A finished manual Build Binaries run of develop."""
+    return {"id": _CANDIDATE, "name": "Build Binaries", "path": ".github/workflows/build.yml", "head_branch": "develop",
+            "head_sha": _HEAD, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
             "created_at": "2026-10-11T03:17:05Z", **fields}
+
+
+def _release_run(**fields) -> dict:
+    """The Build Binaries run of tag v2.5.5, still running: the upgrade test is one of its jobs."""
+    return _candidate_run(**{"head_branch": "v2.5.5", "event": "push", "status": "in_progress", "conclusion": None,
+                             **fields})
 
 
 def _artifact(name: str, **fields) -> dict:
     return {"name": name, "expired": False, "size_in_bytes": 400_000_000, **fields}
 
 
+def _tag_ref(name: str, sha: str = _HEAD, kind: str = "commit") -> dict:
+    return {"ref": f"refs/tags/{name}", "object": {"type": kind, "sha": sha}}
+
+
 def _serve_candidate(github, run: dict, artifacts: list[dict] | None = None, activity: list[dict] | None = None,
-                     latest: str = "v2.5.4") -> None:
+                     tags: list[dict] | None = None, jobs: list[dict] | None = None, latest: str = "v2.5.4") -> None:
     if artifacts is None:
         artifacts = [_artifact("binaries-ubuntu-latest"), _artifact("binaries-windows-latest")]
     if activity is None:
-        # main moved on after the run was created; the run built the head before that.
+        # develop moved on after the run was created; the run built the head before that.
         activity = [{"timestamp": "2026-10-11T04:00:00Z", "after": "c" * 40, "before": _HEAD},
                     {"timestamp": "2026-10-10T12:23:11Z", "after": _HEAD, "before": _OLD}]
+    if tags is None:
+        # A prefix match: v2.5.5 lists v2.5.50 too, and a branch build finds no tag of its name.
+        tags = [_tag_ref("v2.5.5"), _tag_ref("v2.5.50", _OLD)]
+    if jobs is None:
+        # The release run's Linux and Windows builds are done; macOS is still building.
+        jobs = [_job("setup-matrix"), _job("prepare-release"), _job(_LINUX), _job(_WINDOWS), _job(_MAC, None)]
     github.pages[f"{_REPO}/actions/runs/{_CANDIDATE}"] = [(200, run)]
     github.pages[f"{_REPO}/actions/runs/{_CANDIDATE}/artifacts"] = [
         (200, {"total_count": len(artifacts), "artifacts": artifacts})]
+    github.pages[f"{_REPO}/actions/runs/{_CANDIDATE}/jobs?filter=latest"] = [
+        (200, {"total_count": len(jobs), "jobs": jobs})]
     github.pages[f"{_REPO}/activity"] = [(200, activity)]
+    github.pages[f"{_REPO}/git/matching-refs/tags/v2.5.5"] = [(200, tags)]
+    github.pages[f"{_REPO}/git/matching-refs/tags/develop"] = [(200, [])]
+    github.pages[f"{_REPO}/git/tags/{_TAG_OBJECT}"] = [(200, {"sha": _TAG_OBJECT, "object": {"type": "commit", "sha": _HEAD}})]
     github.pages[f"{_REPO}/releases/latest"] = [(200, {"tag_name": latest})]
     github.pages[f"{_REPO}/releases/tags/v2.5.3"] = [(200, {"tag_name": "v2.5.3"})]
 
@@ -475,40 +562,84 @@ def _check(tmp_path, github, *args: str, **env: str) -> tuple[int, str, str]:
     r = subprocess.run(["python3", "scripts/upgrade_candidate.py", "check", *args], capture_output=True, text=True,
                        cwd=_WORKFLOWS.parent.parent,
                        env=_env(tmp_path, **{"GITHUB_API_URL": github.url, "GITHUB_OUTPUT": str(out),
-                                             "GUARDED_SINCE": "2.5.4", "PREVIOUS": "", **env}))
+                                             "GITHUB_RUN_ID": "1", "GUARDED_SINCE": "2.5.4", "PREVIOUS": "", **env}))
     return r.returncode, r.stdout + r.stderr, out.read_text() if out.exists() else ""
 
 
-def test_the_nightly_candidate_is_the_successful_build_of_main_with_both_platforms(tmp_path, github):
-    _serve_candidate(github, _candidate_run())
-    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), "main")
+@pytest.mark.parametrize("tag", [_tag_ref("v2.5.5"), _tag_ref("v2.5.5", _TAG_OBJECT, "tag")],
+                         ids=["lightweight tag", "annotated tag"])
+def test_a_release_build_is_the_candidate_of_the_upgrade_test_it_runs(tmp_path, github, tag):
+    """Called from the tag's own run: the run is still in progress, its Linux and
+    Windows builds succeeded, and the tag points at the commit it built. The
+    previous release is the latest published one; the draft of this tag is not."""
+    _serve_candidate(github, _release_run(), tags=[tag])
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=str(_CANDIDATE))
     assert code == 0, out
     assert outputs.splitlines() == [f"run={_CANDIDATE}", f"sha={_HEAD}", "previous=v2.5.4", "previous_version=2.5.4",
-                                    "guarded=true", "branch=main"]
-    assert f"{_REPO}/activity?ref=refs%2Fheads%2Fmain&per_page=100" in github.calls
+                                    "guarded=true", "ref=v2.5.5"]
+    assert f"{_REPO}/releases/latest" in github.calls
+    assert not any(c.startswith(f"{_REPO}/activity") for c in github.calls)
+
+
+@pytest.mark.parametrize("conclusions,message", [
+    ({_WINDOWS: "failure"}, f"{_WINDOWS} in build run {_CANDIDATE} finished failure"),
+    ({_LINUX: None}, f"build run {_CANDIDATE} has not finished build (ubuntu-latest)"),
+    ({_LINUX: "absent"}, f"build run {_CANDIDATE} has not finished build (ubuntu-latest)"),
+    ({"duplicate": _WINDOWS}, f"build run {_CANDIDATE} has 2 build (windows-latest) jobs"),
+], ids=["windows failed", "linux running", "linux absent", "windows twice"])
+def test_a_release_build_without_both_binaries_built_fails_the_check(tmp_path, github, conclusions, message):
+    jobs = [_job(_MAC, None)]
+    for name in (_LINUX, _WINDOWS):
+        if conclusions.get(name) != "absent":
+            jobs.append(_job(name, conclusions.get(name, "success")))
+    if "duplicate" in conclusions:
+        jobs.append(_job(conclusions["duplicate"], "success", attempt=2))
+    _serve_candidate(github, _release_run(), jobs=jobs)
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=str(_CANDIDATE))
+    assert code == 1, out
+    assert message in out
+    assert outputs == ""
+
+
+def test_a_release_build_whose_tag_points_elsewhere_fails_the_check(tmp_path, github):
+    _serve_candidate(github, _release_run(), tags=[_tag_ref("v2.5.5", _OLD)])
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=str(_CANDIDATE))
+    assert code == 1, out
+    assert f"build run {_CANDIDATE} built {_HEAD}, but tag v2.5.5 points at {_OLD}" in out
+    assert outputs == ""
 
 
 def test_a_manual_candidate_takes_the_same_checks_against_its_own_branch(tmp_path, github):
-    _serve_candidate(github, _candidate_run(head_branch="ci/nightly", event="workflow_dispatch"))
+    _serve_candidate(github, _candidate_run())
     code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), PREVIOUS="v2.5.3")
     assert code == 0, out
-    assert "previous=v2.5.3\nprevious_version=2.5.3\nguarded=false\n" in outputs
-    assert f"{_REPO}/activity?ref=refs%2Fheads%2Fci%2Fnightly&per_page=100" in github.calls
+    assert outputs.splitlines() == [f"run={_CANDIDATE}", f"sha={_HEAD}", "previous=v2.5.3", "previous_version=2.5.3",
+                                    "guarded=false", "ref=develop"]
+    assert f"{_REPO}/activity?ref=refs%2Fheads%2Fdevelop&per_page=100" in github.calls
 
 
-@pytest.mark.parametrize("fields,message", [
-    ({"conclusion": "failure"}, "conclusion failure; only a successful build is a candidate"),
-    ({"conclusion": "cancelled"}, "conclusion cancelled"),
-    ({"status": "in_progress", "conclusion": None}, "is in_progress"),
-    ({"path": ".github/workflows/ci.yml"}, "not Build Binaries"),
-    ({"head_branch": "develop"}, "built develop, not main"),
-    ({"head_sha": _OLD}, f"built {_OLD}, but main pointed at {_HEAD} when the run was created"),
-], ids=["build failed", "build cancelled", "build running", "other workflow", "other branch", "not the head"])
-def test_a_build_that_is_not_the_nightly_head_or_did_not_succeed_fails_the_check(tmp_path, github, fields, message):
-    _serve_candidate(github, _candidate_run(**fields))
-    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), "main")
+def test_a_manual_candidate_may_be_a_finished_release_build(tmp_path, github):
+    _serve_candidate(github, _release_run(status="completed", conclusion="success"))
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE))
+    assert code == 0, out
+    assert "ref=v2.5.5" in outputs
+
+
+@pytest.mark.parametrize("run,message", [
+    (_candidate_run(conclusion="failure"), "conclusion failure; only a successful build is a candidate"),
+    (_candidate_run(conclusion="cancelled"), "conclusion cancelled"),
+    (_candidate_run(status="in_progress", conclusion=None),
+     "is in_progress; only a finished build, or the release build this check runs in, is a candidate"),
+    (_release_run(), "is in_progress; only a finished build, or the release build this check runs in"),
+    (_candidate_run(path=".github/workflows/ci.yml"), "not Build Binaries"),
+    (_candidate_run(head_sha=_OLD), f"built {_OLD}, but develop pointed at {_HEAD} when the run was created"),
+], ids=["build failed", "build cancelled", "build running", "another release build running", "other workflow",
+        "not the head"])
+def test_a_build_that_is_not_its_branch_head_or_did_not_succeed_fails_the_check(tmp_path, github, run, message):
+    _serve_candidate(github, run)
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE))
     assert code == 1, out
-    assert f"::error::" in out and message in out
+    assert "::error::" in out and message in out
     assert outputs == ""
 
 
@@ -520,26 +651,35 @@ def test_a_build_that_is_not_the_nightly_head_or_did_not_succeed_fails_the_check
      "binaries-windows-latest"),
     ([], "binaries-ubuntu-latest, binaries-windows-latest"),
 ], ids=["no windows", "no linux", "linux expired", "windows empty", "none"])
-def test_a_build_missing_either_platform_fails_the_check(tmp_path, github, artifacts, missing):
-    _serve_candidate(github, _candidate_run(), artifacts=artifacts)
-    code, out, _ = _check(tmp_path, github, str(_CANDIDATE), "main")
+@pytest.mark.parametrize("run,current", [(_candidate_run(), "1"), (_release_run(), str(_CANDIDATE))],
+                         ids=["branch build", "release build"])
+def test_a_build_missing_either_platform_fails_the_check(tmp_path, github, artifacts, missing, run, current):
+    _serve_candidate(github, run, artifacts=artifacts)
+    code, out, _ = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=current)
     assert code == 1, out
     assert f"build run {_CANDIDATE} carries no {missing}" in out
 
 
 def test_a_branch_with_no_recorded_head_before_the_run_fails_the_check(tmp_path, github):
     _serve_candidate(github, _candidate_run(), activity=[{"timestamp": "2026-10-11T04:00:00Z", "after": _HEAD}])
-    code, out, _ = _check(tmp_path, github, str(_CANDIDATE), "main")
+    code, out, _ = _check(tmp_path, github, str(_CANDIDATE))
     assert code == 1, out
-    assert "no change to main at or before 2026-10-11T03:17:05Z" in out
+    assert "no change to develop at or before 2026-10-11T03:17:05Z" in out
 
 
-@pytest.mark.parametrize("path", [f"actions/runs/{_CANDIDATE}", "activity", f"actions/runs/{_CANDIDATE}/artifacts",
-                                  "releases/latest"])
-def test_the_check_fails_when_the_github_api_fails(tmp_path, github, path):
-    _serve_candidate(github, _candidate_run())
+@pytest.mark.parametrize("path,run,current", [
+    (f"actions/runs/{_CANDIDATE}", _candidate_run(), "1"),
+    ("activity", _candidate_run(), "1"),
+    (f"actions/runs/{_CANDIDATE}/artifacts", _candidate_run(), "1"),
+    ("releases/latest", _candidate_run(), "1"),
+    ("git/matching-refs/tags/develop", _candidate_run(), "1"),
+    ("git/matching-refs/tags/v2.5.5", _release_run(), str(_CANDIDATE)),
+    (f"actions/runs/{_CANDIDATE}/jobs?filter=latest", _release_run(), str(_CANDIDATE)),
+])
+def test_the_check_fails_when_the_github_api_fails(tmp_path, github, path, run, current):
+    _serve_candidate(github, run)
     github.pages[f"{_REPO}/{path}"] = [(502, {"message": "Bad Gateway"})]
-    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), "main")
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), GITHUB_RUN_ID=current)
     assert code == 1, out
     assert "GitHub API returned HTTP 502" in out
     assert outputs == ""

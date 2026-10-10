@@ -6,17 +6,13 @@ on:
     branches: ["develop", "bugfix"]
   pull_request:
     branches: ["main"]   # mac-only unsigned build + boot smoke (pre-tag gate)
-  # Nightly Linux and Windows build of main; its completion starts the packaged
-  # upgrade check (packaged-upgrade-smoke.yml) on this run's binaries.
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Platforms to build on this manual run (linux-windows: what the nightly builds)"
+        description: "Platforms to build on this manual run"
         type: choice
         default: all
-        options: [all, linux-windows, windows, linux, mac]
+        options: [all, windows, linux, mac]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -71,8 +67,7 @@ jobs:
             *) echo "ERROR: PyPI lookup returned HTTP $STATUS" >&2; exit 1 ;;
           esac
 
-  # Compute the build matrix: the bugfix branch and pull requests build macOS only,
-  # the nightly schedule Linux and Windows only.
+  # Compute the build matrix: the bugfix branch and pull requests build macOS only.
   # Bugfix pushes use the normal signed-dev path; pull requests remain unsigned
   # because signing credentials must not be exposed to PR workflows.
   setup-matrix:
@@ -89,10 +84,8 @@ jobs:
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
           lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
           sel="$PLATFORMS"
-          [ "$GITHUB_EVENT_NAME" = "schedule" ] && sel=linux-windows
           if [ -n "$sel" ] && [ "$sel" != "all" ]; then
             case "$sel" in
-              linux-windows) inc="$lin,$win" ;;
               windows) inc="$win" ;;
               linux)   inc="$lin" ;;
               mac)     inc="$mac" ;;
@@ -967,8 +960,8 @@ jobs:
           check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
           exit $FAIL
 
-      - name: Upload artifacts (dev builds only)
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+      # A tag build keeps its binaries here too: the upgrade test installs them.
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.os }}
@@ -1057,15 +1050,31 @@ jobs:
           fi
           echo "Attached openapi.json to release $RELEASE_ID ($TAG)."
 
+  # ── Upgrade test of this release's binaries (tag builds only) ─────────────
+  # The Linux and Windows binaries this run built, installed over the latest
+  # published release, downgraded and upgraded again (packaged-upgrade-smoke.yml).
+  # Nothing is published unless it passes: publish-release needs it, and PyPI
+  # waits for it (scripts/release_gate.py desktop-builds in publish.yml).
+  upgrade-smoke:
+    needs: [build]
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/packaged-upgrade-smoke.yml
+    with:
+      candidate_run: ${{ github.run_id }}
+
   # ── Publish the release (tag builds only) ────────────────────────────────
   # Platform builds upload their assets to a DRAFT release (electron-builder
-  # publish releaseType=draft). Only once EVERY platform job has succeeded do we
-  # flip the release to published + latest - atomically, with all assets present.
-  # If any platform fails (e.g. macOS notarization), this job is skipped, the
-  # release stays a draft, and /releases/latest keeps serving the previous
-  # complete release: no 404 window during a build, and no partial release.
+  # publish releaseType=draft). Only once EVERY platform job and the upgrade
+  # test have succeeded do we flip the release to published + latest -
+  # atomically, with all assets present. If any of them fails (e.g. macOS
+  # notarization), this job is skipped, the release stays a draft, and
+  # /releases/latest keeps serving the previous complete release: no 404 window
+  # during a build, and no partial or untested release.
   publish-release:
-    needs: [prepare-release, setup-matrix, build, openapi-asset]
+    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
@@ -1133,7 +1142,7 @@ jobs:
           echo "Published $TAG as latest."
 
   # ── Alert on a failed release build ──────────────────────────────────────────
-  # When any platform (or prepare/publish) fails on a v* tag, the release is left as
+  # When any platform (or prepare, upgrade test or publish) fails on a v* tag, the release is left as
   # a draft and `latest` keeps serving the previous version - correct, but SILENT.
   # GitHub's default failure email only reaches whoever pushed the tag, if their
   # personal notification settings allow it. Open (or comment on) a tracking issue
@@ -1141,7 +1150,7 @@ jobs:
   # This is the only signal that e.g. macOS notarization broke (Apple agreement
   # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
   notify-release-failure:
-    needs: [prepare-release, setup-matrix, build, openapi-asset, publish-release]
+    needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke, publish-release]
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
@@ -1158,12 +1167,12 @@ jobs:
           gh label create release-failure --repo "$REPO" --color B60205 --force \
             --description "A release build failed; the release is stuck as a draft" || true
           cat > /tmp/release_failure.md <<EOF
-          The build for **$TAG** failed, so the release was left as a **draft and not published**.
+          The build or upgrade test for **$TAG** failed, so the release was left as a **draft and not published**.
 
           \`releases/latest\` still serves the previous complete release (no 404 window), but **$TAG will not ship on any platform until the build is fixed and the tag is re-pushed**.
 
           - Failed run: $RUN_URL
-          - Check which platform failed in the logs (e.g. macOS notarization / an expired Apple agreement).
+          - Check which platform or upgrade test failed in the logs (e.g. macOS notarization / an expired Apple agreement).
 
           Re-pushing the tag after a fix re-drafts and re-publishes automatically once every platform succeeds.
           If this version is already on PyPI and only publishing the release failed, re-run just the failed jobs of this run; a version on PyPI is never built again.

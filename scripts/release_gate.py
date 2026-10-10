@@ -3,9 +3,9 @@
 """Whether a tagged release may be published, read from GitHub Actions.
 
 PyPI cannot take a release back, so it is published only once build.yml's run for
-the same tag and commit built every desktop platform and attached the API schema;
-the GitHub release only once publish.yml's run for that tag and commit published
-to PyPI. A run counts only if its workflow, tag, commit and event all match, and
+the same tag and commit built every desktop platform, passed the packaged upgrade
+test on its Linux and Windows binaries and attached the API schema; the GitHub
+release only once publish.yml's run for that tag and commit published to PyPI. A run counts only if its workflow, tag, commit and event all match, and
 only when exactly one does.
 
     python scripts/release_gate.py desktop-builds   # in publish.yml, before PyPI
@@ -22,9 +22,13 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 
 PLATFORMS = ("ubuntu-latest", "windows-latest", "macos-latest")
 BUILD_PREREQUISITES = ("prepare-release", "setup-matrix", "openapi-asset")
+# packaged-upgrade-smoke.yml's jobs, called from build.yml. GitHub names a called
+# workflow's jobs "<calling job> / <job>", so they are matched on the last part.
+UPGRADE_TESTS = ("upgrade (ubuntu-latest)", "upgrade (windows-latest)")
 PENDING = 3
 
 
@@ -83,20 +87,34 @@ def _run(workflow: str) -> dict:
     return matching[0]
 
 
+def platform_builds(platforms: tuple[str, ...]) -> dict[str, Callable[[str], bool]]:
+    """build.yml's matrix build job of each platform, by the name GitHub gives it."""
+    return {f"build ({os_name})": lambda name, os_name=os_name: name.startswith(f"build ({os_name},")
+            for os_name in platforms}
+
+
+def unfinished(run_id: object, label: str, required: dict[str, Callable[[str], bool]]) -> list[str]:
+    """The required jobs of the run's current attempt that have not succeeded yet.
+    Refused when one is there more than once, or finished without succeeding."""
+    jobs = _list(f"{_api()}/runs/{run_id}/jobs?filter=latest&per_page=100", "jobs")
+    found = {name: [j for j in jobs if matches(j["name"])] for name, matches in required.items()}
+    for name, same in found.items():
+        if len(same) > 1:
+            raise Refused(f"{label} has {len(same)} {name} jobs")
+        if same and same[0]["status"] == "completed" and same[0]["conclusion"] != "success":
+            raise Refused(f"{same[0]['name']} in {label} finished {same[0]['conclusion']}")
+    return [name for name, same in found.items() if not same or same[0]["conclusion"] != "success"]
+
+
 def desktop_builds() -> None:
     """The current attempt of build.yml's run: exactly one successful build per
-    platform, and every job they depend on or that completes the release assets."""
+    platform, one successful upgrade test each on Linux and Windows, and every job
+    they depend on or that completes the release assets."""
     run = _run("build.yml")
-    jobs = _list(f"{_api()}/runs/{run['id']}/jobs?filter=latest&per_page=100", "jobs")
-    required = {name: [j for j in jobs if j["name"] == name] for name in BUILD_PREREQUISITES}
-    required |= {f"build ({os_name})": [j for j in jobs if j["name"].startswith(f"build ({os_name},")]
-                 for os_name in PLATFORMS}
-    for name, found in required.items():
-        if len(found) > 1:
-            raise Refused(f"build.yml run {run['id']} has {len(found)} {name} jobs")
-        if found and found[0]["status"] == "completed" and found[0]["conclusion"] != "success":
-            raise Refused(f"{found[0]['name']} in build.yml run {run['id']} finished {found[0]['conclusion']}")
-    missing = [name for name, found in required.items() if not found or found[0]["conclusion"] != "success"]
+    required = {name: lambda job, name=name: job == name for name in BUILD_PREREQUISITES}
+    required |= platform_builds(PLATFORMS)
+    required |= {name: lambda job, name=name: job.rsplit(" / ", 1)[-1] == name for name in UPGRADE_TESTS}
+    missing = unfinished(run["id"], f"build.yml run {run['id']}", required)
     if not missing:
         return
     if run["status"] == "completed":

@@ -345,13 +345,13 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
     assert 'xcrun stapler validate "$MOUNT_POINT/Celerp.app"' in verify
     assert 'if [[ "$GITHUB_REF" == refs/tags/v* ]]' in verify
 
-    # Both dev artifact upload and tag publication are downstream of this build step.
-    assert verify_idx < workflow.index("- name: Upload artifacts (dev builds only)")
+    # Both the artifact upload and tag publication are downstream of this build step.
+    assert verify_idx < workflow.index("- name: Upload artifacts")
     assert "publish-release:" in workflow
     publish_idx = workflow.index("  publish-release:")
     publish_block = workflow[publish_idx:publish_idx + 300]
     needs_line = next(l for l in publish_block.splitlines() if l.strip().startswith("needs:"))
-    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, openapi-asset]"
+    assert needs_line.strip() == "needs: [prepare-release, setup-matrix, build, openapi-asset, upgrade-smoke]"
 
 
 def test_build_workflow_exports_versioned_openapi_before_publish():
@@ -439,26 +439,27 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
     assert "taskkill /IM Celerp.exe /F" in win["run"] and "left the API or the database running" in win["run"]
 
 
-def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
-    """The nightly build of main starts the check when it completes, whatever its
-    conclusion, so a failed build fails the check instead of skipping it; a manual
-    run names its build. Both take the same candidate checks before either platform."""
-    build = _workflow("build.yml")[True]  # YAML 1.1 reads the bare key `on` as True
-    assert build["schedule"] == [{"cron": "17 3 * * *"}]
+def test_packaged_upgrade_smoke_runs_in_the_tag_release_and_on_demand_only():
+    """A tag's release build calls the check on its own binaries; a manual run names
+    its build. Both take the same candidate checks before either platform."""
+    build = _workflow("build.yml")
+    assert "schedule" not in build[True]  # YAML 1.1 reads the bare key `on` as True
+    assert build[True]["workflow_dispatch"]["inputs"]["platforms"]["options"] == ["all", "windows", "linux", "mac"]
     wf = _workflow("packaged-upgrade-smoke.yml")
     triggers = wf[True]
-    assert set(triggers) == {"workflow_run", "workflow_dispatch"}
-    assert triggers["workflow_run"] == {"workflows": ["Build Binaries"], "types": ["completed"], "branches": ["main"]}
-    assert triggers["workflow_dispatch"]["inputs"]["candidate_run"]["required"] is True
+    assert set(triggers) == {"workflow_call", "workflow_dispatch"}
+    for trigger in ("workflow_call", "workflow_dispatch"):
+        assert triggers[trigger]["inputs"]["candidate_run"]["required"] is True
+        assert triggers[trigger]["inputs"]["previous"]["default"] == ""
     candidate = wf["jobs"]["candidate"]
-    assert candidate["if"] == ("github.event_name == 'workflow_dispatch' || "
-                               "github.event.workflow_run.event == 'schedule'")
+    assert "if" not in candidate
     check = candidate["steps"][-1]
-    assert check["run"] == 'python3 scripts/upgrade_candidate.py check "$CANDIDATE_RUN" $CANDIDATE_BRANCH'
-    assert check["env"]["CANDIDATE_RUN"] == "${{ github.event.workflow_run.id || inputs.candidate_run }}"
-    assert check["env"]["CANDIDATE_BRANCH"] == "${{ github.event_name == 'workflow_run' && 'main' || '' }}"
+    assert check["run"] == 'python3 scripts/upgrade_candidate.py check "$CANDIDATE_RUN"'
+    assert check["env"]["CANDIDATE_RUN"] == "${{ inputs.candidate_run }}"
     upgrade = wf["jobs"]["upgrade"]
     assert upgrade["needs"] == "candidate"
+    # scripts/release_gate.py finds these jobs by name before PyPI publishes.
+    assert upgrade["name"] == "upgrade (${{ matrix.os }})"
     assert upgrade["env"]["CANDIDATE_RUN"] == "${{ needs.candidate.outputs.run }}"
     runs = "\n".join(s.get("run", "") for s in upgrade["steps"])
     assert "gh run list" not in runs and "dev-latest" not in runs

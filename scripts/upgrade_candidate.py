@@ -2,25 +2,29 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The build the packaged upgrade check installs, read from GitHub Actions.
 
-    python scripts/upgrade_candidate.py check <run id> [branch]
+    python scripts/upgrade_candidate.py check <run id>
     python scripts/upgrade_candidate.py newer <installed version> <previous version>
 
-check: Build Binaries run <run id> finished successfully, built the commit its
-branch (or the branch given) pointed at when the run was created, and carries
-the Linux and Windows binaries. A re-run keeps the commit its run was created
-with, so the branch head is read from the branch's push history at that moment,
-not now. The previous release is PREVIOUS, or the latest release when PREVIOUS
-is blank. Writes run, sha, previous, previous_version and guarded (whether the
-previous release checks the version of an install or its data before opening
-it, from GUARDED_SINCE) to GITHUB_OUTPUT.
+check: Build Binaries run <run id> succeeded, built the right commit, and
+carries the Linux and Windows binaries. A tag's release build runs the check
+inside itself (GITHUB_RUN_ID), before the run has finished: there its Linux and
+Windows build jobs must have succeeded. Any other run must have finished
+successfully. A tag build must have built the commit the tag points at; a
+branch build the commit its branch pointed at when the run was created (a
+re-run keeps that commit, so the head is read from the branch's push history at
+that moment, not now). The previous release is PREVIOUS, or when PREVIOUS is
+blank the latest release, which is never a draft or a prerelease. Writes run,
+sha, previous, previous_version, guarded (whether the previous release checks
+the version of an install or its data before opening it, from GUARDED_SINCE)
+and ref to GITHUB_OUTPUT.
 
 newer: the installed version's X.Y.Z is above the previous release's. A
 development build installs the next patch with a suffix
 (scripts/electron_version.py), so a suffixed version with the previous
 release's X.Y.Z was built before that release, not after it.
 
-Reads GITHUB_API_URL, GITHUB_REPOSITORY, GH_TOKEN, PREVIOUS, GUARDED_SINCE and
-GITHUB_OUTPUT. Exit status: 0 the candidate is fit to test, 1 it is not (any
+Reads GITHUB_API_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GH_TOKEN, PREVIOUS,
+GUARDED_SINCE and GITHUB_OUTPUT. Exit status: 0 the candidate is fit to test, 1 it is not (any
 API error included).
 """
 from __future__ import annotations
@@ -30,10 +34,11 @@ import re
 import sys
 from urllib.parse import quote
 
-from release_gate import Refused, _list, api_get
+from release_gate import Refused, _list, api_get, platform_builds, unfinished
 
 WORKFLOW = "build.yml"
-ARTIFACTS = ("binaries-ubuntu-latest", "binaries-windows-latest")
+PLATFORMS = ("ubuntu-latest", "windows-latest")
+ARTIFACTS = tuple(f"binaries-{os_name}" for os_name in PLATFORMS)
 _VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+].*)?")
 
 
@@ -76,34 +81,56 @@ def branch_head_at(branch: str, moment: str) -> str:
     raise Refused(f"no change to {branch} at or before {moment} in its activity")
 
 
-def check(run_id: str, branch: str = "") -> dict[str, str]:
+def tag_commit(name: str) -> str | None:
+    """The commit tag `name` points at, or None when there is no such tag."""
+    body, _ = api_get(f"{_repo()}/git/matching-refs/tags/{quote(name)}?per_page=100")
+    if not isinstance(body, list):
+        raise Refused(f"GitHub API returned no ref list for tag {name}")
+    target = next((ref["object"] for ref in body if ref.get("ref") == f"refs/tags/{name}"), None)
+    while target is not None and target["type"] == "tag":  # an annotated tag points at its tag object
+        target = _get(f"{_repo()}/git/tags/{target['sha']}")["object"]
+    return None if target is None else target["sha"]
+
+
+def check(run_id: str) -> dict[str, str]:
     if not run_id.isdigit():
         raise Refused(f"candidate run {run_id!r} is not a run id")
     run = _get(f"{_repo()}/actions/runs/{run_id}")
+    label = f"build run {run_id}"
     if not re.fullmatch(rf"\.github/workflows/{re.escape(WORKFLOW)}(@.+)?", run.get("path", "")):
         raise Refused(f"run {run_id} is {run.get('path')}, not Build Binaries")
-    if run.get("status") != "completed" or run.get("conclusion") != "success":
-        raise Refused(f"build run {run_id} is {run.get('status')}, conclusion {run.get('conclusion')}; "
+    if run.get("status") != "completed":
+        if run_id != os.environ.get("GITHUB_RUN_ID"):
+            raise Refused(f"{label} is {run.get('status')}; "
+                          "only a finished build, or the release build this check runs in, is a candidate")
+        missing = unfinished(run_id, label, platform_builds(PLATFORMS))
+        if missing:
+            raise Refused(f"{label} has not finished {', '.join(missing)}")
+    elif run.get("conclusion") != "success":
+        raise Refused(f"{label} is {run.get('status')}, conclusion {run.get('conclusion')}; "
                       "only a successful build is a candidate")
-    sha, built_from = run["head_sha"], run["head_branch"]
-    if branch and built_from != branch:
-        raise Refused(f"build run {run_id} built {built_from}, not {branch}")
-    head = branch_head_at(built_from, run["created_at"])
-    if sha != head:
-        raise Refused(f"build run {run_id} built {sha}, but {built_from} pointed at {head} "
-                      f"when the run was created ({run['created_at']})")
+    sha, ref = run["head_sha"], run["head_branch"]
+    tagged = tag_commit(ref)
+    if tagged is not None:
+        if sha != tagged:
+            raise Refused(f"{label} built {sha}, but tag {ref} points at {tagged}")
+    else:
+        head = branch_head_at(ref, run["created_at"])
+        if sha != head:
+            raise Refused(f"{label} built {sha}, but {ref} pointed at {head} "
+                          f"when the run was created ({run['created_at']})")
     present = {a["name"] for a in _list(f"{_repo()}/actions/runs/{run_id}/artifacts?per_page=100", "artifacts")
                if not a.get("expired") and a.get("size_in_bytes", 0) > 0}
     missing = [name for name in ARTIFACTS if name not in present]
     if missing:
-        raise Refused(f"build run {run_id} carries no {', '.join(missing)}")
+        raise Refused(f"{label} carries no {', '.join(missing)}")
     previous = os.environ.get("PREVIOUS", "").strip()
     release = _get(f"{_repo()}/releases/tags/{previous}" if previous else f"{_repo()}/releases/latest")
     previous = release["tag_name"]
     guarded = release_number(previous) >= release_number(os.environ["GUARDED_SINCE"])
     return {"run": run_id, "sha": sha, "previous": previous,
             "previous_version": ".".join(map(str, release_number(previous))), "guarded": str(guarded).lower(),
-            "branch": built_from}
+            "ref": ref}
 
 
 def main() -> int:
@@ -111,11 +138,11 @@ def main() -> int:
         if sys.argv[1] == "newer":
             newer(sys.argv[2], sys.argv[3])
             return 0
-        found = check(*sys.argv[2:4])
+        found = check(sys.argv[2] if len(sys.argv) > 2 else "")
     except Refused as e:
         print(f"::error::{e}")
         return 1
-    print(f"candidate: build run {found['run']}, {found['branch']} at {found['sha']}, Linux and Windows binaries; "
+    print(f"candidate: build run {found['run']}, {found['ref']} at {found['sha']}, Linux and Windows binaries; "
           f"previous release {found['previous']} (checks before opening: {found['guarded']})")
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as out:
