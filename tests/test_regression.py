@@ -51,7 +51,6 @@ class TestRouteRegistration:
         "/manufacturing",
         "/dashboard",
         "/settings",
-        # "/scanning",  # Scanning module disabled until complete
         "/search",
     ]
 
