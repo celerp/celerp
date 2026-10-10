@@ -920,7 +920,7 @@ async def patch_user(
                     )
 
             if user.is_install_owner:
-                # The installation owner keeps access to every company: only
+                # The installation owner keeps access to every active company: only
                 # after they hand that role to someone else can they be deactivated.
                 raise HTTPException(status_code=400, detail=t("error.install_owner_deactivate"))
 

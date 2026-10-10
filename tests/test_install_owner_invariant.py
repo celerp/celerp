@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The installation owner keeps access to every company they belong to: no member can
-deactivate them in any company, however many companies they belong to. The refusal
+"""The installation owner keeps access to every active company they belong to: no member
+can deactivate them in any company, however many companies they belong to. Another owner
+of a company may still change their role there, or deactivate that company itself. The refusal
 says how to do it: make someone else the installation owner first, in Global Config,
 Users, which the installation owner can do there."""
 
@@ -57,6 +58,19 @@ async def test_api_refuses_to_deactivate_the_installation_owner_in_any_company(c
     assert "Global Config" in detail and "Users" in detail
     users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
     assert next(u for u in users if u["id"] == admin_id)["is_active"] is True
+
+
+async def test_another_owner_may_demote_them_and_deactivate_the_company(client, session):
+    admin_h, admin_id, second_token, _ = await _two_owners(client, session)
+    second_h = {"Authorization": f"Bearer {second_token}"}
+    r = await client.patch(f"/companies/me/users/{admin_id}", json={"role": "operator"}, headers=second_h)
+    assert r.status_code == 200, r.text
+    users = (await client.get("/companies/me/users", headers=second_h)).json()["items"]
+    demoted = next(u for u in users if u["id"] == admin_id)
+    assert (demoted["role"], demoted["is_active"], demoted["is_install_owner"]) == ("operator", True, True)
+    r = await client.delete("/companies/me", headers=second_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["is_active"] is False
 
 
 async def test_users_screen_shows_the_refusal_and_where_to_transfer(client, session):
