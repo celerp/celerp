@@ -2057,32 +2057,50 @@ async def imported_document(session, company_id, doc_id: str) -> ImportedDocumen
 
 async def _carriage_entries(session, company_id, imported: ImportedDocument) -> list[dict]:
     """What the opening balances hold for an imported document, as the entry its bill
-    would book: a bill's whole entry; for a purchase order, each line's share received
-    when it was imported. A purchase order's receipts book only the goods, so its tax and
-    shipping are not in the opening balances; its bill books them when it is converted."""
+    would book. For a bill, its whole entry, except that goods it had already received are
+    in opening stock, held by their lots: what is owed for them is held against retained
+    earnings, never in transit. For a purchase order, each line's share received when it
+    was imported. A purchase order's receipts book only the goods, so its tax and shipping
+    are not in the opening balances; its bill books them when it is converted."""
     snapshot = imported.snapshot
     base_currency = await company_currency(session, company_id)
     built = await _bill_entries(session, company_id, imported.doc_id, snapshot, base_currency)
     if built is None:
         return []
     entries, sources, debits = built
-    if snapshot.get("doc_type") == "bill":
-        return entries
     from celerp.services.document_lines import received_line_index
 
     lines = snapshot.get("line_items") or []
     received: dict[int, _Dec] = {}
     for x in snapshot.get("received_items") or []:
         index = received_line_index(lines, x)
-        if index is not None:
+        if index is not None and (x.get("receive_as") or "stock") == "stock":
             received[index] = received.get(index, _Dec(0)) + to_decimal(x.get("quantity_received"))
+
+    def received_share(source: int | None) -> _Dec:
+        ordered = to_decimal(lines[source].get("quantity")) if source is not None else _Dec(0)
+        return min(received.get(source, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
+
+    if snapshot.get("doc_type") == "bill":
+        held: list[dict] = []
+        in_stock = _Dec(0)
+        for e, s, d in zip(entries, sources, debits):
+            stock = s is not None and bill_line_kind(lines[s]) == "stock"
+            amount = round_money(d * received_share(s), base_currency) if stock else _Dec(0)
+            if amount:
+                in_stock += amount
+                e = {**e, "debit": to_stored_float(d - amount)}
+            if to_decimal(e["debit"]):
+                held.append(e)
+        if in_stock:
+            held.append(_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
+                              debit=to_stored_float(in_stock)))
+        return [*held, entries[-1]]
     carried = []
     for e, s, d in zip(entries, sources, debits):
         if s is None:
             continue
-        ordered = to_decimal(lines[s].get("quantity"))
-        share = min(received.get(s, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
-        amount = round_money(d * share, base_currency)
+        amount = round_money(d * received_share(s), base_currency)
         if amount:
             carried.append({**e, "debit": to_stored_float(amount)})
     if not carried:

@@ -373,6 +373,23 @@ async def test_repair_legacy_bill_voided_before_the_repair(client, session, auth
     await _step(client, session, auth, [bill], "finalize", "post", FIN)
 
 
+@pytest.mark.parametrize("undone", [VOID, REV])
+async def test_repair_legacy_bill_with_goods_received_undone_before_the_repair(client, session, auth, monkeypatch,
+                                                                               undone):
+    """5 billed, 2 already received when imported: the opening balances hold 70 owed and the
+    3 in transit (42); the 2 received are in the lot's opening stock. Voided or reverted to
+    draft under the earlier release, the repair takes out of the opening balances the 70 owed
+    and the 42 in transit. The 2 received stay in stock where the lot holds them, so
+    the 28 owed for them leaves against the equity the opening balances held it against."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    equity = (await _books(session, auth, "3200"))["3200"]
+    bill = await _legacy(client, session, auth, lot, doc_type="bill", qty=5, received=2)
+    await _earlier_release(client, monkeypatch, auth, bill, undone)
+    await _repaired(session, auth, [bill])
+    assert await _books(session, auth, IN_TRANSIT, AP, "3200") == {IN_TRANSIT: 0.0, AP: 0.0, "3200": equity}
+    assert await _lot(session, auth, lot) == (10.0, _OPENING)
+
+
 async def test_repair_legacy_bill_reverted_and_refinalized_before_the_repair(client, session, auth, monkeypatch):
     lot = await _item(client, auth, _OPENING, qty=10)
     bill = await _legacy(client, session, auth, lot, doc_type="bill", qty=5, received=0)
