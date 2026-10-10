@@ -2149,6 +2149,7 @@
   "contacts.field_shipping_address": "عنوان الشحن",
   "contacts.company_default": "الإعداد الافتراضي للشركة",
   "contacts.remove_tag_title": "إزالة العلامة {tag}",
+  "contacts.note_not_found": "هذه الملاحظة ليست على جهة الاتصال هذه. أعد تحميل جهة الاتصال لرؤية ملاحظاتها، ثم عدّل إحداها أو أزلها.",
   "contacts.add_tag_placeholder": "+ إضافة علامة",
   "contacts.total_invoiced": "إجمالي الفواتير",
   "contacts.total_paid": "إجمالي المبلغ المدفوع",

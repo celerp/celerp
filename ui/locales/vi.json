@@ -2149,6 +2149,7 @@
   "contacts.field_shipping_address": "Địa chỉ giao hàng",
   "contacts.company_default": "Mặc định công ty",
   "contacts.remove_tag_title": "Xóa thẻ {tag}",
+  "contacts.note_not_found": "Ghi chú đó không thuộc liên hệ này. Tải lại liên hệ để xem các ghi chú của nó, rồi sửa hoặc xóa một trong số đó.",
   "contacts.add_tag_placeholder": "+ Thêm thẻ",
   "contacts.total_invoiced": "Tổng số tiền trên hóa đơn",
   "contacts.total_paid": "Tổng số tiền đã thanh toán",

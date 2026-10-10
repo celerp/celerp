@@ -2256,6 +2256,7 @@
   "contacts.field_shipping_address": "መላኪያ አድራሻ",
   "contacts.company_default": "ኩባንያ ነባሪ",
   "contacts.remove_tag_title": "መለያ {tag} አስወግድ",
+  "contacts.note_not_found": "ያ ማስታወሻ በዚህ ዕውቂያ ላይ የለም። ማስታወሻዎቹን ለማየት ዕውቂያውን እንደገና ይጫኑ፣ ከዚያ ከእነሱ አንዱን ያርትዑ ወይም ያስወግዱ።",
   "contacts.add_tag_placeholder": "+ መለያ ጨምር",
   "contacts.total_invoiced": "ጠቅላላ የክፍያ መጠየቂያ ደረሰኝ",
   "contacts.total_paid": "ጠቅላላ የተከፈለበት",

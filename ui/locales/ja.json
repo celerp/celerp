@@ -2149,6 +2149,7 @@
   "contacts.field_shipping_address": "配送先住所",
   "contacts.company_default": "会社のデフォルト設定",
   "contacts.remove_tag_title": "タグ {tag} を削除",
+  "contacts.note_not_found": "そのメモはこの連絡先にありません。連絡先を再読み込みしてメモを確認し、その中から編集または削除してください。",
   "contacts.add_tag_placeholder": "+ タグの追加",
   "contacts.total_invoiced": "請求総額",
   "contacts.total_paid": "支払総額",

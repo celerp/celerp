@@ -2149,6 +2149,7 @@
   "contacts.field_shipping_address": "ที่อยู่จัดส่ง",
   "contacts.company_default": "ค่าเริ่มต้นของบริษัท",
   "contacts.remove_tag_title": "ลบแท็ก {tag}",
+  "contacts.note_not_found": "บันทึกนั้นไม่ได้อยู่ในผู้ติดต่อนี้ โหลดผู้ติดต่อใหม่เพื่อดูบันทึกของผู้ติดต่อ แล้วแก้ไขหรือลบหนึ่งในนั้น",
   "contacts.add_tag_placeholder": "+ เพิ่มแท็ก",
   "contacts.total_invoiced": "ยอดออกใบแจ้งหนี้รวม",
   "contacts.total_paid": "ยอดชำระรวม",

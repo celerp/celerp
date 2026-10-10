@@ -2150,6 +2150,7 @@
   "contacts.field_shipping_address": "Adresse de livraison",
   "contacts.company_default": "Par défaut de l'entreprise",
   "contacts.remove_tag_title": "Supprimer le tag {tag}",
+  "contacts.note_not_found": "Cette note n'est pas sur ce contact. Rechargez le contact pour voir ses notes, puis modifiez ou supprimez l'une d'elles.",
   "contacts.add_tag_placeholder": "+ Ajouter une balise",
   "contacts.total_invoiced": "Total facturé",
   "contacts.total_paid": "Total payé",

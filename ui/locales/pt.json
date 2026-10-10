@@ -2149,6 +2149,7 @@
   "contacts.field_shipping_address": "Endereço de entrega",
   "contacts.company_default": "Padrão da empresa",
   "contacts.remove_tag_title": "Remover tag {tag}",
+  "contacts.note_not_found": "Essa nota não está neste contato. Recarregue o contato para ver as notas dele e depois edite ou remova uma delas.",
   "contacts.add_tag_placeholder": "+ Adicionar tag",
   "contacts.total_invoiced": "Total faturado",
   "contacts.total_paid": "Total pago",

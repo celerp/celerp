@@ -2149,6 +2149,7 @@
   "contacts.field_shipping_address": "Alamat Pengiriman",
   "contacts.company_default": "Default Perusahaan",
   "contacts.remove_tag_title": "Hapus tag {tag}",
+  "contacts.note_not_found": "Catatan itu tidak ada di kontak ini. Muat ulang kontak untuk melihat catatannya, lalu edit atau hapus salah satunya.",
   "contacts.add_tag_placeholder": "+ Tambahkan tag",
   "contacts.total_invoiced": "Total Tagihan",
   "contacts.total_paid": "Total yang Telah Dibayar",

@@ -2150,6 +2150,7 @@
   "contacts.field_shipping_address": "Lieferadresse",
   "contacts.company_default": "Unternehmensstandard",
   "contacts.remove_tag_title": "Tag {tag} entfernen",
+  "contacts.note_not_found": "Diese Notiz gehört nicht zu diesem Kontakt. Laden Sie den Kontakt neu, um seine Notizen zu sehen, und bearbeiten oder entfernen Sie dann eine davon.",
   "contacts.add_tag_placeholder": "+ Tag hinzufügen",
   "contacts.total_invoiced": "Fakturiert",
   "contacts.total_paid": "Bezahlt",

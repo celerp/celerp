@@ -2275,6 +2275,7 @@
   "contacts.field_shipping_address": "Shipping Address",
   "contacts.company_default": "Company Default",
   "contacts.remove_tag_title": "Remove tag {tag}",
+  "contacts.note_not_found": "That note is not on this contact. Reload the contact to see its notes, then edit or remove one of those.",
   "contacts.add_tag_placeholder": "+ Add tag",
   "contacts.total_invoiced": "Total Invoiced",
   "contacts.total_paid": "Total Paid",
