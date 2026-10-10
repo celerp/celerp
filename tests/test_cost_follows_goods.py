@@ -333,15 +333,17 @@ def test_a_notice_sent_with_a_redirect_is_shown_on_the_next_page():
     assert "HX-Redirect" in _CLIENT_JS and "sessionStorage" in _CLIENT_JS
 
 
-@pytest.mark.timeout(900)
+@pytest.mark.timeout(120)
 async def test_finalizing_stays_fast_with_many_open_invoices(client, session, auth):
     """Finalizing an invoice and running the books check read only what they need, so
     neither slows down as unshipped invoices pile up."""
     from celerp.services.lot_origin import stock_off_books
 
     sku = f"PERF-{uuid.uuid4().hex[:6]}"
-    other = f"PERF-{uuid.uuid4().hex[:6]}"
+    # Each open invoice sells its own SKU: finalizing plans a line over every lot of its
+    # SKU, so 200 invoices on one SKU would make the setup itself slow down as it runs.
     for _ in range(200):
+        other = f"PERF-{uuid.uuid4().hex[:6]}"
         await _invoice(client, auth, [(await _lot(client, auth, other, 1, 10.0), other, 1)])
     lot = await _lot(client, auth, sku, 1, 10.0)
     doc = await _invoice(client, auth, [(lot, sku, 1)], finalize=False)
