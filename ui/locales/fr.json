@@ -4624,5 +4624,9 @@
   "accounting.bank_not_found": "Ce compte bancaire est introuvable dans cette entreprise. Choisissez l'un des comptes bancaires de l'entreprise.",
   "location.not_found": "{value} n'est pas un emplacement de cette entreprise. Choisissez un emplacement dans Paramètres > Stock > Emplacements, ou ajoutez-le d'abord.",
   "erase.locked_period": "Rien n'a été effacé. {count} des articles sélectionnés ont un historique daté du {lock_date} ou avant, période où les livres sont verrouillés. Déverrouillez la période dans Settings > Accounting, effacez-les, puis verrouillez à nouveau la période.",
-  "demo.not_sample_fixture": "Rien n'a été effacé. {count} des articles sélectionnés contiennent des enregistrements qui ne sont pas des données d'exemple, ils ne sont donc pas supprimés comme exemples. Ouvrez chaque article et utilisez plutôt Delete, Archive ou Write Off Stock."
+  "demo.not_sample_fixture": "Rien n'a été effacé. {count} des articles sélectionnés contiennent des enregistrements qui ne sont pas des données d'exemple, ils ne sont donc pas supprimés comme exemples. Ouvrez chaque article et utilisez plutôt Delete, Archive ou Write Off Stock.",
+  "accounting.reversal_date_invalid": "Choisissez une date de contrepassation au format YYYY-MM-DD, à la date de l'écriture contrepassée ({entry_date}) ou après.",
+  "accounting.reversal_date_locked": "La période est verrouillée jusqu'au {lock_date}, rien ne peut donc être comptabilisé le {date}. Choisissez une date de contrepassation après le {lock_date}.",
+  "accounting.reversal_no_open_date": "La période est verrouillée jusqu'au {lock_date}, aujourd'hui compris, il n'y a donc aucune date ouverte pour comptabiliser la contrepassation. Reculez la date de verrouillage dans Settings > Accounting, puis réessayez.",
+  "accounting.reversal_account_missing": "L'écriture a été passée sur le compte {account}, qui ne figure plus dans le plan comptable, sa contrepassation ne peut donc pas être comptabilisée. Rajoutez le compte {account} dans Settings > Accounting, puis réessayez."
 }

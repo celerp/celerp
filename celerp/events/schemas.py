@@ -1172,6 +1172,10 @@ class AccJournalEntryVoided(BaseModel):
     # check evaluates the entry's own date; a void without it is checked
     # against today and could mutate a locked period.
     ts: str | None = None
+    # The date the reversal posts on when the entry is not voided in place: set at the
+    # event boundary (posting_dates.void_reversal) from the date the user picked, or
+    # today when the entry's own period is locked. The entry stays in its own period.
+    reversed_on: str | None = None
 
 
 class AccPeriodClosed(BaseModel):

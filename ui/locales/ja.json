@@ -4624,5 +4624,9 @@
   "accounting.bank_not_found": "この口座はこの会社に見つかりません。会社の銀行口座から選んでください。",
   "location.not_found": "{value} はこの会社の保管場所ではありません。[設定] > [在庫] > [保管場所] から保管場所を選ぶか、先にそこで追加してください。",
   "erase.locked_period": "何も消去されていません。選択した品目のうち {count} 件に、帳簿がロックされている {lock_date} 以前の履歴があります。Settings > Accounting で期間のロックを解除し、消去してから、期間を再びロックしてください。",
-  "demo.not_sample_fixture": "何も消去されていません。選択した品目のうち {count} 件にサンプルデータではない記録があるため、サンプルとしては削除されません。各品目を開き、代わりに Delete、Archive、または Write Off Stock を使ってください。"
+  "demo.not_sample_fixture": "何も消去されていません。選択した品目のうち {count} 件にサンプルデータではない記録があるため、サンプルとしては削除されません。各品目を開き、代わりに Delete、Archive、または Write Off Stock を使ってください。",
+  "accounting.reversal_date_invalid": "取消日は YYYY-MM-DD 形式で、取り消す仕訳の日付（{entry_date}）以降の日付を選んでください。",
+  "accounting.reversal_date_locked": "{lock_date} までの期間はロックされているため、{date} には何も記帳できません。{lock_date} より後の取消日を選んでください。",
+  "accounting.reversal_no_open_date": "{lock_date} までの期間は今日を含めてロックされているため、取消を記帳できる日付がありません。Settings > Accounting でロック日を前に戻してから、もう一度お試しください。",
+  "accounting.reversal_account_missing": "この仕訳は勘定科目 {account} に記帳されていますが、その科目は勘定科目表にもうないため、取消を記帳できません。Settings > Accounting で勘定科目 {account} を追加し直してから、もう一度お試しください。"
 }

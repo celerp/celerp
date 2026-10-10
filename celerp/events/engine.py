@@ -172,7 +172,7 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
         lock_date = date.fromisoformat(lock_date_str)
     except (ValueError, TypeError):
         return
-    event_date_str = data.get("ts") or data.get("issue_date") or data.get("date")
+    event_date_str = data.get("reversed_on") or data.get("ts") or data.get("issue_date") or data.get("date")
     try:
         event_date = date.fromisoformat(business_date_of(event_date_str, (company.settings or {}).get("timezone")))
     except ValueError as exc:
@@ -525,6 +525,13 @@ async def emit_event(
     await require_event_locations(
         session, kwargs.get("company_id"), kwargs.get("location_id"), kwargs.get("data")
     )
+
+    # A void of an entry in a locked period is dated to an open day instead of mutating
+    # the period: one rule for every void path.
+    if kwargs["event_type"] == "acc.journal_entry.voided":
+        from celerp.services.posting_dates import void_reversal
+
+        await void_reversal(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["data"])
 
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))

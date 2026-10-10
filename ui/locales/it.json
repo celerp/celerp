@@ -4624,5 +4624,9 @@
   "accounting.bank_not_found": "Quel conto bancario non è stato trovato in questa azienda. Scegli uno dei conti bancari dell'azienda.",
   "location.not_found": "{value} non è una sede di questa azienda. Scegli una sede in Impostazioni > Inventario > Sedi o aggiungila prima lì.",
   "erase.locked_period": "Non è stato cancellato nulla. {count} degli articoli selezionati hanno una cronologia datata al {lock_date} o prima, quando i libri sono bloccati. Sblocca il periodo in Settings > Accounting, cancellali, poi blocca di nuovo il periodo.",
-  "demo.not_sample_fixture": "Non è stato cancellato nulla. {count} degli articoli selezionati contengono registrazioni che non sono dati di esempio, quindi non vengono rimossi come esempi. Apri ogni articolo e usa invece Delete, Archive o Write Off Stock."
+  "demo.not_sample_fixture": "Non è stato cancellato nulla. {count} degli articoli selezionati contengono registrazioni che non sono dati di esempio, quindi non vengono rimossi come esempi. Apri ogni articolo e usa invece Delete, Archive o Write Off Stock.",
+  "accounting.reversal_date_invalid": "Scegli una data di storno nel formato YYYY-MM-DD, uguale o successiva alla data della scrittura stornata ({entry_date}).",
+  "accounting.reversal_date_locked": "Il periodo è bloccato fino al {lock_date}, quindi nulla può essere registrato il {date}. Scegli una data di storno successiva al {lock_date}.",
+  "accounting.reversal_no_open_date": "Il periodo è bloccato fino al {lock_date}, oggi compreso, quindi non c'è una data aperta su cui registrare lo storno. Sposta indietro la data di blocco in Settings > Accounting, poi riprova.",
+  "accounting.reversal_account_missing": "La scrittura è stata registrata sul conto {account}, che non è più nel piano dei conti, quindi il suo storno non può essere registrato. Aggiungi di nuovo il conto {account} in Settings > Accounting, poi riprova."
 }

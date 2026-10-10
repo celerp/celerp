@@ -301,15 +301,34 @@ async def test_void_unknown_je_404(client):
 
 
 @pytest.mark.asyncio
-async def test_void_in_locked_period_rejected(client):
+async def test_void_in_locked_period_reverses_on_an_open_date(client):
+    """The entry stays posted in its locked period and its reversal posts on the
+    business date today, through the same accounts."""
     tok = await _reg(client)
     je_id = (await _post_manual_je(client, tok, _bal(30.0), ts="2026-01-15")).json()["je_id"]
     await client.post("/accounting/period-lock", headers=_h(tok),
                       json={"lock_date": "2026-01-31"})
     r = await client.post(f"/accounting/journal-entries/{je_id}/void",
                           headers=_h(tok), json={"reason": "too late"})
+    assert r.status_code == 200, r.text
+    reversed_on = r.json()["reversed_on"]
+    assert reversed_on > "2026-01-31"
+    entries = {e["je_id"]: e for e in (await _journal(client, tok))["entries"]}
+    assert entries[je_id]["status"] == "posted" and entries[je_id]["ts"] == "2026-01-15"
+    assert entries[f"{je_id}:reversal"]["ts"] == reversed_on
+
+
+@pytest.mark.asyncio
+async def test_void_with_no_open_date_is_refused(client):
+    """A lock that covers today leaves no open date for the reversal."""
+    tok = await _reg(client)
+    je_id = (await _post_manual_je(client, tok, _bal(30.0), ts="2026-01-15")).json()["je_id"]
+    await client.post("/accounting/period-lock", headers=_h(tok),
+                      json={"lock_date": "2999-12-31"})
+    r = await client.post(f"/accounting/journal-entries/{je_id}/void",
+                          headers=_h(tok), json={"reason": "too late"})
     assert r.status_code == 422
-    assert "locked" in r.json()["detail"].lower()
+    assert r.json()["detail"]["message_key"] == "accounting.reversal_no_open_date"
     # Entry is still posted
     entry = [e for e in (await _journal(client, tok))["entries"] if e["je_id"] == je_id][0]
     assert entry["status"] == "posted"
@@ -335,9 +354,9 @@ async def test_role_gates_on_new_endpoints(client, session):
 # Manual journal entries: bulk void
 # ---------------------------------------------------------------------------
 
-async def _bulk_void(client, tok, je_ids, reason=None):
-    return await client.post("/accounting/journal-entries/bulk-void",
-                             headers=_h(tok), json={"je_ids": je_ids, "reason": reason})
+async def _bulk_void(client, tok, je_ids, reason=None, reversal_date=None):
+    return await client.post("/accounting/journal-entries/bulk-void", headers=_h(tok),
+                             json={"je_ids": je_ids, "reason": reason, "reversal_date": reversal_date})
 
 
 def _by_id(body: dict) -> dict:
@@ -391,51 +410,55 @@ async def test_bulk_void_refuses_document_driven_entries_per_entry(client):
 
 @pytest.mark.asyncio
 async def test_bulk_void_respects_the_period_lock(client):
+    """With the lock covering today there is no open date for a reversal: refused."""
     tok = await _reg(client)
     locked = (await _post_manual_je(client, tok, _bal(30.0), ts="2026-01-15")).json()["je_id"]
     await client.post("/accounting/period-lock", headers=_h(tok),
-                      json={"lock_date": "2026-01-31"})
+                      json={"lock_date": "2999-12-31"})
 
     r = await _bulk_void(client, tok, [locked], reason="too late")
     assert r.status_code == 200, r.text
     body = r.json()
     assert (body["voided"], body["refused"]) == (0, 1)
-    assert "locked" in body["results"][0]["detail"].lower()
-    assert "2026-01-31" in body["results"][0]["detail"]
+    detail = body["results"][0]["detail"]
+    assert detail["message_key"] == "accounting.reversal_no_open_date"
+    assert "2999-12-31" in detail["message"]
 
     entry = [e for e in (await _journal(client, tok))["entries"] if e["je_id"] == locked][0]
     assert entry["status"] == "posted"
 
 
 @pytest.mark.asyncio
-async def test_bulk_void_continues_after_a_locked_period_entry(client, session):
+async def test_bulk_void_continues_after_a_refused_entry(client, session):
     """The middle entry is refused; the two around it are voided.
 
     A refusal in the middle of a selection has to leave the entries after it alone.
     The order matters: an implementation that raised on the first refusal, or that
     left the session unusable for the entries behind it, would void the first and
-    lose the third.
+    lose the third. The chosen reversal date falls before the middle entry, so that
+    one is refused; the last sits in the locked period and reverses on that date.
     """
     tok = await _reg(client)
     first = (await _post_manual_je(client, tok, _bal(11.0), ts="2026-03-05")).json()["je_id"]
-    middle = (await _post_manual_je(client, tok, _bal(12.0), ts="2026-01-20")).json()["je_id"]
-    last = (await _post_manual_je(client, tok, _bal(13.0), ts="2026-03-07")).json()["je_id"]
+    middle = (await _post_manual_je(client, tok, _bal(12.0), ts="2026-03-07")).json()["je_id"]
+    last = (await _post_manual_je(client, tok, _bal(13.0), ts="2026-01-20")).json()["je_id"]
     await client.post("/accounting/period-lock", headers=_h(tok),
                       json={"lock_date": "2026-01-31"})
 
-    r = await _bulk_void(client, tok, [first, middle, last], reason="Reversed")
+    r = await _bulk_void(client, tok, [first, middle, last], reason="Reversed", reversal_date="2026-03-06")
     assert r.status_code == 200, r.text
     body = r.json()
     assert (body["voided"], body["refused"]) == (2, 1)
     results = _by_id(body)
     assert results[first]["status"] == "void"
     assert results[middle]["status"] == "refused"
+    assert results[middle]["detail"]["message_key"] == "accounting.reversal_date_invalid"
     assert results[last]["status"] == "void"
 
     entries = {e["je_id"]: e for e in (await _journal(client, tok))["entries"]}
-    assert entries[first]["status"] == "void"
-    assert entries[middle]["status"] == "posted"
-    assert entries[last]["status"] == "void"
+    assert entries[middle]["status"] == "posted" and entries[middle]["reversed_on"] is None
+    for je in (first, last):
+        assert entries[f"{je}:reversal"]["ts"] == "2026-03-06"
 
 
 @pytest.mark.asyncio

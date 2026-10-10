@@ -970,11 +970,35 @@ async def _je_rows(
     for row in rows:
         state = row.state
         status = state.get("status")
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        day = str(ts_raw)[:10] if ts_raw else ""
+        if status == "void" and state.get("reversed_on"):
+            # Voided out of a locked period: the entry stays posted in its own period and
+            # its reversal posts on reversed_on (posting_dates.void_reversal).
+            out.append((row.entity_id, {**state, "status": "posted"}, day))
+            out.append((f"{row.entity_id}:reversal", _reversal_state(row.entity_id, state), state["reversed_on"]))
+            continue
         if status != "posted" and not (include_void and status == "void"):
             continue
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        out.append((row.entity_id, state, str(ts_raw)[:10] if ts_raw else ""))
+        out.append((row.entity_id, state, day))
     return out
+
+
+_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
+
+
+def _reversal_state(entity_id: str, state: dict) -> dict:
+    """The reversal of a journal entry on its reversed_on date: every line through the
+    same account and roles with debit and credit swapped."""
+    memo = state.get("memo") or ""
+    return {
+        **state,
+        "status": "posted",
+        "ts": state["reversed_on"],
+        "memo": f"Reversal of {memo}" if memo else "Reversal",
+        "reverses": entity_id,
+        "entries": [{_SWAPPED.get(k, k): v for k, v in line.items()} for line in state.get("entries") or []],
+    }
 
 
 async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
@@ -1311,6 +1335,8 @@ async def _journal_payload(
             "status": state.get("status"),
             "je_type": state.get("je_type"),
             "void_reason": state.get("void_reason"),
+            # Set on an entry voided out of a locked period and on its reversal row.
+            "reversed_on": state.get("reversed_on"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
             "fx": entry_fx,
@@ -1574,6 +1600,9 @@ class ManualJECreate(BaseModel):
 
 class ManualJEVoidPayload(BaseModel):
     reason: str | None = None
+    # When the entry sits in a locked period, the open date its reversal posts on;
+    # the company's business date today when not given (posting_dates.correction_day).
+    reversal_date: str | None = None
 
 
 # A ceiling on how much writing one request can ask for, so a hand-built or mis-clicked
@@ -1585,6 +1614,7 @@ _BULK_VOID_LIMIT = 200
 class BulkJEVoidPayload(BaseModel):
     je_ids: list[str]
     reason: str | None = None
+    reversal_date: str | None = None
 
 
 @router.post("/journal-entries")
@@ -1743,7 +1773,8 @@ async def create_manual_journal_entry(
     }
 
 
-async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None) -> dict:
+async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None,
+                    reversal_date: str | None = None) -> dict:
     """Void one manual journal entry, committing it. Raises the refusal as HTTPException.
 
     Both the single-entry route and the bulk route go through here, so a rule about
@@ -1769,6 +1800,8 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
     data = je_void_data(reason, state)
+    if reversal_date:
+        data["reversed_on"] = reversal_date
     await emit_event(
         session,
         company_id=company_id,
@@ -1783,7 +1816,7 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         metadata_={},
     )
     await session.commit()
-    return {"je_id": entity_id, "status": "void", "void_reason": reason}
+    return {"je_id": entity_id, "status": "void", "void_reason": reason, "reversed_on": data.get("reversed_on")}
 
 
 @router.post("/journal-entries/bulk-void")
@@ -1818,7 +1851,7 @@ async def bulk_void_journal_entries(
         try:
             results.append(await _void_one(
                 session, company_id=company_id, actor_id=actor_id,
-                entity_id=entity_id, reason=payload.reason,
+                entity_id=entity_id, reason=payload.reason, reversal_date=payload.reversal_date,
             ))
         except HTTPException as exc:
             # Every entry starts from a clean session, whatever the one before it
@@ -1849,6 +1882,7 @@ async def void_manual_journal_entry(
     return await _void_one(
         session, company_id=company_id, actor_id=user.id,
         entity_id=entity_id, reason=payload.reason if payload else None,
+        reversal_date=payload.reversal_date if payload else None,
     )
 
 

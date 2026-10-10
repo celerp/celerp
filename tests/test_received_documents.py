@@ -905,7 +905,7 @@ async def test_doctor_voids_only_recognition_entries_with_no_finalize_or_receipt
 
 
 @pytest.mark.asyncio
-async def test_doctor_reports_an_uncaused_entry_in_a_locked_period_instead_of_voiding(client, session):
+async def _locked_uncaused_entry(client, session, lock_date: str) -> tuple[str, uuid.UUID, str]:
     tok = await _token(client)
     company_id = uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
     legacy = f"doc:rcv:lk{uuid.uuid4().hex[:8]}"
@@ -914,9 +914,32 @@ async def test_doctor_reports_an_uncaused_entry_in_a_locked_period_instead_of_vo
     })
     je_id = await _false_sales_entry(session, company_id, legacy, 20.0)
     await session.commit()
-    locked = await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": "2026-06-30"})
+    locked = await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": lock_date})
     assert locked.status_code == 200, locked.text
+    return tok, company_id, je_id
 
+
+@pytest.mark.asyncio
+async def test_doctor_reverses_an_uncaused_entry_in_a_locked_period_on_an_open_date(client, session):
+    """The entry stays in its locked period and its reversal posts on the business date
+    today (posting_dates.void_reversal), never inside the lock."""
+    from celerp.models.projections import Projection
+    from celerp.services.posting_dates import correction_day
+
+    tok, company_id, je_id = await _locked_uncaused_entry(client, session, "2026-06-30")
+    r = await client.post("/admin/doctor?fix=true&checks=uncaused_recognition_jes", headers=_h(tok))
+    check = next(c for c in r.json()["results"] if c["check"] == "uncaused_recognition_jes")
+    assert check["fixed"] == 1, check
+    session.expire_all()
+    state = (await session.get(Projection, {"company_id": company_id, "entity_id": je_id})).state
+    assert state["status"] == "void"
+    assert state["reversed_on"] == await correction_day(session, company_id, state.get("ts")) > "2026-06-30"
+
+
+@pytest.mark.asyncio
+async def test_doctor_reports_an_uncaused_entry_when_no_open_date_exists(client, session):
+    """With today itself locked there is nowhere to post the reversal: reported, not voided."""
+    tok, company_id, je_id = await _locked_uncaused_entry(client, session, "2999-12-31")
     r = await client.post("/admin/doctor?fix=true&checks=uncaused_recognition_jes", headers=_h(tok))
     check = next(c for c in r.json()["results"] if c["check"] == "uncaused_recognition_jes")
     assert check["fixed"] == 0 and check["auto_fixable"] is False

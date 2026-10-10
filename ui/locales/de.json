@@ -4624,5 +4624,9 @@
   "accounting.bank_not_found": "Dieses Bankkonto wurde in diesem Unternehmen nicht gefunden. Wählen Sie eines der Bankkonten des Unternehmens.",
   "location.not_found": "{value} ist kein Standort dieses Unternehmens. Wählen Sie einen Standort unter Einstellungen > Lagerbestand > Standorte oder legen Sie ihn dort zuerst an.",
   "erase.locked_period": "Es wurde nichts gelöscht. {count} der ausgewählten Artikel haben einen Verlauf am oder vor dem {lock_date}, bis zu dem die Bücher gesperrt sind. Entsperren Sie den Zeitraum unter Settings > Accounting, löschen Sie sie und sperren Sie den Zeitraum danach wieder.",
-  "demo.not_sample_fixture": "Es wurde nichts gelöscht. {count} der ausgewählten Artikel enthalten Datensätze, die keine Beispieldaten sind, und werden daher nicht als Beispiele entfernt. Öffnen Sie jeden Artikel und verwenden Sie stattdessen Delete, Archive oder Write Off Stock."
+  "demo.not_sample_fixture": "Es wurde nichts gelöscht. {count} der ausgewählten Artikel enthalten Datensätze, die keine Beispieldaten sind, und werden daher nicht als Beispiele entfernt. Öffnen Sie jeden Artikel und verwenden Sie stattdessen Delete, Archive oder Write Off Stock.",
+  "accounting.reversal_date_invalid": "Wählen Sie ein Stornodatum im Format YYYY-MM-DD, am oder nach dem Datum der Buchung, die storniert wird ({entry_date}).",
+  "accounting.reversal_date_locked": "Der Zeitraum ist bis {lock_date} gesperrt, daher kann am {date} nichts gebucht werden. Wählen Sie ein Stornodatum nach dem {lock_date}.",
+  "accounting.reversal_no_open_date": "Der Zeitraum ist bis {lock_date} gesperrt, also auch heute, daher gibt es kein offenes Datum für die Stornobuchung. Setzen Sie das Sperrdatum unter Settings > Accounting zurück und versuchen Sie es erneut.",
+  "accounting.reversal_account_missing": "Die Buchung ging auf Konto {account}, das nicht mehr im Kontenplan steht, daher kann ihr Storno nicht gebucht werden. Fügen Sie Konto {account} unter Settings > Accounting wieder hinzu und versuchen Sie es erneut."
 }

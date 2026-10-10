@@ -415,14 +415,16 @@ async def test_repair_tells_the_owner_once(client, session, auth):
         (f"je:auto:{po}:rcv", "acc.journal_entry.voided"), (po, "doc.updated")}
 
 
-async def test_repair_waits_for_a_locked_period(client, session, auth):
+async def test_repair_waits_while_no_open_date_exists(client, session, auth):
+    """A lock covering today leaves no open date for the correction: it waits for a
+    later start and nothing is written."""
     from celerp.migrations._data_reconcile import get_meta
     from celerp_docs.imported_cutover import CUTOVER_KEY
 
     lot = await _item(client, auth, _OPENING, qty=10)
     po = await _legacy(client, session, auth, lot)
     lock = "/accounting/period-lock"
-    assert (await client.post(lock, headers=auth["headers"], json={"lock_date": "2026-06-30"})).status_code == 200
+    assert (await client.post(lock, headers=auth["headers"], json={"lock_date": "2999-12-31"})).status_code == 200
     size = await _ledger_size(session, auth)
     assert (await _repair(session))["deferred"] == 1
     assert await _ledger_size(session, auth) == size
@@ -431,6 +433,19 @@ async def test_repair_waits_for_a_locked_period(client, session, auth):
     assert (await client.post(lock, headers=auth["headers"], json={"lock_date": None})).status_code == 200
     session.expire_all()
     await _repaired(session, auth, [po])
+
+
+async def test_repair_in_a_locked_period_reverses_on_an_open_date(client, session, auth):
+    """The old entry stays in its locked period and is reversed on the business date
+    today, so the repair does not wait for the period to be unlocked."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    po = await _legacy(client, session, auth, lot)
+    assert (await client.post("/accounting/period-lock", headers=auth["headers"],
+                              json={"lock_date": "2026-06-30"})).status_code == 200
+    assert (await _repair(session))["deferred"] == 0
+    session.expire_all()
+    rcv = (await session.get(Projection, (auth["company_id"], f"je:auto:{po}:rcv"))).state
+    assert rcv["status"] == "void" and rcv["reversed_on"] > "2026-06-30", rcv
 
 
 async def test_repair_leaves_documents_imported_now_alone(client, session, auth):

@@ -4624,5 +4624,9 @@
   "accounting.bank_not_found": "لم يُعثر على هذا الحساب المصرفي في هذه الشركة. اختر أحد الحسابات المصرفية للشركة.",
   "location.not_found": "{value} ليس من مواقع هذه الشركة. اختر موقعًا من الإعدادات > المخزون > المواقع، أو أضفه هناك أولاً.",
   "erase.locked_period": "لم يتم مسح أي شيء. {count} من العناصر المحددة لها سجل بتاريخ {lock_date} أو قبله، وهي فترة مقفلة في الدفاتر. افتح قفل الفترة من Settings > Accounting، ثم امسحها، ثم أقفل الفترة مرة أخرى.",
-  "demo.not_sample_fixture": "لم يتم مسح أي شيء. {count} من العناصر المحددة تحتوي على سجلات ليست بيانات نموذجية، لذا لا تتم إزالتها كنماذج. افتح كل عنصر واستخدم Delete أو Archive أو Write Off Stock بدلاً من ذلك."
+  "demo.not_sample_fixture": "لم يتم مسح أي شيء. {count} من العناصر المحددة تحتوي على سجلات ليست بيانات نموذجية، لذا لا تتم إزالتها كنماذج. افتح كل عنصر واستخدم Delete أو Archive أو Write Off Stock بدلاً من ذلك.",
+  "accounting.reversal_date_invalid": "اختر تاريخ العكس بالصيغة YYYY-MM-DD، في تاريخ القيد الذي يعكسه ({entry_date}) أو بعده.",
+  "accounting.reversal_date_locked": "الفترة مقفلة حتى {lock_date}، لذا لا يمكن ترحيل أي شيء في {date}. اختر تاريخ عكس بعد {lock_date}.",
+  "accounting.reversal_no_open_date": "الفترة مقفلة حتى {lock_date}، وهذا يشمل اليوم، لذا لا يوجد تاريخ مفتوح لترحيل العكس فيه. أعد تاريخ القفل إلى الوراء في Settings > Accounting، ثم حاول مرة أخرى.",
+  "accounting.reversal_account_missing": "رُحّل القيد إلى الحساب {account} الذي لم يعد في دليل الحسابات، لذا لا يمكن ترحيل عكسه. أعد إضافة الحساب {account} من Settings > Accounting، ثم حاول مرة أخرى."
 }

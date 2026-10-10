@@ -4624,5 +4624,9 @@
   "accounting.bank_not_found": "ያ የባንክ ሂሳብ በዚህ ኩባንያ ውስጥ አልተገኘም። ከኩባንያው የባንክ ሂሳቦች አንዱን ይምረጡ።",
   "location.not_found": "{value} የዚህ ኩባንያ ቦታ አይደለም። ከቅንጅቶች > ክምችት > ቦታዎች ቦታ ይምረጡ ወይም መጀመሪያ እዚያ ያክሉት።",
   "erase.locked_period": "ምንም አልተሰረዘም። ከተመረጡት ዕቃዎች {count} መጻሕፍቱ በተቆለፉበት {lock_date} ወይም ከዚያ በፊት የተመዘገበ ታሪክ አላቸው። በSettings > Accounting ውስጥ ጊዜውን ይክፈቱ፣ ይሰርዟቸው፣ ከዚያ ጊዜውን እንደገና ይቆልፉ።",
-  "demo.not_sample_fixture": "ምንም አልተሰረዘም። ከተመረጡት ዕቃዎች {count} የናሙና ውሂብ ያልሆኑ መዝገቦችን ይዘዋል፣ ስለዚህ እንደ ናሙና አይወገዱም። እያንዳንዱን ዕቃ ይክፈቱ እና በምትኩ Delete፣ Archive ወይም Write Off Stock ይጠቀሙ።"
+  "demo.not_sample_fixture": "ምንም አልተሰረዘም። ከተመረጡት ዕቃዎች {count} የናሙና ውሂብ ያልሆኑ መዝገቦችን ይዘዋል፣ ስለዚህ እንደ ናሙና አይወገዱም። እያንዳንዱን ዕቃ ይክፈቱ እና በምትኩ Delete፣ Archive ወይም Write Off Stock ይጠቀሙ።",
+  "accounting.reversal_date_invalid": "የመቀልበሻ ቀንን በ YYYY-MM-DD ቅርጸት ይምረጡ፣ ከሚቀለበሰው መዝገብ ቀን ({entry_date}) ጀምሮ ወይም በኋላ።",
+  "accounting.reversal_date_locked": "ጊዜው እስከ {lock_date} ተቆልፏል፣ ስለዚህ በ{date} ምንም ሊመዘገብ አይችልም። ከ{lock_date} በኋላ ያለ የመቀልበሻ ቀን ይምረጡ።",
+  "accounting.reversal_no_open_date": "ጊዜው እስከ {lock_date} ተቆልፏል፣ ይህም ዛሬን ያካትታል፣ ስለዚህ መቀልበሻውን የሚመዘግቡበት ክፍት ቀን የለም። በ Settings > Accounting ውስጥ የመቆለፊያ ቀኑን ወደ ኋላ ያንቀሳቅሱ፣ ከዚያ እንደገና ይሞክሩ።",
+  "accounting.reversal_account_missing": "መዝገቡ በሂሳብ {account} ላይ ተመዝግቧል፣ ይህም ከአሁን በኋላ በሂሳቦች ዝርዝር ውስጥ የለም፣ ስለዚህ መቀልበሻው ሊመዘገብ አይችልም። ሂሳብ {account}ን በ Settings > Accounting ውስጥ መልሰው ያክሉ፣ ከዚያ እንደገና ይሞክሩ።"
 }

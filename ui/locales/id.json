@@ -4624,5 +4624,9 @@
   "accounting.bank_not_found": "Rekening bank itu tidak ditemukan di perusahaan ini. Pilih salah satu rekening bank perusahaan.",
   "location.not_found": "{value} bukan lokasi perusahaan ini. Pilih lokasi dari Pengaturan > Persediaan > Lokasi, atau tambahkan di sana terlebih dahulu.",
   "erase.locked_period": "Tidak ada yang dihapus. {count} dari barang yang dipilih memiliki riwayat bertanggal {lock_date} atau sebelumnya, saat pembukuan dikunci. Buka kunci periode di Settings > Accounting, hapus barang tersebut, lalu kunci kembali periodenya.",
-  "demo.not_sample_fixture": "Tidak ada yang dihapus. {count} dari barang yang dipilih memiliki catatan yang bukan data contoh, jadi tidak dihapus sebagai contoh. Buka setiap barang dan gunakan Delete, Archive, atau Write Off Stock."
+  "demo.not_sample_fixture": "Tidak ada yang dihapus. {count} dari barang yang dipilih memiliki catatan yang bukan data contoh, jadi tidak dihapus sebagai contoh. Buka setiap barang dan gunakan Delete, Archive, atau Write Off Stock.",
+  "accounting.reversal_date_invalid": "Pilih tanggal pembalikan dengan format YYYY-MM-DD, pada atau setelah tanggal jurnal yang dibalik ({entry_date}).",
+  "accounting.reversal_date_locked": "Periode dikunci sampai {lock_date}, jadi tidak ada yang bisa diposting pada {date}. Pilih tanggal pembalikan setelah {lock_date}.",
+  "accounting.reversal_no_open_date": "Periode dikunci sampai {lock_date}, termasuk hari ini, jadi tidak ada tanggal terbuka untuk memposting pembalikan. Mundurkan tanggal kunci di Settings > Accounting, lalu coba lagi.",
+  "accounting.reversal_account_missing": "Jurnal ini diposting ke akun {account}, yang sudah tidak ada di bagan akun, jadi pembalikannya tidak bisa diposting. Tambahkan kembali akun {account} di Settings > Accounting, lalu coba lagi."
 }

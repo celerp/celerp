@@ -12,8 +12,10 @@ imported now (auto_je.correct_earlier_import), its received goods are marked as 
 receipt marks them, and the company is told which documents were corrected.
 
 Runs in the lifespan and is gated by a marker so it runs once per database. A company
-staged for a migration is skipped, and a document whose entries sit in a locked period
-is left for the next start; either way the marker stays unset until all are done.
+staged for a migration is skipped. An entry in a locked period is reversed on an open
+date (posting_dates.correction_day); a document with no open date to correct on (the lock
+covers today) is left for the next start. Either way the marker stays unset until all
+are done.
 Every event the correction writes carries auto_je.IMPORTED_CUTOVER in its metadata.
 """
 
