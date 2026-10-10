@@ -28,12 +28,13 @@ from test_posting_roles_lot_origin import _books_match_lots, _remap
 from test_posting_roles_lots import _lot, _new_inventory_account
 from test_posting_roles_older_stock import _as_older_release, _draft, _sold
 from test_posting_roles_rollout import _startup
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
 _FIELD = "inventory_account_code"
 _REPAIR = "Settings > Accounting > Posting accounts"
-_LOCKED = "Period is locked through"
+_LOCKED = t("error.period_locked", "en", date="{date}").split("{date}")[0]
 
 
 async def _move(client, auth, path: str, lot: str):

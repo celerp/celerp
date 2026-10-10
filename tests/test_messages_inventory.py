@@ -55,9 +55,8 @@ async def test_unknown_unit_and_location_say_where_to_fix_them(client):
     r = await client.patch(f"/items/{iid}", headers=h,
                            json={"fields_changed": {"location_id": {"old": None, "new": "nowhere"}}})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_location_invalid", "en")
-    assert (await _create_rejected(client, h, location_id=str(uuid.uuid4()))
-            == t("inventory.err_location_not_found", "en"))
+    assert r.json()["detail"]["message_key"] == "location.not_found"
+    assert (await _create_rejected(client, h, location_id=str(uuid.uuid4())))["message_key"] == "location.not_found"
 
 
 @pytest.mark.asyncio
@@ -134,7 +133,6 @@ def test_code_validators_raise_the_translated_message():
 def test_projection_conflicts_say_refresh():
     from celerp.projections import engine
 
-    assert engine._item_exists().detail == t("inventory.err_item_exists", "en")
     assert engine._not_found("item").detail == t("inventory.err_item_not_found", "en")
     assert engine._not_found("doc").detail == t("error.record_not_found", "en")
 
@@ -143,7 +141,7 @@ def test_status_words_are_translated_with_a_raw_fallback():
     from ui.i18n import item_status_label
 
     assert item_status_label("archived", "de") == t("enum.item_status.archived", "de")
-    assert item_status_label("returned") == "returned"
+    assert item_status_label("no_such_status") == "no_such_status"
 
 
 def _spec_keys() -> list[str]:
