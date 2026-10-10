@@ -22,6 +22,7 @@ from celerp.events.engine import emit_event
 from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.company_lock import lock_chart
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
 from celerp_accounting.chart_rules import (
@@ -152,6 +153,9 @@ async def create_chart_account(
     """Add one chart-of-accounts row; an account code already in use is refused, and
     so is a parent the new account cannot sit under. ``code_generated`` marks a code an
     importer made up because the source account had none."""
+    # Under the chart lock, so a second add of the same code waits for the first and
+    # then sees it, instead of failing on the unique index.
+    await lock_chart(session, company_id)
     existing = (await session.execute(
         select(Account.id).where(Account.company_id == company_id, Account.code == code)
     )).scalar_one_or_none()
