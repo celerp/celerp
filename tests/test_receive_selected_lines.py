@@ -190,12 +190,45 @@ async def test_receive_void_refused(client, session, auth):
     assert r.json()["detail"]["message_key"] == "docs.receive_not_open"
     assert not (await _state(session, auth, bill)).get("received_items")
 
-    # A consignment still in draft has not been issued, so it receives nothing either.
+
+
+async def _journal_entries(session, auth) -> list[dict]:
+    from sqlalchemy import select
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry"))).scalars().all()
+    return [r.state for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_a_draft_consignment_receives_goods_and_books_nothing(client, session, auth):
+    """Consigned goods are not owned, so receiving them books nothing to stock or payables, and
+    a consignment still in draft receives them the same as a purchase order does."""
+    before = await _journal_entries(session, auth)
     draft = await _doc(client, auth, "consignment_in", _stock_lines(1))
     [draft_line] = await _stamp_line_ids(session, auth, draft)
-    r = await _post(client, auth, draft, {"source_line_id": draft_line, "quantity_received": 1})
+    r = await _post(client, auth, draft, {"source_line_id": draft_line, "quantity_received": 4})
+    assert r.status_code == 200, r.text
+    assert await _received(session, auth, draft) == [4]
+    [parcel] = await _parcels(session, auth, draft)
+    assert float(parcel["quantity"]) == 4.0
+    assert await _journal_entries(session, auth) == before
+    # Finalizing it afterwards books nothing either, and the rest still comes in.
+    await _finalize(client, auth, draft)
+    r = await _post(client, auth, draft, {"source_line_id": draft_line, "quantity_received": 6})
+    assert r.status_code == 200, r.text
+    assert await _received(session, auth, draft) == [10]
+    assert await _journal_entries(session, auth) == before
+
+
+@pytest.mark.asyncio
+async def test_a_draft_bill_still_receives_nothing(client, session, auth):
+    """Neighbour: a bill not yet issued booked nothing, so its goods wait for it."""
+    bill = await _doc(client, auth, "bill", _stock_lines(1))
+    [line_id] = await _stamp_line_ids(session, auth, bill)
+    r = await _post(client, auth, bill, {"source_line_id": line_id, "quantity_received": 1})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message_key"] == "docs.receive_not_open"
+    assert r.json()["detail"]["message_key"] == "docs.receive_draft_bill"
 
 
 def test_inbound_status_gate_from_constants():
@@ -206,8 +239,11 @@ def test_inbound_status_gate_from_constants():
     assert {"paid", "partial", "partial_returned", "received"} <= RECEIVABLE_STATUSES["bill"]
     for doc_type in ("bill", "consignment_in", "purchase_order"):
         assert not {"void", "closed"} & RECEIVABLE_STATUSES[doc_type]
-    for doc_type in ("bill", "consignment_in"):
-        assert "draft" not in RECEIVABLE_STATUSES[doc_type]
+    # A draft bill has booked nothing, so it receives nothing; a draft order or consignment
+    # receives (the order's receipt books its own entry, the consignment's books none).
+    assert "draft" not in RECEIVABLE_STATUSES["bill"]
+    for doc_type in ("consignment_in", "purchase_order"):
+        assert "draft" in RECEIVABLE_STATUSES[doc_type]
 
     def offers_receive(status: str) -> bool:
         doc = {"entity_id": "doc:gate-1", "doc_type": "bill", "status": status, "ref_id": "B-1", "currency": "USD",
