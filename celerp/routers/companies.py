@@ -53,6 +53,7 @@ from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment
 from celerp.services.business_time import business_timezone
 from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
+from ui.i18n import t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -279,7 +280,7 @@ async def me(
     company = await session.get(Company, company_id)
     if company is None:
         logger.warning("GET /companies/me: company_id %s not found in DB", company_id)
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     # current_role is the authoritative DB membership role; the UI gates
     # permissions on it rather than trusting the client-held token claims.
     return {
@@ -320,7 +321,7 @@ async def commercial_state(_: None = require_permission("manage_integrations")) 
 async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _: None = require_permission("manage_company_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     if payload.name is not None:
         company.name = payload.name.strip()
     # Merge (PATCH semantics): a partial settings payload must not wipe other keys,
@@ -426,7 +427,7 @@ async def patch_books(
     import VAT default and the online deposit accounts. Each change records who made it and when."""
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     sent = payload.model_dump(exclude_unset=True)
     settings = dict(company.settings or {})
     for key in sorted(BOOKS_KEYS & set(sent)):
@@ -459,11 +460,11 @@ async def patch_role_permissions(
     if payload.role_key not in ROLE_LEVELS:
         raise HTTPException(status_code=422, detail=f"Unknown role '{payload.role_key}'")
     if not perm.grantable:
-        raise HTTPException(status_code=403, detail=f"The {perm.key} permission is fixed and cannot be reassigned")
+        raise HTTPException(status_code=403, detail=t("company.err_permission_fixed"))
 
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings or {})
     grants = dict(settings.get("role_grants") or {})
     # Seed from the currently RESOLVED set on first touch, so toggling one role
@@ -477,7 +478,7 @@ async def patch_role_permissions(
     if payload.granted and ROLE_LEVELS[payload.role_key] < ROLE_LEVELS[perm.floor_role]:
         raise HTTPException(
             status_code=422,
-            detail=f"The {perm.key} permission cannot go below the {perm.floor_role} role",
+            detail=t("company.err_permission_floor", role=t(f"settings.{perm.floor_role}")),
         )
     grants[perm.key] = sorted(roles, key=lambda r: ROLE_LEVELS[r])
     settings["role_grants"] = grants
@@ -642,13 +643,13 @@ async def patch_location(
     try:
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid location id")
+        raise HTTPException(status_code=400, detail=t("company.err_location_invalid"))
     # Company first, then the location: the order an import commit takes them in (and the
     # tax re-seed below needs the company lock), so the two wait instead of deadlocking.
     await lock_company(session, company_id)
     loc = await session.get(Location, loc_uuid)
     if loc is None or loc.company_id != company_id:
-        raise HTTPException(status_code=404, detail="Location not found")
+        raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
     if payload.name is not None:
         loc.name = payload.name
     if payload.address is not None:
@@ -685,14 +686,14 @@ async def delete_location(
     try:
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid location id")
+        raise HTTPException(status_code=400, detail=t("company.err_location_invalid"))
     # Locked before the item count: an import naming this location holds it until
     # the import commits, so the count below includes the items it placed here.
     loc = await session.get(Location, loc_uuid, with_for_update=True, populate_existing=True)
     if loc is None or loc.company_id != company_id:
-        raise HTTPException(status_code=404, detail="Location not found")
+        raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
     if loc.is_default:
-        raise HTTPException(status_code=409, detail="Cannot delete the default location.")
+        raise HTTPException(status_code=409, detail=t("company.err_location_default"))
     item_count = (await session.execute(
         select(_func.count()).where(
             Projection.company_id == company_id,
@@ -703,7 +704,7 @@ async def delete_location(
     if item_count > 0:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot delete location: {item_count} item(s) still assigned here. Reassign them first.",
+            detail=t("company.err_location_in_use", count=item_count),
         )
     await session.delete(loc)
     await session.commit()
@@ -775,7 +776,7 @@ def _assert_role_assignable(caller_role: str, target_role: str) -> None:
     grant manage_users down to any role, so this ceiling is what stops that from
     becoming a self-promotion path."""
     if ROLE_LEVELS[target_role] > ROLE_LEVELS[caller_role]:
-        raise HTTPException(status_code=403, detail="You cannot assign a role above your own.")
+        raise HTTPException(status_code=403, detail=t("company.err_role_above_own"))
 
 
 @router.post("/me/users")
@@ -801,7 +802,7 @@ async def create_user(
             select(UserCompany).where(UserCompany.user_id == existing_user.id, UserCompany.company_id == company_id)
         )).scalar_one_or_none()
         if existing_link:
-            raise HTTPException(status_code=400, detail="User already a member of this company")
+            raise HTTPException(status_code=400, detail=t("company.err_user_already_member"))
         link = UserCompany(id=uuid.uuid4(), user_id=existing_user.id, company_id=company_id, role=payload.role)
         session.add(link)
         try:
@@ -809,7 +810,7 @@ async def create_user(
         except Exception as e:
             await session.rollback()
             logger.error("create_user link failed: %s", e, exc_info=True)
-            raise HTTPException(status_code=400, detail=f"User creation failed: {e}") from e
+            raise HTTPException(status_code=400, detail=t("company.err_user_not_added")) from e
         return {"id": str(existing_user.id)}
 
     # Only the branch that actually creates a new password hash enforces the length
@@ -838,7 +839,7 @@ async def create_user(
     except Exception as e:
         await session.rollback()
         logger.error("create_user failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=f"User creation failed: {e}") from e
+        raise HTTPException(status_code=400, detail=t("company.err_user_not_added")) from e
     return {"id": str(user.id)}
 
 
@@ -865,12 +866,12 @@ async def patch_user(
         ).with_for_update()
     )).scalar_one_or_none()
     if not user or not link:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=t("company.err_user_not_found"))
     # A holder of manage_users may not modify a user whose role outranks their own.
     # Compare on the normalized role so a legacy membership (e.g. salesperson) is
     # ranked at its current level (operator) rather than falling to level 0.
     if ROLE_LEVELS.get(normalize_role(link.role), 0) > ROLE_LEVELS[caller_role]:
-        raise HTTPException(status_code=403, detail="You cannot modify a user whose role is above your own.")
+        raise HTTPException(status_code=403, detail=t("company.err_user_above_own"))
     # Track whether any security-sensitive field actually changes. A role change
     # or a membership active-state change must rotate the target's session state
     # so their existing access AND refresh tokens are rejected on next use. Only
@@ -896,7 +897,7 @@ async def patch_user(
                 )
             ).scalar()
             if owner_count <= 1:
-                raise HTTPException(status_code=400, detail="Cannot demote the last owner. Assign another owner first.")
+                raise HTTPException(status_code=400, detail=t("company.err_last_owner_demote"))
         if payload.role != link.role:
             security_change = True
         link.role = payload.role
@@ -915,23 +916,13 @@ async def patch_user(
                 if owner_count <= 1:
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot deactivate the last owner. Assign another owner first.",
+                        detail=t("company.err_last_owner_deactivate"),
                     )
 
             if user.is_install_owner:
-                active_memberships = (
-                    await session.execute(
-                        select(_func.count()).where(
-                            UserCompany.user_id == user_id,
-                            UserCompany.is_active.is_(True),
-                        )
-                    )
-                ).scalar()
-                if active_memberships <= 1:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Cannot deactivate the installation owner's last active membership.",
-                    )
+                # The installation owner keeps access to every active company: only
+                # after they hand that role to someone else can they be deactivated.
+                raise HTTPException(status_code=400, detail=t("error.install_owner_deactivate"))
 
         if payload.is_active != link.is_active:
             security_change = True
@@ -974,7 +965,7 @@ async def patch_item_schema(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     settings["item_schema"] = [f.model_dump() for f in payload.fields]
@@ -991,7 +982,7 @@ async def patch_item_schema(
 async def get_category_schema(category: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     from celerp.services.field_schema import all_category_schemas
     return all_category_schemas(company.settings or {}).get(category, [])
 
@@ -1006,7 +997,7 @@ async def patch_category_schema(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     reject_system_item_fields(dict.fromkeys(f.key for f in payload.fields))
     settings = dict(company.settings)
     cat_schemas = dict(settings.get("category_schemas") or {})
@@ -1022,7 +1013,7 @@ async def get_company_category_schemas(company_id=Depends(get_current_company_id
     """Return only company-level category schemas (no module defaults). Used to determine which categories the user explicitly applied."""
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return dict(company.settings.get("category_schemas") or {})
 
 
@@ -1031,7 +1022,7 @@ async def get_category_display_names(company_id=Depends(get_current_company_id),
     """Return display names keyed by category slug."""
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return dict(company.settings.get("category_display_names") or {})
 
 
@@ -1041,7 +1032,7 @@ async def get_all_category_schemas(company_id=Depends(get_current_company_id), s
     from celerp.services.field_schema import all_category_schemas
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return all_category_schemas(company.settings)
 
 
@@ -1063,17 +1054,17 @@ async def create_category(
 ) -> dict:
     name = str(payload.get("name") or "").strip()
     if not name:
-        raise HTTPException(status_code=422, detail="name is required")
+        raise HTTPException(status_code=422, detail=t("settings.name_required"))
     key = _slugify_category(name)
     if not key:
-        raise HTTPException(status_code=422, detail="name produces an empty key")
+        raise HTTPException(status_code=422, detail=t("company.err_name_no_letters"))
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings or {})
     cat_schemas = dict(settings.get("category_schemas") or {})
     if key in cat_schemas:
-        raise HTTPException(status_code=409, detail=f"Category '{key}' already exists")
+        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=key))
     cat_schemas[key] = []
     settings["category_schemas"] = cat_schemas
     display_names = dict(settings.get("category_display_names") or {})
@@ -1100,21 +1091,21 @@ async def rename_category(
     from celerp.models.projections import Projection
     new_name = str(payload.get("name") or "").strip()
     if not new_name:
-        raise HTTPException(status_code=422, detail="name is required")
+        raise HTTPException(status_code=422, detail=t("settings.name_required"))
     new_key = _slugify_category(new_name)
     if not new_key:
-        raise HTTPException(status_code=422, detail="name produces an empty key")
+        raise HTTPException(status_code=422, detail=t("company.err_name_no_letters"))
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings or {})
     cat_schemas = dict(settings.get("category_schemas") or {})
     if category_key not in cat_schemas:
-        raise HTTPException(status_code=404, detail=f"Category '{category_key}' not found")
+        raise HTTPException(status_code=404, detail=t("company.err_category_not_found", name=category_key))
     if new_key == category_key:
         return {"ok": True, "items_updated": 0}
     if new_key in cat_schemas:
-        raise HTTPException(status_code=409, detail=f"Category '{new_key}' already exists")
+        raise HTTPException(status_code=409, detail=t("company.err_category_exists", name=new_key))
     # Rename schema key
     cat_schemas[new_key] = cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas
@@ -1153,11 +1144,11 @@ async def delete_category(
     from celerp.models.projections import Projection
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings or {})
     cat_schemas = dict(settings.get("category_schemas") or {})
     if category_key not in cat_schemas:
-        raise HTTPException(status_code=404, detail=f"Category '{category_key}' not found")
+        raise HTTPException(status_code=404, detail=t("company.err_category_not_found", name=category_key))
     # Count items referencing this category
     rows = (await session.execute(
         select(Projection).where(
@@ -1169,7 +1160,7 @@ async def delete_category(
     if item_count > 0:
         raise HTTPException(
             status_code=409,
-            detail={"detail": f"Cannot delete: {item_count} item(s) use this category.", "item_count": item_count},
+            detail={"detail": t("company.err_category_in_use", count=item_count), "item_count": item_count},
         )
     cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas
@@ -1188,7 +1179,7 @@ async def get_column_prefs(company_id=Depends(get_current_company_id), session: 
     """Return column visibility prefs keyed by category or '__all__'."""
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company.settings.get("column_prefs") or {}
 
 
@@ -1201,7 +1192,7 @@ async def patch_column_prefs(
     """Merge column visibility prefs. Any user (not admin-only) can save their view prefs."""
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     prefs = dict(settings.get("column_prefs") or {})
     prefs.update(payload.prefs)
@@ -1219,7 +1210,7 @@ async def patch_column_prefs(
 async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return _configured(company.settings, "taxes", _generic_taxes())
 
 
@@ -1232,7 +1223,7 @@ async def patch_taxes(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["taxes"] = [t.model_dump() for t in payload.taxes]
     company.settings = settings
@@ -1320,7 +1311,7 @@ async def import_taxes_batch(
 async def get_payment_terms(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company_payment_terms(company.settings)
 
 
@@ -1333,7 +1324,7 @@ async def patch_payment_terms(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["payment_terms"] = payload.terms
     company.settings = settings
@@ -1405,7 +1396,7 @@ async def import_payment_terms_batch(
 async def get_contact_tags(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company.settings.get("contact_tags") or []
 
 
@@ -1418,7 +1409,7 @@ async def patch_contact_tags(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["contact_tags"] = payload.tags
     company.settings = settings
@@ -1435,7 +1426,7 @@ async def patch_contact_tags(
 async def get_contact_defaults(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company.settings.get("contact_defaults") or {}
 
 
@@ -1448,7 +1439,7 @@ async def patch_contact_defaults(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["contact_defaults"] = payload.defaults
     company.settings = settings
@@ -1464,7 +1455,7 @@ async def patch_contact_defaults(
 async def get_terms_conditions(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     configured = company.settings.get("terms_conditions")
     templates = terms_templates(company.settings)
     if configured is not None and templates != configured:
@@ -1485,7 +1476,7 @@ async def patch_terms_conditions(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["terms_conditions"] = [t for t in payload.templates]
     company.settings = settings
@@ -1513,7 +1504,7 @@ async def get_purchasing_taxes(
 ) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return _purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes())
 
 
@@ -1526,7 +1517,7 @@ async def patch_purchasing_taxes(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["purchasing_taxes"] = [t.model_dump() for t in payload.taxes]
     company.settings = settings
@@ -1584,7 +1575,7 @@ async def get_purchasing_payment_terms(
 ) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return _purchasing_list(company.settings, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
 
 
@@ -1597,7 +1588,7 @@ async def patch_purchasing_payment_terms(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["purchasing_payment_terms"] = payload.terms
     company.settings = settings
@@ -1660,13 +1651,13 @@ def _validate_units(units: list[UnitRecord]) -> None:
     seen: set[str] = set()
     for u in units:
         if not _UNIT_NAME_RE.match(u.name):
-            raise HTTPException(status_code=422, detail=f"Unit name '{u.name}' must be lowercase alphanumeric + underscore")
+            raise HTTPException(status_code=422, detail=t("company.err_unit_name", name=u.name))
         if not (0 <= u.decimals <= 6):
-            raise HTTPException(status_code=422, detail=f"Unit '{u.name}' decimals must be 0–6")
+            raise HTTPException(status_code=422, detail=t("company.err_unit_decimals", name=u.name))
         if u.unit_type not in _VALID_UNIT_TYPES:
             raise HTTPException(status_code=422, detail=f"Unit '{u.name}' type must be one of: {', '.join(sorted(_VALID_UNIT_TYPES))}")
         if u.name in seen:
-            raise HTTPException(status_code=422, detail=f"Duplicate unit name: '{u.name}'")
+            raise HTTPException(status_code=422, detail=t("company.err_unit_duplicate", name=u.name))
         seen.add(u.name)
 
 
@@ -1674,7 +1665,7 @@ def _validate_units(units: list[UnitRecord]) -> None:
 async def get_units(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company.settings.get("units") or DEFAULT_UNITS
 
 
@@ -1688,7 +1679,7 @@ async def put_units(
     _validate_units(payload.units)
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["units"] = [u.model_dump() for u in payload.units]
     company.settings = settings
@@ -1819,10 +1810,10 @@ async def enable_module(
 
     await hold_module_state(session)
     if not is_installed(module_name):
-        raise HTTPException(status_code=404, detail="Module not found.")
+        raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
     company = await locked_company(session, company_id)
     if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company.settings, also_enabled = enable_for_company(company.settings, module_name)
     await commit_with_load_set(session)
     return {
@@ -1853,7 +1844,7 @@ async def disable_module(
     await hold_module_state(session)
     company = await locked_company(session, company_id)
     if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     try:
         company.settings = disable_for_company(company.settings, module_name)
     except ModuleStillNeeded as exc:
@@ -1898,12 +1889,12 @@ async def delete_module(
     await hold_module_state(session)
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
-        raise HTTPException(status_code=404, detail="Module not found.")
+        raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
     # A default is identified by content (its digest matches the committed lock),
     # never by name - so a demoted look-alike can be deleted, and no impostor named
     # after a default is shielded from deletion.
     if is_first_party(pkg_path):
-        raise HTTPException(status_code=409, detail="Default modules cannot be deleted.")
+        raise HTTPException(status_code=409, detail=t("company.err_module_default"))
     await _refuse_while_in_use(session, module_name, "deleting it")
 
     try:
@@ -1998,7 +1989,7 @@ async def purge_module_data(
             "Nothing was deleted. Try again when it finishes.")) from None
     pkg_path = resolve_module_path(module_name)
     if pkg_path is None:
-        raise HTTPException(status_code=404, detail="Module not found.")
+        raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
     await _refuse_while_in_use(session, module_name, "purging its data")
 
     prefix = (read_manifest(pkg_path) or {}).get("table_prefix") or ""
@@ -2022,9 +2013,9 @@ async def purge_module_data(
         if _is_fk_dependency_error(exc):
             raise HTTPException(
                 status_code=409,
-                detail=("Could not purge: a table outside this module still "
-                        "depends on one of its tables. Nothing was deleted."))
-        raise HTTPException(status_code=409, detail="Purge failed; nothing was removed.")
+                detail=t("company.err_purge_dependency"))
+        logger.exception("module purge failed for %s", module_name)
+        raise HTTPException(status_code=409, detail=t("company.err_purge_failed"))
     return {"ok": True, "name": module_name, "dropped": names}
 
 
@@ -2060,10 +2051,10 @@ async def import_module_upload(
     # an oversize (or lying-Content-Length) body cannot be buffered whole in RAM.
     clen = request.headers.get("content-length")
     if clen and clen.isdigit() and int(clen) > MAX_ARCHIVE_BYTES:
-        raise HTTPException(status_code=413, detail="Archive too large (limit 50 MB).")
+        raise HTTPException(status_code=413, detail=t("module_import.too_large"))
     data = await file.read(MAX_ARCHIVE_BYTES + 1)
     if len(data) > MAX_ARCHIVE_BYTES:
-        raise HTTPException(status_code=413, detail="Archive too large (limit 50 MB).")
+        raise HTTPException(status_code=413, detail=t("module_import.too_large"))
     try:
         info = await asyncio.to_thread(install_from_zip, data, source=source)
     except ModuleImportError as exc:
@@ -2110,21 +2101,17 @@ async def _relay_creds() -> tuple[str, str]:
 
     api_key = _s.gateway_token
     if not api_key:
-        raise HTTPException(status_code=503,
-                            detail="Not signed in to Celerp - connect an account first.")
+        raise HTTPException(status_code=503, detail=t("error.connect_account_first"))
     relay_base = relay_http_url()
     try:
         async with httpx.AsyncClient(timeout=8.0) as c:
             token = await fetch_relay_bearer(c, api_key=api_key)
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Could not reach the Celerp relay.")
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable"))
     except RelayProtocolError:
-        raise HTTPException(
-            status_code=502,
-            detail="Relay returned an unexpected authentication response.")
+        raise HTTPException(status_code=502, detail=t("error.relay_bad_reply"))
     except Exception as exc:
-        raise HTTPException(status_code=502,
-                            detail=f"Could not authenticate with relay ({type(exc).__name__}).")
+        raise HTTPException(status_code=502, detail=t("error.relay_sign_in_failed")) from exc
     return relay_base, token
 
 
@@ -2149,10 +2136,10 @@ async def buy_module(body: _BuyBody) -> dict:
                          headers={"Authorization": f"Bearer {jwt}"})
     if r.status_code != 200:
         raise HTTPException(status_code=r.status_code,
-                            detail=_json_dict(r).get("detail") or "Checkout failed")
+                            detail=_json_dict(r).get("detail") or t("company.err_checkout_failed"))
     body_json = _json_dict(r)
     if not body_json:
-        raise HTTPException(status_code=502, detail="Relay returned an unexpected checkout response.")
+        raise HTTPException(status_code=502, detail=t("company.err_checkout_bad_reply"))
     return body_json
 
 
@@ -2236,10 +2223,10 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
-                    detail=relay_error_detail(r, "The relay refused the download."))
+                    detail=relay_error_detail(r, t("company.err_download_refused")))
             answer = _install_answer(_json_dict(r), body.slug)
             if answer is None:
-                raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
+                raise HTTPException(status_code=502, detail=t("error.relay_bad_reply"))
 
             d = await c.get(f"{url}/marketplace/download/{answer['token']}")
             if d.status_code != 200:
@@ -2250,12 +2237,10 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     except HTTPException:
         raise
     except httpx.HTTPError:
-        raise HTTPException(
-            status_code=502,
-            detail="Could not reach the Celerp relay. Check your connection and try again.")
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable"))
 
     if len(data) > MAX_ARCHIVE_BYTES:
-        raise HTTPException(status_code=413, detail="Downloaded archive too large (limit 50 MB).")
+        raise HTTPException(status_code=413, detail=t("company.err_download_too_large"))
     if hashlib.sha256(data).hexdigest() != answer["sha256"]:
         raise HTTPException(status_code=502,
                             detail="The downloaded package does not match its listing. Try again.")
@@ -2286,10 +2271,9 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     try:
         stage = await asyncio.to_thread(marketplace_stage.read_stage, body.ref)
     except ValueError:
-        raise HTTPException(status_code=400, detail="The download reference is invalid.")
+        raise HTTPException(status_code=400, detail=t("module_import.stage_ref_invalid"))
     except marketplace_stage.StageGone:
-        raise HTTPException(status_code=410,
-                            detail="This download has expired. Download it again.")
+        raise HTTPException(status_code=410, detail=t("module_import.stage_expired"))
     try:
         info = await asyncio.to_thread(
             install_from_zip, stage.data, official=stage.is_official, premium=stage.is_paid,
@@ -2332,7 +2316,7 @@ async def reset_company(
     await lock_connector_maintenance(session)
     # A reset that waited for another to finish finds the company gone, not its role.
     if not await lock_company_for_deletion(session, ctx.company_id):
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     await locked_authority(session, ctx.company_id, ctx.user.id, ("manage_company_lifecycle",))
     company = await session.get(Company, ctx.company_id)
     closure = task_id = None
@@ -2395,6 +2379,7 @@ async def deactivate_company(
         ConnectorRemoteCleanupError,
         revoke_connector_remote_state,
     )
+    from celerp.connectors.registry import service_name
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 
     await lock_connector_maintenance(session)
@@ -2402,7 +2387,7 @@ async def deactivate_company(
         Company, company_id, with_for_update=True, populate_existing=True
     )
     if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     company_id_str = str(company_id)
     configs = list((await session.scalars(
         sa.select(ConnectorConfig)
@@ -2421,7 +2406,7 @@ async def deactivate_company(
             await session.rollback()
             raise HTTPException(
                 status_code=503,
-                detail=f"Could not disconnect {platform}; the company was not deactivated.",
+                detail=t("error.deactivate_disconnect_failed", service=service_name(platform)),
             ) from exc
     for config in configs:
         connector_name = config.connector
@@ -2436,10 +2421,7 @@ async def deactivate_company(
             await session.rollback()
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    f"Could not disconnect {connector_name}; "
-                    "the company was not deactivated."
-                ),
+                detail=t("error.deactivate_disconnect_failed", service=service_name(connector_name)),
             ) from exc
 
     company.is_active = False
@@ -2529,7 +2511,7 @@ async def get_price_lists(
 ) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     existing = company.settings.get("price_lists")
     if existing is None:
         company = await locked_company(session, company_id)
@@ -2568,7 +2550,7 @@ async def patch_price_lists(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     error = price_config_error(payload.price_lists,
                                payload.base_price_list or settings.get("base_price_list"),
@@ -2590,7 +2572,7 @@ async def get_base_price_list(
 ) -> str:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company.settings.get("base_price_list") or DEFAULT_PRICE_LIST_NAME
 
 
@@ -2603,16 +2585,16 @@ async def patch_base_price_list(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     price_lists = settings.get("price_lists") or []
     target = next((pl for pl in price_lists if pl.get("name") == payload.name), None)
     if target is None:
-        raise HTTPException(status_code=422, detail=f"Base price list '{payload.name}' does not exist")
+        raise HTTPException(status_code=422, detail=t("company.err_price_list_missing", name=payload.name))
     if is_derived(target):
         raise HTTPException(
             status_code=422,
-            detail=f"'{payload.name}' is derived from the base price list and cannot be the base itself",
+            detail=t("company.err_price_list_derived", name=payload.name),
         )
     settings["base_price_list"] = payload.name
     company.settings = settings
@@ -2627,7 +2609,7 @@ async def get_default_price_list(
 ) -> str:
     company = await session.get(Company, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     return company.settings.get("default_price_list") or DEFAULT_PRICE_LIST_NAME
 
 
@@ -2640,7 +2622,7 @@ async def patch_default_price_list(
 ) -> dict:
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
     settings["default_price_list"] = payload.name
     company.settings = settings

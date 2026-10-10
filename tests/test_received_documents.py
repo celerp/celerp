@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import json
 import pytest
 from httpx import AsyncClient
+from celerp.services.permissions import missing_permission_text
+from ui.i18n import t
 
 
 async def _token(client: AsyncClient) -> str:
@@ -258,7 +260,7 @@ async def test_booking_needs_the_sales_price_permission_only_for_a_sales_target(
         assert made["line_items"][0]["unit_price"] == 150.0
     else:
         assert r.status_code == 403, r.text
-        assert "set_sales_doc_prices" in r.text
+        assert r.json()["detail"] == missing_permission_text("set_sales_doc_prices")
 
 
 def test_mapping_covers_every_shareable_type():
@@ -1296,7 +1298,7 @@ async def test_tax_amount_without_a_rate_is_not_imported(client):
     r = await client.post("/docs/import-bundle", json=_bundle(_priced(tax=35.0, total=535.0)),
                           headers=_h(tok), follow_redirects=False)
     assert r.status_code == 422
-    assert "without a tax rate" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_share_tax_no_rate", "en")
     listed = await client.get("/docs/received", headers=_h(tok))
     assert listed.status_code == 200, listed.text
     assert listed.json()["items"] == []
@@ -1429,7 +1431,7 @@ async def test_non_finite_number_is_rejected(client, patch_doc):
     r = await client.post("/docs/import-bundle", content=json.dumps(_bundle(doc)),
                           headers={**_h(tok), "Content-Type": "application/json"}, follow_redirects=False)
     assert r.status_code == 422
-    assert "not finite" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_share_bad_number", "en")
 
 
 @pytest.mark.asyncio

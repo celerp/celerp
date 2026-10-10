@@ -18,7 +18,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from celerp.modules import api, loader
-from celerp.services.permissions import authorize_request
+from celerp.services.permissions import authorize_request, missing_permission_text
 from test_helpers import seed_member, signed_request
 from test_modules.test_admission import _clean_loader_state, _modules, _uid, _write_module  # noqa: F401
 
@@ -328,7 +328,7 @@ async def test_ai_query_refused_without_the_ai_permission(session, run_query):
         with pytest.raises(HTTPException) as exc:
             await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 403
-    assert "use_ai_assistant" in exc.value.detail
+    assert exc.value.detail == missing_permission_text("use_ai_assistant")
     run_query.assert_not_awaited()
 
 

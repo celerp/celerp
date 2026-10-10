@@ -24,6 +24,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, download, manifest, members, owner, read, rezip, token
 from migration_support import code_config, count, real_client, real_engine  # noqa: F401
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -487,7 +488,7 @@ async def test_restore_preview_names_destination_and_states_scope(ui, real_engin
     r = await ui.post(f"{base}/restore", data={**_hidden(page), "company_name": "Alpha Trading"})
     page = _page(r)
     assert r.status_code == 200, r.text
-    assert "You already have a company with this name. Choose a different name." in page, page[:3000]
+    assert t("company_backup.err_name_taken") in page, page[:3000]
     assert re.search(r'name="company_name"[^>]*value="Alpha Trading"', page)
     assert await _names(real_engine) == ["Alpha Trading"]
 
@@ -513,7 +514,7 @@ async def test_choose_other_file_deletes_upload(ui, real_engine, real_client, tm
 
 
 OPENED = "This backup was already restored. Celerp opened the existing company; no duplicate was created."
-DISCONNECTED = "Integrations are disconnected and outbound sync is off until you turn it on again."
+DISCONNECTED = "Connections to other services, such as stores and accounting, are not restored from a backup. Connect each one again in Web Access."
 
 
 async def test_done_page_states_outcome_from_server(ui, real_engine, real_client):
@@ -555,7 +556,7 @@ async def test_done_page_links_users_and_roles_when_roles_follow_installation(ui
 
 # ── Lost responses and unreachable service ───────────────────────────────────
 
-NOT_CONFIRMED = "Celerp could not confirm the restore because the local service became unavailable."
+NOT_CONFIRMED = t("company_backup.not_confirmed")
 
 
 async def test_lost_response_after_commit_resolves_to_same_company(routed_ui, real_engine, real_client):
@@ -601,7 +602,7 @@ async def test_lost_response_before_commit_retry_restores_once(routed_ui, real_e
 
     router.overrides[("POST", "/company-backups/restore")] = unreachable
     page = _page(await ui.post(f"{base}/restore", data=_hidden(preview)))
-    assert "Celerp could not reach its local service." in page and "http://" not in page
+    assert t("api.unreachable", "en") in page and "http://" not in page
     assert len(await _company_ids(real_engine)) == 1
 
     del router.overrides[("POST", "/company-backups/restore")]

@@ -350,7 +350,7 @@ def setup_routes(app):
         except Exception as exc:
             return auth_shell(
                 _setup_import_form(
-                    error=t("auth.connection_error", exc=repr(exc)),
+                    error=t("auth.connection_error", exc=exc),
                     setup_code_required=code_required,
                 ),
                 title=page_title("system_recovery.title"),

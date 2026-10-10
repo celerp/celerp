@@ -37,6 +37,7 @@ from migration_support import (
     upload_parts,
 )
 from test_helpers import make_authed_token
+from ui.i18n import t
 
 # Manager's LockDate singleton: field 1 the date, field 2 whether periods are locked.
 LOCK_GUID = uuid.UUID("4c5dac8f-2d5e-4634-a51b-0bbdd021a499")
@@ -421,7 +422,7 @@ async def test_post_finalize_posting_on_or_before_lock_refused(real_client, real
     for day in (LOCKED_THROUGH.isoformat(), "2026-02-01"):
         r = await _post(real_client, headers, real_engine, run.company_id, day)
         assert r.status_code == 422, r.text
-        assert f"Period is locked through {LOCKED_THROUGH.isoformat()}" in r.json()["detail"]
+        assert r.json()["detail"] == t("error.period_locked", date=LOCKED_THROUGH.isoformat())
 
 
 async def test_post_finalize_posting_after_lock_allowed(real_client, real_engine, monkeypatch, tmp_path):

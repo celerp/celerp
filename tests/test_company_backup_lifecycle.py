@@ -17,6 +17,8 @@ import uuid
 from pathlib import Path
 
 import pytest
+
+from ui.i18n import t
 from sqlalchemy import text
 
 from company_backup_support import company, confirm, download, member, members, owner, read, restore, rezip, token
@@ -321,14 +323,14 @@ async def test_bad_files_are_told_apart(real_client, real_engine):
     _, _, tok = await _setup(real_engine)
     data = await download(real_client, tok)
     cases = {
-        b"just some text": cb.NOT_A_BACKUP,
-        gzip.compress(b"pg_dump"): cb.SYSTEM_BACKUP,
-        data[: len(data) // 2]: cb.INCOMPLETE,
+        b"just some text": t(cb.NOT_A_BACKUP),
+        gzip.compress(b"pg_dump"): t(cb.SYSTEM_BACKUP),
+        data[: len(data) // 2]: t(cb.INCOMPLETE),
     }
     for body, message in cases.items():
         r = await read(real_client, tok, body)
         assert r.status_code == 422 and r.json()["detail"] == message, r.text
-    assert "damaged or incomplete" in cb.INCOMPLETE
+    assert "damaged or incomplete" in t(cb.INCOMPLETE)
 
 
 # ── F: modules a backup needs, prepared in the flow ──────────────────────────

@@ -35,6 +35,7 @@ from celerp.modules.slots import resolve_handler
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, role_has_permission
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ async def global_search(
         # provider so the UI renders a real error instead of "no results".
         raise HTTPException(
             status_code=422,
-            detail=f"Search text must be at most {_MAX_Q_LEN} characters.",
+            detail=t("search.err_too_long", max=_MAX_Q_LEN),
         )
 
     if len(stripped) < _MIN_Q_LEN:

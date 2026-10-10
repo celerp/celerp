@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from test_helpers import grant_permission, perm_setup
+from ui.i18n import t
 
 
 async def _contact(client, h: dict, name: str = "Alice") -> str:
@@ -51,7 +52,7 @@ async def test_list_rejects_non_contact_local_record(client, session):
     list_id = await _quotation(client, h)
     r = await _patch(client, h, list_id, ctx["item_id"])
     assert r.status_code == 422, r.text
-    assert "non-contact" in r.text
+    assert r.json()["detail"] == t("documents.err_contact_not_contact", "en")
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
 from celerp.services.company_lock import hold_company
+from ui.i18n import t
 
 # ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -125,7 +126,7 @@ def accepts_mime(mime: str) -> bool:
 def check_file_size(size: int) -> None:
     """ValueError when a file of *size* bytes is over the attachment limit."""
     if size > MAX_FILE_BYTES:
-        raise ValueError(f"File exceeds {MAX_FILE_BYTES // 1024 // 1024} MB limit")
+        raise ValueError(t("error.file_too_large", mb=MAX_FILE_BYTES // 1024 // 1024))
 
 # Longest side of the JPEG list thumbnail derived from every image upload.
 _THUMB_MAX_SIDE = 160
@@ -203,7 +204,7 @@ class LocalBackend:
         root = self._company_dir(company_id).resolve()
         dest = (root / dest_name).resolve() if is_plain_name(att_id) else None
         if dest is None or dest.parent != root:
-            raise ValueError(f"Invalid attachment id: {att_id!r}")
+            raise ValueError(t("error.attachment_not_found"))
         dest.write_bytes(content)
         return f"/static/attachments/{company_id}/{dest_name}"
 
@@ -220,7 +221,7 @@ class LocalBackend:
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         name = stored_id + _stored_extension(mime)
         if not (is_plain_name(str(company_id)) and is_plain_name(name)):
-            raise ValueError(f"Invalid attachment id: {stored_id!r}")
+            raise ValueError(t("error.attachment_not_found"))
         await asyncio.to_thread((self._root / str(company_id) / name).unlink, missing_ok=True)
 
     async def delete_company(self, company_id: str) -> None:
@@ -348,7 +349,7 @@ class S3Backend:
         mime: str,
     ) -> str:
         if not is_plain_name(att_id):
-            raise ValueError(f"Invalid attachment id: {att_id!r}")
+            raise ValueError(t("error.attachment_not_found"))
         key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
@@ -400,7 +401,7 @@ class S3Backend:
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         name = stored_id + _stored_extension(mime)
         if not is_plain_name(name):
-            raise ValueError(f"Invalid attachment id: {stored_id!r}")
+            raise ValueError(t("error.attachment_not_found"))
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             await client.delete_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
 
@@ -508,7 +509,7 @@ async def store_file(
     """
     check_file_size(len(content))
     if not accepts_mime(mime):
-        raise ValueError(f"Unsupported file type: {mime}")
+        raise ValueError(t("error.file_type_unsupported", mime=mime))
 
     att_type: AttachmentType = attachment_type or infer_attachment_type(mime)
     att_id = att_id or str(uuid.uuid4())
@@ -788,7 +789,7 @@ async def store_company_file(company_id, name: str, content: bytes) -> str:
     the stored extension of an allowed type."""
     mime = stored_file_type(name)
     if mime is None:
-        raise ValueError(f"Unsupported file type: {name}")
+        raise ValueError(t("error.file_type_unsupported", mime=name))
     return await get_backend().store(str(company_id), name.rpartition(".")[0], content, mime)
 
 

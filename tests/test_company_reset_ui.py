@@ -14,6 +14,7 @@ from company_backup_support import company, member, owner, token
 from migration_support import OWNER_EMAIL, OWNER_PASSWORD, count, real_client, real_engine  # noqa: F401
 from test_company_backup_ui import _page, ui  # noqa: F401
 from test_company_reset import SOLO_EMAIL, SOLO_PASSWORD, _folder, _local_files
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -89,7 +90,7 @@ async def test_non_owner_is_told_in_the_dialog(ui, real_engine):
 
     r = await ui.post(RESET_UI, data={"company_name": "Harbor Goods Ltd"})
 
-    assert "Owner role required." in r.text
+    assert t("settings.owner_role_required") in _page(r)
     assert await count(real_engine, "companies", "id = :c", c=str(a)) == 1
 
 
@@ -134,9 +135,9 @@ async def test_start_company_shows_errors_on_the_page(ui, real_engine):
     shared = await owner(real_engine)
     await company(real_engine, shared, "Harbor Goods Ltd", "alpha")
     r = await ui.post(START, data={"email": OWNER_EMAIL, "password": "wrong-password", "company_name": "X Ltd"})
-    assert r.status_code == 200 and "Invalid credentials" in _page(r)
+    assert r.status_code == 200 and t("auth.invalid_credentials", "en") in _page(r)
     r = await ui.post(START, data={"email": OWNER_EMAIL, "password": OWNER_PASSWORD, "company_name": "X Ltd"})
-    assert r.status_code == 200 and "This login already has a company. Sign in instead." in _page(r)
+    assert r.status_code == 200 and t("auth.has_company", "en") in _page(r)
     assert await count(real_engine, "companies") == 1
 
 
@@ -159,7 +160,6 @@ async def test_the_old_reset_route_is_gone(ui, real_engine):
 async def test_start_company_explains_when_someone_else_is_signed_in(ui, real_engine, monkeypatch):
     import celerp.gateway.state as gw_state
     from test_company_reset import _signed_in
-    from ui.i18n import t
     monkeypatch.setattr(gw_state, "get_session_token", lambda: "")  # no cloud relay
     shared = await owner(real_engine)
     a = await company(real_engine, shared, "Harbor Goods Ltd", "alpha")

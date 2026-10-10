@@ -21,6 +21,7 @@ import uuid
 import pytest
 
 from test_helpers import grant_permission, perm_setup
+from ui.i18n import t
 
 PATH = "/accounting/accounts/import/batch"
 PREVIEW_PATH = "/accounting/accounts/import/preview"
@@ -287,7 +288,7 @@ async def test_chart_import_over_the_limit_says_so_plainly(client):
     rows = [_row(f"A{i:04d}", f"Account {i}") for i in range(2001)]
     r = await _import(client, h, rows)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == "A chart file can hold up to 2000 accounts; this one has 2001."
+    assert r.json()["detail"] == t("acct.err_chart_import_too_many", "en", count=2001, max=2000)
     assert "A0000" not in await _chart(client, h)
 
 
@@ -441,7 +442,7 @@ async def test_chart_import_rejects_unrecognized_is_active(client, value):
     r = await _import(client, h, [_row("8690", "Odd", is_active=value)])
     body = r.json()
     assert body["created"] == 0
-    assert len(body["errors"]) == 1 and "is_active" in body["errors"][0]
+    assert len(body["errors"]) == 1 and t("acct.err_active_value", "en") in body["errors"][0]
     assert "8690" not in await _chart(client, h)
 
 

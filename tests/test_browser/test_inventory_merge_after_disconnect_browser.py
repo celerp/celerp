@@ -10,6 +10,8 @@ import uuid
 
 import pytest
 
+from ui.i18n import t
+
 from .test_migration_wizard_browser import _pg_admin
 
 pytestmark = pytest.mark.browser
@@ -64,7 +66,7 @@ def test_inventory_merge_after_disconnect_browser(page, ui_server, api):
         _start_merge(page, ui_server, tag, a_id)
         page.wait_for_selector(".toast-container .toast--error", timeout=8000)
         toast = page.locator(".toast-container .toast--error").inner_text()
-        assert "currently linked to Shopify" in toast, toast
+        assert t("inventory.err_merge_linked", "en", stores="Shopify") in toast, toast
 
         # Shopify is disconnected; the item keeps its old Shopify ids as history.
         _db("DELETE FROM connector_configs WHERE company_id = %s AND connector = 'shopify'", company_id)

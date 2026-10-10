@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+from ui.i18n import t
+
 # ISO-4217 codes, in display order. Add new currencies here only; each one's name
 # is the catalog key currency.name.<code> in every UI language.
 CURRENCIES: tuple[str, ...] = (
@@ -20,7 +22,7 @@ CURRENCY_CODES: frozenset[str] = frozenset(CURRENCIES)
 def require_currency_code(code: str | None) -> None:
     """Refuse a currency outside the supported list at a write boundary. Empty means no currency."""
     if code and code not in CURRENCY_CODES:
-        raise HTTPException(status_code=422, detail=f"Invalid currency code: {code}")
+        raise HTTPException(status_code=422, detail=t("error.invalid_currency", value=code))
 
 
 def require_phone(phone: str | None) -> None:

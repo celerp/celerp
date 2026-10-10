@@ -39,6 +39,7 @@ from celerp.db import get_session
 from celerp.main import app
 from celerp.ai.service import AgentResult, PendingAction
 import celerp.gateway.state as gw_state
+from ui.i18n import t
 
 
 
@@ -124,7 +125,7 @@ async def test_upload_rejects_unsupported_type(auth_client):
         "files": ("payload.exe", b"MZ\x90\x00", "application/x-msdownload"),
     })
     assert r.status_code == 400
-    assert "unsupported type" in r.json()["detail"]
+    assert r.json()["detail"] == t("ai.err_file_type_named", name="payload.exe")
 
 
 # ── GET /ai/file/{file_id} ──────────────────────────────────────────────────

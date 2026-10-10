@@ -397,18 +397,7 @@ app.add_middleware(TokenRefreshMiddleware)
 
 # ── i18n middleware: set context language per request ───────────────────────────
 
-class I18nMiddleware:
-    """Pure ASGI middleware: sets context language per request."""
-
-    def __init__(self, app):
-        self._app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            from ui.i18n import get_lang, set_lang
-            request = Request(scope, receive)
-            set_lang(get_lang(request))
-        await self._app(scope, receive, send)
+from ui.i18n import I18nMiddleware  # noqa: E402
 
 app.add_middleware(I18nMiddleware)
 

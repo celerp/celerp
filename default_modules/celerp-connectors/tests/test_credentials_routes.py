@@ -21,6 +21,7 @@ from celerp_connectors.routes import (
     set_item_sync,
     store_credentials,
 )
+from ui.i18n import t
 
 RELAY = "https://relay.test"
 STORE = "https://store.test"
@@ -186,7 +187,7 @@ async def test_store_requires_https_store_url(monkeypatch):
     with url_p, hdr_p:
         result = await store_credentials("woocommerce", _creds("http://store.test"), "company-test", None, _session())
     assert result["error"] == "store_unreachable"
-    assert "supported scheme" in result["detail"]
+    assert result["detail"] == t("error.url_invalid", "en")
 
 
 @pytest.mark.asyncio
@@ -357,7 +358,7 @@ async def test_item_sync_rejects_unbounded_batch_before_locking():
                 _session(),
             )
     assert exc.value.status_code == 422
-    assert "At most 200" in str(exc.value.detail)
+    assert "Sync at most 200 at a time." in str(exc.value.detail)
     lock.assert_not_awaited()
 
 

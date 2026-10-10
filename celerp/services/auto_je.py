@@ -60,6 +60,7 @@ from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, pla
 from celerp.services.units import is_non_stock_line, line_receive_kind
 from sqlalchemy import ARRAY, String, any_, bindparam, func, or_
 from sqlalchemy import select as _select
+from ui.i18n import t
 
 if TYPE_CHECKING:
     from celerp.models.ledger import LedgerEntry
@@ -250,7 +251,7 @@ async def _emit_auto_posted_je(
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:
         raise UnbalancedJournalEntry(
-            f"{memo}: debits {debits} and credits {credits} {currency} do not balance"
+            t("error.auto_je_unbalanced", memo=memo, debits=debits, credits=credits, currency=currency)
         )
     payload = {"memo": memo, "entries": entries}
     if ts:
@@ -1876,7 +1877,7 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
     sources: list[int | None] = [part if isinstance(part, int) else None for part, _ in parts]
     if sum((a for _, a in lines), _Dec(0)) != total_d:
         raise UnbalancedJournalEntry(
-            f"Bill {doc_id}: its lines, tax and shipping do not add up to its total of {total_d} {currency}"
+            t("error.bill_lines_mismatch", doc_id=doc_id, total=total_d, currency=currency)
         )
 
     settings = await current_settings(session, company_id)
@@ -3075,7 +3076,7 @@ async def _recognized_by_account(
     for lot in books.shipments.out.get(doc_id, []):
         idx = _line(lot)
         if idx is None:
-            raise ValueError("cannot safely identify the invoice line of every shipped lot")
+            raise ValueError(t("error.cogs_line_unknown"))
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
             _add(shipped, {await sold_lot_key(session, company_id, lot.entity_id, lot.state or {}): cost})
@@ -3083,7 +3084,7 @@ async def _recognized_by_account(
     for lot, qty in books.shipments.back.get(doc_id, []):
         idx = _line(lot)
         if idx is None:
-            raise ValueError("cannot safely identify the invoice line of every lot taken back")
+            raise ValueError(t("error.cogs_line_unknown"))
         back_qty[idx] = back_qty.get(idx, 0.0) + qty
     repriced = books.repriced.get((doc_id, recognized.cycle), {})
     for idx, alloc in recognized.allocations.items():

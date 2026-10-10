@@ -19,8 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.services.provisioning import unique_slug
-
-NOT_AN_OWNER = "Only an owner of this company can reactivate it."
+from ui.i18n import t
 
 _DEACTIVATED_SUFFIX = re.compile(r"-deactivated-\d+$")
 
@@ -52,7 +51,7 @@ async def reactivate_company(session: AsyncSession, company_id, user_id) -> Reac
         UserCompany.role == "owner", UserCompany.is_active.is_(True)).limit(1)) is not None
     if not owner:
         await session.rollback()
-        raise NotAnOwner(NOT_AN_OWNER)
+        raise NotAnOwner(t("error.reactivate_owner_only"))
     if company.is_active:
         done = Reactivated(company_id=company.id, company_name=company.name, reactivated=False,
                            connectors_to_reconnect=[])

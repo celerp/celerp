@@ -16,6 +16,7 @@ import pytest
 from httpx import AsyncClient
 
 from celerp.services.company_lock import locked_company
+from ui.i18n import t
 
 
 pytestmark = pytest.mark.usefixtures("docs_running")
@@ -552,7 +553,7 @@ async def test_the_online_deposit_setting_refuses_an_account_that_is_not_cash_or
     r = await client.patch("/companies/me/books", json={key: value},
                            headers=_h(tok))
     assert r.status_code == 422
-    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]
+    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]["message"]
 
 
 @pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
@@ -566,7 +567,8 @@ async def test_the_online_deposit_setting_refuses_a_bank_whose_chart_account_can
     r = await client.patch("/companies/me/books", json={key: code},
                            headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "the default deposit account (1111) or an active bank account" in r.json()["detail"]
+    expected_key = "posting.destination.inactive" if "is_active" in change else "posting.destination.not_money"
+    assert r.json()["detail"]["message_key"] == expected_key
 
 
 @pytest.mark.parametrize("key", ["stripe_deposit_account", "woocommerce_deposit_account"])
@@ -740,7 +742,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
                                     reference="pi_race", amount_minor=107000, currency="usd",
                                     paid_at=PAID, context=BOOKS, managed=True)
     assert refused.value.status_code == 409
-    assert "exceeds amount outstanding" in refused.value.detail
+    assert refused.value.detail == t("documents.err_payment_too_much", "en", amount=1070.0, outstanding=570.0)
     await session.rollback()
 
     doc = await _doc_state(client, tok, eid)
@@ -915,7 +917,8 @@ async def test_disconnect_endpoint_502_when_cloud_does_not_answer(client, monkey
     tok = await _register(client)
     r = await client.post("/payments/disconnect", headers=_h(tok))
     assert r.status_code == 502
-    assert r.json()["detail"] == "Could not disconnect Stripe"
+    from ui.i18n import t
+    assert r.json()["detail"] == t("error.stripe_disconnect_failed", "en")
 
 
 @pytest.mark.asyncio

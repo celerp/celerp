@@ -72,6 +72,7 @@ from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
     locked_authority,
+    missing_permission_text,
     reject_price_change,
     require_permission,
     role_has_permission,
@@ -87,6 +88,8 @@ from celerp.services.pricing import (
     price_keys_in,
     stored_price,
 )
+from ui.components.table import display_unit
+from ui.i18n import category_label, field_label, item_status_label, price_list_label, t
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.line_measures import splitting_allowed
@@ -497,7 +500,7 @@ async def assert_status_change_allowed(
         # otherwise edit_inventory alone could take stock off-books with no ledger effect.
         raise HTTPException(
             status_code=422,
-            detail="Disposal is recorded through the Write off stock action, not a direct status edit.",
+            detail=t("inventory.err_dispose_via_write_off"),
         )
     if ns in _ACTION_OWNED_STATUSES:
         raise HTTPException(status_code=422, detail=_ACTION_OWNED_STATUSES[ns])
@@ -521,18 +524,18 @@ async def assert_status_change_allowed(
     if not role_has_permission(settings, role, "revert_items_to_draft"):
         raise HTTPException(
             status_code=403,
-            detail="Reverting an item to draft requires the 'Revert items to draft' permission (revert_items_to_draft)",
+            detail=missing_permission_text("revert_items_to_draft"),
         )
     if current != "available":
         raise HTTPException(
             status_code=409,
-            detail=f"Only an available item can be reverted to draft; this item is {current}",
+            detail=t("inventory.err_revert_not_available", status=item_status_label(current)),
         )
     if state.get("status_doc_id"):
         holder = state.get("status_doc_number") or state.get("status_doc_id")
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot revert to draft: the item's status is held by document {holder}",
+            detail=t("inventory.err_revert_on_document", ref=holder),
         )
     from celerp.models.ledger import LedgerEntry
     event_types = set((await session.execute(
@@ -543,9 +546,10 @@ async def assert_status_change_allowed(
     )).scalars().all())
     circulated = sorted(e for e in event_types if not is_authoring_event(e))
     if circulated:
+        from ui.components.activity import event_label
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot revert to draft: the item has circulation history ({', '.join(circulated)})",
+            detail=t("inventory.err_revert_used", uses=", ".join(event_label(e) for e in circulated)),
         )
     from celerp.services.document_lines import listing_record
     doc_ref = await listing_record(session, company_id, entity_id)
@@ -554,7 +558,7 @@ async def assert_status_change_allowed(
         ref = ref_state.get("ref_id") or ref_state.get("doc_number") or doc_ref.entity_id
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot revert to draft: the item is on document {ref}",
+            detail=t("inventory.err_revert_on_document", ref=ref),
         )
 
 
@@ -631,7 +635,7 @@ async def assert_make_available_allowed(session: AsyncSession, company_id, entit
         raise HTTPException(status_code=409, detail=_RESTORE_ONLY)
     raise HTTPException(
         status_code=409,
-        detail=f"Only a draft item can be made available; this item is {current}",
+        detail=t("inventory.err_make_available_not_draft", status=item_status_label(current)),
     )
 
 
@@ -1987,11 +1991,11 @@ async def _build_item_preview(
     from celerp.services.field_schema import all_category_schemas, union_category_attr_keys
 
     if not _AI_FILE_ID_RE.match(file_id):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
     try:
         data, meta = load_file(file_id, company_id, user_id)
     except (FileNotFoundError, PermissionError):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
 
     filename = meta.get("filename") or file_id
     price_lists, _default_list, _currency = await get_price_config(session, company_id)
@@ -2167,7 +2171,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     from celerp.services.field_schema import get_effective_field_schema
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
     loc_name: str | None = None
     if row.location_id:
         loc = (await session.execute(
@@ -2215,7 +2219,7 @@ async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_
     from celerp.services.reorder import suggest_reorder
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
     return await suggest_reorder(session, company_id, entity_id)
 
 
@@ -2391,6 +2395,21 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
     return out
 
 
+_DEFAULT_FIELDS = {f["key"]: f for f in DEFAULT_ITEM_SCHEMA}
+
+
+def _field_name(key: str, price_lists: list[dict] = ()) -> str:
+    """An item field as the user sees it, for messages: a built-in field's label, a
+    price list's name, otherwise the key as stored."""
+    if key in _DEFAULT_FIELDS:
+        return field_label(_DEFAULT_FIELDS[key])
+    for pl in price_lists:
+        name = pl.get("name", "")
+        if key in (name, price_key(name)):
+            return price_list_label(name)
+    return key
+
+
 def _validate_sku(sku: str | None) -> None:
     """Friendly-422 wrapper over the canonical event-boundary rule (celerp.events.schemas), so an
     interactive route surfaces a clear message instead of the raw write-time rejection."""
@@ -2424,7 +2443,7 @@ async def get_item_projection(session: AsyncSession, company_id, entity_id: str,
     else:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
     return row
 
 
@@ -2454,7 +2473,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is not None:
             if replay.event_type != "item.created":
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             return {"event_id": replay.id, "id": replay.entity_id}
 
     # Guard: setting a price on creation requires set_inventory_prices, except that a
@@ -2487,7 +2506,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
     if not payload.sell_by:
-        raise HTTPException(status_code=422, detail="sell_by is required unless the category has a default unit")
+        raise HTTPException(status_code=422, detail=t("inventory.err_sell_by_required"))
 
     if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
         raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
@@ -2496,7 +2515,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     if payload.sell_by not in unit_map:
-        raise HTTPException(status_code=422, detail=f"sell_by '{payload.sell_by}' is not a valid unit name")
+        raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=payload.sell_by))
 
     # Validate quantity precision
     unit_cfg = unit_map[payload.sell_by]
@@ -2504,7 +2523,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Validate barcode format (digits only)
     if payload.barcode is not None and not payload.barcode.isdigit():
-        raise HTTPException(status_code=422, detail="Barcode must contain digits only")
+        raise HTTPException(status_code=422, detail=t("inventory.err_barcode_digits"))
 
     _validate_sku(payload.sku)
     _validate_gtin(payload.gtin)
@@ -2517,7 +2536,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         if replay.event_type != "item.created":
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
         return {"event_id": replay.id, "id": replay.entity_id}
 
     # Auto-assign sequential SKU if not provided
@@ -2565,7 +2584,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     for _amt in AMOUNT_ITEM_KEYS & set(data):
         _amt_val = data.get(_amt)
         if _amt_val is not None and float(_amt_val) < 0:
-            raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
+            raise HTTPException(status_code=422, detail=t("inventory.err_amount_negative", field=_field_name(_amt)))
     refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
     if refusal:
         raise HTTPException(status_code=422, detail=refusal)
@@ -2679,7 +2698,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "item.updated" or replay.entity_id != entity_id:
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             if set(payload.fields_changed) & COST_ITEM_KEYS:
                 from celerp_inventory.services import cost_correction_notice
                 return {"event_id": replay.id, "cost_correction": await cost_correction_notice(session, company_id, replay)}
@@ -2721,7 +2740,9 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         await assert_status_change_allowed(session, company_id, entity_id, _new_status, role, settings)
     blocked = changed_keys & restricted
     if blocked:
-        raise HTTPException(status_code=403, detail=f"Role '{role}' cannot modify restricted fields: {sorted(blocked)}")
+        raise HTTPException(status_code=403, detail=t(
+            "inventory.err_fields_restricted",
+            fields=", ".join(_field_name(k, _price_lists) for k in sorted(blocked))))
 
     # Derived price lists are computed from the base price list; their keys are never stored.
     # Both the conventional key ("trade_price") and the raw list name ("Trade") are blocked:
@@ -2731,8 +2752,9 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     if derived_blocked:
         raise HTTPException(
             status_code=422,
-            detail=f"{sorted(derived_blocked)} are computed from the '{_base_name}' price list; "
-                   f"edit the base price, or change the factor in Settings",
+            detail=t("inventory.err_price_derived",
+                     lists=", ".join(_field_name(k, _price_lists) for k in sorted(derived_blocked)),
+                     base=price_list_label(_base_name)),
         )
 
     # Normalize "clear" gestures: an empty-string new value means "unset the field" -> None (issue #202).
@@ -2751,7 +2773,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if is_price_item_key(_f, _price_lists) and isinstance(_fc, dict):
             _new = _fc.get("new")
             if _new is not None and coerce_price(_new) is None:
-                raise HTTPException(status_code=422, detail=f"'{_f}' must be a number")
+                raise HTTPException(status_code=422, detail=t("inventory.err_price_not_number",
+                                                              field=_field_name(_f, _price_lists)))
 
     # A renamed SKU is held to the same rule as a created one: no comma (the OR operator).
     if "sku" in changed_keys:
@@ -2769,7 +2792,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             units = await _get_company_units(session, company_id)
             unit_map = {u["name"]: u for u in units}
             if new_sell_by not in unit_map:
-                raise HTTPException(status_code=422, detail=f"sell_by '{new_sell_by}' is not a valid unit name")
+                raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=new_sell_by))
 
     # Validate quantity change against current sell_by unit.
     # Also sync derived weight/pieces field: if sell_by is a weight unit,
@@ -2833,18 +2856,11 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if new_kind is not None and new_kind not in LANDED_COST_KINDS:
             raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
 
-    # Validate weight is non-negative
-    if "weight" in changed_keys:
-        new_weight = (payload.fields_changed["weight"] or {}).get("new")
-        if new_weight is not None and float(new_weight) < 0:
-            raise HTTPException(status_code=422, detail="Weight cannot be negative")
-
-    # The other amount fields are non-negative too (weight handled above).
-    for _amt in ("quantity", "pieces", "gross_weight"):
-        if _amt in changed_keys:
-            _amt_new = (payload.fields_changed[_amt] or {}).get("new")
-            if _amt_new is not None and float(_amt_new) < 0:
-                raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
+    # Amount fields are non-negative.
+    for _amt in sorted(AMOUNT_ITEM_KEYS & changed_keys):
+        _amt_new = (payload.fields_changed[_amt] or {}).get("new")
+        if _amt_new is not None and float(_amt_new) < 0:
+            raise HTTPException(status_code=422, detail=t("inventory.err_amount_negative", field=_field_name(_amt)))
 
     # sell_by sync: when sell_by changes unit type, pull the companion field into quantity.
     # quantity always means "how many sell_by units" — so switching piece→carat should set
@@ -2926,7 +2942,7 @@ class BulkDeleteBody(BaseModel):
 @router.post("/bulk/status")
 async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     # Locked, then validated per item BEFORE any event is emitted: one blocked item
     # rejects the whole bulk with the reason, nothing is half-applied (the session
     # never commits).
@@ -2971,7 +2987,7 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
     lots waits for this one and then finds them available: already available is a no-op,
     and only the drafts actually moved are returned."""
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_make_available_allowed(session, company_id, entity_id)
@@ -3005,7 +3021,7 @@ async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(ge
     first is seen, and a second request for the same lots finds them drafts already, a
     no-op. Only the lots actually returned to draft are returned."""
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     for entity_id in payload.entity_ids:
         await assert_status_change_allowed(session, company_id, entity_id, "draft", role, settings)
@@ -3037,7 +3053,7 @@ async def _lock_selected_items(session: AsyncSession, company_id, entity_ids: li
     rows = await lock_projections(session, company_id, entity_ids)
     missing = sorted({e for e in entity_ids if e not in rows or rows[e].entity_type != "item"})
     if missing:
-        raise HTTPException(status_code=404, detail=f"Item not found: {', '.join(missing)}")
+        raise HTTPException(status_code=404, detail=t("inventory.err_items_not_found"))
     return rows
 
 
@@ -3055,7 +3071,7 @@ async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get
     """Opt the selected items into (or out of) outbound Shopify sync by emitting
     shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     await _lock_selected_items(session, company_id, payload.entity_ids)
     event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
     event_ids = []
@@ -3103,7 +3119,7 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
 @router.post("/bulk/transfer")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     await _lock_selected_items(session, company_id, payload.entity_ids)
     from celerp.models.company import Location
     loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
@@ -3139,7 +3155,7 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     selection is sample items instead: those still untouched are removed with their sample
     stock, and the rest are kept."""
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     if payload.untouched_samples_only:
         # Checked under the item locks taken above, so an edit either committed first
@@ -3209,7 +3225,7 @@ async def bulk_restore_deleted(payload: RestoreDeletedBody, company_id=Depends(g
     Every selected item must be deleted; otherwise nothing is restored and the answer names
     the items that are not."""
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     live = sorted(str((row.state or {}).get("sku") or e) for e, row in rows.items() if _status_of(row) != DELETED)
     if live:
@@ -3231,7 +3247,7 @@ class BulkExpireBody(BaseModel):
 @router.post("/bulk/expire")
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
     await _lock_selected_items(session, company_id, payload.entity_ids)
     for eid in payload.entity_ids:
         await assert_expirable(session, company_id, eid)
@@ -3282,11 +3298,11 @@ async def split_preview(
 ) -> dict:
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
-        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
 
     parent_qty = float(parent.state.get("quantity") or 0)
     if parent_qty <= 0:
-        raise HTTPException(status_code=422, detail="parent qty must be > 0")
+        raise HTTPException(status_code=422, detail=t("inventory.err_split_nothing_left"))
 
     parent_sku = parent.state.get("sku", "")
     parent_sell_by = parent.state.get("sell_by") or "piece"
@@ -3379,7 +3395,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Every record the split writes is keyed from the request key, so the key covers the whole split.
     split_key = payload.idempotency_key or str(uuid.uuid4())
     if parent is None or not is_item_available(parent.state):
-        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
 
     # Block splitting only when explicitly disabled. A missing/None value
     # (e.g. older imports that never set the field) is treated as splittable.
@@ -3424,20 +3440,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
     children = payload.children
     if len(children) < 1:
-        raise HTTPException(status_code=422, detail="Split requires at least 1 child")
+        raise HTTPException(status_code=422, detail=t("inventory.err_split_no_children"))
 
     # Validate each child quantity and weight
     for child in children:
         validate_quantity(child.quantity, decimals)
         if child.weight is not None and child.weight < 0:
-            raise HTTPException(status_code=422, detail="Child weight cannot be negative")
+            raise HTTPException(status_code=422, detail=t("inventory.err_split_weight_negative"))
 
     # Validate total <= parent qty (100% consumption allowed - parent will be archived)
     total_child_qty = sum(c.quantity for c in children)
     if round(total_child_qty, 10) > round(parent_qty, 10):
         raise HTTPException(
             status_code=422,
-            detail=f"Child quantities ({total_child_qty}) exceed parent quantity ({parent_qty})",
+            detail=t("inventory.err_split_qty_over", total=f"{total_child_qty:g}", available=f"{parent_qty:g}"),
         )
     # Normalise: top-level pieces field → attributes so all downstream reads are uniform
     for child in children:
@@ -3452,7 +3468,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         if total_child_pieces > parent_pieces:
             raise HTTPException(
                 status_code=422,
-                detail=f"Total child pieces ({total_child_pieces}) must not exceed parent pieces ({parent_pieces})",
+                detail=t("inventory.err_split_pieces_over", total=total_child_pieces, available=parent_pieces),
             )
 
     # A split child is the SAME product as its parent, so it keeps the parent SKU unless
@@ -3645,14 +3661,14 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # edit_inventory, so an operator can always split without the amount permission.
     if payload.mother_qty is not None:
         if payload.mother_qty < 0:
-            raise HTTPException(status_code=422, detail="Mother quantity cannot be negative")
+            raise HTTPException(status_code=422, detail=t("inventory.err_remaining_qty_negative"))
         if round(payload.mother_qty, 10) != derived_parent_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
-            raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the mother quantity: requires the edit_inventory_amounts permission")
+            raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
     if payload.mother_weight is not None:
         if payload.mother_weight < 0:
-            raise HTTPException(status_code=422, detail="Mother weight cannot be negative")
+            raise HTTPException(status_code=422, detail=t("inventory.err_remaining_weight_negative"))
         if (derived_mother_weight is None or round(payload.mother_weight, weight_decimals) != derived_mother_weight) and not role_has_permission(settings, role, "edit_inventory_amounts"):
-            raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the mother weight: requires the edit_inventory_amounts permission")
+            raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
     # Clamp sub-epsilon residuals from float subtraction to an exact zero (a submitted
     # negative override was rejected above, never silently zeroed).
     derived_parent_qty = max(derived_parent_qty, 0.0)
@@ -4064,19 +4080,19 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     _validate_sku(payload.child_sku)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
-        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
 
     # Validate
     if payload.child_quantity <= 0:
-        raise HTTPException(status_code=422, detail="child_quantity must be > 0")
+        raise HTTPException(status_code=422, detail=t("inventory.err_transform_qty"))
     if not payload.child_category.strip():
-        raise HTTPException(status_code=422, detail="child_category cannot be empty")
+        raise HTTPException(status_code=422, detail=t("inventory.err_transform_category"))
 
     # Validate child_sell_by against company unit map (consistent with split/patch flows)
     _transform_units = await _get_company_units(session, company_id)
     _transform_unit_map = {u["name"]: u for u in _transform_units}
     if payload.child_sell_by not in _transform_unit_map:
-        raise HTTPException(status_code=422, detail=f"Unknown unit '{payload.child_sell_by}'")
+        raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=payload.child_sell_by))
 
     # Child SKU uniqueness against existing items is no longer enforced - SKUs may
     # repeat across physical lots; lot identity is carried by barcode / entity_id.
@@ -4289,9 +4305,9 @@ def _merge_result_id(company_id, idempotency_key: str | None) -> str:
 def _check_merge_request(payload: MergeBody) -> None:
     _validate_sku(payload.resulting_sku)
     if len(payload.source_entity_ids) < 2:
-        raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
+        raise HTTPException(status_code=422, detail=t("inventory.err_merge_min_two"))
     if len(set(payload.source_entity_ids)) != len(payload.source_entity_ids):
-        raise HTTPException(status_code=422, detail="source_entity_ids must contain distinct items.")
+        raise HTTPException(status_code=422, detail=t("inventory.err_merge_duplicate"))
     if payload.target_sku_from not in payload.source_entity_ids:
         raise HTTPException(status_code=422, detail="target_sku_from must identify one of the merge sources.")
 
@@ -4376,11 +4392,12 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     for sid in payload.source_entity_ids:
         proj = rows.get(sid)
         if proj is None:
-            raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
+            raise HTTPException(status_code=404, detail=t("inventory.err_merge_item_missing", item=sid))
         refuse_draft(proj.state or {}, sid)
         status = str((proj.state or {}).get("status") or "").lower()
         if status == "merged":
-            raise HTTPException(status_code=409, detail=f"Item '{sid}' has already been merged.")
+            raise HTTPException(status_code=409, detail=t("inventory.err_merge_already_merged",
+                                                                   item=(proj.state or {}).get("sku") or sid))
         if not is_item_available(proj.state or {}):
             sku = (proj.state or {}).get("sku") or sid
             raise HTTPException(status_code=409,
@@ -4392,7 +4409,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     except ownership.ConnectorOwnershipError:
         raise HTTPException(
             status_code=503,
-            detail="Could not check this company's connectors. Nothing was merged; try again.",
+            detail=t("inventory.err_merge_stores_unchecked"),
         )
     live = sorted(
         registry.get(platform).display_name
@@ -4402,7 +4419,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if live:
         raise HTTPException(
             status_code=409,
-            detail=f"This catalog product is currently linked to {' and '.join(live)}. Merge its physical lots instead.",
+            detail=t("inventory.err_merge_linked", stores=", ".join(live)),
         )
     explicit_catalog_ids = {
         str((proj.state or {}).get("catalog_item_id"))
@@ -4412,7 +4429,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if len(explicit_catalog_ids) > 1:
         raise HTTPException(
             status_code=409,
-            detail="Items from different catalog products cannot be merged.",
+            detail=t("inventory.err_merge_products_differ"),
         )
     merged_catalog_id = next(iter(explicit_catalog_ids), None)
     if merged_catalog_id is None:
@@ -4444,7 +4461,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     ):
         raise HTTPException(
             status_code=409,
-            detail="Catalog product link is invalid.",
+            detail=t("inventory.err_merge_product_link"),
         )
     if catalog_anchor is not None:
         anchor_sku = normalize_sku((catalog_anchor.state or {}).get("sku"))
@@ -4456,7 +4473,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
             ):
                 raise HTTPException(
                     status_code=409,
-                    detail="Items from different catalog products cannot be merged.",
+                    detail=t("inventory.err_merge_products_differ"),
                 )
 
     # Validate: all items must share the same category.
@@ -4464,7 +4481,8 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if len(categories) > 1:
         raise HTTPException(
             status_code=422,
-            detail=f"All items must belong to the same category to merge. Found: {sorted(categories)}.",
+            detail=t("inventory.err_merge_categories",
+                     categories=", ".join(category_label(c) if c else "--" for c in sorted(categories))),
         )
 
     # Validate units: merging sums quantities (in the sell unit) and net weights (in the weight
@@ -4474,7 +4492,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if len(sell_units) > 1:
         raise HTTPException(
             status_code=422,
-            detail=f"Items measured in different units cannot be merged. Found: {', '.join(sorted(sell_units))}.",
+            detail=t("inventory.err_merge_units", units=", ".join(display_unit(u) for u in sorted(sell_units))),
         )
     weight_units = {
         str(p.state.get("weight_unit") or "").strip()
@@ -4484,7 +4502,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if len(weight_units) > 1:
         raise HTTPException(
             status_code=422,
-            detail=f"Items with different weight units cannot be merged. Found: {', '.join(sorted(weight_units))}.",
+            detail=t("inventory.err_merge_weight_units", units=", ".join(display_unit(u) for u in sorted(weight_units))),
         )
 
     # Resolve target projection (SKU/barcode/name/prices come from this source).
@@ -4604,10 +4622,10 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     # override equal to the total) stays on edit_inventory.
     if payload.resulting_quantity is not None:
         if payload.resulting_quantity < 0:
-            raise HTTPException(status_code=422, detail="Resulting quantity cannot be negative")
+            raise HTTPException(status_code=422, detail=t("inventory.err_merge_qty_negative"))
         _natural_qty = round(float(total_qty), _qty_dp) if _qty_dp is not None else float(total_qty)
         if resulting_qty != _natural_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
-            raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the merged quantity: requires the edit_inventory_amounts permission")
+            raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
     # A merge keeps the value of what it combines. Changing that value is a cost
     # correction on the merged item, never part of the merge. A role that may not
     # write prices is refused as for any price write, so its answer says nothing
@@ -4644,7 +4662,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     ):
         raise HTTPException(
             status_code=409,
-            detail="A merged catalog-family lot must keep its catalog product SKU.",
+            detail=t("inventory.err_merge_keep_sku"),
         )
     create_data: dict = {
         "sku": merged_sku,
@@ -4749,7 +4767,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         if replay is not None:
             meta = replay.metadata_ or {}
             if replay.event_type != "item.created" or meta.get("merge_request") != request_digest:
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             if await _merge_undone(session, company_id, replay.entity_id):
                 raise HTTPException(status_code=409, detail=_UNDONE_MERGE)
             return {"id": replay.entity_id, "inventory_reclassification": meta.get("inventory_reclassification")}
@@ -4983,8 +5001,8 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     if payload.price_type in derived_price_keys(_price_lists) or price_key(payload.price_type) in derived_price_keys(_price_lists):
         raise HTTPException(
             status_code=422,
-            detail=f"'{payload.price_type}' is computed from the '{_base_name}' price list; "
-                   f"edit the base price, or change the factor in Settings",
+            detail=t("inventory.err_price_derived", lists=_field_name(payload.price_type, _price_lists),
+                     base=price_list_label(_base_name)),
         )
     # Setting a price requires set_inventory_prices, except that a draft's creator
     # (edit_inventory) authors its cost while it is still a draft - the same carve-out
@@ -5037,7 +5055,7 @@ async def assert_reservable(session: AsyncSession, company_id, entity_id: str, q
     Judged on the locked row, so two reservations racing on one lot never over-commit it."""
     row = await lock_item(session, company_id, entity_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
     state = row.state or {}
     refuse_draft(state, entity_id)
     sku = state.get("sku") or entity_id
@@ -5202,24 +5220,20 @@ async def undo_import_batch(
     try:
         batch_uuid = uuid.UUID(batch_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Import batch not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
     # The company lock serialises this with any chunk still adding to the batch.
     await lock_company(session, company_id)
     batch = (await session.execute(
         select(ImportBatch).where(ImportBatch.id == batch_uuid).with_for_update()
         .execution_options(populate_existing=True))).scalar_one_or_none()
     if batch is None or batch.company_id != company_id:
-        raise HTTPException(status_code=404, detail="Import batch not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
     if batch.status == "undone":
-        raise HTTPException(status_code=409, detail="Batch already undone")
+        raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
     if not batch.reversible:
         raise HTTPException(status_code=409, detail={
             "code": "import_not_reversible",
-            "message": (
-                "This import cannot be undone because it did more than add new items: it changed existing "
-                "records, added locations or category fields, cleared the sample items, or sent changes to a "
-                "connected store."
-            ),
+            "message": t("inventory.err_import_not_reversible"),
         })
 
     entity_ids = batch.entity_ids or []
@@ -5258,7 +5272,7 @@ async def undo_import_batch(
             status_code=409,
             detail={
                 "code": "import_items_modified",
-                "message": "This import cannot be undone because imported items were changed or used later.",
+                "message": t("inventory.err_import_items_changed"),
                 "entity_ids": sorted(modified),
             },
         )

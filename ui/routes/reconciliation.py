@@ -442,7 +442,22 @@ def _workspace_view(
         cls="recon-panel recon-panel--book",
     )
 
+    # A completed reconciliation still shows every action: each one explains that it
+    # must be reopened first (GDR 2e), and Reopen sits right here.
+    completed = Div(
+        Span(t("recon.completed_banner", date=(recon.get("completed_at") or "")[:10] or EMPTY)),
+        Button(
+            t("btn.reopen"),
+            hx_post=f"/accounting/reconcile/{session_id}/reopen",
+            hx_target="#recon-workspace",
+            hx_swap="outerHTML",
+            cls="btn btn--secondary btn--sm",
+        ),
+        cls="flash flash--success recon-completed",
+    ) if recon.get("status") == "completed" else None
+
     return Div(
+        completed,
         header,
         toolbar,
         Div(
@@ -766,7 +781,7 @@ def setup_routes(app):
     async def create_form_partial(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             company = await api.get_company(token)
             currency = company.get("currency", "")
@@ -785,7 +800,7 @@ def setup_routes(app):
     async def split_form_partial(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             company = await api.get_company(token)
             currency = company.get("currency", "")
@@ -804,7 +819,7 @@ def setup_routes(app):
     async def match_confirm(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         je_id = str(form.get("je_id", "")).strip()
         if not je_id:
@@ -821,14 +836,14 @@ def setup_routes(app):
     async def create_confirm(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         account_code = str(form.get("account_code", "")).strip()
         memo = str(form.get("memo", "")).strip()
         amount_raw = str(form.get("amount", "")).strip()
         if not account_code:
             return await _fresh_workspace(token, session_id,
-                                          notice=t("acct.account_code_required"))
+                                          notice=t("settings_accounting.code_required"))
         data = {"account_code": account_code, "memo": memo}
         # No party chosen means no contact key, so an entry nobody named posts
         # exactly the request it posted before the picker existed.
@@ -852,7 +867,7 @@ def setup_routes(app):
     async def split_confirm(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         # Parse split-N fields
         splits = []
@@ -886,7 +901,7 @@ def setup_routes(app):
     async def skip_line(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             await api.skip_recon_line(token, session_id, line_id)
         except APIError as e:
@@ -899,7 +914,7 @@ def setup_routes(app):
     async def unmatch_line(request: Request, session_id: str, line_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             await api.unmatch_recon_line(token, session_id, line_id)
         except APIError as e:
@@ -912,7 +927,7 @@ def setup_routes(app):
     async def trigger_auto_match(request: Request, session_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             await api.auto_match_recon(token, session_id)
         except APIError as e:
@@ -925,7 +940,7 @@ def setup_routes(app):
     async def trigger_bulk_confirm(request: Request, session_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             await api.bulk_confirm_recon(token, session_id)
         except APIError as e:
@@ -938,7 +953,7 @@ def setup_routes(app):
     async def complete_recon(request: Request, session_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             result = await api.complete_reconciliation(token, session_id)
         except APIError as e:
@@ -952,6 +967,8 @@ def setup_routes(app):
                   cls="success-banner"),
                 A(t("btn._back_to_accounting"), href="/settings/accounting?tab=bank-accounts",
                   cls="btn btn--primary"),
+                A(t("recon.view_completed"), href=f"/accounting/reconcile/{session_id}",
+                  cls="btn btn--secondary"),
                 cls="settings-card",
             ),
             title=page_title("recon.complete_title"),
@@ -959,11 +976,24 @@ def setup_routes(app):
             request=request,
         )
 
+    @app.post("/accounting/reconcile/{session_id}/reopen")
+    async def reopen_recon(request: Request, session_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="error-banner")
+        try:
+            await api.reopen_reconciliation(token, session_id)
+        except APIError as e:
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
+
     @app.post("/accounting/reconcile/{session_id}/write-off")
     async def trigger_write_off(request: Request, session_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         try:
             await api.write_off_recon(token, session_id, {})
         except APIError as e:

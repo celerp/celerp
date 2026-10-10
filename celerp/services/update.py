@@ -750,10 +750,10 @@ def _step(*args: str, env: dict | None = None) -> str:
     try:
         result = _bound_python(*args, env=env, timeout=STEP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
-        raise UpdateError(f"{name} did not finish within {STEP_TIMEOUT_SECONDS // 60} minutes") from exc
+        raise UpdateError(f"{name} took longer than {STEP_TIMEOUT_SECONDS // 60} minutes and was stopped") from exc
     if result.returncode != 0:
         log.error("%s failed:\n%s", name, (result.stderr or result.stdout).strip()[-4000:])
-        raise UpdateError(f"{name} exited {result.returncode}")
+        raise UpdateError(f"{name} stopped with an error (code {result.returncode})")
     return result.stdout
 
 
@@ -874,7 +874,7 @@ class SupervisorSteps(Steps):
         ui = self._spawn_ui(env, ui_port)
         if not self._wait_ready((api, api_port), (ui, ui_port), VERIFY_TIMEOUT_SECONDS):
             self.stop_children((api, ui))
-            raise UpdateError("the web interface did not start")
+            raise UpdateError("Celerp's screens did not start after the update")
         return api, ui
 
     def stop_children(self, children: tuple) -> None:

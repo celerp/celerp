@@ -39,6 +39,7 @@ _SCHEMA = [{"key": "sku", "label": "SKU", "type": "text", "required": True, "edi
 
 
 from test_helpers import make_test_token, authed_cookies
+from ui.i18n import t
 
 
 def _authed(token: str | None = None, role: str = "owner") -> dict:
@@ -756,8 +757,8 @@ class TestReportApiErrors:
         assert r.status_code == 200
 
     @pytest.mark.parametrize("failure,status,fragment", [
-        (httpx.TimeoutException("slow"), 504, "Request timed out."),
-        (httpx.ConnectError("refused"), 503, "Celerp could not reach its local service."),
+        (httpx.TimeoutException("slow"), 504, t("api.timed_out", "en")),
+        (httpx.ConnectError("refused"), 503, t("api.unreachable", "en")),
     ])
     @pytest.mark.parametrize("factory,args", [
         ("_api_client", ("tok",)),

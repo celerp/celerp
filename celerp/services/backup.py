@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from celerp.config import settings
+from ui.i18n import t
 
 _NONCE_BYTES = 12
 
@@ -130,11 +131,9 @@ def _parse_key(b64_key: str) -> bytes:
     try:
         key = base64.b64decode(b64_key)
     except Exception as exc:
-        raise ValueError(f"BACKUP_ENCRYPTION_KEY is not valid base64: {exc}") from exc
+        raise ValueError(t("error.backup_key_invalid")) from exc
     if len(key) != 32:
-        raise ValueError(
-            f"BACKUP_ENCRYPTION_KEY must decode to exactly 32 bytes, got {len(key)}"
-        )
+        raise ValueError(t("error.backup_key_invalid"))
     return key
 
 
@@ -153,12 +152,12 @@ def dump_database(database_url: str, *, runner=None) -> bytes:
             timeout=300,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("pg_dump not found in PATH — cannot create backup") from exc
+        raise RuntimeError(t("error.backup_tool_missing")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("pg_dump timed out after 300 seconds") from exc
+        raise RuntimeError(t("error.backup_timed_out")) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"pg_dump failed (exit {result.returncode}): {stderr}")
+        raise RuntimeError(t("error.backup_failed_detail", detail=stderr))
     return result.stdout
 
 
@@ -266,9 +265,8 @@ def check_restore_target(database_url: str) -> None:
     (``_UNSUPPORTED_OBJECTS``); read-only."""
     names = _psql(database_url, _UNSUPPORTED_OBJECTS)
     if names:
-        raise ValueError("Celerp restores only its own tables and sequences in the public schema. "
-                         "Remove or move these database objects, then try again: "
-                         + "; ".join(name for name in names.split("\n") if name))
+        raise ValueError(t("system_recovery.restore_target_unsupported",
+                           names="; ".join(name for name in names.split("\n") if name)))
 
 
 def _psql(database_url: str, sql: str) -> str:
@@ -442,12 +440,12 @@ def _run_tool(command: list[str], runner, timeout: int = 600, cwd: Path | None =
     try:
         result = (runner or subprocess.run)(command, capture_output=True, timeout=timeout, cwd=cwd)
     except FileNotFoundError as exc:
-        raise RuntimeError(f"{name} not found") from exc
+        raise RuntimeError(t("error.restore_tool_missing")) from exc
     except OSError as exc:
-        raise RuntimeError(f"{name} could not run: {exc.strerror}") from exc
+        raise RuntimeError(t("error.restore_failed_detail", detail=f"{name}: {exc.strerror}")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{name} timed out after {timeout} seconds") from exc
+        raise RuntimeError(t("error.restore_timed_out", seconds=timeout)) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"{name} failed (exit {result.returncode}): {stderr}")
+        raise RuntimeError(t("error.restore_failed_detail", detail=f"{name} (exit {result.returncode}): {stderr}"))
     return result.stdout

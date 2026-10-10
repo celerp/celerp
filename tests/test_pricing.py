@@ -26,6 +26,7 @@ from celerp.services.pricing import (
     round_half_up_to_increment,
     validate_price_lists,
 )
+from ui.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +265,7 @@ async def test_patch_base_price_list_rejects_missing_and_derived(client):
     assert r.status_code == 422
     r = await client.patch("/companies/me/base-price-list", json={"name": "Trade"}, headers=h)
     assert r.status_code == 422
-    assert "cannot be the base" in r.json()["detail"]
+    assert r.json()["detail"] == t("company.err_price_list_derived", name="Trade")
 
 
 @pytest.mark.asyncio
@@ -381,7 +382,7 @@ async def test_patch_item_rejects_derived_key(client):
         headers=h,
     )
     assert r.status_code == 422
-    assert "computed" in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_price_derived", "en", lists="Trade", base="Retail")
 
 
 @pytest.mark.asyncio
@@ -395,7 +396,7 @@ async def test_set_item_price_rejects_derived_key(client):
         headers=h,
     )
     assert r.status_code == 422
-    assert "computed" in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_price_derived", "en", lists="Trade", base="Retail")
 
 
 @pytest.mark.asyncio

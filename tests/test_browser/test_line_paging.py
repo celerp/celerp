@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 
+
 pytestmark = pytest.mark.browser
 
 _AUDIT_LINES = 105

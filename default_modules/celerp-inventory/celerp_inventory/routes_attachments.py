@@ -53,6 +53,7 @@ from celerp.services.cost_visibility import restricted_field_keys
 from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import require_permission
 from celerp_inventory.routes import flatten_item, get_item_projection
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +257,7 @@ async def bulk_attach_files(
     from starlette.datastructures import Headers as _Headers
 
     if not zipfile.is_zipfile(file.file):
-        raise HTTPException(status_code=422, detail="Uploaded file is not a valid ZIP archive")
+        raise HTTPException(status_code=422, detail=t("inventory.err_zip_invalid"))
     file.file.seek(0)
     zf = zipfile.ZipFile(file.file)
     entries = [info for info in zf.infolist() if not info.is_dir()]
@@ -374,7 +375,7 @@ async def bulk_attach_files(
 def _get_item_file(files: list[dict], file_id: str) -> dict:
     match = next((f for f in files if f.get("id") == file_id), None)
     if match is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
     return match
 
 
@@ -480,7 +481,7 @@ async def set_item_file_hero(
     row = await get_item_projection(session, company_id, entity_id)
     target = _get_item_file(row.state.get("files", []), file_id)
     if not target.get("mime", "").startswith("image/"):
-        raise HTTPException(status_code=422, detail="Hero can only be set on an image file")
+        raise HTTPException(status_code=422, detail=t("inventory.err_main_image_not_image"))
     await emit_event(
         session,
         company_id=company_id,
@@ -533,7 +534,7 @@ async def _assert_image_visible(session: AsyncSession, company_id, role: str, ro
     category = flatten_item(row.state, row.entity_id).get("category")
     schema = await get_effective_field_schema(session, company_id, category=category)
     if "thumbnail" in restricted_field_keys(role, schema):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
 
 
 @router.get("/{entity_id}/files/{file_id}/thumbnail")
@@ -584,7 +585,7 @@ async def download_item_file(
     atts = row.state.get("attachments") or []
     match = next((f for f in files + atts if f.get("id") == file_id), None)
     if match is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
     await _assert_image_visible(session, company_id, role, row, match)
     url = match.get("url", "")
     # If stored as an absolute URL (cloud/S3 backend), redirect directly
@@ -593,7 +594,7 @@ async def download_item_file(
         return _Redir(url)
     dest = local_attachment_url_path(str(company_id), url)
     if dest is None:
-        raise HTTPException(status_code=404, detail="File missing from disk")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_missing_on_disk"))
     return FileResponse(
         path=str(dest),
         filename=match["filename"],

@@ -6,7 +6,7 @@
 A backup made by a newer Celerp than the running one is refused, at any version
 level, with a message saying to update Celerp first. Older and same-version
 backups, and legacy backups that never recorded a version, restore; a recorded
-version that cannot be read is refused.
+version that can't be read is refused.
 """
 
 from __future__ import annotations
@@ -14,11 +14,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import tarfile
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
+
+from ui.i18n import t
 
 RUNNING = "2.5.4"
 
@@ -75,6 +78,6 @@ def test_backup_without_a_recorded_version_accepted(tmp_path, meta):
 @pytest.mark.parametrize("version", ["abc", "2.x", 7, ["2.5.4"]])
 def test_unreadable_recorded_version_refused(tmp_path, version):
     from celerp.services.backup_import import validate_archive
-    with pytest.raises(ValueError, match="cannot be read"):
+    with pytest.raises(ValueError, match=re.escape(t("error.restore_version_unreadable", "en", recorded=repr(version)))):
         validate_archive(_archive(tmp_path, {"celerp_version": version}))
 

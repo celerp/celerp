@@ -14,6 +14,10 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
+from celerp.services.permissions import missing_permission_text
+from celerp_inventory.routes import _field_name
+from ui.i18n import t
+
 
 def _roles_from(role: str) -> list[str]:
     """The role keys at or above *role* in the hierarchy: the per-role grant set a
@@ -204,7 +208,7 @@ def test_assert_role_permission_raises_403():
     with pytest.raises(HTTPException) as exc:
         assert_role_permission({}, "operator", "set_inventory_prices")
     assert exc.value.status_code == 403
-    assert "set_inventory_prices" in exc.value.detail
+    assert missing_permission_text("set_inventory_prices") in exc.value.detail
     # A granted caller passes silently.
     assert_role_permission({}, "manager", "set_inventory_prices")
 
@@ -564,7 +568,7 @@ async def test_operator_ungranted_price_403(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403
-    assert "set_inventory_prices" in r.json()["detail"]
+    assert missing_permission_text("set_inventory_prices") in r.json()["detail"]
 
 
 async def test_operator_granted_create_with_costs(client, session):
@@ -724,7 +728,7 @@ async def test_operator_revoked_patch_price_403(client, session):
     r = await client.patch(f"/docs/{doc_id}", json=_line_patch(ctx["item_id"], 2, 75.0),
                            headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert "set_sales_doc_prices" in r.json()["detail"]
+    assert missing_permission_text("set_sales_doc_prices") in r.json()["detail"]
 
     r2 = await client.patch(f"/docs/{doc_id}", json=_line_patch(ctx["item_id"], 3, 50.0),
                             headers=ctx["operator_h"])
@@ -750,7 +754,7 @@ async def test_operator_revoked_create_price_403(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert "set_sales_doc_prices" in r.json()["detail"]
+    assert missing_permission_text("set_sales_doc_prices") in r.json()["detail"]
 
     r2 = await client.post(
         "/docs",
@@ -821,7 +825,7 @@ async def test_save_doc_lines_surfaces_permission_error(client, session):
                       "subtotal": 150.0, "tax": 0, "total": 150.0},
             )
     assert r.status_code == 400, r.text
-    assert "set_sales_doc_prices" in r.json()["error"]
+    assert missing_permission_text("set_sales_doc_prices") in r.json()["error"]
 
 
 # ── Matrix save API: PATCH /companies/me/role-permissions (J3) ─────────────────
@@ -1500,7 +1504,7 @@ async def test_amount_edit_denied_without_permission(client, session, field):
     r = await client.patch(f"/items/{ctx['item_id']}", json=_amount_patch(field),
                            headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert field in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name(field))
 
 
 async def test_amount_edit_allowed_with_permission(client, session):
@@ -1581,7 +1585,7 @@ async def test_merge_override_denied_without_amount_permission(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert "quantity" in r.json()["detail"].lower()
+    assert r.json()["detail"] == missing_permission_text("edit_inventory_amounts")
 
 
 async def test_merge_negative_override_rejected(client, session):
@@ -1619,7 +1623,7 @@ async def test_sell_by_change_denied_without_amount_permission(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert "sell_by" in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name("sell_by"))
 
 
 async def test_sell_by_change_allowed_with_amount_permission(client, session):
@@ -1866,7 +1870,7 @@ async def test_create_negative_amount_rejected(client, session, field):
     body[field] = -5
     r = await client.post("/items", json=body, headers=ctx["admin_h"])
     assert r.status_code == 422, r.text
-    assert field in r.json()["detail"]
+    assert r.json()["detail"] == t("inventory.err_amount_negative", "en", field=_field_name(field))
 
 
 def test_guard_family_removed():
@@ -1971,7 +1975,7 @@ async def test_owner_can_still_create_owner(client, session):
 
 # ── Price writes (set_inventory_prices) on every item writer ────────────────
 
-_PRICE_DENIED = "Setting inventory prices requires the 'set_inventory_prices' permission"
+_PRICE_DENIED = missing_permission_text("set_inventory_prices")
 
 
 @pytest.mark.parametrize("key", ["retail_price", "wholesale_price", "Retail", "retail_price_total"])

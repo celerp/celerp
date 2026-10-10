@@ -28,5 +28,11 @@ def get(name: str) -> ConnectorBase:
     return connector
 
 
+def service_name(name: str) -> str:
+    """The name a user knows connector *name* by, or *name* itself when unknown."""
+    connector = _registry.get(name)
+    return connector.display_name if connector else name
+
+
 def all_connectors() -> list[ConnectorBase]:
     return list(_registry.values())

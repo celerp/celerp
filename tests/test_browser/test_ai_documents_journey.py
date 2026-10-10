@@ -21,6 +21,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from celerp.ai.llm import ModelResult
+from ui.i18n import t
 
 from .test_ai_chat_journey import (  # noqa: F401  (fixtures by name)
     _SCRIPT, _answer, _open_chat, _send, _tool_call, agent_caps, agent_env, item_create_cap,
@@ -148,7 +149,7 @@ def test_receipts_to_bills_journey(page: Page, ui_server, api):
     expect(clean.locator(".ai-action__warnings")).to_have_count(0)
 
     page.locator(".ai-action-group__footer button[type=submit]").click()
-    expect(page.locator(".ai-action-group__summary")).to_contain_text("4 applied, 0 failed.")
+    expect(page.locator(".ai-action-group__summary")).to_contain_text(t("ai.confirm_all_done", "en", completed=4))
 
     bills = api.get("/docs", params={"doc_type": "bill", "q": "Northwind"}).json()["items"]
     assert [b["contact_name"] for b in bills] == ["Northwind Paper Co"]
@@ -191,7 +192,7 @@ def test_receipts_bulk_table_journey(page: Page, ui_server, api):
     expect(toolbar).to_be_visible()
     expect(toolbar.locator(".bulk-count")).to_contain_text("5")
     toolbar.locator(".bulk-action-select").select_option("confirm")
-    expect(page.locator(".ai-action-group__summary")).to_contain_text("5 applied, 0 failed.", timeout=20_000)
+    expect(page.locator(".ai-action-group__summary")).to_contain_text(t("ai.confirm_all_done", "en", completed=5), timeout=20_000)
     expect(table.locator(".bulk-select")).to_have_count(1)
     expect(rows.filter(has_text="Create bill from Alder Supplies").locator(".table-link")).to_have_attribute(
         "href", re.compile(r"^/docs/")

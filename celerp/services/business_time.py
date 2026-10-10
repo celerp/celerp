@@ -7,17 +7,18 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from ui.i18n import t
 
 
 def business_timezone(timezone_name: str | None) -> ZoneInfo:
     """Resolve an IANA business timezone, defaulting an unset value to UTC."""
     if timezone_name is not None and not isinstance(timezone_name, str):
-        raise ValueError("business timezone must be an IANA timezone name")
+        raise ValueError(t("error.timezone_not_text"))
     name = (timezone_name or "UTC").strip() or "UTC"
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError(f"invalid business timezone: {name!r}") from exc
+        raise ValueError(t("error.invalid_timezone", value=name)) from exc
 
 
 def business_date_at(instant: datetime, timezone_name: str | None) -> str:

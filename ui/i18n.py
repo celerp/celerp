@@ -178,6 +178,13 @@ def category_labels(names: dict) -> dict:
     return {k: category_label(k, names.get(k)) for k in {*library, *names}}
 
 
+def item_status_label(status: str, lang: str | None = None) -> str:
+    """Display name for an item status in the user's language; a status with no
+    catalog entry shows as stored, so a message never names a translation key."""
+    tkey = f"enum.item_status.{status}"
+    return t(tkey, lang) if tkey in _cached_load("en") else status
+
+
 @lru_cache(maxsize=1)
 def _field_label_keys() -> dict[str, str]:
     """English text -> translation key of every item field label in the catalog: the
@@ -390,6 +397,29 @@ def set_lang(lang: str) -> None:
 def current_lang() -> str:
     """Return the current context language."""
     return _current_lang.get()
+
+
+class I18nMiddleware:
+    """Pure ASGI middleware: sets the context language for each request, so t()
+    reads in the language the request asks for (the celerp_lang cookie, else
+    Accept-Language). Both apps use it: the UI for its pages, the API for the
+    messages it returns, which the UI client asks for in the reader's language."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        from starlette.requests import HTTPConnection
+        # Restored afterwards, so an app called in-process by another (the API
+        # under the UI) never leaves its language behind in the caller's context.
+        token = _current_lang.set(get_lang(HTTPConnection(scope)))
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            _current_lang.reset(token)
 
 
 def is_rtl(lang: str | None = None) -> bool:

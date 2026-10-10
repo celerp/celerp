@@ -14,6 +14,7 @@ import pytest_asyncio
 from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
+from ui.i18n import t
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,7 @@ async def test_void_blocked_while_fulfilled_and_state_untouched(client, session,
     # Void via API: blocked while goods are out (revert fulfillment first).
     r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "test"})
     assert r.status_code == 409, r.text
-    assert "revert fulfillment" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t("documents.err_void_delivered", "en")
 
     # The refused void changes nothing: fulfillment state and stock untouched.
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
@@ -578,7 +579,7 @@ async def test_memo_to_invoice_fails_when_no_memo_out_items(client, session, aut
     # Don't fulfill - all items still available
     r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
     assert r.status_code == 422, r.text
-    assert "memo_out" in r.text.lower() or "on memo" in r.text.lower()
+    assert r.json()["detail"] == t("documents.err_memo_nothing_out", "en")
 
 
 @pytest.mark.asyncio

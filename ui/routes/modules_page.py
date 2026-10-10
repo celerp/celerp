@@ -43,6 +43,7 @@ from ui.i18n import t, get_lang
 from ui.routes.account import (
     GATE_UNREACHABLE, _DISMISS_GATE_MODAL, account_gate, gate_modal_response,
 )
+from celerp.modules.outcome import NOT_REPORTED
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
@@ -451,9 +452,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
     # column. Deduped per page so a panel swap does not re-announce a standing
     # failure; a full reload starts fresh and re-announces.
     if load_error_toasts:
-        # The loader's reason is written for the module's author, so the toast
-        # leads with what it means for the user and keeps the reason after it.
-        payload = [{"key": f"{n}|{e}", "msg": t("modules.load_failed_toast", lang, name=lbl, detail=e)}
+        payload = [{"key": f"{n}|{e}", "msg": _load_error_message(lbl, e, lang)}
                    for n, lbl, e in load_error_toasts]
         errors_json = json.dumps(payload).replace("</", "<\\/")
         load_error_js = Script(
@@ -956,6 +955,14 @@ def _community_row(m: dict, lang: str, installed: set[str], owner: bool, *,
         id=row_id,
         cls="data-row",
     )
+
+
+def _load_error_message(label: str, error: str, lang: str) -> str:
+    """The corner-toast text for a module that failed to start. A module that
+    stopped without a reason gets the plain sentence, not the stored English one."""
+    if error == NOT_REPORTED:
+        return t("modules.not_reported", lang, label=label)
+    return t("modules.load_failed", lang, label=label, error=error)
 
 
 def _toast(fragment: FT, message: str | None, *, error: bool = True) -> HTMLResponse:

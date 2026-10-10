@@ -26,6 +26,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, normalize_role
 from celerp.services.company_lock import AUTHORITY, locked_company
+from ui.i18n import t
 
 
 class Role(NamedTuple):
@@ -141,16 +142,21 @@ def role_has_permission(settings: dict | None, role: str, key: str) -> bool:
     return granted
 
 
+def missing_permission_text(key: str) -> str:
+    """The refusal for a role without *key*, naming the permission as the role editor labels it."""
+    perm = _PERMISSIONS_BY_KEY.get(key)
+    return t("error.permission_missing", label=perm.label if perm else key)
+
+
+def missing_permission(key: str) -> HTTPException:
+    """The 403 for a role without *key*."""
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=missing_permission_text(key))
+
+
 def assert_role_permission(settings: dict | None, role: str, key: str) -> None:
     """Raise 403 naming the missing permission when *role* is not granted it."""
     if not role_has_permission(settings, role, key):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Requires the {key} permission",
-        )
-
-
-ROLE_CHANGED = "Your access to this company changed while this was being saved. Nothing was saved; try again."
+        raise missing_permission(key)
 
 
 class AuthoritySettings(dict):
@@ -187,7 +193,7 @@ class RequestAuthority:
         permission the request relied on; then refresh the settings it was handed."""
         role, settings = await read_authority(session, self.company_id, self.user_id)
         if role != self.role:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=ROLE_CHANGED)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("error.access_changed"))
         for key in sorted(self.keys):
             assert_role_permission(settings, role, key)
         for view in self.views:
@@ -252,10 +258,7 @@ def reject_price_change(price_keys: set[str], role: str, settings: dict | None) 
     The one price gate every item writer applies (inventory and document routes
     alike), so no surface can set a price the Pricing tab would refuse."""
     if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Setting inventory prices requires the 'set_inventory_prices' permission",
-        )
+        raise missing_permission("set_inventory_prices")
 
 
 async def get_current_company_settings(

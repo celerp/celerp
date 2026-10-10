@@ -44,6 +44,7 @@ from celerp.held_back import (
     unowned_error,
 )
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from ui.i18n import I18nMiddleware, t
 
 from celerp.routers import auth, companies, company_backup, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
@@ -710,6 +711,9 @@ app.add_middleware(ModuleStartupMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)
+# Outermost, so every message the API returns, the other middleware's included,
+# reads in the language the request asks for.
+app.add_middleware(I18nMiddleware)
 
 if settings.celerp_public_url:
     from fastapi.middleware.cors import CORSMiddleware
@@ -722,10 +726,19 @@ if settings.celerp_public_url:
     )
 
 
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc) -> JSONResponse:
+    # A route that raised its own 404 keeps its message; an unknown address gets the generic one.
+    detail = getattr(exc, "detail", None)
+    if not detail or detail == "Not Found":
+        detail = t("error.api_not_found")
+    return JSONResponse(status_code=404, content={"detail": detail})
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     log_unhandled_exception(request, exc)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(status_code=500, content={"detail": t("error.server_error")})
 
 
 def _finite_or_text(value: float) -> float | str:
@@ -741,7 +754,7 @@ async def request_validation_handler(_request: Request, exc: RequestValidationEr
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
-    return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+    return JSONResponse(status_code=429, content={"detail": t("error.rate_limited")})
 
 
 @app.exception_handler(CodeConflictError)

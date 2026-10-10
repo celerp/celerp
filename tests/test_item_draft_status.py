@@ -10,6 +10,10 @@ import pytest
 
 from celerp.services.pricing import is_cost_list_name  # noqa: E402
 from test_helpers import create_item, grant_permission, perm_setup, merge_items, reserve_item  # noqa: E402
+from celerp.services.permissions import missing_permission_text
+from celerp_inventory.routes import _field_name
+from ui.components.activity import event_label
+from ui.i18n import t
 
 
 async def _item_state(client, headers: dict, item_id: str) -> dict:
@@ -123,7 +127,7 @@ async def test_available_amount_edit_still_gated(client, session):
         json={"fields_changed": {"quantity": {"old": 5, "new": 8}}},
         headers=ctx["operator_h"])
     assert patch.status_code == 403, patch.text
-    assert "quantity" in patch.json()["detail"]
+    assert patch.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name("quantity"))
 
 
 async def test_draft_cost_visible_without_costs_permission(client, session):
@@ -228,7 +232,7 @@ async def test_cost_at_creation_still_gated_for_available_item(client, session):
     body["status"] = "available"
     r = await client.post("/items", json=body, headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert "set_inventory_prices" in r.json()["detail"]
+    assert r.json()["detail"] == missing_permission_text("set_inventory_prices")
 
 
 def test_with_draft_cost_list_reinjects_for_authorable_draft():
@@ -380,7 +384,7 @@ async def test_revert_requires_permission(client, session):
 
     denied = await _revert_to_draft(client, ctx["operator_h"], item_id)
     assert denied.status_code == 403, denied.text
-    assert "revert_items_to_draft" in denied.json()["detail"]
+    assert denied.json()["detail"] == missing_permission_text("revert_items_to_draft")
 
 
 async def test_clean_revert_succeeds(client, session):
@@ -413,7 +417,7 @@ async def test_revert_blocked_by_circulation_event(client, session):
 
     rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
-    assert "history" in rv.json()["detail"].lower() or "circulat" in rv.json()["detail"].lower()
+    assert rv.json()["detail"] == t("inventory.err_revert_used", "en", uses=event_label("item.quantity.adjusted"))
 
 
 async def test_revert_blocked_when_on_document(client, session):

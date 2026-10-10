@@ -11,6 +11,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
+from ui.i18n import t
 
 from celerp.accounting_roles import refusal
 
@@ -134,7 +135,7 @@ def validate_positive(qty: float, *, label: str = "Quantity") -> None:
     if qty <= 0:
         raise HTTPException(
             status_code=422,
-            detail=f"{label}: quantity must be greater than zero, got {qty}",
+            detail=t("error.qty_positive", label=label),
         )
 
 

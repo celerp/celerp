@@ -220,7 +220,7 @@ def setup_routes(app):
     async def numbering_field_edit(request: Request, doc_type: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             sequences = await api.get_doc_sequences(token)
         except (APIError, Exception):
@@ -252,7 +252,7 @@ def setup_routes(app):
     async def numbering_field_display(request: Request, doc_type: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             sequences = await api.get_doc_sequences(token)
         except (APIError, Exception):
@@ -270,7 +270,7 @@ def setup_routes(app):
     async def numbering_field_patch(request: Request, doc_type: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", "")).strip()
         patch_data = {}
@@ -295,7 +295,7 @@ def setup_routes(app):
     async def numbering_reset(request: Request, doc_type: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.patch_doc_sequence(token, doc_type, {"next": 1})
             sequences = await api.get_doc_sequences(token)
@@ -310,7 +310,7 @@ def setup_routes(app):
         from celerp.services.line_measures import LINE_IDENTIFIER_MODES
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
         if value not in LINE_IDENTIFIER_MODES:

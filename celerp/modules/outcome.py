@@ -43,7 +43,8 @@ _KEY = "module_outcome"
 _POLL_SECONDS = 0.5
 _LOG_EVERY_SECONDS = 30.0
 
-NOT_REPORTED = "Not running: the server did not report this module as started."
+NOT_REPORTED = ("Not running: this module didn't start and gave no reason. Restart Celerp; "
+                "if it still doesn't start, ask the module's developer.")
 STARTING = "Celerp is still starting. Try again in a moment."
 
 # API side: whether module routes wait for the UI process's report. Set once the

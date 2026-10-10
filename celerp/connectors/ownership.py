@@ -15,6 +15,7 @@ from celerp.config import ensure_instance_id
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
 from celerp.services.company_lock import lock_company
+from ui.i18n import t
 
 
 class ConnectorOwnershipError(RuntimeError):
@@ -43,6 +44,11 @@ OWNER_LOCK_TIMEOUT_MS = 5000
 _LOCK_NOT_AVAILABLE = "55P03"
 
 
+def _service(connector: str) -> str:
+    from celerp.connectors.registry import service_name
+    return service_name(connector)
+
+
 def _resolve_connector_owner(
     rows: list[ConnectorConfig], company_id
 ) -> ConnectorConfig | None:
@@ -55,21 +61,16 @@ def _resolve_connector_owner(
         for row in rows
         if str(row.company_id) != legacy_id
     }
+    service = _service(rows[0].connector) if rows else ""
     if len(owners) > 1 or (legacy and owners):
-        raise ConnectorOwnershipAmbiguousError(
-            "This connector is linked to more than one company; disconnect it in Settings before retrying"
-        )
+        raise ConnectorOwnershipAmbiguousError(t("error.connector_multi_company", service=service))
     if owners:
         owner_id = next(iter(owners))
         if owner_id != company_id:
-            raise ConnectorOwnershipError(
-                "Connector is not connected to the current company"
-            )
+            raise ConnectorOwnershipError(t("error.connector_not_here", service=service))
         return next(row for row in rows if str(row.company_id) == company_id)
     if legacy:
-        raise ConnectorOwnershipAmbiguousError(
-            "This connector is linked to more than one company; disconnect it in Settings before retrying"
-        )
+        raise ConnectorOwnershipAmbiguousError(t("error.connector_multi_company", service=service))
     return None
 
 
@@ -117,17 +118,21 @@ async def connector_maintenance_guard():
 
 
 async def _lock_active_company(
-    session: AsyncSession, company_id, *, for_update: bool = True
+    session: AsyncSession, company_id, connector: str, *, for_update: bool = True
 ) -> Company:
     try:
         cid = uuid.UUID(str(company_id))
     except (TypeError, ValueError) as exc:
-        raise ConnectorOwnershipError("Connector company is invalid") from exc
+        raise ConnectorOwnershipError(
+            t("error.connector_company_invalid", service=_service(connector))
+        ) from exc
     if for_update:
         await lock_company(session, cid)
     company = await session.get(Company, cid, populate_existing=True)
     if company is None or not company.is_active:
-        raise ConnectorOwnershipError("Connector company is inactive")
+        raise ConnectorOwnershipError(
+            t("error.connector_company_inactive", service=_service(connector))
+        )
     return company
 
 
@@ -190,15 +195,13 @@ async def lock_connector_operation(
 
     company_id = str(company_id)
     await lock_connector_key(session, connector, exclusive=exclusive)
-    await _lock_active_company(session, company_id, for_update=exclusive)
+    await _lock_active_company(session, company_id, connector, for_update=exclusive)
     rows = await _connector_rows(session, connector, for_update=exclusive)
     current = _resolve_connector_owner(rows, company_id)
     if current is not None:
         return current
     if require_owner:
-        raise ConnectorOwnershipError(
-            f"{connector} is not connected to the current company"
-        )
+        raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))
     reset_at = await session.scalar(
         sa.select(sa.func.max(SyncRun.started_at)).where(
             SyncRun.company_id == company_id,
@@ -207,9 +210,7 @@ async def lock_connector_operation(
         )
     )
     if reset_at is not None:
-        raise ConnectorOwnershipError(
-            f"{connector} is not connected to the current company"
-        )
+        raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))
     return None
 
 
@@ -226,7 +227,7 @@ async def claim_connector_ownership(
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
-    company = await _lock_active_company(session, company_id)
+    company = await _lock_active_company(session, company_id, connector)
     rows = await _connector_rows(session, connector, for_update=True)
     others = {
         str(row.company_id)
@@ -234,9 +235,7 @@ async def claim_connector_ownership(
         if str(row.company_id) not in {company_id, legacy_id}
     }
     if others:
-        raise ConnectorOwnershipError(
-            f"{connector} is already connected to another company"
-        )
+        raise ConnectorOwnershipError(t("error.connector_other_company", service=_service(connector)))
 
     current = next((r for r in rows if str(r.company_id) == company_id), None)
     legacy = next((r for r in rows if str(r.company_id) == legacy_id), None)
@@ -246,9 +245,7 @@ async def claim_connector_ownership(
             and legacy.webhook_secret
             and current.webhook_secret != legacy.webhook_secret
         ):
-            raise ConnectorOwnershipError(
-                f"{connector} has conflicting legacy webhook secrets; manual reconciliation is required"
-            )
+            raise ConnectorOwnershipError(t("error.connector_legacy_conflict", service=_service(connector)))
         merged_ids = list(dict.fromkeys(current.webhook_ids + legacy.webhook_ids))
         current.webhook_ids_json = json.dumps(merged_ids) if merged_ids else None
         if not current.webhook_secret:
@@ -440,9 +437,7 @@ async def connector_release_scope(
     rows = await _connector_rows(session, connector, for_update=True)
     mine = [row for row in rows if str(row.company_id) in {company_id, legacy_id}]
     if not any(str(row.company_id) == company_id for row in mine):
-        raise ConnectorOwnershipError(
-            f"{connector} is not connected to the current company"
-        )
+        raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))
     return mine
 
 
@@ -475,9 +470,7 @@ async def lock_unassigned_connector(
     await lock_connector_key(session, connector, exclusive=True)
     rows = await _connector_rows(session, connector, for_update=True)
     if not _unassigned_only(rows):
-        raise ConnectorOwnershipError(
-            f"{connector} has no unassigned connection to reset"
-        )
+        raise ConnectorOwnershipError(t("error.connector_nothing_to_reset", service=_service(connector)))
     return rows
 
 
@@ -517,7 +510,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     store_handle = ctx.store_handle
     if not connector.store_scoped_ids or not store_handle:
         return
-    await _lock_active_company(session, company_id)
+    await _lock_active_company(session, company_id, connector.name)
     cid = uuid.UUID(str(company_id))
     key = (str(cid), connector.name)
     source = await session.get(ConnectorSource, key, populate_existing=True)
@@ -553,8 +546,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
             confirmed = await connector.same_store(ctx, samples)
         except Exception as exc:
             raise ConnectorStoreChangedError(
-                f"Could not read {store_handle} to confirm this company's "
-                f"{connector.display_name} records came from it. Try again."
+                t("error.store_unchecked", store=store_handle, service=connector.display_name)
             ) from exc
         if not confirmed:
             raise ConnectorStoreChangedError(

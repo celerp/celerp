@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select, text
+from ui.i18n import t
 
 from migration_support import (
     creator_run,
@@ -89,17 +90,17 @@ async def test_migration_scan_streams_and_bounds_upload(client, session, migrati
         assert adapter.inspect_calls == inspected, "a rejected upload reached the source parser"
 
     await rejected([], 422, "Choose a file to upload.")
-    await rejected(multipart(("empty.fake", b"")), 422, "The uploaded file is empty.")
+    await rejected(multipart(("empty.fake", b"")), 422, t("migration.err_upload_empty", "en"))
     await rejected(multipart(*[(f"f{i}.fake", data) for i in range(store.MAX_ARTIFACTS + 1)]), 413,
                    f"Upload at most {store.MAX_ARTIFACTS} files.")
 
     specs = adapter.artifact_specs
     monkeypatch.setattr(adapter, "artifact_specs", (ArtifactSpec("source_file", "Source file", (".fake",), 100),))
-    await rejected(multipart(("big.fake", data + b" " * 200)), 413, "This file is larger than this source allows.")
+    await rejected(multipart(("big.fake", data + b" " * 200)), 413, t("migration.err_file_too_large", "en"))
     monkeypatch.setattr(adapter, "artifact_specs", specs)
 
     monkeypatch.setattr(store, "MAX_AGGREGATE_BYTES", len(data) + 10)
-    await rejected(multipart(("a.fake", data), ("b.fake", data)), 413, "The upload is larger than the allowed total.")
+    await rejected(multipart(("a.fake", data), ("b.fake", data)), 413, t("migration.err_upload_too_large", "en"))
     monkeypatch.setattr(store, "MAX_AGGREGATE_BYTES", 2 * 1024**3)
 
     real_open = store._open_artifact
@@ -119,7 +120,7 @@ async def test_migration_scan_streams_and_bounds_upload(client, session, migrati
             self._fh.close()
 
     monkeypatch.setattr(store, "_open_artifact", _FailingFile)
-    await rejected(multipart(("books.fake", data + b" " * 5000)), 500, "The file could not be stored. Try again.")
+    await rejected(multipart(("books.fake", data + b" " * 5000)), 500, t("migration.err_store_failed", "en"))
     monkeypatch.setattr(store, "_open_artifact", real_open)
     assert (await session.execute(select(func.count()).select_from(Company))).scalar_one() == 0
     assert (await session.execute(select(func.count()).select_from(User))).scalar_one() == 0
@@ -160,7 +161,7 @@ async def test_migration_rejects_unknown_or_mismatched_source(client, migration_
     assert by_key[FAKE_KEY]["artifacts"][0]["extensions"] == [".fake"]
 
     cases = [
-        (fake_bytes(), "not_a_source", "This source is not available."),
+        (fake_bytes(), "not_a_source", t("migration.err_source_unavailable", "en")),
         (fake_bytes(), "manager_io",
          '"books.fake" is not a Manager.io file. Accepted: Manager business file (.manager).'),
         (b"PK\x03\x04 a spreadsheet", None,
@@ -424,7 +425,7 @@ async def test_save_decisions_storage_failure_is_reported_and_keeps_the_scan(mig
         with monkeypatch.context() as patched, pytest.raises(store.ScanStoreError) as exc:
             patched.setattr(target, name, replacement)
             store.save_decisions(scan.token, owner=owner, decisions=decisions)
-        assert (exc.value.status_code, exc.value.detail) == (500, "The file could not be stored. Try again."), name
+        assert (exc.value.status_code, exc.value.detail) == (500, t("migration.err_store_failed", "en")), name
         assert (directory / "scan.json").read_bytes() == before, name
         kept = sorted(p.name for p in directory.iterdir())
         assert kept == sorted([a.path.name for a in scan.artifacts] + ["scan.json"]), name

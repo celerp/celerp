@@ -166,7 +166,8 @@ async def test_import_rejects_duplicate_entity_id(client, session):
         "source": "import:test", "idempotency_key": f"idem-2-{uuid.uuid4().hex[:8]}",
     })
     assert r.status_code == 409
-    assert "already exists" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "doc_import.entity_exists"
+    assert "already exists" in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -1139,4 +1140,4 @@ async def test_doctor_reports_missing_foreign_rate_as_blocked_instead_of_posting
     assert finding["auto_fixable"] is False
     detail = next(d for d in finding["details"] if d["doc_id"] == entity_id)
     assert "rate" in detail["blocked_reason"].lower()
-    assert "set the document exchange rate" in detail["blocked_reason"].lower()
+    assert "enter the exchange rate" in detail["blocked_reason"].lower()

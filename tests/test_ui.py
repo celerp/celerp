@@ -36,6 +36,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from celerp.services.import_stage import read_stage, write_stage
 from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
+from ui.i18n import t
+from celerp.services.permissions import missing_permission_text
 from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
 
@@ -1872,7 +1874,7 @@ class TestPeriodLockAndCloseBooks:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"required" in r.content
+        assert b"Choose the date your financial year ends" in r.content
 
 
 class TestReportsPage:
@@ -2319,7 +2321,7 @@ class TestInventoryCategoryTabs:
         with patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})):
             r = await ui_client.patch("/settings/users/u1/role", data={"value": "admin"}, cookies=_authed())
         assert r.status_code == 200
-        assert b"last owner" in r.content.lower()
+        assert t("company.err_last_owner_demote") in html.unescape(r.text)
 
     @pytest.mark.asyncio
     async def test_user_role_non_owner_demotion_allowed(self, ui_client):
@@ -2505,7 +2507,7 @@ class TestSettingsInlineEditValidation:
             r = await ui_client.patch("/settings/terms/0/days", data={"value": "-5"}, cookies=_authed())
         assert r.status_code == 200
         assert b"cell-error" in r.content
-        assert b"negative" in r.content.lower()
+        assert t("error.days_negative") in html.unescape(r.text)
         mock_patch.assert_not_called()
 
     # ── Company name / slug ──────────────────────────────────────────────────
@@ -2517,7 +2519,7 @@ class TestSettingsInlineEditValidation:
             r = await ui_client.patch("/settings/company/name", data={"value": "   "}, cookies=_authed())
         assert r.status_code == 200
         assert b"cell-error" in r.content
-        assert b"blank" in r.content.lower()
+        assert t("error.company_name_blank") in html.unescape(r.text)
         mock_patch.assert_not_called()
 
     @pytest.mark.asyncio
@@ -3007,15 +3009,15 @@ class TestDocumentPolish:
             assert "next=doc-send" in content
             # The failure now surfaces as a persistent lower-right toast that
             # stays until dismissed, not an inline hint beside Send. It keeps the
-            # message and the deep link to reconnect in Settings.
-            assert "Web access connection failed" in content
+            # message and the link to Web Access to connect again.
+            assert "Web Access refused this computer" in content
             assert "celerpToast(" in content
             assert "'error',true," in content
             assert "/settings/cloud" in content
-            assert "Reconnect in Settings" in content
+            assert "Open Web Access" in content
             # The message is carried by the toast call, not rendered inline as
             # element text beside Send (that inline hint is gone).
-            assert ">Web access connection failed" not in content
+            assert ">Web Access refused this computer" not in content
             assert 'hx-get="/docs/d:1/share"' not in content
         finally:
             documents._free_send_quota_cache.update(
@@ -3036,7 +3038,7 @@ class TestDocumentPolish:
         assert r.status_code == 200
         assert b"send-modal-d-1" in r.content
         assert b"next=doc-send" not in r.content
-        assert b"Web access connection failed" not in r.content
+        assert b"Web Access refused this computer" not in r.content
 
     @pytest.mark.asyncio
     async def test_list_send_hidden_when_relay_credential_rejected(self, ui_client):
@@ -3062,10 +3064,10 @@ class TestDocumentPolish:
         assert "send-modal-list-1" not in content
         # Same persistent lower-right toast fallback as the doc path, not an
         # inline hint: message plus the reconnect deep link, no inline anchor.
-        assert "Web access connection failed" in content
+        assert "Web Access refused this computer" in content
         assert "celerpToast(" in content
         assert "/settings/cloud" in content
-        assert ">Web access connection failed" not in content
+        assert ">Web Access refused this computer" not in content
 
     @pytest.mark.asyncio
     async def test_online_note_present(self, ui_client):
@@ -4974,7 +4976,7 @@ class TestSprint5ItemActions:
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
             r = await ui_client.post("/api/items/gc:123/split", data={"parts": "abc"}, cookies=_authed())
         assert r.status_code == 200
-        assert b"Invalid" in r.content
+        assert t("inv.invalid_quantities_use_commaseparated_numbers").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_split_item_route_too_few_parts(self, ui_client):
@@ -6540,7 +6542,7 @@ class TestBulkDuplicate:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"Duplicated: 1, failed: 1." in r.content
+        assert t("inventory.bulk_duplicated_partial", ok=1, failed=1).encode() in r.content
         assert b"flash--warning" in r.content
         assert create.call_count == 2
 
@@ -6561,8 +6563,8 @@ class TestBulkDuplicate:
             )
         assert r.status_code == 200
         assert b"flash--error" in r.content
-        assert b"Failed to duplicate" in r.content
-        assert b"duplicated." not in r.content
+        assert t("inventory.bulk_duplicate_failed", n=2).encode() in r.content
+        assert b"Duplicated:" not in r.content
         assert create.call_count == 2
 
     @pytest.mark.asyncio
@@ -6610,7 +6612,7 @@ class TestBulkDuplicate:
                 cookies=_authed(role="viewer"),
             )
         assert r.status_code == 200
-        assert b"Unauthorized" in r.content
+        assert missing_permission_text("edit_inventory") in html.unescape(r.text)
         assert create.call_count == 0
 
     def test_bulkActionChanged_handles_duplicate(self):
@@ -6739,7 +6741,7 @@ class TestBulkActionsPhase1to5:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"Target item selection is required" in r.content
+        assert t("inv.target_item_selection_is_required").encode() in r.content
 
     # ── Phase 4: bulk split (simplified single-qty) ──────────────────────
 
@@ -6752,7 +6754,7 @@ class TestBulkActionsPhase1to5:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"exactly 1" in r.content
+        assert t("inv.select_exactly_1_item_to_split").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_split_rejects_invalid_qty(self, ui_client):
@@ -6763,7 +6765,7 @@ class TestBulkActionsPhase1to5:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"Invalid split quantity" in r.content
+        assert t("inv.invalid_split_quantity").encode() in r.content
 
     # ── Phase 5: bulk expire/archive ─────────────────────────────────────
 
@@ -8503,7 +8505,7 @@ class TestInviteUser:
             cookies=_authed(),
         )
         assert r.status_code == 200
-        assert b"required" in r.content.lower()
+        assert t("error.name_email_password_required", "en").encode() in r.content
 
     @pytest.mark.asyncio
     async def test_invite_user_post_api_error_shows_message(self, ui_client):
@@ -9576,7 +9578,7 @@ class TestModulesUI:
                 stack.enter_context(patch(k, new=v))
             r = await ui_client.get("/modules", cookies=_authed())
         assert r.status_code == 200
-        assert b"Required by:" in r.content and b"Child" in r.content  # tooltip rendered
+        assert b"Other modules need this one" in r.content and b"Child" in r.content  # tooltip rendered
 
     @pytest.mark.asyncio
     async def test_paid_module_license_failure_shows_connect_upsell(self, ui_client):
@@ -10446,7 +10448,7 @@ class TestMarketplaceUI:
         assert r.status_code == 200
         assert buy.await_count == 0
         assert b"flash--error" in r.content
-        assert b"Could not check" in r.content
+        assert t("account.status_unreachable", "en").encode() in r.content
         assert b"/modules/marketplace-panel" in r.content     # way back to the catalog
 
     @pytest.mark.asyncio
@@ -11333,7 +11335,7 @@ class TestPaymentsSettingsPage:
         with self._mocks(relay=True, enabled=False, state="revoked"):
             r = await ui_client.get("/settings/payments", cookies=_authed(role="admin"))
         assert r.status_code == 200
-        assert "Reconnect this Stripe account to finish checking payments already in progress." in r.text
+        assert "Use Reconnect Stripe in Web Access, Online Payments to finish checking them." in r.text
         # One action: reconnect. No sales pitch, no disconnect, no deposit settings.
         assert r.text.count('action="/settings/payments/connect"') == 1
         assert "Reconnect Stripe" in r.text
@@ -12996,7 +12998,7 @@ class TestUnitsSettings:
         ]}
         r = await client.put("/companies/me/units", json=payload, headers=headers)
         assert r.status_code == 422
-        assert "duplicate" in r.json()["detail"].lower()
+        assert r.json()["detail"] == t("company.err_unit_duplicate", name="piece")
 
     # ── API: Validation — invalid decimals ──────────────────────────
 
@@ -13909,6 +13911,19 @@ class TestDocumentsOverhaul:
         content = r.content.decode()
         assert '/docs/doc:INV-2026-0001/print' in content
         assert '/api/docs/doc:INV-2026-0001/pdf' not in content
+
+    @pytest.mark.asyncio
+    async def test_list_print_view_rejects_layout_on_a_non_shipping_list_without_an_error_prefix(self, ui_client):
+        """?layout= only applies to shipping lists; on anything else it 422s with the
+        server's own explanation alone, never a bare 'Error:' prefix in front of it."""
+        non_shipping_list = {**_BLANK_DOC, "entity_id": "list:L-001", "ref_id": "L-001", "doc_type": "list",
+                             "list_type": "sales_order"}
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=non_shipping_list)):
+            r = await ui_client.get("/lists/list:L-001/print?layout=commercial_invoice", cookies=_authed())
+        assert r.status_code == 422
+        content = r.content.decode()
+        assert "layout is only valid for shipping documents" in content
+        assert "Error:" not in content
 
     @pytest.mark.asyncio
     async def test_po_shows_convert_to_bill_button(self, ui_client):

@@ -66,6 +66,7 @@ from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, locked_company
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.provisioning import create_install_owner, provision_restored_company
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -145,41 +146,37 @@ BATCH_BYTES = 1024 ** 2
 
 _NOT_RESTORED = " Nothing was restored."
 _NOT_BACKED_UP = " Nothing was backed up."
-NOT_A_BACKUP = "This file is not a Celerp company backup." + _NOT_RESTORED
-SYSTEM_BACKUP = "This is a whole-installation backup. Use System Recovery instead." + _NOT_RESTORED
-DAMAGED = "This company backup is damaged or was changed after it was made." + _NOT_RESTORED
-INCOMPLETE = "This company backup is damaged or incomplete. Copy the file again, then try again." + _NOT_RESTORED
-NEWER = ("This company backup was made by a newer version of Celerp. Update Celerp, then try again."
-         + _NOT_RESTORED)
-OLDER = "This company backup was made by an older version of Celerp and cannot be restored here." + _NOT_RESTORED
-TOO_LARGE = "This company backup is too large to restore here." + _NOT_RESTORED
-TOO_LARGE_UPLOAD = "This file is too large for a company backup upload." + _NOT_RESTORED
-TOO_LARGE_TO_BACK_UP = "This company holds more data than a company backup can restore." + _NOT_BACKED_UP
-RESHAPED = "The structure of {table} changed while it was being backed up." + _NOT_BACKED_UP + " Try again."
-ROW_TOO_LARGE_TO_BACK_UP = "One record is too large for a company backup to restore." + _NOT_BACKED_UP
-UNDECLARED = "The {label} module has not said whether its data belongs in a company backup." + _NOT_BACKED_UP
-UNSUPPORTED_MODULE = "The {label} module keeps data in a form Celerp cannot back up yet." + _NOT_BACKED_UP
-UNSUPPORTED = "This company has data Celerp cannot back up yet." + _NOT_BACKED_UP
-UNSAVABLE = "This company backup has records this Celerp cannot save." + _NOT_RESTORED
-ATTACHMENT_FAILED = "Celerp could not save an attachment file from this backup." + _NOT_RESTORED
-ATTACHMENT_TYPE = "This company backup has an attachment file of a type Celerp does not store: {name}." + _NOT_RESTORED
-MISMATCH = "The restored company did not match the backup." + _NOT_RESTORED
-DISAGREE = "This backup contains business records that do not agree with each other." + _NOT_RESTORED
-CHANGED_COPY = ("This backup was already restored here, but this file holds different records under the same"
-                " backup. Use the original file or make a new backup." + _NOT_RESTORED)
-FOREIGN = "This company backup refers to records of another company." + _NOT_RESTORED
-ALREADY_SET_UP = "This Celerp is already set up." + _NOT_RESTORED
-NOT_A_MEMBER = ("This backup was already restored here as a company you are not a member of."
-                + _NOT_RESTORED)
-DEACTIVATED = ("This backup was already restored here as a company that is now deactivated. Reactivate it instead."
-               + _NOT_RESTORED)
-RESTORE_RUNNING = "A restore of this backup is already running." + _NOT_RESTORED
-OTHER_RESTORE_RUNNING = "A restore of another backup of this company is already running." + _NOT_RESTORED
-STALE_PREVIEW = ("Something changed since this preview. Check the updated preview before continuing."
-                 + _NOT_RESTORED)
-ATTACHMENT_MISSING = "This company backup refers to an attachment file it does not carry." + _NOT_RESTORED
-MODULES_REQUIRED = "This company backup needs modules that are not ready here: {labels}." + _NOT_RESTORED
-NAME_TAKEN = "You already have a company with this name. Choose a different name." + _NOT_RESTORED
+# Refusals, as locale keys: each is translated where the BackupError is raised.
+NOT_A_BACKUP = "company_backup.err_not_a_backup"
+SYSTEM_BACKUP = "company_backup.err_system_backup"
+DAMAGED = "company_backup.err_damaged"
+INCOMPLETE = "company_backup.err_incomplete"
+NEWER = "company_backup.err_newer"
+TOO_LARGE = "company_backup.err_too_large"
+TOO_LARGE_UPLOAD = "company_backup.err_too_large_upload"
+TOO_LARGE_TO_BACK_UP = "company_backup.err_too_large_to_back_up"
+ROW_TOO_LARGE_TO_BACK_UP = "company_backup.err_row_too_large"
+UNDECLARED = "company_backup.err_undeclared"
+UNSUPPORTED_MODULE = "company_backup.err_unsupported_module"
+UNSUPPORTED = "company_backup.err_unsupported"
+UNSAVABLE = "company_backup.err_unsavable"
+ATTACHMENT_FAILED = "company_backup.err_attachment_failed"
+ATTACHMENT_TYPE = "company_backup.err_attachment_type"
+MISMATCH = "company_backup.err_mismatch"
+DISAGREE = "company_backup.err_disagree"
+CHANGED_COPY = "company_backup.err_changed_copy"
+FOREIGN = "company_backup.err_foreign"
+ALREADY_SET_UP = "company_backup.err_already_set_up"
+NOT_A_MEMBER = "company_backup.err_not_a_member"
+DEACTIVATED = "company_backup.err_deactivated"
+STALE_PREVIEW = "company_backup.err_stale_preview"
+ATTACHMENT_MISSING = "company_backup.err_attachment_missing"
+MODULES_REQUIRED = "company_backup.err_modules_required"
+NAME_TAKEN = "company_backup.err_name_taken"
+OLDER = "company_backup.err_older"
+RESHAPED = "company_backup.err_reshaped"
+RESTORE_RUNNING = "company_backup.err_restore_running"
+OTHER_RESTORE_RUNNING = "company_backup.err_other_restore_running"
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
@@ -205,7 +202,7 @@ class StalePreview(BackupError):
     """The restore confirmed a preview that no longer holds; ``plan`` is the current one."""
 
     def __init__(self, plan: RestorePlan) -> None:
-        super().__init__(409, STALE_PREVIEW, "stale_preview")
+        super().__init__(409, t(STALE_PREVIEW), "stale_preview")
         self.plan = plan
 
 
@@ -214,7 +211,7 @@ class ModulesRequired(BackupError):
 
     def __init__(self, modules: requirements.RequirementPlan) -> None:
         waiting = ", ".join(r.label for r in modules.requirements if r.status is not requirements.Status.READY)
-        super().__init__(409, MODULES_REQUIRED.format(labels=waiting), "modules_required")
+        super().__init__(409, t(MODULES_REQUIRED, labels=waiting), "modules_required")
         self.modules = modules
 
 
@@ -270,8 +267,8 @@ def _declared(modules: InstalledModules, module: str) -> dict:
 def _refusal(table: str, owners: dict[str, str]) -> BackupError:
     """Why ``table`` stops an export, by module name; the table itself goes to the log only."""
     if table in owners:
-        return BackupError(409, UNSUPPORTED_MODULE.format(label=module_label(owners[table])))
-    return BackupError(409, UNSUPPORTED)
+        return BackupError(409, t(UNSUPPORTED_MODULE, label=module_label(owners[table])))
+    return BackupError(409, t(UNSUPPORTED))
 
 
 def _unsupported(label: str, owner: str | None, *, restoring: bool) -> BackupError:
@@ -334,7 +331,7 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
                 continue
             owners[name] = owner
             if how != INCLUDE:
-                refuse(name, BackupError(409, UNDECLARED.format(label=module_label(owner))), scoped=True)
+                refuse(name, BackupError(409, t(UNDECLARED, label=module_label(owner))), scoped=True)
                 continue
             ok = _module_shape_ok(table)
         else:
@@ -471,7 +468,7 @@ def _parse_row(line: bytes | str):
     back digit for digit. A row too large to parse (_row_too_large) is refused before it
     is parsed."""
     if _row_too_large(line.encode() if isinstance(line, str) else line):
-        raise BackupError(422, TOO_LARGE)
+        raise BackupError(422, t(TOO_LARGE))
     return json.loads(line, parse_float=lambda s: "\x00" + s + "\x00", parse_constant=_refuse_constant)
 
 
@@ -651,7 +648,7 @@ async def export_company_snapshot(company_id, out: Path, *, provenance: dict | N
         # nothing behind, and a later one deletes the published file with the company.
         async with AsyncSession(bind=celerp.db.engine) as session, session.begin():
             if not await hold_company(session, company_id):
-                raise BackupError(404, "Company not found.")
+                raise BackupError(404, t("error.company_unavailable"))
             partial.replace(out)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -676,14 +673,14 @@ async def _unchanged(session: AsyncSession, plan: _Plan, lock) -> None:
     reshaped, or given other columns or keys since ``plan`` was made."""
     changed = await lock(session, plan.order) or await _committed_shape(plan)
     if changed:
-        raise BackupError(409, RESHAPED.format(table=changed))
+        raise BackupError(409, t(RESHAPED, table=changed))
 
 
 async def _export_company(session: AsyncSession, company_id, partial: Path, *, provenance: dict | None) -> dict:
     """Write the backup to ``partial``; the caller publishes it or deletes it."""
     company = await session.get(Company, company_id)
     if company is None:
-        raise BackupError(404, "Company not found.")
+        raise BackupError(404, t("error.company_unavailable"))
     modules = installed_modules()
     plan = await _classify(session, modules, strict=True)
     await _unchanged(session, plan, db_catalog.hold)
@@ -739,7 +736,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                             body = line.encode()
                             if len(body) > MAX_ROW_BYTES or _row_too_large(body):
                                 logger.warning("Company backup refused: a row of %s is too large", name)
-                                raise BackupError(409, ROW_TOO_LARGE_TO_BACK_UP)
+                                raise BackupError(409, t(ROW_TOO_LARGE_TO_BACK_UP))
                             _collect_urls(json.loads(line), company_id, found, types)
                             body += b"\n"
                             digest.update(body)
@@ -768,17 +765,17 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                                                 "sha256": hashlib.sha256(body).hexdigest()})
             body = json.dumps(manifest, indent=1).encode()
             if len(body) > MAX_MANIFEST_BYTES:
-                raise BackupError(409, TOO_LARGE_TO_BACK_UP)
+                raise BackupError(409, t(TOO_LARGE_TO_BACK_UP))
             zf.writestr("manifest.json", body)
         await _unchanged(session, plan, db_catalog.fence)
         # The same limits a restore applies, so no backup is made that restore would refuse.
         if not _within_limits(partial):
-            raise BackupError(409, TOO_LARGE_TO_BACK_UP)
+            raise BackupError(409, t(TOO_LARGE_TO_BACK_UP))
     except BaseException as exc:
         # A table whose columns changed meanwhile can fail to read, e.g. once a type it
         # uses is renamed; that is answered as the change it is.
         if isinstance(exc, DBAPIError) and (changed := await _committed_shape(plan)):
-            raise BackupError(409, RESHAPED.format(table=changed)) from None
+            raise BackupError(409, t(RESHAPED, table=changed)) from None
         raise
     return manifest
 
@@ -820,12 +817,12 @@ def _is_count(value) -> bool:
 def _check_manifest(m) -> None:
     """Every manifest field a restore reads, of the type the export writes."""
     if not isinstance(m, dict) or m.get("format") != FORMAT:
-        raise BackupError(422, NOT_A_BACKUP)
+        raise BackupError(422, t(NOT_A_BACKUP))
     version = m.get("format_version")
     if not isinstance(version, int) or isinstance(version, bool) or version < 1:
-        raise BackupError(422, DAMAGED)
+        raise BackupError(422, t(DAMAGED))
     if version > FORMAT_VERSION:
-        raise BackupError(422, NEWER)
+        raise BackupError(422, t(NEWER))
     # A newer Celerp's records may mean something this copy cannot read, even when
     # every table and column exists here. Backups made before the version was
     # recorded come from an older Celerp.
@@ -833,9 +830,9 @@ def _check_manifest(m) -> None:
         try:
             newer = is_newer_than_running(m["celerp_version"])
         except (InvalidVersion, TypeError):
-            raise BackupError(422, DAMAGED)
+            raise BackupError(422, t(DAMAGED))
         if newer:
-            raise BackupError(422, NEWER)
+            raise BackupError(422, t(NEWER))
     company, modules, tables, files = m.get("company"), m.get("modules"), m.get("tables"), m.get("attachments")
     ok = (_is_uuid(m.get("backup_id")) and isinstance(m.get("created_at"), str)
           and isinstance(company, dict) and _is_uuid(company.get("id"))
@@ -861,10 +858,10 @@ def _check_manifest(m) -> None:
             and isinstance(f.get("sha256"), str)
             and attachments.company_file_name(company["id"], f["url"]) is not None for f in files)
     if not ok:
-        raise BackupError(422, DAMAGED)
+        raise BackupError(422, t(DAMAGED))
     for f in files:
         if attachments.stored_file_type(f["name"]) is None:
-            raise BackupError(422, ATTACHMENT_TYPE.format(name=f["name"]))
+            raise BackupError(422, t(ATTACHMENT_TYPE, name=f["name"]))
 
 
 def _member_limit(name: str) -> int:
@@ -890,7 +887,7 @@ class _Budget:
                 size += len(chunk)
                 self.total += len(chunk)
                 if size > limit or self.total > MAX_TOTAL_BYTES:
-                    raise BackupError(422, TOO_LARGE)
+                    raise BackupError(422, t(TOO_LARGE))
                 yield chunk
 
 
@@ -906,13 +903,13 @@ def _check_member(budget: _Budget, zf: zipfile.ZipFile, name: str, sha256: str, 
                 pending = pending or bool(part.strip())
                 row += len(part)
                 if row > MAX_ROW_BYTES:
-                    raise BackupError(422, TOO_LARGE)
+                    raise BackupError(422, t(TOO_LARGE))
                 if i < len(parts) - 1:
                     lines += pending
                     pending, row = False, 0
     lines += pending
     if digest.hexdigest() != sha256 or (rows is not None and lines != rows) or (size is not None and length != size):
-        raise BackupError(422, DAMAGED)
+        raise BackupError(422, t(DAMAGED))
 
 
 def _read_member(zf: zipfile.ZipFile, name: str) -> bytes:
@@ -943,36 +940,36 @@ def read_backup(path: Path) -> BackupFile:
     one, and from one whose contents changed."""
     if not zipfile.is_zipfile(path):
         if _starts_like_zip(path):
-            raise BackupError(422, INCOMPLETE)
-        raise BackupError(422, SYSTEM_BACKUP if _looks_like_system_backup(path) else NOT_A_BACKUP)
+            raise BackupError(422, t(INCOMPLETE))
+        raise BackupError(422, t(SYSTEM_BACKUP if _looks_like_system_backup(path) else NOT_A_BACKUP))
     try:
         with zipfile.ZipFile(path) as zf:
             infos = zf.infolist()
             if not _within_limits(path):
-                raise BackupError(422, TOO_LARGE)
+                raise BackupError(422, t(TOO_LARGE))
             names = [i.filename for i in infos]
             if len(set(names)) != len(names):
-                raise BackupError(422, DAMAGED)
+                raise BackupError(422, t(DAMAGED))
             if "manifest.json" not in names:
-                raise BackupError(422, NOT_A_BACKUP)
+                raise BackupError(422, t(NOT_A_BACKUP))
             budget = _Budget()
             try:
                 manifest = json.loads(b"".join(budget.chunks(zf, "manifest.json")))
             except ValueError:
-                raise BackupError(422, NOT_A_BACKUP) from None
+                raise BackupError(422, t(NOT_A_BACKUP)) from None
             _check_manifest(manifest)
             expected = {"manifest.json", *(f"tables/{t}.jsonl" for t in manifest["tables"]),
                         *(f"attachments/{f['name']}" for f in manifest["attachments"])}
             if expected != set(names):
-                raise BackupError(422, DAMAGED)
+                raise BackupError(422, t(DAMAGED))
             for table, meta in manifest["tables"].items():
                 _check_member(budget, zf, f"tables/{table}.jsonl", meta["sha256"], rows=meta["rows"])
             for f in manifest["attachments"]:
                 _check_member(budget, zf, f"attachments/{f['name']}", f["sha256"], size=f["size"])
     except (zlib.error, EOFError):
-        raise BackupError(422, INCOMPLETE) from None
+        raise BackupError(422, t(INCOMPLETE)) from None
     except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, ValueError, KeyError, RuntimeError, NotImplementedError):
-        raise BackupError(422, DAMAGED) from None
+        raise BackupError(422, t(DAMAGED)) from None
     whole = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(_CHUNK):
@@ -1002,7 +999,7 @@ def _lines(zf: zipfile.ZipFile, name: str):
     with zf.open(name) as fh:
         while line := fh.readline(MAX_ROW_BYTES + 1):
             if len(line) > MAX_ROW_BYTES and not line.endswith(b"\n"):
-                raise BackupError(422, TOO_LARGE)
+                raise BackupError(422, t(TOO_LARGE))
             if line.strip():
                 yield line
 
@@ -1022,12 +1019,12 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
     m = backup.manifest
     source = m["company"]["id"]
     carried = set(order)
-    unreadable = OLDER if _older(m) else DAMAGED
+    unreadable = t(OLDER) if _older(m) else t(DAMAGED)
     files = {f["url"] for f in m["attachments"]}
 
     def check_files(value) -> None:
         if any(attachments.company_file_name(source, s) is not None and s not in files for s in _strings(value)):
-            raise BackupError(422, ATTACHMENT_MISSING)
+            raise BackupError(422, t(ATTACHMENT_MISSING))
 
     ids: set[str] = set()
     seen: set[str] = set()
@@ -1045,21 +1042,21 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
             fks = [fk[:3] for fk in table.fks if set(fk.cols) <= present]
             own_keys = [(tcols, keys.setdefault((name, tcols), set())) for target, tcols in wanted if target == name]
             if any(not set(tcols) <= present for tcols, _ in own_keys):
-                raise BackupError(422, DAMAGED)
+                raise BackupError(422, t(DAMAGED))
             single = table.pk[0] if len(table.pk) == 1 and not table.columns[table.pk[0]].generated else None
             total = 0
             for line in _lines(zf, f"tables/{name}.jsonl"):
                 if _RAW_NUL.search(line):
-                    raise BackupError(422, DAMAGED)
+                    raise BackupError(422, t(DAMAGED))
                 row = _parse_row(line)
                 if not isinstance(row, dict) or set(row) != present or row.get("company_id") != source:
-                    raise BackupError(422, DAMAGED)
+                    raise BackupError(422, t(DAMAGED))
                 if name in OBJECT_COLUMNS and not isinstance(row.get(OBJECT_COLUMNS[name]), dict):
-                    raise BackupError(422, DAMAGED)
+                    raise BackupError(422, t(DAMAGED))
                 if single is not None and single in present:
                     value = row[single]
                     if table.columns[single].udt == "uuid" and not _is_uuid(value):
-                        raise BackupError(422, DAMAGED)
+                        raise BackupError(422, t(DAMAGED))
                     if _is_uuid(value):
                         ids.add(value)
                 _uuids(row, seen)
@@ -1072,7 +1069,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
                         continue
                     if target == "companies":
                         if values != (source,):
-                            raise BackupError(422, DAMAGED)
+                            raise BackupError(422, t(DAMAGED))
                     elif target in carried:
                         refs.setdefault((target, tcols), set()).add(values)
                     else:
@@ -1081,7 +1078,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
             digests[name] = total % (1 << 256)
     for key, values in refs.items():
         if not values <= keys.get(key, set()):
-            raise BackupError(422, DAMAGED)
+            raise BackupError(422, t(DAMAGED))
     return ids, digests, seen - ids - {source}
 
 
@@ -1094,7 +1091,7 @@ async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values
     wanted = sorted(values)
     if await session.scalar(text("SELECT 1 FROM companies WHERE id = ANY(CAST(:v AS uuid[])) "
                                  "AND id <> CAST(:s AS uuid) LIMIT 1"), {"v": wanted, "s": source}):
-        raise BackupError(422, FOREIGN)
+        raise BackupError(422, t(FOREIGN))
     for name, table in plan.schema.items():
         if len(table.pk) != 1 or "company_id" not in table.columns:
             continue
@@ -1105,7 +1102,7 @@ async def _check_foreign(session: AsyncSession, plan: _Plan, source: str, values
         if await session.scalar(text(
                 f"SELECT 1 FROM {db_catalog.ident(name)} WHERE {db_catalog.ident(table.pk[0])} = ANY(CAST(:v AS {key}[])) "
                 f"AND {kept} LIMIT 1"), {"v": wanted, "s": source}):
-            raise BackupError(422, FOREIGN)
+            raise BackupError(422, t(FOREIGN))
 
 
 async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
@@ -1122,11 +1119,11 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
     tables = backup.manifest["tables"]
     for name, meta in tables.items():
         if name not in plan.schema or not set(meta["columns"]) <= set(plan.schema[name].insertable):
-            raise BackupError(422, NEWER)
+            raise BackupError(422, t(NEWER))
         if name in plan.refused:
             raise _unsupported(await db_catalog.label(session, name), plan.owners.get(name), restoring=True)
         if name not in plan.order:
-            raise BackupError(422, OLDER if _older(backup.manifest) else NEWER)
+            raise BackupError(422, t(OLDER) if _older(backup.manifest) else t(NEWER))
     order = [t for t in plan.order if t in tables]
     ids, digests, others = await asyncio.to_thread(_scan_rows, backup, order, plan)
     await _check_foreign(session, plan, backup.manifest["company"]["id"], others)
@@ -1209,9 +1206,9 @@ async def _claim(session: AsyncSession, backup_id: str, source: str) -> None:
     """Claim this backup and the company it was made from for this transaction's restore,
     refusing at once while another restore of either runs: two of them would create the
     same company twice, or one under the same web address the other is creating."""
-    for key, refusal in ((backup_id, RESTORE_RUNNING), (f"source:{source}", OTHER_RESTORE_RUNNING)):
+    for key, refusal_key in ((backup_id, RESTORE_RUNNING), (f"source:{source}", OTHER_RESTORE_RUNNING)):
         if not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _lock_key(key)}):
-            raise BackupError(409, refusal)
+            raise BackupError(409, t(refusal_key))
 
 
 async def _is_member(session: AsyncSession, user_id, company_id) -> bool:
@@ -1232,7 +1229,7 @@ def _same_file(backup: BackupFile, restored: Company | None) -> None:
     bytes. A company restored before its file's hash was kept is not compared."""
     kept = ((restored.settings or {}).get("restored_backup") or {}).get("sha256") if restored is not None else None
     if kept is not None and kept != backup.sha256:
-        raise BackupError(409, CHANGED_COPY)
+        raise BackupError(409, t(CHANGED_COPY))
 
 
 async def _bootstrap_existing(session: AsyncSession, backup: BackupFile,
@@ -1246,7 +1243,7 @@ async def _bootstrap_existing(session: AsyncSession, backup: BackupFile,
     if (not company.is_active or user is None or not user.auth_hash
             or not verify_password(owner_account["password"], user.auth_hash)
             or not await _is_member(session, user.id, company.id)):
-        raise BackupError(409, ALREADY_SET_UP)
+        raise BackupError(409, t(ALREADY_SET_UP))
     _same_file(backup, company)
     return company, user
 
@@ -1460,7 +1457,7 @@ async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, comp
             rows += len(batch)
         if rows != meta["rows"] or total % (1 << 256) != checked.digests[name]:
             logger.warning("Company restore refused: %s did not read back as the backup holds it", name)
-            raise BackupError(422, MISMATCH)
+            raise BackupError(422, t(MISMATCH))
 
 
 async def _projection_states(session: AsyncSession, company_id) -> dict[str, tuple[str, object]]:
@@ -1486,7 +1483,7 @@ async def _check_replay(session: AsyncSession, company_id) -> None:
         differ = sorted(k for k in restored.keys() | replayed.keys() if restored.get(k) != replayed.get(k))
         logger.warning("Company restore refused: %d records do not agree with the ledger (first: %s)",
                        len(differ), differ[0])
-        raise BackupError(422, DISAGREE)
+        raise BackupError(422, t(DISAGREE))
 
 
 async def _rebind_actors(session: AsyncSession, company_id) -> None:
@@ -1586,15 +1583,15 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 name = plan.destination_name if company_name is None else _chosen_name(company_name)
             else:
                 if mode == "start_company" and not await hold_companyless_login(session, user_id):
-                    raise BackupError(409, HAS_COMPANY)
+                    raise BackupError(409, t(HAS_COMPANY))
                 # One restore at a time per owner, so two cannot both take the same free name.
                 await session.execute(text("SELECT pg_advisory_xact_lock(:k)"),
                                       {"k": _lock_key(f"names:{user_id}")})
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
-                    raise BackupError(409, NOT_A_MEMBER)
+                    raise BackupError(409, t(NOT_A_MEMBER))
                 if plan.action == OFFER_REACTIVATE:
-                    raise BackupError(409, DEACTIVATED, "deactivated")
+                    raise BackupError(409, t(DEACTIVATED), "deactivated")
                 # Opening the existing company with nothing to add is what any preview of it
                 # led to, so it needs no matching preview.
                 settled = plan.action == RETURN_EXISTING and not plan.team_blocked
@@ -1612,10 +1609,10 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 if company_name is not None:
                     name = _chosen_name(company_name)
                     if _name_key(name) in await _taken_names(session, user_id):
-                        raise BackupError(409, NAME_TAKEN, "name_taken")
+                        raise BackupError(409, t(NAME_TAKEN), "name_taken")
             if mode == "bootstrap":
                 if await session.scalar(select(User.id).limit(1)) is not None:
-                    raise BackupError(409, ALREADY_SET_UP)
+                    raise BackupError(409, t(ALREADY_SET_UP))
                 user = await create_install_owner(session, name=owner_account["name"],
                                                   email=owner_account["email"], password=owner_account["password"])
             else:
@@ -1632,7 +1629,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                         url_map[f["url"]] = await attachments.store_company_file(str(new_id), f["name"], content)
                     except Exception:
                         logger.warning("Storing an attachment from a company backup failed", exc_info=True)
-                        raise BackupError(422, ATTACHMENT_FAILED) from None
+                        raise BackupError(422, t(ATTACHMENT_FAILED)) from None
                 id_map = {source: str(new_id), **{old: str(uuid.uuid4()) for old in checked.ids}, **url_map}
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
                 settings = set_enabled(settings, set(m["modules"]["enabled"]))  # the checked list, never the copied key
@@ -1652,7 +1649,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     for name in checked.order:
                         await _insert(session, zf, name, m["tables"][name]["columns"], id_map)
                 except DBAPIError:
-                    raise BackupError(422, UNSAVABLE) from None
+                    raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
             await _check_replay(session, new_id)
             if _same_lineage(mode, current_company_id, source):
@@ -1712,7 +1709,7 @@ async def reactivate_restored(path: Path, *, mode: str, user_id, current_company
         await _lock(session, backup.manifest["backup_id"])
         plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
         if plan.action == REFUSE:
-            raise BackupError(409, NOT_A_MEMBER)
+            raise BackupError(409, t(NOT_A_MEMBER))
         if plan.action != OFFER_REACTIVATE:
             if destination is None:  # nothing was restored from it yet, so there is nothing to reactivate
                 raise StalePreview(plan)
@@ -1725,4 +1722,4 @@ async def reactivate_restored(path: Path, *, mode: str, user_id, current_company
         try:
             return await company_lifecycle.reactivate_company(session, destination.id, user_id)
         except company_lifecycle.NotAnOwner:
-            raise BackupError(409, NOT_A_MEMBER) from None
+            raise BackupError(409, t(NOT_A_MEMBER)) from None

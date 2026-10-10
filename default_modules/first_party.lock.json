@@ -1,16 +1,16 @@
 {
-  "celerp-accounting": "42dce886c73d6101baf4b7b717096d635e36d537f6dab615ba56be2828c0da87",
-  "celerp-admin": "a4fd6ebc315bed063a3043287e47412e1be967746704b8c4af9c5c511b71d1ca",
-  "celerp-ai": "96eb847768e489a41d2e8586d0c324bc1cf476ca7c80c97b97deeafcc9b1d1fe",
-  "celerp-backup": "ba2f45e7d16ea23b4fe2d4d405f8875277a6a8f793bf6bdc2f91518cf944faaf",
-  "celerp-connectors": "3c2beab5a962c02e4c4d71016f63ffcfc4614e068371d0269e8479baf9265da8",
-  "celerp-contacts": "b281ccc283e887ab8232d1c109df9de9024e5f86eef3a5568ac296425baf63aa",
+  "celerp-accounting": "9c6f711c8234e9922de36b1f90e8319a4dce2409461d44e9942303e2cc90f42e",
+  "celerp-admin": "c4276476dd21c8ee34752983ee7c4c08b7147f0a07984f3f0fab7357e32b07b2",
+  "celerp-ai": "2a60814c9cb1fd4dc519dd8a2fd35697e209711ca1718f1e1f8ffe29b5db51e8",
+  "celerp-backup": "9f060370a85dd3747f2806efc88bd679085b545b5ee72824c5beda66bb1aa316",
+  "celerp-connectors": "85a4f20442a8abd7b7c653c84245b0cdf7618628fa4d887946f1d853564c1a75",
+  "celerp-contacts": "9be93a2a3c4616936a65b2e6c87e39d5f5a51dfc79b60a74a3b9409aaa9ec3e2",
   "celerp-dashboard": "0e8186b4cff340fd1fe450508e1bfbf305f1774bff4f5d5a3c4064e28470d761",
-  "celerp-docs": "407b582a2f908b5b7e89609b6e8585a2520dda4b4dfda2baff1b12865613b983",
-  "celerp-inventory": "a60d2396f2f11e5a34a63d88fb85bc45469842403dff18a78a28dbc3b360a9d3",
+  "celerp-docs": "39929435d683591b888ee63562eafcebbbebf6cacf670dd1ec62a84164147378",
+  "celerp-inventory": "62287cebc2d620e9337f36ad4139cb9d0d0ba2d15f353300496abc1de5455e2a",
   "celerp-labels": "044e1739f5b978e941cce6d422f7472954be44852d9a047ec643e5b582ab5ca1",
-  "celerp-manufacturing": "51bcada8fa03357bd7b410bba327b502fd618d61024c5f43f374437587b8a21f",
+  "celerp-manufacturing": "8e70240f7edf8086ec07158096713175a596343ac04783c65023a229863b8c8b",
   "celerp-reports": "32d8cb5f5d4e2173bf422d0e23ace3104b7527a50e3b63d6540c7128755f345c",
-  "celerp-subscriptions": "3626082c153222a6567f912d302fedfc71e1f2dfda9a9d23112dbdba9a3a1511",
-  "celerp-verticals": "1209f9b3bd4fed7accd2237ce3fcc2d6c508cc24132f6d2af5a7e6bc0e84d094"
+  "celerp-subscriptions": "5fc8dd3784d57a8c539b3d72967a0ef1ba384f793c18bf77cca688276606a24d",
+  "celerp-verticals": "d8c88656c20b3aa8fa1e5df981a63299b3a8ac02569bdcfa38e2f981655339ca"
 }

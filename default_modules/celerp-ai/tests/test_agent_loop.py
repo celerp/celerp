@@ -23,6 +23,7 @@ import pytest
 
 from celerp.ai import service
 from celerp.ai.llm import RelayError
+from ui.i18n import t
 from celerp.ai.service import (
     MAX_ARGUMENT_BYTES,
     MAX_MODEL_TURNS,
@@ -495,7 +496,7 @@ async def test_timeout_maps_to_error(monkeypatch):
     monkeypatch.setattr(service, "complete", _slow)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
-    assert result.error == "Celerp AI could not complete this request in time. Please try again."
+    assert result.error == t("ai.err_timeout")
 
 
 @pytest.mark.asyncio
@@ -507,7 +508,7 @@ async def test_relay_409_continuation_expired_maps_to_plain_error(monkeypatch):
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
     assert result.pending_actions == []
-    assert result.error == "The conversation step expired, ask the question again."
+    assert result.error == t("ai.err_step_expired")
 
 
 @pytest.mark.asyncio
@@ -545,7 +546,7 @@ async def test_tool_401_ends_run_with_session_expired(monkeypatch):
         execute=_execute_returning({"ok": False, "status": 401, "error": {"code": "http_401", "message": "no"}}),
     )
     result = await _run()
-    assert result.error == "Your session expired, sign in again."
+    assert result.error == t("error.session_expired")
     assert result.pending_actions == []
 
 

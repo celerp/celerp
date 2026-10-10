@@ -38,20 +38,16 @@ from celerp.services import bootstrap
 from celerp.services import company_backup as cb
 from celerp.services import company_backup_files as files
 from celerp.services.auth import AuthContext
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/company-backups", tags=["company-backups"])
 
-UPLOAD_AGAIN = "This upload is no longer available. Choose the file again."
-RUN_NOT_FOUND = "Migration not found."
-RUN_NOT_READY = "This migration has not finished, so its company cannot be backed up yet."
 MODULES_UNAVAILABLE = ("This company backup needs modules that cannot run here: {labels}. "
                        "Import them, or choose another backup. Nothing was restored.")
 CONSENT_NEEDED = ("These modules come from outside Celerp. Confirm that you want to turn them on: {labels}. "
                   "Nothing was restored.")
-MODULES_NOT_SAVED = "Celerp could not turn on the modules this backup needs. Nothing was restored."
-MODULE_TOO_LARGE = "This module file is too large (limit 50 MB)."
 _BOOTSTRAP = "bootstrap"
 _START_COMPANY = "start_company"
 
@@ -76,9 +72,9 @@ async def _provenance(session: AsyncSession, ctx: AuthContext, run_id: uuid.UUID
     """Where a backup made at the end of a migration came from."""
     run = await session.get(MigrationRun, run_id)
     if run is None or run.company_id != ctx.company_id or run.created_by_user_id != ctx.user.id:
-        raise HTTPException(status_code=404, detail=RUN_NOT_FOUND)
+        raise HTTPException(status_code=404, detail=t("company_backup.err_run_not_found"))
     if run.status != MigrationStatus.COMPLETED:
-        raise HTTPException(status_code=409, detail=RUN_NOT_READY)
+        raise HTTPException(status_code=409, detail=t("company_backup.err_run_not_ready"))
     return {"prepared_by": run.prepared_by, "source_system": run.source_system}
 
 
@@ -105,14 +101,14 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
 def _stage(owner: str, token: str) -> Path:
     path = files.stage_path(owner, token)
     if path is None:
-        raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
+        raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
     return path
 
 
 def _uploaded(owner: str, token: str) -> Path:
     path = _stage(owner, token)
     if not path.is_file():
-        raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
+        raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
     return path
 
 
@@ -132,7 +128,7 @@ async def _preview(session: AsyncSession, stage: Path, token: str, mode: str, us
     else:
         plan = await cb.plan_existing_restore(session, backup, mode, user_id, current_company_id)
         if plan.action == cb.REFUSE:
-            raise cb.BackupError(409, cb.NOT_A_MEMBER)
+            raise cb.BackupError(409, t(cb.NOT_A_MEMBER))
     return {"upload_token": token, "file_name": files.stage_facts(stage).get("file_name", ""),
             **backup.summary(), **plan.public()}
 
@@ -148,7 +144,7 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str =
             await asyncio.to_thread(files.stage_upload, file.file, stage, limit=cb.MAX_UPLOAD_BYTES, owner=owner,
                                     mode=mode, file_name=file.filename)
         except files.UploadTooLarge:
-            raise cb.BackupError(413, cb.TOO_LARGE_UPLOAD) from None
+            raise cb.BackupError(413, t(cb.TOO_LARGE_UPLOAD)) from None
         return await _preview(session, stage, token, mode, user_id, current_company_id)
     except BaseException:
         files.discard_stage(stage)
@@ -184,7 +180,7 @@ async def _prepare(owner: str, token: str, consent: list[str]) -> JSONResponse:
                                                       "code": "consent_required"})
     except OSError:
         logger.exception("Could not turn on the modules a company backup needs")
-        raise HTTPException(status_code=503, detail=MODULES_NOT_SAVED) from None
+        raise HTTPException(status_code=503, detail=t("company_backup.err_modules_not_saved")) from None
     if not restart:
         return JSONResponse(status_code=200, content={"restart": False, "restarting": False})
     return JSONResponse(status_code=202, content={"restart": True, "restarting": requirements.schedule_restart()})
@@ -197,7 +193,7 @@ async def _import_module(file: UploadFile, session: AsyncSession, owner: str, to
     _uploaded(owner, token)
     data = await file.read(MAX_ARCHIVE_BYTES + 1)
     if len(data) > MAX_ARCHIVE_BYTES:
-        raise HTTPException(status_code=413, detail=MODULE_TOO_LARGE)
+        raise HTTPException(status_code=413, detail=t("module_import.too_large"))
     try:
         await asyncio.to_thread(install_from_zip, data)
     except ModuleImportError as exc:
@@ -277,7 +273,7 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
     if not stage.is_file():
         result = await cb.reopen_restored(files.restored_company(stage), user_id=ctx.user.id)
         if result is None:
-            raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
+            raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
     else:
         try:
             result = await cb.restore_company(stage, mode=payload.mode, user_id=ctx.user.id,
@@ -302,7 +298,7 @@ async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(use
     if not stage.is_file():
         reopened = await cb.reopen_restored(files.restored_company(stage), user_id=ctx.user.id)
         if reopened is None:
-            raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
+            raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
         company_id, name, outcome, reconnect = reopened.company_id, reopened.company_name, reopened.outcome, []
     else:
         try:
@@ -393,7 +389,7 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     if not stage.is_file():
         result = await cb.reopen_restored(files.restored_company(stage), owner_account=account)
         if result is None:
-            raise HTTPException(status_code=409, detail=UPLOAD_AGAIN)
+            raise HTTPException(status_code=409, detail=t("company_backup.upload_expired"))
         return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
     try:

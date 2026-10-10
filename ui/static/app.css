@@ -245,7 +245,7 @@ a:hover { text-decoration: underline; }
    share the second, so the search box keeps room to type and names show whole. */
 @media (max-width: 480px) {
   .topbar { flex-wrap: wrap; height: auto; row-gap: 6px; }
-  .topbar .global-search-wrap { order: 1; flex: 1 1 12rem; }
+  .topbar .global-search-wrap { order: 1; flex: 1 1 13rem; }
   .topbar .company-switcher-select { order: 1; max-width: 50%; }
   .topbar .lang-switcher-wrap { flex-shrink: 0; }
   .topbar .lang-switcher-wrap .combobox-input { max-width: 8rem; }
@@ -477,7 +477,7 @@ a:hover { text-decoration: underline; }
 .cell--paired .paired-sep { color: var(--c-text-muted, #888); user-select: none; }
 .cell--paired .paired-tertiary { color: var(--c-text-muted, #888); font-style: italic; cursor: default; user-select: none; }
 
-.cell-error { color: var(--c-red); font-size: 11px; padding: 4px 8px; }
+.cell-error { color: var(--c-red); font-size: 11px; padding: 4px 8px; white-space: normal; max-width: 360px; }
 .cell--channels { white-space: nowrap; }
 .catalog-channels { display: inline-flex; align-items: center; gap: 4px; }
 .catalog-channel {
@@ -2028,6 +2028,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 /* ─── Bank Reconciliation Workspace (phase 9) ─────────────────────────────── */
 .recon-workspace { display: flex; flex-direction: column; gap: 12px; max-width: 1400px; }
+.recon-completed { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .recon-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 16px 0; border-bottom: 1px solid var(--c-border); }
 .recon-title { margin: 0; font-size: 20px; font-weight: 700; }
 .recon-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 8px 0; }

@@ -31,8 +31,9 @@ from migration_support import (
     scan_upload,
 )
 from test_helpers import register_admin
+from ui.i18n import t
 
-STAGED = "This company is still being moved into Celerp. Finish or discard the migration first."
+STAGED = t("auth.company_staged", "en")
 
 
 class Crash(Exception):
@@ -271,8 +272,7 @@ async def test_a_scan_claimed_by_another_user_cannot_start_a_run(real_client, re
         await s.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(created_by_user_id=other.id))
         await s.commit()
     r = await _start(real_client, admin_token, scan_token)
-    assert r.status_code == 409 and r.json()["detail"] == \
-        "This upload was already used to start a migration, or it was replaced."
+    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_scan_already_started", "en")
     assert await count(real_engine, "migration_runs") == 1
 
 
@@ -328,7 +328,7 @@ async def test_bootstrap_lost_response_recovers_through_login(real_client, real_
     r = await real_client.post("/migrations/bootstrap/start", json={
         "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
-    assert r.status_code == 409 and r.json()["detail"] == "System already bootstrapped. Contact your admin."
+    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_bootstrapped", "en")
 
     r = await real_client.post("/auth/login", json={"email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 200, r.text

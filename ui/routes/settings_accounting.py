@@ -24,6 +24,9 @@ from ui.routes.accounting_import import ACCOUNT_TYPES
 # list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
 # two run in separate processes, so a test asserts they still match.
 CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
+# The longest account code the API accepts (celerp_accounting.chart_rules.ACCOUNT_CODE_MAX),
+# mirrored the same way and asserted by the same kind of test.
+_ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import refusal_text, role_label, t
@@ -554,7 +557,7 @@ async def _validate_account(token: str, name: str, account_type: str,
     if not name:
         return t("settings_accounting.name_required")
     if account_type not in ACCOUNT_TYPES:
-        return t("settings_accounting.account_type_invalid", types=", ".join(ACCOUNT_TYPES))
+        return t("settings_accounting.account_type_invalid", types=", ".join(t(f"enum.account_type.{x}") for x in ACCOUNT_TYPES))
     if parent_code:
         if parent_code == own_code:
             return t("settings_accounting.account_own_parent")
@@ -710,7 +713,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         bank_name = str(form.get("bank_name", "")).strip()
         account_number = str(form.get("account_number", "")).strip()
@@ -808,7 +811,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         patch = {}
         for field in ("bank_name", "account_number", "bank_type", "currency"):
@@ -827,7 +830,7 @@ def setup_routes(app):
     async def toggle_bank_account(request: Request, bank_id: str):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="bank-accounts-list")
+            return Div(P(t("error.session_expired")), id="bank-accounts-list")
         refused = []
         try:
             b = await api.get_bank_account(token, bank_id)
@@ -884,7 +887,7 @@ def setup_routes(app):
     async def create_rule(request: Request):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="rules-list")
+            return Div(P(t("error.session_expired")), id="rules-list")
         form = await request.form()
         data = {
             "bank_account_id": str(form.get("bank_account_id", "")).strip(),
@@ -909,7 +912,7 @@ def setup_routes(app):
     async def delete_rule(request: Request, rule_id: str):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="rules-list")
+            return Div(P(t("error.session_expired")), id="rules-list")
         try:
             await api.delete_recon_rule(token, rule_id)
             rules_data = await api.get_recon_rules(token)
@@ -924,7 +927,7 @@ def setup_routes(app):
     async def seed_chart_route(request: Request):
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="chart-content")
+            return Div(P(t("error.session_expired")), id="chart-content")
         try:
             await api.seed_chart(token)
             chart_data = await api.get_chart(token)
@@ -962,7 +965,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         code = str(form.get("code", "")).strip()
         name = str(form.get("name", "")).strip()
@@ -970,8 +973,8 @@ def setup_routes(app):
         parent_code = str(form.get("parent_code", "")).strip()
         if not code:
             return P(t("settings_accounting.code_required"), cls="error-banner")
-        if len(code) > 32:
-            return P(t("settings_accounting.code_too_long"), cls="error-banner")
+        if len(code) > _ACCOUNT_CODE_MAX:
+            return P(t("settings_accounting.code_too_long", max=_ACCOUNT_CODE_MAX), cls="error-banner")
         err = await _validate_account(token, name, account_type, parent_code, own_code=code)
         if err:
             return P(err, cls="error-banner")
@@ -1019,7 +1022,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="error-banner")
+            return P(t("error.session_expired"), cls="error-banner")
         form = await request.form()
         name = str(form.get("name", "")).strip()
         account_type = str(form.get("account_type", "")).strip()
@@ -1043,7 +1046,7 @@ def setup_routes(app):
     async def posting_account_edit(request: Request, key: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             data = await api.get_posting_accounts(token)
         except APIError as e:
@@ -1065,7 +1068,7 @@ def setup_routes(app):
         """The display cell again (the Escape cancel handler)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             data = await api.get_posting_accounts(token)
         except APIError as e:
@@ -1086,7 +1089,7 @@ def setup_routes(app):
         (an account the role cannot use) is shown on the row with the reason."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         code = str(form.get("value", "")).strip()
         try:
@@ -1112,7 +1115,7 @@ def setup_routes(app):
     async def cash_flow_field_edit(request: Request, code: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
@@ -1128,7 +1131,7 @@ def setup_routes(app):
         """Return the read-only display cell (used by the Escape cancel handler)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
@@ -1147,7 +1150,7 @@ def setup_routes(app):
         422 whose message is shown in place rather than swallowed."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", "")).strip()
         try:

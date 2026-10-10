@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpcore
 import httpx
+from ui.i18n import t
 
 
 def _blocked_ip(addr: str) -> bool:
@@ -26,17 +27,17 @@ async def _resolve_public_addresses(host: str, port: int) -> list[str]:
             host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP,
         )
     except (socket.gaierror, UnicodeError, ValueError) as exc:
-        raise ValueError("URL host could not be resolved") from exc
+        raise ValueError(t("error.url_unresolved")) from exc
 
     addresses: list[str] = []
     for info in infos:
         address = str(info[4][0])
         if _blocked_ip(address):
-            raise ValueError("URL host is not a public address")
+            raise ValueError(t("error.url_private"))
         if address not in addresses:
             addresses.append(address)
     if not addresses:
-        raise ValueError("URL host could not be resolved")
+        raise ValueError(t("error.url_unresolved"))
     return addresses
 
 
@@ -59,11 +60,11 @@ async def validate_public_base_url(
         or parsed.username is not None
         or parsed.password is not None
     ):
-        raise ValueError("URL must use a supported scheme and public hostname")
+        raise ValueError(t("error.url_invalid"))
     if reject_query and parsed.query:
-        raise ValueError("Base URL must not contain a query")
+        raise ValueError(t("error.url_has_query"))
     if reject_fragment and parsed.fragment:
-        raise ValueError("Base URL must not contain a fragment")
+        raise ValueError(t("error.url_has_fragment"))
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     await _resolve_public_addresses(parsed.hostname, port)
@@ -164,10 +165,10 @@ async def fetch_public_bytes(
                 request_params = None
                 if response.status_code in {301, 302, 303, 307, 308}:
                     if hop >= max_redirects:
-                        raise ValueError("Too many redirects")
+                        raise ValueError(t("error.url_too_many_redirects"))
                     location = response.headers.get("location")
                     if not location:
-                        raise ValueError("Redirect did not include a destination")
+                        raise ValueError(t("error.url_redirect_no_destination"))
                     current = urljoin(str(response.url), location)
                     continue
 
@@ -192,4 +193,4 @@ async def fetch_public_bytes(
                     bytes(body),
                     str(response.url),
                 )
-    raise ValueError("Too many redirects")
+    raise ValueError(t("error.url_too_many_redirects"))

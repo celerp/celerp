@@ -25,6 +25,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from test_helpers import create_item, perm_setup
+from ui.i18n import t
 
 
 
@@ -81,7 +82,7 @@ async def test_new_run_naming_a_non_item_component_is_refused(client, session, k
         "output_item_id": s["product"],
     }, headers=s["admin_h"])
     assert r.status_code == 422, r.text
-    assert ref in r.json()["detail"]
+    assert r.json()["detail"] == t("manufacturing.err_item_unknown", "en")
     assert await _runs(session, company_id) == before
 
 
@@ -96,7 +97,7 @@ async def test_new_run_making_a_non_item_product_is_refused(client, session):
         "source": "import", "idempotency_key": "out-1",
     }]}, headers=s["admin_h"])
     assert r.status_code == 200, r.text
-    assert r.json()["created"] == 0 and doc_id in r.json()["errors"][0]
+    assert r.json()["created"] == 0 and r.json()["errors"] == [f"mfg:out: {t('manufacturing.err_item_unknown', 'en')}"]
     assert await _runs(session, company_id) == 0
 
 
@@ -138,7 +139,7 @@ async def test_imported_run_naming_a_non_item_component_is_refused(client, sessi
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 1, body
-    assert len(body["errors"]) == 1 and ref in body["errors"][0] and body["errors"][0].startswith("mfg:bad")
+    assert body["errors"] == [f"mfg:bad: {t('manufacturing.err_item_unknown', 'en')}"]
     assert await session.get(Projection, {"company_id": company_id, "entity_id": "mfg:bad"}) is None
     assert (await session.execute(select(func.count()).select_from(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id == "mfg:bad"))).scalar_one() == 0
@@ -279,4 +280,4 @@ async def test_finalizing_an_order_skips_and_reports_a_line_whose_recipe_names_a
     assert [o["output_item_id"] for o in runs] == [chain]
     notes = [n for n in (await client.get("/notifications", headers=h)).json()["items"]
              if n["title"] == "Work orders not created"]
-    assert len(notes) == 1 and "RINGREF" in notes[0]["body"] and gold in notes[0]["body"]
+    assert len(notes) == 1 and f"RINGREF ({t('manufacturing.err_item_unknown', 'en')}). Fix the recipe" in notes[0]["body"]

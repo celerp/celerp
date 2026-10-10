@@ -28,9 +28,18 @@ from migration_support import auth, code_config, maker, real_client, real_engine
 from celerp.services.backup_import import _clear_restored_connector_state as _real_clear
 from celerp.services.backup_import import _reconcile_connectors as _real_revoke
 from celerp.services.session_tracker import end_all_sessions as _real_end_sessions
+from ui.i18n import t
 
 
-SAFETY_WARNING = "A safety backup could not be made before restoring."
+SAFETY_WARNING = "Celerp couldn't make a safety copy before restoring"
+
+
+def _tool_failed(detail: str) -> str:
+    """A pattern for a restore refused because a PostgreSQL tool failed, ``detail``
+    being a pattern for what the tool reported."""
+    before, after = t("error.restore_failed_detail", "en", detail="\0").split("\0")
+    return re.escape(before) + detail + re.escape(after)
+
 SOURCE_DUMP = b"SOURCE-DUMP"
 SAFETY_DUMP = b"SAFETY-DUMP"
 ROOTS = {"attachments": ("static", "attachments"), "ai_uploads": ("ai_uploads",), "modules": ("modules",)}
@@ -1542,8 +1551,8 @@ async def test_a_backup_whose_late_table_data_is_unreadable(tmp_path, monkeypatc
 
         result = await backup_import.run_recovery(damaged)
         assert result.ok is False and not result.needs_confirmation, result
-        assert result.error.startswith("This backup file is damaged and cannot be restored: pg_restore failed"), \
-            result.error
+        assert re.fullmatch(re.escape("This backup file is damaged and cannot be restored: ")
+                            + _tool_failed(r"pg_restore \(exit \d+\): [\s\S]*"), result.error), result.error
         _assert_nothing_started(rec, connector_calls, [])
         assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 200
         assert await _company_names(real_engine) == {"Alpha Trading", "Beta Trading"}
@@ -2362,7 +2371,7 @@ async def test_a_failed_restore_changes_nothing(tmp_path, real_engine, break_res
     dump = await _restore_target(real_engine, tmp_path)
     try:
         tables = await _tables(real_engine)
-        with pytest.raises(RuntimeError, match="failed"):
+        with pytest.raises(RuntimeError, match=_tool_failed(r"(pg_restore|psql) \(exit \d+\): [\s\S]*")):
             await _restore(dump, break_restore(dump))
         await _assert_unchanged(real_engine, tables)
         assert list(tmp_path.iterdir()) == [dump]
@@ -2426,7 +2435,7 @@ async def test_a_restore_blocked_by_an_object_outside_public_changes_nothing(tmp
         await _execute(real_engine, "CREATE SCHEMA zz")
         await _execute(real_engine, "CREATE TABLE zz.jobs (status public.zz_status)")
         tables = await _tables(real_engine)
-        with pytest.raises(RuntimeError, match=r"psql failed \(exit 3\): .*ERROR:  cannot drop type public.zz_status"):
+        with pytest.raises(RuntimeError, match=_tool_failed(r"psql \(exit 3\): .*ERROR:  cannot drop type public.zz_status[\s\S]*")):
             await _restore(dump)
         await _assert_unchanged(real_engine, tables)
     finally:
@@ -2517,7 +2526,7 @@ async def test_a_restore_that_would_change_another_schema_changes_nothing(tmp_pa
         await _execute(real_engine, "CREATE SCHEMA zz")
         await _execute(real_engine, create)
         tables = await _tables(real_engine)
-        with pytest.raises(RuntimeError, match=r"psql failed \(exit 1\): ERROR:  cannot drop desired"):
+        with pytest.raises(RuntimeError, match=_tool_failed(r"psql \(exit 1\): ERROR:  cannot drop desired[\s\S]*")):
             await _restore(dump)
         await _assert_unchanged(real_engine, tables)
         async with real_engine.connect() as conn:
@@ -2545,7 +2554,7 @@ async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine)
             def runner(command, **kwargs):
                 return subprocess.run(command, **{**kwargs, "timeout": 3 if _tool(command) == "psql" else 60})
 
-            with pytest.raises(RuntimeError, match="psql timed out"):
+            with pytest.raises(RuntimeError, match=re.escape(t("error.restore_timed_out", "en", seconds=600))):
                 await _restore(dump, runner)
         async with real_engine.connect() as conn:
             for _ in range(100):
@@ -2567,8 +2576,8 @@ async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine)
 # The error each kind of unusable psql gives.
 PSQL = {
     "missing": "psql not found",
-    "not executable": "psql could not run",
-    "failing": "psql failed (exit 127)",
+    "not executable": "psql: Permission denied",
+    "failing": "psql (exit 127)",
 }
 
 

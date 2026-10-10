@@ -25,6 +25,7 @@ from celerp.accounting_roles import refusal
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
 from celerp.services.line_measures import splitting_allowed
+from ui.i18n import t
 from celerp.services.lot_origin import DELETED
 
 # The uniqueness invariant is an OUTBOUND customer-stock rule: a customer-facing
@@ -152,12 +153,12 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
         carried[ident] += 1
         if carried[ident] > known[ident]:
             label = line.get("name") or line.get("sku")
-            where = f"Line {n} ({label})" if label else f"Line {n}"
+            where = t("acct.field_line", n=n) + (f" ({label})" if label else "")
             raise HTTPException(
                 status_code=422,
                 detail={
                     "code": "invalid_reference",
-                    "message": f"{where} references an item that does not exist: {ident}",
+                    "message": t("documents.err_item_missing", where=where, ident=ident),
                     "item_id": ident,
                     "line": n,
                 },
@@ -321,7 +322,7 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
                 status_code=409,
                 detail={
                     "code": "duplicate_document_item",
-                    "message": "This item is already on the document.",
+                    "message": t("documents.duplicate_item_on_document"),
                     "item_id": ident,
                 },
             )

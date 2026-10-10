@@ -80,8 +80,9 @@ async def test_deactivated_company_blocks_non_owner(client: AsyncClient, session
 
 
 @pytest.mark.asyncio
-async def test_deactivated_company_blocked_on_switch(client: AsyncClient):
-    """Cannot switch into a deactivated company."""
+async def test_owner_can_switch_into_deactivated_company(client: AsyncClient):
+    """The owner may switch into their deactivated company, as at sign-in, so they can
+    reactivate it (tests/test_deactivated_companies_section.py covers other members)."""
     token = await _register(client)
 
     # Get company_id from my-companies
@@ -91,7 +92,9 @@ async def test_deactivated_company_blocked_on_switch(client: AsyncClient):
     await client.delete("/companies/me", headers=_auth(token))
 
     r = await client.post(f"/auth/switch-company/{company_id}", headers=_auth(token))
-    assert r.status_code in (401, 403)
+    assert r.status_code == 200, r.text
+    r = await client.post("/companies/me/reactivate", headers=_auth(r.json()["access_token"]))
+    assert r.status_code == 200 and r.json()["is_active"] is True
 
 
 @pytest.mark.asyncio
@@ -190,7 +193,7 @@ async def test_deactivated_company_blocks_connector_operations(client: AsyncClie
     company.is_active = False
     await session.commit()
 
-    with pytest.raises(ConnectorOwnershipError, match="inactive"):
+    with pytest.raises(ConnectorOwnershipError, match="has been deactivated"):
         await lock_connector_operation(
             session, str(company_id), "woocommerce", require_owner=True
         )

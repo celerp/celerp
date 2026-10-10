@@ -645,7 +645,7 @@ async def test_manufacturing_create_order_empty_description(client):
         "output_item_id": "item:y", "quantity": 1,
     })
     assert r.status_code == 422
-    assert r.json()["detail"] == "description is required"
+    assert r.json()["detail"] == "Enter a description."
 
 
 # ---------------------------------------------------------------------------

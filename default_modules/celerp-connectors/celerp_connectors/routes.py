@@ -19,6 +19,7 @@ from celerp.services.auth import (
     require_install_owner,
 )
 from celerp.services.permissions import require_permission
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -102,8 +103,8 @@ async def trigger_sync(
     from celerp import connectors
     try:
         connector = connectors.get(connector_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
     if payload.entity not in connector.supported_entities:
         raise HTTPException(
@@ -120,12 +121,12 @@ async def trigger_sync(
         )
     )
     if config is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
     direction = SyncDirection(config.direction)
 
     ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
 
     # Route through run_sync so the manual path gets the same audit row, concurrency
     # guard, and incremental watermark as the scheduled/webhook paths.
@@ -138,7 +139,7 @@ async def trigger_sync(
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         log.exception("connector sync error: %s/%s", connector_name, payload.entity)
-        raise HTTPException(status_code=502, detail=f"Connector error: {exc}")
+        raise HTTPException(status_code=502, detail=t("error.connector_sync_error", service=connector.display_name, detail=exc))
 
     return SyncResponse(
         connector=connector_name,
@@ -163,7 +164,7 @@ async def trigger_sync_plan(
     try:
         connector = connectors.get(connector_name)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
 
     from celerp.models.connector_config import ConnectorConfig
     from sqlalchemy import select
@@ -174,12 +175,12 @@ async def trigger_sync_plan(
         )
     )
     if config is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
     direction = SyncDirection(config.direction)
 
     ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
 
     from celerp.connectors.sync_runner import run_connector_sync
     from celerp.services.background import spawn_background
@@ -210,7 +211,7 @@ def _relay_https_error() -> dict | None:
     if relay_http_url().startswith("https://") or os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
         return None
     return {"ok": False, "error": "relay_not_https",
-            "detail": "Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development."}
+            "detail": t("connectors.err_relay_not_https")}
 
 
 @router.post("/{connector_name}/credentials")
@@ -233,8 +234,8 @@ async def store_credentials(
 
     try:
         connector = connectors.get(connector_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
     if (err := _relay_https_error()) is not None:
         return err
@@ -563,8 +564,8 @@ async def reset_unassigned_connector(
 
     try:
         connectors.get(connector_name)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
     try:
         rows = await lock_unassigned_connector(session, connector_name)
@@ -614,7 +615,7 @@ async def _set_order_reconciled(
         if not entry.get("signature"):
             raise HTTPException(
                 status_code=409,
-                detail="This order clears on its own once its data is fixed",
+                detail=t("error.order_clears_itself"),
             )
         if signature is not None and entry["signature"] != signature:
             raise HTTPException(
@@ -627,7 +628,7 @@ async def _set_order_reconciled(
         session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply
     )
     if entry is None:
-        raise HTTPException(status_code=404, detail="This order is not waiting for attention")
+        raise HTTPException(status_code=404, detail=t("error.order_no_attention"))
     try:
         await set_woocommerce_order_reconciled(
             session, str(company_id), order_id,
@@ -689,14 +690,11 @@ async def set_item_sync(
     if connector_name not in PRODUCT_CHANNEL_PLATFORMS:
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+        raise HTTPException(status_code=422, detail=t("error.sync_none_selected"))
     if len(payload.entity_ids) > _ITEM_SYNC_LIMIT:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"At most {_ITEM_SYNC_LIMIT} items can be synchronized in one request "
-                f"(received {len(payload.entity_ids)})."
-            ),
+            detail=t("error.sync_too_many", count=len(payload.entity_ids), limit=_ITEM_SYNC_LIMIT),
         )
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
@@ -753,7 +751,7 @@ async def set_item_sync(
             str(company_id), "woocommerce", ownership_session=session
         )
         if ctx is None:
-            raise HTTPException(status_code=409, detail="WooCommerce is connected but its credentials are not currently available")
+            raise HTTPException(status_code=409, detail=t("error.woocommerce_credentials"))
         for anchor_id, anchor in anchors.items():
             try:
                 await WooCommerceConnector().ensure_product_link(ctx, anchor_id, actor_id=user.id)

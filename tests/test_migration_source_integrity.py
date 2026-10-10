@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from fixtures.manager_io.support import BASIC
+from ui.i18n import t
 from migration_support import (
     load_run,
     migration_env,  # noqa: F401 - fixture
@@ -18,7 +19,7 @@ from migration_support import (
 
 pytestmark = pytest.mark.asyncio
 
-CHANGED = "The source file for this migration has changed since it was scanned."
+CHANGED = t("migration.err_source_changed", "en")
 
 
 def _stored(run):

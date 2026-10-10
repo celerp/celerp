@@ -614,7 +614,7 @@ async def test_bill_holding_goods_it_received_still_reverts_and_voids_only_once_
                                   "in stock. Select those lines and use Return Goods first, then revert.")
     r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "Cannot void a document with received items; return the goods first"
+    assert r.json()["detail"] == "This document can't be voided: it still holds received goods. Return them with Return Goods, then void it."
 
 
 async def _receive_on(client, auth, doc_id: str, line_id: str, lot: str, qty: float):

@@ -25,6 +25,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from test_helpers import perm_setup
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -111,6 +112,30 @@ async def test_item_birth_over_a_contact_id_is_refused(client, session):
     assert exc.value.status_code in (404, 409)
 
     assert await _snapshot(session, company_id, contact_id) == before
+
+
+async def test_a_second_birth_for_the_same_item_id_is_refused_in_language(client, session):
+    s = await perm_setup(client, session)
+    company_id = await _company_id(session)
+    before = await _snapshot(session, company_id, s["item_id"])
+
+    with pytest.raises(HTTPException) as exc:
+        await _emit(session, company_id, s["item_id"], "item", "item.created",
+                    {"sku": "AGAIN", "name": "Again", "quantity": 1, "sell_by": "piece"})
+    assert exc.value.status_code == 409
+    assert exc.value.detail == t("inventory.err_item_exists", "en")
+
+    from ui import i18n
+    i18n.set_lang("th")
+    try:
+        with pytest.raises(HTTPException) as exc_th:
+            await _emit(session, company_id, s["item_id"], "item", "item.created",
+                        {"sku": "AGAIN", "name": "Again", "quantity": 1, "sell_by": "piece"})
+    finally:
+        i18n.set_lang("en")
+    assert exc_th.value.detail == t("inventory.err_item_exists", "th") != exc.value.detail
+
+    assert await _snapshot(session, company_id, s["item_id"]) == before
 
 
 @pytest.mark.parametrize("path,body", [

@@ -76,7 +76,7 @@ def test_csv_xlsx_metadata_only_no_bytes():
 
 def test_unsupported_type_raises():
     files = [{"media_type": "application/zip", "data": "x", "filename": "a.zip", "file_id": "ai_up_5"}]
-    with pytest.raises(ValueError, match="unsupported file type"):
+    with pytest.raises(ValueError, match="can't read this kind of file"):
         _build_user_content("hi", files)
 
 

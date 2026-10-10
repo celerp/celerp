@@ -20,6 +20,7 @@ import httpx
 
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.gateway.state import relay_http_url, relay_session_headers
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def _build_user_content(
     - text/csv and xlsx become a text part naming the file and its file_id so
       the model can call the import-preview capability - the bytes are never
       sent to the model;
-    - anything else raises ValueError("unsupported file type").
+    - anything else raises ValueError naming the kinds of file that work.
 
     Empty text with files is valid: no trailing text part is appended.
     """
@@ -112,7 +113,7 @@ def _build_user_content(
                 "text": f"Attached file: {f.get('filename')} (file_id {f.get('file_id')})",
             })
         else:
-            raise ValueError("unsupported file type")
+            raise ValueError(t("error.ai_file_type"))
 
     if text:
         parts.append({"type": "text", "text": text})

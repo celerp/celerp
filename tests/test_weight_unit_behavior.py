@@ -49,6 +49,7 @@ from celerp.importers.schema import (
     CIFBundleManifest,
 )
 from celerp.importers.importer import BundleImporter
+from ui.i18n import t
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -525,7 +526,7 @@ class TestItemCreateModel:
         headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
         r = await client.post("/items", json={"sku": "S001", "name": "Widget"}, headers=headers)
         assert r.status_code == 422, r.text
-        assert "sell_by" in r.text
+        assert r.json()["detail"] == t("inventory.err_sell_by_required", "en")
 
     def test_item_create_with_sell_by(self) -> None:
         from celerp_inventory.routes import ItemCreate

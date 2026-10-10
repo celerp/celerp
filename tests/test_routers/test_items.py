@@ -7,6 +7,8 @@ import uuid
 import pytest
 from test_helpers import merge_items, reserve_item, sell_item
 
+from ui.i18n import t
+
 
 async def _token(client) -> str:
     r = await client.post(
@@ -350,7 +352,7 @@ async def test_create_item_requires_sell_by(client):
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={"status": "available", "sku": "NO-SB", "name": "Widget", "quantity": 1}, headers=h)
     assert r.status_code == 422
-    assert "sell_by" in r.text.lower() or "field required" in r.text.lower()
+    assert r.json()["detail"] == t("inventory.err_sell_by_required", "en")
 
 
 @pytest.mark.asyncio
@@ -538,7 +540,7 @@ async def test_split_qty_exceeds_parent_rejected(client):
         "children": [{"sku": "C1", "quantity": 3}, {"sku": "C2", "quantity": 3}]
     }, headers=h)
     assert r.status_code == 422
-    assert "exceed" in r.text.lower()
+    assert r.json()["detail"] == t("inventory.err_split_qty_over", "en", total="6", available="5")
 
 
 @pytest.mark.asyncio

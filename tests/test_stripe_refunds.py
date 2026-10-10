@@ -29,6 +29,7 @@ from company_backup_support import token
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
 from test_company_reset_payments import (_PAYMENT, BOOKS, _Cloud, _harbor, _invoice, _paid, _pay_by_hand,
                                          _reset, _system_recovery, _unmatched)
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -494,7 +495,7 @@ async def test_a_released_payment_is_refunded_or_voided_here(real_engine, real_c
 
 # ── A payment received through Stripe was real, so it is never deleted ───────
 
-KEPT = "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
+KEPT = t("error.stripe_receipt_kept")
 
 
 async def _released_receipt(engine, client, monkeypatch, tmp_path):

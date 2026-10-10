@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ui.i18n import t
+
 MAX_BARCODE_LEN = 64
 MAX_SKU_LEN = 255
 # RFID EPC codes are alphanumeric/hex tag payloads; 255 covers even long GS1 EPC
@@ -37,22 +39,14 @@ LEGACY_BARCODE_UNIQUE_INDEX = "uq_projection_company_item_barcode"
 BARCODE_UNIQUE_INDEX = "uq_projection_company_resolvable_item_barcode"
 RFID_EPC_UNIQUE_INDEX = "uq_projection_company_item_rfid_epc"
 
-SKU_COMMA_MESSAGE = "SKU cannot contain a comma"
-SKU_TOO_LONG_MESSAGE = f"SKU cannot exceed {MAX_SKU_LEN} characters"
-BARCODE_NOT_DIGITS_MESSAGE = "Barcode must contain only digits"
-BARCODE_TOO_LONG_MESSAGE = f"Barcode cannot exceed {MAX_BARCODE_LEN} characters"
 BARCODE_CONFLICT_MESSAGE = "Barcode '{barcode}' already exists"
-GTIN_NOT_DIGITS_MESSAGE = "GTIN must contain only digits"
-GTIN_LENGTH_MESSAGE = "GTIN must be 8, 12, 13, or 14 digits"
-RFID_EPC_TOO_LONG_MESSAGE = f"RFID / EPC cannot exceed {MAX_RFID_EPC_LEN} characters"
-RFID_EPC_NOT_ALNUM_MESSAGE = "RFID / EPC must contain only letters and digits"
 RFID_EPC_CONFLICT_MESSAGE = "RFID / EPC '{code}' already exists"
 
 
 def reject_comma_sku(sku: Any) -> Any:
     """Reject a comma-bearing SKU. Returns the sku for chaining."""
     if sku is not None and "," in str(sku):
-        raise ValueError(SKU_COMMA_MESSAGE)
+        raise ValueError(t("inventory.err_sku_comma"))
     return sku
 
 
@@ -60,7 +54,7 @@ def validate_sku(sku: Any) -> Any:
     """Reject a comma-bearing or over-long SKU. Returns the sku for chaining."""
     reject_comma_sku(sku)
     if sku is not None and len(str(sku)) > MAX_SKU_LEN:
-        raise ValueError(SKU_TOO_LONG_MESSAGE)
+        raise ValueError(t("inventory.err_sku_too_long", max=MAX_SKU_LEN))
     return sku
 
 
@@ -72,9 +66,9 @@ def validate_barcode(barcode: Any) -> Any:
     if s == "":
         return barcode
     if not s.isdigit():
-        raise ValueError(BARCODE_NOT_DIGITS_MESSAGE)
+        raise ValueError(t("inventory.err_barcode_digits"))
     if len(s) > MAX_BARCODE_LEN:
-        raise ValueError(BARCODE_TOO_LONG_MESSAGE)
+        raise ValueError(t("inventory.err_barcode_too_long", max=MAX_BARCODE_LEN))
     return barcode
 
 
@@ -91,9 +85,9 @@ def validate_gtin(gtin: Any) -> Any:
     if s == "":
         return gtin
     if not s.isdigit():
-        raise ValueError(GTIN_NOT_DIGITS_MESSAGE)
+        raise ValueError(t("inventory.err_gtin_digits"))
     if len(s) not in GTIN_LENGTHS:
-        raise ValueError(GTIN_LENGTH_MESSAGE)
+        raise ValueError(t("inventory.err_gtin_length"))
     return gtin
 
 
@@ -124,9 +118,9 @@ def validate_rfid_epc(code: Any) -> Any:
     if s == "":
         return s
     if not s.isalnum():
-        raise ValueError(RFID_EPC_NOT_ALNUM_MESSAGE)
+        raise ValueError(t("inventory.err_rfid_chars"))
     if len(s) > MAX_RFID_EPC_LEN:
-        raise ValueError(RFID_EPC_TOO_LONG_MESSAGE)
+        raise ValueError(t("inventory.err_rfid_too_long", max=MAX_RFID_EPC_LEN))
     return s
 
 

@@ -20,6 +20,7 @@ from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
 from stock_books import book_older_opening, older_release_lot
 from test_helpers import make_authed_token, perm_setup, provision_company_books
+from ui.i18n import t
 
 
 async def _auth_company(session, currency: str = "USD") -> dict:
@@ -289,7 +290,7 @@ async def test_audit_undo_refuses_after_later_cost_change(_db_engine):
             with pytest.raises(HTTPException) as exc:
                 await undo_audit_adjust(list_id, company_id=company_id, _=None, user=user, session=db)
             assert exc.value.status_code == 409
-            assert "cost changed" in str(exc.value.detail)
+            assert exc.value.detail == t("documents.err_audit_undo_cost", "en", sku="AUD-COST")
             await db.rollback()
         async with factory() as db:
             item = await db.get(Projection, {"company_id": company_id, "entity_id": item_id})
@@ -406,7 +407,7 @@ async def test_bulk_payment_rejects_mixed_document_currencies(client, session):
         "bank_account": "1111",
     })
     assert r.status_code == 422, r.text
-    assert "same currency" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_selected_currencies_differ", "en")
 
 
 @pytest.mark.asyncio
@@ -420,7 +421,7 @@ async def test_payment_rejects_currency_that_differs_from_document(client, sessi
         "currency": "USD",
     })
     assert r.status_code == 422, r.text
-    assert "does not match document currency" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_payment_currency", "en", payment_currency="USD", doc_currency="KWD")
 
 
 def test_payment_form_uses_document_currency_precision_and_rate():
@@ -455,7 +456,7 @@ async def test_legacy_audit_undo_without_cost_identity_fails_closed(_db_engine):
             with pytest.raises(HTTPException) as exc:
                 await undo_audit_adjust(list_id, company_id=company_id, _=None, user=user, session=db)
             assert exc.value.status_code == 409
-            assert "predates safe cost tracking" in str(exc.value.detail)
+            assert exc.value.detail == t("documents.err_audit_undo_legacy", "en", sku="AUD-LEGACY")
             await db.rollback()
     finally:
         await _cleanup(factory, company_id, user_id)
@@ -483,7 +484,7 @@ async def test_credit_application_rejects_mixed_document_currencies(client, sess
         json={"target_doc_id": ids["invoice"], "amount": 1.0},
     )
     assert r.status_code == 422, r.text
-    assert "same currency" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_apply_currency_mismatch", "en")
 
 
 @pytest.mark.asyncio
@@ -505,7 +506,7 @@ async def test_kwd_credit_refund_rejects_sub_minor_unit_amount(client, session):
         json={"amount": 0.0004, "date": "2026-09-29", "bank_account": "1111"},
     )
     assert r.status_code == 422, r.text
-    assert "must be positive" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_refund_amount_positive", "en")
 
 
 async def _account_net(session, company_id, account: str) -> float:
