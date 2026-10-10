@@ -45,7 +45,7 @@ from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
-from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
+from celerp.importers.tabular import SYSTEM_SKIP_COLS, CsvImportSpec, cell_error_code, finite_float
 from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
@@ -2621,6 +2621,9 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
         # after resolution by build_import_records, not as a mapped column.
         required={"name"},
         type_map=type_map,
+        # An item's status is set by what happens to it (sold, reserved, consigned), so a
+        # file's status column is skipped unless the user maps it.
+        skip_cols=SYSTEM_SKIP_COLS | {"status"},
     )
 
 

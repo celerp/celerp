@@ -9,6 +9,7 @@ import csv
 import io
 from collections import OrderedDict
 from datetime import date
+from decimal import Decimal
 from urllib.parse import parse_qs, urlsplit
 
 from fasthtml.common import *
@@ -41,7 +42,7 @@ from ui.routes.csv_import import (
     validation_result,
 )
 from ui.i18n import t, get_lang
-from celerp.services.auto_je import imported_issue_kind
+from celerp.services.auto_je import IMPORTED_ISSUE_STATUSES, imported_issue_kind
 
 
 _DOC_IMPORT_SPEC = CsvImportSpec(
@@ -94,10 +95,12 @@ def _group_documents(rows: list[dict]) -> OrderedDict:
                 "due_date": str(r.get("due_date", "")).strip() or None,
                 "contact_name": str(r.get("contact_name", "")).strip() or None,
                 "total": _number(r, "total") or 0.0,
-                "amount_outstanding": _number(r, "amount_outstanding") or 0.0,
-                "status": str(r.get("status", "")).strip() or "draft",
+                "status": str(r.get("status", "")).strip().lower() or "draft",
                 "line_items": [],
             }
+            outstanding = _number(r, "amount_outstanding")
+            if outstanding is not None:
+                doc_map[key]["amount_outstanding"] = outstanding
         line_sku = str(r.get("line_sku", "")).strip()
         line_total = _number(r, "line_total_price")
         if line_sku or line_total:
@@ -123,6 +126,51 @@ def _group_documents(rows: list[dict]) -> OrderedDict:
                 line["cost_basis"] = cost
             doc_map[key]["line_items"].append(line)
     return doc_map
+
+
+# Document types whose money the import books (receivable or payable), and the statuses a
+# file may give each: not issued, or issued in a status the file's columns can back. Goods
+# received on a bill come in through Receive Goods, which the file cannot carry.
+_SETTLED_DOC_TYPES = ("invoice", "credit_note", "bill")
+_GOODS_STATUSES = frozenset({"received", "partially_received"})
+_OPEN_STATUSES = frozenset({"sent", "final", "awaiting_payment"})
+_FILE_STATUSES: dict[str, frozenset[str]] = {
+    doc_type: frozenset({"draft", "void"}) | (IMPORTED_ISSUE_STATUSES[doc_type] - _GOODS_STATUSES)
+    for doc_type in _SETTLED_DOC_TYPES
+}
+
+
+def _status_refusal(data: dict, treatment: str) -> str | None:
+    """Why a document cannot be imported with the status its file gives, or None, filling in
+    what it owes and has been paid. Paid means nothing is outstanding, partial means part of
+    the total is, and an open status owes the whole total (a blank amount outstanding is read
+    that way). A paid or part-paid document recorded now is refused: the file does not say
+    when or into which account the payment was made, so the import could only book the whole
+    total as still owed, or a payment that never happened."""
+    doc_type, status = data["doc_type"], data["status"]
+    allowed = _FILE_STATUSES.get(doc_type)
+    if allowed is None:
+        return None
+    number = data["doc_number"]
+    if status not in allowed:
+        return t("doc_import.status_not_importable", number=number, status=status,
+                 allowed=", ".join(sorted(allowed)))
+    if imported_issue_kind(data) is None:
+        return None
+    total = Decimal(str(data["total"]))
+    given = data.get("amount_outstanding")
+    outstanding = Decimal(str(given)) if given is not None else (Decimal(0) if status == "paid" else total)
+    agrees = (outstanding == 0 if status == "paid"
+              else 0 < outstanding < total if status == "partial"
+              else outstanding == total)
+    if not agrees:
+        return t("doc_import.status_figures_disagree", number=number, status=status,
+                 outstanding=given if given is not None else "--", total=data["total"])
+    if status in ("paid", "partial") and (treatment or ("" if doc_type == "bill" else "record_now")) == "record_now":
+        return t("doc_import.settled_record_now", number=number, status=status)
+    data["amount_outstanding"] = float(outstanding)
+    data["amount_paid"] = float(total - outstanding)
+    return None
 
 
 # The form field carrying a document's treatment, and the treatments the import accepts.
@@ -562,7 +610,7 @@ def setup_routes(app):
             "contact_name": "Acme Corp",
             "total": "1500",
             "amount_outstanding": "1500",
-            "status": "unpaid",
+            "status": "awaiting_payment",
             "line_sku": "SKU-001",
             "line_barcode": "",
             "line_stone_type": "Emerald",
@@ -747,8 +795,13 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
         records: list[dict] = []
+        refused: list[str] = []
         for (doc_type, doc_number), data in _group_documents(rows).items():
             chosen = str(form.get(_TREATMENT_FIELD.format(doc_type=doc_type, doc_number=doc_number)) or "")
+            refusal = _status_refusal(data, chosen)
+            if refusal:
+                refused.append(refusal)
+                continue
             if chosen:
                 data["import_treatment"] = chosen
             records.append({
@@ -768,9 +821,9 @@ def setup_routes(app):
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
         updated = int(result.get("updated", 0) or 0)
-        errors = list(result.get("errors", []) or [])
+        errors = [*refused, *(result.get("errors", []) or [])]
 
-        await discard_import_csv(token, form, result)
+        await discard_import_csv(token, form, {**result, "errors": errors})
         return import_result_panel(
             created=created,
             skipped=skipped,

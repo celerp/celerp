@@ -118,6 +118,16 @@ IMPORT_TREATMENT = "import_treatment"
 IMPORTED_CUTOVER = "imported_cutover"
 
 
+# The statuses an imported document of each type that posts is issued in. Any other
+# status (draft, void, converted, expired, or one the type does not take) posts nothing.
+IMPORTED_ISSUE_STATUSES: dict[str, frozenset[str]] = {
+    "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
+    "credit_note": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
+    "purchase_order": frozenset({"received", "partially_received", "final"}),
+    "bill": frozenset({"awaiting_payment", "partial", "paid", "final", "received", "partially_received"}),
+}
+
+
 def imported_issue_kind(data: dict) -> str | None:
     """What an imported snapshot was issued as, or None for one not issued.
 
@@ -129,16 +139,9 @@ def imported_issue_kind(data: dict) -> str | None:
     an entry the document's own history says should exist)."""
     status = str(data.get("status") or "draft")
     total = float(data.get("total", 0) or 0)
-    if status in ("void", "draft", "converted", "expired") or total <= 0:
-        return None
     doc_type = str(data.get("doc_type") or "")
-    if doc_type in ("invoice", "credit_note") and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
+    if total > 0 and status in IMPORTED_ISSUE_STATUSES.get(doc_type, ()):
         return doc_type
-    if doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
-        return "purchase_order"
-    if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final",
-                                         "received", "partially_received"):
-        return "bill"
     return None
 
 

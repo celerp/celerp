@@ -1832,7 +1832,7 @@ async def _build_item_preview(
     # overrides it column by column.
     category_attrs = union_category_attr_keys(all_category_schemas(settings))
     resolved = normalize_and_validate_mapping(
-        cols, suggest_mapping(cols, spec.cols, category_attrs), mapping,
+        cols, suggest_mapping(cols, spec.cols, category_attrs, skip_cols=spec.skip_cols), mapping,
         allowed_targets=spec.cols,
         required_targets=spec.required,
         allowed_category_attrs=category_attrs,

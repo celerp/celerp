@@ -41,6 +41,7 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     MAPPING_ATTR_PREFIX,
     MAPPING_ATTRIBUTE,
     MAPPING_SKIP,
+    SYSTEM_SKIP_COLS,
     ValidateFn,
     _IDENTIFIER_COLS,
     _row_errors,
@@ -267,15 +268,17 @@ def column_mapping_form(
     form_values: dict | None = None,
     col_labels: dict[str, str] | None = None,
     mutex_groups: list[list[str]] | None = None,
+    skip_cols: frozenset[str] = SYSTEM_SKIP_COLS,
 ) -> FT:
     """Render a horizontal spreadsheet-style column mapping UI.
 
     Each CSV column stays as a visual column with a searchable mapping dropdown
     and 3-5 sample data rows below - matching the user's spreadsheet mental model.
-    ``col_labels`` names core and category targets in the reader's language.
+    ``col_labels`` names core and category targets in the reader's language; ``skip_cols``
+    are the file's columns the importer manages itself, suggested as Skip.
     """
     attrs = category_attrs or []
-    suggested = suggest_mapping(csv_cols, target_cols, category_attrs=attrs)
+    suggested = suggest_mapping(csv_cols, target_cols, category_attrs=attrs, skip_cols=skip_cols)
     req = required_targets or set()
     fv = form_values or {}
     preview = sample_rows[:5]
