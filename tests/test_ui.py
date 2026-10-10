@@ -14904,12 +14904,12 @@ class TestBuildWorkflowVersioning:
         pkg = (REPO_ROOT / 'electron/package.json').read_text()
         assert 'signIgnore' not in pkg
 
-    def test_build_workflow_dev_pipeline_trigger(self):
+    def test_build_workflow_publishes_no_dev_release(self):
+        # Development builds stay workflow artifacts; no shared prerelease channel.
         from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
-        assert 'develop' in workflow
-        assert 'dev-latest' in workflow
-        assert 'prerelease: true' in workflow
+        assert 'dev-latest' not in workflow
+        assert 'prerelease: true' not in workflow
 
     def test_electron_main_disallows_prerelease(self):
         from test_helpers import REPO_ROOT

@@ -979,23 +979,6 @@ jobs:
             electron/dist/Celerp.deb
           if-no-files-found: warn
 
-      - name: Release (dev build)
-        # Only develop publishes to the shared dev-latest release. Bugfix and
-        # manually dispatched feature branches stay as downloadable workflow
-        # artifacts only (above), so they never overwrite the dev channel.
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name == 'develop' }}
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: dev-latest
-          name: "Dev Build (latest)"
-          files: |
-            electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac.dmg
-            electron/dist/Celerp.AppImage
-            electron/dist/Celerp.deb
-          draft: false
-          prerelease: true
-
   # ── Attach the OpenAPI schema as a release asset (tag builds only) ────────
   # The website renders a static API reference from this schema, fetching
   # openapi.json from the latest release. Generated without booting a server:
