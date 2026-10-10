@@ -216,3 +216,32 @@ async def test_unused_credit_note_on_a_void_invoice_is_voided_with_it(client, se
     await _backfill(session, auth)
     assert (await _doc(session, auth, cn))[0] == "void"
     assert await _books(session, auth) == {"1120": 0.0, "4100": 0.0, "1111": 0.0, "6960": 0.0}
+
+
+async def test_a_refund_on_a_credit_note_of_a_void_invoice_is_refused_through_every_refund_route(client, session, auth):
+    """The one refund implementation refuses a credit note whose invoice is void, the same
+    refusal cn-refund, apply, void-payment and void give: nothing is written."""
+    inv = await _svc_invoice(client, auth, 80.0)
+    cn = await _legacy_cn(client, session, auth, inv, 40.0)
+    assert (await _refund(client, auth, cn, 10.0)).status_code == 200
+    await _void_on_main(session, auth, inv)
+    await _backfill(session, auth)
+    held = await _books(session, auth)
+    payment = next(p for p in (await _state(session, auth, cn)).get("payments") or [] if p.get("status") == "active")
+    r = await _post(client, auth, f"/docs/{cn}/refund",
+                    {"payment_index": payment["index"], "amount": 10.0, "payment_date": "2026-10-09"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "credit_note.invoice_void"
+    assert await _books(session, auth) == held
+
+
+async def test_a_refund_of_an_invoice_payment_still_gives_the_money_back(client, session, auth):
+    """Neighbour: the void-invoice refusal is for credit notes only; an invoice's own
+    payment refunds as before."""
+    inv = await _svc_invoice(client, auth, 80.0)
+    assert (await _pay(client, auth, inv, 80.0)).status_code == 200
+    payment = next(p for p in (await _state(session, auth, inv)).get("payments") or [] if p.get("status") == "active")
+    r = await _post(client, auth, f"/docs/{inv}/refund",
+                    {"payment_index": payment["index"], "amount": 30.0, "payment_date": "2026-10-09"})
+    assert r.status_code == 200, r.text
+    assert (await _doc(session, auth, inv))[:2] == ("partial", 30.0)

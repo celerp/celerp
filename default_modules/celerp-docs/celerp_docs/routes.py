@@ -3626,6 +3626,8 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
     cannot give that much back; the caller commits. Returns the event, flagged
     ``was_deduped`` when *idempotency_key* already recorded it."""
     _reject_if_closed(row.state, "refund a payment")
+    if row.state.get("doc_type") == "credit_note":
+        await refuse_on_void_invoice(session, company_id, row.state)
     currency = str(row.state.get("currency") or "USD").upper()
     if payment.get("method") in ("credit_note", "applied"):
         raise HTTPException(
