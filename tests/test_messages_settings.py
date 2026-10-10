@@ -95,7 +95,7 @@ def test_failed_update_step_says_it_stopped_without_its_output():
 
 
 @pytest.mark.parametrize("key", [
-    "error.permission_missing", "error.period_locked", "settings.reset_name_mismatch",
+    "error.permission_missing", "error.period_locked", "company_reset.name_mismatch",
     "settings.reset_not_done", "company_backup.err_not_a_backup", "company.err_permission_floor",
     "connectors.err_relay_not_https", "system_recovery.safety_failed",
 ])

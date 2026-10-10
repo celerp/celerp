@@ -621,7 +621,7 @@ async def test_system_recovery_waits_for_a_running_company_backup(
 async def test_failed_system_recovery_restore_releases_the_schema_key(scratch_url, tmp_path, failure):
     recovery = _Recovery(scratch_url, tmp_path / "database.dump", failure=failure)
     recovery.release.set()
-    said = "psql" if failure == "error" else re.escape(t("error.restore_timed_out", "en"))
+    said = "psql" if failure == "error" else re.escape(t("error.restore_timed_out", "en", seconds=600))
     with pytest.raises(RuntimeError, match=said):
         await asyncio.wait_for(recovery.task, 15)
     assert recovery.seen == [["ExclusiveLock"]]

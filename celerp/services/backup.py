@@ -265,9 +265,8 @@ def check_restore_target(database_url: str) -> None:
     (``_UNSUPPORTED_OBJECTS``); read-only."""
     names = _psql(database_url, _UNSUPPORTED_OBJECTS)
     if names:
-        raise ValueError("Celerp restores only its own tables and sequences in the public schema. "
-                         "Remove or move these database objects, then try again: "
-                         + "; ".join(name for name in names.split("\n") if name))
+        raise ValueError(t("system_recovery.restore_target_unsupported",
+                           names="; ".join(name for name in names.split("\n") if name)))
 
 
 def _psql(database_url: str, sql: str) -> str:
@@ -445,7 +444,7 @@ def _run_tool(command: list[str], runner, timeout: int = 600, cwd: Path | None =
     except OSError as exc:
         raise RuntimeError(t("error.restore_failed_detail", detail=f"{name}: {exc.strerror}")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(t("error.restore_timed_out")) from exc
+        raise RuntimeError(t("error.restore_timed_out", seconds=timeout)) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
         raise RuntimeError(t("error.restore_failed_detail", detail=f"{name} (exit {result.returncode}): {stderr}"))

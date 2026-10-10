@@ -1342,8 +1342,7 @@ _BK_REPLACED = {
         ["ALTER TABLE zz_widgets ALTER COLUMN gadget_id TYPE text"]),
 }
 _BK_CHANGED = {**_BK_RESHAPED, **_BK_REPLACED}
-_BK_RESHAPED_DETAIL = ("The structure of zz_widgets changed while it was being backed up. "
-                       "Nothing was backed up. Try again.")
+_BK_RESHAPED_DETAIL = t("company_backup.err_reshaped", "en", table="zz_widgets")
 
 
 async def _bk_reshaped(engine, cid, gadget, statements) -> None:
@@ -1528,8 +1527,7 @@ async def test_a_carried_table_dropped_as_the_export_begins_stops_it(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ("The structure of zz_gadgets changed while it was being backed up. "
-                                      "Nothing was backed up. Try again.")
+        assert r.json()["detail"] == t("company_backup.err_reshaped", "en", table="zz_gadgets")
     finally:
         await _bk_drop(real_engine, "zz_gadgets")
 
@@ -1783,7 +1781,7 @@ async def test_a_type_of_a_carried_column_renamed_while_it_is_read_stops_the_exp
 
         refused = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
 
-        assert (refused.status_code, refused.detail) == (409, cb.RESHAPED.format(table="zz_widgets"))
+        assert (refused.status_code, refused.detail) == (409, t(cb.RESHAPED, "en", table="zz_widgets"))
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
@@ -1819,7 +1817,7 @@ async def test_a_type_of_a_carried_column_renamed_as_the_export_holds_it_stops_i
         refused = await _bk_export_refused(cid, tmp_path / "out.celerp-company")
 
         assert renamed == [None]
-        assert (refused.status_code, refused.detail) == (409, cb.RESHAPED.format(table="zz_widgets"))
+        assert (refused.status_code, refused.detail) == (409, t(cb.RESHAPED, "en", table="zz_widgets"))
     finally:
         await _bk_sql(real_engine, "DROP SCHEMA IF EXISTS zz_ext CASCADE")
         await _bk_drop(real_engine, "zz_widgets", "zz_gadgets")
@@ -2215,8 +2213,7 @@ async def test_row_security_forced_as_the_export_begins_stops_it(
         r = await real_client.get("/company-backups/download", headers=auth(tok))
 
         assert r.status_code == 409, r.text[:200]
-        assert r.json()["detail"] == ("The structure of zz_gadgets changed while it was being backed up. "
-                                      "Nothing was backed up. Try again.")
+        assert r.json()["detail"] == t("company_backup.err_reshaped", "en", table="zz_gadgets")
     finally:
         await _bk_drop(real_engine, "zz_gadgets")
 
@@ -2480,7 +2477,7 @@ async def test_a_backup_naming_a_row_outside_it_is_refused_plainly(
         data = _bk_naming_outside(await download(real_client, tok), lookup,
                                   cb.FORMAT_VERSION - 1 if older else cb.FORMAT_VERSION)
 
-        message = ("This company backup was made by an older version of Celerp and cannot be restored here."
+        message = ("This company backup was made by an older version of Celerp and can't be restored here."
                    if older else "damaged or was changed")
         await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, message)
     finally:
@@ -3807,7 +3804,8 @@ async def test_concurrent_restore_creates_one_company(real_engine, real_client, 
     assert answered, "the second restore waited for the first"
     r = await refused
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == (cb.RESTORE_RUNNING if second == "the same backup" else cb.OTHER_RESTORE_RUNNING)
+    assert r.json()["detail"] == t(cb.RESTORE_RUNNING if second == "the same backup" else cb.OTHER_RESTORE_RUNNING,
+                                    "en")
     assert await count(real_engine, "companies") == companies + 1
     assert await count(real_engine, "projections", "company_id = :c", c=uuid.UUID(created["company_id"])) == 1
     assert await count(real_engine, "pg_locks", "locktype = 'advisory' AND database = "
@@ -4959,7 +4957,7 @@ async def test_concurrent_same_backup_restore_with_existing_destination(real_eng
     added = await first
     assert added.status_code == 200, added.text
     assert added.json()["company_id"] == dest and added.json()["team_members"] == 2
-    assert (refused.status_code, refused.json()["detail"]) == (409, cb.RESTORE_RUNNING)
+    assert (refused.status_code, refused.json()["detail"]) == (409, t(cb.RESTORE_RUNNING, "en"))
     assert len(await _r_memberships(real_engine, dest)) == 3
     assert await count(real_engine, "companies") == companies
 

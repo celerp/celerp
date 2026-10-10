@@ -67,7 +67,7 @@ def test_reset_dialog_needs_the_exact_name_and_shows_refusals_inside(page, fresh
         assert c.patch("/companies/me", json={"name": renamed}).status_code == 200
     confirm.click()
     flash = page.locator("#company-reset-flash")
-    flash.locator(f"text={t('settings.reset_name_mismatch', 'en')}").wait_for(timeout=_WAIT_MS)
+    flash.locator(f"text={t('company_reset.name_mismatch', 'en')}").wait_for(timeout=_WAIT_MS)
     assert page.locator("#company-reset-modal[open]").count() == 1
     _shot(page, "2-reset-refused-inside-dialog")
     assert _companies_named(renamed) == 1

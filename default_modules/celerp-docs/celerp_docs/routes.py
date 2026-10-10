@@ -2479,7 +2479,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     if row.state.get("received_items") and not emptied:
         raise HTTPException(
             status_code=409,
-            detail="Cannot void a document with received items; return the goods first")
+            detail=t("docs.void_received_items"))
     # A bill made from a purchase order nets the order's receipt entries; voiding reverses
     # only the bill's own entries, so a receipt entry still posted (even one undone since)
     # would stay booked against a bill that owes nothing. Going back to the order settles it.

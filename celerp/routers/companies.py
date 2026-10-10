@@ -2271,10 +2271,9 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     try:
         stage = await asyncio.to_thread(marketplace_stage.read_stage, body.ref)
     except ValueError:
-        raise HTTPException(status_code=400, detail="The download reference is invalid.")
+        raise HTTPException(status_code=400, detail=t("module_import.stage_ref_invalid"))
     except marketplace_stage.StageGone:
-        raise HTTPException(status_code=410,
-                            detail="This download has expired. Download it again.")
+        raise HTTPException(status_code=410, detail=t("module_import.stage_expired"))
     try:
         info = await asyncio.to_thread(
             install_from_zip, stage.data, official=stage.is_official, premium=stage.is_paid,

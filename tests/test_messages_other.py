@@ -186,15 +186,15 @@ def test_failed_backup_keeps_details_for_support(monkeypatch):
     assert str(ei.value) == t("error.backup_failed_detail", "en", detail="disk full")
 
 
-@pytest.mark.parametrize("exc,key", [
-    (FileNotFoundError(), "error.restore_tool_missing"),
-    (subprocess.TimeoutExpired("pg_restore", 600), "error.restore_timed_out"),
+@pytest.mark.parametrize("exc,key,kw", [
+    (FileNotFoundError(), "error.restore_tool_missing", {}),
+    (subprocess.TimeoutExpired("pg_restore", 600), "error.restore_timed_out", {"seconds": 600}),
 ])
-def test_restore_failures_say_what_to_do(exc, key):
+def test_restore_failures_say_what_to_do(exc, key, kw):
     from celerp.services import backup
     with pytest.raises(RuntimeError) as ei:
         backup._run_tool(["pg_restore"], _fail(exc))
-    assert str(ei.value) == t(key, "en")
+    assert str(ei.value) == t(key, "en", **kw)
 
 
 @pytest.mark.asyncio
