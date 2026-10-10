@@ -62,16 +62,21 @@ def _run(tmp_path: Path, script: str, env: dict) -> subprocess.CompletedProcess:
                           env=env, capture_output=True, text=True, cwd=_WORKFLOWS.parent.parent)
 
 
-def _run_job(tmp_path: Path, workflow: str, job: str, **env: str) -> tuple[int, str, list[str]]:
+def _run_job(tmp_path: Path, workflow: str, job: str, polls: int | None = None,
+             **env: str) -> tuple[int, str, list[str]]:
     """Runs the job's steps in order as GitHub does, stopping at the first failure. An
-    action step is only recorded as reached."""
+    action step is only recorded as reached. `polls` shortens the PyPI wait loop so
+    running it out stays fast; its real length is checked from the workflow alone."""
     base = _env(tmp_path, **env)
     out, code = "", 0
     for step in _steps(workflow, job):
         if "uses" in step:
             out += f"reached {step['uses']}\n"
             continue
-        r = _run(tmp_path, step["run"], {**base, **step.get("env", {}), **env, "GH_TOKEN": "t"})
+        script = step["run"]
+        if polls is not None and _PYPI_LOOP in script:
+            script = script.replace(_PYPI_LOOP, f"$(seq {polls})")
+        r = _run(tmp_path, script, {**base, **step.get("env", {}), **env, "GH_TOKEN": "t"})
         out += r.stdout + r.stderr
         code = r.returncode
         if code:
@@ -135,6 +140,8 @@ def test_pypi_publishes_from_its_own_tag_push_workflow():
 
 _PYPI = "reached pypa/gh-action-pypi-publish"
 _PYPI_POLLS = 340  # a minute apart, inside GitHub's 6-hour job limit
+_PYPI_LOOP = f"$(seq {_PYPI_POLLS})"
+_TEST_POLLS = 3
 _REPO = "/repos/celerp/celerp"
 _ACTIONS = f"{_REPO}/actions"
 _BUILD_RUN, _PUBLISH_RUN = 36595157056, 36595157121
@@ -241,7 +248,7 @@ def _serve(github, workflow: str, runs: list[dict], jobs: dict[int, list[dict]],
 
 def _publish_to_pypi(tmp_path, github, runs: list[dict], jobs: dict[int, list[dict]]):
     _serve(github, "build.yml", runs, jobs, "latest")
-    return _run_job(tmp_path, "publish.yml", "publish", GITHUB_API_URL=github.url)
+    return _run_job(tmp_path, "publish.yml", "publish", polls=_TEST_POLLS, GITHUB_API_URL=github.url)
 
 
 def _release(tag: str, draft: bool = False, prerelease: bool = False) -> dict:
@@ -326,7 +333,7 @@ def test_pypi_waits_for_the_upgrade_test_after_the_builds(tmp_path, github):
                                     {_BUILD_RUN: _build_jobs({_UPGRADE_LINUX: None, _UPGRADE_WINDOWS: None})})
     assert code != 0, out
     assert "waiting for upgrade (ubuntu-latest), upgrade (windows-latest)" in out
-    assert _polls(github, "build.yml") == _PYPI_POLLS
+    assert _polls(github, "build.yml") == _TEST_POLLS
     assert _PYPI not in out
 
 
@@ -405,8 +412,18 @@ def test_pypi_is_not_published_while_the_desktop_builds_never_finish(tmp_path, g
     code, out, _ = _publish_to_pypi(tmp_path, github, runs, {_BUILD_RUN: _build_jobs({_MAC: None})})
     assert code != 0, out
     assert "did not finish within 340 minutes. Once they finish, re-run the failed publish job" in out
-    assert _polls(github, "build.yml") == _PYPI_POLLS
+    assert _polls(github, "build.yml") == _TEST_POLLS
     assert _PYPI not in out
+
+
+def test_the_pypi_wait_polls_every_minute_for_as_long_as_github_lets_the_job_run():
+    job = yaml.safe_load((_WORKFLOWS / "publish.yml").read_text())["jobs"]["publish"]
+    wait = next(s for s in job["steps"] if s.get("name") == "Wait for the desktop builds and upgrade test of this commit")
+    assert wait["run"].count(_PYPI_LOOP) == 1
+    assert "3) sleep 60 ;;" in wait["run"]
+    assert f"did not finish within {_PYPI_POLLS} minutes" in wait["run"]
+    assert job["timeout-minutes"] == 360
+    assert _PYPI_POLLS < job["timeout-minutes"]
 
 
 def test_pypi_is_not_published_when_the_build_run_was_building_for_more_than_4_hours(tmp_path, github):
@@ -435,7 +452,7 @@ def test_pypi_waits_while_the_build_run_has_not_been_building_for_4_hours(tmp_pa
     code, out, _ = _publish_to_pypi(tmp_path, github, [run], {_BUILD_RUN: jobs})
     assert code != 0, out
     assert "within 4 hours" not in out
-    assert _polls(github, "build.yml") == _PYPI_POLLS
+    assert _polls(github, "build.yml") == _TEST_POLLS
     assert _PYPI not in out
 
 
