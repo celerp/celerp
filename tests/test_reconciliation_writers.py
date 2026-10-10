@@ -115,8 +115,9 @@ async def test_a_statement_line_attachment_is_added_once_and_removed(client, tmp
                               files={"file": ("slip.pdf", b"%PDF-1.4 slip", "application/pdf")})
         assert r.status_code == 200, r.text
     att = r.json()["attachment_id"]
-    assert (await _lines(client, h, sid))["Deposit"]["attachment_ids"] == [att]
+    assert (await _lines(client, h, sid))["Deposit"]["attachments"] == [{"id": att, "url": r.json()["url"]}]
 
     r = await client.delete(f"/accounting/reconciliation/{sid}/lines/{line['id']}/attach/{att}", headers=h)
     assert r.json() == {"removed": att}
-    assert (await _lines(client, h, sid))["Deposit"]["attachment_ids"] == []
+    assert (await _lines(client, h, sid))["Deposit"]["attachments"] == []
+    assert list(tmp_path.iterdir()) == [], "nothing is written relative to the process directory"
