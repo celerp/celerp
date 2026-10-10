@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Un'altra svalutazione usa già il numero {number}. Scegli un numero diverso.",
   "documents.err_price_list_unknown": "Il listino {price_list} non esiste. Scegli un listino dal menu a discesa.",
   "documents.err_contact_currency_invalid": "Celerp non riconosce la valuta del contatto ({currency}). Apri il contatto, scegli una valuta dall'elenco e riprova.",
-  "documents.err_deposit_account_refused": "Il conto {code} non può ricevere pagamenti online perché non è il conto di deposito predefinito ({default}) né un conto bancario attivo. Scegli uno dei tuoi conti bancari oppure il conto di deposito predefinito.",
+  "documents.err_deposit_account_refused": "Il conto {code} non può ricevere pagamenti online perché non è il conto di deposito predefinito ({default}) né un conto bancario attivo. Scegli uno dei tuoi conti bancari oppure Predefinito dei pagamenti online.",
   "documents.err_received_not_found": "Celerp non ha trovato questo documento ricevuto. Potrebbe essere stato eliminato. Torna a Ricevuti e aggiorna.",
   "documents.err_revision_conflict": "Celerp ha già ricevuto questa versione del documento con un contenuto diverso, quindi questa copia non è stata importata. Chiedi al mittente di inviarla come nuova revisione.",
   "documents.err_book_first": "Questo documento non è ancora stato registrato. Registralo prima e poi riprova.",

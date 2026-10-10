@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Penghapusan lain sudah memakai nomor {number}. Pilih nomor lain.",
   "documents.err_price_list_unknown": "Daftar harga {price_list} tidak ada. Pilih daftar harga dari menu tarik-turun.",
   "documents.err_contact_currency_invalid": "Mata uang kontak ({currency}) tidak dikenali Celerp. Buka kontak, pilih mata uang dari daftar, lalu coba lagi.",
-  "documents.err_deposit_account_refused": "Akun {code} tidak bisa menerima pembayaran online karena bukan akun setoran bawaan ({default}) atau rekening bank aktif. Pilih salah satu rekening bank Anda, atau akun setoran bawaan.",
+  "documents.err_deposit_account_refused": "Akun {code} tidak bisa menerima pembayaran online karena bukan akun setoran bawaan ({default}) atau rekening bank aktif. Pilih salah satu rekening bank Anda, atau Default pembayaran online.",
   "documents.err_received_not_found": "Celerp tidak dapat menemukan dokumen masuk ini. Mungkin sudah dihapus. Kembali ke Diterima lalu muat ulang.",
   "documents.err_revision_conflict": "Celerp sudah menerima versi dokumen ini dengan isi berbeda, jadi salinan ini tidak diimpor. Minta pengirim mengirimnya sebagai revisi baru.",
   "documents.err_book_first": "Dokumen ini belum dibukukan. Bukukan dulu, lalu coba lagi.",

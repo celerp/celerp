@@ -4034,7 +4034,7 @@
   "documents.err_writeoff_number_taken": "Eine andere Abschreibung verwendet bereits die Nummer {number}. Wählen Sie eine andere Nummer.",
   "documents.err_price_list_unknown": "Die Preisliste {price_list} existiert nicht. Wählen Sie eine Preisliste aus der Auswahlliste.",
   "documents.err_contact_currency_invalid": "Die Währung des Kontakts ({currency}) kennt Celerp nicht. Öffnen Sie den Kontakt, wählen Sie eine Währung aus der Liste und versuchen Sie es erneut.",
-  "documents.err_deposit_account_refused": "Konto {code} kann keine Online-Zahlungen empfangen, weil es weder das Standard-Einzahlungskonto ({default}) noch ein aktives Bankkonto ist. Wählen Sie eines Ihrer Bankkonten oder das Standard-Einzahlungskonto.",
+  "documents.err_deposit_account_refused": "Konto {code} kann keine Online-Zahlungen empfangen, weil es weder das Standard-Einzahlungskonto ({default}) noch ein aktives Bankkonto ist. Wählen Sie eines Ihrer Bankkonten oder Standard für Online-Zahlungen.",
   "documents.err_received_not_found": "Celerp konnte dieses empfangene Dokument nicht finden. Es wurde möglicherweise gelöscht. Gehen Sie zurück zu Empfangen und laden Sie neu.",
   "documents.err_revision_conflict": "Celerp hat diese Version des Dokuments bereits mit anderem Inhalt erhalten, daher wurde diese Kopie nicht importiert. Bitten Sie den Absender, sie als neue Revision zu senden.",
   "documents.err_book_first": "Dieses Dokument wurde noch nicht gebucht. Buchen Sie es zuerst und versuchen Sie es dann erneut.",
