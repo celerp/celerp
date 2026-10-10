@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import bcrypt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -69,8 +70,29 @@ def validate_password(password: str) -> None:
         raise ValueError("password_too_short")
 
 
+# Accounts restored from backups made before the current scheme carry a bcrypt hash.
+# They are checked with bcrypt directly (passlib's bcrypt handler does not load with
+# the installed bcrypt) and replaced with the current scheme on the next sign-in.
+_BCRYPT_PREFIXES = ("$2a$", "$2b$", "$2y$")
+
+
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    """Whether ``plain`` matches ``hashed``. An unreadable hash never matches."""
+    if hashed.startswith(_BCRYPT_PREFIXES):
+        # bcrypt only ever read the first 72 bytes when these hashes were made.
+        try:
+            return bcrypt.checkpw(plain.encode()[:72], hashed.encode())
+        except ValueError:
+            return False
+    try:
+        return pwd_context.verify(plain, hashed)
+    except (ValueError, TypeError):
+        return False
+
+
+def password_needs_rehash(hashed: str) -> bool:
+    """Whether ``hashed`` is a legacy hash to replace with the current scheme."""
+    return hashed.startswith(_BCRYPT_PREFIXES)
 
 
 def hash_password(password: str) -> str:
