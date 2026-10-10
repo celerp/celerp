@@ -320,9 +320,10 @@ async def _bought_lineage(session, company_id, roots: list[str]) -> dict[str, tu
 
 
 async def bought_receipt_lots(session, company_id, bill: dict) -> dict[str, str]:
-    """Lot holding goods a customer returned, which a bill bought from a consignment took over
-    (bought_parcels) -> the receipt lot those goods came in as, so they go back on that
-    receipt's line."""
+    """Lot holding goods a customer returned from the lots a document's receipts made (for a
+    bill bought from a consignment, the lots it took over, bought_parcels) -> the receipt lot
+    those goods came in as, so they go back on that receipt's line and against what the
+    document still holds of it."""
     return {parcel: receipt for parcel, receipt in (await _bought_lineage(
         session, company_id, list(bill.get("received_item_ids") or []))).values()
         if receipt is not None and parcel != receipt}

@@ -5358,28 +5358,32 @@ def _received_lot_of(returned: dict) -> str:
     return returned.get("received_lot_id") or returned["item_id"]
 
 
-async def _receipt_lot(session: AsyncSession, company_id, item_id: str,
-                       received: dict) -> tuple[str | None, bool]:
+async def _receipt_lot(session: AsyncSession, company_id, item_id: str, received: dict,
+                       came_back: dict[str, str]) -> tuple[str | None, bool, bool]:
     """The lot among ``received`` (the lots a document brought goods into) that ``item_id`` is,
     was split off or was made from, through any number of splits and transforms, and whether
-    a transform lies on the way; (None, False) when it is none of these. Only a lot reached by
-    splits alone holds goods the document brought in: a transform made something else of them."""
+    a transform lies on the way; (None, False, False) when it is none of these. Only a lot
+    reached by splits alone holds goods the document brought in: a transform made something
+    else of them. Goods a customer returned (``came_back``, lot -> the receipt lot they came
+    in as, bought_receipt_lots) are that receipt lot's goods again; the third value is whether
+    the way back crossed such a return."""
     seen: set[str] = set()
-    transformed = False
+    transformed = returned = False
     while item_id not in received:
         if item_id in seen:
-            return None, False
+            return None, False, False
         seen.add(item_id)
-        parent = (await _transform_parents(session, company_id, [item_id])).get(item_id)
-        if parent:
+        if item_id in came_back:
+            parent, returned = came_back[item_id], True
+        elif parent := (await _transform_parents(session, company_id, [item_id])).get(item_id):
             transformed = True
         else:
             row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
             parent = ((row.state or {}) if row is not None and row.entity_type == "item" else {}).get("split_from")
         if not parent:
-            return None, False
+            return None, False, False
         item_id = str(parent)
-    return item_id, transformed
+    return item_id, transformed, returned
 
 
 async def _transform_parents(session: AsyncSession, company_id, lots: list[str]) -> dict[str, str]:
@@ -6431,11 +6435,15 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         for lot, _parent, link in await lineage(session, company_id, row.state.get("received_item_ids") or []):
             if link == "returned_from" and is_consigned(lot.state or {}):
                 returnable.setdefault(lot.entity_id, float((lot.state or {}).get("quantity") or 0))
+    # Goods a customer brought back in a lot of their own go back as the receipt lot they
+    # came in as, against what the document still holds of it.
+    came_back = await bought_receipt_lots(session, company_id, row.state)
     root_of: dict[str, str] = {}
     for it in items:
         _stated_measures(it.weight, it.pieces)
-        root, transformed = ((root_of[it.item_id], False) if it.item_id in root_of
-                             else await _receipt_lot(session, company_id, it.item_id, returnable))
+        root, transformed, returned_by_customer = (
+            (root_of[it.item_id], False, False) if it.item_id in root_of
+            else await _receipt_lot(session, company_id, it.item_id, returnable, came_back))
         left = returnable.get(root) if root is not None and not transformed else None
         if left is None or it.quantity_returned > left + 1e-9:
             found = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
@@ -6453,9 +6461,10 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 "docs.return_lot_more_than_received",
                 f"{name}: at most {max(0.0, left):g} received on this document can still be returned.",
                 sku=name, qty=f"{max(0.0, left):g}"))
-        if root != it.item_id and it.item_id not in root_of:
+        if root != it.item_id and it.item_id not in root_of and not returned_by_customer:
             # A part split off the lot before the goods came in holds none of them: the
             # supplier credits goods it never sent with a credit note, not a return at cost.
+            # Goods a customer brought back were the lot's goods when they were sold.
             first = await _standing_receipt_since(session, company_id, entity_id) or 0
             if it.item_id not in {r.entity_id for r in (await _split_since(session, company_id, [root], first))[root]}:
                 found = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
@@ -10514,14 +10523,15 @@ class ReceiveReturnPayload(BaseModel):
 
 
 def _returned_lot_origin(ref: dict, quantity: float) -> dict:
-    """What a lot a customer returned keeps of the sold lot it came back from: the
-    inventory account its value goes back to, or for consigned goods the consignment
-    itself (still the consignor's, on the payable the sale was costed against, traced
-    back to the consignment through the sold lot)."""
+    """What a lot a customer returned keeps of the sold lot it came back from: the sold lot
+    itself (``returned_from``, so the goods trace back to the receipt that brought them in),
+    and the inventory account its value goes back to, or for consigned goods the consignment
+    (still the consignor's, on the payable the sale was costed against)."""
+    came_from = {"returned_from": ref["id"]} if ref.get("id") else {}
     if not is_consigned(ref):
-        return {LOT_ACCOUNT_FIELD: lot_account(ref)} if float(ref.get("cost_price") or 0) * quantity > 0 else {}
-    return {"consignment_flag": "in", CONSIGNOR_PAYABLE_FIELD: ref.get(CONSIGNOR_PAYABLE_FIELD),
-            "returned_from": ref.get("id"),
+        return {**came_from, **({LOT_ACCOUNT_FIELD: lot_account(ref)}
+                                if float(ref.get("cost_price") or 0) * quantity > 0 else {})}
+    return {**came_from, "consignment_flag": "in", CONSIGNOR_PAYABLE_FIELD: ref.get(CONSIGNOR_PAYABLE_FIELD),
             **({CONSIGNOR_FIELD: ref[CONSIGNOR_FIELD]} if ref.get(CONSIGNOR_FIELD) else {})}
 
 
