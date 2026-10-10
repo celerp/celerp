@@ -455,9 +455,9 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     )
 
     if transition.before is None and entry.event_type not in ITEM_BIRTHS:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
     if transition.before is not None and entry.event_type in ITEM_BIRTHS:
-        raise HTTPException(status_code=409, detail="This item already exists.")
+        raise HTTPException(status_code=409, detail=t("inventory.err_item_exists"))
     assert_draft_not_circulated(entry.event_type, transition)
     # Modules hold an item to what its lineage may still take (a production run's open
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
