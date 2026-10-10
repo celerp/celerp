@@ -92,8 +92,8 @@ async def test_a_rule_for_a_bank_account_of_another_company_is_refused(client, a
     r = await client.post("/accounting/rules", headers=auth["headers"], json={
         "bank_account_id": str(uuid.uuid4()), "match_pattern": "x", "target_account_code": "6000"})
     assert r.status_code == 404, r.text
-    # The app answers every 404 with a plain "Not found" (celerp/main.py not_found_handler).
-    assert r.json()["detail"] == "Not found"
+    # The refusal keeps its message key, so the UI can say what to do next.
+    assert r.json()["detail"]["message_key"] == "accounting.bank_not_found"
 
 
 async def test_well_formed_bank_ids_still_work(client, auth):

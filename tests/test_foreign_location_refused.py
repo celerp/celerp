@@ -197,26 +197,28 @@ async def test_transfer_list_move_to_another_company_location_is_refused(client,
 # The event boundary every writer passes through
 # ---------------------------------------------------------------------------
 
-async def test_event_naming_another_company_location_is_refused_at_the_boundary(session, auth):
-    """A writer with no check of its own (scanning, a connector, a migration) is still
-    refused, because emit_event checks every location an event names."""
+async def test_event_naming_another_company_location_is_refused_at_the_boundary(client, session, auth):
+    """A writer with no check of its own (a connector, a migration) is still refused,
+    because emit_event checks every location an event names: its ledger location and
+    the location keys of its data."""
     from fastapi import HTTPException
 
     from celerp.events.engine import emit_event
 
     foreign = await _foreign_location(session)
+    own = await _own_location(client, auth)
     for location_id, data in (
-        (uuid.UUID(foreign), {"code": "1234"}),
-        (None, {"code": "1234", "location_id": foreign}),
+        (uuid.UUID(foreign), {"to_location_id": own}),
+        (None, {"to_location_id": foreign}),
     ):
         with pytest.raises(HTTPException) as exc:
-            await emit_event(session, company_id=auth["company_id"], entity_id=f"scan:{uuid.uuid4()}",
-                             entity_type="scan", event_type="scan.barcode", data=data,
+            await emit_event(session, company_id=auth["company_id"], entity_id=f"item:{uuid.uuid4()}",
+                             entity_type="item", event_type="item.transferred", data=data,
                              actor_id=auth["user_id"], location_id=location_id, source="api",
                              idempotency_key=str(uuid.uuid4()), metadata_={})
         assert exc.value.status_code == 422 and exc.value.detail["message_key"] == KEY
     await session.rollback()
-    assert await _events(session, auth, entity_type="scan") == 0
+    assert await _events(session, auth, entity_type="item") == 0
 
 
 async def test_item_patch_moving_to_another_company_location_is_refused(client, session, auth):
