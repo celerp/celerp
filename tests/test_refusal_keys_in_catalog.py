@@ -147,3 +147,185 @@ def test_no_refusal_call_site_is_unresolved():
         if key is None and site.split(":")[0] not in _DYNAMIC_KEY_SITES
     }
     assert not unresolved, f"refusal() call sites with no resolvable key: {unresolved}"
+
+
+# Files this review round converted raw-English HTTPException details to t()/refusal().
+# Guards against a regression reintroducing raw English in exactly these files; it is not
+# a repo-wide sweep (most of celerp/modules/*, the CLI, and other untouched files still
+# raise raw English by design - module-author contract errors, internal invariants, CLI
+# output - and are out of scope here).
+_TOUCHED_FILES = [
+    "celerp/credentials.py", "celerp/events/engine.py", "celerp/importers/tabular.py",
+    "celerp/routers/auth.py", "celerp/routers/companies.py", "celerp/services/account_roles.py",
+    "celerp/services/backup.py", "celerp/services/backup_import.py", "celerp/services/business_time.py",
+    "celerp/services/currencies.py", "celerp/services/journal_accounts.py", "celerp/services/lot_origin.py",
+    "celerp/services/payments.py",
+    "default_modules/celerp-accounting/celerp_accounting/chart_rules.py",
+    "default_modules/celerp-accounting/celerp_accounting/migration_sink.py",
+    "default_modules/celerp-docs/celerp_docs/consignment_buy.py",
+    "default_modules/celerp-docs/celerp_docs/routes.py",
+    "default_modules/celerp-docs/celerp_docs/routes_payments.py",
+    "default_modules/celerp-inventory/celerp_inventory/routes.py",
+    "default_modules/celerp-inventory/celerp_inventory/services.py",
+    "default_modules/celerp-manufacturing/celerp_manufacturing/movements.py",
+    "default_modules/celerp-manufacturing/celerp_manufacturing/routes.py",
+]
+
+# Raw-English HTTPException(detail=...) texts already present in the touched files above
+# before this review round, outside the scope of this round's fix (predates the merge
+# base this round triaged against). Allowlisted explicitly, by file and exact text, rather
+# than silently skipped, so a NEW raw detail added to one of these files - not one of
+# these pre-existing lines - still fails the guard below.
+_PRE_EXISTING_RAW_HTTPEXCEPTION = {
+    "celerp/routers/auth.py": {
+        "direct_connection_limit",
+        "Invalid refresh token",
+        "System already bootstrapped. Contact your admin.",
+        "Registration failed",
+        "Password must be at least  characters.",
+    },
+    "celerp/routers/companies.py": {
+        "Unknown permission ''",
+        "Unknown role ''",
+        "Installation owner access required",
+        " is part of Celerp and is always on.",
+        "Unknown module source.",
+        "Could not create company: ",
+        "Password must be at least  characters.",
+        "Unit '' type must be one of: ",
+        " needs this module. Turn that off first.",
+        "Could not purge while a company backup or restore is running. Nothing was deleted. "
+        "Try again when it finishes.",
+        "Unknown business type: ",
+    },
+    "celerp/services/lot_origin.py": {
+        "Company not found.",
+    },
+    "default_modules/celerp-docs/celerp_docs/routes.py": {
+        "idempotency_key is longer than  characters",
+        "Cannot send a closed memo; reopen it first.",
+        "Add at least one line item before sending this document.",
+        "Add at least one line item before finalizing this document.",
+        "Cannot void a document with payments; void the payments first",
+        "Cannot revert to draft while goods received on this document are still in stock. "
+        "Select those lines and use Return Goods first, then revert.",
+        "Cannot revert to draft while lines are still out on memo or sold. Select those "
+        "lines and use Set as available first, then revert.",
+        "This payment has been refunded in full, so there is nothing left to void.",
+        "Credit note applications cannot be deleted. Void the payment instead.",
+        ": it is not on this . Add it to the  first.",
+        "Only an issued  can record goods moved before it came to Celerp",
+        "Line  does not hold item ",
+        "Line : at most  can be moved",
+        "Select at least one document to ship",
+        "offset must be zero or greater",
+        "limit must be greater than zero",
+        " is not a . Choose a , or change the contact's type to  or both.",
+        "target_type must be 'invoice' or 'memo'",
+        "Finalize the quotation before converting it",
+        "Finalize the count before adjusting stock",
+        "Select at least one item to write off",
+        "Enter a quantity and a destination account for each item you want to write off",
+        "Unknown list type: ",
+        "Issue the list before sending it",
+        "Issue the transfer before moving its items",
+        "This credit note cannot be undone: goods it released from invoice  have left "
+        "stock since, so the invoice cannot hold them again. Bring the goods back into "
+        "stock first, or issue a new invoice for them.",
+        ": the receipt cost  differs from the  line (). Receive the goods at the  price, "
+        "then add a landed cost or correct the item's cost.",
+        "Item  does not exist",
+        "Issue every document before creating its shipping paperwork",
+        "Reopen a closed memo before creating its shipping paperwork",
+        "offset must be an integer",
+        "limit must be an integer",
+        "original_count must be zero or greater",
+        ":  cannot come back on this credit note: the invoice shipped , returned , so  "
+        "can come back",
+        " changed after the audit was finalized; recount it.",
+        "line_id or item_id is required",
+        ": choose a destination account",
+        "original_count cannot exceed the -line page limit",
+        ": nothing left to ship: invoiced , credited , shipped 0",
+        ": its inventory item no longer exists. Remove the line, then try again.",
+        ": its inventory item was merged into another item. Remove the line, then try again.",
+        "This import key was already used for a different record",
+    },
+    "default_modules/celerp-inventory/celerp_inventory/routes.py": {
+        "This item is held by document ; resolve the document first (release or return "
+        "the goods, or convert the document), then the item can be .",
+        "Unknown status ''; allowed: ",
+        "Use the item's 'Revert to Draft' action, not a direct status edit.",
+        "A draft item can only become available through the 'Make Available' action, "
+        "not a direct status edit.",
+        "Field '' not available for suggestions",
+        "An item is created as draft or available, not .",
+        "inventory_type must be one of ",
+        "landed_cost_kind must be one of ",
+        "Nothing was deleted. Only a draft that never became stock can be deleted, and "
+        "these cannot: . Use Revert to Draft for stock made available by mistake, "
+        "Archive to retire a product, or Write Off Stock for goods that left the company.",
+        "Allow splitting is set to No for this item. Change Allow Splitting to Yes in the "
+        "item details to enable splitting.",
+        "This merge can no longer be undone: the merged item has changed since it was made.",
+        "This merge can no longer be undone: one of the merged items has changed since it "
+        "was made.",
+        "This merge was made before merges could be undone, so the items' earlier state "
+        "is not on record.",
+    },
+    "default_modules/celerp-inventory/celerp_inventory/services.py": {
+        "Item not found",
+    },
+    "default_modules/celerp-manufacturing/celerp_manufacturing/routes.py": {
+        "Item has no recipe to build from",
+        "Unknown bulk action: ",
+        "This is your only work center. Add another before deleting this one.",
+        "This is the default work center. Set another center as default before deleting it.",
+    },
+}
+
+
+def _httpexception_raw_details(rel_path: str):
+    """Every HTTPException(detail=...) call in *rel_path* whose detail is a raw string
+    or f-string literal (not a call to t()/refusal()/refuse()), as (line, text)."""
+    path = _ROOT / rel_path
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel_path)
+    found = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "HTTPException"):
+            continue
+        detail = next((kw.value for kw in node.keywords if kw.arg == "detail"), None)
+        if detail is None:
+            continue
+        if isinstance(detail, ast.Call):
+            fn = detail.func
+            name = fn.id if isinstance(fn, ast.Name) else (
+                fn.attr if isinstance(fn, ast.Attribute) else None)
+            if name in ("t", "refusal", "refuse"):
+                continue
+        if isinstance(detail, ast.Constant) and isinstance(detail.value, str):
+            text = detail.value
+        elif isinstance(detail, ast.JoinedStr):
+            text = "".join(v.value for v in detail.values
+                           if isinstance(v, ast.Constant) and isinstance(v.value, str))
+        else:
+            text = None
+        if text is not None and text.strip():
+            found.append((node.lineno, text))
+    return found
+
+
+def test_no_new_raw_english_httpexception_detail_in_touched_files():
+    """A raw-English HTTPException detail reaches the user in every locale verbatim.
+    Review round 1 (repair) converted every one main's recent work introduced in these
+    files to t()/refusal(); this guards against reintroducing one, while leaving
+    pre-existing debt (_PRE_EXISTING_RAW_HTTPEXCEPTION) and untouched files (module
+    loader/slots/api.py, the CLI, and similar developer-only surfaces) alone."""
+    new_raw = {}
+    for rel in _TOUCHED_FILES:
+        allowed = _PRE_EXISTING_RAW_HTTPEXCEPTION.get(rel, set())
+        bad = [(line, text) for line, text in _httpexception_raw_details(rel) if text not in allowed]
+        if bad:
+            new_raw[rel] = bad
+    assert not new_raw, f"new raw-English HTTPException detail(s), not yet keyed: {new_raw}"
