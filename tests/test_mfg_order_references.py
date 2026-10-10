@@ -280,4 +280,4 @@ async def test_finalizing_an_order_skips_and_reports_a_line_whose_recipe_names_a
     assert [o["output_item_id"] for o in runs] == [chain]
     notes = [n for n in (await client.get("/notifications", headers=h)).json()["items"]
              if n["title"] == "Work orders not created"]
-    assert len(notes) == 1 and "missing item: RINGREF. Fix the recipe" in notes[0]["body"]
+    assert len(notes) == 1 and f"RINGREF ({t('manufacturing.err_item_unknown', 'en')}). Fix the recipe" in notes[0]["body"]
