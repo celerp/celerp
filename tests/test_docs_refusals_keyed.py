@@ -19,7 +19,7 @@ import pytest
 
 from test_cost_restatement import _state
 from test_credit_note_settlement_owned import _cn, _cn_body, _post, _svc_invoice
-from test_undo_receipt_moved_on import _received_parcel, _split_one
+from test_undo_receipt_moved_on import _received_parcel, _reserve_one, _split_one
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LANGS = ("am", "ar", "de", "en", "es", "fr", "id", "it", "ja", "pt", "th", "vi")
@@ -87,28 +87,33 @@ async def test_undoing_an_invoice_under_a_credit_note_is_refused_with_a_key(clie
 @pytest.mark.asyncio
 async def test_undoing_a_receipt_whose_goods_moved_on_names_each_reason_with_a_key(client, session, auth):
     bill, parcel = await _received_parcel(client, session, auth)
-    await _split_one(client, auth, parcel)
+    await _reserve_one(client, auth, parcel)
     r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    detail = _keyed(r, "docs.undo_receipt_moved_on")
+    detail = _keyed(r, "docs.undo_receipt_blocked")
     [reason] = detail["params"]["reasons"]
-    assert reason["message_key"] == "docs.undo_lot_holds"
-    assert reason["params"] == {"sku": "UNDO-G", "held": "3", "came_in": "4"}
+    assert reason["message_key"] == "docs.undo_lot_reserved"
+    assert reason["params"] == {"sku": "UNDO-G", "reserved": "1"}
 
 
 @pytest.mark.asyncio
-async def test_the_ui_reads_a_moved_on_receipt_in_the_users_language(client, session, auth):
+@pytest.mark.parametrize("move, key, german, english", [
+    (_split_one, "docs.undo_receipt_split", "geteilt", "split"),
+    (_reserve_one, "docs.undo_receipt_blocked", "reserviert", "reserved"),
+], ids=["split", "reserved"])
+async def test_the_ui_reads_a_moved_on_receipt_in_the_users_language(client, session, auth, move, key, german, english):
     from ui.i18n import refusal_text, set_lang
 
     bill, parcel = await _received_parcel(client, session, auth)
-    await _split_one(client, auth, parcel)
+    await move(client, auth, parcel)
     r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
     set_lang("de")
     try:
         text = refusal_text(r.json()["detail"])
     finally:
         set_lang("en")
-    assert "Wareneingang" in text and "UNDO-G" in text and "holds" not in text, text
+    assert r.json()["detail"]["message_key"] == key, r.text
+    assert "Wareneingang" in text and "UNDO-G" in text and german in text and english not in text, text
 
 
 # Neighbouring rules: a credit note in its invoice's currency and rate is still created, and

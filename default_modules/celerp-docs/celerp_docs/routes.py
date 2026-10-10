@@ -10837,36 +10837,55 @@ async def receive_return(
     return result
 
 
-def _parcel_moved_on(item_state: dict | None, item_id: str, came_in: float) -> dict | None:
-    """Why a parcel a receipt created can no longer be taken back whole, or None when it is
-    still as the receipt left it: available, holding what came in, none of it reserved.
-    A split, a sale or an adjustment changes what it holds, so undoing the receipt would
-    leave the moved part behind outside it."""
+def _parcel_moved_on(item_state: dict | None, item_id: str, came_in: float, *, receipt: bool) -> dict | None:
+    """Why a parcel a receipt created can no longer be taken back whole, as a keyed refusal
+    naming the real next step, or None when it is still as the receipt left it: available,
+    holding what came in, none of it reserved. A split, a sale or an adjustment changes what
+    it holds, so undoing the receipt would leave the moved part behind outside it. ``receipt``
+    is whether the undo is of a goods receipt (not of a credit note's return), which decides
+    the way back from a count adjusted up."""
     if item_state is None:
-        return refusal("docs.undo_lot_missing", f"{item_id} was not found; it may already have been removed",
-                       item=item_id)
+        return refusal("docs.undo_lot_missing", "A lot this document brought in is no longer in stock.")
     sku = item_state.get("sku") or item_id
     status = item_state.get("status") or "unknown"
+    if status == "sold":
+        return refusal("docs.undo_lot_sold", f"SKU {sku} was sold. Take the sale back first.", sku=sku)
+    if status == "memo_out":
+        return refusal("docs.undo_lot_on_memo", f"SKU {sku} is out on a memo. Take it back on the memo first.", sku=sku)
+    if status == "reserved":
+        return refusal("docs.undo_lot_reserved_on_doc",
+                       f"SKU {sku} is reserved on a document. Release it on that document first.", sku=sku)
     if status != "available":
-        return refusal("docs.undo_lot_status", f"SKU '{sku}' is {status} and cannot be archived",
+        return refusal("docs.undo_lot_not_available",
+                       f"SKU {sku} is {status}, not available. Set it back to Available first.",
                        sku=sku, lot_status=status)
     held = float(item_state.get("quantity") or 0)
-    if abs(held - came_in) > 1e-9:
-        return refusal("docs.undo_lot_holds",
-                       f"SKU '{sku}' holds {held:g} of the {came_in:g} that came in (split, sold or adjusted since)",
-                       sku=sku, held=f"{held:g}", came_in=f"{came_in:g}")
+    if held < came_in - 1e-9:
+        return refusal("docs.undo_lot_holds_fewer",
+                       f"SKU {sku} holds {held:g} of the {came_in:g} that came in, because units went to a "
+                       f"sale, transfer or split. Undo that first.", sku=sku, held=f"{held:g}", came_in=f"{came_in:g}")
+    if held > came_in + 1e-9:
+        params = {"sku": sku, "held": f"{held:g}", "came_in": f"{came_in:g}"}
+        if receipt:
+            # Taking the extra units off by a count would itself count as units gone.
+            return refusal("docs.undo_receipt_lot_holds_more",
+                           f"SKU {sku} holds {held:g} but {came_in:g} came in, because the count was adjusted up. "
+                           f"Use Return to supplier for the {came_in:g} that came in.", **params)
+        return refusal("docs.undo_return_lot_holds_more",
+                       f"SKU {sku} holds {held:g} but {came_in:g} came in, because the count was adjusted up. "
+                       f"Set it back to {came_in:g} first.", **params)
     reserved = float(item_state.get("reserved_quantity") or 0)
     if reserved > 0:
-        return refusal("docs.undo_lot_reserved", f"SKU '{sku}' has {reserved:g} reserved",
+        return refusal("docs.undo_lot_reserved",
+                       f"SKU {sku} has {reserved:g} reserved. Release the reservation first.",
                        sku=sku, reserved=f"{reserved:g}")
     return None
 
 
-def _moved_on_refusal(key: str, english: str, blocked: list[dict]) -> HTTPException:
-    """The 409 for goods a receipt or return brought in that moved on since, naming each."""
-    reasons = "; ".join(b["message"] for b in blocked)
+def _undo_blocked(key: str, lead: str, reasons: list[dict]) -> HTTPException:
+    """The one 409 for every lot that blocks an undo: each reason keyed and named by its SKU."""
     return HTTPException(status_code=409, detail=refusal(
-        key, f"{english} Blocked items: {reasons}. Correct the stock first, then try again.", reasons=blocked))
+        key, f"{lead}: {'; '.join(r['message'] for r in reasons)}", reasons=reasons))
 
 
 @router.delete("/{entity_id}/receive-return")
@@ -10902,11 +10921,9 @@ async def undo_receive_return(
     if item_ids:
         came_in = {r["item_id"]: float(r.get("quantity") or 0) for r in received_items if r.get("item_id")}
         blocked = [why for iid in item_ids
-                   if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in[iid])) is not None]
+                   if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in[iid], receipt=False)) is not None]
         if blocked:
-            raise _moved_on_refusal("docs.undo_return_moved_on",
-                                    "The return cannot be undone: goods it brought back are no longer as they came in.",
-                                    blocked)
+            raise _undo_blocked("docs.undo_return_blocked", "The return cannot be undone", blocked)
 
     # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
     undo_suffix = str(uuid.uuid4())
@@ -11084,7 +11101,7 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
         root, lot, before = e.root, e.lot, e.before
         if before is None:
             born_since.add(lot)
-            split[root] = split[root] or lot not in sent_back
+            split[root] = split[root] or (lot != root and lot not in sent_back)
         moved = _held(e.after) - _held(before)
         if (key := _reversal_key(e.event_type, e.data, e.meta)) is not None:
             paired[root][key] = paired[root].get(key, 0.0) - moved
@@ -11218,28 +11235,34 @@ async def undo_receive(
                 f"SKU '{sku}': {units:g} units have left stock since this document received {needed:g}, "
                 f"so the receipt cannot be undone. Use Return to supplier, which takes the goods back at cost.",
                 sku=sku, gone=f"{units:g}", needed=f"{needed:g}"))
+    # A split leaves the goods on hand in the lots split off, so the way back is a return.
+    for lot in [*received_item_ids, *topped_up]:
+        if split_since.get(lot):
+            sku = (item_rows.get(lot) or {}).get("sku") or lot
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.undo_receipt_split",
+                f"SKU {sku} was split since this document received it, so the receipt cannot be undone. "
+                f"Use Return to supplier.", sku=sku))
     blocked = [why for iid in received_item_ids
-               if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in.get(iid, 0.0))) is not None]
+               if (why := _parcel_moved_on(item_rows.get(iid), iid, came_in.get(iid, 0.0), receipt=True)) is not None]
     for lot in topped_up:
         qty, cost = added[lot]
         lot_state = item_rows.get(lot) or {}
         sku = lot_state.get("sku") or lot
         free = _free_on_hand(lot_state)
         left = round_basis((goods_basis(lot_state) or 0.0) - cost)
-        if split_since[lot]:
-            blocked.append(refusal("docs.undo_lot_split", f"SKU '{sku}' was split since this document received it",
-                                   sku=sku))
-        elif free + 1e-9 < qty:
-            blocked.append(refusal("docs.undo_lot_not_free",
-                                   f"SKU '{sku}' has {free:g} on hand and free, {qty:g} came in on this document",
-                                   sku=sku, free=f"{free:g}", qty=f"{qty:g}"))
+        if free + 1e-9 < qty:
+            blocked.append(refusal(
+                "docs.undo_lot_short",
+                f"SKU {sku} has {free:g} on hand and free, but {qty:g} came in on this document. "
+                f"Release the reservation first.", sku=sku, free=f"{free:g}", qty=f"{qty:g}"))
         elif left < 0 or (free - qty <= 1e-9 and left != 0):
-            blocked.append(refusal("docs.undo_lot_cost_changed",
-                                   f"SKU '{sku}' has had its cost changed since this document received it", sku=sku))
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.undo_receipt_cost_changed",
+                f"The cost of SKU {sku} was changed since this document received it, so the receipt "
+                f"cannot be undone. Set the cost back first, or use Return to supplier.", sku=sku))
     if blocked:
-        raise _moved_on_refusal("docs.undo_receipt_moved_on",
-                                "The receipt cannot be undone: goods it brought in are no longer as they came in.",
-                                blocked)
+        raise _undo_blocked("docs.undo_receipt_blocked", "The receipt cannot be undone", blocked)
 
     undo_suffix = str(uuid.uuid4())
 
