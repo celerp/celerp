@@ -114,17 +114,17 @@ IMPORTED_CUTOVER = "imported_cutover"
 def imported_issue_kind(data: dict) -> str | None:
     """What an imported snapshot was issued as, or None for one not issued.
 
-    An issued invoice posts its entry at import. An issued purchase order or bill
-    posts nothing: the opening balances hold it (IMPORTED_OPENING). Shared by the
-    import endpoints and the Doctor (which only repairs an entry the document's own
-    history says should exist)."""
+    An issued invoice or credit note posts its entry at import. An issued purchase
+    order or bill posts nothing: the opening balances hold it (IMPORTED_OPENING).
+    Shared by the import endpoints and the Doctor (which only repairs an entry the
+    document's own history says should exist)."""
     status = str(data.get("status") or "draft")
     total = float(data.get("total", 0) or 0)
     if status in ("void", "draft", "converted", "expired") or total <= 0:
         return None
     doc_type = str(data.get("doc_type") or "")
-    if doc_type == "invoice" and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
-        return "invoice"
+    if doc_type in ("invoice", "credit_note") and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
+        return doc_type
     if doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
         return "purchase_order"
     if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final",
@@ -598,6 +598,74 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
         ts=ts or doc.get("finalized_at") or doc.get("issue_date"),
         entries=entries,
         metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+    )
+
+
+async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str, doc: dict,
+                                   base_currency: str = "USD", ts: str | None = None,
+                                   memo: str | None = None) -> None:
+    """Bring a credit note's posted receivable to its invoice's rate. ``doc`` carries the
+    invoice's rate; what the credit note's posted entries took off the receivable at its
+    own rate, less what that rate makes of its total, moves the receivable back by the
+    difference against exchange gain or loss, so the credit note clears the receivable
+    at the rate its invoice raised it. Posts nothing when they agree."""
+    settings = await current_settings(session, company_id)
+    original = str(doc.get("original_doc_id") or "")
+    ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
+    ar = ar or await resolve(session, company_id, R.RECEIVABLE)
+    posted = [row for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
+              if (row.state or {}).get("status") == "posted"]
+    taken = sum((to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
+                 for row in posted for e in (row.state or {}).get("entries") or [] if e.get("account") == ar),
+                _Dec(0))
+    gap = taken - to_decimal(_sale_totals(doc, base_currency)[0])
+    if not gap:
+        return
+    entries = [_origin_line(settings, ar, R.RECEIVABLE, debit=to_stored_float(max(gap, _Dec(0))),
+                            credit=to_stored_float(max(-gap, _Dec(0))))]
+    role = _fx_difference_role(entries)
+    acc = await resolve_many(session, company_id, [role])
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:fin:rate",
+        idem_create=je_idempotency_key(doc_id, "credit_note.rate", "c"),
+        idem_posted=je_idempotency_key(doc_id, "credit_note.rate", "p"),
+        memo=memo or f"Credit note {doc_id} brought to its invoice's rate",
+        ts=ts or doc.get("finalized_at") or doc.get("issue_date"),
+        entries=_balanced_with_fx_difference(entries, _line(acc[role], role)),
+        metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
+    )
+
+
+async def create_for_imported_paid(session, *, company_id, user_id, doc_id: str, doc: dict,
+                                   base_currency: str = "USD") -> None:
+    """What an imported invoice or credit note says was already paid on it before the
+    import comes off the receivable against retained earnings, as other value the books
+    first recognize at an import does: the cash it moved is in the opening balances, so
+    only the receivable it left behind stands. An invoice's paid part is Cr receivable,
+    a credit note's (refunded before the import) Dr receivable. Not a payment and not
+    recognition: no payment is recorded, and a void (refused on a paid document) never
+    reverses it. Posts nothing when nothing was paid."""
+    paid = round_money(doc.get("amount_paid") or 0, doc.get("currency", "USD"))
+    if paid <= 0:
+        return
+    amount = to_base(to_stored_float(paid), require_doc_rate(doc, base_currency), base_currency)
+    settings = await current_settings(session, company_id)
+    invoice = doc_id if doc.get("doc_type") == "invoice" else str(doc.get("original_doc_id") or "")
+    ar = await party_origin(session, company_id, invoice, R.RECEIVABLE, settings) if invoice else None
+    acc = await resolve_many(session, company_id, [R.RETAINED_EARNINGS, *([] if ar else [R.RECEIVABLE])])
+    on_invoice = doc.get("doc_type") == "invoice"
+    receivable = (_origin_line(settings, ar, R.RECEIVABLE) if ar else _line(acc[R.RECEIVABLE], R.RECEIVABLE))
+    entries = [{**receivable, "debit": 0.0 if on_invoice else amount, "credit": amount if on_invoice else 0.0},
+               _line(acc[R.RETAINED_EARNINGS], R.RETAINED_EARNINGS,
+                     debit=amount if on_invoice else 0.0, credit=0.0 if on_invoice else amount)]
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:opening-paid",
+        idem_create=je_idempotency_key(doc_id, "imported.paid", "c"),
+        idem_posted=je_idempotency_key(doc_id, "imported.paid", "p"),
+        memo=f"Paid on {doc_id} before it was imported",
+        ts=doc.get("finalized_at") or doc.get("issue_date"),
+        entries=entries,
+        metadata_={"trigger": "doc.imported", "doc_id": doc_id},
     )
 
 

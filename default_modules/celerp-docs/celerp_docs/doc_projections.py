@@ -110,8 +110,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         for field, change in data["fields_changed"].items():
             if field in _PATCH_PROTECTED:
                 continue
-            if field == "conversion_rate" and _is_finalized:
-                continue  # conversion_rate is immutable after finalization
+            # conversion_rate is immutable after finalization, except that an older credit
+            # note issued at another rate than its invoice's takes the invoice's at upgrade.
+            if field == "conversion_rate" and _is_finalized and not data.get("takes_invoice_rate"):
+                continue
             current[field] = change.get("new")
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
         # based on how much has already been paid or credited - never let outstanding go negative.

@@ -2409,6 +2409,23 @@ def settled_by_credit_only(state: dict) -> bool:
             and float(state.get("credited") or 0) > 0)
 
 
+async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
+    """A credit note reverses part of its invoice's sale. Once that invoice is void the
+    sale no longer exists, so nothing is refunded, applied or restored against the
+    credit note (409)."""
+    original = str(cn.get("original_doc_id") or "")
+    invoice = await session.get(Projection, {"company_id": company_id, "entity_id": original}) if original else None
+    if invoice is None or (invoice.state or {}).get("status") != "void":
+        return
+    number = str(cn.get("doc_number") or cn.get("ref_id") or "")
+    inv_number = str(invoice.state.get("doc_number") or invoice.state.get("ref_id") or original)
+    raise HTTPException(status_code=409, detail=refusal(
+        "credit_note.invoice_void",
+        f"Credit note {number} credits invoice {inv_number}, which is void. The sale no longer exists, "
+        f"so nothing is refunded, applied or restored against the credit note.",
+        credit_note=number, invoice=inv_number))
+
+
 async def _issued_credit_note_rows(session, company_id, invoice_id: str) -> list[Projection]:
     """The issued (not draft, not void) credit notes against an invoice."""
     rows = (await session.execute(select(Projection).where(
@@ -2439,7 +2456,9 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
     still has open, is what it settled, up to what the invoice's balance does not explain
     (total less paid, outstanding and what other credit notes settled). That amount is
     ``credited`` on both, through the same settlement step an issued credit note takes, so
-    voiding it later puts it back."""
+    voiding it later puts it back. What the credit note claims beyond that, the invoice
+    never took off its balance, so it stays open on the credit note as the customer's
+    credit."""
     if data.get("doc_type") == "credit_note" and data.get("original_doc_id"):
         pairs = [(str(data["original_doc_id"]), entity_id)]
     elif data.get("doc_type") == "invoice":
@@ -2452,28 +2471,29 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
         inv, note = (invoice.state if invoice else None) or {}, (cn.state if cn else None) or {}
         if inv.get("status") in (None, "draft", "void") or note.get("status") in (None, "draft", "void"):
             continue
-        if float(note.get("credited") or 0):
-            continue
         currency = str(inv.get("currency") or "USD").upper()
 
         def money(state, key):
             return round_money(to_decimal(state.get(key) or 0), currency)
 
-        settled = min(
-            max(Decimal(0), money(note, "total") - money(note, "amount_paid") - money(note, "amount_outstanding")),
-            max(Decimal(0), money(inv, "total") - money(inv, "amount_paid") - money(inv, "amount_outstanding")
-                - money(inv, "credited")))
-        if settled <= 0:
+        claimed = max(Decimal(0), money(note, "total") - money(note, "amount_paid")
+                      - money(note, "amount_outstanding") - money(note, "credited"))
+        if claimed <= 0:
             continue
+        settled = min(claimed, max(Decimal(0), money(inv, "total") - money(inv, "amount_paid")
+                                   - money(inv, "amount_outstanding") - money(inv, "credited")))
         metadata = {"source_credit_note": cn_id, "credit_note_effect": "reduced",
                     "credit_amount": to_stored_float(settled), "imported": True}
-        await emit_credit_settlement(session, company_id, user_id, invoice_id, inv,
-                                     outstanding=money(inv, "amount_outstanding"),
-                                     credited=money(inv, "credited") + settled,
-                                     idempotency_key=f"credit-note-import:{cn_id}", metadata=metadata)
+        if settled:
+            await emit_credit_settlement(session, company_id, user_id, invoice_id, inv,
+                                         outstanding=money(inv, "amount_outstanding"),
+                                         credited=money(inv, "credited") + settled,
+                                         idempotency_key=f"credit-note-import:{cn_id}", metadata=metadata)
         await emit_credit_settlement(session, company_id, user_id, cn_id, note,
-                                     outstanding=money(note, "amount_outstanding"), credited=settled,
-                                     idempotency_key=f"credit-note-import:{cn_id}:credit-note", metadata=metadata)
+                                     outstanding=money(note, "amount_outstanding") + claimed - settled,
+                                     credited=money(note, "credited") + settled,
+                                     idempotency_key=f"credit-note-import:{cn_id}:credit-note",
+                                     metadata=metadata if settled else {"imported": True})
 
 
 async def _refuse_undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str) -> None:
@@ -2719,6 +2739,8 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     restored_status = state.get("pre_void_status")
     if not restored_status:
         raise HTTPException(status_code=409, detail="Cannot unvoid: document was voided before unvoid support was added (no pre_void_status)")
+    if state.get("doc_type") == "credit_note":
+        await refuse_on_void_invoice(session, company_id, state)
 
     # Restored in a savepoint, so a refusal that can only be read off the restored books
     # leaves nothing behind.
@@ -2732,6 +2754,15 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
     )
     # Restore the JEs the void reversed (idempotent - uses doc-scoped keys)
     await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    if state.get("doc_type") == "credit_note" and not [
+            je for je in await _posted_journal_entries(session, company_id, entity_id)
+            if je[len(f"je:auto:{entity_id}:"):].split(":")[0] == "fin"]:
+        # Voided before credit notes posted their entry, it posts it now, as issued today.
+        _cn_company = await session.get(Company, company_id)
+        await auto_je.create_for_credit_note_finalized(
+            session, company_id=company_id, user_id=user.id, doc_id=entity_id, doc=state,
+            base_currency=(_cn_company.settings or {}).get("currency", "USD") if _cn_company else "USD",
+            ts=await auto_je.entry_day(session, company_id))
     # Consigned goods that went back to the consignor while the invoice was void are
     # theirs again, so the invoice cannot stand on them.
     if state.get("doc_type") == "invoice" and (
@@ -3653,6 +3684,7 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
         raise HTTPException(status_code=409, detail="Only credit notes can be applied to invoices")
     if cn.get("status") in ("draft", "void"):
         raise HTTPException(status_code=409, detail="Credit note must be issued before applying")
+    await refuse_on_void_invoice(session, company_id, cn)
 
     inv = inv_row.state
     if inv.get("doc_type") != "invoice":
@@ -3779,6 +3811,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         raise HTTPException(status_code=409, detail="Only credit notes can be refunded")
     if cn.get("status") in ("draft", "void"):
         raise HTTPException(status_code=409, detail="Credit note must be issued before refunding")
+    await refuse_on_void_invoice(session, company_id, row.state)
     currency = str(cn.get("currency") or "USD").upper()
     amount_d = round_money(payload.amount, currency)
     if amount_d <= 0:
@@ -5296,14 +5329,14 @@ def _import_metadata(source_ts: str | None, data: dict, *, post_ledger: bool) ->
 
 
 async def imported_opening_snapshot(session: AsyncSession, company_id, data: dict) -> dict:
-    """An imported issued document as it enters the books. An invoice or bill is finalized,
+    """An imported issued document as it enters the books. An invoice, credit note or bill is finalized,
     since it was issued, so finalizing it again books nothing a second time (a purchase
     order is finalized by converting it to a bill, which books only what the opening
     balances do not hold). A purchase order or bill also has each stock line it received
     marked with what that line holds in the lot it names, as a receipt marks what it added,
     so a return takes the goods back off that lot. A snapshot not issued is returned as it is."""
     kind = auto_je.imported_issue_kind(data)
-    if kind in ("invoice", "bill") and not data.get("finalized"):
+    if kind in ("invoice", "credit_note", "bill") and not data.get("finalized"):
         data = {**data, "finalized": True}
     if kind not in ("purchase_order", "bill"):
         return data
@@ -5344,16 +5377,31 @@ async def mark_received_goods(session: AsyncSession, company_id, data: dict) -> 
 
 
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
-    """Create the accounting entry implied by an imported issued invoice.
+    """Create the accounting entries implied by an imported issued invoice or credit note.
 
+    An invoice posts its full total and a credit note its full total back, at the
+    document's date, as issuing them here would. What the snapshot says was already paid
+    on either comes off the receivable against retained earnings
+    (auto_je.create_for_imported_paid), so the receivable holds what the imported
+    documents leave open. No payment is synthesized from snapshot totals: its bank
+    account and settlement date/rate are separate facts the snapshot cannot supply.
     An imported purchase order or bill posts nothing: the opening balances hold it, the
     goods received on it as opening stock and what is owed on it as opening payables
-    (auto_je.IMPORTED_OPENING). Payment entries are never synthesized from snapshot
-    totals because their bank account and settlement date/rate are separate facts that
-    the snapshot cannot supply.
+    (auto_je.IMPORTED_OPENING).
     """
-    if auto_je.imported_issue_kind(data) == "invoice":
+    kind = auto_je.imported_issue_kind(data)
+    if kind == "invoice":
         await auto_je.create_for_doc_finalized(
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id,
+            doc=data, base_currency=base_currency,
+        )
+    elif kind == "credit_note":
+        await auto_je.create_for_credit_note_finalized(
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id,
+            doc=data, base_currency=base_currency,
+        )
+    if kind in ("invoice", "credit_note"):
+        await auto_je.create_for_imported_paid(
             session, company_id=company_id, user_id=user_id, doc_id=entity_id,
             doc=data, base_currency=base_currency,
         )
