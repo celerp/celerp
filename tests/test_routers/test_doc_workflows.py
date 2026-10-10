@@ -1318,8 +1318,9 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     # Revert Return Stock must fail with 409 and name the blocked item
     undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
     assert undo_r.status_code == 409, undo_r.text
-    detail = undo_r.json().get("detail", "")
-    assert "sold" in detail.lower() or "RR-002" in detail, (
+    detail = undo_r.json()["detail"]
+    assert detail["message_key"] == "docs.undo_return_moved_on", detail
+    assert "sold" in detail["message"].lower() or "RR-002" in detail["message"], (
         f"Error message must name the blocked item or status. Got: {detail}"
     )
 

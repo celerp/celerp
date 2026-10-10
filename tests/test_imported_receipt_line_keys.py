@@ -23,7 +23,7 @@ async def _import(client, auth, lines: list[dict], received: list[dict], total: 
         "data": {"doc_type": "purchase_order", "contact_id": "supplier:1", "status": "received",
                  "doc_number": f"IMP-{uuid.uuid4().hex[:4]}", "issue_date": "2026-01-01", "subtotal": total,
                  "total": total, "amount_outstanding": total, "amount_paid": 0,
-                 "line_items": lines, "received_items": received}})
+                 "line_items": lines, "received_items": received, "import_treatment": "opening_balances"}})
     assert r.status_code == 200, r.text
     return doc
 
