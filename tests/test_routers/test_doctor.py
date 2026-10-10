@@ -584,20 +584,19 @@ async def test_doctor_fix_missing_payment_je(client, session):
 
 @pytest.mark.asyncio
 async def test_doctor_fix_duplicate_jes(client, session):
-    """Create two JEs for the same trigger key, verify doctor detects and fixes duplicates."""
+    """The same JE record written twice is one entry restated, not a duplicate: Doctor
+    reports nothing, and fix mode voids nothing and leaves the entry posted."""
     import uuid as _uuid
     from celerp.events.engine import emit_event as _emit
+    from celerp.models.projections import Projection
 
     token = await _register(client)
-    # Get company_id via API - comes back as string UUID, must parse to UUID for ORM
     me = (await client.get("/companies/me", headers=_h(token))).json()
     company_id = _uuid.UUID(me["id"])
 
     doc_id = f"doc:dup-je-{_uuid.uuid4().hex[:8]}"
     je_entity_id = f"je:auto:{doc_id}:fin"
 
-    # Emit the same JE twice with slightly different idempotency keys to bypass dedup
-    # Use the test session (same DB as the HTTP client)
     for i in range(2):
         await _emit(
             session, company_id=company_id,
@@ -610,21 +609,22 @@ async def test_doctor_fix_duplicate_jes(client, session):
             ]},
             actor_id=None, location_id=None, source="test",
             idempotency_key=f"{je_entity_id}:test-dup-{i}",
-            metadata_={},
+            metadata_={"trigger": "doc.finalized", "doc_id": doc_id},
         )
     await session.commit()
 
-    # Doctor should find 1 duplicate pair
     r = await client.post("/admin/doctor?checks=duplicate_jes", headers=_h(token))
     assert r.status_code == 200
     dups = next(c for c in r.json()["results"] if c["check"] == "duplicate_jes")
-    assert dups["found"] >= 1
+    assert dups["found"] == 0
 
-    # Fix mode: voids the duplicates
     r2 = await client.post("/admin/doctor?checks=duplicate_jes&fix=true", headers=_h(token))
     assert r2.status_code == 200
     dups2 = next(c for c in r2.json()["results"] if c["check"] == "duplicate_jes")
-    assert dups2["fixed"] >= 1
+    assert dups2["fixed"] == 0 and dups2["auto_fixable"] is False
+    session.expire_all()
+    je = await session.get(Projection, (company_id, je_entity_id))
+    assert je.state["status"] == "posted"
 
 
 # --- Doctor fix: zero-amount JEs ---
@@ -708,9 +708,11 @@ async def test_doctor_does_not_post_an_order_total_for_a_receipt(client, session
     assert r.status_code == 200
 
     # Seed historical received state directly; the public import is creation-only.
+    locations = (await client.get("/companies/me/locations", headers=_h(token))).json()
+    loc = (locations.get("items") if isinstance(locations, dict) else locations)[0]["id"]
     await _emit_legacy_doc_event(
         client, session, token, entity_id, "doc.received",
-        {"location_id": "loc:default", "received_items": []},
+        {"location_id": loc, "received_items": []},
     )
 
     r2 = await client.post("/admin/doctor?checks=missing_jes&fix=true", headers=_h(token))

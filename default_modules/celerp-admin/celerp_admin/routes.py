@@ -6,7 +6,7 @@
 Checks:
 1. missing_jes       - Docs with no corresponding journal entries
 1b. uncaused_recognition_jes - Sales/receiving JEs on a doc that was never finalized or received
-2. duplicate_jes     - Multiple JEs for the same doc trigger (finalize/payment/receive)
+2. duplicate_jes     - Live JEs repeating another live JE's posting of the same doc (report only)
 3. ghost_events      - Multiple doc.created events for the same entity_id
 4. orphan_projections - Projections with no backing ledger events
 5. stale_projections  - Projection state diverges from replayed ledger events
@@ -343,60 +343,84 @@ async def _check_uncaused_recognition_jes(
     }
 
 
+_DUPLICATE_SOURCE_KEYS = ("trigger", "doc_id", "payment_index", "cn_id")
+_DUPLICATE_WHAT_TO_CHECK = (
+    "Both entries record the same posting of this document. Open each one and check "
+    "whether one repeats the other. If it does, void the repeated one from its journal "
+    "entry page. Doctor never voids it for you."
+)
+
+
+def _je_lines_signature(state: dict) -> tuple:
+    return tuple(sorted(
+        (str(e.get("account") or ""), str(Decimal(str(e.get("debit") or 0)).normalize()),
+         str(Decimal(str(e.get("credit") or 0)).normalize()))
+        for e in (state.get("entries") or [])
+    ))
+
+
 async def _check_duplicate_jes(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
-    """Find docs with multiple JEs for the same trigger."""
-    jes = (await session.execute(
-        select(LedgerEntry).where(
+    """Report live journal entries that repeat another live entry's posting. Report only.
+
+    One journal entry record is one entry: writing it again (a restatement, a rate
+    true-up, an account remap) replaces it, so a record is never its own duplicate. A
+    duplicate is two or more posted records with the same source (trigger, document,
+    payment or credit note) and the same lines, where at least one record sits outside
+    the deterministic je:auto:{doc_id}: scheme (canonical per-cycle ids such as a second
+    equal receipt are distinct postings by construction). Doctor names both records and
+    what to check; it never voids anything, in dry-run or fix mode.
+    """
+    live = (await session.execute(
+        select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+        )
+    )).all()
+    states = {eid: st for eid, st in live if (st or {}).get("status") == "posted"}
+    if not states:
+        return {"check": "duplicate_jes", "found": 0, "fixed": 0, "auto_fixable": False, "details": []}
+
+    latest_meta: dict[str, dict] = {}
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "journal_entry",
             LedgerEntry.event_type == "acc.journal_entry.created",
         ).order_by(LedgerEntry.id.asc())
-    )).scalars().all()
+    )).all()
+    for eid, meta in rows:
+        if eid in states:
+            latest_meta[eid] = meta or {}
 
-    # Group by source doc_id + operation type derived from entity_id.
-    # Entity ids have canonical form: je:auto:{doc_id}:{op} where op is fin, pay:{cents}, rcv.
-    # We use entity_id (not metadata trigger) so that fin+pay for the same doc don't collide.
-    by_doc_op: dict[str, list[LedgerEntry]] = {}
-    for je in jes:
-        # entity_id format: je:auto:{doc_id}:{op}
-        # Strip the je:auto: prefix to get doc_id+op, which is our grouping key.
-        eid = je.entity_id
-        if eid.startswith("je:auto:"):
-            group_key = eid[len("je:auto:"):]  # e.g. "doc:INV-2026-0001:fin"
-        else:
-            # Fallback: use entity_id as-is (handles any legacy format)
-            group_key = eid
-        by_doc_op.setdefault(group_key, []).append(je)
-
-    duplicates = []
-    fixed = 0
-    for key, entries in by_doc_op.items():
-        if len(entries) <= 1:
+    groups: dict[tuple, list[str]] = {}
+    for eid, state in states.items():
+        meta = latest_meta.get(eid) or {}
+        if not meta.get("doc_id"):
             continue
-        # Keep earliest, flag rest
-        keep = entries[0]
-        for dup in entries[1:]:
-            duplicates.append({
-                "doc_trigger": key,
-                "keep_id": keep.id,
-                "duplicate_id": dup.id,
-                "duplicate_entity_id": dup.entity_id,
-            })
-            if fix:
-                # Void the duplicate by emitting a void event
-                await emit_event(
-                    session, company_id=company_id, entity_id=dup.entity_id,
-                    entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                    data=je_void_data("Doctor: duplicate JE", dup.data or {}),
-                    actor_id=user_id, location_id=None, source="doctor",
-                    idempotency_key=f"doctor:void:{dup.idempotency_key}",
-                    metadata_={"voided_by": "doctor", "kept_id": keep.id},
-                )
-                fixed += 1
+        source = tuple(str(meta.get(k)) if meta.get(k) is not None else None for k in _DUPLICATE_SOURCE_KEYS)
+        groups.setdefault((source, _je_lines_signature(state)), []).append(eid)
 
-    return {"check": "duplicate_jes", "found": len(duplicates), "fixed": fixed, "auto_fixable": True, "details": duplicates[:50]}
+    details = []
+    for (source, _lines), members in groups.items():
+        if len(members) < 2:
+            continue
+        doc_id = source[1]
+        canonical = f"je:auto:{doc_id}:"
+        if all(m.startswith(canonical) for m in members):
+            continue
+        members.sort(key=lambda m: (not m.startswith(canonical), m))
+        for dup in members[1:]:
+            details.append({
+                "entry_id": members[0],
+                "duplicate_entry_id": dup,
+                "doc_id": doc_id,
+                "trigger": source[0],
+                "what_to_check": _DUPLICATE_WHAT_TO_CHECK,
+            })
+
+    return {"check": "duplicate_jes", "found": len(details), "fixed": 0, "auto_fixable": False, "details": details[:50]}
 
 
 async def _check_ghost_events(
