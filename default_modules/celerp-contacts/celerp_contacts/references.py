@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Contact references held by other records (Documents, Lists, Deals).
+"""Contact references held by other records (Documents, Lists, Deals, consigned stock).
 
 Every writer that makes a record point at a contact, or that retires a contact,
 locks the contact rows through lock_contacts(), then the dependent record.
@@ -37,8 +37,9 @@ async def lock_contacts(session: AsyncSession, company_id, contact_ids) -> dict[
 
 async def lock_referencing_records(
     session: AsyncSession, company_id, contact_ids, *, entity_types: tuple[str, ...] = ("doc", "list"),
+    field: str = "contact_id",
 ) -> list[Projection]:
-    """Lock matching contact-bearing records in entity-id order.
+    """Lock the records of entity_types whose ``field`` names one of contact_ids, in entity-id order.
 
     Callers lock the contacts themselves first (lock_contacts), the order every
     contact-reference writer takes.
@@ -51,7 +52,7 @@ async def lock_referencing_records(
         .where(
             Projection.company_id == company_id,
             Projection.entity_type.in_(entity_types),
-            Projection.state["contact_id"].as_string().in_(want),
+            Projection.state[field].as_string().in_(want),
         )
         .order_by(Projection.entity_id)
         .with_for_update()

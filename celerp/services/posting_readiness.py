@@ -6,7 +6,7 @@ user when one is missing.
 
 Only the roles of workflows the company actually uses are needed: sales and purchasing
 always, tax once taxes appear, inventory once stock exists, work in progress once a
-production run exists, and landed cost, foreign currency and fixed assets once the
+production run exists, the consignor payable once goods arrive on consignment, and landed cost, foreign currency and fixed assets once the
 books hold them. Any other role stays unmapped until
 its first use asks for it.
 
@@ -101,6 +101,8 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             if state.get("landed_costs"):
                 groups.add("landed_cost")
             continue
+        if state.get("doc_type") == "consignment_in":
+            groups.add("consignment")
         if float(state.get("tax") or 0):
             groups.add("tax")
         if str(state.get("currency") or base).upper() != base:

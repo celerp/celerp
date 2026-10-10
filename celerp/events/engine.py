@@ -353,8 +353,9 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
                 data[LOT_ACCOUNT_FIELD] = code
         return
     current = (previous_state or {}).get(LOT_ACCOUNT_FIELD)
-    if kwargs["event_type"] == "item.inventory_account.recorded":
-        # An older lot that recorded none takes the one the upgrade or the user places it on.
+    if kwargs["event_type"] in ("item.inventory_account.recorded", "item.consignment.bought"):
+        # An older lot that recorded none takes the one the upgrade or the user places it on,
+        # and consigned goods take the one the bill that buys them debits.
         if current:
             raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
         return
@@ -370,6 +371,35 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
         raise HTTPException(
             status_code=422,
             detail="An item's inventory account is recorded when its stock is booked and cannot be changed.",
+        )
+
+
+def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None:
+    """A consigned lot records the account its sale is owed to the consignor on when it is
+    first sold, and a lot born from it (a part of it, or goods a customer returns) keeps
+    it. No later event may change it: the payable recognized there is cleared there."""
+    from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD
+
+    if kwargs["event_type"] in ITEM_BIRTHS and previous_state is None:
+        return
+    current = (previous_state or {}).get(CONSIGNOR_PAYABLE_FIELD)
+    data = kwargs["data"]
+    if kwargs["event_type"] == "item.consignor_payable.recorded":
+        if current:
+            raise HTTPException(status_code=409, detail="This stock already records its consignor payable account.")
+        return
+    changed = data.get("fields_changed")
+    if CONSIGNOR_PAYABLE_FIELD in data:
+        written = data[CONSIGNOR_PAYABLE_FIELD]
+    elif isinstance(changed, dict) and CONSIGNOR_PAYABLE_FIELD in changed:
+        change = changed[CONSIGNOR_PAYABLE_FIELD]
+        written = change.get("new") if isinstance(change, dict) else change
+    else:
+        return
+    if written != current:
+        raise HTTPException(
+            status_code=422,
+            detail="The account a consigned item's sale is owed on is recorded when it is first sold and cannot be changed.",
         )
 
 
@@ -395,6 +425,16 @@ def _guard_on_books(kwargs: dict) -> None:
         )
 
 
+def _may_take_set_aside(event_type: str, data: dict) -> bool:
+    """Whether an item event is held to the goods finalized invoices have set aside
+    (auto_je.refuse_stranding_set_aside): every event but a shipment to a customer, the
+    one way set-aside goods are meant to leave. A shipment that takes goods another
+    invoice set aside moves that invoice's cost with them (auto_je.moved_costs) when both
+    invoices have a cost snapshot, and is held to them otherwise (_item_applied). Goods
+    sent out on memo are not shipped and are held to it."""
+    return event_type != "item.fulfilled" or (data or {}).get("doc_type") == "memo"
+
+
 async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     """Checks and effects of one live item event, on the state its row lock applied it to.
 
@@ -411,6 +451,7 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
         book_draft_boundary,
         book_value_change,
         draft_boundary,
+        units_leaving,
         value_boundary,
     )
 
@@ -423,6 +464,23 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
     for handler in sorted({c["handler"] for c in get_slot("item_lineage_guard")}):
         await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+    if units_leaving(transition.before, transition.after) > 1e-9:
+        from celerp.services.auto_je import recognized_cogs, refuse_stranding_set_aside
+
+        shipper = str((entry.data or {}).get("source_doc_id") or "") or None
+        if _may_take_set_aside(entry.event_type, entry.data):
+            await refuse_stranding_set_aside(
+                session, entry.company_id, entry.entity_id, transition.before, transition.after)
+        else:
+            # A shipping invoice takes the goods it holds itself. Goods another invoice
+            # holds move to it with their cost only when both have a cost snapshot
+            # (auto_je.moved_costs); goods held by an invoice finalized before snapshots
+            # existed, or taken by a shipment with no snapshot, are held to it like any
+            # other exit.
+            await refuse_stranding_set_aside(
+                session, entry.company_id, entry.entity_id, transition.before, transition.after,
+                exclude=shipper,
+                moves_cost=shipper is not None and await recognized_cogs(session, entry.company_id, shipper) is not None)
     draft_move = await draft_boundary(session, entry, transition)
     if draft_move is not None:
         await book_draft_boundary(session, entry, draft_move)
@@ -587,9 +645,18 @@ async def emit_event(
             )
 
     item = kwargs.get("entity_type") == "item"
+    if item and previous_item_state is not None:
+        from celerp.services.company_lock import lock_company
+
+        # Any change to an existing lot may take goods out of what is ready to ship, and
+        # is then judged against the invoices holding them (_item_applied) under the
+        # company lock. It is taken here, before the row lock the apply takes
+        # (company_lock.lock_company), whatever the change turns out to be.
+        await lock_company(session, kwargs["company_id"])
     if item:
         _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)
+        _record_consignor_payable(kwargs, previous_item_state)
 
     entry = LedgerEntry(**kwargs)
 

@@ -36,7 +36,7 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import current_settings, lot_account
+from celerp.services.account_roles import current_settings, is_consigned, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
@@ -548,10 +548,13 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 elif sale.doc_id is None:
                     unposted.append(lot_label(before, lot_id))
                 elif not sale.allocated and change:
-                    by_account, account = resold.setdefault(sale.doc_id, {}), lot_account(before)
+                    by_account, account = resold.setdefault(sale.doc_id, {}), await sold_lot_key(
+                        session, company_id, lot_id, before)
                     by_account[account] = by_account.get(account, 0.0) + change
-                if sale.doc_id is not None and change:
-                    sold.append((lot_id, lot_account(before), change))
+                # A consigned lot was never on the books: its cost is what is owed to the
+                # consignor, so the true-up alone moves cost of sales against that payable.
+                if sale.doc_id is not None and change and not is_consigned(before):
+                    sold.append((lot_id, sold_lot_account(before), change))
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
             allocations = await auto_je.allocations_naming_lot(session, company_id, lot_id)
             if sale.allocated:
@@ -1040,6 +1043,7 @@ async def upsert_external_product(
             )
             selected_by_identity = False
         if row is not None:
+            await lock_company(session, cid)  # before the row lock (company_lock lock order)
             row = await session.get(
                 Projection,
                 {"company_id": cid, "entity_id": row.entity_id},
@@ -1929,8 +1933,9 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
     False when nothing differs, or when the item was moved to Deleted: the sync leaves it
     there, and Restore is the one way back."""
     cid = uuid.UUID(str(company_id))
-    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
-                            with_for_update=True, populate_existing=True)
+    # The company lock comes before the item's row lock, as every stock writer takes them:
+    # a sync that lowers the quantity is judged against what invoices hold under it.
+    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
     state = row.state or {}
@@ -3632,9 +3637,10 @@ async def adjust_item_quantity(
     source: str,
     idempotency_key: str,
 ):
-    """Set an item's quantity on hand, checked against its selling unit's decimals. Units that
-    leave take their freight to the cent (pools_kept). The caller commits."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    """Set an item's quantity on hand, checked against its selling unit's decimals and
+    against what finalized invoices hold of it, read under the lock. Units that leave take
+    their freight to the cent (pools_kept). The caller commits."""
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row:
         current_sell_by = row.state.get("sell_by")
         unit_map = {u["name"]: u for u in await get_company_units(session, company_id)}
@@ -3840,21 +3846,23 @@ async def write_import_batch(
             if existing_projection is not None:
                 outcome.add(entity_id, "rejected", _record_refused(entity_id, "exists", "entity already exists"))
                 continue
+        # A refused row names its SKU, from the stored item when the row does not carry one.
+        named = {**data, "sku": data.get("sku") or ((stored_proj.state or {}).get("sku") if stored_proj is not None else None)}
 
         # Imported price values modify the same protected business data as the
         # interactive pricing surfaces. Import/export authority does not imply
         # permission to set prices.
         price_keys = price_keys_in(data, price_lists)
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-            outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(price_keys, "set_inventory_prices")))
+            outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(price_keys, "set_inventory_prices")))
             continue
 
         sell_by = str(data.get("sell_by") or "").strip()
         if event_type != "item.patched" and not sell_by:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.sell_by_required", "sell_by is required")))
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.sell_by_required", "sell_by is required")))
             continue
         if sell_by and valid_units and sell_by not in valid_units:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
                 "import.row.unknown_unit", f"sell_by '{sell_by}' is not a valid unit", unit=sell_by)))
             continue
 
@@ -3865,7 +3873,7 @@ async def write_import_batch(
                 if sell_by and sell_by != stored_sell_by:
                     gated.add("sell_by")
                 if gated:
-                    outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(gated, "edit_inventory_amounts")))
+                    outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(gated, "edit_inventory_amounts")))
                     continue
 
         negative_amount = None
@@ -3880,12 +3888,12 @@ async def write_import_batch(
             except (TypeError, ValueError):
                 pass
         if negative_amount is not None:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
                 "import.row.negative", f"{negative_amount} cannot be negative", field=negative_amount)))
             continue
         cost_refusal = negative_cost_error(lot_label(data, entity_id), *event_goods_costs(event_type, data))
         if cost_refusal:
-            outcome.add(entity_id, "rejected", _row_refused(data, cost_refusal))
+            outcome.add(entity_id, "rejected", _row_refused(named, cost_refusal))
             continue
 
         # Creation follows the ordinary internal-code primitive, after replay
@@ -3908,7 +3916,7 @@ async def write_import_batch(
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
         except ValueError as exc:
-            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
 
         if event_type != "item.patched":
@@ -3920,7 +3928,7 @@ async def write_import_batch(
             try:
                 loc_id = uuid.UUID(str(raw_loc))
             except ValueError:
-                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.invalid_location", "invalid location_id")))
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.invalid_location", "invalid location_id")))
                 continue
 
         # A patched goods cost is restated like an edit on the item page (merge and
@@ -3932,7 +3940,7 @@ async def write_import_batch(
             try:
                 cost_change = _pop_cost_change(data)
             except (TypeError, ValueError):
-                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.cost_not_number", "cost must be a number")))
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.cost_not_number", "cost must be a number")))
                 continue
 
         try:
@@ -3958,12 +3966,17 @@ async def write_import_batch(
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
-            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:
+                # A refusal (goods an invoice has set aside, a change the item cannot take)
+                # is the user's to resolve, so the row says what it is.
+                outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
+                continue
             # The cause stays in the server log; the caller gets a plain row error.
             logger.exception("Item import could not write %s", entity_id)
-            outcome.add(entity_id, "failed", _row_refused(data, refusal("import.row.not_written", "the item could not be written")))
+            outcome.add(entity_id, "failed", _row_refused(named, refusal("import.row.not_written", "the item could not be written")))
             continue
 
         existing[idem_key] = entry

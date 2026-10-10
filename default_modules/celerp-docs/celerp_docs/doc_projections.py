@@ -58,17 +58,28 @@ def _recalc_list_totals(state: dict) -> dict:
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
     """Return document-currency paid and outstanding balances. Goods sent back to the supplier
     owe nothing: what their return took off accounts payable (``returned_credit``) comes off
-    the total the same as a payment."""
+    the total the same as a payment. What an issued credit note settled between a document
+    and the invoice it credits (``credited``) is owed by neither."""
     currency = str(state.get("currency") or "USD")
     owed = round_money(to_decimal(state.get("total", 0) or 0) - to_decimal(state.get("returned_credit", 0) or 0),
                        currency)
     paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
-    outstanding = round_money(max(Decimal(0), owed - paid_d), currency)
+    credited = round_money(to_decimal(state.get("credited", 0) or 0), currency)
+    outstanding = round_money(max(Decimal(0), owed - paid_d - credited), currency)
     return paid_d, outstanding
 
 
-def _payment_status(paid: Decimal, outstanding: Decimal) -> str:
-    return "paid" if outstanding == 0 else ("partial" if paid > 0 else "final")
+def _left_of(payment: dict) -> Decimal:
+    """What a payment still holds of amount_paid: its amount less what was refunded of it."""
+    return to_decimal(payment.get("amount") or 0) - to_decimal(payment.get("refunded") or 0)
+
+
+def payment_status(state: dict, paid: Decimal, outstanding: Decimal) -> str:
+    """Paid once nothing is owed; partial while a payment or an issued credit note
+    (``credited``) has settled part of it; otherwise final."""
+    if outstanding == 0:
+        return "paid"
+    return "partial" if paid > 0 or to_decimal(state.get("credited", 0) or 0) > 0 else "final"
 
 
 def _receipt_status(current: dict) -> str:
@@ -105,7 +116,7 @@ def _status_without_receipts(state: dict) -> str:
     before = state.get("pre_receipt_status")
     if before == "draft" and not state.get("finalized"):
         return "draft"
-    status = _payment_status(*_payment_balances(state, to_decimal(state.get("amount_paid", 0))))
+    status = payment_status(state, *_payment_balances(state, to_decimal(state.get("amount_paid", 0))))
     return "awaiting_payment" if status == "final" and before == "awaiting_payment" else status
 
 
@@ -162,15 +173,21 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "doc.updated":
         _is_template = current.get("doc_type") in {"subscription_invoice", "subscription_po"}
         _PATCH_PROTECTED = {"entity_type", "company_id"} if _is_template else {"status", "entity_type", "company_id"}
+        # What an issued credit note settles (``credited``) sets the status with it. Edits
+        # and import-upserts can write neither field, so only that settlement carries both.
+        if "credited" in data["fields_changed"]:
+            _PATCH_PROTECTED = _PATCH_PROTECTED - {"status"}
         _is_finalized = current.get("status", "draft") != "draft"
         for field, change in data["fields_changed"].items():
             if field in _PATCH_PROTECTED:
                 continue
-            if field == "conversion_rate" and _is_finalized:
-                continue  # conversion_rate is immutable after finalization
+            # conversion_rate is immutable after finalization, except that an older credit
+            # note issued at another rate than its invoice's takes the invoice's at upgrade.
+            if field == "conversion_rate" and _is_finalized and not data.get("takes_invoice_rate"):
+                continue
             current[field] = change.get("new")
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
-        # based on how much has already been paid - never let outstanding go negative.
+        # based on how much has already been paid or credited - never let outstanding go negative.
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
             _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
             current["amount_outstanding"] = to_stored_float(outstanding)
@@ -275,7 +292,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = _payment_status(paid, outstanding)
+        current["status"] = payment_status(current, paid, outstanding)
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({
@@ -308,27 +325,23 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # behind on docs compacted by pre-tombstone deletions).
         target = next((p for p in payments if p.get("index") == idx), None)
         if target is not None:
-            # Refunds reduce amount_paid, so their effect is derived before
-            # this removal: what the actives summed to minus what amount_paid
-            # actually was. Deriving also covers refunds recorded before they
-            # named a payment. A refund of this payment leaves with it: only refunds
-            # of the other payments still count against what stays paid.
-            _prior_active = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            refunded = max(Decimal(0), _prior_active - to_decimal(current.get("amount_paid", 0))
-                           - to_decimal(target.get("refunded", 0)))
+            # The void takes off what is left of this payment once its own refunds
+            # gave part back. Everything else in amount_paid stays: other payments
+            # less their refunds (refunds recorded before they named a payment
+            # included), and what an imported document says was paid before the
+            # import, which no payment on the list records.
             target["status"] = "voided"
             target["void_reason"] = data.get("void_reason")
             target["refund_date"] = data.get("refund_date")
-            active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            paid, outstanding = _payment_balances(current, active_total - refunded)
+            paid, outstanding = _payment_balances(
+                current, to_decimal(current.get("amount_paid", 0)) - _left_of(target))
             current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = _payment_status(paid, outstanding)
+            current["status"] = payment_status(current, paid, outstanding)
     elif event_type == "doc.payment.deleted":
         idx = data["payment_index"]
         payments = current.get("payments", [])
-        _prior_active = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-        refunded = max(Decimal(0), _prior_active - to_decimal(current.get("amount_paid", 0)))
+        removed = None
         if data.get("tombstone"):
             # Tombstone in place, never compact: payment indices are identity.
             # Journal-entry ids and idempotency keys embed the index, so a
@@ -337,9 +350,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             # silently posting nothing. Lookup is by index FIELD, since list
             # position can lag on docs compacted by pre-tombstone deletions.
             target = next((p for p in payments if p.get("index") == idx), None)
-            changed = target is not None
+            changed = target is not None and target.get("status") == "active"
             if changed:
                 target["status"] = "deleted"
+                removed = target
         else:
             # Deletion events written before the tombstone flag compacted the
             # list positionally; replaying them must keep doing exactly that,
@@ -347,15 +361,18 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             # compacted positions.
             changed = 0 <= idx < len(payments)
             if changed:
+                removed = payments[idx] if payments[idx].get("status") == "active" else None
                 del payments[idx]
                 for i, p in enumerate(payments):
                     p["index"] = i
         if changed:
-            active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            paid, outstanding = _payment_balances(current, active_total - refunded)
+            # As a void: what is left of the payment comes off amount_paid, and
+            # everything else in it stays.
+            paid, outstanding = _payment_balances(
+                current, to_decimal(current.get("amount_paid", 0)) - (_left_of(removed) if removed else Decimal(0)))
             current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = _payment_status(paid, outstanding)
+            current["status"] = payment_status(current, paid, outstanding)
     elif event_type == "doc.payment.refunded":
         refunded = to_decimal(data["amount"])
         idx = data.get("payment_index")
@@ -368,7 +385,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current, to_decimal(current.get("amount_paid", 0)) - refunded)
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = _payment_status(paid, outstanding)
+        current["status"] = payment_status(current, paid, outstanding)
     elif event_type == "doc.payment.refund_reversed":
         restored = to_decimal(data["amount"])
         target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
@@ -378,7 +395,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current, to_decimal(current.get("amount_paid", 0)) + restored)
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = _payment_status(paid, outstanding)
+        current["status"] = payment_status(current, paid, outstanding)
     elif event_type == "doc.payment.stripe_released":
         target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
         if target is not None:

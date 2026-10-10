@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
+from celerp.accounting_roles import CONSIGNOR_FIELD
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.ledger import LedgerEntry
@@ -1033,7 +1034,27 @@ async def merge_contacts_service(
             metadata_={},
         )
 
-    # 11. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
+    # 11. Consigned stock records the consignor it is owed to (the consignor of record),
+    # which follows the merge like the consignment that received it.
+    for dr in await lock_referencing_records(
+            session, company_id, source_ids, entity_types=("item",), field=CONSIGNOR_FIELD):
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=dr.entity_id,
+            entity_type="item",
+            event_type="item.updated",
+            data={"fields_changed": {
+                CONSIGNOR_FIELD: {"old": dr.state[CONSIGNOR_FIELD], "new": payload.target_contact_id},
+            }},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # 12. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
     # No events emitted for notes.
 
     return {

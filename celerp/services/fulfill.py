@@ -21,7 +21,7 @@ def _to_uuid(val) -> _uuid.UUID:
     return val if isinstance(val, _uuid.UUID) else _uuid.UUID(str(val))
 
 
-async def _returned_lots(session: AsyncSession, cid, doc_ids: list[str]) -> dict[str, list[tuple[str | None, str, float]]]:
+async def returned_lots(session: AsyncSession, cid, doc_ids: list[str]) -> dict[str, list[tuple[str | None, str, float]]]:
     """Per document, the goods still received back on credit notes raised on it: for each
     returned lot, the sold lot it was valued from (None when it names none), its SKU and
     its quantity."""
@@ -112,7 +112,7 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
             line_id, idx = auto_je.recorded_line(e)
             recorded[key] = (line_id, idx if source == owner[source] else None)
     out_lots = {key: e for key, e in latest.items() if e.event_type == "item.fulfilled"}
-    returned = await _returned_lots(session, cid, [d.entity_id for d in docs])
+    returned = await returned_lots(session, cid, [d.entity_id for d in docs])
 
     wanted = {lot for _doc, lot in out_lots} | {sold for back in returned.values() for sold, _, _ in back if sold}
     for d in docs:

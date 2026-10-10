@@ -14,9 +14,12 @@ scopes; they never resolve today's map.
 from __future__ import annotations
 
 from fastapi import HTTPException
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    CONSIGNOR_FIELD,
+    CONSIGNOR_PAYABLE_FIELD,
     LOT_ACCOUNT_FIELD,
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
@@ -36,6 +39,7 @@ from celerp.accounting_roles import (
     unknown_role,
 )
 from celerp.models.company import Company
+from celerp.models.projections import Projection
 
 
 class PostingRoleError(HTTPException):
@@ -212,15 +216,193 @@ class AmbiguousOriginError(HTTPException):
         )
 
 
+class NotOwnedError(HTTPException):
+    """Goods held on consignment are the consignor's, not the company's stock, so they
+    have no inventory account and their cost cannot move as if they were owned."""
+
+    def __init__(self, sku: str):
+        super().__init__(
+            status_code=409,
+            detail=refusal(
+                "consignment.not_owned",
+                f"Stock {sku or 'item'} is held on consignment and is not the company's inventory, "
+                "so it cannot be used this way until it is bought from the consignor.", sku=sku or "item"),
+        )
+
+
+class ConsignmentNoCostError(HTTPException):
+    """Consigned goods whose cost is not known (a foreign consignment with no rate yet)
+    cannot be sold, since what is owed to the consignor would be a guess."""
+
+    def __init__(self, sku: str):
+        super().__init__(status_code=409, detail=refusal(
+            "consignment.no_cost",
+            f"Stock {sku or 'item'} is held on consignment with no known cost, so what is owed to the "
+            "consignor for it cannot be recorded. Set the consignment's exchange rate or the item's cost first.",
+            sku=sku or "item"))
+
+
+class ConsignorUnknownError(HTTPException):
+    """Consigned goods whose consignor is not known cannot be sold, since there is no one
+    to owe their cost to."""
+
+    def __init__(self, sku: str):
+        super().__init__(status_code=409, detail=refusal(
+            "consignment.no_consignor",
+            f"Stock {sku or 'item'} is held on a consignment with no consignor, so there is no one to owe "
+            "for it when it sells. Open the consignment and choose the consignor first.", sku=sku or "item"))
+
+
+def is_consigned(state: dict) -> bool:
+    """Whether a lot holds goods on consignment from a supplier."""
+    return state.get("consignment_flag") == "in"
+
+
 def lot_account(state: dict) -> str:
     """The inventory account a lot's value sits in: the one it recorded when it first
     took on stock, or for a lot from before lots recorded it, the one the upgrade or the
     user placed it on (celerp.services.lot_origin). Never today's role target, never a
-    company-wide guess."""
+    company-wide guess. Consigned goods are not the company's stock and have none."""
+    if is_consigned(state):
+        raise NotOwnedError(str(state.get("sku") or ""))
     code = state.get(LOT_ACCOUNT_FIELD)
     if not code:
         raise LotOriginError(str(state.get("sku") or ""))
     return code
+
+
+def sold_lot_account(state: dict) -> str:
+    """The account a lot's cost leaves when it is sold and returns to when the sale is
+    undone: its inventory account, or for consigned goods the consignor payable it
+    recorded on its first sale, since what the company owes the consignor is the cost
+    of consigned goods it sells."""
+    if is_consigned(state):
+        code = state.get(CONSIGNOR_PAYABLE_FIELD)
+        if not code:
+            raise NotOwnedError(str(state.get("sku") or ""))
+        return code
+    return lot_account(state)
+
+
+# How a lot came from another one, followed back to the lot received on a consignment.
+_LOT_PARENT_KEYS = ("split_from", "transformed_from", "returned_from")
+
+
+async def lineage(session: AsyncSession, company_id, roots) -> list[tuple[Projection, str | None, str | None]]:
+    """Every lot that came from ``roots``, roots first and each lot after the one it came
+    from: (lot, parent, link), where link names how it came from its parent (its parts
+    ``split_from``, ``transformed_from``, goods a customer returned ``returned_from``, or
+    the lot it was merged into ``merged_into``), and parent and link are None for a root."""
+    out: list[tuple[Projection, str | None, str | None]] = []
+    seen: set[str] = set()
+    frontier: dict[str, tuple[str | None, str | None]] = {root: (None, None) for root in roots}
+    while frontier:
+        seen |= set(frontier)
+        rows = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(sorted(frontier))))).scalars().all()
+        rows = sorted(rows, key=lambda r: r.entity_id)
+        out += [(row, *frontier[row.entity_id]) for row in rows]
+        children = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            or_(*(Projection.state[key].as_string().in_(sorted(frontier)) for key in _LOT_PARENT_KEYS))))).scalars().all()
+        frontier = {}
+        for child in sorted(children, key=lambda r: r.entity_id):
+            if child.entity_id in seen:
+                continue
+            cs = child.state or {}
+            link = next(key for key in ("transformed_from", "split_from", "returned_from") if cs.get(key) in seen)
+            frontier[child.entity_id] = (cs[link], link)
+        for row in rows:
+            into = (row.state or {}).get("merged_into")
+            if into and into not in seen and into not in frontier:
+                frontier[str(into)] = (row.entity_id, "merged_into")
+    return out
+
+
+async def consignor_of(session: AsyncSession, company_id, lot_id: str, state: dict) -> str | None:
+    """The consignor the consigned lot ``lot_id`` (projection ``state``) belongs to: the
+    contact of the consignment it was received on. A lot records it at its first sale and
+    every lot made from it keeps it; until then it is traced back through the lots it came
+    from to the consignment that received it, whose consignor is fixed from that sale on.
+    None when that consignment cannot be found."""
+    seen: set[str] = set()
+    while not state.get(CONSIGNOR_FIELD):
+        parent = next((str(state[k]) for k in _LOT_PARENT_KEYS if state.get(k)), None)
+        if parent is None or parent in seen:
+            return await _received_on(session, company_id, lot_id)
+        seen.add(parent)
+        row = await session.get(Projection, (company_id, parent))
+        if row is None:
+            return None
+        lot_id, state = parent, row.state or {}
+    return state[CONSIGNOR_FIELD]
+
+
+async def _received_on(session: AsyncSession, company_id, lot_id: str) -> str | None:
+    """The contact of the consignment whose receipts list ``lot_id``, or None."""
+    if not lot_id:
+        return None
+    docs = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "consignment_in"))).scalars().all()
+    for doc in docs:
+        if lot_id in ((doc.state or {}).get("received_item_ids") or []):
+            return (doc.state or {}).get("contact_id") or None
+    return None
+
+
+# A posting key naming an account and, for the consignor payable, the consignor the
+# line is owed to: "<account>|<contact>". Writers sum amounts by it, so two consignors'
+# amounts never net on one line, and _lot_line puts the contact on the line it posts.
+_PARTY_SEPARATOR = "|"
+
+
+def party_key(code: str, contact: str | None) -> str:
+    """The posting key for ``code`` owed to ``contact`` (just the account without one)."""
+    return f"{code}{_PARTY_SEPARATOR}{contact}" if contact else code
+
+
+def split_party_key(key: str) -> tuple[str, str | None]:
+    """(account, contact or None) of a posting key (party_key)."""
+    code, _, contact = key.partition(_PARTY_SEPARATOR)
+    return code, contact or None
+
+
+async def merge_survivors(session: AsyncSession, company_id) -> dict[str, str]:
+    """Each contact merged into another, mapped to the contact that survives it.
+
+    Merged contacts are one party. A merge re-points the records that name the contact
+    it retires, but a posted journal line keeps the contact it was posted for, so a
+    reader of posted parties resolves each one here. A merged contact's tombstone names
+    the contact it went into, which may itself have been merged since."""
+    rows = (await session.execute(select(
+        Projection.entity_id, Projection.state["merged_into"].as_string()).where(
+        Projection.company_id == company_id, Projection.entity_type == "contact",
+        Projection.state["merged_into"].as_string().isnot(None)))).all()
+    into = {str(contact): str(winner) for contact, winner in rows if winner}
+    survivors: dict[str, str] = {}
+    for contact, winner in into.items():
+        seen = {contact}
+        while winner in into and winner not in seen:
+            seen.add(winner)
+            winner = into[winner]
+        survivors[contact] = winner
+    return survivors
+
+
+def surviving_key(key: str, survivors: dict[str, str]) -> str:
+    """The posting key ``key`` (party_key) owed to the contact that survives its party's merges."""
+    code, contact = split_party_key(key)
+    return party_key(code, survivors.get(contact, contact) if contact else None)
+
+
+async def sold_lot_key(session: AsyncSession, company_id, lot_id: str, state: dict) -> str:
+    """sold_lot_account of lot ``lot_id`` as a posting key: for consigned goods the
+    consignor payable owed to the lot's consignor (consignor_of)."""
+    code = sold_lot_account(state)
+    if not is_consigned(state):
+        return code
+    return party_key(code, await consignor_of(session, company_id, lot_id, state))
 
 
 async def new_lot_account(session: AsyncSession, company_id, role: AccountRole) -> str | None:

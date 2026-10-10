@@ -33,6 +33,10 @@ from celerp_docs.routes import (
     _import_metadata,
     _lock_imported_contact,
     _require_doc_rate_http,
+    check_imported_snapshot,
+    imported_opening_snapshot,
+    imported_settlement_free,
+    settle_imported_credit,
     write_doc_patch,
 )
 
@@ -148,28 +152,33 @@ async def _create_doc(
     """Write one imported document and, when it is issued, its accounting entry."""
     await _lock_imported_contact(session, company_id, "doc", rec.data)
     await _assert_import_number_free(session, company_id, "doc", rec.data)
-    if auto_je.import_auto_je_kind(rec.data) is not None:
+    if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
-    if post_ledger and auto_je.import_auto_je_kind(rec.data) == "bill":
-        await require_line_destinations(session, company_id, rec.data.get("line_items"))
+    await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
+    data = imported_settlement_free(rec.data)
+    if post_ledger:
+        if auto_je.imported_issue_kind(data) == "bill":
+            await require_line_destinations(session, company_id, data.get("line_items"))
+        data = await imported_opening_snapshot(session, company_id, data)
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=rec.entity_id,
         entity_type="doc",
         event_type=DOC_CREATED,
-        data=rec.data,
+        data=data,
         actor_id=user.id,
         location_id=None,
         source=rec.source,
         idempotency_key=rec.idempotency_key,
-        metadata_=_import_metadata(rec.source_ts),
+        metadata_=_import_metadata(rec.source_ts, data, post_ledger=post_ledger),
     )
     if getattr(entry, "was_deduped", False):
         return "skipped"
+    await settle_imported_credit(session, company_id, user.id, entry.entity_id, data)
     if post_ledger:
         await _import_auto_je(
-            session, company_id, user.id, entry.entity_id, rec.data,
+            session, company_id, user.id, entry.entity_id, data,
             base_currency=base_currency,
         )
     return "created"

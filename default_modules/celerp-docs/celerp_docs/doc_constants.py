@@ -75,13 +75,13 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
     "customer_id": "contact_id", "customer_name": "contact_name", "receiver": "contact_name",
 }
 
-# State that only lifecycle operations write: finalize, send, payment, receive,
-# fulfil, convert, close and void, plus the record identity the ledger assigns.
+# State that only lifecycle operations write: finalize, send, payment, credit,
+# receive, fulfil, convert, close and void, plus the record identity the ledger assigns.
 # Ordinary creation never carries any of it, since a new document or list is an
 # unpaid draft, and import-upsert never rewrites it. Only the snapshot import
 # routes bring in an issued record, behind their own permission checks.
 LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
-    "status", "finalized", "amount_paid", "amount_outstanding", "payments",
+    "status", "finalized", "amount_paid", "amount_outstanding", "payments", "credited",
     "sent_to", "sent_via", "finalized_at", "sent_at", "issued_at", "accepted_at",
     "received_items", "received_item_ids", "returned_items", "returned_credit", "return_received_items",
     "fulfilled_items", "fulfillment_status", "fulfilled_at", "fulfilled_by", "fulfill_cycle",

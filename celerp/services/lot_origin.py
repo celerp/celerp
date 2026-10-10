@@ -109,6 +109,26 @@ def in_stock(state: dict | None) -> bool:
     return status not in OFF_BOOKS and (status not in RETIRED or s.get(ON_BOOKS_FIELD) is True)
 
 
+def ready_to_ship(state: dict | None) -> bool:
+    """Whether a lot's goods are in stock and free to ship: goods of a stock type
+    (is_stock_type), on the books, and neither archived, expired, nor out with a customer
+    on memo."""
+    s = state or {}
+    status = str(s.get("status") or "").lower()
+    return is_stock_type(s) and in_stock(s) and status not in RETIRED and status != "memo_out"
+
+
+def units_leaving(before: dict | None, after: dict | None) -> float:
+    """How many of a lot's units a change takes out of what is ready to ship (ready_to_ship):
+    all of them when the lot stops being ready, else what its quantity falls by."""
+    if not before or not ready_to_ship(before):
+        return 0.0
+    held = float(before.get("quantity") or 0)
+    if not ready_to_ship(after):
+        return held
+    return max(0.0, held - float((after or {}).get("quantity") or 0))
+
+
 def held_value(row: Projection) -> Decimal | None:
     """The value of the goods a lot holds on the books, or None when it holds none on
     them (not owned, not committed, retired with its value given up, consigned in, or not
@@ -169,12 +189,15 @@ async def account_balances(session: AsyncSession, company_id, codes) -> dict[str
     return {code: _balance(entries, code) for code in codes}
 
 
-def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str) -> Decimal:
-    """What ``code`` holds beyond the value of the lots on hand that record it."""
+def _room(entries: list[tuple[str, dict]], items: list[Projection], code: str, currency: str,
+          sold: dict[str, float]) -> Decimal:
+    """What ``code`` holds beyond the value of the lots on hand that record it, less what
+    finalized invoices already recognized for the ones they have not shipped (``sold``,
+    from auto_je.recognized_unshipped)."""
     balance = _balance(entries, code)
     recorded = sum((booked_value(r, currency) for r in items if (r.state or {}).get(LOT_ACCOUNT_FIELD) == code),
                    Decimal("0"))
-    return balance - recorded
+    return balance - recorded + round_money(sold.get(code, 0), currency)
 
 
 async def account_room(session: AsyncSession, company_id, code: str) -> Decimal:
@@ -184,9 +207,12 @@ async def account_room(session: AsyncSession, company_id, code: str) -> Decimal:
 
 async def account_rooms(session: AsyncSession, company_id, codes) -> dict[str, Decimal]:
     """account_room for each of ``codes``, read once."""
+    from celerp.services.auto_je import recognized_unshipped
+
     currency = (await current_settings(session, company_id)).get("currency", "USD")
     entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
-    return {code: round_money(_room(entries, items, code, currency), currency) for code in codes}
+    sold = await recognized_unshipped(session, company_id)
+    return {code: round_money(_room(entries, items, code, currency, sold), currency) for code in codes}
 
 
 def awaits_account(row: Projection) -> bool:
@@ -205,15 +231,18 @@ async def stock_off_books(session: AsyncSession, company_id) -> list[dict]:
     """What the books check reports about stock: each lot on hand holding value that
     records no inventory account, and each account lots are carried on whose balance differs from
     the stock on hand recorded on it. Read only; nothing is booked to close a gap."""
+    from celerp.services.auto_je import recognized_unshipped
+
     settings = await current_settings(session, company_id)
     if SCHEMA_KEY not in settings:
         return []
     currency = settings.get("currency", "USD")
     entries, items = await _posted_entries(session, company_id), await _items(session, company_id)
+    sold = await recognized_unshipped(session, company_id)
     findings = [{"kind": "unplaced_lot", "entity_id": r.entity_id, "sku": (r.state or {}).get("sku")}
                 for r in sorted(unrecorded(items), key=lambda r: r.entity_id)]
     for code in sorted({code for role in _INVENTORY for code in scope_codes(settings, role)}):
-        room = round_money(_room(entries, items, code, currency), currency)
+        room = round_money(_room(entries, items, code, currency, sold), currency)
         if room:
             books = round_money(_balance(entries, code), currency)
             findings.append({"kind": "stock_gap", "account": code, "books": float(books),
@@ -692,6 +721,15 @@ async def _open(session: AsyncSession, company_id, user_id) -> bool:
     return True
 
 
+async def opening_lot_account(session: AsyncSession, company_id) -> str:
+    """The inventory account a lot with no purchase behind it is booked to: the opening
+    inventory account in use now, checked as any new entry's is (account_roles.resolve_many).
+    The one source for opening stock, a lot made available, and an older lot that records
+    no account when its value first changes."""
+    opening = AccountRole.INVENTORY_OPENING.value
+    return (await resolve_many(session, company_id, [opening]))[opening]
+
+
 @dataclass(frozen=True)
 class DraftBoundary:
     """A lot moving between draft and stock: the value it brings onto the books (made
@@ -732,7 +770,7 @@ async def draft_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     opening = AccountRole.INVENTORY_OPENING.value
     code = before.get(LOT_ACCOUNT_FIELD) if made_available else lot_account(before)
     if not code:
-        code = (await resolve_many(session, entry.company_id, [opening]))[opening]
+        code = await opening_lot_account(session, entry.company_id)
     elif made_available:
         code = await continue_role(session, entry.company_id, opening, code)
     return DraftBoundary(made_available=made_available, value=value, code=code,
@@ -816,6 +854,7 @@ class ValueChange:
     delta: Decimal
     code: str
     day: str
+    record: bool = False  # an older lot records ``code`` as its value first changes
 
 
 async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: Transition) -> ValueChange | None:
@@ -826,15 +865,21 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     is booked in the same transaction; writers that book or move the value themselves
     (self_booked) are left to their own entries. While the lot holds booked stock,
     nothing may change whether it is the company's own (its inventory type, a
-    consignment): that is refused, never booked. With Accounting off, nothing is booked."""
+    consignment): that is refused, never booked. An older lot that records no account
+    and stays the company's own stock is booked on the account it would have been
+    booked to (opening_lot_account), which it records from then on. With Accounting
+    off, nothing is booked."""
     from celerp.services.auto_je import entry_day
 
     before, after = transition.before, transition.after
     code = (before or {}).get(LOT_ACCOUNT_FIELD)
-    if not code or not in_stock(before) or not in_stock(after):
+    if before is None or not in_stock(before) or not in_stock(after):
         return None
-    if _owned_stock(SimpleNamespace(state=before, consignment_flag=None)) != _owned_stock(
-            SimpleNamespace(state=after, consignment_flag=None)):
+    owned_before = _owned_stock(SimpleNamespace(state=before, consignment_flag=None))
+    owned_after = _owned_stock(SimpleNamespace(state=after, consignment_flag=None))
+    if not code and not (owned_before and owned_after):
+        return None
+    if owned_before != owned_after:
         raise HTTPException(
             status_code=422,
             detail=f"This item holds stock booked to inventory account {code}, so its inventory type and "
@@ -849,13 +894,17 @@ async def value_boundary(session: AsyncSession, entry: LedgerEntry, transition: 
     delta = -value_moved(before, after, settings.get("currency", "USD"))
     if not delta:
         return None
-    return ValueChange(delta=delta, code=code,
-                       day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")))
+    return ValueChange(delta=delta, code=code or await opening_lot_account(session, entry.company_id),
+                       day=await entry_day(session, entry.company_id, (entry.data or {}).get("ts")),
+                       record=not code)
 
 
 async def book_value_change(session: AsyncSession, entry: LedgerEntry, change: ValueChange) -> None:
     """Book a lot's change in value (value_boundary) on its inventory account, keyed by
-    the event so a retry books nothing more (book_lot_value)."""
+    the event so a retry books nothing more (book_lot_value). An older lot records the
+    account first."""
+    if change.record:
+        await _record(session, entry.company_id, entry.entity_id, change.code, "value changed", entry.actor_id)
     await book_lot_value(
         session, entry.company_id, entry.actor_id, change.code, change.delta,
         je_id=f"je:auto:{entry.entity_id}:value-changed:{entry.id}", idem=f"lot-value:{entry.id}",
@@ -923,15 +972,15 @@ async def recognize_opening_lots(session: AsyncSession, company_id, item_ids, ac
     if not lots:
         return
     value = sum((booked_value(r, settings.get("currency", "USD")) for r in lots), Decimal("0"))
-    opening, retained = AccountRole.INVENTORY_OPENING.value, AccountRole.RETAINED_EARNINGS.value
-    accounts = await resolve_many(session, company_id, [opening, retained])
+    code = await opening_lot_account(session, company_id)
+    await resolve_many(session, company_id, [AccountRole.RETAINED_EARNINGS.value])
     day = await entry_day(session, company_id, at)
     for lot in lots:
-        await _record(session, company_id, lot.entity_id, accounts[opening], "opening stock", actor_id)
+        await _record(session, company_id, lot.entity_id, code, "opening stock", actor_id)
     digest = hashlib.sha256("\n".join(lot.entity_id for lot in lots).encode()).hexdigest()[:16]
     key = f"opening-stock:{operation_id}:{digest}"
     await post_opening_stock_delta(
-        session, company_id, {accounts[opening]: value}, onto_books=True, je_id=f"je:auto:{key}", idem=key,
+        session, company_id, {code: value}, onto_books=True, je_id=f"je:auto:{key}", idem=key,
         memo="Opening stock brought in", metadata={"trigger": "item.opening-stock", "operation": operation_id},
         actor_id=actor_id, day=day)
 

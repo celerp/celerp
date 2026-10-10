@@ -3,7 +3,7 @@
 
 from copy import deepcopy
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.money import round_basis
 
 # Maps old weight_unit abbreviations to new unit names
@@ -52,8 +52,9 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # flags / classification
     "allow_splitting", "inventory_type", "pick_method", "consignment_flag", "item_type",
     "is_expired", "expires_at", "landed_cost_kind", "recoverable",
-    # the inventory account the lot's value sits in (celerp.accounting_roles)
-    LOT_ACCOUNT_FIELD,
+    # the inventory account the lot's value sits in, and for a consigned lot the account
+    # its sale is owed to its consignor on and that consignor (celerp.accounting_roles)
+    LOT_ACCOUNT_FIELD, CONSIGNOR_PAYABLE_FIELD, CONSIGNOR_FIELD,
     # whether an archived or expired lot still holds its stock (celerp.services.lot_origin)
     ON_BOOKS_FIELD,
     # purchase side
@@ -62,7 +63,7 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "short_description", "description", "notes", "hs_code", "batch_no",
     # relationships / lifecycle markers
     "parent_id", "parent_sku", "children", "child_skus", "merged_into", "split_from",
-    "transformed_from", "transformed_into", "fulfilled_for_docs", "catalog_item_id",
+    "transformed_from", "returned_from", "transformed_into", "fulfilled_for_docs", "catalog_item_id",
     "_catalog_sku_aliases",
     "status_doc_id", "status_doc_number", "status_line_entity_id",
     # manufactured-lot identity: a produced lot links to its product and its run, and flags itself
@@ -516,6 +517,19 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         _recompute_cost(current)
     elif event_type == "item.inventory_account.recorded":
         current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
+    elif event_type == "item.consignor_payable.recorded":
+        current[CONSIGNOR_PAYABLE_FIELD] = data[CONSIGNOR_PAYABLE_FIELD]
+        current[CONSIGNOR_FIELD] = data[CONSIGNOR_FIELD]
+    elif event_type == "item.consignment.bought":
+        # Bought from the consignor: the company's own stock at the bill's cost. The
+        # consignment no longer names the lot; a sale or memo that does is kept.
+        current["consignment_flag"] = None
+        if current.get("status_doc_id") == data["consignment_doc_id"]:
+            current.pop("status_doc_id", None)
+            current.pop("status_doc_number", None)
+        current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
+        current["cost_base"] = float(data["cost_total"])
+        _recompute_cost(current)
     elif event_type == "item.inventory_on_books.recorded":
         pass  # _keep_on_books
     elif event_type == "item.landed_cost.allocated":

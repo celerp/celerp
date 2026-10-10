@@ -3244,7 +3244,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             status_code=422,
             detail=f"Child quantities ({total_child_qty}) exceed parent quantity ({parent_qty})",
         )
-
     # Normalise: top-level pieces field → attributes so all downstream reads are uniform
     for child in children:
         if child.pieces is not None:
@@ -3934,7 +3933,23 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_pieces is not None:
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
 
-    # 1. Create child
+    # 1. Mark parent archived (consumed by transform), first: goods an invoice holds
+    #    cannot be made into something else, and are refused before anything is written.
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "archived"},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"reason": "consumed_by_transform"},
+    )
+
+    # 2. Create child
     await emit_event(
         session,
         company_id=company_id,
@@ -3987,21 +4002,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={"reason": "from_transform"},
-    )
-
-    # 4. Mark parent archived (consumed by transform)
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.status.set",
-        data={"new_status": "archived"},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={"reason": "consumed_by_transform"},
     )
 
     # 5. Emit transform event

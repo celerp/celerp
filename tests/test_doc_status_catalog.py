@@ -19,7 +19,7 @@ from celerp.services.list_behavior import LIST_STATUSES, LIST_TYPES, status_key
 from ui import i18n
 
 _PROJECTIONS = Path(__file__).resolve().parents[1] / "default_modules/celerp-docs/celerp_docs/doc_projections.py"
-_DERIVED_STATUS_FUNCS = {"_payment_status", "_status_without_receipts"}
+_DERIVED_STATUS_FUNCS = {"payment_status", "_status_without_receipts"}
 
 
 def _literals(node: ast.AST | None) -> set[str]:

@@ -712,12 +712,14 @@ async def test_invoice_finalize_promotes_memo_out_items_to_sold(client, session,
 
 
 @pytest.mark.asyncio
-async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids):
-    """PATCH doc with line_items.new that omits a line whose lot this document shipped
-    must be rejected.
+@pytest.mark.parametrize("sent_out_by", ["this_doc", "elsewhere"])
+async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids, sent_out_by):
+    """PATCH doc with line_items.new that omits a line whose goods THIS document sent out
+    is rejected; a line whose goods went out some other way is not this document's, so
+    it can be dropped (or changed to other stock).
 
-    Sets up the state via the service layer (bypassing the revert guard) to test the line
-    guard independently: draft doc + its item sold on it (simulates a forced/migrated state).
+    Sets up the state via the service layer to test the PATCH guard independently: draft
+    doc + item sent out (simulates a forced/migrated state).
     """
     import uuid as _uuid
     from celerp.events.engine import emit_event
@@ -737,14 +739,15 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
     doc_id = r.json()["id"]
     # Doc is draft at this point
 
-    # Set item status to sold via service layer (bypassing HTTP guards)
+    # Send the item out via the service layer (bypassing HTTP guards)
     await emit_event(
         session,
         company_id=_setup_ids["company_id"],
         entity_id=item_id,
         entity_type="item",
-        event_type="item.status.set",
-        data={"new_status": "sold", "source_doc_id": doc_id},
+        event_type="item.fulfilled" if sent_out_by == "this_doc" else "item.status.set",
+        data=({"source_doc_id": doc_id, "quantity_fulfilled": 1.0, "fulfilled_by": str(_setup_ids["user_id"]),
+               "doc_type": "memo"} if sent_out_by == "this_doc" else {"new_status": "sold"}),
         actor_id=_setup_ids["user_id"],
         location_id=None,
         source="test",
@@ -762,6 +765,9 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
         "fields_changed": {"line_items": {"new": remaining_lines}},
     })
+    if sent_out_by == "elsewhere":
+        assert r.status_code == 200, r.text
+        return
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["message_key"] == "line.protected_shipped"
 
@@ -2379,9 +2385,9 @@ async def test_cogs_zero_cost_line_contributes_zero(client, session, auth, _setu
 
 @pytest.mark.asyncio
 async def test_cogs_parcel_qty_zero_falls_back(client, session, auth, _setup_ids):
-    """A line whose parcel has quantity <= 0 falls back to the parcel's cost_price for
-    the per-unit cost and posts no division error. Parcel: quantity 0, cost_price 7; line
-    draws 2, so COGS = 14. At merge-base finalize posts no COGS and never divides."""
+    """A line whose parcel has quantity <= 0 finalizes without a division error and
+    posts no cost of sales: no lot holds the 2 units invoiced, so they are costed when
+    goods for them ship. Parcel: quantity 0, cost_price 7; line of 2."""
     sku = f"COGSZQ-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"], json={
         "status": "available", "sku": sku, "name": sku, "quantity": 0,
@@ -2392,8 +2398,8 @@ async def test_cogs_parcel_qty_zero_falls_back(client, session, auth, _setup_ids
         {"sku": sku, "name": sku, "quantity": 2, "unit_price": 9.0, "entity_id": item_id},
     ])
     nets = await _je_net(client, auth["headers"])
-    assert nets.get("5100") == 14.0, (
-        f"parcel_qty<=0 must fall back to cost_price: 2*7=14, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("5100") is None, (
+        f"units no lot holds post no cost at finalize, got {nets.get('5100')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -2531,11 +2537,11 @@ async def test_cogs_finalize_spans_sibling_lots(client, session, auth, _setup_id
 
 
 @pytest.mark.asyncio
-async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, session, auth, _setup_ids):
-    """When the whole SKU is short of the invoiced quantity, finalize still succeeds:
-    the allocatable units price at their own lots' costs and the unallocatable
-    remainder prices provisionally at the bound lot's unit cost. Lots: A 2 at 10,
-    B 2 at 30 (total 4); line qty 5 bound to A posts 2*10 + 2*30 + 1*10 = 90."""
+async def test_cogs_finalize_oversell_costs_only_lots_on_hand(client, session, auth, _setup_ids):
+    """When the whole SKU is short of the invoiced quantity, finalize still succeeds and
+    costs only the units lots hold, each at its own lot's cost; the unit no lot holds is
+    costed when goods for it ship. Lots: A 2 at 10, B 2 at 30 (total 4); line qty 5
+    bound to A posts 2*10 + 2*30 = 80."""
     sku = f"SPANSHORT-{uuid.uuid4().hex[:6]}"
     lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
     await _create_item(client, auth, sku, 2, cost_price=30.0)
@@ -2543,24 +2549,25 @@ async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, ses
         {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
     ])
     nets = await _je_net(client, auth["headers"])
-    assert nets.get("5100") == 90.0, (
-        f"oversold line must post 2*10 + 2*30 + 1*10 = 90, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-OB") == -90.0, (
-        f"inventory relief must match at -90, got {nets.get('1130-OB')} (nets={nets})")
+    assert nets.get("5100") == 80.0, (
+        f"oversold line must post 2*10 + 2*30 = 80, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("1130-OB") == -80.0, (
+        f"inventory relief must match at -80, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
 async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup_ids):
     """Fulfillment compares the actual cost of the lots drawn with the COGS recognized
-    at finalize and posts one adjustment JE for the difference; a fulfill whose actual
-    cost equals the recognized amount posts no adjustment; re-running the adjustment
-    is idempotent.
+    at finalize and posts one adjustment JE for the difference; re-running the
+    adjustment is idempotent.
 
     Setup: lots A 2 at 10, B 3 at 30, C 3 at 50. doc1 line qty 5 bound to A
-    recognizes 2*10 + 3*30 = 110 at finalize. doc2 then sells lot B outright
-    (recognized 90, fulfilled at exactly 90: no adjustment). Fulfilling doc1
-    afterwards draws A and C (B is sold), actual 2*10 + 3*50 = 170, so doc1 gets one
-    adjustment JE of +60."""
+    recognizes 2*10 + 3*30 = 110 at finalize. doc2 then sells lot B outright: doc1
+    already costed B, so doc2 costs the free lot C at finalize (3*50 = 150). Shipping B,
+    doc2 takes B's 90 over from doc1 (a cost move) and gives back the 150 it set aside
+    for C, which stays on hand. Fulfilling doc1 afterwards draws A and C (B is sold),
+    actual 2*10 + 3*50 = 170 against the 20 it still holds, so doc1 gets one adjustment
+    JE of +150."""
     from celerp.models.projections import Projection
 
     cid = _setup_ids["company_id"]
@@ -2582,8 +2589,11 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
     session.expire_all()
     doc2_adj = await session.get(
         Projection, {"company_id": cid, "entity_id": f"je:auto:{doc2}:cogs-adj:fulfill-0:l0"})
-    assert doc2_adj is None, (
-        "a fulfill whose actual cost equals the recognized COGS must post no adjustment JE")
+    assert doc2_adj is not None and {
+        e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
+        for e in doc2_adj.state.get("entries", [])} == {"5100": (0.0, 150.0), "1130-OB": (150.0, 0.0)}, (
+        "a lot another invoice already costed is not costed twice: doc2 takes B's cost from doc1 "
+        "and gives back C's")
 
     r = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [lot_a]})
@@ -2592,17 +2602,17 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
     adj_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"
     adj = await session.get(Projection, {"company_id": cid, "entity_id": adj_id})
     assert adj is not None and adj.state.get("status") == "posted", (
-        f"fulfillment must post the COGS adjustment JE {adj_id} (actual 170 vs recognized 110)")
+        f"fulfillment must post the COGS adjustment JE {adj_id} (actual 170 vs 20 still held)")
     by_acct = {e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
                for e in adj.state.get("entries", [])}
-    assert by_acct.get("5100") == (60.0, 0.0), (
-        f"adjustment must debit 5100 by exactly 60, got {by_acct.get('5100')}")
-    assert by_acct.get("1130-OB") == (0.0, 60.0), (
-        f"adjustment must credit 1130-OB by exactly 60, got {by_acct.get('1130-OB')}")
+    assert by_acct.get("5100") == (150.0, 0.0), (
+        f"adjustment must debit 5100 by exactly 150, got {by_acct.get('5100')}")
+    assert by_acct.get("1130-OB") == (0.0, 150.0), (
+        f"adjustment must credit 1130-OB by exactly 150, got {by_acct.get('1130-OB')}")
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, (
-        f"total COGS must be 110 + 90 + 60 = 260, got {nets.get('5100')} (nets={nets})")
+        f"total COGS must be 110 + 150 - 150 + 150 = 260, got {nets.get('5100')} (nets={nets})")
 
     # Idempotency: replaying the same adjustment must not double-post.
     from sqlalchemy import func, select
@@ -2633,8 +2643,9 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
     Setup: two SKUs. SKU1 lots A1 2 at 10, B1 3 at 30, C1 3 at 50; SKU2 lots
     A2 2 at 20, B2 3 at 40, C2 3 at 70. doc1 line 0 (SKU1 qty 5 bound A1)
     recognizes 110; line 1 (SKU2 qty 5 bound A2) recognizes 160. doc2 sells B1
-    and B2 outright, so batch 1 (line 0) draws A1+C1 = 170, delta +60, and
-    batch 2 (line 1) draws A2+C2 = 250, delta +90."""
+    and B2 outright and takes their cost over (90 and 120), so doc1's lines hold 20 and
+    40: batch 1 (line 0) draws A1+C1 = 170, delta +150, and batch 2 (line 1) draws
+    A2+C2 = 250, delta +210."""
     from celerp.models.projections import Projection
 
     cid = _setup_ids["company_id"]
@@ -2672,9 +2683,9 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
     adj_l0_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"
     adj_l0 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l0_id})
     assert adj_l0 is not None and adj_l0.state.get("status") == "posted", (
-        f"batch 1 must post its own adjustment JE {adj_l0_id} (actual 170 vs recognized 110)")
-    assert _adj_amount(adj_l0) == (60.0, 0.0), (
-        f"batch 1 delta must be +60 for its own line only, got {_adj_amount(adj_l0)}")
+        f"batch 1 must post its own adjustment JE {adj_l0_id} (actual 170 vs 20 held)")
+    assert _adj_amount(adj_l0) == (150.0, 0.0), (
+        f"batch 1 delta must be +150 for its own line only, got {_adj_amount(adj_l0)}")
 
     # Batch 2: line 1, same cycle, different delta. Must post a second JE, not
     # dedup away on batch 1's key.
@@ -2685,11 +2696,11 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
     adj_l1_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l1"
     adj_l1 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l1_id})
     assert adj_l1 is not None and adj_l1.state.get("status") == "posted", (
-        f"batch 2 must post its own adjustment JE {adj_l1_id} (actual 250 vs recognized 160)")
-    assert _adj_amount(adj_l1) == (90.0, 0.0), (
-        f"batch 2 delta must be +90 for its own line only, got {_adj_amount(adj_l1)}")
+        f"batch 2 must post its own adjustment JE {adj_l1_id} (actual 250 vs 40 held)")
+    assert _adj_amount(adj_l1) == (210.0, 0.0), (
+        f"batch 2 delta must be +210 for its own line only, got {_adj_amount(adj_l1)}")
     adj_l0 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l0_id})
-    assert _adj_amount(adj_l0) == (60.0, 0.0), "batch 2 must not disturb batch 1's JE"
+    assert _adj_amount(adj_l0) == (150.0, 0.0), "batch 2 must not disturb batch 1's JE"
 
     # Replaying batch 2 posts nothing new, even with a different computed delta.
     from sqlalchemy import func, select
@@ -2709,7 +2720,7 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
         f"replaying batch 2 must be a no-op, ledger rows went {rows_before} -> {rows_after}")
     session.expire_all()
     adj_l1 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l1_id})
-    assert _adj_amount(adj_l1) == (90.0, 0.0), "replay must not change batch 2's posted entries"
+    assert _adj_amount(adj_l1) == (210.0, 0.0), "replay must not change batch 2's posted entries"
 
 
 @pytest.mark.asyncio

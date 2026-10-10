@@ -95,6 +95,8 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
     # The sale is taken back on the invoice that made it, not on the memo.
     r = await client.post(f"/docs/{sale}/revert-lines", headers=h, json={"line_entity_ids": [stale]})
     assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{sale}/void", headers=h, json={"reason": "returned"})
+    assert r.status_code == 200, r.text
     assert (await client.get(f"/items/{stale}", headers=h)).json()["status"] == "available"
 
     memo = await _memo(client, h, [stale, fresh])

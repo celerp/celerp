@@ -3945,15 +3945,23 @@ celerpUpdateBulkAlloc();
         try:
             kwargs = call(form)
             send, entity_id, done = kwargs.pop("_send"), kwargs.pop("entity_id"), kwargs.pop("_done")
-            await send(token, entity_id, **kwargs)
+            answer = await send(token, entity_id, **kwargs)
         except ValueError as exc:
             return _action_error(str(exc))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(error_message(e))
-        n = len(kwargs["line_ids"]) + len(kwargs["line_entity_ids"])
-        toast = toast_header(t(f"{done}_{'one' if n == 1 else 'many'}", n=n), "info")
+        # Goods another invoice had set aside: say whose, and that it is costed when it
+        # ships, in a notice that stays until it is closed.
+        moved = (answer.get("cost_moved") or []) if isinstance(answer, dict) else []
+        if moved:
+            notice = " ".join(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
+                                doc=m.get("doc_number") or m.get("doc_id")) for m in moved)
+            toast = toast_header(notice, "info", persist=True)
+        else:
+            n = len(kwargs["line_ids"]) + len(kwargs["line_entity_ids"])
+            toast = toast_header(t(f"{done}_{'one' if n == 1 else 'many'}", n=n), "info")
         return _R("", status_code=204, headers={**toast, **({"HX-Redirect": redirect} if redirect else {})})
 
     @app.post("/docs/{entity_id}/fulfill-lines")
@@ -6783,7 +6791,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="void-section",
             )
         )
-    # "Revert to Draft" button - only from final/sent (and "fulfilled" for inbound docs) with no payments and no received items
+    # "Revert to Draft" button - only from final/sent (and "fulfilled" for inbound docs) with no payments and no received items,
+    # or from paid/partial when an issued credit note alone settled it (the API's settled_by_credit_only).
+    # Never on an invoice an issued credit note settled part of: the API refuses it until that credit note is undone.
     amount_paid_for_revert = float(doc.get("amount_paid") or 0)
     has_received_items = bool(doc.get("received_items"))
     _is_inbound_doc = doc_type in ("bill", "consignment_in")
@@ -6794,7 +6804,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _is_inbound_doc
         else {"final", "sent"}
     )
-    if status in _revertable_statuses and amount_paid_for_revert == 0 and _can_finalize and not suppress_doc_actions:
+    _credited = float(doc.get("credited") or 0) > 0
+    _settled_by_credit_only = not is_list and status in ("partial", "paid") and _credited and doc_type != "invoice"
+    if ((status in _revertable_statuses or _settled_by_credit_only) and amount_paid_for_revert == 0
+            and not (doc_type == "invoice" and _credited)
+            and _can_finalize and not suppress_doc_actions):
         action_btns_right.insert(0,
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary",

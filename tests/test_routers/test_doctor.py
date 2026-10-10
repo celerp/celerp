@@ -220,7 +220,8 @@ async def test_import_same_idempotency_key_returns_existing(client, session):
 
 @pytest.mark.asyncio
 async def test_import_paid_invoice_creates_jes(client, session):
-    """Import a paid invoice - should auto-create finalization + payment JEs."""
+    """Import a paid invoice: its finalization entry, and what it says was paid before the
+    import off the receivable against retained earnings. No synthetic payment entry."""
     token = await _register(client)
     entity_id = f"doc:test-paid-{uuid.uuid4().hex[:8]}"
 
@@ -236,10 +237,9 @@ async def test_import_paid_invoice_creates_jes(client, session):
 
     # Check JE projections were created
     jes = await _document_jes(client, token)
-    # Only finalization JE is created on import (no synthetic payment JE)
-    je_types = [e["event_type"] for e in jes]
-    assert je_types.count("acc.journal_entry.created") == 1
-    assert je_types.count("acc.journal_entry.posted") == 1
+    created = sorted(e["entity_id"] for e in jes if e["event_type"] == "acc.journal_entry.created")
+    assert created == [f"je:auto:{entity_id}:fin", f"je:auto:{entity_id}:opening-paid"]
+    assert [e["event_type"] for e in jes].count("acc.journal_entry.posted") == 2
 
     # Trial balance should show data
     r = await client.get("/accounting/trial-balance", headers=_h(token))
@@ -358,10 +358,10 @@ async def test_batch_import_paid_invoices_create_jes(client, session):
     assert r.status_code == 200
     assert r.json()["created"] == 3
 
-    # Should have 6 JE created events (3 finalization + 3 payment) = 12 total events
+    # Per invoice its finalization entry and its paid-before-import entry; no payment entries.
     jes = await _document_jes(client, token)
-    created = [e for e in jes if e["event_type"] == "acc.journal_entry.created"]
-    assert len(created) == 3  # 3 finalization only; no synthetic payment JEs on import
+    created = sorted(e["entity_id"] for e in jes if e["event_type"] == "acc.journal_entry.created")
+    assert created == sorted(f"je:auto:{r['entity_id']}:{kind}" for r in records for kind in ("fin", "opening-paid"))
 
 
 # --- Doctor fix mode ---
@@ -518,8 +518,9 @@ async def test_doctor_subset_checks(client, session):
 # --- Doctor: PO missing JE (fix path) ---
 
 @pytest.mark.asyncio
-async def test_doctor_missing_je_po_no_missing_after_api(client, session):
-    """A PO imported as received triggers the auto-JE hook - doctor should find 0 missing."""
+async def test_doctor_finds_no_missing_entry_for_a_po_imported_as_received(client, session):
+    """A PO imported as received posts nothing (the opening balances hold its
+    value), and Doctor does not report an entry as missing for it."""
     import uuid as _uuid
     token = await _register(client)
     entity_id = f"doc:po-fix-{_uuid.uuid4().hex[:8]}"
@@ -535,14 +536,12 @@ async def test_doctor_missing_je_po_no_missing_after_api(client, session):
     })
     assert r.status_code == 200
 
-    # Auto-JE hook fires for received POs - no missing JEs
-    r2 = await client.post("/admin/doctor?checks=missing_jes", headers=_h(token))
+    r2 = await client.post("/admin/doctor?fix=true&checks=missing_jes", headers=_h(token))
     missing = next(c for c in r2.json()["results"] if c["check"] == "missing_jes")
-    assert missing["found"] == 0
+    assert missing["found"] == 0 and missing["fixed"] == 0
 
-    # Verify PO JE events created
     created = [e for e in await _document_jes(client, token) if e["event_type"] == "acc.journal_entry.created"]
-    assert len(created) == 1
+    assert created == []
 
 
 # --- Doctor fix: paid invoice missing payment JE ---
