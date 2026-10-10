@@ -50,7 +50,7 @@ from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
 from celerp.services.document_lines import (
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
-    strip_line_ids,
+    shipped_elsewhere, strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -8669,16 +8669,15 @@ async def set_list_lines_available(
     async def run(indices: list[int]) -> dict:
         line_items = row.state.get("line_items", [])
         locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
-        shipped = []
+        shipped: dict[str, list[str]] = {}
         for i in indices:
             bound = locked.get(str(line_item_id(line_items[i]) or ""))
             if not by_line.get(i) and bound is not None and bound.state.get("status") in ("sold", "memo_out"):
-                shipped.append(str(line_items[i].get("sku") or i + 1))
+                by = str(bound.state.get("status_doc_number") or bound.state.get("status_doc_id") or "")
+                shipped.setdefault(by, []).append(str(line_items[i].get("sku") or i + 1))
         if shipped:
-            names = ", ".join(shipped)
-            raise HTTPException(status_code=422, detail=refusal(
-                "lines.shipped_elsewhere",
-                f"{names} went out on a document. Set it as available on that document.", lines=names))
+            by, names = next(iter(shipped.items()))
+            raise HTTPException(status_code=422, detail=shipped_elsewhere(", ".join(names), by))
         return await _reserve_lines_impl(row, entity_id, "available", indices, user, session,
                                          may_acquire=False, commit=False)
 
@@ -9204,6 +9203,8 @@ def _unavailable(bound: Projection, owner_id: str) -> dict | None:
     sku, status = st.get("sku", ""), st.get("status", "")
     by = st.get("status_doc_number")
     if by and st.get("status_doc_id") != owner_id:
+        if status in ("sold", "memo_out"):
+            return shipped_elsewhere(sku, by)
         return refusal("lines.lot_held_by", f"{sku} is held by {by} (status: {status}).",
                        sku=sku, doc=by, status=status)
     return refusal("lines.lot_status", f"{sku} has status {status}.", sku=sku, status=status)

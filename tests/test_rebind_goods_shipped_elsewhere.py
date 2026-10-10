@@ -3,8 +3,13 @@
 """An invoice whose goods another invoice shipped goes back to uncosted and is costed
 when it ships. Shipping the gone lot says where it went and what to do; the invoice can
 be reverted and its line changed to other stock, which it then ships at that stock's
-cost. A line whose goods the invoice itself shipped still cannot be dropped."""
+cost. A line whose goods the invoice itself shipped still cannot be dropped. Both
+refusals are the one ``lines.shipped_elsewhere`` key, which names the document the goods
+went out on and the next step, in every catalog."""
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +21,8 @@ from test_invoice_unshipped_books import _lot, _ok
 from test_set_aside_goods_follow_the_lot import _per_doc
 
 pytestmark = pytest.mark.asyncio
+
+_LOCALES = sorted((Path(__file__).resolve().parents[1] / "ui" / "locales").glob("*.json"))
 
 
 def _line(lot: str, sku: str) -> list[dict]:
@@ -35,8 +42,11 @@ async def test_an_invoice_whose_goods_shipped_elsewhere_ships_other_stock(client
     K = await _lot(client, auth, sku, 1, 25.0)
     r = await client.post(f"/docs/{a}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [L]})
     assert r.status_code == 422, r.text
-    error = r.json()["detail"]["errors"][0]
-    assert await _doc_number(session, auth, b) in error and "change the line to other stock" in error
+    detail = r.json()["detail"]
+    [reason] = detail["params"]["reasons"]
+    assert reason["message_key"] == "lines.shipped_elsewhere"
+    assert reason["params"] == {"lines": sku, "doc": await _doc_number(session, auth, b)}
+    assert "Revert fulfillment first" in detail["message"]
     await _ok(client, auth, f"/docs/{a}/revert-to-draft")
     r = await _rebind(client, auth, a, _line(K, sku))
     assert r.status_code == 200, r.text
@@ -58,4 +68,15 @@ async def test_a_line_whose_goods_this_document_sent_out_cannot_be_dropped(clien
     lines = (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": memo})).state["line_items"]
     r = await _rebind(client, auth, memo, lines[:1])
     assert r.status_code == 409, r.text
-    assert "Revert fulfillment first" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "lines.shipped_elsewhere"
+    assert detail["params"] == {"lines": sku, "doc": await _doc_number(session, auth, memo)}
+    assert "Revert fulfillment first" in detail["message"]
+
+
+@pytest.mark.parametrize("path", _LOCALES, ids=lambda p: p.stem)
+async def test_the_shipped_elsewhere_refusal_names_the_document_and_the_next_step_in_every_catalog(path):
+    catalog = json.loads(path.read_text(encoding="utf-8"))
+    text = catalog["lines.shipped_elsewhere"]
+    assert "{lines}" in text and "{doc}" in text
+    assert "line.protected_shipped" not in catalog

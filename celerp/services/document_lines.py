@@ -173,6 +173,15 @@ def out_on_another_memo(state: dict, entity_id: str | None, source_memo_id: str 
     return state.get("status") == "memo_out" and (not holder or holder not in (entity_id, source_memo_id))
 
 
+def shipped_elsewhere(lines: str, doc: str) -> dict:
+    """The refusal for goods that went out on document ``doc``: they come back only by
+    reverting that fulfillment, so whatever wants them (another record's line, a write
+    that drops or rebinds the line that shipped them) is told to do that first."""
+    return refusal("lines.shipped_elsewhere",
+                   f"{lines} went out on {doc}. Revert fulfillment first: set it as available on {doc}.",
+                   lines=lines, doc=doc)
+
+
 def memo_out_refusal(state: dict, sku: str) -> dict:
     """The refusal for a lot out on a memo other than the one this record may take it from,
     naming that memo when the lot carries its number."""
@@ -406,9 +415,6 @@ _PROTECTED_MESSAGES = {
     "held": ("line.protected_held",
              "Line {line} ({sku}) holds reserved stock. Set it as available before removing it or "
              "changing its item."),
-    "shipped": ("line.protected_shipped",
-                "Line {line} ({sku}) has shipped stock. Set it as available before removing, moving "
-                "or changing its item."),
     "received": ("line.protected_received",
                  "Line {line} ({sku}) has received goods. Undo or return them before removing, moving "
                  "or changing the line's item or type."),
@@ -504,8 +510,8 @@ async def _protected_lines(session, company_id, owner_id: str, stored: dict) -> 
 async def assert_protected_lines_kept(session, company_id, owner_id: str, stored: dict, line_set) -> None:
     """Refuse a write of ``line_set`` over the stored record ``stored`` that removes, re-ids
     or rebinds a line holding or having shipped stock, or that had goods received, or that
-    moves a shipped or received line (409 ``line.protected_held`` / ``_shipped`` /
-    ``_received``). A line may be rebound only to a lot it holds or shipped itself, or to a
+    moves a shipped or received line (409 ``line.protected_held`` / ``lines.shipped_elsewhere``
+    / ``line.protected_received``). A line may be rebound only to a lot it holds or shipped itself, or to a
     part split off its own item: that is how reserving and shipping part of a lot, and
     recording a historical delivery, name the lot the line now stands for."""
     from celerp.services.auto_je import bill_line_kind
@@ -542,7 +548,10 @@ async def assert_protected_lines_kept(session, company_id, owner_id: str, stored
             if why == "received" and bill_line_kind(old) != bill_line_kind(new):
                 ok = False
         if not ok:
-            key, text = _PROTECTED_MESSAGES[why]
             sku = str(old.get("sku") or old.get("description") or old.get("name") or "")
+            if why == "shipped":
+                doc = str(stored.get("doc_number") or stored.get("ref_id") or owner_id)
+                raise HTTPException(status_code=409, detail=shipped_elsewhere(sku, doc))
+            key, text = _PROTECTED_MESSAGES[why]
             raise HTTPException(status_code=409, detail=refusal(
                 key, text.format(line=index + 1, sku=sku), line=index + 1, sku=sku))

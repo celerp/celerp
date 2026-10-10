@@ -131,10 +131,10 @@ async def _refused(session, entity_id, lines, key, entity_type="doc"):
 async def test_a_shipped_line_cannot_be_removed_moved_or_rebound_by_any_writer(client, session, h):
     d = await _shipped_invoice(client, h, "LW-5")
     lines = (await state(client, h, d))["line_items"]
-    await _refused(session, d, lines[1:], "line.protected_shipped")
-    await _refused(session, d, [lines[1], lines[0]], "line.protected_shipped")
+    await _refused(session, d, lines[1:], "lines.shipped_elsewhere")
+    await _refused(session, d, [lines[1], lines[0]], "lines.shipped_elsewhere")
     other = await lot(client, h, "LW-5-C", 2)
-    await _refused(session, d, [dict(lines[0], item_id=other, entity_id=other), lines[1]], "line.protected_shipped")
+    await _refused(session, d, [dict(lines[0], item_id=other, entity_id=other), lines[1]], "lines.shipped_elsewhere")
     # The patch route refuses it too.
     r = await _patch_lines(client, h, d, lines[1:])
     assert r.status_code == 409, r.text

@@ -539,6 +539,7 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "የተፈጸሙ ዕቃዎች ተዘምነዋል",
         "lines.cannot_fulfil": "ትዕዛዝ መፈጸም አልተቻለም፦ {reasons}",
         "lines.fulfil_status": "የዚህ መዝገብ ሁኔታ {doc_status} እስከሆነ ድረስ መስመሮችን መፈጸም አይቻልም።",
+        "lines.shipped_elsewhere": "{lines} በ{doc} ወጥቷል። መጀመሪያ የትዕዛዝ አፈጻጸምን ይቀልብሱ፦ በ{doc} ላይ እንዳለ አዘጋጅን ይጠቀሙ።",
     },
     "ar": {
         "btn.fulfill_deduct_inventory": "تنفيذ الطلب / خصم المخزون",
@@ -554,6 +555,7 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "تم تحديث العناصر المُنفَّذة",
         "lines.cannot_fulfil": "تعذر تنفيذ الطلب: {reasons}",
         "lines.fulfil_status": "لا يمكن تنفيذ البنود ما دامت حالة هذا السجل {doc_status}.",
+        "lines.shipped_elsewhere": "{lines} خرج بموجب {doc}. تراجع عن تنفيذ الطلب أولًا: عيّنه كـ «متاح» في {doc}.",
     },
     "es": {
         "btn.fulfill_deduct_inventory": "Procesar pedido / Descontar inventario",
@@ -569,6 +571,7 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "Artículos procesados actualizados",
         "lines.cannot_fulfil": "No se puede procesar: {reasons}",
         "lines.fulfil_status": "No se pueden procesar líneas mientras el estado de este registro sea {doc_status}.",
+        "lines.shipped_elsewhere": "{lines} salió en {doc}. Revierta primero el procesamiento: márquelo como disponible en {doc}.",
     },
     "id": {
         "btn.fulfill_deduct_inventory": "Proses pesanan / Kurangi inventori",
@@ -584,6 +587,7 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "Barang yang telah diproses diperbarui",
         "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
         "lines.fulfil_status": "Baris tidak dapat diproses selama status catatan ini {doc_status}.",
+        "lines.shipped_elsewhere": "{lines} sudah keluar lewat {doc}. Batalkan pemrosesan pesanan terlebih dahulu: tetapkan sebagai tersedia di {doc}.",
     },
     "pt": {
         "btn.fulfill_deduct_inventory": "Processar pedido / Deduzir estoque",
@@ -599,6 +603,7 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "Itens processados atualizados",
         "lines.cannot_fulfil": "Não é possível processar: {reasons}",
         "lines.fulfil_status": "As linhas não podem ser processadas enquanto o status deste registro for {doc_status}.",
+        "lines.shipped_elsewhere": "{lines} saiu em {doc}. Reverta primeiro o processamento do pedido: defina-o como disponível em {doc}.",
     },
 }
 

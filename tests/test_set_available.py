@@ -190,6 +190,8 @@ async def test_a_list_refuses_goods_a_document_shipped(client, h):
     r = await _set_available(client, h, q, line_ids=[lq0, lq1])
     assert r.status_code == 422, r.text
     assert _key(r) == "lines.shipped_elsewhere"
+    assert r.json()["detail"]["params"] == {"lines": "SA-10A", "doc": (await item(client, h, a))["status_doc_number"]}
+    assert "Revert fulfillment first" in r.json()["detail"]["message"]
     assert (await item(client, h, a))["status"] == "sold"
     assert (await item(client, h, b))["status"] == "reserved"
 
