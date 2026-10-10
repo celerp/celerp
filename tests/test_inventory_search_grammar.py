@@ -254,8 +254,8 @@ def test_scoped_textual_identifier_not_numeric_coerced():
     assert query_match_reasons(_item(name="C", sku="X", barcode="123"), "barcode: 00123") is None
     assert query_match_reasons(_item(name="D", sku="X", barcode="00123"),
                                "barcode: 00123") == [("barcode", "00123")]
-    # A substring of the same identifier still matches - only numeric coercion is removed.
-    assert query_match_reasons(_item(name="E", sku="SHOT001"), "sku: 001") == [("sku", "001")]
+    # A scoped SKU is a whole-value match, so a longer SKU ending in the value does not match.
+    assert query_match_reasons(_item(name="E", sku="SHOT001"), "sku: 001") is None
     # Numeric fields are unaffected: a numeric-looking value still coerces (1 == 001).
     assert query_match_reasons(_item(name="F", sku="X", quantity=1), "qty: 001") == [("quantity", "001")]
 
@@ -426,3 +426,112 @@ def test_weight_does_not_coerce_text_identifier_fields():
                                numeric_fields=numeric, text_fields=text) == [("sku", "001")]
     assert query_match_reasons(_item(name="C", sku="X", barcode="123"), "barcode: 00123",
                                numeric_fields=numeric, text_fields=text) is None
+
+
+# ── Scope carry-over, exact identifier fields, and the reserved all: scope ──────
+
+
+def test_scope_carries_forward_across_comma_groups():
+    """Red statement: before the change only the first group was scoped, so
+    `barcode: 1042, 1043` searched 1043 in every field and an item whose SKU held 1043
+    matched. A group with no field of its own now inherits the last scope."""
+    by_sku = _item(name="Lot", sku="1043-A", barcode="777")
+    assert query_match_reasons(by_sku, "barcode: 1042, 1043") is None
+    assert query_match_reasons(_item(barcode="1043"), "barcode: 1042, 1043") == [("barcode", "1043")]
+    # A group naming its own field starts a new scope, and later groups inherit that one.
+    assert query_match_reasons(_item(sku="ABC"), "barcode: 1042, sku: xyz, abc") == [("sku", "abc")]
+    assert query_match_reasons(_item(name="abc", sku="Q"), "barcode: 1042, sku: xyz, abc") is None
+    # The scanner form: each scan ends in a comma, a trailing empty group is dropped.
+    assert query_match_reasons(_item(barcode="1044"), "barcode: 1042,1043,1044,") == [("barcode", "1044")]
+
+
+def test_name_scope_carries_to_gold():
+    """Red statement: `name: ring, gold` used to mean name has ring OR any field has
+    gold, so a bracelet described as gold plated matched. Now gold is a name term too."""
+    plated = _item(name="Bracelet", sku="BR1", description="gold plated")
+    assert query_match_reasons(plated, "name: ring, gold") is None
+    assert query_match_reasons(_item(name="Gold chain"), "name: ring, gold") == [("name", "gold")]
+    assert query_match_reasons(_item(name="Silver ring"), "name: ring, gold") == [("name", "ring")]
+
+
+def test_scoped_identifier_fields_match_exactly():
+    """Red statement: a scoped barcode, SKU, GTIN or RFID was a substring match, so
+    `barcode: 1042` matched 10420 and `sku: 1042` matched 1042.1. Scoped identifier fields
+    now compare whole values; text fields keep substring matching."""
+    assert query_match_reasons(_item(barcode="10420"), "barcode: 1042") is None
+    assert query_match_reasons(_item(barcode="1042"), "barcode: 1042") == [("barcode", "1042")]
+    assert query_match_reasons(_item(sku="1042.1"), "sku: 1042") is None
+    assert query_match_reasons(_item(gtin="00012345678905"), "gtin: 12345678905") is None
+    assert query_match_reasons(_item(gtin="00012345678905"), "gtin: 00012345678905") == [("gtin", "00012345678905")]
+    # Text fields still match a part of the value.
+    assert query_match_reasons(_item(name="Gold ring"), "name: ring") == [("name", "ring")]
+
+
+def test_scoped_rfid_is_case_insensitive_and_exact():
+    """RFID values compare in their canonical upper-case form, so a lower-case scan
+    matches, and a prefix of the EPC does not."""
+    tag = _item(rfid_epc="E2801160600002084A1B2C3D")
+    assert query_match_reasons(tag, "rfid_epc: e2801160600002084a1b2c3d") == [
+        ("rfid_epc", "e2801160600002084a1b2c3d")]
+    assert query_match_reasons(tag, "rfid_epc: e2801160") is None
+
+
+def test_scoped_sku_exact_follows_normalize_sku():
+    """SKU comparison is the canonical SKU key: trimmed and case-folded, whole value."""
+    assert query_match_reasons(_item(sku=" Ring-01 "), "sku: ring-01") == [("sku", "ring-01")]
+    assert query_match_reasons(_item(sku="RING-010"), "sku: ring-01") is None
+
+
+def test_all_scope_resets_to_every_field():
+    """Red statement: `all:` was an unknown prefix searched as literal text, so
+    `barcode: 1042, all: ring` found nothing for the second group. all: now resets the
+    scope, and later bare groups stay unscoped."""
+    box = _item(name="Box", sku="BX", barcode="999", description="ring box")
+    assert query_match_reasons(box, "barcode: 1042, all: ring") == [("description", "ring")]
+    assert query_match_reasons(box, "barcode: 1042, all: zzz, box") == [("name", "box")]
+    assert query_match_reasons(_item(barcode="1042"), "barcode: 1042, all: ring") == [("barcode", "1042")]
+
+
+def test_all_wins_over_custom_field_named_all():
+    """A category attribute called `all` does not capture `all:`: the reserved scope
+    searches every field."""
+    item = _item(name="Gold ring", sku="GR1", all="silver")
+    assert query_match_reasons(item, "all: gold") == [("name", "gold")]
+
+
+def test_unscoped_term_reports_exact_identifier_field():
+    """A bare term equal to an identifier names that field as the match, ahead of a
+    text field that merely contains it."""
+    item = _item(name="Ring 1042 set", sku="RS", barcode="1042")
+    assert query_match_reasons(item, "1042") == [("barcode", "1042")]
+
+
+# ── A numeric range keeps its meaning next to an identifier that looks like one ──
+
+
+def test_unscoped_range_is_not_an_exact_sku():
+    """Red statement: an unscoped `5-10` was checked as an exact identifier before it
+    was read as a range, so the item whose SKU is 5-10 matched even though its quantity
+    (20) is outside the range. An unscoped range keeps its numeric meaning."""
+    sku_5_10 = _item(name="Bolt", sku="5-10", quantity=20)
+    assert query_match_reasons(sku_5_10, "5-10") is None
+    # The same item inside the range matches on its quantity, not its SKU.
+    assert query_match_reasons(_item(name="Bolt", sku="5-10", quantity=7), "5-10") == [("quantity", "7")]
+
+
+def test_scoped_sku_selects_range_shaped_identifier():
+    """Neighbour guard: `sku: 5-10` and `sku:5-10` select the identifier explicitly,
+    whatever the quantity."""
+    sku_5_10 = _item(name="Bolt", sku="5-10", quantity=20)
+    assert query_match_reasons(sku_5_10, "sku: 5-10") == [("sku", "5-10")]
+    assert query_match_reasons(sku_5_10, "sku:5-10") == [("sku", "5-10")]
+    assert query_match_reasons(_item(name="Bolt", sku="5-100", quantity=20), "sku: 5-10") is None
+
+
+def test_unscoped_range_filtering_unchanged():
+    """Neighbour guard: range filtering is unchanged. In range matches on the numeric
+    column, out of range does not match, and a reversed range (lo > hi) is still literal
+    text, so an exact identifier written that way is still found."""
+    assert query_match_reasons(_item(name="Bolt", sku="B7", quantity=7), "5-10") == [("quantity", "7")]
+    assert query_match_reasons(_item(name="Bolt", sku="B20", quantity=20), "5-10") is None
+    assert query_match_reasons(_item(name="Bolt", sku="10-5", quantity=20), "10-5") == [("sku", "10-5")]

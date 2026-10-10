@@ -1170,6 +1170,8 @@ async def _inventory_content(
         attribute_facets = items_resp.get("attribute_facets", {})
         # Totals of the same filtered set as the rows, refreshed with them.
         aggregates = items_resp.get("aggregates") or {}
+        # Scoped barcode/RFID/GTIN/SKU values that matched no item (a scan with no lot).
+        not_found = items_resp.get("not_found") or []
     except APIError as e:
         # 401 belongs to the caller's auth handler; every other read failure gets
         # an explicit, retryable error - never a blank table pretending the
@@ -1216,6 +1218,8 @@ async def _inventory_content(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
             cls="column-manager-row",
         ),
+        P(t("inventory.search_not_found", codes=", ".join(not_found)), cls="flash flash--warning")
+        if not_found else None,
         data_table(
             rows=items,
             sort_key=p["sort"],

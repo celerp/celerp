@@ -12,8 +12,10 @@ name: Packaged Upgrade Smoke
 # updater makes (--updated). The pip updater, its state file and a 2.5.0 data
 # directory are covered by scripts/e2e_update.py (E6).
 #
-# The candidate is the dev-latest build, or the Build Binaries run given as
-# candidate_run. Releases before GUARDED_SINCE do not check the version of an
+# The candidate is the newest successful Build Binaries run on main that carries
+# the platform's binaries, or the run given as candidate_run; it must be built
+# from a commit after the previous release, so the job never tests a downgrade as
+# an upgrade. Releases before GUARDED_SINCE do not check the version of an
 # install or of the data before opening it, so with such a release as "previous"
 # the downgrade step reports what happened and asserts nothing.
 
@@ -27,7 +29,7 @@ on:
         type: string
         default: ""
       candidate_run:
-        description: "Build Binaries run id to take the candidate from (blank: dev-latest)"
+        description: "Build Binaries run id to take the candidate from (blank: the newest successful main build)"
         type: string
         default: ""
 
@@ -55,7 +57,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download the previous release and the candidate
         shell: bash
@@ -65,17 +67,26 @@ jobs:
           PREVIOUS="${{ inputs.previous }}"
           [ -n "$PREVIOUS" ] || PREVIOUS=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
           gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.asset }}" --dir "$RUNNER_TEMP/previous"
-          if [ -n "${{ inputs.candidate_run }}" ]; then
-            gh run download "${{ inputs.candidate_run }}" --repo "$GITHUB_REPOSITORY" --name "${{ matrix.artifact }}" --dir "$RUNNER_TEMP/candidate"
-          else
-            gh release download dev-latest --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.asset }}" --dir "$RUNNER_TEMP/candidate"
+          CANDIDATE="${{ inputs.candidate_run }}"
+          if [ -z "$CANDIDATE" ]; then
+            for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --branch main --status success --limit 50 \
+                --json databaseId,event -q '.[] | select(.event != "pull_request") | .databaseId'); do
+              found=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=${{ matrix.artifact }}" -q '[.artifacts[] | select(.expired | not)] | length')
+              if [ "$found" -gt 0 ]; then CANDIDATE=$run; break; fi
+            done
+            [ -n "$CANDIDATE" ] || { echo "::error::no successful Build Binaries run on main carries ${{ matrix.artifact }}"; exit 1; }
           fi
+          gh run download "$CANDIDATE" --repo "$GITHUB_REPOSITORY" --name "${{ matrix.artifact }}" --dir "$RUNNER_TEMP/candidate"
+          CANDIDATE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE" -q .head_sha)
+          [ "$(gh api "repos/$GITHUB_REPOSITORY/compare/$PREVIOUS...$CANDIDATE_SHA" -q .status)" = ahead ] ||
+            { echo "::error::candidate run $CANDIDATE (commit $CANDIDATE_SHA) is not built from a commit after $PREVIOUS"; exit 1; }
+          BEHIND=$(gh api "repos/$GITHUB_REPOSITORY/compare/$CANDIDATE_SHA...main" -q .ahead_by)
           PREVIOUS_VERSION="${PREVIOUS#v}"
           GUARDED=false
           [ "$(printf '%s\n%s\n' "$GUARDED_SINCE" "$PREVIOUS_VERSION" | sort -V | head -1)" = "$GUARDED_SINCE" ] && GUARDED=true
           echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> "$GITHUB_ENV"
           echo "PREVIOUS_GUARDED=$GUARDED" >> "$GITHUB_ENV"
-          echo "previous $PREVIOUS (checks before opening: $GUARDED); candidate ${{ inputs.candidate_run || 'dev-latest' }}"
+          echo "previous $PREVIOUS (checks before opening: $GUARDED); candidate run $CANDIDATE, commit $CANDIDATE_SHA, $BEHIND commits behind main"
 
       # Data: each copy opens the same data directory in turn.
       - name: Previous, candidate, downgrade, reopen (Linux, data)
@@ -85,8 +96,10 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libfuse2 jq >/dev/null
           chmod +x "$RUNNER_TEMP"/previous/Celerp.AppImage "$RUNNER_TEMP"/candidate/Celerp.AppImage
-          # The runner image blocks unprivileged user namespaces, so Chromium's sandbox
-          # aborts inside an AppImage. Allow them, as a stock desktop install does.
+          # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor, so
+          # Chromium falls back to the SUID sandbox, which an AppImage mount cannot
+          # provide, and aborts before the app opens any data. This job checks
+          # upgrade and data, so it lifts the restriction for the run.
           sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
           export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
           # Opens the data with one copy; prints "ready" or "not-ready" after $2 seconds at most.

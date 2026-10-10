@@ -32,9 +32,14 @@ from celerp.services.units import get_company_units
 from .routes import (
     _DEFAULT_NUMERIC_FIELDS,
     _DEFAULT_TEXT_FIELDS,
+    QueryTerm,
     apply_item_visibility,
+    best_exact_identifier,
     flatten_item,
-    query_match_reasons,
+    identifier_tier,
+    match_reasons,
+    matched_groups,
+    parse_query,
     searchable_field_sets,
 )
 
@@ -151,33 +156,46 @@ async def strip_field_visibility(
     return stripped, item_field_sets
 
 
+def parse_item_query(
+    q: str, result: list[dict],
+    item_field_sets: dict[str, tuple[frozenset[str], frozenset[str]]],
+) -> list[list[QueryTerm]]:
+    """Parse q once for the whole item set (parse_query): a `field:` prefix is a scope
+    when any item's category knows that field or any visibility-stripped item carries
+    it as an attribute, so every item reads the query with the same scopes."""
+    numeric = frozenset(_DEFAULT_NUMERIC_FIELDS).union(*(n for n, _ in item_field_sets.values()))
+    text = frozenset(_DEFAULT_TEXT_FIELDS).union(*(t for _, t in item_field_sets.values()))
+    return parse_query(q, numeric, text, result)
+
+
 def apply_query_match(
-    result: list[dict], q: str,
+    result: list[dict], groups: list[list[QueryTerm]],
     item_field_sets: dict[str, tuple[frozenset[str], frozenset[str]]],
 ) -> list[dict]:
-    """Keep only items matching the search grammar and attach each item's q_match.
+    """Keep only items matching the parsed query (parse_item_query) and attach each
+    item's q_match and q_exact.
 
-    Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare number
-    = numeric-exact OR text, else text substring (query_match_reasons). Each item
-    is matched against its own category's numeric/text field sets, so a
-    number-typed category field resolves and a text-typed one is not coerced.
-    Reasons are computed over the visibility-stripped dict, so every cited field
-    is one the role may see. Mutates the surviving dicts to add r["q_match"].
+    Grammar: comma = OR groups (a named field carries to the groups after it), & = AND
+    terms, lo-hi = numeric range, scoped identifier = whole value, bare number =
+    numeric-exact OR text, else text substring (matched_groups). Each item is
+    matched against its own category's numeric/text field sets, so a number-typed
+    category field resolves and a text-typed one is not coerced. Reasons are computed
+    over the visibility-stripped dict, so every cited field is one the role may see.
+    q_match cites the first group that matched; q_exact names the identifier field of
+    the item's best exact hit by a bare term of any group that matched
+    (best_exact_identifier over the same evaluation), or None; apply_item_order ranks
+    by it.
     """
-    q_reasons: dict = {}
     matched: list[dict] = []
     for r in result:
         num, txt = item_field_sets.get(
             r.get("id"), (_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS)
         )
-        reasons = query_match_reasons(r, q, num, txt)
-        if reasons is not None:
-            q_reasons[r.get("id")] = reasons
+        hit_groups = list(matched_groups(r, groups, num, txt))
+        if hit_groups:
+            r["q_match"] = [{"field": f, "match": m} for f, m in match_reasons(hit_groups[0])]
+            r["q_exact"] = best_exact_identifier(r, hit_groups)
             matched.append(r)
-    for r in matched:
-        r["q_match"] = [
-            {"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), [])
-        ]
     return matched
 
 
@@ -210,15 +228,27 @@ def apply_item_order(
     wins for every status other than the available set; for the available set FEFO
     overrides it. With no user sort and no FEFO, the default order applies
     (most-recently-updated first, then name asc, then entity_id asc).
+
+    Search ranking: unless a user column sort is in effect, exact identifier hits
+    (q_exact, set by apply_query_match) rank in IDENTIFIER_TIERS order. Without FEFO
+    they lead the default order. Under FEFO expiry stays the primary order and the
+    tier only orders items that share an expiry date (or have none). A column the user
+    chose to sort by always wins.
     """
     is_fefo = inventory_method == "fefo"
+    user_sort = bool(sort) and (not is_fefo or status not in (None, "available", ""))
+    if not user_sort:
+        if not is_fefo:
+            default_order(result)
+        # Stable sorts: the FEFO sort below keeps this as its tie-break.
+        result.sort(key=lambda item: identifier_tier(item.get("q_exact")))
     if is_fefo:
         def _fefo_key(item: dict):
             # Items without expiry float to the bottom; expired items sort first.
             return item.get("expires_at") or "9999-99-99"
         result.sort(key=_fefo_key)
 
-    if sort and (not is_fefo or status not in (None, "available", "")):
+    if user_sort:
         reverse = direction.lower() != "asc"
 
         def _sort_key(item: dict):
@@ -232,8 +262,6 @@ def apply_item_order(
             return (0, str(v).lower())
 
         result.sort(key=_sort_key, reverse=reverse)
-    elif not sort and not is_fefo:
-        default_order(result)
 
 
 async def global_search(session, company_id, role, q, limit) -> dict:
@@ -256,7 +284,7 @@ async def global_search(session, company_id, role, q, limit) -> dict:
         session, company_id, role, result
     )
     if q:
-        result = apply_query_match(result, q, item_field_sets)
+        result = apply_query_match(result, parse_item_query(q, result, item_field_sets), item_field_sets)
     company = await session.get(Company, company_id)
     inventory_method = (company.settings or {}).get("inventory_method") if company else None
     apply_item_order(
