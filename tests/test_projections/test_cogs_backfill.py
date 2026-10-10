@@ -893,3 +893,91 @@ async def test_backfill_after_the_notice_was_dismissed_tells_again(session):
     notices = await _notifications(session, company_id)
     assert len(notices) == 2
     assert first.body == next(n for n in notices if n.id == first.id).body
+
+
+def _shown_in(lang: str, notice) -> dict:
+    """The notice as the bell lists it to a reader of ``lang``."""
+    import json
+    from ui import i18n
+    from ui.routes.notifications import _in_reader_language
+
+    listed = {"items": [{"id": str(notice.id), "title": notice.title, "body": notice.body, "i18n": notice.i18n}]}
+    i18n.set_lang(lang)
+    try:
+        [item] = json.loads(_in_reader_language(json.dumps(listed).encode()))["items"]
+    finally:
+        i18n.set_lang("en")
+    return item
+
+
+async def _posted_and_waiting(session, n: int):
+    """One invoice the backfill posts and one whose older lot waits for its account."""
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    _seed_parcel(session, company_id, f"item:p{n}", cost_total=40.0, quantity=2.0)
+    _seed_parcel(session, company_id, f"item:p{n + 1}", cost_total=60.0, quantity=2.0, account=None)
+    for m in (n, n + 1):
+        _seed_doc(session, company_id, f"doc:INV-00{m}",
+                  line_items=[{"quantity": 1, "item_id": f"item:p{m}", "line_total": 100.0}])
+        await _emit_je(session, company_id, f"je:auto:doc:INV-00{m}:fin",
+                       entries=_fin_entries(), ts="2026-01-05")
+    await session.commit()
+    return company_id
+
+
+@pytest.mark.asyncio
+async def test_backfill_notice_is_keyed_and_shown_in_the_readers_language(session):
+    """The notice stores the keys and params of every part it says, so the bell shows it
+    in the reader's language; the stored English reads as before."""
+    company_id = await _posted_and_waiting(session, 40)
+    await run_cogs_backfill(session)
+    await session.commit()
+    [notice] = await _notifications(session, company_id)
+    assert notice.title == "Cost of goods posted for past invoices"
+    assert notice.body == f"1 invoice, total 20.00. {_OLDER_STOCK_NEXT}"
+    assert notice.i18n["title"] == "notice.cogs_backfill.title"
+    assert notice.i18n["body"] == "notice.cogs_backfill.body"
+    assert [(p["message_key"], p["params"]) for p in notice.i18n["params"]["parts"]] == [
+        ("notice.cogs_backfill.posted_one", {"count": 1, "total": "20.00"}),
+        ("notice.cogs_backfill.older_stock", {"count": 1})]
+    es = _shown_in("es", notice)
+    assert es["title"] == "Costo de ventas contabilizado para facturas anteriores"
+    assert es["body"].startswith("1 factura, total 20.00. 1 esperan una cuenta de inventario"), es["body"]
+    assert es["body"].endswith("reinicie Celerp."), es["body"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_names_each_optional_part_by_its_own_key(session):
+    """Neighbour: every optional count is its own keyed part, in the order it is told."""
+    from celerp.services.cogs_backfill import _notice_parts
+
+    parts = _notice_parts({"posted": 2, "total": 50.0, "zero_cost": 1, "deferred": 1, "older_stock": 1,
+                           "errored": 1, "skipped": 1})
+    assert [p["message_key"].rsplit(".", 1)[1] for p in parts] == [
+        "posted_many", "zero_cost", "deferred", "older_stock", "errored", "skipped"]
+    assert " ".join(p["message"] for p in parts) == (
+        f"2 invoices, total 50.00. 1 zero cost, nothing to post. 1 deferred: accounting period locked. "
+        f"{_OLDER_STOCK_NEXT} 1 could not be computed. 1 skipped: cost spans multiple lots, post manually.")
+
+
+@pytest.mark.asyncio
+async def test_a_stored_english_notice_is_rewritten_keyed_on_the_next_start(session):
+    """A notice an earlier release stored in English only, still standing while the
+    backfill waits, is brought up to date with its keys on the next start: the same
+    notice, now shown in the reader's language, with no migration."""
+    company_id = await _posted_and_waiting(session, 42)
+    stored = Notification(company_id=company_id, category="accounting",
+                          title="Cost of goods posted for past invoices",
+                          body="1 could not be computed.", priority="high")
+    session.add(stored)
+    await session.commit()
+    assert stored.i18n is None
+
+    await run_cogs_backfill(session)
+    await session.commit()
+
+    [notice] = await _notifications(session, company_id)
+    assert notice.id == stored.id
+    assert notice.i18n["body"] == "notice.cogs_backfill.body"
+    assert notice.body == f"1 invoice, total 20.00. {_OLDER_STOCK_NEXT}"
+    assert _shown_in("de", notice)["title"] == "Wareneinsatz für frühere Rechnungen gebucht"

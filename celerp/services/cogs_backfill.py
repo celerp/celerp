@@ -30,7 +30,7 @@ import logging
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import AccountRole
+from celerp.accounting_roles import AccountRole, refusal
 from celerp.migrations._data_reconcile import get_meta, set_meta
 from celerp.models.company import Company
 from celerp.models.projections import Projection
@@ -44,7 +44,6 @@ log = logging.getLogger(__name__)
 COGS_BACKFILL_KEY = "cogs_backfill"
 
 _CATEGORY = "accounting"
-_TITLE = "Cost of goods posted for past invoices"
 _BACKFILL_SUFFIX = "cogs-backfill"
 
 
@@ -131,21 +130,22 @@ async def legacy_cogs_refusal(session, company_id, doc_id: str, doc_state: dict)
     return None
 
 
-def _notify_body(c: dict) -> str:
+_NOTICE = "notice.cogs_backfill"
+# The counts a notice tells only when there are any, in the order it tells them.
+_OPTIONAL_PARTS = ("zero_cost", "deferred", "older_stock", "errored", "skipped")
+
+
+def _notice_parts(c: dict) -> list[dict]:
+    """The notice body's sentences, each a keyed message so the bell shows it in the
+    reader's language: the invoices posted, then each count that is not zero."""
+    from ui.i18n import t
+
+    def part(key: str, **params) -> dict:
+        return refusal(f"{_NOTICE}.{key}", t(f"{_NOTICE}.{key}", "en", **params), **params)
+
     posted = c["posted"]
-    parts = [f"{posted} invoice{'s' if posted != 1 else ''}, total {c['total']:.2f}."]
-    if c["zero_cost"]:
-        parts.append(f"{c['zero_cost']} zero cost, nothing to post.")
-    if c["deferred"]:
-        parts.append(f"{c['deferred']} deferred: accounting period locked.")
-    if c["older_stock"]:
-        parts.append(f"{c['older_stock']} wait for an inventory account: choose it under Older stock in "
-                     "Settings > Accounting > Posting accounts, then restart Celerp.")
-    if c["errored"]:
-        parts.append(f"{c['errored']} could not be computed.")
-    if c["skipped"]:
-        parts.append(f"{c['skipped']} skipped: cost spans multiple lots, post manually.")
-    return " ".join(parts)
+    parts = [part("posted_one" if posted == 1 else "posted_many", count=posted, total=f"{c['total']:.2f}")]
+    return parts + [part(key, count=c[key]) for key in _OPTIONAL_PARTS if c[key]]
 
 
 def _count_posted(c: dict, cogs: float, ts) -> None:
@@ -161,12 +161,19 @@ def _count_posted(c: dict, cogs: float, ts) -> None:
 
 async def _notify(session, company_id, c: dict) -> None:
     """One bell notice per company: a retrying boot brings the standing notice up to
-    date (notify_standing) instead of stacking another."""
+    date (notify_standing) instead of stacking another. It is stored in English with the
+    keys and params of its title and each part, which the bell shows in the reader's
+    language."""
+    from ui.i18n import t
+
     action_url = "/accounting?q=COGS%20backfill"
     if c["earliest"] and c["latest"]:
         action_url += f"&from={c['earliest']}&to={c['latest']}"
+    parts = _notice_parts(c)
     await notification_service.notify_standing(
-        session, company_id, _CATEGORY, _TITLE, _notify_body(c), action_url=action_url)
+        session, company_id, _CATEGORY, t(f"{_NOTICE}.title", "en"), " ".join(p["message"] for p in parts),
+        action_url=action_url,
+        i18n={"title": f"{_NOTICE}.title", "body": f"{_NOTICE}.body", "params": {"parts": parts}})
 
 
 async def run_cogs_backfill(session) -> dict:
