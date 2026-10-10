@@ -46,10 +46,12 @@ async def _seed_company(session, name: str = "CogsCo") -> uuid.UUID:
 
 
 def _seed_parcel(session, company_id, entity_id: str, *, cost_total=None,
-                 quantity=0.0, cost_price=None) -> None:
+                 quantity=0.0, cost_price=None, account: str | None = "1130-P") -> None:
     """A parcel projection as compute_doc_cogs reads it, recording the inventory account
-    a lot takes on when it first holds stock."""
-    state: dict = {"quantity": quantity, LOT_ACCOUNT_FIELD: "1130-P"}
+    a lot takes on when it first holds stock (none for older stock from a backup)."""
+    state: dict = {"quantity": quantity}
+    if account:
+        state[LOT_ACCOUNT_FIELD] = account
     if cost_total is not None:
         state["cost_total"] = cost_total
     if cost_price is not None:
@@ -784,3 +786,110 @@ async def test_backfill_reports_an_older_cost_line_it_cannot_classify_instead_of
     assert _posted_ids(await _doc_jes(session, company_id, doc_id)) == before_ids
     assert result["errored"] == 1
     assert await _marker_value(session) is None
+
+
+_OLDER_STOCK_NEXT = ("1 wait for an inventory account: choose it under Older stock in "
+                     "Settings > Accounting > Posting accounts, then restart Celerp.")
+
+
+async def _place_lot(session, company_id, entity_id: str) -> None:
+    """The user chose the older lot's inventory account."""
+    row = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one()
+    row.state = {**row.state, LOT_ACCOUNT_FIELD: "1130-P"}
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_backfill_tells_older_stock_to_choose_its_account_then_restart(session):
+    """An invoice whose lot is older stock with no inventory account is not a computation
+    failure: the notice says to choose the account under Older stock and restart, and the
+    marker stays unset so that restart posts it."""
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    _seed_parcel(session, company_id, "item:p30", cost_total=40.0, quantity=2.0, account=None)
+    doc_id = "doc:INV-0030"
+    _seed_doc(session, company_id, doc_id,
+              line_items=[{"quantity": 1, "item_id": "item:p30", "line_total": 100.0}])
+    await _emit_je(session, company_id, f"je:auto:{doc_id}:fin",
+                   entries=_fin_entries(), ts="2026-01-05")
+    await session.commit()
+
+    result = await run_cogs_backfill(session)
+    await session.commit()
+
+    assert result["older_stock"] == 1
+    assert result["errored"] == 0
+    assert f"je:auto:{doc_id}:cogs-backfill" not in await _doc_jes(session, company_id, doc_id)
+    assert await _marker_value(session) is None
+    [notice] = await _notifications(session, company_id)
+    assert _OLDER_STOCK_NEXT in notice.body
+    assert "could not be computed" not in notice.body
+
+
+@pytest.mark.asyncio
+async def test_backfill_restart_updates_the_standing_notice_counts(session):
+    """A retry brings the standing notice up to date instead of keeping the first boot's
+    counts: once the older lot is placed and Celerp restarts, the one notice counts every
+    invoice the backfill posted and no longer asks for an account."""
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    _seed_parcel(session, company_id, "item:p31", cost_total=40.0, quantity=2.0)
+    _seed_parcel(session, company_id, "item:p32", cost_total=60.0, quantity=2.0, account=None)
+    for n, item, ts in ((31, "item:p31", "2026-01-05"), (32, "item:p32", "2026-01-09")):
+        _seed_doc(session, company_id, f"doc:INV-00{n}",
+                  line_items=[{"quantity": 1, "item_id": item, "line_total": 100.0}])
+        await _emit_je(session, company_id, f"je:auto:doc:INV-00{n}:fin",
+                       entries=_fin_entries(), ts=ts)
+    await session.commit()
+
+    await run_cogs_backfill(session)
+    await session.commit()
+    [first] = await _notifications(session, company_id)
+    assert "1 invoice, total 20.00." in first.body
+    assert _OLDER_STOCK_NEXT in first.body
+
+    await _place_lot(session, company_id, "item:p32")
+    second = await run_cogs_backfill(session)
+    await session.commit()
+
+    assert second["posted"] == 1
+    assert await _marker_value(session) == "done"
+    [notice] = await _notifications(session, company_id)
+    assert notice.id == first.id
+    assert notice.body == "2 invoices, total 50.00."
+    assert notice.action_url == "/accounting?q=COGS%20backfill&from=2026-01-05&to=2026-01-09"
+
+
+@pytest.mark.asyncio
+async def test_backfill_after_the_notice_was_dismissed_tells_again(session):
+    """Neighbour: a notice someone dismissed is history; a later run that still has
+    something to report adds a new notice rather than rewriting the dismissed one."""
+    from celerp.models.notification import NotificationRead
+    from celerp.models.company import User
+
+    await _clear_marker(session)
+    company_id = await _seed_company(session)
+    _seed_parcel(session, company_id, "item:p33", cost_total=40.0, quantity=2.0, account=None)
+    _seed_doc(session, company_id, "doc:INV-0033",
+              line_items=[{"quantity": 1, "item_id": "item:p33", "line_total": 100.0}])
+    await _emit_je(session, company_id, "je:auto:doc:INV-0033:fin",
+                   entries=_fin_entries(), ts="2026-01-05")
+    await session.commit()
+
+    await run_cogs_backfill(session)
+    await session.commit()
+    [first] = await _notifications(session, company_id)
+    user = User(id=uuid.uuid4(), email=f"u{uuid.uuid4().hex[:8]}@x.test",
+                name="Reader", auth_hash="x")
+    session.add(user)
+    await session.flush()
+    session.add(NotificationRead(notification_id=first.id, user_id=user.id))
+    await session.commit()
+
+    await run_cogs_backfill(session)
+    await session.commit()
+
+    notices = await _notifications(session, company_id)
+    assert len(notices) == 2
+    assert first.body == next(n for n in notices if n.id == first.id).body

@@ -11,10 +11,13 @@ finalize JE, and tells each affected company what happened via a bell
 notification.
 
 Runs at startup behind an instance_meta marker, exactly like the status-doc
-backfill. A doc inside a locked accounting period (or one whose legacy state
-the cost computation rejects) is deferred and counted; the marker stays unset
-in that case so the next boot retries the stragglers - the emit idempotency
-keys make re-posting impossible for docs already handled. A doc whose line
+backfill. A doc inside a locked accounting period, one whose lot is older stock
+still waiting for the user to choose its inventory account, or one whose legacy
+state the cost computation rejects is counted; the marker stays unset in that
+case so the next boot retries the stragglers - the emit idempotency keys make
+re-posting impossible for docs already handled. Each boot brings the company's
+standing notice up to date, so it counts every invoice posted so far and only
+what still waits. A doc whose line
 quantity exceeds its bound lot is skipped terminally instead: the remainder was
 drawn from sibling lots at costs unknowable now, so the owner posts that JE
 manually from the notification.
@@ -33,7 +36,7 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services import auto_je
-from celerp.services.account_roles import line_has_role, line_roles
+from celerp.services.account_roles import LotOriginError, line_has_role, line_roles
 from celerp.services.auto_je import compute_doc_cogs
 
 log = logging.getLogger(__name__)
@@ -42,6 +45,7 @@ COGS_BACKFILL_KEY = "cogs_backfill"
 
 _CATEGORY = "accounting"
 _TITLE = "Cost of goods posted for past invoices"
+_BACKFILL_SUFFIX = "cogs-backfill"
 
 
 def _je_doc_id(je_id: str, doc_ids: set[str]) -> str | None:
@@ -134,6 +138,9 @@ def _notify_body(c: dict) -> str:
         parts.append(f"{c['zero_cost']} zero cost, nothing to post.")
     if c["deferred"]:
         parts.append(f"{c['deferred']} deferred: accounting period locked.")
+    if c["older_stock"]:
+        parts.append(f"{c['older_stock']} wait for an inventory account: choose it under Older stock in "
+                     "Settings > Accounting > Posting accounts, then restart Celerp.")
     if c["errored"]:
         parts.append(f"{c['errored']} could not be computed.")
     if c["skipped"]:
@@ -141,24 +148,25 @@ def _notify_body(c: dict) -> str:
     return " ".join(parts)
 
 
+def _count_posted(c: dict, cogs: float, ts) -> None:
+    c["posted"] += 1
+    c["total"] += cogs
+    day = str(ts)[:10] if ts else None
+    if day:
+        if c["earliest"] is None or day < c["earliest"]:
+            c["earliest"] = day
+        if c["latest"] is None or day > c["latest"]:
+            c["latest"] = day
+
+
 async def _notify(session, company_id, c: dict) -> None:
-    """One bell notice per company, deduped on the standing notice with its stable
-    title so a retrying boot never stacks duplicates."""
-    if await notification_service.has_standing(session, company_id, _CATEGORY, _TITLE):
-        return
+    """One bell notice per company: a retrying boot brings the standing notice up to
+    date (notify_standing) instead of stacking another."""
     action_url = "/accounting?q=COGS%20backfill"
     if c["earliest"] and c["latest"]:
         action_url += f"&from={c['earliest']}&to={c['latest']}"
-    await notification_service.create(
-        session,
-        company_id,
-        _CATEGORY,
-        _TITLE,
-        _notify_body(c),
-        user_id=None,
-        action_url=action_url,
-        priority="high",
-    )
+    await notification_service.notify_standing(
+        session, company_id, _CATEGORY, _TITLE, _notify_body(c), action_url=action_url)
 
 
 async def run_cogs_backfill(session) -> dict:
@@ -198,6 +206,18 @@ async def run_cogs_backfill(session) -> dict:
         suffix = je.entity_id[len(f"je:auto:{doc_id}:"):]
         doc_jes.setdefault((je.company_id, doc_id), {})[suffix] = je.state or {}
 
+    def counts() -> dict:
+        return {"posted": 0, "total": 0.0, "zero_cost": 0, "deferred": 0, "older_stock": 0,
+                "errored": 0, "skipped": 0, "earliest": None, "latest": None}
+
+    # What earlier boots posted, so a retry's notice counts every invoice posted so far.
+    earlier: dict = {}
+    for (company_id, _doc_id), je_by_suffix in doc_jes.items():
+        backfill = je_by_suffix.get(_BACKFILL_SUFFIX)
+        if backfill and backfill.get("status") == "posted":
+            cogs = sum(float(e.get("debit") or 0) for e in backfill.get("entries", []))
+            _count_posted(earlier.setdefault(company_id, counts()), cogs, backfill.get("ts"))
+
     per_company: dict = {}
     for doc in docs:
         state = doc.state or {}
@@ -213,11 +233,7 @@ async def run_cogs_backfill(session) -> dict:
         if posted_cogs:
             continue
 
-        c = per_company.setdefault(doc.company_id, {
-            "posted": 0, "total": 0.0, "zero_cost": 0,
-            "deferred": 0, "errored": 0, "skipped": 0,
-            "earliest": None, "latest": None,
-        })
+        c = per_company.setdefault(doc.company_id, counts())
         ts = fin_je.get("ts") or state.get("finalized_at") or state.get("issue_date")
         if posted_cogs is None:
             # Posting would risk a second COGS entry; the doc is reported and retried
@@ -239,6 +255,10 @@ async def run_cogs_backfill(session) -> dict:
                         ts=ts,
                     )
                     await auto_je.record_consignor_payables(session, doc.company_id, None, cogs_result.payables)
+        except LotOriginError:
+            # Older stock waiting for its inventory account: the user chooses it and the
+            # next boot posts the doc.
+            c["older_stock"] += 1
         except HTTPException as exc:
             if exc.status_code == 503:
                 # Backup in progress: run-level, nothing lands, next boot retries.
@@ -264,33 +284,33 @@ async def run_cogs_backfill(session) -> dict:
                     doc.entity_id, state.get("doc_number") or "no number",
                 )
             elif cogs > 0:
-                c["posted"] += 1
-                c["total"] += cogs
-                day = str(ts)[:10] if ts else None
-                if day:
-                    if c["earliest"] is None or day < c["earliest"]:
-                        c["earliest"] = day
-                    if c["latest"] is None or day > c["latest"]:
-                        c["latest"] = day
+                _count_posted(c, cogs, ts)
             else:
                 c["zero_cost"] += 1
 
-    totals = {"posted": 0, "zero_cost": 0, "deferred": 0, "errored": 0, "skipped": 0}
+    totals = {"posted": 0, "zero_cost": 0, "deferred": 0, "older_stock": 0, "errored": 0, "skipped": 0}
     for company_id, c in per_company.items():
         for key in totals:
             totals[key] += c[key]
-        if any((c["posted"], c["zero_cost"], c["deferred"], c["errored"], c["skipped"])):
+        before = earlier.get(company_id)
+        if before:
+            c["posted"] += before["posted"]
+            c["total"] += before["total"]
+            days = [d for d in (c["earliest"], c["latest"], before["earliest"], before["latest"]) if d]
+            c["earliest"], c["latest"] = (min(days), max(days)) if days else (None, None)
+        if any(c[key] for key in totals):
             await _notify(session, company_id, c)
 
-    pending = totals["deferred"] or totals["errored"]
+    pending = totals["deferred"] or totals["older_stock"] or totals["errored"]
     if not pending:
         conn = await session.connection()
         await conn.run_sync(lambda c: set_meta(c, COGS_BACKFILL_KEY, "done"))
 
     log.info(
-        "COGS backfill: %d posted, %d zero cost, %d deferred, %d errored, %d skipped%s",
-        totals["posted"], totals["zero_cost"], totals["deferred"], totals["errored"],
-        totals["skipped"],
+        "COGS backfill: %d posted, %d zero cost, %d deferred, %d waiting on older stock, %d errored, "
+        "%d skipped%s",
+        totals["posted"], totals["zero_cost"], totals["deferred"], totals["older_stock"],
+        totals["errored"], totals["skipped"],
         "" if not pending else " (marker left unset; next boot retries)",
     )
     return {"changed": True, **totals}
