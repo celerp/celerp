@@ -2054,12 +2054,12 @@ async def _carriage_entries(session, company_id, imported: ImportedDocument) -> 
     entries, sources, debits = built
     if snapshot.get("doc_type") == "bill":
         return entries
-    from celerp.services.document_lines import doc_line_index
+    from celerp.services.document_lines import received_line_index
 
     lines = snapshot.get("line_items") or []
     received: dict[int, _Dec] = {}
     for x in snapshot.get("received_items") or []:
-        index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), x.get("sku"))
+        index = received_line_index(lines, x)
         if index is not None:
             received[index] = received.get(index, _Dec(0)) + to_decimal(x.get("quantity_received"))
     carried = []

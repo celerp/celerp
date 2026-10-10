@@ -37,24 +37,38 @@ from celerp.services.lot_origin import DELETED
 DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
 
 
-def doc_line_index(lines: list[dict], po_line_index: int, item_id: str | None, sku: str | None) -> int | None:
-    """The document line received goods are for: the line at po_line_index unless it names
-    another item or SKU, else the line naming their item or SKU. A line names its item by
-    whichever key its writer used (line_item_id), so an entity_id line is matched like an
-    item_id line."""
-    sku = (sku or "").strip() or None
+def _holds_receipt(line: dict, entry: dict, *, in_place: bool = False) -> bool:
+    """Whether ``line`` holds the goods a receipt entry names: its item (by whichever key its
+    writer used, line_item_id) or SKU. An entry naming
+    neither (an expense or asset line) is held by a line naming neither, the one ``in_place``
+    at its recorded position whatever it is called, any other only under the same name."""
+    item_id = entry.get("item_id")
+    sku = str(entry.get("sku") or "").strip()
+    if item_id or sku:
+        return bool((item_id and line_item_id(line) == item_id)
+                    or (sku and str(line.get("sku") or "").strip() == sku))
+    if line_item_id(line) or str(line.get("sku") or "").strip():
+        return False
+    name = str(entry.get("name") or "").strip()
+    return in_place or (bool(name) and str(line.get("name") or line.get("description") or "").strip() == name)
 
-    def names_other(line: dict) -> bool:
-        line_id = line_item_id(line)
-        line_sku = str(line.get("sku") or "").strip()
-        return bool((item_id and line_id and line_id != item_id)
-                    or (sku and line_sku and line_sku != sku))
 
-    if 0 <= po_line_index < len(lines) and not names_other(lines[po_line_index]):
-        return po_line_index
-    return next((i for i, li in enumerate(lines)
-                 if (item_id and line_item_id(li) == item_id)
-                 or (sku and str(li.get("sku") or "").strip() == sku)), None)
+def received_line_index(lines: list[dict], entry: dict) -> int | None:
+    """The document line a receipt (or return) entry is for, or None when it cannot be told.
+
+    An entry recorded with its line's id names that line wherever it now sits. An older entry
+    names its line by position, trusted only while the line there still holds the entry's
+    goods; otherwise the one line holding them. Two lines holding them leave it untold.
+    """
+    line_id = entry.get("source_line_id")
+    if line_id:
+        found = [i for i, li in enumerate(lines) if li.get("line_id") == line_id]
+        return found[0] if len(found) == 1 else None
+    index = int(entry.get("po_line_index", -1))
+    if 0 <= index < len(lines) and _holds_receipt(lines[index], entry, in_place=True):
+        return index
+    found = [i for i, li in enumerate(lines) if _holds_receipt(li, entry)]
+    return found[0] if len(found) == 1 else None
 
 
 def line_item_id(line: dict) -> str | None:

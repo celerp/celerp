@@ -33,7 +33,7 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import buy_consignment
 from celerp_docs.doc_money import document_money
-from celerp_docs.doc_projections import payment_status, received_line_index
+from celerp_docs.doc_projections import payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
@@ -49,7 +49,8 @@ from celerp.services.business_time import business_date_at, business_date_of
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed, splitting_off
 from celerp.services.document_lines import (
-    doc_line_index, line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, strip_line_ids,
+    line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
+    strip_line_ids,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -7351,7 +7352,7 @@ async def mark_received_goods(session: AsyncSession, company_id, data: dict) -> 
         # The record keeps the received lot's SKU, so a line keyed by SKU alone is matched to it
         # wherever the record is read later.
         sku = x.get("sku") or lot_state.get("sku")
-        line_index = doc_line_index(lines, int(x.get("po_line_index", -1)), x.get("item_id"), sku)
+        line_index = received_line_index(lines, {**x, "sku": sku})
         before = so_far.get(line_index, 0.0) if line_index is not None else 0.0
         if line_index is not None:
             so_far[line_index] = before + quantity
