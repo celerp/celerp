@@ -190,5 +190,9 @@ async def test_reserve_a_line_whose_lot_was_sold_on_another_record_is_refused(cl
     r = await client.post(f"/docs/{d}/reserve-lines", headers=h,
                           json={"new_status": "reserved", "line_ids": await line_ids(client, h, d)})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"]["params"]["reasons"][0]["params"]["doc"] == (await item(client, h, a))["status_doc_number"]
+    [reason] = r.json()["detail"]["params"]["reasons"]
+    assert reason["message_key"] == "lines.shipped_elsewhere"
+    n = (await item(client, h, a))["status_doc_number"]
+    assert reason["params"]["docs"] == n
+    assert [w["params"]["doc"] for w in reason["params"]["went"]] == [n]
     assert (await item(client, h, b))["status"] == "available"
