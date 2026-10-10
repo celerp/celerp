@@ -109,7 +109,7 @@ def test_system_recovery_refuses_a_cut_short_dump_browser(page, recovery, tmp_pa
     page.set_input_files("#backup-import-input", _archive(tmp_path / "cut.celerp-backup", dump[:len(dump) // 8]))
     page.wait_for_selector("#backup-flash.flash--error", timeout=_WAIT_MS)
     flash = page.locator("#backup-flash").inner_text()
-    assert "pg_restore failed" in flash
+    assert "couldn't be restored" in flash and "pg_restore" in flash
     assert page.locator('button:has-text("Restore without safety copy")').count() == 0
     assert set(_company_names(url)) == {_RENAMED}
     assert not (tmp_path / "data" / "static" / "attachments").exists()
