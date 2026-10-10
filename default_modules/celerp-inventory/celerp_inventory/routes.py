@@ -88,7 +88,8 @@ from celerp.services.pricing import (
     price_keys_in,
     stored_price,
 )
-from ui.i18n import category_label, field_label, item_status_label, price_list_label, t, unit_label
+from ui.components.table import display_unit
+from ui.i18n import category_label, field_label, item_status_label, price_list_label, t
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.line_measures import splitting_allowed
@@ -4491,7 +4492,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if len(sell_units) > 1:
         raise HTTPException(
             status_code=422,
-            detail=t("inventory.err_merge_units", units=", ".join(unit_label(u) for u in sorted(sell_units))),
+            detail=t("inventory.err_merge_units", units=", ".join(display_unit(u) for u in sorted(sell_units))),
         )
     weight_units = {
         str(p.state.get("weight_unit") or "").strip()
@@ -4501,7 +4502,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if len(weight_units) > 1:
         raise HTTPException(
             status_code=422,
-            detail=t("inventory.err_merge_weight_units", units=", ".join(unit_label(u) for u in sorted(weight_units))),
+            detail=t("inventory.err_merge_weight_units", units=", ".join(display_unit(u) for u in sorted(weight_units))),
         )
 
     # Resolve target projection (SKU/barcode/name/prices come from this source).
