@@ -135,7 +135,7 @@ async def test_historical_receipt_records_what_it_added_to_the_lot_without_new_s
     # The live receipt takes only the four still to come.
     r = await _receive(client, token, bill, loc, 5)
     assert r.status_code == 422, r.text
-    assert "at most 4 more can be received" in r.json()["detail"]
+    assert "at most 4 more can be received" in r.json()["detail"]["message"]
     assert (await _receive(client, token, bill, loc, 4)).status_code == 200
 
 
@@ -326,7 +326,7 @@ async def test_partial_receipts_up_to_the_line_then_nothing_more(client, session
 
     r = await _receive(client, token, bill, loc, 1)
     assert r.status_code == 422, r.text
-    assert "at most 0 more can be received" in r.json()["detail"]
+    assert "at most 0 more can be received" in r.json()["detail"]["message"]
     assert await _stock_and_books(session, company_id) == full
     assert await _events(session, company_id, "doc.received", bill) == 2
 
@@ -342,7 +342,7 @@ async def test_over_receipt_is_refused_before_any_stock_is_written(client, sessi
 
     r = await _receive(client, token, bill, loc, 7)
     assert r.status_code == 422, r.text
-    assert "at most 6 more can be received" in r.json()["detail"]
+    assert "at most 6 more can be received" in r.json()["detail"]["message"]
     assert await _stock_and_books(session, company_id) == before
     assert await _events(session, company_id, "item.created") == parcels
 

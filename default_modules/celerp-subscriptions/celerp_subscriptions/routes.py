@@ -27,7 +27,7 @@ from celerp.services.permissions import require_permission
 from celerp.services.terms import resolve_document_terms
 from celerp_docs.doc_money import document_money
 from celerp_docs.routes import finalize_document
-from celerp_docs.sequences import next_doc_ref
+from celerp_docs.sequences import next_draft_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 
 VALID_FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
@@ -139,9 +139,7 @@ def _build_router() -> APIRouter:
                 contact_name = contact_state.get("name") or ""
                 contact_company_name = contact_state.get("company_name") or ""
 
-        # Assign proper proforma ref (invoices) or PO ref, build entity_id
-        seq_type = "proforma" if target_doc_type == "invoice" else "purchase_order"
-        pf_ref = next_doc_ref(company, seq_type)
+        pf_ref = next_draft_ref(company, target_doc_type)
         doc_entity_id = f"doc:{pf_ref}"
 
         line_items = copy.deepcopy(list(state.get("line_items") or []))

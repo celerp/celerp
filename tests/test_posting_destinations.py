@@ -144,7 +144,8 @@ async def _bill_created_with_line(client, headers, code: str):
 
 def _bill_snapshot(code: str) -> dict:
     return {"doc_type": "bill", "status": "awaiting_payment", "contact_id": "supplier:1", "currency": "USD",
-            "line_items": [{**_LINE, "line_total": 40.0, "account_code": code}], "subtotal": 40.0, "total": 40.0}
+            "line_items": [{**_LINE, "line_total": 40.0, "account_code": code}], "subtotal": 40.0, "total": 40.0,
+            "import_treatment": "record_now"}  # booked now, so its line accounts take the posting
 
 
 async def _bill_import(client, headers, code: str):

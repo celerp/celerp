@@ -57,11 +57,11 @@ async def test_permitted_user_receives_items_and_valuation(client, session):
     assert valuation.status_code == 200, valuation.text
 
 
-_COST_KEYS = ("cost_base", "cost_landed", "landed_contributions")
+_COST_KEYS = ("cost_base", "cost_landed", "landed_costs")
 
 
 def _value(key: str):
-    return {"Freight::shipping": 1.0} if key == "landed_contributions" else 1.0
+    return {"bill:x::shipping": 1.0} if key == "landed_costs" else 1.0
 
 
 async def _available_item(client, ctx) -> str:

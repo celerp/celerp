@@ -149,8 +149,8 @@ async def test_a_value_beyond_what_the_history_records_is_refused(client, sessio
 
 async def test_stock_sold_before_it_is_on_hand_does_not_stop_reconciling_from_retained_earnings(
         client, session, auth):
-    """An invoice for goods not yet on hand books their cost ahead of them, so that inventory
-    account holds less than its stock until they arrive. It holds none of the run's value."""
+    """An invoice for goods not yet on hand costs nothing until they ship, so their inventory
+    account carries exactly its stock throughout. It holds none of the run's value."""
     ahead = (await client.post("/items", headers=auth["headers"], json={
         "sku": f"AHEAD-{uuid.uuid4().hex[:6]}", "name": "Made to order", "quantity": 0, "sell_by": "piece",
         "status": "available", "cost_price": 50})).json()["id"]
@@ -158,7 +158,7 @@ async def test_stock_sold_before_it_is_on_hand_does_not_stop_reconciling_from_re
         {"item_id": ahead, "sku": "AHEAD", "name": "Made to order", "quantity": 2, "unit_price": 100}]})).json()["id"]
     assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
     account = (await _state(session, auth, ahead))[LOT_ACCOUNT_FIELD]
-    assert await account_room(session, auth["company_id"], account) == -100
+    assert await account_room(session, auth["company_id"], account) == 0
     used = await older_release_lot(session, auth["company_id"], auth["user_id"], 40.0, qty=4)
     raw = await _item(client, auth, 100.0, qty=10)
     _, order = await _job(client, auth, raw)
@@ -170,7 +170,7 @@ async def test_stock_sold_before_it_is_on_hand_does_not_stop_reconciling_from_re
 
     assert r.status_code == 200, r.text
     assert not (await _facts(session, auth, order)).get("wip_unresolved")
-    assert await account_room(session, auth["company_id"], account) == -100
+    assert await account_room(session, auth["company_id"], account) == 0
 
 
 async def test_a_run_on_books_from_elsewhere_is_reconciled_and_carries_on(client, session, auth):

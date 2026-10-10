@@ -12,7 +12,7 @@ import uuid as _uuid
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.models.company import Company
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
 from celerp.services.pricing import is_cost_list_name, is_derived, price_key
@@ -30,14 +30,14 @@ AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "g
 
 # Item keys only the app's own item events write: the cost components derived from cost_total
 # and landed cost, reservation and fulfilment counters, lineage and document links, files, the
-# lot's inventory account and books state, ownership, expiry and catalog aliases. A create, an
+# lot's inventory account, consignor payable, consignor and books state, ownership, expiry and catalog aliases. A create, an
 # import or an edit may set cost_total and the prices (permission-gated), never these.
 SYSTEM_ITEM_KEYS: frozenset[str] = COST_DERIVED_ITEM_KEYS | {
     "entity_id", "company_id", "reserved_quantity", "quantity_fulfilled",
-    "children", "child_skus", "merged_into", "split_from", "transformed_from", "transformed_into",
-    "fulfilled_for_docs", "status_doc_id", "status_doc_number", "manufacturing_order_id",
-    "files", "attachments", "preview_image_id",
-    LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, "consignment_flag", "is_expired", "_catalog_sku_aliases",
+    "children", "child_skus", "merged_into", "split_from", "transformed_from", "returned_from", "transformed_into",
+    "fulfilled_for_docs", "status_doc_id", "status_doc_number", "status_line_entity_id",
+    "manufacturing_order_id", "files", "attachments", "preview_image_id",
+    LOT_ACCOUNT_FIELD, CONSIGNOR_PAYABLE_FIELD, CONSIGNOR_FIELD, ON_BOOKS_FIELD, "consignment_flag", "is_expired", "_catalog_sku_aliases",
 }
 
 

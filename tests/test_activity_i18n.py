@@ -120,7 +120,8 @@ def test_activity_table_footer_translates():
 
 
 @pytest.mark.parametrize("event_type", [
-    "item.inventory_account.recorded", "item.inventory_on_books.recorded",
+    "item.inventory_account.recorded", "item.consignor_payable.recorded", "item.consignment.bought",
+    "item.inventory_on_books.recorded",
     "mfg.order.wip_opened", "mfg.order.wip_unresolved",
 ])
 def test_posting_events_read_as_words_in_every_language(event_type):

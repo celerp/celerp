@@ -59,7 +59,7 @@ async def test_create_invoice_rejects_fractional_piece_quantity(client, session)
     token = await _register(client)
     r = await _create_doc(client, token, lines=[_line(qty=0.5, sell_by="piece")])
     assert r.status_code == 422, r.text
-    assert "0.5" in r.json()["detail"]
+    assert "0.5" in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -147,7 +147,7 @@ async def test_patch_doc_rejects_fractional_piece_on_line_item(client, session):
         json={"fields_changed": {"line_items": {"new": [_line(qty=0.5, sell_by="piece")]}}},
     )
     assert patch.status_code == 422, patch.text
-    assert "0.5" in patch.json()["detail"]
+    assert "0.5" in patch.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -193,7 +193,7 @@ async def test_receive_po_rejects_fractional_piece_quantity(client, session):
         },
     )
     assert recv.status_code == 422, recv.text
-    assert "0.5" in recv.json()["detail"]
+    assert "0.5" in recv.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio
@@ -265,7 +265,7 @@ async def test_fulfill_quantity_validator_is_wired(client, session):
     with pytest.raises(_HTTPException) as exc_info:
         validate_line_quantity(0.5, "piece", unit_map, label="Phone")
     assert exc_info.value.status_code == 422
-    assert "0.5" in exc_info.value.detail
+    assert "0.5" in exc_info.value.detail["message"]
 
     # integer piece must pass
     validate_line_quantity(3.0, "piece", unit_map, label="Phone")

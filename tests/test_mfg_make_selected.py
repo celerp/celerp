@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from mfg_runs import OPENING, PURCHASED, WIP, lines, product
+from mfg_runs import COGS, OPENING, PURCHASED, WIP, lines, product
 from stock_books import assert_settled
 from test_cost_restatement import _item
 from test_mfg_creation_contract import _count
@@ -134,8 +134,8 @@ async def _run_entries(session, auth, made: dict, key: str) -> dict[str, list[tu
 
 
 async def test_orders_made_and_shipped_leave_every_account_carrying_its_stock(client, session, auth):
-    """Both orders were costed when posted, before anything was made. Making them puts the
-    rings on the account for made goods, and shipping each moves its cost of sale there."""
+    """Neither order is costed when posted: nothing is on hand yet. Making them puts the
+    rings on the account for made goods, and shipping each costs its sale from there."""
     made, early, late = await _setup(client, auth)
     out = await _make(client, auth, [(made, early), (made, late)], "op", complete=True)
     assert [c["doc_id"] for c in out["created"]] == [early, late]
@@ -146,5 +146,5 @@ async def test_orders_made_and_shipped_leave_every_account_carrying_its_stock(cl
         assert r.status_code == 200, r.text
         assert r.json()["fulfillment_status"] == "fulfilled"
         assert await lines(session, auth, f"je:auto:{doc}:cogs-adj:fulfill-0:l0") == [
-            ("1130-OB", (OPENING,), 5.0, 0.0), ("1130-P", (PURCHASED,), 0.0, 5.0)]
+            ("1130-P", (PURCHASED,), 0.0, 5.0), ("5100", (COGS,), 5.0, 0.0)]
     await assert_settled(client, session, auth)

@@ -6,7 +6,7 @@
 Checks:
 1. missing_jes       - Docs with no corresponding journal entries
 1b. uncaused_recognition_jes - Sales/receiving JEs on a doc that was never finalized or received
-2. duplicate_jes     - Multiple JEs for the same doc trigger (finalize/payment/receive)
+2. duplicate_jes     - Live JEs repeating another live JE's posting of the same doc (report only)
 3. ghost_events      - Multiple doc.created events for the same entity_id
 4. orphan_projections - Projections with no backing ledger events
 5. stale_projections  - Projection state diverges from replayed ledger events
@@ -71,19 +71,22 @@ async def _documents_with_posting_event(
     """Documents whose own history holds the event that posts their entry.
 
     Keyed by posting kind: "invoice" for a finalize (or a snapshot import that
-    posts an invoice on create), "purchase_order" for a snapshot import that
-    posts a received purchase order on create, "receipt" for goods received on
-    the document (each receipt posts its own entry for what it brought in). Only
+    posts an invoice on create), "credit_note" for a snapshot import that posts
+    an issued credit note on create, "purchase_order" for a received purchase order
+    imported as a snapshot (an earlier release posted its receipt on import; the
+    one-time correction of those imports, not this check, owns that entry, and an
+    import now posts nothing), "receipt" for goods received on the document (each
+    receipt posts its own entry for what it brought in). Only
     a doc.created the import routes recorded as a snapshot import counts; the
     status in any other doc.created payload is not evidence.
 
     The second map holds documents created already issued with no such record:
     imports from before the record existed look exactly like this, so their
     entries are neither owed nor safe to void without review."""
-    from celerp.services.auto_je import IMPORTED_SNAPSHOT, import_auto_je_kind
+    from celerp.services.auto_je import IMPORTED_SNAPSHOT, imported_issue_kind
 
-    posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set(), "receipt": set()}
-    unrecorded: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
+    posted_by: dict[str, set[str]] = {"invoice": set(), "credit_note": set(), "purchase_order": set(), "receipt": set()}
+    unrecorded: dict[str, set[str]] = {"invoice": set(), "credit_note": set(), "purchase_order": set()}
     for entity_id, event_type, data, meta in (await session.execute(
         select(
             LedgerEntry.entity_id, LedgerEntry.event_type,
@@ -99,7 +102,7 @@ async def _documents_with_posting_event(
         elif event_type == "doc.received":
             posted_by["receipt"].add(entity_id)
         else:
-            kind = import_auto_je_kind(data or {})
+            kind = imported_issue_kind(data or {})
             if kind not in posted_by:
                 continue
             if (meta or {}).get(IMPORTED_SNAPSHOT):
@@ -115,9 +118,10 @@ async def _check_missing_jes(
     """Find documents whose expected accounting entry is missing.
 
     An entry is only expected when the document's own history holds the
-    operation that posts it: a finalize for an invoice, a receipt for a
-    purchase order, or an import that posts on create. Status alone is not
-    evidence (a sent draft is still a draft)."""
+    operation that posts it: a finalize for an invoice, or an import that posts
+    on create (an invoice; an imported purchase order or bill posts nothing, as
+    the opening balances hold it). Status alone is not evidence (a sent draft is
+    still a draft)."""
     docs = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
@@ -133,6 +137,9 @@ async def _check_missing_jes(
     )).scalars().all())
 
     posted_by, _ = await _documents_with_posting_event(session, company_id)
+    from celerp.services.auto_je import imported_payment_indexes
+
+    imported_payments = await imported_payment_indexes(session, company_id)
 
     from celerp.models.company import Company
     from celerp.services.money import checked_exchange_rate, require_doc_rate
@@ -189,15 +196,17 @@ async def _check_missing_jes(
                     existing_keys.add(fin_key)
                     fixed += 1
 
-            bank_pays = [
-                p for p in (state.get("payments") or [])
-                if p.get("status") == "active"
-                and p.get("method") not in ("credit_note", "applied")
-            ]
+            # What was paid before an import is booked by the paid-before-import entry,
+            # so neither the payments the snapshot carried nor its paid amount owe a
+            # payment entry.
+            opening_paid = je_idempotency_key(entity_id, "imported.paid", "c") in existing_keys
+            before_import = imported_payments.get(entity_id, set()) if opening_paid else set()
             bank_all = [
                 p for p in (state.get("payments") or [])
                 if p.get("method") not in ("credit_note", "applied")
+                and p.get("index", 0) not in before_import
             ]
+            bank_pays = [p for p in bank_all if p.get("status") == "active"]
             pay_key_prefix = f"je:{entity_id}:invoice.paid:"
             minted = sum(
                 1 for key in existing_keys
@@ -227,7 +236,7 @@ async def _check_missing_jes(
                         )
                         existing_keys.add(pay_key)
                         fixed += 1
-            elif not bank_pays and not (state.get("payments") or []):
+            elif not bank_pays and not (state.get("payments") or []) and not opening_paid:
                 amount_paid = float(state.get("amount_paid", 0) or 0)
                 agg_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
                 if amount_paid > 0 and agg_key not in existing_keys:
@@ -249,19 +258,6 @@ async def _check_missing_jes(
                         existing_keys.add(agg_key)
                         fixed += 1
 
-        elif doc_type == "purchase_order" and entity_id in posted_by["purchase_order"]:
-            rcv_key = je_idempotency_key(entity_id, "po.received", "c")
-            if rcv_key not in existing_keys:
-                problem = _rate_problem(state)
-                detail = {"doc_id": entity_id, "trigger": "po_received", "total": total}
-                if problem:
-                    detail["blocked_reason"] = problem
-                missing.append(detail)
-                if fix and not problem:
-                    await _emit_po_received_je(session, company_id, user_id, entity_id, state)
-                    existing_keys.add(rcv_key)
-                    fixed += 1
-
     return {
         "check": "missing_jes",
         "found": len(missing),
@@ -275,7 +271,7 @@ async def _check_missing_jes(
 # kinds one of whose events has to be in the document's own history for the
 # entry to be owed. The COGS backfill only ever followed a finalize entry.
 _RECOGNITION_CAUSE = {
-    "doc.finalized": ("invoice",),
+    "doc.finalized": ("invoice", "credit_note"),
     "doc.cogs_backfill": ("invoice",),
     "doc.received": ("purchase_order", "receipt"),
 }
@@ -347,60 +343,84 @@ async def _check_uncaused_recognition_jes(
     }
 
 
+_DUPLICATE_SOURCE_KEYS = ("trigger", "doc_id", "payment_index", "cn_id")
+_DUPLICATE_WHAT_TO_CHECK = (
+    "Both entries record the same posting of this document. Open each one and check "
+    "whether one repeats the other. If it does, void the repeated one from its journal "
+    "entry page. Doctor never voids it for you."
+)
+
+
+def _je_lines_signature(state: dict) -> tuple:
+    return tuple(sorted(
+        (str(e.get("account") or ""), str(Decimal(str(e.get("debit") or 0)).normalize()),
+         str(Decimal(str(e.get("credit") or 0)).normalize()))
+        for e in (state.get("entries") or [])
+    ))
+
+
 async def _check_duplicate_jes(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
-    """Find docs with multiple JEs for the same trigger."""
-    jes = (await session.execute(
-        select(LedgerEntry).where(
+    """Report live journal entries that repeat another live entry's posting. Report only.
+
+    One journal entry record is one entry: writing it again (a restatement, a rate
+    true-up, an account remap) replaces it, so a record is never its own duplicate. A
+    duplicate is two or more posted records with the same source (trigger, document,
+    payment or credit note) and the same lines, where at least one record sits outside
+    the deterministic je:auto:{doc_id}: scheme (canonical per-cycle ids such as a second
+    equal receipt are distinct postings by construction). Doctor names both records and
+    what to check; it never voids anything, in dry-run or fix mode.
+    """
+    live = (await session.execute(
+        select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "journal_entry",
+        )
+    )).all()
+    states = {eid: st for eid, st in live if (st or {}).get("status") == "posted"}
+    if not states:
+        return {"check": "duplicate_jes", "found": 0, "fixed": 0, "auto_fixable": False, "details": []}
+
+    latest_meta: dict[str, dict] = {}
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "journal_entry",
             LedgerEntry.event_type == "acc.journal_entry.created",
         ).order_by(LedgerEntry.id.asc())
-    )).scalars().all()
+    )).all()
+    for eid, meta in rows:
+        if eid in states:
+            latest_meta[eid] = meta or {}
 
-    # Group by source doc_id + operation type derived from entity_id.
-    # Entity ids have canonical form: je:auto:{doc_id}:{op} where op is fin, pay:{cents}, rcv.
-    # We use entity_id (not metadata trigger) so that fin+pay for the same doc don't collide.
-    by_doc_op: dict[str, list[LedgerEntry]] = {}
-    for je in jes:
-        # entity_id format: je:auto:{doc_id}:{op}
-        # Strip the je:auto: prefix to get doc_id+op, which is our grouping key.
-        eid = je.entity_id
-        if eid.startswith("je:auto:"):
-            group_key = eid[len("je:auto:"):]  # e.g. "doc:INV-2026-0001:fin"
-        else:
-            # Fallback: use entity_id as-is (handles any legacy format)
-            group_key = eid
-        by_doc_op.setdefault(group_key, []).append(je)
-
-    duplicates = []
-    fixed = 0
-    for key, entries in by_doc_op.items():
-        if len(entries) <= 1:
+    groups: dict[tuple, list[str]] = {}
+    for eid, state in states.items():
+        meta = latest_meta.get(eid) or {}
+        if not meta.get("doc_id"):
             continue
-        # Keep earliest, flag rest
-        keep = entries[0]
-        for dup in entries[1:]:
-            duplicates.append({
-                "doc_trigger": key,
-                "keep_id": keep.id,
-                "duplicate_id": dup.id,
-                "duplicate_entity_id": dup.entity_id,
-            })
-            if fix:
-                # Void the duplicate by emitting a void event
-                await emit_event(
-                    session, company_id=company_id, entity_id=dup.entity_id,
-                    entity_type="journal_entry", event_type="acc.journal_entry.voided",
-                    data=je_void_data("Doctor: duplicate JE", dup.data or {}),
-                    actor_id=user_id, location_id=None, source="doctor",
-                    idempotency_key=f"doctor:void:{dup.idempotency_key}",
-                    metadata_={"voided_by": "doctor", "kept_id": keep.id},
-                )
-                fixed += 1
+        source = tuple(str(meta.get(k)) if meta.get(k) is not None else None for k in _DUPLICATE_SOURCE_KEYS)
+        groups.setdefault((source, _je_lines_signature(state)), []).append(eid)
 
-    return {"check": "duplicate_jes", "found": len(duplicates), "fixed": fixed, "auto_fixable": True, "details": duplicates[:50]}
+    details = []
+    for (source, _lines), members in groups.items():
+        if len(members) < 2:
+            continue
+        doc_id = source[1]
+        canonical = f"je:auto:{doc_id}:"
+        if all(m.startswith(canonical) for m in members):
+            continue
+        members.sort(key=lambda m: (not m.startswith(canonical), m))
+        for dup in members[1:]:
+            details.append({
+                "entry_id": members[0],
+                "duplicate_entry_id": dup,
+                "doc_id": doc_id,
+                "trigger": source[0],
+                "what_to_check": _DUPLICATE_WHAT_TO_CHECK,
+            })
+
+    return {"check": "duplicate_jes", "found": len(details), "fixed": 0, "auto_fixable": False, "details": details[:50]}
 
 
 async def _check_ghost_events(
@@ -618,21 +638,6 @@ async def _emit_payment_je(
         base_currency=base_currency,
         doc_rate=float(document_rate),
         settlement_rate=float(settlement_rate),
-    )
-
-
-async def _emit_po_received_je(
-    session: AsyncSession, company_id, user_id, doc_id: str, state: dict,
-) -> None:
-    from celerp.models.company import Company
-    from celerp.services import auto_je as _auto_je
-
-    company = await session.get(Company, company_id)
-    base_currency = (company.settings.get("currency", "USD") if company else "USD")
-    await _auto_je.create_for_po_received(
-        session, company_id=company_id, user_id=user_id, po_id=doc_id,
-        doc=state, total=float(state.get("total", 0) or 0),
-        base_currency=base_currency, receive_date=state.get("issue_date") or state.get("created_at"),
     )
 
 

@@ -2129,7 +2129,7 @@ async def _finalized_bill(client, ctx, sku: str, line: dict | None = None, doc_t
         "location_id": ctx["location_id"], "retail_price": 10,
     })).json()["id"]
     bill = (await client.post("/docs", headers=ctx["admin_h"], json={
-        "doc_type": doc_type,
+        "doc_type": doc_type, "contact_id": "supplier:1",
         "line_items": [{"item_id": template, "sku": sku, "name": sku, "quantity": 2,
                         "unit_price": 5, "line_total": 10, **(line or {})}],
         "total": 10,
@@ -2203,19 +2203,28 @@ async def test_consignment_receive_line_cost_without_permission(client, session,
 
 @pytest.mark.parametrize("role_h", ["operator_h", "admin_h"])
 async def test_consignment_receive_without_rate(client, session, role_h):
-    """A foreign-currency consignment with no rate yet still receives: the rate is settled
-    when it is invoiced, so the parcel carries no cost until then."""
+    """A foreign-currency consignment issued before rates were required has no rate, and it
+    still receives: the rate is settled when it is invoiced, so the parcel carries no cost
+    until then."""
     ctx = await perm_setup(client, session)
     template = (await client.post("/items", headers=ctx["admin_h"], json={
         "status": "available", "sku": "CSG-FX", "name": "CSG-FX", "quantity": 0, "sell_by": "piece",
         "location_id": ctx["location_id"], "retail_price": 10,
     })).json()["id"]
     doc = (await client.post("/docs", headers=ctx["admin_h"], json={
-        "doc_type": "consignment_in", "currency": "EUR",
+        "doc_type": "consignment_in", "contact_id": "supplier:1", "currency": "EUR", "conversion_rate": 35,
         "line_items": [{"item_id": template, "sku": "CSG-FX", "name": "CSG-FX", "quantity": 2,
                         "unit_price": 5, "line_total": 10}],
         "total": 10,
     })).json()["id"]
+    fin = await client.post(f"/docs/{doc}/finalize", headers=ctx["admin_h"])
+    assert fin.status_code == 200, fin.text
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    session.expire_all()
+    row = (await session.execute(select(Projection).where(Projection.entity_id == doc))).scalar_one()
+    row.state = {k: v for k, v in row.state.items() if k != "conversion_rate"}
+    await session.commit()
     r = await client.post(f"/docs/{doc}/receive", headers=ctx[role_h], json={
         "location_id": ctx["location_id"],
         "received_items": [{"item_id": template, "sku": "CSG-FX", "name": "CSG-FX",

@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_helpers import TZ, merge_items
+from test_helpers import TZ, invoices_booking_one_lot_twice, merge_items
 
 
 async def _item(client, auth, cost_total: float | None, qty: float = 1, sku: str | None = None) -> str:
@@ -86,14 +86,30 @@ async def _sell(client, session, auth, *item_ids: str) -> str:
 
 
 async def _doc_cogs(session, auth, doc_id: str) -> float:
-    """Cost of goods sold the document's posted entries recognize in total."""
+    """Cost of goods sold the document's posted entries recognize in total.
+
+    A cost move debits the invoice that shipped the goods and credits the invoice
+    that had set them aside, inside one entry, so it is split between the two."""
     session.expire_all()
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"],
         Projection.entity_type == "journal_entry",
-        Projection.entity_id.like(f"je:auto:{doc_id}:%"),
+        Projection.entity_id.like(f"je:auto:{doc_id}:%") | (
+            Projection.entity_id.like("je:auto:%:cost-move:%")
+            & Projection.entity_id.like(f"%:{doc_id}")),
     ))).scalars().all()
-    return round(sum(_cogs(r.state) for r in rows if r.state.get("status") == "posted"), 2)
+    total = 0.0
+    for r in rows:
+        if r.state.get("status") != "posted":
+            continue
+        entries = [e for e in r.state.get("entries", []) if e["account"] == "5100"]
+        if ":cost-move:" not in r.entity_id:
+            total += _cogs(r.state)
+        elif r.entity_id.startswith(f"je:auto:{doc_id}:"):
+            total += sum(float(e.get("debit") or 0) for e in entries)
+        else:
+            total -= sum(float(e.get("credit") or 0) for e in entries)
+    return round(total, 2)
 
 
 async def _cogs_adjustments(session, auth, doc_id: str) -> dict[str, dict]:
@@ -391,10 +407,8 @@ async def test_sale_with_no_document_saves_the_cost_and_posts_nothing(client, se
     assert await _count(session, auth, event_type="acc.journal_entry.created") == jes
 
 
-@pytest.mark.asyncio
-async def test_sale_without_an_exact_invoice_line_refuses_correction(client, session, auth):
-    # Sold by converting a memo to an invoice: no invoice line ever fulfilled it.
-    item = await _item(client, auth, 100.0)
+async def _memo_converted(client, session, auth, item: str) -> str:
+    """The lot out on a memo, then the memo converted to a draft invoice; returns the invoice."""
     sku = (await _state(session, auth, item))["sku"]
     r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
         {"entity_id": item, "sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
@@ -404,8 +418,41 @@ async def test_sale_without_an_exact_invoice_line_refuses_correction(client, ses
                        (f"/docs/{memo}/convert", {})):
         r = await client.post(path, headers=auth["headers"], json=body)
         assert r.status_code == 200, r.text
+    return r.json()["target_doc_id"]
+
+
+@pytest.mark.asyncio
+async def test_sale_without_an_exact_invoice_line_refuses_correction(client, session, auth):
+    # Converted the way an older release did it: the lot marked sold to the memo itself.
+    from celerp.events.engine import emit_event
+
+    item = await _item(client, auth, 100.0)
+    invoice = await _memo_converted(client, session, auth, item)
+    memo = (await _state(session, auth, invoice))["source_memo_id"]
+    await emit_event(session, company_id=auth["company_id"], entity_id=item, entity_type="item",
+                     event_type="item.status.set", data={"new_status": "sold", "source_doc_id": memo},
+                     actor_id=auth["user_id"], location_id=None, source="memo_convert",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
     assert (await _state(session, auth, item))["status"] == "sold"
     await _assert_refused(client, session, auth, item, [], fragment="invoice line")
+
+
+@pytest.mark.asyncio
+async def test_sale_billed_from_a_converted_memo_is_corrected_on_its_invoice(client, session, auth):
+    from gl_support import gl_totals
+
+    item = await _item(client, auth, 100.0)
+    invoice = await _memo_converted(client, session, auth, item)
+    r = await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, item))["status"] == "sold"
+    assert (await gl_totals(session, auth["company_id"], entry_id_part=f":{invoice}:"))["5100"] == 100.0
+
+    r = await _set_cost(client, auth, item, 120.0)
+    assert r.status_code == 200, r.text
+    assert await _cost(session, auth, item) == 120.0
+    assert (await gl_totals(session, auth["company_id"], entry_id_part=f":{invoice}:"))["5100"] == 120.0
 
 
 # -- Every cost writer goes through the same operation ----------------------
@@ -521,12 +568,16 @@ async def test_unit_cost_with_stock_sets_the_basis(client, session, auth, path):
 
 
 @pytest.mark.asyncio
-async def test_correction_reaches_every_invoice_that_recognized_a_sold_lot(client, session, auth):
+async def test_correction_follows_a_set_aside_lot_to_the_invoice_that_shipped_it(client, session, auth):
     item = await _item(client, auth, 100.0)
-    shipped = await _invoice(client, session, auth, item)
-    waiting = await _invoice(client, session, auth, item)
+    with invoices_booking_one_lot_twice():
+        waiting = await _invoice(client, session, auth, item)
+        shipped = await _invoice(client, session, auth, item)
     assert await _doc_cogs(session, auth, waiting) == 100.0
+    assert await _doc_cogs(session, auth, shipped) == 0.0  # the lot is already costed on waiting
     await _fulfil(client, shipped, auth, item)
+    assert await _doc_cogs(session, auth, shipped) == 100.0
+    assert await _doc_cogs(session, auth, waiting) == 0.0  # its cost moved with the goods
     assert (await _set_cost(client, auth, item, 120.0)).status_code == 200
     assert await _doc_cogs(session, auth, shipped) == 120.0
-    assert await _doc_cogs(session, auth, waiting) == 120.0
+    assert await _doc_cogs(session, auth, waiting) == 0.0

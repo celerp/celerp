@@ -4,7 +4,8 @@
 
 A draft bill whose goods an earlier release received before it was issued is still a
 draft once the receipt is undone: it has not been issued and books no payable. An
-issued bill goes back to what its payments make it, so a paid bill stays paid.
+issued bill goes back to what its payments make it, so a paid bill stays paid and an
+unpaid one awaiting payment stays awaiting payment.
 """
 from __future__ import annotations
 
@@ -43,7 +44,7 @@ def _receives_on_drafts(monkeypatch) -> None:
     """Receive as an earlier release did, which took goods in on a bill still a draft."""
     import celerp_docs.routes as docs_routes
 
-    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", lambda state: None)
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_when_not_open", lambda state: None)
 
 
 async def _receive_and_undo(client, h: dict, bill: str, sku: str) -> dict:
@@ -204,7 +205,7 @@ async def test_an_earlier_bill_imported_as_issued_stays_final(client, session):
     r = await client.post("/docs/import/batch", headers=h, json={"records": [{
         "entity_id": bill, "event_type": "doc.created", "source": "import", "idempotency_key": f"imp-{bill}",
         "data": {"doc_type": "bill", "status": "final", "doc_number": f"IMP-{bill[-8:]}", "issue_date": "2026-01-10",
-                 "currency": "USD", "subtotal": 100, "tax": 0, "total": 100, "line_items": [
+                 "currency": "USD", "subtotal": 100, "tax": 0, "total": 100, "import_treatment": "record_now", "line_items": [
                      {"sku": "RU-OLD-IMP", "name": "Widget", "quantity": 2, "unit_price": 50, "line_total": 100,
                       "receive_as": "stock"}]}}]})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
@@ -236,3 +237,18 @@ async def test_the_upgrade_fills_in_earlier_receipts_once(client, session, monke
     await _as_before_the_upgrade(session, cid, bill)
     assert (await record_legacy_receipts(session))["changed"] is False
     assert "pre_receipt_status" not in (await session.get(Projection, {"company_id": cid, "entity_id": bill})).state
+
+
+async def test_undoing_a_receipt_on_a_bill_converted_from_an_order_leaves_it_awaiting_payment(client):
+    h = await _owner(client)
+    r = await client.post("/docs", headers=h, json={"doc_type": "purchase_order", "line_items": [
+        {"sku": "RU-PO", "name": "Widget", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"}],
+        "subtotal": 100, "tax": 0, "total": 100})
+    assert r.status_code == 200, r.text
+    bill = r.json()["id"]
+    await _post(client, h, f"/docs/{bill}/finalize")
+    assert (await client.get(f"/docs/{bill}", headers=h)).json()["status"] == "awaiting_payment"
+
+    doc = await _receive_and_undo(client, h, bill, "RU-PO")
+
+    assert doc["status"] == "awaiting_payment"

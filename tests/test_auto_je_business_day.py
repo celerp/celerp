@@ -3,7 +3,8 @@
 """Automatic entries carry the business day of the operation they record.
 
 A bill without its own date, goods returned on a credit note, a return undone, a
-production run movement, and an audit or write-off adjustment are each dated the
+production run movement, an audit or write-off adjustment, goods received on a purchase
+order, landed cost capitalised on receipt, and goods returned to a supplier are each dated the
 company's calendar day of the operation, never the server's own date. A recorded
 date or timestamp wins over the clock, a period lock through that day refuses the
 entry with the usual message, and posting the same entry again later or rebuilding
@@ -77,8 +78,50 @@ async def _stock_adjusted(session, client, auth, instant) -> str:
     return "je:auto:list:a1:audit:0"
 
 
-_PATHS = [_bill_without_a_date, _return_received, _return_undone, _run_issued, _stock_adjusted]
-_IDS = ["bill", "return-received", "return-undone", "manufacturing", "line-adjustment"]
+async def _landed_capitalised(session, client, auth, instant) -> str:
+    await auto_je.create_for_landed_capitalisation(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], doc_id="doc:b2",
+        landed_by_kind={"freight": 5.0}, landed_by_account={"1130-P": 5.0}, receive_suffix="r1",
+    )
+    return "je:auto:doc:b2:landed-cap:r1"
+
+
+async def _auto_entry_of(session, auth, prefix: str) -> str:
+    rows = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == auth["company_id"], Projection.entity_id.startswith(prefix)))).scalars().all()
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+async def _order_received(session, client, auth, instant) -> str:
+    from test_receipt_accounting import _doc, _finalize
+    from test_receive_selected_lines import _post
+
+    order = await _doc(client, auth, "purchase_order", [{"sku": "BD-PO", "name": "Goods", "quantity": 2, "unit_price": 5.0}])
+    r = await _post(client, auth, order, {"po_line_index": 0, "sku": "BD-PO", "quantity_received": 2})
+    assert r.status_code == 200, r.text
+    return await _auto_entry_of(session, auth, f"je:auto:{order}:rcv:")
+
+
+async def _returned_to_supplier(session, client, auth, instant) -> str:
+    from test_receipt_accounting import _doc, _finalize
+    from test_receive_selected_lines import _post
+
+    bill = await _doc(client, auth, "bill", [{"sku": "BD-RTN", "name": "Goods", "quantity": 2, "unit_price": 5.0}])
+    await _finalize(client, auth, bill)
+    r = await _post(client, auth, bill, {"po_line_index": 0, "sku": "BD-RTN", "quantity_received": 2})
+    assert r.status_code == 200, r.text
+    parcel = (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": bill})).state["received_item_ids"][0]
+    r = await client.post(f"/docs/{bill}/return-items", headers=auth["headers"],
+                          json={"items": [{"item_id": parcel, "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    return await _auto_entry_of(session, auth, f"je:auto:{bill}:rtn:")
+
+
+_PATHS = [_bill_without_a_date, _return_received, _return_undone, _run_issued, _stock_adjusted, _landed_capitalised]
+_IDS = ["bill", "return-received", "return-undone", "manufacturing", "line-adjustment", "landed-capitalisation"]
+# Posted by a request, so dated by the clock alone.
+_REQUESTS = [_order_received, _returned_to_supplier]
 
 
 async def _setup(session, client) -> dict:
@@ -100,7 +143,7 @@ async def _created(session, auth, je_id: str) -> int:
 
 
 @pytest.mark.parametrize("case", [_NEW_YORK, _BANGKOK], ids=["business-day-behind", "business-day-ahead"])
-@pytest.mark.parametrize("post", _PATHS, ids=_IDS)
+@pytest.mark.parametrize("post", [*_PATHS, *_REQUESTS], ids=[*_IDS, "order-received", "returned-to-supplier"])
 async def test_the_entry_is_dated_the_business_day_of_the_operation(session, client, monkeypatch, post, case):
     tz, instant, host_day = case
     auth = await _setup(session, client)

@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 # state from the same ledger events, so every installation that upgrades past the
 # change rebuilds its projections once. Independent of the app version: a release
 # that changes no handler leaves it alone and its upgrade skips the rebuild.
-PROJECTION_SEMANTICS = 1
+PROJECTION_SEMANTICS = 2
 PROJECTION_SEMANTICS_KEY = "projection_semantics"
 
 

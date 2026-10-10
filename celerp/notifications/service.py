@@ -243,6 +243,31 @@ async def notify_once(
     return True
 
 
+async def notify_standing(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    category: str,
+    title: str,
+    body: str,
+    *,
+    action_url: str | None = None,
+    i18n: dict | None = None,
+) -> bool:
+    """A condition told to the company as a high-priority notice that stays current.
+
+    Deduped on a standing notice with the same category and title (has_standing): while
+    it stands it is brought up to date with this body, so it never shows an earlier
+    state, and once dismissed a condition that persists notifies again. ``action_url``
+    and ``i18n`` as for ``create``. Caller commits. Returns whether it was created."""
+    standing = await _standing(session, company_id, category, title)
+    if standing is not None:
+        await session.execute(update(Notification).where(Notification.id == standing)
+                              .values(body=body, action_url=action_url, i18n=i18n))
+        return False
+    await create(session, company_id, category, title, body, action_url=action_url, priority="high", i18n=i18n)
+    return True
+
+
 async def notify_every_company(
     session: AsyncSession,
     category: str,
@@ -252,25 +277,14 @@ async def notify_every_company(
     action_url: str | None = None,
     i18n: dict | None = None,
 ) -> int:
-    """An instance-wide condition, told to every company as a high-priority notice.
-
-    Deduped on a standing notice with the same category and title (has_standing): a
-    reboot while it stands creates nothing new, and a condition that persists notifies
-    again only after the notice was dismissed. A notice that still stands is brought up
-    to date with this body, so it never describes an earlier cause. ``action_url`` and
-    ``i18n`` as for ``create``. Caller commits. Returns the number of notifications
-    created."""
+    """An instance-wide condition, told to every company (notify_standing): a reboot
+    while a notice stands brings it up to date instead of adding another. Caller commits.
+    Returns the number of notifications created."""
     from celerp.models.company import Company
 
     created = 0
     for cid in (await session.execute(select(Company.id))).scalars().all():
-        standing = await _standing(session, cid, category, title)
-        if standing is not None:
-            await session.execute(update(Notification).where(Notification.id == standing)
-                                  .values(body=body, action_url=action_url, i18n=i18n))
-            continue
-        await create(session, cid, category, title, body, action_url=action_url, priority="high", i18n=i18n)
-        created += 1
+        created += await notify_standing(session, cid, category, title, body, action_url=action_url, i18n=i18n)
     return created
 
 

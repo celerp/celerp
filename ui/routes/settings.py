@@ -855,15 +855,8 @@ def setup_routes(app):
                     id=f"company-{field}-input",
                     cls="cell-input cell-input--select", autofocus=True,
                 ),
-                Button(t("btn.save"), type="button",
-                       hx_patch=f"/settings/company/{field}",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       hx_include=f"#company-{field}-input",
-                       cls="btn btn--primary btn--xs ml-sm"),
-                Button(t("btn.cancel"), type="button",
-                       hx_get=f"/settings/company/{field}/display",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       cls="btn btn--secondary btn--xs ml-xs"),
+                *_company_cell_buttons(field),
+                onkeydown=_SAVE_CANCEL_KEYS,
                 cls="cell cell--editing",
             )
 
@@ -885,15 +878,7 @@ def setup_routes(app):
                     ),
                     cls="combobox-wrap",
                 ),
-                Button(t("btn.save"), type="button",
-                       hx_patch=f"/settings/company/{field}",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       hx_include=f"#company-{field}-input",
-                       cls="btn btn--primary btn--xs ml-sm"),
-                Button(t("btn.cancel"), type="button",
-                       hx_get=f"/settings/company/{field}/display",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       cls="btn btn--secondary btn--xs ml-xs"),
+                *_company_cell_buttons(field),
                 cls="cell cell--editing",
             )
 
@@ -919,21 +904,13 @@ def setup_routes(app):
                     ),
                     cls="combobox-wrap",
                 ),
-                Button(t("btn.save"), type="button",
-                       hx_patch=f"/settings/company/{field}",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       hx_include=f"#company-{field}-input",
-                       cls="btn btn--primary btn--xs ml-sm"),
-                Button(t("btn.cancel"), type="button",
-                       hx_get=f"/settings/company/{field}/display",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       cls="btn btn--secondary btn--xs ml-xs"),
+                *_company_cell_buttons(field),
                 cls="cell cell--editing",
             )
 
         return Td(
             Input(
-                type="text", name="value", value=val,
+                type="date" if field == "opening_balance_date" else "text", name="value", value=val,
                 id=f"company-{field}-input",
                 cls="cell-input",
                 autofocus=True,
@@ -945,15 +922,8 @@ def setup_routes(app):
                 rows="3",
                 autofocus=True,
             ),
-            Button(t("btn.save"), type="button",
-                   hx_patch=f"/settings/company/{field}",
-                   hx_target="closest td", hx_swap="outerHTML",
-                   hx_include=f"#company-{field}-input",
-                   cls="btn btn--primary btn--xs ml-sm"),
-            Button(t("btn.cancel"), type="button",
-                   hx_get=f"/settings/company/{field}/display",
-                   hx_target="closest td", hx_swap="outerHTML",
-                   cls="btn btn--secondary btn--xs ml-xs"),
+            *_company_cell_buttons(field),
+            onkeydown=_SAVE_CANCEL_KEYS,
             cls="cell cell--editing",
         )
 
@@ -2746,6 +2716,31 @@ def _business_type_change_lines(changes: dict) -> list[str]:
     return lines
 
 
+# A company field's edit cell: Escape cancels and Enter saves, as its Cancel and Save buttons
+# do (GDR 2j). Enter in the address textarea starts a new line. The shell's own Escape handler
+# leaves an open edit cell to the cell.
+_SAVE_CANCEL_KEYS = (
+    "if(event.key==='Escape'){event.preventDefault();this.querySelector('.cell-cancel').click();}"
+    "else if(event.key==='Enter'&&event.target.matches('input,select')){"
+    "event.preventDefault();this.querySelector('.cell-save').click();}"
+)
+
+
+def _company_cell_buttons(field: str) -> tuple[FT, FT]:
+    """Save and Cancel for a company field's edit cell."""
+    return (
+        Button(t("btn.save"), type="button",
+               hx_patch=f"/settings/company/{field}",
+               hx_target="closest td", hx_swap="outerHTML",
+               hx_include=f"#company-{field}-input",
+               cls="btn btn--primary btn--xs ml-sm cell-save"),
+        Button(t("btn.cancel"), type="button",
+               hx_get=f"/settings/company/{field}/display",
+               hx_target="closest td", hx_swap="outerHTML",
+               cls="btn btn--secondary btn--xs ml-xs cell-cancel"),
+    )
+
+
 def _company_display_cell(field: str, value) -> FT:
     raw = str(value) if value and str(value).strip() else ""
     if field == "currency" and raw:
@@ -3024,15 +3019,16 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
 
 
 def _company_settings_card(company: dict, lang: str = "en", can_change_business_type: bool = False) -> FT:
-    """The company's regional settings (Currency / Timezone / Fiscal Year Start), plus Business Type for
-    roles allowed to change it, edited inline via the existing /settings/company/{field} routes. Sits to
-    the right of the Contact Info card on Company Details, mirroring the customer/vendor settings card.
+    """The company's regional settings (Currency / Timezone / Fiscal Year Start / Opening balances
+    as at), plus Business Type for roles allowed to change it, edited inline via the existing
+    /settings/company/{field} routes. Sits to the right of the Contact Info card on Company Details, mirroring the customer/vendor settings card.
     Language is omitted - it is set from the header language switcher, so duplicating it here would be
     cruft."""
     fields = [
         ("currency", t("label.currency", lang)),
         ("timezone", t("label.timezone", lang)),
         ("fiscal_year_start", t("label.fiscal_year_start", lang)),
+        ("opening_balance_date", t("label.opening_balance_date", lang)),
     ]
     if can_change_business_type:
         fields.append(("vertical", t("label.business_type", lang)))

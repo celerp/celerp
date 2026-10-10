@@ -41,6 +41,7 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     MAPPING_ATTR_PREFIX,
     MAPPING_ATTRIBUTE,
     MAPPING_SKIP,
+    SYSTEM_SKIP_COLS,
     ValidateFn,
     _IDENTIFIER_COLS,
     _row_errors,
@@ -267,15 +268,17 @@ def column_mapping_form(
     form_values: dict | None = None,
     col_labels: dict[str, str] | None = None,
     mutex_groups: list[list[str]] | None = None,
+    skip_cols: frozenset[str] = SYSTEM_SKIP_COLS,
 ) -> FT:
     """Render a horizontal spreadsheet-style column mapping UI.
 
     Each CSV column stays as a visual column with a searchable mapping dropdown
     and 3-5 sample data rows below - matching the user's spreadsheet mental model.
-    ``col_labels`` names core and category targets in the reader's language.
+    ``col_labels`` names core and category targets in the reader's language; ``skip_cols``
+    are the file's columns the importer manages itself, suggested as Skip.
     """
     attrs = category_attrs or []
-    suggested = suggest_mapping(csv_cols, target_cols, category_attrs=attrs)
+    suggested = suggest_mapping(csv_cols, target_cols, category_attrs=attrs, skip_cols=skip_cols)
     req = required_targets or set()
     fv = form_values or {}
     preview = sample_rows[:5]
@@ -1222,6 +1225,7 @@ def validation_result(
     notes: Any = "",
     ready: int | None = None,
     col_labels: dict[str, str] | None = None,
+    form_fields: Any = "",
 ) -> FT:
     """Return the post-upload panel: inline-fix error panel or clean confirm panel.
 
@@ -1233,6 +1237,7 @@ def validation_result(
     button letting users opt-in to updating existing records. ``notes`` are shown
     on the confirm panel above the preview table; ``ready`` is how many rows the
     import will add, when the server's preview says fewer than every row.
+    ``form_fields`` are controls submitted with the import (inside its form).
     """
     error_pairs = [(i, _row_errors(row, cols, validate)) for i, row in enumerate(rows)]
     error_row_indices = [i for i, errs in error_pairs if errs]
@@ -1268,6 +1273,7 @@ def validation_result(
         notes=notes,
         ready=ready,
         col_labels=col_labels or {},
+        form_fields=form_fields,
     )
 
 
@@ -1324,6 +1330,7 @@ def _confirm_panel(
     notes: Any = "",
     ready: int | None = None,
     col_labels: dict[str, str],
+    form_fields: Any = "",
 ) -> FT:
     """Rows-ready summary, preview table, and the single import button."""
     review_step = 3 if has_mapping else 2
@@ -1343,6 +1350,7 @@ def _confirm_panel(
             _preview_table(rows, cols, col_labels),
             Form(
                 *[Input(type="hidden", name=k, value=v) for k, v in hidden.items()],
+                form_fields,
                 upsert_control,
                 Button(
                     import_icon(),

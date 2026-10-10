@@ -3,12 +3,11 @@
 """Output of an open run sent out on memo keeps a cost completion can still change.
 
 A lot sent out on memo still holds its goods and its cost, so completion re-costs it like
-stock on hand. Converting the memo to an invoice sells the lot without an invoice line
-that shipped it, so no later cost change can reach that sale: while the run is open the
-conversion is refused with a message saying why. Taken back from the memo, or converted
-after the run completes, the lot goes on like any other. Every completion here re-costs
-the output (25.00 a unit down to 20.00), and supply stays what is on hand plus what each
-open run still has to receive.
+stock on hand. Converting the memo hands the lot to the invoice; finalizing that invoice
+sells it on the invoice's own lines, so completion re-costs that sale too. Taken back from
+the memo, or converted after the run completes, the lot goes on like any other. Every
+completion here re-costs the output (25.00 a unit down to 20.00), and supply stays what
+is on hand plus what each open run still has to receive.
 """
 from __future__ import annotations
 
@@ -21,7 +20,6 @@ from mfg_runs import refusal, snapshot
 from stock_books import assert_settled
 from test_cost_restatement import _sell, _state
 from test_mfg_output_lineage import completes_recosted, open_output
-from test_mfg_output_lineage_legacy import older_release_rules
 
 pytestmark = pytest.mark.asyncio
 
@@ -81,23 +79,16 @@ async def test_whole_invoice_sale_is_recosted_at_completion(client, session, aut
     assert await _supply(session, auth, made) == (2.0, 0.0)
 
 
-async def test_converting_a_memo_of_open_output_waits_for_completion(client, session, auth):
+async def test_a_memo_of_open_output_billed_is_recosted_at_completion(client, session, auth):
     made, order, lot = await open_output(client, session, auth)
     memo = await _memo_out(client, session, auth, lot)
     assert await _supply(session, auth, made) == (0.0, 2.0)
 
-    before = await snapshot(session, auth, order, lot, memo)
-    detail = refusal(await _convert(client, auth, memo), 409, "output_memo_conversion")
-    await session.rollback()
-    assert detail["message"] == ("Complete this production run before converting this memo to an invoice. "
-                                 "Its finished-goods cost is not final yet."), detail
-    assert await snapshot(session, auth, order, lot, memo) == before
+    await _bill(client, session, auth, memo, lot)
+    assert await _supply(session, auth, made) == (0.0, 2.0)
 
-    # Still out on memo, the lot takes its final cost; the memo then converts.
     await completes_recosted(client, session, auth, order)
     assert await _cost(session, auth, lot) == 40.0
-    assert (await _state(session, auth, lot))["status"] == "memo_out"
-    await _bill(client, session, auth, memo, lot)
     assert await _supply(session, auth, made) == (2.0, 0.0)
 
 
@@ -124,23 +115,6 @@ async def test_output_of_a_completed_run_converts_from_memo(client, session, aut
     await _bill(client, session, auth, memo, lot)
 
     assert await _supply(session, auth, made) == (2.0, 0.0)
-
-
-async def test_a_conversion_already_recorded_still_replays(client, session, auth):
-    """The hold applies to changes made now; a conversion already on the ledger rebuilds."""
-    from celerp.projections.engine import ProjectionEngine
-
-    _, order, lot = await open_output(client, session, auth)
-    memo = await _memo_out(client, session, auth, lot)
-    with older_release_rules():
-        assert (await _convert(client, auth, memo)).status_code == 200
-
-    await ProjectionEngine.rebuild(session, auth["company_id"])
-    await session.commit()
-
-    session.expire_all()
-    assert (await _state(session, auth, lot))["status"] == "sold"
-    assert (await _state(session, auth, order))["status"] != "completed"
 
 
 async def test_a_return_of_open_output_sold_waits_for_completion(client, session, auth):

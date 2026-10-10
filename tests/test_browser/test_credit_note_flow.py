@@ -14,11 +14,14 @@ pytestmark = pytest.mark.browser
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _create_paid_invoice(api, sku: str = "W-01", amount: float = 100.0) -> str:
-    """Create, finalize, and fully pay an invoice. Returns entity_id."""
+def _create_paid_invoice(api, sku: str = "W-01", amount: float = 100.0, entity_id: str | None = None) -> str:
+    """Create, finalize, and fully pay an invoice, its line on ``entity_id`` when given. Returns entity_id."""
+    line = {"name": "Widget", "sku": sku, "quantity": 1, "unit_price": amount, "sell_by": "unit"}
+    if entity_id:
+        line["entity_id"] = entity_id
     inv_r = api.post("/docs", json={
         "doc_type": "invoice", "contact_id": "contact:test",
-        "line_items": [{"name": "Widget", "sku": sku, "quantity": 1, "unit_price": amount, "sell_by": "unit"}],
+        "line_items": [line],
         "subtotal": amount, "tax": 0, "total": amount,
     })
     assert inv_r.status_code == 200, inv_r.text
@@ -157,11 +160,18 @@ def test_receive_return_button_visible_on_finalized_cn(page: Page, ui_server: st
 # ---------------------------------------------------------------------------
 def test_receive_return_badge_after_submission(page: Page, ui_server: str, api):
     """CN-07: After receive-return API call, page shows 'Return Received' badge."""
-    inv_id = _create_paid_invoice(api, sku="CN07-G", amount=150.0)
+    # Only goods the invoice shipped can come back, so the invoice ships its lot first.
+    item = api.post("/items", json={"status": "available", "sku": "CN07-G", "name": "Widget",
+                                    "quantity": 2, "sell_by": "piece", "cost_price": 80.0})
+    assert item.status_code in {200, 201}, item.text
+    lot_id = item.json()["id"]
+    inv_id = _create_paid_invoice(api, sku="CN07-G", amount=150.0, entity_id=lot_id)
+    shipped = api.post(f"/docs/{inv_id}/fulfill-lines", json={"line_entity_ids": [lot_id]})
+    assert shipped.status_code == 200, shipped.text
     cn_id = _create_finalized_cn(api, inv_id, sku="CN07-G", amount=150.0)
 
     rr = api.post(f"/docs/{cn_id}/receive-return", json={
-        "items": [{"sku": "CN07-G", "name": "Widget", "quantity": 1, "cost_price": 80.0}]
+        "items": [{"sku": "CN07-G", "name": "Widget", "quantity": 1}]
     })
     assert rr.status_code == 200, f"receive-return failed: {rr.text}"
 

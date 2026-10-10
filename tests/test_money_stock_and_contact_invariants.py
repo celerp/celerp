@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal
 import types
 import uuid
 from datetime import datetime, timezone
@@ -18,9 +17,8 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services import auto_je
 from celerp.services.lot_origin import recognize_opening_lots
-from stock_books import older_release_lot
+from stock_books import book_older_opening, older_release_lot
 from test_helpers import make_authed_token, perm_setup, provision_company_books
 
 
@@ -82,8 +80,10 @@ async def test_kwd_fulfillment_true_up_keeps_fils(client, session):
                      "entity_id": f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"})
     assert adj is not None and adj.state.get("status") == "posted"
     by_account = {e["account"]: (e["debit"], e["credit"]) for e in adj.state["entries"]}
-    assert by_account["5100"] == (0.004, 0.0)
-    assert by_account["1130-OB"] == (0.0, 0.004)
+    # doc2 took lot B's 1.000 over from doc1 when it shipped B, so doc1 is costed for its
+    # second unit when it ships: lot C at 1.004, fils kept.
+    assert by_account["5100"] == (1.004, 0.0)
+    assert by_account["1130-OB"] == (0.0, 1.004)
 
 
 @pytest.mark.asyncio
@@ -115,9 +115,7 @@ async def test_kwd_manual_overpayment_uses_fils_not_cent_tolerance(client, sessi
 async def test_kwd_opening_inventory_posts_sub_cent_gap(client, session):
     auth = await _auth_company(session, "KWD")
     await older_release_lot(session, auth["company_id"], auth["user_id"], 0.005)
-    await auto_je.book_opening_inventory(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
-    await session.commit()
+    await book_older_opening(session, auth["company_id"], auth["user_id"])
     session.expire_all()
     row = await session.get(
         Projection, {"company_id": auth["company_id"],
@@ -530,15 +528,16 @@ async def test_true_ups_on_two_lines_round_once_for_the_invoice(client, session)
         lot_a = await _api_item(client, auth, sku, 1, 1.00)
         lot_b = await _api_item(client, auth, sku, 1, 1.00)
         await _api_item(client, auth, sku, 1, 1.004)
-        other = await _invoice(client, auth, lot_b, sku, 1)
         lines.append({"entity_id": lot_a, "sku": sku, "name": sku,
                       "quantity": 2, "unit_price": 5.0, "sell_by": "piece"})
-        first_lots.append((lot_b, other))
+        first_lots.append((lot_b, sku))
     r = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "invoice", "line_items": lines, "total": 20.0})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
     assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    # Each line costs lots A and B at finalize; B then leaves on another invoice.
+    first_lots = [(lot_b, await _invoice(client, auth, lot_b, sku, 1)) for lot_b, sku in first_lots]
     for lot_b, other in first_lots:
         r = await client.post(f"/docs/{other}/fulfill-lines", headers=auth["headers"],
                               json={"line_entity_ids": [lot_b]})
@@ -547,7 +546,9 @@ async def test_true_ups_on_two_lines_round_once_for_the_invoice(client, session)
                           json={"line_entity_ids": [ln["entity_id"] for ln in lines]})
     assert r.status_code == 200, r.text
 
-    # Each line leaves at 2.004 against 2.00 recognized: 0.008 for the invoice rounds to 0.01.
+    # Each line's lot B left on another invoice, which took its 1.00 over, so each line
+    # leaves at 2.004 against the 1.00 it still holds: 2.008 for the invoice rounds once to
+    # 2.01 (each line rounded alone would give 2.00).
     session.expire_all()
     rows = (await session.execute(
         select(Projection).where(Projection.company_id == auth["company_id"],
@@ -555,7 +556,7 @@ async def test_true_ups_on_two_lines_round_once_for_the_invoice(client, session)
     )).scalars().all()
     amounts = [sum(float(e["debit"]) - float(e["credit"]) for e in p.state["entries"] if e["account"] == "5100")
                for p in rows if p.state.get("status") == "posted"]
-    assert amounts == [0.01]
+    assert amounts == [2.01]
 
 
 @pytest.mark.asyncio

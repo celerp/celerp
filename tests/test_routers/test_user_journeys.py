@@ -823,6 +823,7 @@ async def test_crud_credit_note_reduces_invoice_outstanding(client):
     token = await _reg(client)
     h = _h(token)
     inv_id = await _invoice(client, token, subtotal=100, tax=0, total=100)
+    assert (await client.post(f"/docs/{inv_id}/finalize", headers=h)).status_code == 200
     r = await client.post(
         "/docs",
         headers=h,
@@ -830,13 +831,16 @@ async def test_crud_credit_note_reduces_invoice_outstanding(client):
             "doc_type": "credit_note",
             "original_doc_id": inv_id,
             "reason": "return",
-            "line_items": [],
-            "subtotal": 0,
+            "line_items": [{"name": "Refund", "quantity": 1, "unit_price": 30, "line_total": 30}],
+            "subtotal": 30,
             "tax": 0,
             "total": 30,
         },
     )
     assert r.status_code == 200
+    assert (await client.get(f"/docs/{inv_id}", headers=h)).json()["amount_outstanding"] == 100
+    f = await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)
+    assert f.status_code == 200, f.text
     inv_state = (await client.get(f"/docs/{inv_id}", headers=h)).json()
     assert inv_state["amount_outstanding"] == 70
 
@@ -1542,8 +1546,9 @@ async def test_edge_void_already_void_doc_returns_error(client):
     eid = await _invoice(client, token)
     await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "test"})
     r = await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "again"})
-    # Can void void; or 409 - implementation-dependent, just assert it doesn't crash (2xx or 409)
-    assert r.status_code in {200, 409, 422}
+    # A void document is voided once: a second void is refused and names the way back.
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.void_already_void"
 
 
 @pytest.mark.asyncio

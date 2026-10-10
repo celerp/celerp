@@ -34,18 +34,21 @@ async def _owner(client) -> dict:
 @pytest.mark.asyncio
 async def test_setup_settings_save_without_documents(client, docs_not_running):
     h = await _owner(client)
-    r = await client.patch("/companies/me", json={"settings": {"currency": "USD", "timezone": "UTC"}}, headers=h)
+    r = await client.patch("/companies/me", json={"settings": {"timezone": "UTC"}}, headers=h)
     assert r.status_code == 200, r.text
-    assert (await client.get("/companies/me", headers=h)).json()["settings"]["timezone"] == "UTC"
+    r = await client.patch("/companies/me/books", json={"currency": "USD"}, headers=h)
+    assert r.status_code == 200, r.text
+    settings = (await client.get("/companies/me", headers=h)).json()["settings"]
+    assert (settings["timezone"], settings["currency"]) == ("UTC", "USD")
 
 
 @pytest.mark.asyncio
 async def test_deposit_account_without_documents_is_refused_unchanged(client, docs_not_running):
     h = await _owner(client)
-    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": "1000", "timezone": "UTC"}},
+    r = await client.patch("/companies/me/books", json={"stripe_deposit_account": "1000", "currency": "EUR"},
                            headers=h)
     assert r.status_code == 422, r.text
     assert "Documents" in r.text
     settings = (await client.get("/companies/me", headers=h)).json()["settings"]
     assert "stripe_deposit_account" not in settings
-    assert settings.get("timezone") != "UTC"
+    assert settings.get("currency") != "EUR"

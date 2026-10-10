@@ -57,7 +57,8 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
 from celerp.services.lot_origin import (
-    DELETED, RECORDED, RETIRED, ever_became_stock, in_stock, is_authoring_event, is_stock_type, recorded_value, refuse_draft,
+    DELETED, RECORDED, RETIRED, book_lot_value, booked_value, ever_became_stock, in_stock, is_authoring_event, is_stock_type,
+    recorded_value, refuse_draft,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -511,6 +512,8 @@ async def assert_status_change_allowed(
             return
         if current not in ("", "draft", ns) and not in_stock(state):
             raise HTTPException(status_code=422, detail=_LEFT_THE_BOOKS.get(current, _GAVE_UP_ITS_STOCK))
+        if ns == "available" and await _orphaned_hold(session, company_id, state):
+            return
         _reject_document_held(state, "archived" if ns == "archived" else f"set to {ns}")
         return
     if current in ("", "draft"):
@@ -557,6 +560,25 @@ async def assert_status_change_allowed(
 
 # Statuses only a document sets and only that document releases.
 _DOCUMENT_HELD_STATUSES = frozenset({"reserved", "memo_out"})
+
+
+async def _orphaned_hold(session: AsyncSession, company_id, state: dict) -> bool:
+    """True for a reservation nothing can release any more: the record holding it is gone
+    or void, or the line it was held for is no longer on that record. Only such a hold
+    may be made available by a status edit. Goods out on memo or sold are never orphans:
+    they are settled by returning or crediting them on their document."""
+    if str(state.get("status") or "").lower() != "reserved" or not state.get("status_doc_id"):
+        return False
+    owner = await session.get(Projection, {"company_id": company_id, "entity_id": state["status_doc_id"]},
+                              populate_existing=True)
+    if owner is None or owner.entity_type not in ("doc", "list"):
+        return True
+    owner_state = owner.state or {}
+    if owner_state.get("status") == "void":
+        return True
+    line_id = state.get("status_line_entity_id")
+    return bool(line_id) and line_id not in {
+        li.get("line_id") for li in owner_state.get("line_items") or [] if isinstance(li, dict)}
 
 
 def _reject_document_held(state: dict, action: str) -> None:
@@ -1989,7 +2011,7 @@ async def _build_item_preview(
     # overrides it column by column.
     category_attrs = union_category_attr_keys(all_category_schemas(settings))
     resolved = normalize_and_validate_mapping(
-        cols, suggest_mapping(cols, spec.cols, category_attrs), mapping,
+        cols, suggest_mapping(cols, spec.cols, category_attrs, skip_cols=spec.skip_cols), mapping,
         allowed_targets=spec.cols,
         required_targets=spec.required,
         allowed_category_attrs=category_attrs,
@@ -2420,19 +2442,9 @@ async def _lock_items_for_physical_mutation(session: AsyncSession, company_id, e
 
 
 async def _require_company_location(session: AsyncSession, company_id, location_id) -> None:
-    if location_id is None:
-        return
-    from celerp.models.company import Location
+    from celerp.services.locations import require_company_location
 
-    try:
-        parsed = location_id if isinstance(location_id, uuid.UUID) else uuid.UUID(str(location_id))
-    except (TypeError, ValueError, AttributeError):
-        raise HTTPException(status_code=422, detail="Invalid location_id")
-    exists = (await session.execute(
-        select(Location.id).where(Location.id == parsed, Location.company_id == company_id)
-    )).scalar_one_or_none()
-    if exists is None:
-        raise HTTPException(status_code=422, detail="Location not found for this company")
+    await require_company_location(session, company_id, location_id)
 
 
 @router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
@@ -3329,6 +3341,22 @@ async def split_preview(
     return result
 
 
+_SPLIT_ID_NAMESPACE = uuid.UUID("3b8e2f61-4c7d-4a9e-b1f5-7d2c9e6a0b84")
+
+
+def _split_request_digest(entity_id: str, payload: SplitBody) -> str:
+    """What a split asks for. A retry under the same request key must ask for exactly this."""
+    canonical = {"entity": entity_id, "children": [c.model_dump() for c in payload.children],
+                 "mother_qty": payload.mother_qty, "mother_weight": payload.mother_weight}
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _split_key_reused() -> dict:
+    return refusal("items.split_key_reused",
+                   "This request key was already used for a different action. Send the split again "
+                   "without a key, or with a new one.")
+
+
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists = (await get_price_config(session, company_id))[0]
@@ -3336,7 +3364,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         _validate_sku(_child.sku)
         reject_system_item_fields({"attributes": _child.attributes})
         reject_price_change(price_keys_in({"attributes": _child.attributes}, _price_lists), role, settings)
+    request_digest = _split_request_digest(entity_id, payload)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
+    if payload.idempotency_key:
+        # A repeat delivery of a split that already happened gets its result again. Read
+        # under the item lock, so a delivery still in flight finishes first.
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if (replay.event_type != "item.split" or replay.entity_id != entity_id
+                    or (replay.metadata_ or {}).get("split_request") != request_digest):
+                raise HTTPException(status_code=409, detail=_split_key_reused())
+            return {"event_id": replay.id, "children": [
+                {"id": eid, "sku": sku} for eid, sku in zip(replay.data["child_ids"], replay.data["child_skus"])]}
+    # Every record the split writes is keyed from the request key, so the key covers the whole split.
+    split_key = payload.idempotency_key or str(uuid.uuid4())
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
@@ -3353,11 +3394,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_location_id = parent.state.get("location_id")
     parent_attrs = dict(parent.state.get("attributes") or {})
 
-    # Price fields to preserve on children via pricing events (cost is split proportionally)
+    # Price fields to preserve on children via pricing events (cost is carved below)
     parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
-    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
-        float(parent.state.get("cost_price") or 0) * parent_qty
-    )
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -3401,7 +3439,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             status_code=422,
             detail=f"Child quantities ({total_child_qty}) exceed parent quantity ({parent_qty})",
         )
-
     # Normalise: top-level pieces field → attributes so all downstream reads are uniform
     for child in children:
         if child.pieces is not None:
@@ -3448,18 +3485,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         )
     )
 
-    # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
-    # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
-    # This is correct for partial splits; no remainder redistribution needed.
-    _child_cost_totals: list[float | None]
-    if parent_cost_total and parent_qty:
-        _D_unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
-        _child_cost_totals = [
-            float((_D_unit_cost * Decimal(str(c.quantity))).quantize(Decimal("0.0000000001")))
-            for c in children
-        ]
-    else:
-        _child_cost_totals = [None] * len(children)
+    # Each child is carved off what the mother holds after the children before it
+    # (carve_cost, the one division split_off_child uses): its goods and landed pools by
+    # quantity, the mother keeping the difference, so the parts add back to the lot.
+    from celerp.services.auto_je import company_currency
+    from celerp_inventory.services import carve_cost, goods_basis
+    currency = await company_currency(session, company_id)
+    remaining = {"quantity": parent_qty, "cost_base": goods_basis(parent.state),
+                 "landed_costs": dict(parent.state.get("landed_costs") or {})}
+    carves = []
+    for c in children:
+        carve = carve_cost(remaining, c.quantity, currency)
+        carves.append(carve)
+        remaining = {"quantity": round(parent_qty - sum(x.quantity for x in children[:len(carves)]), 10),
+                     "cost_base": carve.rest_goods, "landed_costs": carve.rest_landed}
 
     def _child_weight(c) -> float | None:
         if c.weight is not None:
@@ -3471,14 +3510,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     running_qty = parent_qty
     running_pieces = parent_pieces
     running_weight = parent_weight
-    running_cost = parent_cost_total
 
     for i, child in enumerate(children):
-        child_eid = f"item:{uuid.uuid4()}"
+        child_eid = f"item:{uuid.uuid5(_SPLIT_ID_NAMESPACE, f'{company_id}:{split_key}:{i}')}"
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
         # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
         child_data: dict = lot_fields(parent.state)
+        if carves[i].part_landed:
+            child_data["landed_costs"] = carves[i].part_landed
         # Pieces are never inherited from the mother: an explicit per-child count
         # (already merged into child.attributes) or, for a piece-unit item, the
         # child's own quantity. Otherwise the child carries no pieces.
@@ -3512,7 +3552,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=_parse_uuid(parent_location_id),
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:{i}:created",
             metadata_={"parent_id": entity_id},
         )
 
@@ -3535,7 +3575,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=_parse_uuid(parent_location_id),
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:{i}:split_from",
             metadata_={"reason": "from_split"},
         )
 
@@ -3556,13 +3596,14 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             detail["weight_before"] = running_weight
             running_weight = round((running_weight or 0) - (ch_weight or 0), weight_decimals)
             detail["weight_after"] = running_weight
-        if parent_cost_total and _child_cost_totals[i] is not None:
-            detail["cost_before"] = running_cost
-            running_cost = round(running_cost - _child_cost_totals[i], 10)
-            detail["cost_after"] = running_cost
+        if carves[i].rest_goods is not None:
+            detail["cost_before"] = round_basis(
+                carves[i].rest_goods + carves[i].part_goods
+                + sum(carves[i].rest_landed.values()) + sum(carves[i].part_landed.values()))
+            detail["cost_after"] = round_basis(carves[i].rest_goods + sum(carves[i].rest_landed.values()))
         children_detail.append(detail)
 
-        # Preserve prices from parent via pricing events (excluding cost - set proportionally below)
+        # Preserve prices from parent via pricing events (excluding cost - carved below)
         for price_type, price_val in parent_prices.items():
             await emit_event(
                 session,
@@ -3574,22 +3615,22 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"{split_key}:{i}:price:{price_type}",
                 metadata_={"reason": "from_split"},
             )
-        # Assign proportional cost_total to child (pre-computed with Decimal; remainder in last child)
-        if _child_cost_totals[i] is not None:
+        # The child's goods cost; its landed pools came with item.created
+        if carves[i].part_goods is not None:
             await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=child_eid,
                 entity_type="item",
                 event_type="item.pricing.set",
-                data={"price_type": "cost_total", "new_price": _child_cost_totals[i]},
+                data={"price_type": "cost_total", "new_price": carves[i].part_goods},
                 actor_id=user.id,
                 location_id=None,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=f"{split_key}:{i}:cost",
                 metadata_={"reason": "from_split"},
             )
 
@@ -3612,42 +3653,32 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             raise HTTPException(status_code=422, detail="Mother weight cannot be negative")
         if (derived_mother_weight is None or round(payload.mother_weight, weight_decimals) != derived_mother_weight) and not role_has_permission(settings, role, "edit_inventory_amounts"):
             raise HTTPException(status_code=403, detail=f"Role '{role}' cannot hand-set the mother weight: requires the edit_inventory_amounts permission")
+    # Clamp sub-epsilon residuals from float subtraction to an exact zero (a submitted
+    # negative override was rejected above, never silently zeroed).
+    derived_parent_qty = max(derived_parent_qty, 0.0)
     new_parent_qty = payload.mother_qty if payload.mother_qty is not None else derived_parent_qty
-    # Clamp sub-epsilon residuals from float subtraction to an exact zero (derived branch
-    # only; a submitted negative override was rejected above, never silently zeroed).
-    if payload.mother_qty is None and new_parent_qty < 0:
-        new_parent_qty = 0.0
+    # The mother keeps what the last carve left her at the derived remainder.
+    mother: dict = {"new_qty": derived_parent_qty, "landed_costs": remaining["landed_costs"]}
+    if remaining["cost_base"] is not None:
+        mother["cost_base"] = remaining["cost_base"]
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.quantity.adjusted",
-        data={"new_qty": new_parent_qty},
+        data=mother,
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=str(uuid.uuid4()),
+        idempotency_key=f"{split_key}:mother",
         metadata_={"reason": "split_parent"},
     )
-
-    # Update parent cost_total (reduce by sum of child cost_totals; pre-computed values guarantee conservation)
-    if parent_cost_total and parent_qty:
-        total_child_cost = sum(c for c in _child_cost_totals if c is not None)
-        parent_remaining_cost = max(0.0, round(parent_cost_total - total_child_cost, 10))
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.pricing.set",
-            data={"price_type": "cost_total", "new_price": parent_remaining_cost},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"reason": "split_parent"},
-        )
+    if round(new_parent_qty, 10) != derived_parent_qty:
+        # A re-weigh that finds more or fewer units than the split leaves is a stock count:
+        # the same quantity and value change, journal and event as POST /items/{id}/adjust.
+        await adjust_item_quantity(session, company_id, user.id, entity_id, {"new_qty": new_parent_qty},
+                                   source="api", idempotency_key=f"{split_key}:count")
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
@@ -3693,7 +3724,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:measures",
             metadata_={"reason": "split_parent"},
         )
 
@@ -3709,7 +3740,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{split_key}:archived",
             metadata_={"reason": "consumed_by_split"},
         )
 
@@ -3746,8 +3777,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
+        idempotency_key=split_key,
+        metadata_={"split_request": request_digest},
     )
 
     await session.commit()
@@ -3758,27 +3789,43 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
 
 async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_proj: Projection,
-                          child_qty: float, child_weight: float | None = None,
-                          child_pieces: int | None = None) -> tuple[str, str]:
-    """Split one child of ``child_qty`` off ``parent_proj`` → ``(child_eid, child_sku)``.
+                          child_qty: float, action: str, child_weight: float | None = None,
+                          child_pieces: int | None = None,
+                          child_cost_base: float | None = None,
+                          landed_of: str | None = None,
+                          landed_part: dict[str, float] | None = None) -> tuple[str, str]:
+    """Split one child of ``child_qty`` off ``parent_proj`` -> ``(child_eid, child_sku)``.
 
     The child keeps the parent SKU (same product; a distinct lot by barcode / entity_id)
-    and is the split-off portion; the mother keeps the remainder. Cost splits
-    proportionally by quantity.
-    Weight and pieces come ONLY from the explicit args — no proportional fallback,
-    no auto-derivation; the mother keeps ``parent - child`` for each.
+    and is the split-off portion; the mother keeps the remainder. The cost divides by
+    carve_cost: goods by quantity unless ``child_cost_base`` names the child's share, and
+    each landed pool by quantity (only bill ``landed_of``'s for goods going back to its
+    supplier, and a pool named in ``landed_part`` by the amount named), the two sides always
+    adding back to the whole.
+
+    ``action`` names what the user is doing (a key of line_measures.splitting_off): a lot
+    whose Allow Splitting is off refuses any part smaller than the whole with HTTP 409,
+    before anything is written.
+
+    Weight and pieces come only from the explicit args; the mother keeps ``parent - child``
+    of each, and a part measuring more than its lot is refused. An omitted measure is
+    unknown: the child carries none and the mother's becomes unknown too, since what is
+    left cannot be worked out. A lot sold by weight (or by pieces) measures its quantity,
+    on both sides, whatever figure it had stored.
 
     Invariants (raise ValueError if violated):
-      - child_qty must not exceed the locked parent quantity
-      - parcel has weight (weight-unit sell_by OR a weight attribute)
-            -> child_weight is required
-      - sell_by is a weight unit  -> child_weight must equal child_qty
-      - parcel has pieces (piece-unit sell_by OR a pieces attribute)
-            -> child_pieces is required
-      - sell_by is a pieces unit  -> child_pieces must equal child_qty
+      - child_qty must not exceed the locked parent quantity, nor be finer than its unit
+      - pieces are whole numbers
+      - sell_by is a weight unit  -> child_weight equals child_qty
+      - sell_by is a pieces unit  -> child_pieces equals child_qty
 
-    Does NOT commit — the caller owns the transaction.
+    Does NOT commit; the caller owns the transaction.
     """
+    from celerp.services.line_measures import splitting_off
+    from celerp.services.units import exceeds_precision
+    from celerp.services.auto_je import company_currency
+    from celerp_inventory.services import carve_cost
+
     # Lock and re-read the live parent projection before carving: split_off_child emits
     # the mother's new quantity as an ABSOLUTE value, so two concurrent carves of one
     # parcel must each base their decrement on the current committed quantity, not on a
@@ -3797,39 +3844,67 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     # --- validate against the locked quantity (no floor, no silent clamp) ---
     if round(child_qty - parent_qty, 10) > 0:
         raise ValueError(f"cannot split {child_qty:g} of {parent_qty:g} available")
+    if not splitting_allowed(parent.state) and child_qty < parent_qty - 1e-9:
+        raise HTTPException(status_code=409, detail=splitting_off(parent_sku, action))
+    if action in ("return", "write_off"):
+        # The part leaves stock as soon as it is carved, so the mother must keep the goods
+        # finalized invoices set aside: judged on the mother as the carve would leave it.
+        from celerp.services.auto_je import refuse_stranding_set_aside
+        await refuse_stranding_set_aside(session, company_id, entity_id, parent.state,
+                                         {**parent.state, "quantity": parent_qty - child_qty})
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     sell_by = parent.state.get("sell_by") or ""
     weight_type = is_weight_unit(sell_by, unit_map)
     pieces_type = is_pieces_unit(sell_by, unit_map)
-    parent_weight = _read_float(parent.state, "weight")
-    parent_pieces = _read_pieces(parent.state)
+    stored_weight = _read_float(parent.state, "weight")
+    stored_pieces = _read_pieces(parent.state)
+    # The quantity of a lot sold by a measure is that measure, so a stored figure that has
+    # drifted from it (an import, an older receipt) is carved from the quantity instead.
+    parent_weight = parent_qty if weight_type and stored_weight is not None else stored_weight
+    parent_pieces = parent_qty if pieces_type and stored_pieces is not None else stored_pieces
+    if sell_by in unit_map and exceeds_precision(child_qty, int(unit_map[sell_by].get("decimals") or 0)):
+        raise ValueError(f"{child_qty:g} is more precise than {sell_by} allows")
 
-    # --- validate (no omission, no fallback) ---
-    if (weight_type or parent_weight is not None) and child_weight is None:
-        raise ValueError("child_weight is required: this item is weight-tracked")
+    if weight_type and child_weight is None:
+        child_weight = child_qty
+    if pieces_type and child_pieces is None:
+        child_pieces = child_qty
+
     if weight_type and child_weight is not None and abs(child_weight - child_qty) > 1e-9:
         raise ValueError("for weight-sold items child_weight must equal child_qty")
-    if (pieces_type or parent_pieces is not None) and child_pieces is None:
-        raise ValueError("child_pieces is required: this item is piece-tracked")
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
+    if child_pieces is not None and float(child_pieces) != int(float(child_pieces)):
+        raise ValueError("pieces must be a whole number")
+    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
+
+    # What the mother keeps of each measure: the difference when both sides are known,
+    # unknown when the part's is not. A part measuring more than its lot is refused.
+    fields_changed: dict[str, dict] = {}
+    weight_after: float | None = None
+    if parent_weight is not None:
+        if child_weight is not None:
+            weight_after = round(parent_weight - child_weight, 10)
+            if weight_after < 0:
+                raise ValueError(f"weight {child_weight:g} is more than the {parent_weight:g} the lot has")
+        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": weight_after}
+    pieces_after: int | None = None
+    if parent_pieces is not None:
+        if ch_pieces is not None:
+            pieces_after = _to_int_pieces(parent_pieces) - ch_pieces
+            if pieces_after < 0:
+                raise ValueError(f"{ch_pieces} pieces is more than the {parent_pieces:g} the lot has")
+        fields_changed["pieces"] = {"old": stored_pieces, "new": pieces_after}
 
     # The split child is the same product as the parent: it KEEPS the parent SKU and is
     # distinguished only by its own unique barcode / entity_id (SKUs repeat across lots).
     child_sku = parent_sku
 
-    # Cost: proportional by quantity (unit-cost invariant).
-    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
-        float(parent.state.get("cost_price") or 0) * parent_qty
-    )
-    child_cost_total: float | None = None
-    if parent_cost_total and parent_qty:
-        unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
-        child_cost_total = float((unit_cost * Decimal(str(child_qty))).quantize(Decimal("0.0000000001")))
+    carve = carve_cost(parent.state, child_qty, await company_currency(session, company_id),
+                       child_cost_base, landed_of, landed_part)
 
-    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
     parent_prices = {
         k: parent.state[k] for k in parent.state
         if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"
@@ -3844,7 +3919,11 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
+    else:
+        child_attrs.pop("pieces", None)
     child_data = lot_fields(parent.state)
+    if carve.part_landed:
+        child_data["landed_costs"] = carve.part_landed
     from celerp_inventory.services import (
         normalize_sku as _normalize_family_sku,
         resolve_catalog_anchor_for_item as _resolve_family_anchor,
@@ -3880,7 +3959,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                      event_type="item.created", data=child_data, actor_id=user_id,
                      location_id=_parse_uuid(parent.state.get("location_id")), source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={"parent_id": entity_id})
-    # Origin marker on the child: "Split from <mother>" — the child's first history entry.
+    # Origin marker on the child: "Split from <mother>" - the child's first history entry.
     origin = await emit_event(
         session, company_id=company_id, entity_id=child_eid, entity_type="item",
         event_type="item.split_from",
@@ -3894,33 +3973,21 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                          event_type="item.pricing.set", data={"price_type": price_type, "new_price": price_val},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
-    if child_cost_total is not None:
+    if carve.part_goods is not None:
         await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
-                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": child_cost_total},
+                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": carve.part_goods},
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
 
     # --- reduce the mother ---
-    new_parent_qty = max(0.0, round(parent_qty - child_qty, 10))
+    new_parent_qty = round(parent_qty - child_qty, 10)
+    adjusted: dict = {"new_qty": new_parent_qty, "landed_costs": carve.rest_landed}
+    if carve.rest_goods is not None:
+        adjusted["cost_base"] = carve.rest_goods
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
-                     event_type="item.quantity.adjusted", data={"new_qty": new_parent_qty},
+                     event_type="item.quantity.adjusted", data=adjusted,
                      actor_id=user_id, location_id=None, source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
-    if child_cost_total is not None and parent_cost_total:
-        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
-                         event_type="item.pricing.set",
-                         data={"price_type": "cost_total", "new_price": max(0.0, round(parent_cost_total - child_cost_total, 10))},
-                         actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
-    # Secondary measures are NOT conserved: the child keeps its (uncapped) value and
-    # the mother floors at 0 (e.g. child weight 20 of a 15ct mother -> mother 0ct).
-    fields_changed: dict[str, dict] = {}
-    if child_weight is not None and parent_weight is not None:
-        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": max(0.0, round(parent_weight - child_weight, 10))}
-    if ch_pieces is not None and parent_pieces is not None:
-        new_attrs = dict(parent_attrs)
-        new_attrs["pieces"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
-        fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
     if fields_changed:
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.updated", data={"fields_changed": fields_changed},
@@ -3934,13 +4001,13 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     }
     if parent_pieces is not None and ch_pieces is not None:
         child_detail["pieces_before"] = _to_int_pieces(parent_pieces)
-        child_detail["pieces_after"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
+        child_detail["pieces_after"] = pieces_after
     if parent_weight is not None and child_weight is not None:
         child_detail["weight_before"] = parent_weight
-        child_detail["weight_after"] = max(0.0, round(parent_weight - child_weight, 10))
-    if child_cost_total is not None and parent_cost_total:
-        child_detail["cost_before"] = parent_cost_total
-        child_detail["cost_after"] = max(0.0, round(parent_cost_total - child_cost_total, 10))
+        child_detail["weight_after"] = weight_after
+    if carve.rest_goods is not None:
+        child_detail["cost_before"] = float(parent.state.get("cost_total") or 0)
+        child_detail["cost_after"] = round_basis(carve.rest_goods + sum(carve.rest_landed.values()))
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.split",
                      data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty],
@@ -3948,6 +4015,48 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                      actor_id=user_id, location_id=None, source="fulfill_split",
                      idempotency_key=str(uuid.uuid4()), metadata_={})
     return child_eid, child_sku
+
+
+async def restock_measures(session: AsyncSession, *, company_id, user_id, lot_id: str, lot_state: dict,
+                           new_qty: float, unit_map: dict, weight_delta: float | None = None,
+                           pieces_delta: int | None = None, source: str, idempotency_key: str,
+                           metadata: dict) -> None:
+    """Keep a lot's weight and pieces true when stock is added to or taken off it.
+
+    Call with the lot's state from before the quantity change, in the same transaction.
+    The measure the lot is sold by follows its new quantity. Any other known measure moves
+    by the signed delta stated for it; with no delta stated, or a result below zero, what
+    the lot now measures cannot be worked out, so the measure becomes unknown. An unknown
+    measure stays unknown, unless the lot held nothing before and the delta is all it holds.
+    Emits one ``item.updated`` when a measure changes; history is never rewritten.
+    """
+    sell_by = lot_state.get("sell_by") or ""
+    old_qty = float(lot_state.get("quantity") or 0)
+
+    def after(old: float | None, sold_by: bool, delta: float | None) -> float | None:
+        if sold_by:
+            return new_qty if old is not None else None
+        if delta is None:
+            return None
+        if old is None:
+            return delta if old_qty <= 1e-9 and delta > 0 else None
+        value = round(old + delta, 10)
+        return value if value >= 0 else None
+
+    fields_changed: dict[str, dict] = {}
+    old_weight = _read_float(lot_state, "weight")
+    weight = after(old_weight, is_weight_unit(sell_by, unit_map), weight_delta)
+    if weight != old_weight:
+        fields_changed["weight"] = {"old": lot_state.get("weight"), "new": weight}
+    old_pieces = _read_pieces(lot_state)
+    pieces = after(old_pieces, is_pieces_unit(sell_by, unit_map), pieces_delta)
+    if pieces != old_pieces:
+        fields_changed["pieces"] = {"old": old_pieces, "new": _to_int_pieces(pieces) if pieces is not None else None}
+    if fields_changed:
+        await emit_event(session, company_id=company_id, entity_id=lot_id, entity_type="item",
+                         event_type="item.updated", data={"fields_changed": fields_changed},
+                         actor_id=user_id, location_id=None, source=source,
+                         idempotency_key=idempotency_key, metadata_=metadata)
 
 
 @router.post("/{entity_id}/transform")
@@ -3991,7 +4100,14 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     refusal = negative_cost_error(payload.child_sku, effective_cost)
     if refusal:
         raise HTTPException(status_code=422, detail=refusal)
+    # Kept at the parent's cost, the child carries the parent's landed pools beside its goods
+    # cost; a cost the user restates is the child's goods cost entire.
+    child_landed = dict(parent.state.get("landed_costs") or {}) if effective_cost == parent_cost_total else {}
+    child_goods = round_basis(effective_cost - sum(float(v or 0) for v in child_landed.values()))
     parent_location_id = parent.state.get("location_id")
+    currency = settings.get("currency", "USD")
+    parent_account = parent.state.get(LOT_ACCOUNT_FIELD)
+    parent_booked = booked_value(parent, currency)
 
     child_eid = f"item:{uuid.uuid4()}"
     # Lock the code namespace so a concurrent allocator cannot mint the same barcode.
@@ -4010,6 +4126,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "attributes": {**parent_attrs},
         "barcode": child_barcode,
     })
+    if child_landed:
+        child_data["landed_costs"] = child_landed
     # A transform yields a DIFFERENT product, so no product-family identity carries.
     child_data.pop("gtin", None)
     child_data.pop("catalog_item_id", None)
@@ -4020,7 +4138,23 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if payload.child_pieces is not None:
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
 
-    # 1. Create child
+    # 1. Mark parent archived (consumed by transform), first: goods an invoice holds
+    #    cannot be made into something else, and are refused before anything is written.
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "archived"},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"reason": "consumed_by_transform"},
+    )
+
+    # 2. Create child
     await emit_event(
         session,
         company_id=company_id,
@@ -4060,34 +4194,19 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     # 2. Sell prices are intentionally NOT copied — the child starts with no sell price (see the
     #    parent_price_keys note above). Only cost carries over.
 
-    # 2b. Set child cost via item.pricing.set (consistent with split/post_item flows)
+    # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=child_eid,
         entity_type="item",
         event_type="item.pricing.set",
-        data={"price_type": "cost_total", "new_price": effective_cost},
+        data={"price_type": "cost_total", "new_price": child_goods},
         actor_id=user.id,
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={"reason": "from_transform"},
-    )
-
-    # 4. Mark parent archived (consumed by transform)
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.status.set",
-        data={"new_status": "archived"},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={"reason": "consumed_by_transform"},
     )
 
     # 5. Emit transform event
@@ -4131,6 +4250,21 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         idempotency_key=idempotency_key,
         metadata_={},
     )
+
+    # A cost the user restates changes the value the stock holds, so the change is booked
+    # on the lot's inventory account against stock gains or shrinkage, as a cost edit is.
+    if parent_account:
+        from celerp.services.auto_je import entry_day
+
+        child = (await session.execute(
+            select(Projection).where(Projection.company_id == company_id, Projection.entity_id == child_eid)
+            .execution_options(populate_existing=True)
+        )).scalars().one()
+        await book_lot_value(
+            session, company_id, user.id, parent_account, booked_value(child, currency) - parent_booked,
+            je_id=f"je:auto:{child_eid}:cost-restated:transform", idem=f"transform-restate:{child_eid}",
+            day=await entry_day(session, company_id),
+            metadata={"trigger": "item.cost_restated", "item_id": child_eid, "transformed_from": entity_id})
 
     await session.commit()
     return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
@@ -4366,8 +4500,9 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
 
     # Compute defaults.
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
+    # One source of unknown weight leaves the merged weight unknown, never short.
     weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
-    total_weight = sum(weights) if weights else None
+    total_weight = sum(weights) if len(weights) == len(source_projections) else None
     # The merged lot keeps the value its sources record, which is what the books carry
     # for them (lot_origin.recorded_value): a source with no cost adds nothing.
     merged_cost_total = float(sum(recorded_value(p.state) for p in source_projections))
@@ -4743,6 +4878,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                 "original_status": str(proj.state.get("status") or "available"),
                 "original_status_doc_id": proj.state.get("status_doc_id"),
                 "original_status_doc_number": proj.state.get("status_doc_number"),
+                "original_status_line_entity_id": proj.state.get("status_line_entity_id"),
             },
             actor_id=user.id,
             location_id=None,
@@ -4815,7 +4951,8 @@ async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id),
             session, company_id=company_id, entity_id=sid, entity_type="item", event_type="item.unmerged",
             data={"merged_into": entity_id, "restored_status": data["original_status"],
                   "source_doc_id": data.get("original_status_doc_id"),
-                  "doc_number": data.get("original_status_doc_number")},
+                  "doc_number": data.get("original_status_doc_number"),
+                  "source_line_entity_id": data.get("original_status_line_entity_id")},
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=f"merge-undo:{entity_id}:{sid}", metadata_={},
         )
@@ -5251,8 +5388,6 @@ async def export_items_csv(
 
 
 def setup_api_routes(app) -> None:
-    # Scanning module disabled until properly finished
-    # from celerp_inventory.routes_scanning import router as scanning_router
     from celerp_inventory.routes_attachments import router as attachments_router
     # attachments_router first: its specific sub-paths (e.g. /files/{id}) must
     # be registered before the catch-all /{entity_id} route in the main router.

@@ -12,6 +12,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refusal
+
 # Units sold by weight/volume/length allow fractional quantities.
 # "piece" (decimals=0) enforces positive integers.
 DEFAULT_UNITS: list[dict] = [
@@ -47,6 +49,20 @@ def default_receive_as(inventory_type: str | None, sell_by: str | None = None) -
     if inventory_type == "non_stocked" or is_non_stock_line(inventory_type, sell_by):
         return "expense"
     return "stock"
+
+
+# How a purchase line's goods come in.
+RECEIVE_KINDS: tuple[str, ...] = ("stock", "expense", "asset")
+
+
+def line_receive_kind(line: dict) -> str:
+    """What a purchase line brings in: stock, an expense or an asset. The kind stored on the
+    line wins; a line saved without one is stock when it names an item or SKU and an expense
+    otherwise. A parcel a receipt created (``entity_id``) is not a catalog reference."""
+    kind = str(line.get("receive_as") or "").strip().lower()
+    if kind in RECEIVE_KINDS:
+        return kind
+    return "stock" if line.get("sku") or line.get("item_id") else "expense"
 
 
 def is_landed_component(inventory_type: str | None) -> bool:
@@ -92,16 +108,25 @@ def exceeds_precision(qty: float, decimals: int) -> bool:
     return d != d.quantize(Decimal(10) ** -decimals, rounding=ROUND_HALF_UP)
 
 
-def validate_quantity(qty: float, decimals: int, *, label: str = "Quantity") -> None:
+def quantity_step(unit_name: str | None, unit_map: dict[str, dict]) -> float | None:
+    """The smallest quantity the named unit allows (1 for piece, 0.01 for gram), or None when
+    the unit is unknown or a service, whose quantities are not constrained."""
+    if not unit_name or unit_name in SERVICE_SELL_BY or unit_name not in unit_map:
+        return None
+    return 10.0 ** -int(unit_map[unit_name].get("decimals") or 0)
+
+
+def validate_quantity(qty: float, decimals: int, *, label: str | None = None) -> None:
     """Raise HTTP 422 if *qty* has more decimal places than *decimals* allows.
 
-    label: human-readable name included in the error message (e.g. item name).
+    label: the item or line the quantity is for, named in the message when given.
     """
     if exceeds_precision(qty, decimals):
-        raise HTTPException(
-            status_code=422,
-            detail=f"{label}: quantity {qty} exceeds allowed precision ({decimals} decimal places for this unit)",
-        )
+        rule = f"{qty:g} is more precise than this unit allows (at most {decimals} decimal places)."
+        detail = (refusal("quantity.precision", f"{label}: {rule}", label=label, qty=f"{qty:g}", decimals=decimals)
+                  if label else
+                  refusal("quantity.precision_plain", rule, qty=f"{qty:g}", decimals=decimals))
+        raise HTTPException(status_code=422, detail=detail)
 
 
 def validate_positive(qty: float, *, label: str = "Quantity") -> None:

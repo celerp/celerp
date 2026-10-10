@@ -18,12 +18,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
+from celerp.accounting_roles import CONSIGNOR_FIELD, refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.attachments import attach_file, local_attachment_url_path, remove_attachment, storing
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import lock_projections
 from celerp.services.currencies import require_currency_code, require_phone
 from celerp.services.permissions import locked_authority, require_permission
 
@@ -399,6 +401,23 @@ async def delete_contact_file(
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 
+async def _locked_note(session: AsyncSession, company_id, contact_id: str, note_id: str) -> None:
+    """Hold the live note ``note_id`` of this contact, read once no other write to the contact
+    or the note is in flight. Any other id is refused, so an edit or removal is never
+    written onto another contact's note, another kind of record, or a note that is gone."""
+    rows = await lock_projections(session, company_id, [contact_id, note_id])
+    contact = rows.get(contact_id)
+    if contact is None or contact.entity_type != "contact":
+        raise HTTPException(status_code=404, detail="Not found")
+    note = rows.get(note_id)
+    if note is None or note.entity_type != "contact_note" or note.state.get("contact_id") != contact_id \
+            or note.state.get("deleted"):
+        raise HTTPException(status_code=404, detail=refusal(
+            "contacts.note_not_found",
+            "That note is not on this contact. Reload the contact to see its notes, then "
+            "edit or remove one of those."))
+
+
 @router.get("/contacts/{contact_id}/notes")
 async def list_contact_notes(
     contact_id: str,
@@ -470,9 +489,7 @@ async def update_contact_note(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+    await _locked_note(session, company_id, contact_id, note_id)
 
     entry = await emit_event(
         session,
@@ -505,9 +522,7 @@ async def delete_contact_note(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+    await _locked_note(session, company_id, contact_id, note_id)
 
     entry = await emit_event(
         session,
@@ -1033,7 +1048,27 @@ async def merge_contacts_service(
             metadata_={},
         )
 
-    # 11. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
+    # 11. Consigned stock records the consignor it is owed to (the consignor of record),
+    # which follows the merge like the consignment that received it.
+    for dr in await lock_referencing_records(
+            session, company_id, source_ids, entity_types=("item",), field=CONSIGNOR_FIELD):
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=dr.entity_id,
+            entity_type="item",
+            event_type="item.updated",
+            data={"fields_changed": {
+                CONSIGNOR_FIELD: {"old": dr.state[CONSIGNOR_FIELD], "new": payload.target_contact_id},
+            }},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # 12. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
     # No events emitted for notes.
 
     return {

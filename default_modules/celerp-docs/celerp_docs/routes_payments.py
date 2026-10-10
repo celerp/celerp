@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import AccountRole
+from celerp.accounting_roles import AccountRole, refusal
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -32,7 +32,7 @@ from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEP
 from celerp.services.account_roles import resolve
 from celerp.services.auth import get_current_company_id, get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone
-from celerp.services.doc_balance import outstanding_balance
+from celerp.services.doc_balance import is_awaiting_payment, outstanding_balance
 from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
@@ -357,8 +357,10 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
         raise HTTPException(status_code=404, detail="Payment link not found")
     if not pay.payments_enabled():
         raise HTTPException(status_code=503, detail="Online payment is not available")
-    if state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0:
-        raise HTTPException(status_code=409, detail="This document is not payable")
+    if (state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0
+            or not is_awaiting_payment(state.get("doc_type"), state.get("status"))):
+        raise HTTPException(status_code=409, detail=refusal(
+            "pay.not_awaiting_payment", "This document is not awaiting payment, so it cannot be paid online."))
     currency = state.get("currency", "USD")
     ref = _doc_ref(state) or entity_id.split(":")[-1][:8]
     try:

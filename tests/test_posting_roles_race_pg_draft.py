@@ -227,27 +227,24 @@ async def test_revert_racing_fulfil_never_leaves_circulated_draft(committed_engi
     await _books(committed_engine, cid)
 
 
-async def test_fulfil_racing_revert_loser_clean_conflict(committed_engine, race):
-    """Revert to Draft of lot ``b`` holds its commit; a fulfilment that would draw ``b``
-    arrives meanwhile. Once ``b`` is a draft it is not stock, so the fulfilment cannot
-    draw it and refuses cleanly, leaving every lot as it was."""
-    client, hold = race
+async def test_revert_of_a_lot_the_invoice_set_aside_is_refused(committed_engine, race):
+    """Lot ``b`` holds the second unit the finalized invoice costed, so Revert to Draft
+    of ``b`` would take goods out of stock that the invoice has already taken off the
+    books: it is refused naming the invoice and leaves every lot as it was, and the
+    fulfilment then draws ``b`` as before."""
+    client, _hold = race
     cid, tok = await _company(committed_engine)
     doc, a, b = await _invoice_spanning(client, tok)
 
-    revert, fulfil = await _race(
-        committed_engine, client, hold,
-        _move(client, tok, "revert-to-draft", b),
-        lambda: client.post(f"/docs/{doc}/fulfill-lines", headers=auth(tok), json={"line_entity_ids": [a]}))
+    revert = await _move(client, tok, "revert-to-draft", b)()
+    assert revert.status_code == 409, revert.text
+    number = (await _state(committed_engine, cid, doc))["doc_number"]
+    detail = revert.json()["detail"]
+    assert detail["message_key"] == "lots.held_for_invoice_leave", revert.text
+    assert number in detail["message"] and detail["params"]["docs"] == number, revert.text
+    assert (await _state(committed_engine, cid, b))["status"] == "available"
+    assert await _draft_entries(committed_engine, cid, b) == ["made-available"]
 
-    assert revert.status_code == 200, revert.text
-    assert fulfil.status_code in (409, 422), fulfil.text
-    assert (await _state(committed_engine, cid, a))["status"] == "available"
-    assert (await _state(committed_engine, cid, b))["status"] == "draft"
-    assert await _draft_entries(committed_engine, cid, b) == ["made-available", "returned-to-draft"]
-    # The invoice already recognized the cost of both units when it was finalized, so
-    # the books agree with the lots once it is fulfilled: bring b back and fulfil.
-    await _ok(client, tok, "/items/bulk/make-available", {"entity_ids": [b]})
     await _ok(client, tok, f"/docs/{doc}/fulfill-lines", {"line_entity_ids": [a]})
     assert (await _state(committed_engine, cid, b))["status"] == "sold"
     await _books(committed_engine, cid)

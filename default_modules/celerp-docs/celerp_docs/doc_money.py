@@ -38,6 +38,16 @@ def _recompute_tax_applications(raw, base, currency: str):
         (to_decimal(item.amount) for item in resolved), to_decimal(0))
 
 
+def _line_amount(line: dict):
+    value = line.get("line_total")
+    if value not in (None, ""):
+        return to_decimal(value or 0)
+    return (
+        to_decimal(line.get("quantity", 0) or 0)
+        * to_decimal(line.get("unit_price", 0) or 0)
+    )
+
+
 def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool) -> dict:
     """Subtotal, discount, taxes and total of a document with these lines.
 
@@ -47,15 +57,6 @@ def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrate
     amount stands as it is, otherwise UnratedTaxError is raised so the caller can
     refuse rather than change the amount.
     """
-    def _line_amount(line: dict):
-        value = line.get("line_total")
-        if value not in (None, ""):
-            return to_decimal(value or 0)
-        return (
-            to_decimal(line.get("quantity", 0) or 0)
-            * to_decimal(line.get("unit_price", 0) or 0)
-        )
-
     subtotal = round_money(
         sum((_line_amount(line) for line in lines if isinstance(line, dict)), to_decimal(0)),
         currency,

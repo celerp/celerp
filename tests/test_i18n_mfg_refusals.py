@@ -169,7 +169,7 @@ def test_the_complete_action_is_a_verb_not_the_completed_status(lang):
 
 @pytest.mark.asyncio
 async def test_a_document_action_refused_by_a_run_says_why_in_the_users_language(ui_client):
-    """Converting a memo whose goods a run has not finished costing: the toast is in Thai."""
+    """A document action refused because a run has not finished costing its goods: the toast is in Thai."""
     th = _catalog("th")["mfg.output_memo_conversion"]
     english = _catalog("en")["mfg.output_memo_conversion"]
     refused = APIError(409, english, {"message": english, "message_key": "mfg.output_memo_conversion",
@@ -190,7 +190,7 @@ async def test_shipping_open_run_output_in_part_says_why_in_the_users_language(u
     english = _catalog("en")["mfg.output_in_production"].format(**params)
     refused = APIError(409, english, {"message": english, "message_key": "mfg.output_in_production", "params": params})
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(side_effect=refused)):
-        r = await ui_client.post("/docs/doc:INV-1/fulfill-lines", data={"selected": "item:1"},
+        r = await ui_client.post("/docs/doc:INV-1/fulfill-lines", data={"selected": "item:1", "idempotency_key": "k"},
                                  cookies={**_authed(), "celerp_lang": "th"})
     assert r.status_code == 200, r.text
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == _catalog("th")[

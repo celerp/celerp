@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select, text
@@ -26,7 +25,9 @@ from celerp.services import auto_je
 from test_cost_restatement import (
     _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
-from test_helpers import TZ, company_auth
+from stock_books import book_older_opening
+from test_consignment_in_sale import _consign
+from test_helpers import TZ, company_auth, invoices_booking_one_lot_twice
 
 # The accounts a finalize entry posts cost of goods sold to on a seeded chart.
 _COGS_ACCOUNTS = {SEEDED_TARGETS[R.COGS], *(SEEDED_TARGETS[r] for r in INVENTORY_VALUE_ROLES)}
@@ -47,9 +48,7 @@ _VALUE_SOURCES = {SEEDED_TARGETS[r] for r in (R.RETAINED_EARNINGS, R.STOCK_GAIN,
 async def _trial_balance(session, auth) -> dict[str, float]:
     """Every account's posted total (debit positive), opening inventory reconciled, with
     the sources of a lot's value change pooled as one."""
-    await auto_je.book_opening_inventory(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
-    await session.commit()
+    await book_older_opening(session, auth["company_id"], auth["user_id"])
     session.expire_all()
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
@@ -92,16 +91,9 @@ async def _oracle(client, session, steps, lot: str, new_cost, *, before: int, la
 
 # -- History steps ---------------------------------------------------------
 
-def make(name: str, cost, qty: float = 1, consignment_flag: str | None = None, **extra):
+def make(name: str, cost, qty: float = 1, **extra):
     async def step(client, session, auth, ctx):
-        if consignment_flag:
-            await make(name, cost, qty, sell_by="piece", **extra)(client, session, auth, ctx)
-            # Consigned-in goods are received through a consignment document; the lot it leaves.
-            row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": ctx[name]})
-            row.consignment_flag = consignment_flag
-            row.state = {**row.state, "consignment_flag": consignment_flag}
-            await session.commit()
-        elif extra:
+        if extra:
             data = {"sku": f"SC-{uuid.uuid4().hex[:6]}", "name": "Lot", "quantity": qty,
                     "sell_by": "piece", "status": "available", **extra}
             if cost is not None:
@@ -111,6 +103,13 @@ def make(name: str, cost, qty: float = 1, consignment_flag: str | None = None, *
             ctx[name] = r.json()["id"]
         else:
             ctx[name] = await _item(client, auth, cost, qty)
+    return step
+
+
+def consign(name: str, unit_cost: float):
+    """A lot of one unit received on a consignment at ``unit_cost``."""
+    async def step(client, session, auth, ctx):
+        _, ctx[name] = await _consign(client, session, auth, qty=1, cost_price=unit_cost)
     return step
 
 
@@ -162,9 +161,7 @@ def mark_sold(name: str):
 
 def reconcile_opening_inventory():
     async def step(client, session, auth, ctx):
-        await auto_je.book_opening_inventory(
-            session, company_id=auth["company_id"], user_id=auth["user_id"], in_production=Decimal("0"))
-        await session.commit()
+        await book_older_opening(session, auth["company_id"], auth["user_id"])
     return step
 
 
@@ -331,8 +328,10 @@ async def test_correction_never_drives_a_merge_result_negative(client, session):
 # -- 5, 6: consignment-in and non-stock lots -------------------------------
 
 @pytest.mark.asyncio
-async def test_cost_added_to_a_sold_consignment_lot(client, session):
-    await _oracle(client, session, [make("a", None, consignment_flag="in"), sell("a")], "a", 70.0, before=1)
+async def test_cost_corrected_on_a_sold_consignment_lot(client, session):
+    # Consigned goods sell only at a known cost (what is owed to the consignor), so the
+    # correction here changes a recorded cost rather than adding a missing one.
+    await _oracle(client, session, [consign("a", 50.0), sell("a")], "a", 70.0, before=1)
 
 
 @pytest.mark.asyncio
@@ -405,12 +404,17 @@ async def test_legacy_revert_to_draft_books_cogs_once(client, session):
 async def test_legacy_void_reverses_cogs_booked_at_fulfilment(client, session):
     auth = await _new_company(session)
     ctx: dict = {}
-    for step in (make("a", 100.0), legacy_invoice("a"), legacy_fulfil("a"), revert_lines("a"),
-                 doc_action("void")):
+    for step in (make("a", 100.0), legacy_invoice("a"), legacy_fulfil("a"), revert_lines("a")):
         await step(client, session, auth, ctx)
+    # The goods came back, so the invoice gave back the cost its fulfilment booked.
+    assert await _doc_cogs(session, auth, ctx["doc"]) == 0.0
+    fulfilment = f"je:auto:{ctx['doc']}:fulfill"
+    await doc_action("void")(client, session, auth, ctx)
+    assert (await _state(session, auth, fulfilment))["status"] == "void"
     assert await _doc_cogs(session, auth, ctx["doc"]) == 0.0
     await doc_action("unvoid")(client, session, auth, ctx)
-    assert await _doc_cogs(session, auth, ctx["doc"]) == 100.0
+    assert (await _state(session, auth, f"{fulfilment}:unvoid:1"))["status"] == "posted"
+    assert await _doc_cogs(session, auth, ctx["doc"]) == 0.0
 
 
 # -- 9: several lines, one shipped -----------------------------------------
@@ -564,8 +568,12 @@ async def test_rounded_and_large_costs(client, session, cost):
 @pytest.mark.asyncio
 async def test_sold_lot_also_allocated_on_another_open_invoice(client, session):
     steps = [make("a", None), invoice("a", doc="waiting"), sell("a")]
-    auth, ctx, _ = await _oracle(client, session, steps, "a", 100.0, before=1)
-    assert await _doc_cogs(session, auth, ctx["waiting"]) == 100.0
+    with invoices_booking_one_lot_twice():
+        auth, ctx, _ = await _oracle(client, session, steps, "a", 100.0, before=1)
+    # The lot's cost went with it to the invoice that shipped it; the one that had set
+    # it aside is costed when goods ship on it.
+    assert await _doc_cogs(session, auth, ctx["doc"]) == 100.0
+    assert await _doc_cogs(session, auth, ctx["waiting"]) == 0.0
 
 
 # -- 18: who may correct a cost --------------------------------------------

@@ -16,6 +16,7 @@ class EventType(StrEnum):
     ITEM_QUANTITY_ADJUSTED = "item.quantity.adjusted"
     ITEM_EXPIRED = "item.expired"
     ITEM_WRITTEN_OFF = "item.written_off"
+    ITEM_RETURNED_TO_SUPPLIER = "item.returned_to_supplier"
     ITEM_SPLIT = "item.split"
     ITEM_SPLIT_FROM = "item.split_from"
     ITEM_TRANSFORM = "item.transform"
@@ -25,6 +26,8 @@ class EventType(StrEnum):
     ITEM_PRODUCED = "item.produced"
     ITEM_COST_ADJUSTED = "item.cost_adjusted"
     ITEM_INVENTORY_ACCOUNT_RECORDED = "item.inventory_account.recorded"
+    ITEM_CONSIGNOR_PAYABLE_RECORDED = "item.consignor_payable.recorded"
+    ITEM_CONSIGNMENT_BOUGHT = "item.consignment.bought"
     ITEM_INVENTORY_ON_BOOKS_RECORDED = "item.inventory_on_books.recorded"
     ITEM_RECIPE_SET = "item.recipe.set"
     ITEM_WORKFLOW_SET = "item.workflow.set"
@@ -100,12 +103,6 @@ class EventType(StrEnum):
     MFG_ORDER_SCHEDULED = "mfg.order.scheduled"
     MFG_ORDER_WIP_OPENED = "mfg.order.wip_opened"
     MFG_ORDER_WIP_UNRESOLVED = "mfg.order.wip_unresolved"
-
-    # Scanning
-    SCAN_BARCODE = "scan.barcode"
-    SCAN_RFID = "scan.rfid"
-    SCAN_NFC = "scan.nfc"
-    SCAN_RESOLVED = "scan.resolved"
 
     # Marketplace
     MP_LISTING_CREATED = "mp.listing.created"

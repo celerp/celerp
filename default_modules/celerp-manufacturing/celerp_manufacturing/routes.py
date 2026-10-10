@@ -27,7 +27,7 @@ from celerp.events.schemas import (
     WorkflowSpec,
     workflow_step_minutes,
 )
-from celerp.models.company import Company, WorkCenter
+from celerp.models.company import Company, Location, WorkCenter
 from celerp.importers.results import failure_reason
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
@@ -1453,6 +1453,23 @@ def _parse_loc(value: str | None):
         return None
 
 
+async def _wip_location(session: AsyncSession, company_id, value: str | None):
+    """The work center's WIP location: empty clears it, anything else must name one of the
+    company's own locations. A malformed id or another company's location is refused rather
+    than stored as no location."""
+    if not value:
+        return None
+    loc_id = _parse_loc(value)
+    if loc_id is not None:
+        loc_id = (await session.execute(select(Location.id).where(
+            Location.id == loc_id, Location.company_id == company_id))).scalar_one_or_none()
+    if loc_id is None:
+        raise movements.refuse(422, "wip_location_unknown",
+                               f"Location {value} is not one of this company's locations. "
+                               "Choose a location from Settings > Locations, or leave it empty.", value=value)
+    return loc_id
+
+
 @router.get("/work-centers")
 async def list_work_centers(
     company_id=Depends(get_current_company_id),
@@ -1475,11 +1492,12 @@ async def create_work_center(
         raise HTTPException(status_code=422, detail="Work center name is required")
     # A company's first center becomes its default, so the board always has a
     # working-day length to read once any center exists.
+    wip_location_id = await _wip_location(session, company_id, payload.wip_location_id)
     has_any = (await session.execute(
         select(WorkCenter.id).where(WorkCenter.company_id == company_id).limit(1)
     )).scalars().first()
     wc = WorkCenter(
-        company_id=company_id, name=payload.name.strip(), wip_location_id=_parse_loc(payload.wip_location_id),
+        company_id=company_id, name=payload.name.strip(), wip_location_id=wip_location_id,
         labor_rate=payload.labor_rate, capacity=payload.capacity,
         hours_per_day=_clean_hours(payload.hours_per_day), is_default=has_any is None,
     )
@@ -1509,7 +1527,7 @@ async def patch_work_center(
             raise HTTPException(status_code=422, detail="Work center name is required")
         wc.name = fields["name"].strip()
     if "wip_location_id" in fields:
-        wc.wip_location_id = _parse_loc(fields["wip_location_id"])
+        wc.wip_location_id = await _wip_location(session, company_id, fields["wip_location_id"])
     if "labor_rate" in fields:
         wc.labor_rate = fields["labor_rate"]
     if "capacity" in fields:

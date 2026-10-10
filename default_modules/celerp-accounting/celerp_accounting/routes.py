@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -42,7 +43,10 @@ from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
-from celerp.services.account_roles import current_settings, line_roles, resolve, resolve_many, role_map
+from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.attachments import (
+    company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
+)
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_chart, locked_company
 from celerp.services.doc_balance import canonical_doc_type
@@ -85,6 +89,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "2000", "name": "Liabilities", "account_type": "liability", "parent_code": None},
     {"code": "2100", "name": "Current Liabilities", "account_type": "liability", "parent_code": "2000"},
     {"code": "2110", "name": "Accounts Payable", "account_type": "liability", "parent_code": "2100"},
+    {"code": "2115", "name": "Consignor Payable", "account_type": "liability", "parent_code": "2100"},
     {"code": "2120", "name": "VAT Payable (Output VAT)", "account_type": "liability", "parent_code": "2100"},
     {"code": "2130", "name": "Withholding Tax Payable", "account_type": "liability", "parent_code": "2100"},
     {"code": "2140", "name": "Accrued Expenses", "account_type": "liability", "parent_code": "2100"},
@@ -242,43 +247,53 @@ async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUI
     session.add(bank)
 
 
-# The seeded inventory accounts whose presence, exactly as seeded, shows a chart is
-# Celerp's own and can take a seeded account added after it was created.
-_NATIVE_INVENTORY = ("1130", "1130-P", "1130-OB")
+# Per role added after charts were first seeded, the seeded accounts whose presence,
+# exactly as seeded, shows a chart is Celerp's own and can take that role's account.
+_SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
+    AccountRole.WORK_IN_PROGRESS: ("1130", "1130-P", "1130-OB"),
+    AccountRole.CONSIGNOR_PAYABLE: ("2100", "2110"),
+}
 
 
-async def _add_seeded_wip_account(session: AsyncSession, company_id: uuid.UUID) -> bool:
-    """Add the seeded work-in-progress account to a chart written before it existed,
-    only when the chart is provably Celerp's own seeded one: its inventory accounts
-    are present exactly as seeded and nothing holds the work-in-progress code yet.
-    A chart from a migration or a restored backup is never extended; its company
-    chooses the account in Posting Accounts. An existing account is never changed.
-    Returns whether the account was added."""
-    from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS, AccountRole
-    from celerp.services.company_lock import lock_chart, locked_company
+async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> frozenset:
+    """Add the seeded account of each role added after the chart was written, only where
+    the chart is provably Celerp's own seeded one: the role's anchor accounts are present
+    exactly as seeded and nothing holds the role's code yet. A chart from a migration or a
+    restored backup is never extended; its company chooses the account in Posting
+    Accounts. An existing account is never changed. Returns the roles whose account was
+    added, which the caller may then map to it."""
+    from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS
     from sqlalchemy import select as _select
 
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
-    role = AccountRole.WORK_IN_PROGRESS
-    if (company is None or SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup")
-            or (settings.get(ROLES_KEY) or {}).get(role.value)):
-        return False
+    if company is None or SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup"):
+        return frozenset()
+    mapped = settings.get(ROLES_KEY) or {}
+    wanted = {role: anchors for role, anchors in _SEEDED_ANCHORS.items() if not mapped.get(role.value)}
+    if not wanted:
+        return frozenset()
     await lock_chart(session, company_id)
-    entry = next(e for e in THAI_CHART_OF_ACCOUNTS if e["code"] == SEEDED_TARGETS[role])
-    seeded = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS if e["code"] in _NATIVE_INVENTORY}
+    chart = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS}
+    codes = {code for role, anchors in wanted.items() for code in (*anchors, SEEDED_TARGETS[role])}
     rows = {a.code: a for a in (await session.execute(_select(Account).where(
-        Account.company_id == company_id, Account.code.in_([*_NATIVE_INVENTORY, entry["code"]])))).scalars()}
-    if entry["code"] in rows:
-        return False
-    for code, want in seeded.items():
-        row = rows.get(code)
-        if row is None or not row.is_active or (row.account_type, row.parent_code) != (
-                want["account_type"], want["parent_code"]):
-            return False
-    session.add(_seeded_account(company_id, entry))
-    await session.flush()
-    return True
+        Account.company_id == company_id, Account.code.in_(codes)))).scalars()}
+
+    def as_seeded(code: str) -> bool:
+        row, want = rows.get(code), chart[code]
+        return row is not None and row.is_active and (row.account_type, row.parent_code) == (
+            want["account_type"], want["parent_code"])
+
+    added = set()
+    for role, anchors in wanted.items():
+        code = SEEDED_TARGETS[role]
+        if code in rows or not all(as_seeded(a) for a in anchors):
+            continue
+        session.add(_seeded_account(company_id, chart[code]))
+        added.add(role)
+    if added:
+        await session.flush()
+    return frozenset(added)
 
 
 async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid.UUID) -> None:
@@ -303,7 +318,7 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     yet. This handles the case where accounting is enabled after the company was already
     created (e.g. first-run with no modules, then preset applied), and a deactivated
     company then works when it is reactivated. A chart seeded by an older release gets
-    the accounts seeded since, where it is provably Celerp's own (_add_seeded_wip_account).
+    the accounts seeded since, where it is provably Celerp's own (_add_seeded_accounts).
     Then every company's posting accounts are
     reconciled with its chart (account_roles.reconcile_company), and a company left
     without an account its workflows need gets one notice pointing at the fix. Stock from
@@ -338,10 +353,10 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)
             await _seed_default_bank_account(session, company_id)
-            seeded = True
+            claim = UNGUESSED_ROLES
         else:
-            seeded = await _add_seeded_wip_account(session, company_id)
-        if await reconcile_company(session, company_id, UNGUESSED_ROLES if seeded else frozenset()):
+            claim = await _add_seeded_accounts(session, company_id)
+        if await reconcile_company(session, company_id, claim):
             await notify_unmapped(session, company_id)
         settings = await current_settings(session, company_id)
         if INVENTORY_ORIGIN_KEY in settings or not uses_module(settings, "celerp-accounting"):
@@ -936,6 +951,10 @@ async def _require_contact_filter(
         )
 
 
+# The id of the reversal row _je_rows adds for an entry voided out of a locked period.
+_REVERSAL_SUFFIX = ":reversal"
+
+
 async def _je_rows(
     session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
 ) -> list[tuple[str, dict, str]]:
@@ -959,11 +978,35 @@ async def _je_rows(
     for row in rows:
         state = row.state
         status = state.get("status")
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        day = str(ts_raw)[:10] if ts_raw else ""
+        if status == "void" and state.get("reversed_on"):
+            # Voided out of a locked period: the entry stays posted in its own period and
+            # its reversal posts on reversed_on (posting_dates.void_reversal).
+            out.append((row.entity_id, {**state, "status": "posted"}, day))
+            out.append((f"{row.entity_id}{_REVERSAL_SUFFIX}", _reversal_state(row.entity_id, state), state["reversed_on"]))
+            continue
         if status != "posted" and not (include_void and status == "void"):
             continue
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        out.append((row.entity_id, state, str(ts_raw)[:10] if ts_raw else ""))
+        out.append((row.entity_id, state, day))
     return out
+
+
+_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
+
+
+def _reversal_state(entity_id: str, state: dict) -> dict:
+    """The reversal of a journal entry on its reversed_on date: every line through the
+    same account and roles with debit and credit swapped."""
+    memo = state.get("memo") or ""
+    return {
+        **state,
+        "status": "posted",
+        "ts": state["reversed_on"],
+        "memo": f"Reversal of {memo}" if memo else "Reversal",
+        "reverses": entity_id,
+        "entries": [{_SWAPPED.get(k, k): v for k, v in line.items()} for line in state.get("entries") or []],
+    }
 
 
 async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
@@ -1050,13 +1093,18 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     total - travel with the ref so the extended journal can name what was bought
     or sold on each posting. The projection row is already loaded whole here, so
     carrying them costs no extra read.
+
+    The reversal row of an entry voided out of a locked period has no creation
+    event of its own; it is the same document's posting undone, so it resolves to
+    the ref of the entry it reverses: same document, party and currency.
     """
     from celerp.models.ledger import LedgerEntry
 
     if not je_ids:
         return {}
+    reverses = {je_id: je_id.removesuffix(_REVERSAL_SUFFIX) for je_id in je_ids}
     ledger_events = []
-    for chunk in _id_chunks(je_ids):
+    for chunk in _id_chunks(sorted(set(reverses.values()))):
         ledger_events.extend((
             await session.execute(
                 select(LedgerEntry).where(
@@ -1144,10 +1192,10 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
             "doc": state,
         }
-    return refs
+    return {je_id: refs[original] for je_id, original in reverses.items() if original in refs}
 
 
-def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
+def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[str, str]) -> str:
     """The party a journal entry line belongs to, or "" when none resolves.
 
     A line may name its own contact, which is how a manual posting to a control
@@ -1157,12 +1205,12 @@ def _line_party(refs: dict[str, dict], je_id: str, entry: dict) -> str:
     statement, so a line can never sit in one party's bucket on one report and
     another's on the next. Lines that resolve to nothing are reported under the
     empty string, so a filtered view can never quietly drop them from the
-    account's total.
+    account's total. A party merged into another contact reads as the contact that
+    survives it (merge_survivors), so merged contacts are one party on every report.
     """
     named = entry.get("contact")
-    if isinstance(named, str) and named:
-        return named
-    return (refs.get(je_id) or {}).get("contact_id") or ""
+    party = named if isinstance(named, str) and named else (refs.get(je_id) or {}).get("contact_id") or ""
+    return survivors.get(party, party)
 
 
 def _statement_kind(ref: dict) -> str:
@@ -1300,6 +1348,8 @@ async def _journal_payload(
             "status": state.get("status"),
             "je_type": state.get("je_type"),
             "void_reason": state.get("void_reason"),
+            # Set on an entry voided out of a locked period and on its reversal row.
+            "reversed_on": state.get("reversed_on"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
             "fx": entry_fx,
@@ -1563,6 +1613,9 @@ class ManualJECreate(BaseModel):
 
 class ManualJEVoidPayload(BaseModel):
     reason: str | None = None
+    # When the entry sits in a locked period, the open date its reversal posts on;
+    # the company's business date today when not given (posting_dates.correction_day).
+    reversal_date: str | None = None
 
 
 # A ceiling on how much writing one request can ask for, so a hand-built or mis-clicked
@@ -1574,6 +1627,7 @@ _BULK_VOID_LIMIT = 200
 class BulkJEVoidPayload(BaseModel):
     je_ids: list[str]
     reason: str | None = None
+    reversal_date: str | None = None
 
 
 @router.post("/journal-entries")
@@ -1732,7 +1786,8 @@ async def create_manual_journal_entry(
     }
 
 
-async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None) -> dict:
+async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None,
+                    reversal_date: str | None = None) -> dict:
     """Void one manual journal entry, committing it. Raises the refusal as HTTPException.
 
     Both the single-entry route and the bulk route go through here, so a rule about
@@ -1758,6 +1813,8 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
     data = je_void_data(reason, state)
+    if reversal_date:
+        data["reversed_on"] = reversal_date
     await emit_event(
         session,
         company_id=company_id,
@@ -1772,7 +1829,7 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         metadata_={},
     )
     await session.commit()
-    return {"je_id": entity_id, "status": "void", "void_reason": reason}
+    return {"je_id": entity_id, "status": "void", "void_reason": reason, "reversed_on": data.get("reversed_on")}
 
 
 @router.post("/journal-entries/bulk-void")
@@ -1807,7 +1864,7 @@ async def bulk_void_journal_entries(
         try:
             results.append(await _void_one(
                 session, company_id=company_id, actor_id=actor_id,
-                entity_id=entity_id, reason=payload.reason,
+                entity_id=entity_id, reason=payload.reason, reversal_date=payload.reversal_date,
             ))
         except HTTPException as exc:
             # Every entry starts from a clean session, whatever the one before it
@@ -1838,6 +1895,7 @@ async def void_manual_journal_entry(
     return await _void_one(
         session, company_id=company_id, actor_id=user.id,
         entity_id=entity_id, reason=payload.reason if payload else None,
+        reversal_date=payload.reversal_date if payload else None,
     )
 
 
@@ -1893,6 +1951,7 @@ async def account_ledger(
         raise HTTPException(status_code=404, detail="Account not found")
 
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+    survivors = await merge_survivors(session, company_id)
 
     account_type = account.account_type if account else "unknown"
     debit_normal = _is_debit_normal(account_type)
@@ -1908,7 +1967,7 @@ async def account_ledger(
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
                 continue
-            line_contact = _line_party(refs, je_id, entry)
+            line_contact = _line_party(refs, je_id, entry, survivors)
             if contact_id is not None and line_contact != contact_id:
                 continue
             amounts = _line_amounts(entry)
@@ -2056,6 +2115,7 @@ async def general_ledger(
         await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
         if contact_id is not None else {}
     )
+    survivors = await merge_survivors(session, company_id) if contact_id is not None else {}
     accounts = (
         await session.execute(
             select(Account).where(Account.company_id == company_id)
@@ -2074,7 +2134,7 @@ async def general_ledger(
             amounts = _line_amounts(entry)
             if not code or amounts is None:
                 continue
-            if contact_id is not None and _line_party(party_refs, je_id, entry) != contact_id:
+            if contact_id is not None and _line_party(party_refs, je_id, entry, survivors) != contact_id:
                 continue
             d, c = amounts
             if date_from and ts < date_from:
@@ -2309,18 +2369,10 @@ async def statement_of_account(
     contact_row = await _require_contact(session, company_id, contact_id)
     # Merge tombstones carry both deleted and merged_into, so the merge check
     # must come first or merged contacts would 404 instead of redirecting.
-    if contact_row.state.get("merged_into"):
-        # Follow the merge chain so bookmarked statements land on the surviving contact.
-        seen = {contact_id}
-        winner = contact_row.state["merged_into"]
-        while winner not in seen:
-            seen.add(winner)
-            row = await session.get(Projection, (company_id, winner))
-            nxt = row.state.get("merged_into") if row else None
-            if not nxt:
-                break
-            winner = nxt
-        return {"merged_into": winner}
+    survivors = await merge_survivors(session, company_id)
+    if contact_id in survivors:
+        # Bookmarked statements land on the surviving contact.
+        return {"merged_into": survivors[contact_id]}
     if contact_row.state.get("deleted"):
         raise HTTPException(status_code=404, detail="Contact not found")
 
@@ -2337,7 +2389,7 @@ async def statement_of_account(
         for seq, entry in enumerate(state.get("entries", [])):
             if not _CONTROL_ROLES.intersection(line_roles(settings, entry)):
                 continue
-            if _line_party(refs, je_id, entry) != contact_id:
+            if _line_party(refs, je_id, entry, survivors) != contact_id:
                 continue
             amounts = _line_amounts(entry)
             if amounts is None:
@@ -2549,7 +2601,11 @@ async def create_bank_account(
         idem_c = f"opening:{bank.id}:c"
         idem_p = f"opening:{bank.id}:p"
         from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
-        today = datetime.now(timezone.utc).date().isoformat()
+        # The balance is as of the company's today, in its own timezone.
+        from celerp.models.company import Company
+        from celerp.services.business_time import business_date_at
+        company = await session.get(Company, company_id)
+        today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
         ob = float(payload.opening_balance)
         # Debit the bank account, credit equity (the retained earnings account)
         entries = [
@@ -2633,8 +2689,8 @@ async def patch_bank_account(
 # ---------------------------------------------------------------------------
 
 class TransferCreate(BaseModel):
-    from_bank_id: str
-    to_bank_id: str
+    from_bank_id: uuid.UUID
+    to_bank_id: uuid.UUID
     amount: FiniteFloat
     date: str  # ISO date "YYYY-MM-DD"
     description: str = ""
@@ -2655,7 +2711,7 @@ async def create_transfer(
     from_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.from_bank_id),
+                BankAccount.id == payload.from_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2667,7 +2723,7 @@ async def create_transfer(
     to_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.to_bank_id),
+                BankAccount.id == payload.to_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2680,7 +2736,7 @@ async def create_transfer(
     je_id = f"je:transfer:{uuid.uuid4()}"
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
-    memo = payload.description or f"Transfer {payload.from_bank_id[:8]} → {payload.to_bank_id[:8]}"
+    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} → {str(payload.to_bank_id)[:8]}"
     entries = [
         {"account": to_bank.chart_account_code, "debit": payload.amount, "credit": 0.0},
         {"account": from_bank.chart_account_code, "debit": 0.0, "credit": payload.amount},
@@ -2698,8 +2754,8 @@ async def create_transfer(
             "entries": entries,
             "je_type": "transfer",
             "reference": payload.reference,
-            "from_bank_account_id": payload.from_bank_id,
-            "to_bank_account_id": payload.to_bank_id,
+            "from_bank_account_id": str(payload.from_bank_id),
+            "to_bank_account_id": str(payload.to_bank_id),
         },
         actor_id=user.id,
         location_id=None,
@@ -2724,8 +2780,8 @@ async def create_transfer(
 
     return {
         "je_id": je_id,
-        "from_bank_id": payload.from_bank_id,
-        "to_bank_id": payload.to_bank_id,
+        "from_bank_id": str(payload.from_bank_id),
+        "to_bank_id": str(payload.to_bank_id),
         "amount": payload.amount,
         "date": payload.date,
         "memo": memo,
@@ -2738,7 +2794,7 @@ async def create_transfer(
 # ---------------------------------------------------------------------------
 
 class ReconciliationStart(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     statement_date: str  # "YYYY-MM-DD"
     statement_balance: FiniteFloat
 
@@ -2775,10 +2831,23 @@ async def _recon_bank_and_entries(
     return bank, await _je_entries_for_account(db, company_id, bank.chart_account_code)
 
 
+def _cleared_je_ids(recon: ReconciliationSession, bank: BankAccount) -> set[str]:
+    """Book entries a session counts as cleared: those matched on it, plus the entry
+    that posted the bank's opening balance.
+
+    The opening balance is the balance brought forward, so it is cleared from the
+    start and never offered for matching. Its one source is that ledger entry, the
+    same one the bank list reads; the bank account's opening_balance column is never
+    added on top, so the balance cannot count twice, and an opening balance with no
+    posted entry counts nowhere (the bank list flags it as opening_unbacked).
+    """
+    return set(recon.reconciled_je_ids or []) | {_opening_je_id(bank.id)}
+
+
 def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> tuple[float, float]:
     """(matched balance, remaining difference) for a session."""
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    matched_balance = float(bank.opening_balance) + sum(e["amount"] for e in all_entries if e["je_id"] in reconciled_ids)
+    cleared = _cleared_je_ids(recon, bank)
+    matched_balance = sum(e["amount"] for e in all_entries if e["je_id"] in cleared)
     return matched_balance, float(recon.statement_balance) - matched_balance
 
 
@@ -2802,6 +2871,14 @@ def _recon_to_dict(r: ReconciliationSession) -> dict:
     }
 
 
+def _line_attachment(company_id, url: str) -> dict:
+    """One attachment a statement line holds: its stored file name as the id, with the URL
+    the company's attachment store serves it at. An entry that is not a file of this
+    company's store has no URL, so nothing outside the store is ever offered."""
+    name = company_file_name(company_id, url)
+    return {"id": name or url, "url": url if name else None}
+
+
 def _stmt_line_to_dict(l: BankStatementLine) -> dict:
     return {
         "id": str(l.id),
@@ -2814,7 +2891,7 @@ def _stmt_line_to_dict(l: BankStatementLine) -> dict:
         "reference": l.reference,
         "status": l.status,
         "matched_je_id": l.matched_je_id,
-        "attachment_ids": list(l.attachment_ids or []),
+        "attachments": [_line_attachment(l.company_id, url) for url in l.attachment_ids or []],
         "raw_csv_row": dict(l.raw_csv_row or {}),
         "created_at": l.created_at.isoformat(),
     }
@@ -2877,7 +2954,7 @@ async def start_reconciliation(
     bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.bank_account_id),
+                BankAccount.id == payload.bank_account_id,
                 BankAccount.company_id == company_id,
             ).with_for_update()
         )
@@ -2927,9 +3004,9 @@ async def get_reconciliation(
     recon = await _get_recon(db, session_id, company_id)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    unreconciled = [e for e in all_entries if e["je_id"] not in reconciled_ids]
-    reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
+    cleared = _cleared_je_ids(recon, bank)
+    unreconciled = [e for e in all_entries if e["je_id"] not in cleared]
+    reconciled = [e for e in all_entries if e["je_id"] in cleared]
     matched_balance, difference = _recon_balance(recon, bank, all_entries)
 
     d = _recon_to_dict(recon)
@@ -2938,7 +3015,7 @@ async def get_reconciliation(
         "all_entries": all_entries,
         "unreconciled_entries": unreconciled,
         "reconciled_entries": reconciled,
-        "book_balance": float(bank.opening_balance) + sum(e["amount"] for e in all_entries),
+        "book_balance": sum(e["amount"] for e in all_entries),
         "matched_balance": matched_balance,
         "difference": difference,
     })
@@ -3020,11 +3097,11 @@ async def reconciliation_workbench(
             BankStatementLine.status.in_(("unmatched", "suggested")),
         ).order_by(BankStatementLine.line_date, BankStatementLine.created_at)
     )).scalars().all()
-    reconciled_ids = set(recon.reconciled_je_ids or [])
+    cleared = _cleared_je_ids(recon, bank)
     _, difference = _recon_balance(recon, bank, all_entries)
 
     open_lines, lines_truncated = _capped([_stmt_line_to_dict(l) for l in lines])
-    entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in reconciled_ids])
+    entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in cleared])
     return {
         "session": _recon_to_dict(recon),
         "bank_account": _bank_to_dict(bank),
@@ -3071,7 +3148,7 @@ class WriteOffPayload(BaseModel):
 
 
 class ReconRuleCreate(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     match_field: str = "description"
     match_pattern: str
     match_type: str = "contains"
@@ -3330,8 +3407,8 @@ async def auto_match_recon(
     )).scalars().all()
 
     book_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
-    already_matched = set(recon.reconciled_je_ids or [])
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in already_matched]
+    cleared = _cleared_je_ids(recon, bank)
+    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared]
 
     stmt_dicts = [_stmt_line_to_dict(l) for l in stmt_lines]
     matches = auto_match(stmt_dicts, unmatched_entries)
@@ -3700,25 +3777,30 @@ async def attach_to_line(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Attach a document to a statement line (stores file, returns attachment id)."""
-    import hashlib
-    from pathlib import Path
+    """Attach a document to a statement line, stored in the company's attachment store.
 
-    _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    data = await file.read()
-    att_id = hashlib.sha256(data).hexdigest()[:16]
-    # Store in static attachments dir (mirrors inventory attachment pattern)
-    att_dir = Path("static/attachments")
-    att_dir.mkdir(parents=True, exist_ok=True)
-    att_path = att_dir / att_id
-    att_path.write_bytes(data)
-
-    ids = list(sl.attachment_ids or [])
-    if att_id not in ids:
-        ids.append(att_id)
-        sl.attachment_ids = ids
-    await db.commit()
-    return {"attachment_id": att_id, "filename": file.filename}
+    The stored id is derived from the line and the content, so attaching the same file to
+    the same line again returns the attachment it already holds, and the same file on two
+    lines is two files that are removed independently."""
+    content = await file.read()
+    mime = upload_mime(file)
+    att_id = hashlib.sha256(str(line_id).encode() + content).hexdigest()[:32]
+    async with storing(db, company_id) as store:
+        _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
+        name = stored_file_name(att_id, mime)
+        held = next((u for u in sl.attachment_ids or [] if name and company_file_name(company_id, u) == name), None)
+        if held is not None:
+            return {"attachment_id": name, "url": held, "filename": file.filename}
+        try:
+            meta = await store.file(content, file.filename, mime, att_id=att_id)
+        except ValueError:
+            raise HTTPException(status_code=413, detail=refusal(
+                "accounting.statement_attachment_refused",
+                "This file cannot be attached. Attach a PDF, image, video, Word or text "
+                "file of at most 50 MB."))
+        sl.attachment_ids = [*(sl.attachment_ids or []), meta["url"]]
+    return {"attachment_id": company_file_name(company_id, meta["url"]), "url": meta["url"],
+            "filename": meta["filename"]}
 
 
 @router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}")
@@ -3730,9 +3812,25 @@ async def remove_line_attachment(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Remove an attachment from a statement line and delete its stored file."""
     _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    ids = [i for i in (sl.attachment_ids or []) if i != att_id]
-    sl.attachment_ids = ids
+    held = next((u for u in sl.attachment_ids or [] if _line_attachment(company_id, u)["id"] == att_id), None)
+    if held is None:
+        raise HTTPException(status_code=404, detail=refusal(
+            "accounting.statement_attachment_not_found",
+            "This statement line has no such attachment. Reload the line to see the "
+            "attachments it holds, then remove one of those."))
+    name = company_file_name(company_id, held)
+    if name is not None:
+        try:
+            await delete_stored_file(str(company_id), name.rpartition(".")[0], stored_file_type(name))
+        except Exception:
+            logger.warning("could not delete statement line attachment %s", name)
+            raise HTTPException(status_code=503, detail=refusal(
+                "accounting.statement_attachment_not_removed",
+                "The attachment file could not be deleted, so it is still on the line. "
+                "Try removing it again in a moment."))
+    sl.attachment_ids = [u for u in sl.attachment_ids if u != held]
     await db.commit()
     return {"removed": att_id}
 
@@ -3861,14 +3959,14 @@ async def write_off_difference(
 
 @router.get("/rules")
 async def get_recon_rules(
-    bank_account_id: str | None = None,
+    bank_account_id: uuid.UUID | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
     q = select(ReconciliationRule).where(ReconciliationRule.company_id == company_id)
     if bank_account_id:
-        q = q.where(ReconciliationRule.bank_account_id == uuid.UUID(bank_account_id))
+        q = q.where(ReconciliationRule.bank_account_id == bank_account_id)
     rows = (await db.execute(q.order_by(ReconciliationRule.created_at))).scalars().all()
     return {"items": [_rule_to_dict(r) for r in rows], "total": len(rows)}
 
@@ -3880,10 +3978,17 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    bank = (await db.execute(select(BankAccount.id).where(
+        BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
+    ))).scalar_one_or_none()
+    if bank is None:
+        raise HTTPException(status_code=404, detail=refusal(
+            "accounting.bank_not_found",
+            "That bank account was not found in this company. Choose one of the company's bank accounts."))
     rule = ReconciliationRule(
         id=uuid.uuid4(),
         company_id=company_id,
-        bank_account_id=uuid.UUID(payload.bank_account_id),
+        bank_account_id=payload.bank_account_id,
         match_field=payload.match_field,
         match_pattern=payload.match_pattern,
         match_type=payload.match_type,
@@ -4230,6 +4335,7 @@ async def set_posting_account(
     role: str,
     payload: PostingAccountIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4237,7 +4343,7 @@ async def set_posting_account(
     where they are; the earlier account stays with the role for them."""
     from celerp.services.account_roles import set_role
 
-    await set_role(session, company_id, role, payload.code)
+    await set_role(session, company_id, role, payload.code, user.id)
     await session.commit()
     return await _posting_accounts(session, company_id)
 
@@ -4292,8 +4398,15 @@ async def close_fiscal_year(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Close a fiscal year: zero revenue + expense accounts, transfer net income to Retained Earnings."""
-    company = await locked_company(session, company_id)
     year_end = payload.fiscal_year_end
+    try:
+        _require_iso_date(year_end, "fiscal_year_end")
+    except HTTPException:
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_invalid",
+            f"{year_end} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
+            value=year_end)) from None
+    company = await locked_company(session, company_id)
     # Build account balances through the year-end date
     posted = await _je_rows(session, company_id)
     balances = _build_balances(posted, None, year_end)

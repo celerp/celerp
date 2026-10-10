@@ -6,6 +6,8 @@ A bill's freight, insurance, duty or import VAT sits on the clearing account its
 own entry recorded for that kind of cost. Receiving, returning and undoing the
 goods draw on that account whatever the company's clearing account is set to by
 then, and a charge the bill posted to an account of its own clears from there.
+Landed cost on goods sent back is expensed; shipping still parked when the last
+of the goods goes back is expensed from the account the bill parked it on.
 """
 from __future__ import annotations
 
@@ -54,7 +56,7 @@ async def test_goods_received_after_a_remap_capitalise_from_the_bills_clearing_a
 
 
 @pytest.mark.asyncio
-async def test_goods_sent_back_after_a_remap_return_landed_cost_to_the_bills_clearing_account(
+async def test_goods_sent_back_after_a_remap_expense_their_landed_cost_without_touching_the_new_clearing_account(
         session, client, auth):
     bill = await _freight_bill(client, auth)
     await _finalize(client, auth, bill)
@@ -64,13 +66,27 @@ async def test_goods_sent_back_after_a_remap_return_landed_cost_to_the_bills_cle
     await _remap_freight(session, auth, await _clearing_account(client, auth))
     r = await _return(client, auth, bill, parcel, 1)
     assert r.status_code == 200, r.text
-    assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2") == {
-        "1130-P": 20.0, "1130-FRT": 5.0, "1130-FR2": 0.0}
+    assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2", "6970") == {
+        "1130-P": 20.0, "1130-FRT": 0.0, "1130-FR2": 0.0, "6970": 5.0}
 
-    r = await client.delete(f"/docs/{bill}/receive", headers=auth["headers"])
+
+@pytest.mark.asyncio
+async def test_shipping_on_goods_received_after_a_remap_clears_from_the_bills_clearing_account(
+        session, client, auth):
+    bill = await _doc(client, auth, "bill", [
+        {"sku": "GOODS", "name": "Goods", "quantity": 2, "unit_price": 15.0}], shipping=5.0)
+    await _finalize(client, auth, bill)
+    assert await _books(session, auth, "1130-FRT") == {"1130-FRT": 5.0}
+    await _remap_freight(session, auth, await _clearing_account(client, auth))
+    r = await _receive(client, auth, bill, _GOODS)
     assert r.status_code == 200, r.text
     assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2") == {
-        "1130-P": 15.0, "1130-FRT": 10.0, "1130-FR2": 0.0}
+        "1130-P": 35.0, "1130-FRT": 0.0, "1130-FR2": 0.0}
+    [parcel] = (await _state(session, auth, bill))["received_item_ids"]
+    r = await _return(client, auth, bill, parcel, 2)
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, "1130-P", "1130-FRT", "1130-FR2", "6970") == {
+        "1130-P": 0.0, "1130-FRT": 0.0, "1130-FR2": 0.0, "6970": 5.0}
 
 
 async def _bill_posting_freight_to(session, client, auth, code: str) -> str:
@@ -119,7 +135,7 @@ async def test_a_bill_received_before_it_is_finalized_books_its_charge_where_the
     """An earlier release took goods in on a bill still a draft."""
     import celerp_docs.routes as docs_routes
 
-    monkeypatch.setattr(docs_routes, "_refuse_receipt_on_a_draft_bill", lambda state: None)
+    monkeypatch.setattr(docs_routes, "_refuse_receipt_when_not_open", lambda state: None)
     bill = await _freight_bill(client, auth)
     r = await _receive(client, auth, bill, _GOODS)
     assert r.status_code == 200, r.text

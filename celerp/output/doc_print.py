@@ -21,7 +21,7 @@ from fasthtml.common import (
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
-from celerp.services.doc_balance import outstanding_balance
+from celerp.services.doc_balance import is_awaiting_payment, outstanding_balance
 from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
@@ -215,10 +215,10 @@ def _doc_footer(import_url: str | None, import_from_page: bool = False):
 
 def _pay_bar(pay_url: str | None, doc: dict, currency: str):
     """Screen-only bar above the letterhead: amount due + a Pay button.
-    Rendered only while something is outstanding, so a paid invoice's share
-    link reverts to a plain view. Hidden in print CSS - paper carries no
-    buttons."""
-    if not pay_url:
+    Rendered only while the document awaits payment and something is
+    outstanding, so a paid or void invoice's share link reverts to a plain
+    view. Hidden in print CSS - paper carries no buttons."""
+    if not pay_url or not is_awaiting_payment(doc.get("doc_type"), doc.get("status")):
         return None
     outstanding = float(outstanding_balance(doc) or 0)
     if outstanding <= 0:
@@ -443,6 +443,9 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             totals_rows.append(Tr(Td(_dlabel, cls="label"), Td(f"-{_money(_disc_amt)}", cls="amount")))
         if float(tax_total or 0):
             totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
+        # Shipping is part of the stored total, so it is shown for the rows to add up.
+        if float(doc.get("shipping") or 0):
+            totals_rows.append(Tr(Td("Shipping", cls="label"), Td(_money(doc["shipping"]), cls="amount")))
         totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
         totals_section = Div(Table(*totals_rows), cls="dp-totals")
 

@@ -255,9 +255,14 @@ async def _receipt_without_its_record(s, company_id) -> None:
     from celerp.models.projections import Projection
     from celerp_docs.legacy_receipts import LEGACY_RECEIPTS_KEY
 
+    from celerp.models.company import Location
+
+    location = Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True)
+    s.add(location)
+    await s.flush()
     bill = f"doc:{uuid.uuid4().hex}"
     for event_type, data in (("doc.created", {"doc_type": "bill", "total": 0.0, "line_items": []}),
-                             ("doc.received", {"received_items": [], "location_id": "loc-1"})):
+                             ("doc.received", {"received_items": [], "location_id": str(location.id)})):
         await emit_event(s, company_id=company_id, entity_id=bill, entity_type="doc", event_type=event_type,
                          data=data, actor_id=None, location_id=None, source="test",
                          idempotency_key=f"test:{event_type}:{bill}", metadata_={})
@@ -323,6 +328,76 @@ async def _delivered_lot_linked(s, company_id) -> bool:
     return bool(rows) and all(state.get("catalog_item_id") for state in rows)
 
 
+async def _bill_imported_by_earlier_release(s, company_id) -> None:
+    """An imported bill as an earlier release left it: its import booked it again on top of
+    the opening balances. The two accounts it posted to are removed again afterwards when the
+    company did not hold them, so the company's chart is as it was."""
+    from celerp.events.engine import emit_event
+    from celerp.services import auto_je
+    from celerp.services.journal_accounts import add_account, lock_accounts
+
+    accounts = {"5100": ("Cost of goods sold", "expense"), "2110": ("Accounts payable", "liability")}
+    added = sorted(set(accounts) - set(await lock_accounts(s, company_id, set(accounts)) or {}))
+    for code in added:
+        await add_account(s, company_id, code, *accounts[code])
+    bill = f"doc:{uuid.uuid4().hex}"
+    await emit_event(s, company_id=company_id, entity_id=bill, entity_type="doc", event_type="doc.created",
+                     data={"doc_type": "bill", "status": "awaiting_payment", "total": 10.0, "line_items": [
+                         {"description": "Service", "quantity": 1, "unit_price": 10.0}]},
+                     actor_id=None, location_id=None, source="test", idempotency_key=f"test:doc.created:{bill}",
+                     metadata_={auto_je.IMPORTED_SNAPSHOT: True})
+    await auto_je._emit_auto_posted_je(
+        s, company_id=company_id, user_id=None, je_id=f"je:auto:{bill}:bill",
+        idem_create=auto_je.je_idempotency_key(bill, "po.converted_to_bill:0", "c"),
+        idem_posted=auto_je.je_idempotency_key(bill, "po.converted_to_bill:0", "p"),
+        memo="Imported bill", ts="2026-01-01",
+        entries=[{"account": "5100", "debit": 10.0, "credit": 0.0}, {"account": "2110", "debit": 0.0, "credit": 10.0}],
+        metadata_={"trigger": "doc.converted_to_bill", "doc_id": bill})
+    if added:
+        await s.execute(text("DELETE FROM accounts WHERE company_id = :c AND code = ANY(:codes)"),
+                        {"c": str(company_id), "codes": added})
+
+
+async def _imported_bill_corrected(s, company_id) -> bool:
+    from celerp.models.projections import Projection
+
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.like("je:auto:doc:%:bill")))).scalars().all()
+    return bool(rows) and all(state.get("status") == "void" for state in rows)
+
+
+async def _credit_note_issued_by_earlier_release(s, company_id) -> None:
+    """A credit note as an earlier release left it: it took its amount off the invoice's
+    balance, recorded nothing on itself and posted no entry."""
+    from celerp.events.engine import emit_event
+
+    inv, cn = f"doc:{uuid.uuid4().hex}", f"doc:{uuid.uuid4().hex}"
+    line = [{"description": "Service", "quantity": 1, "unit_price": 80.0, "line_total": 80.0}]
+    for entity_id, data in (
+            (inv, {"doc_type": "invoice", "status": "final", "total": 80.0, "subtotal": 80.0, "amount_paid": 0.0,
+                   "amount_outstanding": 80.0, "line_items": line}),
+            (cn, {"doc_type": "credit_note", "status": "final", "total": 40.0, "subtotal": 40.0,
+                  "amount_paid": 0.0, "amount_outstanding": 40.0, "original_doc_id": inv,
+                  "issue_date": "2026-01-01", "line_items": [{**line[0], "unit_price": 40.0, "line_total": 40.0}]})):
+        await emit_event(s, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.created",
+                         data=data, actor_id=None, location_id=None, source="test",
+                         idempotency_key=f"test:doc.created:{entity_id}", metadata_={})
+    await emit_event(s, company_id=company_id, entity_id=inv, entity_type="doc", event_type="doc.updated",
+                     data={"fields_changed": {"amount_outstanding": {"old": 80.0, "new": 40.0}}},
+                     actor_id=None, location_id=None, source="test", idempotency_key=f"test:legacy-credit:{cn}",
+                     metadata_={"source_credit_note": cn})
+
+
+async def _credit_note_settled(s, company_id) -> bool:
+    from celerp.models.projections import Projection
+
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
+    notes = [state for state in rows if state.get("doc_type") == "credit_note"]
+    return bool(notes) and all(float(state.get("credited") or 0) == 40.0 for state in notes)
+
+
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
@@ -332,6 +407,9 @@ LIFECYCLE_BACKFILLS = {
     "celerp_docs.legacy_receipts:record_legacy_receipts_hook": (_receipt_without_its_record, _receipt_recorded),
     "celerp_manufacturing.routes:settle_open_runs_hook": (_run_issued_by_older_release, _run_settled),
     "celerp_docs.historical_lots:link_historical_lots_hook": (_delivered_lot_without_its_product, _delivered_lot_linked),
+    "celerp_docs.imported_cutover:imported_cutover_hook": (_bill_imported_by_earlier_release, _imported_bill_corrected),
+    "celerp_docs.legacy_credit_notes:legacy_credit_notes_hook": (_credit_note_issued_by_earlier_release,
+                                                                 _credit_note_settled),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.

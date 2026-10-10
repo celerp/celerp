@@ -21,7 +21,7 @@ def _to_uuid(val) -> _uuid.UUID:
     return val if isinstance(val, _uuid.UUID) else _uuid.UUID(str(val))
 
 
-async def _returned_lots(session: AsyncSession, cid, doc_ids: list[str]) -> dict[str, list[tuple[str | None, str, float]]]:
+async def returned_lots(session: AsyncSession, cid, doc_ids: list[str]) -> dict[str, list[tuple[str | None, str, float]]]:
     """Per document, the goods still received back on credit notes raised on it: for each
     returned lot, the sold lot it was valued from (None when it names none), its SKU and
     its quantity."""
@@ -101,16 +101,18 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
         ).order_by(LedgerEntry.id)
     )).scalars().all()
     latest: dict[tuple[str, str], LedgerEntry] = {}  # (document, lot) -> latest event
-    recorded: dict[tuple[str, str], int | None] = {}  # (document, lot) -> line its latest fulfillment named
+    recorded: dict[tuple[str, str], tuple[str | None, int | None]] = {}  # (document, lot) -> line its latest fulfillment named
     for e in events:
         source = (e.data or {}).get("source_doc_id")
         key = (owner[source], e.entity_id)
         latest[key] = e
         if e.event_type == "item.fulfilled":
-            # A memo's line numbers are the memo's, not the invoice's.
-            recorded[key] = auto_je.recorded_line_index(e) if source == owner[source] else None
+            # A memo's line numbers are the memo's, not the invoice's; a line id is carried
+            # across the conversion, so it still names the invoice's line.
+            line_id, idx = auto_je.recorded_line(e)
+            recorded[key] = (line_id, idx if source == owner[source] else None)
     out_lots = {key: e for key, e in latest.items() if e.event_type == "item.fulfilled"}
-    returned = await _returned_lots(session, cid, [d.entity_id for d in docs])
+    returned = await returned_lots(session, cid, [d.entity_id for d in docs])
 
     wanted = {lot for _doc, lot in out_lots} | {sold for back in returned.values() for sold, _, _ in back if sold}
     for d in docs:
@@ -139,7 +141,8 @@ async def outstanding_physical_lines(session: AsyncSession, company_id, docs: li
                 continue
             lot_state = items.get(lot)
             qty = float((lot_state or {}).get("quantity") or (e.data or {}).get("quantity_fulfilled") or 0)
-            idx = auto_je.line_of_lot(line_items, lot, lot_state or {}, recorded.get((doc_id, lot)))
+            line_id, recorded_idx = recorded.get((doc_id, lot), (None, None))
+            idx = auto_je.line_of_lot(line_items, lot, lot_state or {}, recorded_idx, line_id)
             line_of[lot] = idx
             if idx in sent:
                 sent[idx] += qty

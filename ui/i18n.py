@@ -253,18 +253,48 @@ def reconcile_reason(reason: str) -> str:
 
 
 def refusal_text(detail) -> str:
-    """An API refusal in the user's language. A structured refusal carries ``message``
-    (English), ``message_key`` and ``params``; its ``message_key`` is translated with
-    those params. Anything else is shown as the server wrote it, the ``detail`` of a body
-    carrying a machine code included."""
+    """An API refusal in the user's language, as plain sentences.
+
+    A structured refusal carries ``message`` (English), ``message_key`` and ``params``;
+    its ``message_key`` is translated with those params. A body's ``errors`` (a list
+    wins over a joined English ``message`` beside it) and lists render every entry in
+    turn, a body's ``detail`` renders what it holds, and plain text is shown as the
+    server wrote it. Internal record ids never reach the user. Anything
+    else renders as "", so callers fall back to their own plain message."""
+    if isinstance(detail, str):
+        return _without_ids(detail)
+    if isinstance(detail, list):
+        return " ".join(text for text in (refusal_text(d) for d in detail) if text)
     if not isinstance(detail, dict):
-        return str(detail or "")
-    message = str(detail.get("message") or detail.get("detail") or "")
+        return ""
+    errors = detail.get("errors")
+    if errors and (isinstance(errors, list) or "message" not in detail):
+        return refusal_text(errors)
+    if "message" not in detail:
+        return refusal_text(detail.get("detail"))
+    message = _without_ids(str(detail.get("message") or ""))
     key = detail.get("message_key")
     if not key:
         return message
     params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
-    return t_or(str(key), message, **params)
+    return _without_ids(t_or(str(key), message, **params))
+
+
+# A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>.
+_INTERNAL_ID = re.compile(
+    r"\b(?:[a-z_]+:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+
+
+def _without_ids(text: str) -> str:
+    """``text`` with internal record ids removed: ``item:<uuid> (RAW-2): reason`` reads
+    ``RAW-2: reason``."""
+    if not _INTERNAL_ID.search(text):
+        return text
+    text = _INTERNAL_ID.sub("", text)
+    text = re.sub(r"^\s*\(([^()]*)\)", r"\1", text)  # "(RAW-2): x" once its id is gone
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip().lstrip(":;,").strip()
 
 
 _ICON = re.compile(r"^\W+")
@@ -272,9 +302,11 @@ _ICON = re.compile(r"^\W+")
 
 def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
-    label without its icon), or a list of them (``steps`` joined by semicolons, others as
-    sentences), in the user's language; a ``role`` as its label and ``roles`` as their
-    labels; ``type``/``types`` as account types; ``status`` as an item status; ``reason``
+    label without its icon), or a list of them (``steps`` and ``reasons`` joined by
+    semicolons, others as sentences), in the user's language; a
+    ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
+    ``status`` as an item status, ``lot_status`` as one read mid-sentence and
+    ``doc_status`` as a document status; ``reason``
     as why a production run waits for reconciling."""
     from ui.components.table import display_enum
 
@@ -283,13 +315,19 @@ def _refusal_param(name: str, value):
         # A sidebar item named in a sentence reads as its label, without its icon.
         return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
     if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
-        return ("; " if name == "steps" else " ").join(refusal_text(v) for v in value)
+        return ("; " if name in ("steps", "reasons") else " ").join(refusal_text(v) for v in value)
     if name == "role":
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
     if name == "status":
         return display_enum(value, "item_status")
+    if name == "lot_status":
+        # Read mid-sentence: lowercase, except in German, where the label is a noun.
+        label = display_enum(value, "item_status")
+        return label if current_lang() == "de" else label.lower()
+    if name == "doc_status":
+        return display_enum(value, "doc_status")
     if name == "reason":
         return reconcile_reason(str(value))
     if name == "type":

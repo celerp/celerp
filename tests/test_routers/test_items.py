@@ -1008,11 +1008,10 @@ async def test_list_item_categories_includes_schema_categories(client):
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
 
-    # Seed category schemas via company settings (simulates vertical preset / category library)
-    r = await client.patch("/companies/me", headers=h, json={
-        "settings": {"category_schemas": {"Colored Stones": [], "Gold Jewelry": []}}
-    })
-    assert r.status_code == 200, r.text
+    # Seed category schemas through the category schema route (as a vertical preset or the category library would)
+    for category in ("Colored Stones", "Gold Jewelry"):
+        r = await client.patch(f"/companies/me/category-schema/{category}", headers=h, json={"fields": []})
+        assert r.status_code == 200, r.text
 
     cats = (await client.get("/items/categories", headers=h)).json()
     assert "Colored Stones" in cats, f"Expected 'Colored Stones' in {cats}"
@@ -1026,9 +1025,8 @@ async def test_list_item_categories_union_of_schema_and_items(client):
     h = {"Authorization": f"Bearer {token}"}
 
     # Schema has one category
-    await client.patch("/companies/me", headers=h, json={
-        "settings": {"category_schemas": {"Schema Cat": []}}
-    })
+    r = await client.patch("/companies/me/category-schema/Schema Cat", headers=h, json={"fields": []})
+    assert r.status_code == 200, r.text
 
     # Create an item with a different category (not in schema)
     await client.post("/items", headers=h, json={
@@ -2702,11 +2700,11 @@ async def test_merge_dropdown_fields_use_value_or_mixed_never_sum(client):
     h = {"Authorization": f"Bearer {token}"}
     # Category with a string dropdown (grade), a NUMERIC-option dropdown (size), and a genuine
     # numeric-TYPED field (weight_ct). 'carats' is left undefined -> a free/custom attribute.
-    r = await client.patch("/companies/me", headers=h, json={"settings": {"category_schemas": {"DD": [
+    r = await client.patch("/companies/me/category-schema/DD", headers=h, json={"fields": [
         {"key": "grade", "label": "Grade", "type": "select", "options": ["A", "B", "C"], "editable": True, "required": False},
         {"key": "size", "label": "Size", "type": "select", "options": ["1", "2", "3"], "editable": True, "required": False},
         {"key": "weight_ct", "label": "Weight (ct)", "type": "number", "editable": True, "required": False},
-    ]}}})
+    ]})
     assert r.status_code == 200, r.text
 
     def _attr(item, key):

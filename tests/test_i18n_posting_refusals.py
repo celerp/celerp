@@ -32,7 +32,13 @@ KEYS = ["posting.problem.unset", "posting.problem.not_in_chart", "posting.proble
         "notice.mfg_wip_recorded.title", "notice.mfg_wip_recorded.body",
         "notice.historical_lots_no_product.title", "notice.historical_lots_no_product.body",
         "notice.starter_modules_on.title", "notice.starter_modules_on.body",
-        "notice.work_centers_moved.title", "notice.work_centers_moved.body"]
+        "notice.work_centers_moved.title", "notice.work_centers_moved.body",
+        "notice.imported_doc_cutover.title", "notice.imported_doc_cutover.body",
+        "notice.cogs_backfill.title", "notice.cogs_backfill.body",
+        "notice.cogs_backfill.posted_one", "notice.cogs_backfill.posted_many",
+        "notice.cogs_backfill.zero_cost", "notice.cogs_backfill.deferred",
+        "notice.cogs_backfill.older_stock", "notice.cogs_backfill.errored",
+        "notice.cogs_backfill.skipped"]
 _ASSET = {"code": "1110", "account_type": "asset", "is_active": True, "has_children": False}
 
 

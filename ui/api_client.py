@@ -10,6 +10,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
+from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
@@ -320,24 +321,28 @@ async def _bulk_api_client(token: str, timeout: float | httpx.Timeout = 10.0):
 
 def _api_error(status: int, body, text: str) -> APIError:
     """The APIError an error response raises: ``detail`` is the plain string the sites
-    render, in the user's language."""
-    detail = body.get("detail", text) if isinstance(body, dict) else text
-    data = None
-    if isinstance(detail, dict) and "message" in detail:
-        # Structured detail (message + extras): detail becomes the plain string
-        # the sites render, in the user's language (refusal_text); the full
-        # payload rides on APIError.data.
-        # Dict details WITHOUT a message key (e.g. {"errors": [...]} from
-        # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
-        data = detail
-        detail = refusal_text(detail) or text
-    elif isinstance(body, dict) and set(body) - {"detail"}:
-        # An error body carrying structured fields beyond `detail` (a top-level
-        # machine "code" like scan_run_conflict, with a plain-string detail):
-        # keep detail the string the sites render, carry the whole body on
-        # APIError.data so callers can branch on the code.
-        data = body
-    return APIError(status, detail, data=data)
+    render, in the user's language; ``data`` keeps the structured payload for callers
+    that branch on it.
+
+    A refusal (``message``) or a list of them (``errors``) renders through refusal_text.
+    A body that is not JSON (a proxy's error page) reads as a plain generic sentence.
+    Any other dict detail (a field-by-field map) passes through for its page to lay out;
+    an error body carrying fields beyond ``detail`` (a machine ``code``) rides on data."""
+    if not isinstance(body, dict):
+        return APIError(status, t("error.unexpected_error_body"))
+    detail = body.get("detail", text)
+    if isinstance(detail, dict) and ("message" in detail or "errors" in detail):
+        return APIError(status, refusal_text(detail) or t("error.unexpected_error_body"), data=detail)
+    if isinstance(detail, str):
+        detail = refusal_text(detail)
+    return APIError(status, detail, data=body if set(body) - {"detail"} else None)
+
+
+def error_message(e: APIError) -> str:
+    """An APIError as the plain sentence a page shows: the rendered refusal, else the
+    error's own text, else a generic sentence; never a raw payload or an empty string."""
+    text = refusal_text(e.data) or (e.detail if isinstance(e.detail, str) else "")
+    return text or t("error.unexpected_error_body")
 
 
 def error_text(r: httpx.Response, fallback: str) -> str:
@@ -767,7 +772,7 @@ async def switch_company(token: str, company_id: str) -> tuple[str, str]:
 def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
-    for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email",
+    for k in ("currency", "timezone", "fiscal_year_start", "opening_balance_date", "tax_id", "phone", "address", "vertical", "email",
               "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
               "line_item_identifier"):
         if k not in data:
@@ -802,14 +807,13 @@ async def get_commercial_state(token: str, timeout: float = 3.0) -> dict:
 
 async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Only the changed settings keys are sent (the API merges them),
-    so keys owned by dedicated endpoints are never echoed back through this door.
+    so keys owned by dedicated endpoints are never echoed back through this door; the
+    books settings go to their own route.
     Dashboard preferences are one nested dict, merged here with its current value;
     top-level fields (name, slug) are patched directly."""
-    _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
-                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
-                        "line_item_identifier", "getting_started_dismissed"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
-    settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
+    settings_patch = {k: v for k, v in data.items() if k in GENERAL}
+    books_patch = {k: v for k, v in data.items() if k in BOOKS_KEYS}
     dashboard_patch = {}
     # Map default_per_page to per_page for storage
     for k in _DASHBOARD_FIELDS:
@@ -817,8 +821,10 @@ async def patch_company(token: str, data: dict) -> dict:
             storage_key = "per_page" if k == "default_per_page" else k
             dashboard_patch[storage_key] = data[k]
     direct_patch = {k: v for k, v in data.items()
-                    if k not in _SETTINGS_FIELDS and k not in _DASHBOARD_FIELDS}
+                    if k not in GENERAL and k not in BOOKS_KEYS and k not in _DASHBOARD_FIELDS}
     async with _api_client(token) as c:
+        if books_patch:
+            _raise(await c.patch("/companies/me/books", json=books_patch))
         if dashboard_patch:
             current = _raise(await c.get("/companies/me")).json()
             settings_patch["dashboard"] = {**((current.get("settings") or {}).get("dashboard") or {}), **dashboard_patch}
@@ -1528,30 +1534,39 @@ async def reopen_doc(token: str, entity_id: str, idempotency_key: str | None = N
         return _raise(await c.post(f"/docs/{entity_id}/reopen", json={"idempotency_key": idempotency_key})).json()
 
 
-async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
+async def fulfill_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                        line_entity_ids: list[str] | None = None, idempotency_key: str | None = None) -> dict:
+    """Ship the chosen lines, named by line id (or, on older rows, by their item)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={"line_entity_ids": line_entity_ids})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "idempotency_key": idempotency_key})).json()
 
 
-async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str],
-                          quantities: dict[str, float] | None = None) -> dict:
-    """Revert whole lines, or pass quantities={item_id: qty_coming_back} to take back only
-    part of a lot; the remainder stays out with the customer."""
-    payload: dict = {"line_entity_ids": line_entity_ids}
-    if quantities:
-        payload["quantities"] = quantities
+async def set_lines_available(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                              line_entity_ids: list[str] | None = None,
+                              quantities: dict[str, float] | None = None,
+                              idempotency_key: str | None = None, is_list: bool = False) -> dict:
+    """Set as available in one request: lines holding stock give it back, lines that shipped
+    take their goods back. quantities={line_id: qty_coming_back} takes back only part of a
+    memo line; the rest stays out with the customer."""
+    base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json=payload)).json()
+        return _raise(await c.post(f"{base}/{entity_id}/set-available", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "quantities": quantities or None, "idempotency_key": idempotency_key})).json()
 
 
-async def reserve_lines(token: str, entity_id: str, line_entity_ids: list[str],
-                        new_status: str, is_list: bool = False) -> dict:
+async def reserve_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                        line_entity_ids: list[str] | None = None, new_status: str,
+                        idempotency_key: str | None = None, is_list: bool = False) -> dict:
     """Set lines reserved or available (ledger-neutral). is_list routes to the list router,
     whose reserve-lines wrapper serves list rows (the docs router 404s them)."""
     base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
-        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines",
-                                   json={"line_entity_ids": line_entity_ids, "new_status": new_status})).json()
+        return _raise(await c.post(f"{base}/{entity_id}/reserve-lines", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "new_status": new_status, "idempotency_key": idempotency_key})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None,
@@ -1565,6 +1580,11 @@ async def receive_return(token: str, entity_id: str, items: list[dict], notes: s
 async def undo_receive_return(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/receive-return")).json()
+
+
+async def return_goods(token: str, entity_id: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/return-items", json=data)).json()
 
 
 async def undo_receive_goods(token: str, entity_id: str) -> dict:
@@ -2107,42 +2127,6 @@ async def update_mfg_settings(token: str, mfg: dict) -> dict:
     """Persist the manufacturing settings block under company.settings.manufacturing."""
     async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me", json={"settings": {"manufacturing": mfg}})).json()
-
-
-# ---------------------------------------------------------------------------
-# BOM
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Scanning disabled — module not yet complete
-# ---------------------------------------------------------------------------
-
-# async def scan_once(token: str, code: str, location_id: str | None = None) -> dict:
-#     async with _api_client(token) as c:
-#         payload: dict = {"code": code}
-#         if location_id:
-#             payload["location_id"] = location_id
-#         return _raise(await c.post("/scanning/scan", json=payload)).json()
-#
-#
-# async def resolve_scan(token: str, code: str) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.get(f"/scanning/resolve/{code}")).json()
-#
-#
-# async def start_batch(token: str, location_id: str | None = None) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post("/scanning/batch", json={"location_id": location_id})).json()
-#
-#
-# async def complete_batch(token: str, batch_id: str) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post(f"/scanning/batch/{batch_id}/complete")).json()
-#
-#
-# async def scan_batch(token: str, scans: list[dict]) -> dict:
-#     async with _api_client(token) as c:
-#         return _raise(await c.post("/scanning/scan/batch", json={"scans": scans})).json()
 
 
 # ---------------------------------------------------------------------------

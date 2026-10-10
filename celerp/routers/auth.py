@@ -36,6 +36,7 @@ from celerp.services.auth import (
     lock_issuance_company,
     usable_company_link,
     oauth2_scheme_optional,
+    password_needs_rehash,
     validate_access_token,
     validate_password,
     verify_password,
@@ -163,6 +164,10 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
     if not user or not user.auth_hash or not verify_password(password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    # A legacy hash moves to the current scheme now; a legacy password shorter than
+    # the policy keeps its hash until the user changes it.
+    if password_needs_rehash(user.auth_hash) and len(password) >= MIN_PASSWORD_LENGTH:
+        user.auth_hash = hash_password(password)
     return user
 
 

@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import OrderedDict
+from datetime import date
+from decimal import Decimal
 from urllib.parse import parse_qs, urlsplit
 
 from fasthtml.common import *
@@ -39,6 +42,7 @@ from ui.routes.csv_import import (
     validation_result,
 )
 from ui.i18n import t, get_lang
+from celerp.services.auto_je import IMPORTED_ISSUE_STATUSES, imported_issue_kind
 
 
 _DOC_IMPORT_SPEC = CsvImportSpec(
@@ -61,6 +65,193 @@ _DOC_IMPORT_LABEL_KEYS = {
         "line_sku", "line_barcode", "line_stone_type", "line_weight_ct",
         "line_qty", "line_unit_price", "line_total_price", "line_cost_basis")},
 }
+
+
+def _number(row: dict, key: str) -> float | None:
+    raw = str(row.get(key, "")).strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _group_documents(rows: list[dict]) -> OrderedDict:
+    """The documents in the spreadsheet, keyed by (doc_type, doc_number): one row per line
+    item, the document's own fields taken from its first row."""
+    doc_map: OrderedDict = OrderedDict()
+    for r in rows:
+        doc_type = str(r.get("doc_type", "")).strip().lower()
+        doc_number = str(r.get("doc_number", "")).strip()
+        if not doc_type or not doc_number:
+            continue
+        key = (doc_type, doc_number)
+        if key not in doc_map:
+            doc_map[key] = {
+                "doc_type": doc_type,
+                "doc_number": doc_number,
+                "date": str(r.get("date", "")).strip() or None,
+                "due_date": str(r.get("due_date", "")).strip() or None,
+                "contact_name": str(r.get("contact_name", "")).strip() or None,
+                "total": _number(r, "total") or 0.0,
+                "status": str(r.get("status", "")).strip().lower() or "draft",
+                "line_items": [],
+            }
+            outstanding = _number(r, "amount_outstanding")
+            if outstanding is not None:
+                doc_map[key]["amount_outstanding"] = outstanding
+        line_sku = str(r.get("line_sku", "")).strip()
+        line_total = _number(r, "line_total_price")
+        if line_sku or line_total:
+            line: dict = {}
+            if line_sku:
+                line["sku"] = line_sku
+            if str(r.get("line_barcode", "")).strip():
+                line["barcode"] = str(r.get("line_barcode", "")).strip()
+            if str(r.get("line_stone_type", "")).strip():
+                line["description"] = str(r.get("line_stone_type", "")).strip()
+            wt = _number(r, "line_weight_ct")
+            if wt:
+                line["weight"] = wt
+            qty = _number(r, "line_qty")
+            line["quantity"] = qty if qty is not None else 1.0
+            up = _number(r, "line_unit_price")
+            if up:
+                line["unit_price"] = up
+            if line_total:
+                line["total_price"] = line_total
+            cost = _number(r, "line_cost_basis")
+            if cost:
+                line["cost_basis"] = cost
+            doc_map[key]["line_items"].append(line)
+    return doc_map
+
+
+# Document types whose money the import books (receivable or payable), and the statuses a
+# file may give each: not issued, or issued in a status the file's columns can back. Goods
+# received on a bill come in through Receive Goods, which the file cannot carry.
+_SETTLED_DOC_TYPES = ("invoice", "credit_note", "bill")
+_GOODS_STATUSES = frozenset({"received", "partially_received"})
+_OPEN_STATUSES = frozenset({"sent", "final", "awaiting_payment"})
+_FILE_STATUSES: dict[str, frozenset[str]] = {
+    doc_type: frozenset({"draft", "void"}) | (IMPORTED_ISSUE_STATUSES[doc_type] - _GOODS_STATUSES)
+    for doc_type in _SETTLED_DOC_TYPES
+}
+# Statuses other systems export for an open document, read as the open status they mean:
+# the whole total is still owed. Overdue is never stored; the app reads it from the due date.
+_STATUS_ALIASES = {"unpaid": "awaiting_payment", "overdue": "awaiting_payment"}
+
+
+def _status_refusal(data: dict, treatment: str) -> str | None:
+    """Why a document cannot be imported with the status its file gives, or None, filling in
+    what it owes and has been paid. Unpaid and overdue are read as awaiting_payment
+    (_STATUS_ALIASES). Paid means nothing is outstanding, partial means part of
+    the total is, and an open status owes the whole total (a blank amount outstanding is read
+    that way). A paid or part-paid document recorded now is refused: the file does not say
+    when or into which account the payment was made, so the import could only book the whole
+    total as still owed, or a payment that never happened."""
+    doc_type = data["doc_type"]
+    allowed = _FILE_STATUSES.get(doc_type)
+    if allowed is None:
+        return None
+    status = data["status"] = _STATUS_ALIASES.get(data["status"], data["status"])
+    number = data["doc_number"]
+    if status not in allowed:
+        return t("doc_import.status_not_importable", number=number, status=status,
+                 allowed=", ".join(sorted(allowed)))
+    if imported_issue_kind(data) is None:
+        return None
+    total = Decimal(str(data["total"]))
+    given = data.get("amount_outstanding")
+    outstanding = Decimal(str(given)) if given is not None else (Decimal(0) if status == "paid" else total)
+    agrees = (outstanding == 0 if status == "paid"
+              else 0 < outstanding < total if status == "partial"
+              else outstanding == total)
+    if not agrees:
+        return t("doc_import.status_figures_disagree", number=number, status=status,
+                 outstanding=given if given is not None else "--", total=data["total"])
+    if status in ("paid", "partial") and (treatment or ("" if doc_type == "bill" else "record_now")) == "record_now":
+        return t("doc_import.settled_record_now", number=number, status=status)
+    data["amount_outstanding"] = float(outstanding)
+    data["amount_paid"] = float(total - outstanding)
+    return None
+
+
+# The form field carrying a document's treatment, and the treatments the import accepts.
+_TREATMENT_FIELD = "treatment:{doc_type}:{doc_number}"
+_TREATMENTS = (("opening_balances", "docs_import.treatment_opening"),
+               ("record_now", "docs_import.treatment_record_now"))
+
+
+def _iso_date(value) -> date | None:
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
+def _prefilled(data: dict, opening: date | None) -> str:
+    """The treatment offered for a document that posts: by its date against the opening
+    balance date when both are known. A date the file gives but that cannot be read leaves
+    any document to be chosen. With no date to compare, none for a bill (the import refuses
+    it until one is chosen) and Record it now for an invoice or credit note, as the import
+    does when it is not told."""
+    given = data.get("date")
+    dated = _iso_date(given)
+    if given and dated is None:
+        return ""
+    if opening is not None and dated is not None:
+        return "opening_balances" if dated <= opening else "record_now"
+    return "" if data["doc_type"] == "bill" else "record_now"
+
+
+async def _treatment_choice(token: str, rows: list[dict], form=None) -> FT | str:
+    """Per document that posts (a bill, invoice or credit note), newest first, how it enters
+    the books: what the user already chose when the review is shown again (``form``),
+    otherwise pre-filled from the company's opening balance date. Empty when none posts."""
+    docs = [d for d in _group_documents(rows).values()
+            if imported_issue_kind(d) in ("bill", "invoice", "credit_note")]
+    if not docs:
+        return ""
+    try:
+        opening = _iso_date((await api.get_company(token)).get("opening_balance_date"))
+    except APIError:
+        opening = None
+    submitted = form or {}
+    known = {"", *(value for value, _ in _TREATMENTS)}
+    docs.sort(key=lambda d: (_iso_date(d.get("date")) is not None, _iso_date(d.get("date")) or date.min),
+              reverse=True)
+
+    def _row(d: dict) -> FT:
+        field = _TREATMENT_FIELD.format(**d)
+        chosen = submitted.get(field) if submitted.get(field) in known else _prefilled(d, opening)
+        return Tr(
+            Td(display_enum(d["doc_type"])),
+            Td(d["doc_number"]),
+            Td(d.get("date") or EMPTY),
+            Td(Select(
+                Option(EMPTY, value="", selected=chosen == ""),
+                *[Option(t(key), value=value, selected=chosen == value) for value, key in _TREATMENTS],
+                name=field,
+                cls="form-input cell-input--select",
+            )),
+        )
+
+    hint = (t("docs_import.treatment_hint_dated", date=opening.isoformat()) if opening is not None
+            else t("docs_import.treatment_hint_undated"))
+    return Div(
+        H3(t("docs_import.treatment_title")),
+        P(hint, cls="import-hint"),
+        P(t("docs_import.treatment_note"), cls="import-hint"),
+        Table(
+            Thead(Tr(Th(t("th.document_type")), Th(t("th.number")), Th(t("th.date")),
+                     Th(t("docs_import.treatment_column")))),
+            Tbody(*[_row(d) for d in docs]),
+            cls="data-table",
+        ),
+        cls="mt-sm mb-sm",
+    )
 
 
 # The address free-tier share links are published under.
@@ -424,7 +615,7 @@ def setup_routes(app):
             "contact_name": "Acme Corp",
             "total": "1500",
             "amount_outstanding": "1500",
-            "status": "unpaid",
+            "status": "awaiting_payment",
             "line_sku": "SKU-001",
             "line_barcode": "",
             "line_stone_type": "Emerald",
@@ -547,6 +738,7 @@ def setup_routes(app):
                 revalidate_action="/docs/import/revalidate",
                 has_mapping=True,
                 upsert_label=t("docs_import.upsert_label"),
+                form_fields=await _treatment_choice(token, rows),
             ),
             title=page_title("docs_import.import_documents"),
             nav_active="docs",
@@ -583,6 +775,7 @@ def setup_routes(app):
             revalidate_action="/docs/import/revalidate",
             has_mapping=True,
             upsert_label=t("docs_import.upsert_label"),
+            form_fields=await _treatment_choice(token, rows, form),
         )
 
     @app.post("/docs/import/errors")
@@ -606,64 +799,16 @@ def setup_routes(app):
         csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
-        def _f(row: dict, key: str) -> float | None:
-            raw = str(row.get(key, "")).strip()
-            if not raw:
-                return None
-            try:
-                return float(raw)
-            except ValueError:
-                return None
-
-        # Group rows by (doc_type, doc_number) - one CSV row per line item
-        from collections import OrderedDict
-        doc_map: OrderedDict = OrderedDict()
-        for r in rows:
-            doc_type = str(r.get("doc_type", "")).strip().lower()
-            doc_number = str(r.get("doc_number", "")).strip()
-            if not doc_type or not doc_number:
-                continue
-            key = (doc_type, doc_number)
-            if key not in doc_map:
-                doc_map[key] = {
-                    "doc_type": doc_type,
-                    "doc_number": doc_number,
-                    "date": str(r.get("date", "")).strip() or None,
-                    "due_date": str(r.get("due_date", "")).strip() or None,
-                    "contact_name": str(r.get("contact_name", "")).strip() or None,
-                    "total": _f(r, "total") or 0.0,
-                    "amount_outstanding": _f(r, "amount_outstanding") or 0.0,
-                    "status": str(r.get("status", "")).strip() or "draft",
-                    "line_items": [],
-                }
-            # Append line item if present
-            line_sku = str(r.get("line_sku", "")).strip()
-            line_total = _f(r, "line_total_price")
-            if line_sku or line_total:
-                line: dict = {}
-                if line_sku:
-                    line["sku"] = line_sku
-                if str(r.get("line_barcode", "")).strip():
-                    line["barcode"] = str(r.get("line_barcode", "")).strip()
-                if str(r.get("line_stone_type", "")).strip():
-                    line["description"] = str(r.get("line_stone_type", "")).strip()
-                wt = _f(r, "line_weight_ct")
-                if wt:
-                    line["weight"] = wt
-                qty = _f(r, "line_qty")
-                line["quantity"] = qty if qty is not None else 1.0
-                up = _f(r, "line_unit_price")
-                if up:
-                    line["unit_price"] = up
-                if line_total:
-                    line["total_price"] = line_total
-                cost = _f(r, "line_cost_basis")
-                if cost:
-                    line["cost_basis"] = cost
-                doc_map[key]["line_items"].append(line)
-
         records: list[dict] = []
-        for (doc_type, doc_number), data in doc_map.items():
+        refused: list[str] = []
+        for (doc_type, doc_number), data in _group_documents(rows).items():
+            chosen = str(form.get(_TREATMENT_FIELD.format(doc_type=doc_type, doc_number=doc_number)) or "")
+            refusal = _status_refusal(data, chosen)
+            if refusal:
+                refused.append(refusal)
+                continue
+            if chosen:
+                data["import_treatment"] = chosen
             records.append({
                 "event_type": "doc.created",
                 "data": data,
@@ -681,9 +826,9 @@ def setup_routes(app):
         created = int(result.get("created", 0) or 0)
         skipped = int(result.get("skipped", 0) or 0)
         updated = int(result.get("updated", 0) or 0)
-        errors = list(result.get("errors", []) or [])
+        errors = [*refused, *(result.get("errors", []) or [])]
 
-        await discard_import_csv(token, form, result)
+        await discard_import_csv(token, form, {**result, "errors": errors})
         return import_result_panel(
             created=created,
             skipped=skipped,

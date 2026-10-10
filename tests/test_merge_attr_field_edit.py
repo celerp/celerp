@@ -39,12 +39,12 @@ async def _token(client) -> str:
 async def _set_grade_schema(client, headers) -> None:
     """Give category 'DD' a 'grade' select attribute so a conflict must resolve to 'Mixed'."""
     r = await client.patch(
-        "/companies/me",
+        "/companies/me/category-schema/DD",
         headers=headers,
-        json={"settings": {"category_schemas": {"DD": [
+        json={"fields": [
             {"key": "grade", "label": "Grade", "type": "select",
              "options": ["A", "B", "C"], "editable": True, "required": False},
-        ]}}},
+        ]},
     )
     assert r.status_code == 200, r.text
 

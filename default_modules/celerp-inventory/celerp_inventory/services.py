@@ -36,16 +36,16 @@ from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.account_roles import current_settings, lot_account
+from celerp.services.account_roles import current_settings, is_consigned, sold_lot_account, sold_lot_key
 from celerp.services.business_time import business_date_at
 from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import event_goods_costs, lot_label, negative_cost_error
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.money import round_basis
+from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import book_lot_value, is_deleted, recognize_opening_lots, self_booked
-from celerp.importers.tabular import CsvImportSpec, cell_error_code, finite_float
+from celerp.importers.tabular import SYSTEM_SKIP_COLS, CsvImportSpec, cell_error_code, finite_float
 from celerp.services.item_erasure import erased_from_connector
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, reject_system_item_fields
 from celerp.services.money import to_stored_float, unit_price_from_total
@@ -89,14 +89,26 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     "pieces",
     "cost_total",
     "cost_price",
-    # Status - children start as available regardless of parent's terminal status
+    "cost_base",
+    "cost_landed",
+    "landed_costs",
+    # Status - children start as available regardless of parent's terminal status, so
+    # they never carry the parent's document or line pairing either
     "status",
+    "status_doc_id",
+    "status_doc_number",
+    "status_line_entity_id",
     # Timestamps - set fresh
     "created_at",
     "updated_at",
-    # Relationship - set by split/transform logic
+    # Relationship - set by split/transform logic. A lot's lineage is its own: a part split
+    # off it records split_from, a transform's product records transformed_from, and neither
+    # inherits the lot's own.
     "parent_id",
     "parent_sku",
+    "split_from",
+    "transformed_from",
+    "transformed_into",
 })
 
 
@@ -169,6 +181,76 @@ def goods_basis(state: dict) -> float | None:
     if basis is None:
         basis = state.get("cost_total")
     return None if basis is None else round_basis(basis)
+
+
+@dataclass(frozen=True)
+class CostCarve:
+    """A lot's cost divided between a part leaving it and what the lot keeps: goods cost
+    (None when the lot has none) and each landed pool ("<source_bill_id>::<kind>")."""
+
+    part_goods: float | None
+    part_landed: dict[str, float]
+    rest_goods: float | None
+    rest_landed: dict[str, float]
+
+
+def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | None = None,
+               landed_of: str | None = None, landed_part: dict[str, float] | None = None) -> CostCarve:
+    """The one division of a lot's cost when ``part_qty`` of it becomes a lot of its own (a
+    split, a return to the supplier, a count). The lot keeps its quantity share of the goods
+    cost (unless ``part_goods`` names the part's) and of every landed pool, each to the cent in
+    ``currency`` (allocate_pro_rata), and the part takes the difference. The books carry
+    every lot to the cent, so the part and the lot round back to exactly what the whole
+    carried. When the whole lot divides by quantity, its whole cost is rounded once: the lot
+    keeps the cent share of goods and pools together, the share an invoice costs the same
+    units at, and its goods take what its rounded pools leave of that share. Goods going back to the supplier of bill ``landed_of`` take a share of that
+    bill's landed pools only: another bill's pool changes only with that bill. A pool named in
+    ``landed_part`` gives the part the amount named, never more than the pool holds, in place
+    of its quantity share: goods a bill added to a lot carry that bill's landed cost per unit
+    of its own goods, not per unit of the whole lot."""
+    qty = float(state.get("quantity") or 0)
+
+    def kept(amount: float) -> float:
+        if qty <= 0:
+            return 0.0
+        rest, _part = allocate_pro_rata(amount, [to_decimal(qty - part_qty), to_decimal(part_qty)], currency)
+        return to_stored_float(rest)
+
+    pools = {k: float(v or 0) for k, v in (state.get("landed_costs") or {}).items()}
+    divided = {k for k in pools if landed_of is None or k.partition("::")[0] == landed_of}
+    named = landed_part or {}
+    rest_landed = {k: (round_basis(v - min(v, max(float(named[k]), 0.0))) if k in named else kept(v))
+                   if k in divided else v for k, v in pools.items()}
+    part_landed = {k: round_basis(v - rest_landed[k]) for k, v in pools.items() if k in divided}
+    basis = goods_basis(state)
+    if basis is None:
+        return CostCarve(None, part_landed, None, rest_landed)
+    if part_goods is not None:
+        part = round_basis(part_goods)
+        return CostCarve(part, part_landed, round_basis(basis - part), rest_landed)
+    rest = kept(basis)
+    if landed_of is None and not named and basis > 0:
+        once = round_basis(kept(basis + sum(pools.values())) - sum(rest_landed.values()))
+        if 0 <= once <= basis:
+            rest = once
+    return CostCarve(round_basis(basis - rest), part_landed, rest, rest_landed)
+
+
+def cost_kept(state: dict, new_qty: float, currency: str) -> dict:
+    """The cost a lot with landed pools keeps when it falls to ``new_qty`` with no part
+    becoming a lot of its own (a count, a manual adjustment, a consumption), to the cent
+    (carve_cost), as the ``landed_costs`` and ``cost_base`` of the event that moves it; empty
+    when the lot rises, keeps its quantity, empties or has no pools. A lot that rises keeps
+    its pools as they are (units found bring no freight), and an emptied lot keeps its whole
+    unit cost for stock that comes back."""
+    old = float(state.get("quantity") or 0)
+    if not state.get("landed_costs") or old <= 0 or not 0 < float(new_qty) < old:
+        return {}
+    carve = carve_cost(state, old - float(new_qty), currency)
+    out: dict = {"landed_costs": carve.rest_landed}
+    if carve.rest_goods is not None:
+        out["cost_base"] = carve.rest_goods
+    return out
 
 
 def _basis_or_conflict(state: dict, label: str) -> float:
@@ -477,10 +559,13 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 elif sale.doc_id is None:
                     unposted.append(lot_label(before, lot_id))
                 elif not sale.allocated and change:
-                    by_account, account = resold.setdefault(sale.doc_id, {}), lot_account(before)
+                    by_account, account = resold.setdefault(sale.doc_id, {}), await sold_lot_key(
+                        session, company_id, lot_id, before)
                     by_account[account] = by_account.get(account, 0.0) + change
-                if sale.doc_id is not None and change:
-                    sold.append((lot_id, lot_account(before), change))
+                # A consigned lot was never on the books: its cost is what is owed to the
+                # consignor, so the true-up alone moves cost of sales against that payable.
+                if sale.doc_id is not None and change and not is_consigned(before):
+                    sold.append((lot_id, sold_lot_account(before), change))
             unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
             allocations = await auto_je.allocations_naming_lot(session, company_id, lot_id)
             if sale.allocated:
@@ -969,6 +1054,7 @@ async def upsert_external_product(
             )
             selected_by_identity = False
         if row is not None:
+            await lock_company(session, cid)  # before the row lock (company_lock lock order)
             row = await session.get(
                 Projection,
                 {"company_id": cid, "entity_id": row.entity_id},
@@ -1858,8 +1944,9 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
     False when nothing differs, or when the item was moved to Deleted: the sync leaves it
     there, and Restore is the one way back."""
     cid = uuid.UUID(str(company_id))
-    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
-                            with_for_update=True, populate_existing=True)
+    # The company lock comes before the item's row lock, as every stock writer takes them:
+    # a sync that lowers the quantity is judged against what invoices hold under it.
+    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
     state = row.state or {}
@@ -2534,6 +2621,9 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
         # after resolution by build_import_records, not as a mapped column.
         required={"name"},
         type_map=type_map,
+        # An item's status is set by what happens to it (sold, reserved, consigned), so a
+        # file's status column is skipped unless the user maps it.
+        skip_cols=SYSTEM_SKIP_COLS | {"status"},
     )
 
 
@@ -3561,13 +3651,18 @@ async def adjust_item_quantity(
     source: str,
     idempotency_key: str,
 ):
-    """Set an item's quantity on hand, checked against its selling unit's decimals. The caller commits."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    """Set an item's quantity on hand, checked against its selling unit's decimals and
+    against what finalized invoices hold of it, read under the lock. Units that leave take
+    their cost to the cent (cost_kept). The caller commits."""
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row:
         current_sell_by = row.state.get("sell_by")
         unit_map = {u["name"]: u for u in await get_company_units(session, company_id)}
         if current_sell_by and current_sell_by in unit_map:
             validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
+        if "landed_costs" not in data and "cost_base" not in data:
+            from celerp.services.auto_je import company_currency
+            data = {**data, **cost_kept(row.state, data["new_qty"], await company_currency(session, company_id))}
     return await emit_event(
         session,
         company_id=company_id,
@@ -3765,21 +3860,23 @@ async def write_import_batch(
             if existing_projection is not None:
                 outcome.add(entity_id, "rejected", _record_refused(entity_id, "exists", "entity already exists"))
                 continue
+        # A refused row names its SKU, from the stored item when the row does not carry one.
+        named = {**data, "sku": data.get("sku") or ((stored_proj.state or {}).get("sku") if stored_proj is not None else None)}
 
         # Imported price values modify the same protected business data as the
         # interactive pricing surfaces. Import/export authority does not imply
         # permission to set prices.
         price_keys = price_keys_in(data, price_lists)
         if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
-            outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(price_keys, "set_inventory_prices")))
+            outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(price_keys, "set_inventory_prices")))
             continue
 
         sell_by = str(data.get("sell_by") or "").strip()
         if event_type != "item.patched" and not sell_by:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.sell_by_required", "sell_by is required")))
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.sell_by_required", "sell_by is required")))
             continue
         if sell_by and valid_units and sell_by not in valid_units:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
                 "import.row.unknown_unit", f"sell_by '{sell_by}' is not a valid unit", unit=sell_by)))
             continue
 
@@ -3790,7 +3887,7 @@ async def write_import_batch(
                 if sell_by and sell_by != stored_sell_by:
                     gated.add("sell_by")
                 if gated:
-                    outcome.add(entity_id, "rejected", _row_refused(data, _needs_permission(gated, "edit_inventory_amounts")))
+                    outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(gated, "edit_inventory_amounts")))
                     continue
 
         negative_amount = None
@@ -3805,12 +3902,12 @@ async def write_import_batch(
             except (TypeError, ValueError):
                 pass
         if negative_amount is not None:
-            outcome.add(entity_id, "rejected", _row_refused(data, refusal(
+            outcome.add(entity_id, "rejected", _row_refused(named, refusal(
                 "import.row.negative", f"{negative_amount} cannot be negative", field=negative_amount)))
             continue
         cost_refusal = negative_cost_error(lot_label(data, entity_id), *event_goods_costs(event_type, data))
         if cost_refusal:
-            outcome.add(entity_id, "rejected", _row_refused(data, cost_refusal))
+            outcome.add(entity_id, "rejected", _row_refused(named, cost_refusal))
             continue
 
         # Creation follows the ordinary internal-code primitive, after replay
@@ -3833,7 +3930,7 @@ async def write_import_batch(
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
         except ValueError as exc:
-            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
 
         if event_type != "item.patched":
@@ -3845,7 +3942,7 @@ async def write_import_batch(
             try:
                 loc_id = uuid.UUID(str(raw_loc))
             except ValueError:
-                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.invalid_location", "invalid location_id")))
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.invalid_location", "invalid location_id")))
                 continue
 
         # A patched goods cost is restated like an edit on the item page (merge and
@@ -3857,7 +3954,7 @@ async def write_import_batch(
             try:
                 cost_change = _pop_cost_change(data)
             except (TypeError, ValueError):
-                outcome.add(entity_id, "rejected", _row_refused(data, refusal("import.row.cost_not_number", "cost must be a number")))
+                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.cost_not_number", "cost must be a number")))
                 continue
 
         try:
@@ -3883,12 +3980,17 @@ async def write_import_batch(
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
-            outcome.add(entity_id, "rejected", _row_refused(data, str(exc)))
+            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
             continue
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:
+                # A refusal (goods an invoice has set aside, a change the item cannot take)
+                # is the user's to resolve, so the row says what it is.
+                outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
+                continue
             # The cause stays in the server log; the caller gets a plain row error.
             logger.exception("Item import could not write %s", entity_id)
-            outcome.add(entity_id, "failed", _row_refused(data, refusal("import.row.not_written", "the item could not be written")))
+            outcome.add(entity_id, "failed", _row_refused(named, refusal("import.row.not_written", "the item could not be written")))
             continue
 
         existing[idem_key] = entry

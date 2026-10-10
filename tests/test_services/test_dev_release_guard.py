@@ -318,7 +318,7 @@ def test_a_schema_alone_never_makes_an_event_replayable(monkeypatch):
     from celerp.projections.engine import ProjectionEngine
 
     monkeypatch.setitem(slots._slots, "projection_handler", [])
-    for event_type in ("sub.created", "scan.barcode", "payment_batch.recorded", "bom.created",
+    for event_type in ("sub.created", "payment_batch.recorded", "bom.created",
                        "sys.user.created", "sys.company.created"):
         assert ProjectionEngine.replayable(event_type), event_type
     for event_type in ("mfg.order.created", "item.created", "doc.created", "crm.deal.created",

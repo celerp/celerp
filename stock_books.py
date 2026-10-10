@@ -56,9 +56,12 @@ async def older_release_lot(session, company_id, actor_id, cost: float, *, qty: 
 
 
 async def book_older_opening(session, company_id, user_id) -> None:
-    """Commit the opening inventory entry an older release booked for its pre-system stock."""
+    """Commit the opening inventory entry an older release booked for its pre-system stock,
+    under the company lock every caller of book_opening_inventory holds."""
     from celerp.services.auto_je import book_opening_inventory
+    from celerp.services.company_lock import locked_company
 
+    await locked_company(session, company_id)
     await book_opening_inventory(session, company_id=company_id, user_id=user_id, in_production=Decimal("0"))
     await session.commit()
 
@@ -66,9 +69,14 @@ async def book_older_opening(session, company_id, user_id) -> None:
 _LOT_ROLES = (AccountRole.INVENTORY_PURCHASED.value, AccountRole.INVENTORY_OPENING.value)
 
 
-async def assert_books_carry_stock(session, company_id, *, unplaced=()) -> dict[str, Decimal]:
+async def assert_books_carry_stock(session, company_id, *, unplaced=(),
+                                   in_transit: dict[str, Decimal] | None = None) -> dict[str, Decimal]:
     """Assert the lot-carrying accounts hold exactly the stock recorded on them, and
-    return each account's balance."""
+    return each account's balance.
+
+    ``in_transit`` names value a lot account carries for goods billed and not yet
+    received (a finalized bill books them before any lot exists); it is added to what
+    the lots hold on that account."""
     session.expire_all()
     settings = (await session.get(Company, company_id)).settings or {}
     currency = settings.get("currency", "USD")
@@ -98,6 +106,13 @@ async def assert_books_carry_stock(session, company_id, *, unplaced=()) -> dict[
             continue
         held[code] += round_money(value, currency)  # each posting moves a lot's value to the cent
     assert not missing, f"lots on hand that record no lot inventory account: {missing}"
+    from celerp.services.auto_je import recognized_unshipped
+
+    for code, amount in (await recognized_unshipped(session, company_id)).items():
+        if code in held:
+            held[code] -= round_money(amount, currency)  # sold on a finalized invoice, not yet shipped
+    for code, amount in (in_transit or {}).items():
+        held[code] = held.get(code, Decimal("0")) + round_money(Decimal(str(amount)), currency)
     held = {code: round_money(v, currency) for code, v in held.items()}
     assert books == held, f"books {books} != stock recorded on them {held}"
     return books

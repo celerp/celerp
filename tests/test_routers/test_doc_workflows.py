@@ -24,6 +24,15 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _company_today(client, token: str) -> str:
+    """Today in the company's own timezone, the day a new document is dated, which is not
+    always the day on the machine running the tests."""
+    from celerp.services.business_time import business_date_of
+    r = await client.get("/companies/me", headers=_h(token))
+    assert r.status_code == 200
+    return business_date_of(None, (r.json()["settings"] or {}).get("timezone"))
+
+
 async def _create_invoice(client, token: str, *, subtotal: float = 100, tax: float = 7, total: float = 107) -> str:
     r = await client.post(
         "/docs",
@@ -386,14 +395,18 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
     )
     assert (await client.post(f"/docs/{expired.json()['id']}/convert", headers=_h(token))).status_code == 409
 
-    # credit note adjusts source invoice outstanding
+    # an issued credit note adjusts source invoice outstanding; a draft one does not
     inv = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+    assert (await client.post(f"/docs/{inv}/finalize", headers=_h(token))).status_code == 200
     cn = await client.post(
         "/docs",
         headers=_h(token),
-        json={"doc_type": "credit_note", "original_doc_id": inv, "reason": "return", "line_items": [], "subtotal": 0, "tax": 0, "total": 30},
+        json={"doc_type": "credit_note", "original_doc_id": inv, "reason": "return", "line_items": [{"name": "Refund", "quantity": 1, "unit_price": 30, "line_total": 30}], "subtotal": 30, "tax": 0, "total": 30},
     )
     assert cn.status_code == 200
+    assert (await client.get(f"/docs/{inv}", headers=_h(token))).json()["amount_outstanding"] == 100
+    f = await client.post(f"/docs/{cn.json()['id']}/finalize", headers=_h(token))
+    assert f.status_code == 200, f.text
     assert (await client.get(f"/docs/{inv}", headers=_h(token))).json()["amount_outstanding"] == 70
 
 
@@ -530,16 +543,16 @@ async def test_new_doc_uses_configured_pattern(client, session):
 
 @pytest.mark.asyncio
 async def test_new_doc_gets_issue_date_today(client, session):
-    """Creating a new doc sets issue_date to today (ISO format)."""
-    from datetime import date
+    """Creating a new doc sets issue_date to the company's today (ISO format)."""
     token = await _register(client)
     r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice"})
     assert r.status_code == 200
     doc_id = r.json()["id"]
     doc = await client.get(f"/docs/{doc_id}", headers=_h(token))
     assert doc.status_code == 200
-    assert doc.json().get("issue_date") == date.today().isoformat(), (
-        f"Expected issue_date={date.today().isoformat()!r}, got {doc.json().get('issue_date')!r}"
+    today = await _company_today(client, token)
+    assert doc.json().get("issue_date") == today, (
+        f"Expected issue_date={today!r}, got {doc.json().get('issue_date')!r}"
     )
 
 
@@ -557,7 +570,7 @@ async def test_finalized_doc_rejects_all_edits_with_clear_message(client, sessio
     r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
                            json={"fields_changed": {"issue_date": {"old": date.today().isoformat(), "new": new_date}}})
     assert r.status_code == 409
-    detail = r.json()["detail"]
+    detail = r.json()["detail"]["message"]
     assert "draft" in detail.lower(), f"Error must mention 'Draft': {detail!r}"
     assert "revert" in detail.lower(), f"Error must tell user to revert: {detail!r}"
 
@@ -574,18 +587,17 @@ async def test_non_editable_field_rejected_on_issued_doc(client, session):
     r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
                            json={"fields_changed": {"subtotal": {"old": 100, "new": 999}}})
     assert r.status_code == 409
-    assert "draft" in r.json()["detail"].lower()
+    assert "draft" in r.json()["detail"]["message"].lower()
 
 
 @pytest.mark.asyncio
 async def test_list_docs_date_filter_uses_issue_date(client, session):
     """list_docs date filter includes docs whose issue_date falls in range."""
-    from datetime import date
     token = await _register(client)
-    # Create a doc (issue_date = today)
+    # Create a doc (issue_date = the company's today)
     r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice"})
     assert r.status_code == 200
-    today = date.today().isoformat()
+    today = await _company_today(client, token)
     # List with date_from=today - doc must appear
     r = await client.get(f"/docs?doc_type=invoice&date_from={today}", headers=_h(token))
     assert r.status_code == 200
@@ -1141,12 +1153,8 @@ async def test_doc_return_received_projection(client, session):
 
 @pytest.mark.asyncio
 async def test_receive_return_no_sold_inventory(client, session):
-    """receive-return must succeed even when no sold inventory records exist for the SKU.
-
-    Real-world case: CN created manually against an invoice whose items were never
-    run through item.fulfilled, or items sold before fulfillment tracking existed.
-    Backend falls back to CN/invoice line item data.
-    """
+    """receive-return refuses goods its invoice never shipped: a credit note against an
+    invoice whose goods never left stock has nothing to take back, and says so in numbers."""
     token = await _register(client)
     h = _h(token)
 
@@ -1170,11 +1178,9 @@ async def test_receive_return_no_sold_inventory(client, session):
     cn_id = cn.json()["id"]
     await client.post(f"/docs/{cn_id}/finalize", headers=h)
 
-    # receive-return must succeed using invoice line item data as fallback
     r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-NOSOLD", "quantity": 1}]})
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert len(data["received_items"]) == 1
+    assert r.status_code == 422, r.text
+    assert "shipped 0" in r.json()["detail"], r.text
 
 
 @pytest.mark.asyncio
@@ -1312,10 +1318,11 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     # Revert Return Stock must fail with 409 and name the blocked item
     undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
     assert undo_r.status_code == 409, undo_r.text
-    detail = undo_r.json().get("detail", "")
-    assert "sold" in detail.lower() or "RR-002" in detail, (
-        f"Error message must name the blocked item or status. Got: {detail}"
-    )
+    detail = undo_r.json()["detail"]
+    assert detail["message_key"] == "docs.undo_return_blocked", detail
+    [reason] = detail["params"]["reasons"]
+    assert reason["message_key"] == "docs.undo_lot_sold" and reason["params"] == {"sku": "RR-002"}, reason
+    assert "RR-002" in detail["message"] and "sold" in detail["message"], detail["message"]
 
 
 @pytest.mark.asyncio
@@ -1398,7 +1405,7 @@ async def test_revert_goods_received_removes_items_from_inventory(client, sessio
 
 @pytest.mark.asyncio
 async def test_revert_goods_received_blocked_if_item_resold(client, session):
-    """Revert Goods Received must 409 if any created item has been sold."""
+    """Revert Goods Received is refused once any created item has been sold."""
     token = await _register(client)
     h = _h(token)
 
@@ -1427,9 +1434,10 @@ async def test_revert_goods_received_blocked_if_item_resold(client, session):
     await sell_item(client, h, item_ids[0])
 
     undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
-    assert undo_r.status_code == 409, undo_r.text
-    detail = undo_r.json().get("detail", "")
-    assert "sold" in detail.lower() or "RG-002" in detail, f"Error must identify the blocked item. Got: {detail}"
+    assert undo_r.status_code == 422, undo_r.text
+    detail = undo_r.json()["detail"]
+    assert detail["message_key"] == "docs.undo_receipt_units_sold", detail
+    assert detail["params"]["sku"] == "RG-002", f"Error must identify the blocked item. Got: {detail}"
 
 
 @pytest.mark.asyncio
@@ -2729,3 +2737,27 @@ async def test_finalize_twice_without_revert_is_noop(client, session):
     assert second.json().get("already_finalized") is True
     second_state = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
     assert second_state["ref_id"] == first_ref
+
+
+@pytest.mark.asyncio
+async def test_editing_a_locked_document_says_how_to_unlock_it(client):
+    """A void document is unvoided, never reverted to Draft, so its refusal says so; any
+    other locked document is told to revert to Draft."""
+    token = await _register(client)
+    edit = {"fields_changed": {"notes": {"old": None, "new": "x"}}}
+
+    final = await _create_invoice(client, token)
+    await client.post(f"/docs/{final}/finalize", headers=_h(token))
+    r = await client.patch(f"/docs/{final}", headers=_h(token), json=edit)
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.edit_locked"
+    assert r.json()["detail"]["params"] == {"doc_status": "final"}
+    assert "revert it to Draft" in r.json()["detail"]["message"]
+
+    void = await _create_invoice(client, token)
+    await client.post(f"/docs/{void}/finalize", headers=_h(token))
+    assert (await client.post(f"/docs/{void}/void", headers=_h(token), json={"reason": "x"})).status_code == 200
+    r = await client.patch(f"/docs/{void}", headers=_h(token), json=edit)
+    assert r.status_code == 409
+    assert r.json()["detail"]["message_key"] == "docs.edit_void"
+    assert "Unvoid" in r.json()["detail"]["message"] and "Draft" not in r.json()["detail"]["message"]

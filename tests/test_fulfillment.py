@@ -712,11 +712,14 @@ async def test_invoice_finalize_promotes_memo_out_items_to_sold(client, session,
 
 
 @pytest.mark.asyncio
-async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids):
-    """Fix 3: PATCH doc with line_items.new that omits a fulfilled entity_id must be rejected.
+@pytest.mark.parametrize("sent_out_by", ["this_doc", "elsewhere"])
+async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids, sent_out_by):
+    """PATCH doc with line_items.new that omits a line whose goods THIS document sent out
+    is rejected; a line whose goods went out some other way is not this document's, so
+    it can be dropped (or changed to other stock).
 
-    Sets up the state via the service layer (bypassing Fix 1) to test the PATCH guard
-    independently: draft doc + item in sold state (simulates a forced/migrated state).
+    Sets up the state via the service layer to test the PATCH guard independently: draft
+    doc + item sent out (simulates a forced/migrated state).
     """
     import uuid as _uuid
     from celerp.events.engine import emit_event
@@ -736,14 +739,15 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
     doc_id = r.json()["id"]
     # Doc is draft at this point
 
-    # Set item status to sold via service layer (bypassing HTTP guards)
+    # Send the item out via the service layer (bypassing HTTP guards)
     await emit_event(
         session,
         company_id=_setup_ids["company_id"],
         entity_id=item_id,
         entity_type="item",
-        event_type="item.status.set",
-        data={"new_status": "sold"},
+        event_type="item.fulfilled" if sent_out_by == "this_doc" else "item.status.set",
+        data=({"source_doc_id": doc_id, "quantity_fulfilled": 1.0, "fulfilled_by": str(_setup_ids["user_id"]),
+               "doc_type": "memo"} if sent_out_by == "this_doc" else {"new_status": "sold"}),
         actor_id=_setup_ids["user_id"],
         location_id=None,
         source="test",
@@ -761,8 +765,11 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
         "fields_changed": {"line_items": {"new": remaining_lines}},
     })
+    if sent_out_by == "elsewhere":
+        assert r.status_code == 200, r.text
+        return
     assert r.status_code == 409, r.text
-    assert "fulfilled" in r.text.lower()
+    assert r.json()["detail"]["message_key"] == "lines.shipped_elsewhere"
 
 
 @pytest.mark.asyncio
@@ -884,7 +891,7 @@ async def test_fulfill_lines_rejects_stock_shortage(client, auth):
     r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [item_id]})
     assert r.status_code == 409, r.text
-    assert "stock" in r.json()["detail"].lower()
+    assert "stock" in r.json()["detail"]["message"].lower()
     # Nothing was fulfilled — the item stays available.
     item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item["status"] == "available"
@@ -897,14 +904,14 @@ async def test_fulfill_lines_rejects_partial_when_splitting_off(client, auth):
     pr = await client.patch(f"/items/{item_id}", headers=auth["headers"],
                             json={"fields_changed": {"allow_splitting": {"old": True, "new": False}}})
     assert pr.status_code == 200, pr.text
-    doc_id = await _create_and_finalize_invoice(
+    doc_id = await _create_memo(
         client, auth,
         [{"sku": "NOSPLIT-A", "entity_id": item_id, "quantity": 3, "unit_price": 1.0}],
     )
     r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [item_id]})
     assert r.status_code == 409, r.text
-    assert "splitting" in r.json()["detail"].lower()
+    assert r.json()["detail"]["message_key"] == "lots.splitting_off"
     item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item["status"] == "available"
 
@@ -976,10 +983,10 @@ async def test_fulfill_split_piece_item_derives_pieces(client, auth):
 
 
 @pytest.mark.asyncio
-async def test_fulfill_split_secondary_overshoot_floors_mother(client, auth):
-    """Partial draw: the child's secondary measure is uncapped (may exceed the parcel)
-    and the mother floors at 0. sell_by=piece, mother 5pcs/15ct -> child 3pcs/20ct,
-    mother 2pcs/0ct."""
+async def test_fulfill_split_secondary_overshoot_is_refused(client, auth):
+    """Partial draw: a child weighing more than the whole parcel would leave the mother a
+    negative weight, so the shipment is refused and nothing moves. sell_by=piece, mother
+    5pcs/15ct, line 3pcs/20ct."""
     r = await client.post("/items", headers=auth["headers"], json={
         "status": "available", "sku": "SPLIT-SEC", "name": "SPLIT-SEC", "quantity": 5, "sell_by": "piece",
         "weight": 15, "weight_unit": "carat",
@@ -992,15 +999,13 @@ async def test_fulfill_split_secondary_overshoot_floors_mother(client, auth):
     )
     fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                            json={"line_entity_ids": [item_id]})
-    assert fr.status_code == 200, fr.text
+    assert fr.status_code == 409, fr.text
+    assert fr.json()["detail"]["message_key"] == "lines.cannot_split"
     mother = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
-    assert float(mother["quantity"]) == 2            # 5 - 3
-    assert float(mother.get("weight") or 0) == 0     # max(0, 15 - 20)
+    assert (float(mother["quantity"]), float(mother["weight"]), mother["status"]) == (5, 15, "available")
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     li = doc["line_items"][0]
-    child = (await client.get(f"/items/{li.get('entity_id') or li.get('item_id')}", headers=auth["headers"])).json()
-    assert float(child["quantity"]) == 3
-    assert float(child["weight"]) == 20              # uncapped
+    assert (li.get("entity_id") or li.get("item_id")) == item_id
 
 
 @pytest.mark.asyncio
@@ -1018,7 +1023,7 @@ async def test_fulfill_whole_draw_secondary_must_equal(client, auth):
     fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
                            json={"line_entity_ids": [item_id]})
     assert fr.status_code == 409, fr.text
-    assert "whole" in fr.json()["detail"].lower()
+    assert "whole" in fr.json()["detail"]["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -1412,7 +1417,7 @@ async def test_set_as_shipped_rejects_foreign_reserved_line(client, session, aut
     doc_a = await _create_and_finalize_invoice(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
-    doc_b = await _create_and_finalize_invoice(client, auth, [
+    doc_b = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
 
@@ -1486,12 +1491,15 @@ async def test_reserve_lines_rejects_non_available_line(client, session, auth, _
         {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
     ])
 
-    # Reserve A on its own first.
-    r1 = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+    # A memo reserves A first.
+    other = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+    ])
+    r1 = await client.post(f"/docs/{other}/reserve-lines", headers=auth["headers"],
                            json={"line_entity_ids": [eid_a], "new_status": "reserved"})
     assert r1.status_code == 200, r1.text
 
-    # Now try to reserve both; A is no longer available, so the whole request fails and B is untouched.
+    # Now try to reserve both; A is held elsewhere, so the whole request fails and B is untouched.
     r2 = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
                            json={"line_entity_ids": [eid_a, eid_b], "new_status": "reserved"})
     assert r2.status_code == 422, r2.text
@@ -1506,7 +1514,7 @@ async def test_release_rejects_foreign_reserved_line(client, session, auth, _set
     doc_a = await _create_and_finalize_invoice(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
-    doc_b = await _create_and_finalize_invoice(client, auth, [
+    doc_b = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
 
@@ -1662,7 +1670,7 @@ async def test_reserve_lines_rejects_sold_line_from_another_doc(client, session,
     doc_a = await _create_and_finalize_invoice(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
-    doc_b = await _create_and_finalize_invoice(client, auth, [
+    doc_b = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
     ])
     ra = await client.post(f"/docs/{doc_a}/fulfill-lines", headers=auth["headers"],
@@ -2075,7 +2083,7 @@ async def test_reserve_partial_nonsplittable_blocked(client, session, auth, _set
     pr = await client.patch(f"/items/{mother_id}", headers=auth["headers"],
                             json={"fields_changed": {"allow_splitting": {"old": True, "new": False}}})
     assert pr.status_code == 200, pr.text
-    doc_id = await _create_and_finalize_invoice(client, auth, [
+    doc_id = await _create_memo(client, auth, [
         {"sku": sku, "name": sku, "quantity": 3, "unit_price": 5.0, "entity_id": mother_id},
     ])
     r = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
@@ -2134,9 +2142,9 @@ async def test_reserve_carve_concurrent_no_lost_update(client, session, auth, _s
         return _types.SimpleNamespace(entity_id=mother_id, company_id=cid, state=copy.deepcopy(stale))
 
     # Two carves, each from the same stale parent snapshot (concurrent readers).
-    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3)
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3, action="ship")
     await session.commit()
-    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3)
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=3, child_pieces=3, action="ship")
     await session.commit()
 
     items = (await client.get("/items", headers=auth["headers"])).json()["items"]
@@ -2167,7 +2175,7 @@ async def test_split_off_child_rejects_over_capacity(client, session, auth, _set
     parent = await session.get(Projection, {"company_id": cid, "entity_id": mother_id})
     with pytest.raises(ValueError, match="6 of 4"):
         await split_off_child(session, company_id=cid, user_id=uid, parent_proj=parent,
-                              child_qty=6, child_pieces=6)
+                              child_qty=6, child_pieces=6, action="ship")
     await session.rollback()
 
     mother = (await client.get(f"/items/{mother_id}", headers=auth["headers"])).json()
@@ -2204,13 +2212,13 @@ async def test_split_off_child_concurrent_over_capacity_rejects_second(client, s
         return _types.SimpleNamespace(entity_id=mother_id, company_id=cid, state=copy.deepcopy(stale))
 
     # First carve: 6 of 10, succeeds, leaves the locked parent at 4.
-    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6)
+    await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6, action="ship")
     await session.commit()
 
     # Second carve, from the same stale (quantity == 10) snapshot: 6 of the now-locked 4
     # must be rejected, not silently floored.
     with pytest.raises(ValueError, match="6 of 4"):
-        await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6)
+        await split_off_child(session, company_id=cid, user_id=uid, parent_proj=_snap(), child_qty=6, child_pieces=6, action="ship")
     await session.rollback()
 
     items = (await client.get("/items", headers=auth["headers"])).json()["items"]
@@ -2377,9 +2385,9 @@ async def test_cogs_zero_cost_line_contributes_zero(client, session, auth, _setu
 
 @pytest.mark.asyncio
 async def test_cogs_parcel_qty_zero_falls_back(client, session, auth, _setup_ids):
-    """A line whose parcel has quantity <= 0 falls back to the parcel's cost_price for
-    the per-unit cost and posts no division error. Parcel: quantity 0, cost_price 7; line
-    draws 2, so COGS = 14. At merge-base finalize posts no COGS and never divides."""
+    """A line whose parcel has quantity <= 0 finalizes without a division error and
+    posts no cost of sales: no lot holds the 2 units invoiced, so they are costed when
+    goods for them ship. Parcel: quantity 0, cost_price 7; line of 2."""
     sku = f"COGSZQ-{uuid.uuid4().hex[:6]}"
     r = await client.post("/items", headers=auth["headers"], json={
         "status": "available", "sku": sku, "name": sku, "quantity": 0,
@@ -2390,8 +2398,8 @@ async def test_cogs_parcel_qty_zero_falls_back(client, session, auth, _setup_ids
         {"sku": sku, "name": sku, "quantity": 2, "unit_price": 9.0, "entity_id": item_id},
     ])
     nets = await _je_net(client, auth["headers"])
-    assert nets.get("5100") == 14.0, (
-        f"parcel_qty<=0 must fall back to cost_price: 2*7=14, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("5100") is None, (
+        f"units no lot holds post no cost at finalize, got {nets.get('5100')} (nets={nets})")
 
 
 @pytest.mark.asyncio
@@ -2529,11 +2537,11 @@ async def test_cogs_finalize_spans_sibling_lots(client, session, auth, _setup_id
 
 
 @pytest.mark.asyncio
-async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, session, auth, _setup_ids):
-    """When the whole SKU is short of the invoiced quantity, finalize still succeeds:
-    the allocatable units price at their own lots' costs and the unallocatable
-    remainder prices provisionally at the bound lot's unit cost. Lots: A 2 at 10,
-    B 2 at 30 (total 4); line qty 5 bound to A posts 2*10 + 2*30 + 1*10 = 90."""
+async def test_cogs_finalize_oversell_costs_only_lots_on_hand(client, session, auth, _setup_ids):
+    """When the whole SKU is short of the invoiced quantity, finalize still succeeds and
+    costs only the units lots hold, each at its own lot's cost; the unit no lot holds is
+    costed when goods for it ship. Lots: A 2 at 10, B 2 at 30 (total 4); line qty 5
+    bound to A posts 2*10 + 2*30 = 80."""
     sku = f"SPANSHORT-{uuid.uuid4().hex[:6]}"
     lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
     await _create_item(client, auth, sku, 2, cost_price=30.0)
@@ -2541,24 +2549,25 @@ async def test_cogs_finalize_oversell_prices_shortfall_at_bound_cost(client, ses
         {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
     ])
     nets = await _je_net(client, auth["headers"])
-    assert nets.get("5100") == 90.0, (
-        f"oversold line must post 2*10 + 2*30 + 1*10 = 90, got {nets.get('5100')} (nets={nets})")
-    assert nets.get("1130-OB") == -90.0, (
-        f"inventory relief must match at -90, got {nets.get('1130-OB')} (nets={nets})")
+    assert nets.get("5100") == 80.0, (
+        f"oversold line must post 2*10 + 2*30 = 80, got {nets.get('5100')} (nets={nets})")
+    assert nets.get("1130-OB") == -80.0, (
+        f"inventory relief must match at -80, got {nets.get('1130-OB')} (nets={nets})")
 
 
 @pytest.mark.asyncio
 async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup_ids):
     """Fulfillment compares the actual cost of the lots drawn with the COGS recognized
-    at finalize and posts one adjustment JE for the difference; a fulfill whose actual
-    cost equals the recognized amount posts no adjustment; re-running the adjustment
-    is idempotent.
+    at finalize and posts one adjustment JE for the difference; re-running the
+    adjustment is idempotent.
 
     Setup: lots A 2 at 10, B 3 at 30, C 3 at 50. doc1 line qty 5 bound to A
-    recognizes 2*10 + 3*30 = 110 at finalize. doc2 then sells lot B outright
-    (recognized 90, fulfilled at exactly 90: no adjustment). Fulfilling doc1
-    afterwards draws A and C (B is sold), actual 2*10 + 3*50 = 170, so doc1 gets one
-    adjustment JE of +60."""
+    recognizes 2*10 + 3*30 = 110 at finalize. doc2 then sells lot B outright: doc1
+    already costed B, so doc2 costs the free lot C at finalize (3*50 = 150). Shipping B,
+    doc2 takes B's 90 over from doc1 (a cost move) and gives back the 150 it set aside
+    for C, which stays on hand. Fulfilling doc1 afterwards draws A and C (B is sold),
+    actual 2*10 + 3*50 = 170 against the 20 it still holds, so doc1 gets one adjustment
+    JE of +150."""
     from celerp.models.projections import Projection
 
     cid = _setup_ids["company_id"]
@@ -2580,8 +2589,11 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
     session.expire_all()
     doc2_adj = await session.get(
         Projection, {"company_id": cid, "entity_id": f"je:auto:{doc2}:cogs-adj:fulfill-0:l0"})
-    assert doc2_adj is None, (
-        "a fulfill whose actual cost equals the recognized COGS must post no adjustment JE")
+    assert doc2_adj is not None and {
+        e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
+        for e in doc2_adj.state.get("entries", [])} == {"5100": (0.0, 150.0), "1130-OB": (150.0, 0.0)}, (
+        "a lot another invoice already costed is not costed twice: doc2 takes B's cost from doc1 "
+        "and gives back C's")
 
     r = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
                           json={"line_entity_ids": [lot_a]})
@@ -2590,17 +2602,17 @@ async def test_fulfill_true_up_posts_adjustment_je(client, session, auth, _setup
     adj_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"
     adj = await session.get(Projection, {"company_id": cid, "entity_id": adj_id})
     assert adj is not None and adj.state.get("status") == "posted", (
-        f"fulfillment must post the COGS adjustment JE {adj_id} (actual 170 vs recognized 110)")
+        f"fulfillment must post the COGS adjustment JE {adj_id} (actual 170 vs 20 still held)")
     by_acct = {e["account"]: (float(e.get("debit") or 0), float(e.get("credit") or 0))
                for e in adj.state.get("entries", [])}
-    assert by_acct.get("5100") == (60.0, 0.0), (
-        f"adjustment must debit 5100 by exactly 60, got {by_acct.get('5100')}")
-    assert by_acct.get("1130-OB") == (0.0, 60.0), (
-        f"adjustment must credit 1130-OB by exactly 60, got {by_acct.get('1130-OB')}")
+    assert by_acct.get("5100") == (150.0, 0.0), (
+        f"adjustment must debit 5100 by exactly 150, got {by_acct.get('5100')}")
+    assert by_acct.get("1130-OB") == (0.0, 150.0), (
+        f"adjustment must credit 1130-OB by exactly 150, got {by_acct.get('1130-OB')}")
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, (
-        f"total COGS must be 110 + 90 + 60 = 260, got {nets.get('5100')} (nets={nets})")
+        f"total COGS must be 110 + 150 - 150 + 150 = 260, got {nets.get('5100')} (nets={nets})")
 
     # Idempotency: replaying the same adjustment must not double-post.
     from sqlalchemy import func, select
@@ -2631,8 +2643,9 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
     Setup: two SKUs. SKU1 lots A1 2 at 10, B1 3 at 30, C1 3 at 50; SKU2 lots
     A2 2 at 20, B2 3 at 40, C2 3 at 70. doc1 line 0 (SKU1 qty 5 bound A1)
     recognizes 110; line 1 (SKU2 qty 5 bound A2) recognizes 160. doc2 sells B1
-    and B2 outright, so batch 1 (line 0) draws A1+C1 = 170, delta +60, and
-    batch 2 (line 1) draws A2+C2 = 250, delta +90."""
+    and B2 outright and takes their cost over (90 and 120), so doc1's lines hold 20 and
+    40: batch 1 (line 0) draws A1+C1 = 170, delta +150, and batch 2 (line 1) draws
+    A2+C2 = 250, delta +210."""
     from celerp.models.projections import Projection
 
     cid = _setup_ids["company_id"]
@@ -2670,9 +2683,9 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
     adj_l0_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"
     adj_l0 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l0_id})
     assert adj_l0 is not None and adj_l0.state.get("status") == "posted", (
-        f"batch 1 must post its own adjustment JE {adj_l0_id} (actual 170 vs recognized 110)")
-    assert _adj_amount(adj_l0) == (60.0, 0.0), (
-        f"batch 1 delta must be +60 for its own line only, got {_adj_amount(adj_l0)}")
+        f"batch 1 must post its own adjustment JE {adj_l0_id} (actual 170 vs 20 held)")
+    assert _adj_amount(adj_l0) == (150.0, 0.0), (
+        f"batch 1 delta must be +150 for its own line only, got {_adj_amount(adj_l0)}")
 
     # Batch 2: line 1, same cycle, different delta. Must post a second JE, not
     # dedup away on batch 1's key.
@@ -2683,11 +2696,11 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
     adj_l1_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l1"
     adj_l1 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l1_id})
     assert adj_l1 is not None and adj_l1.state.get("status") == "posted", (
-        f"batch 2 must post its own adjustment JE {adj_l1_id} (actual 250 vs recognized 160)")
-    assert _adj_amount(adj_l1) == (90.0, 0.0), (
-        f"batch 2 delta must be +90 for its own line only, got {_adj_amount(adj_l1)}")
+        f"batch 2 must post its own adjustment JE {adj_l1_id} (actual 250 vs 40 held)")
+    assert _adj_amount(adj_l1) == (210.0, 0.0), (
+        f"batch 2 delta must be +210 for its own line only, got {_adj_amount(adj_l1)}")
     adj_l0 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l0_id})
-    assert _adj_amount(adj_l0) == (60.0, 0.0), "batch 2 must not disturb batch 1's JE"
+    assert _adj_amount(adj_l0) == (150.0, 0.0), "batch 2 must not disturb batch 1's JE"
 
     # Replaying batch 2 posts nothing new, even with a different computed delta.
     from sqlalchemy import func, select
@@ -2707,7 +2720,7 @@ async def test_fulfill_true_up_per_batch_posts_separate_adjustments(client, sess
         f"replaying batch 2 must be a no-op, ledger rows went {rows_before} -> {rows_after}")
     session.expire_all()
     adj_l1 = await session.get(Projection, {"company_id": cid, "entity_id": adj_l1_id})
-    assert _adj_amount(adj_l1) == (90.0, 0.0), "replay must not change batch 2's posted entries"
+    assert _adj_amount(adj_l1) == (210.0, 0.0), "replay must not change batch 2's posted entries"
 
 
 @pytest.mark.asyncio
@@ -2976,7 +2989,7 @@ async def test_reserve_shipped_cross_lot_invoice_covers_complete_allocation(clie
     released = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
                                  json={"line_entity_ids": [lot_a], "new_status": "available"})
     assert released.status_code == 200, released.text
-    assert set(released.json()["reserved"]) == {lot_a, lot_b}
+    assert set(released.json()["released"]) == {lot_a, lot_b}
     for eid in (lot_a, lot_b):
         item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
         assert item["status"] == "available"
@@ -3040,3 +3053,119 @@ async def test_fulfill_two_same_sku_bound_lots_draws_each_lot_once(
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, nets
+
+
+# ---------------------------------------------------------------------------
+# A lot out on a memo is that memo's: only an invoice made from it may sell it.
+# ---------------------------------------------------------------------------
+
+
+async def _lot_out_on_memo(client, auth, sku: str) -> tuple[str, str, str]:
+    """A lot shipped on a finalized memo: (lot id, memo id, memo number)."""
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    memo_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}])
+    await _fulfill_lines(client, auth, memo_id, eid)
+    lot = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert lot["status"] == "memo_out" and lot["status_doc_id"] == memo_id
+    return eid, memo_id, lot["status_doc_number"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("doc_type", ["invoice", "memo"])
+async def test_a_lot_out_on_a_memo_is_refused_on_another_document(client, auth, doc_type):
+    """Creating or editing another invoice or memo to take a lot out on a memo is refused,
+    naming the memo, in the user's language."""
+    from ui.i18n import refusal_text
+
+    sku = f"ONMEMO-{uuid.uuid4().hex[:6]}"
+    eid, _memo_id, memo_no = await _lot_out_on_memo(client, auth, sku)
+    line = {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}
+
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": [line]})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert f"out on memo {memo_no}" in detail["message"]
+    assert refusal_text(detail).startswith(f"{sku} is out on memo {memo_no}.")
+
+    other = await client.post("/docs", headers=auth["headers"], json={"doc_type": doc_type, "line_items": []})
+    assert other.status_code == 200, other.text
+    r = await client.patch(f"/docs/{other.json()['id']}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"new": [line]}}})
+    assert r.status_code == 422, r.text
+    assert f"out on memo {memo_no}" in r.json()["detail"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_quotation_may_still_list_a_lot_out_on_a_memo(client, auth):
+    sku = f"ONMEMO-Q-{uuid.uuid4().hex[:6]}"
+    eid, _memo_id, _memo_no = await _lot_out_on_memo(client, auth, sku)
+    r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "quotation", "line_items": [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}]})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_finalize_refuses_an_invoice_lot_out_on_another_memo(client, auth):
+    """An invoice drafted before its lot went out on a memo cannot sell that lot at finalize:
+    the finalize is refused naming the memo, and the lot stays out on the memo."""
+    sku = f"ONMEMO-F-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    line = {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}
+    inv = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": [line]})
+    assert inv.status_code == 200, inv.text
+    memo_id = await _create_memo(client, auth, [line])
+    await _fulfill_lines(client, auth, memo_id, eid)
+    memo_no = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status_doc_number"]
+
+    r = await client.post(f"/docs/{inv.json()['id']}/finalize", headers=auth["headers"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "documents.lot_on_memo_by"
+    assert r.json()["detail"]["params"]["doc"] == memo_no
+    lot = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert lot["status"] == "memo_out" and lot["status_doc_id"] == memo_id
+
+
+@pytest.mark.asyncio
+async def test_finalize_sells_the_source_memo_lot_on_the_invoice_number(client, session, auth, _setup_ids):
+    """An invoice made from a memo whose lot is still out on that memo (a memo converted
+    before conversion settled its lots) sells the lot at finalize, stamped with the
+    finalized invoice number, not the draft PF number."""
+    from celerp.events.engine import emit_event
+
+    sku = f"ONMEMO-S-{uuid.uuid4().hex[:6]}"
+    eid, memo_id, memo_no = await _lot_out_on_memo(client, auth, sku)
+    r = await client.post(f"/docs/{memo_id}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    invoice_id = r.json()["target_doc_id"]
+    # The lot as an older conversion left it: still out on the memo.
+    await emit_event(
+        session, company_id=_setup_ids["company_id"], entity_id=eid, entity_type="item",
+        event_type="item.status.set", data={"new_status": "memo_out", "source_doc_id": memo_id, "doc_number": memo_no},
+        actor_id=_setup_ids["user_id"], location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+
+    r = await client.post(f"/docs/{invoice_id}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    inv = (await client.get(f"/docs/{invoice_id}", headers=auth["headers"])).json()
+    assert inv["ref_id"].startswith("INV")
+    lot = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+    assert lot["status"] == "sold" and lot["status_doc_id"] == invoice_id
+    assert lot["status_doc_number"] == inv["ref_id"]
+
+
+@pytest.mark.asyncio
+async def test_source_memo_cannot_be_claimed_by_a_client(client, auth):
+    """Only memo conversion records the memo an invoice was made from, so no client can
+    claim another memo's lots by naming it."""
+    sku = f"ONMEMO-C-{uuid.uuid4().hex[:6]}"
+    eid, memo_id, _memo_no = await _lot_out_on_memo(client, auth, sku)
+    line = {"sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "entity_id": eid}
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "source_memo_id": memo_id, "line_items": [line]})
+    assert r.status_code == 422, r.text
+    inv = await client.post("/docs", headers=auth["headers"], json={"doc_type": "invoice", "line_items": []})
+    r = await client.patch(f"/docs/{inv.json()['id']}", headers=auth["headers"], json={
+        "fields_changed": {"source_memo_id": {"new": memo_id}, "line_items": {"new": [line]}}})
+    assert r.status_code == 422, r.text

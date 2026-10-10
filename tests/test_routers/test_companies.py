@@ -22,8 +22,9 @@ async def test_companies_me_patch_and_locations(client):
     assert r.status_code == 200
     assert r.json()["name"] == "Acme"
 
-    r = await client.patch("/companies/me", json={"settings": {"a": 1}}, headers=headers)
+    r = await client.patch("/companies/me", json={"settings": {"tax_id": "1"}}, headers=headers)
     assert r.status_code == 200
+    assert (await client.get("/companies/me", headers=headers)).json()["settings"]["tax_id"] == "1"
 
     r = await client.post(
         "/companies/me/locations",

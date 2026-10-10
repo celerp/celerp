@@ -113,10 +113,6 @@ async def _position(books: Books) -> dict:
             recognized.add(recognition.group(1))
         for line in lines:
             net = _d(line.get("debit")) - _d(line.get("credit"))
-            # A supplier return takes the goods off the payable but leaves the bill's own
-            # balance as it was: the supplier now owes that credit back.
-            if ":rtn:" in je_id and line.get("account") in ap:
-                net = D(0)
             for name, codes in (("inventory", inventory), ("ar", ar), ("ap", ap)):
                 if line.get("account") in codes:
                     balances[name] += net
@@ -350,7 +346,7 @@ async def test_migration_lifecycle_uses_canonical_domain_code_only(real_engine, 
     bill = await _doc(books, "BILLG")
     assert _lot_additions(bill) == {wid: (10.0, 40.0)}
     async with maker(real_engine)() as s:
-        assert await _returnable_quantities(s, books.run.company_id, bill) == {wid: 10.0}
+        assert await _returnable_quantities(s, books.run.company_id, books.id("PurchaseInvoice", "BILLG"), bill) == {wid: 10.0}
         invoice_id = books.id("SalesInvoice", "INVE")
         lot = await _sold_lot(books, "INVE")
         items = await _projections(real_engine, books.run, "item")

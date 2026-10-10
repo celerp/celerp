@@ -853,6 +853,27 @@ async def test_dismiss_all_is_atomic_and_idempotent(auth_client):
     assert [a["id"] for a in thread["messages"][-1]["pending_actions"]] == ["call_b"]
 
 
+@pytest.mark.asyncio
+async def test_dismiss_one_action_persists_and_a_second_dismiss_is_409(auth_client):
+    """Dismissing one proposal removes it from the reloaded thread and runs nothing."""
+    c, h = auth_client
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    message_id, call_id = await _propose_action(c, h, conv_id)
+    url = f"/ai/conversations/{conv_id}/dismiss"
+    first = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_id": call_id})
+    assert first.status_code == 200
+    assert first.json() == {"dismissed": True, "tool_call_id": call_id}
+    thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
+    assert thread["messages"][-1]["pending_actions"] == []
+    again = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_id": call_id})
+    assert again.status_code == 409
+    confirm = await c.post(f"/ai/conversations/{conv_id}/confirm", headers=h,
+                           json={"message_id": message_id, "tool_call_id": call_id})
+    assert confirm.status_code == 409
+    contacts = (await c.get("/crm/contacts", headers=h)).json()["items"]
+    assert [x for x in contacts if x.get("name") == "Acme"] == []
+
+
 # ── POST /ai/conversations/{id}/confirm-all ──────────────────────────────────
 
 @pytest.mark.asyncio

@@ -722,11 +722,6 @@ if settings.celerp_public_url:
     )
 
 
-@app.exception_handler(404)
-async def not_found_handler(request: Request, exc) -> JSONResponse:
-    return JSONResponse(status_code=404, content={"detail": "Not found"})
-
-
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     log_unhandled_exception(request, exc)

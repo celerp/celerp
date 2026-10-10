@@ -78,6 +78,57 @@ function _copiedFeedback(btn, restoreLabel) {
   btn.textContent = window.__shellI18n.copied;
   setTimeout(function() { btn.textContent = restoreLabel; }, 2000);
 }
+// Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
+// Each row is named by its line id; a page whose rows do not all carry one names them by
+// item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
+// the operation key the page was rendered with, so the same action sent again after a lost
+// answer is recorded once. Resolves true on success, keeping the server's toast for the
+// page the caller opens next; otherwise the reason is shown.
+async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
+  var fd = new FormData();
+  celerpLineSelection(rows).forEach(function(kv) { fd.append(kv[0], kv[1]); });
+  (fields || []).forEach(function(kv) { fd.append(kv[0], kv[1]); });
+  if (key) fd.append('idempotency_key', key);
+  var msg = fallbackMsg;
+  try {
+    var resp = await fetch(url, {method: 'POST', body: fd});
+    var t = null;
+    try { t = JSON.parse(resp.headers.get('HX-Trigger') || 'null'); } catch (e) {}
+    if (resp.status === 204) {
+      if (t && t.celerpToast) _celerpKeepToast(t.celerpToast);
+      return true;
+    }
+    if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message;
+  } catch (e) {
+  }
+  celerpToast(msg, 'error');
+  return false;
+}
+// One line action at a time: the second click of a double click, or a click while another
+// action's confirm or request is open, does nothing. ``run`` resolves true when the page is
+// reloading, which keeps the guard on until it has.
+var _celerpLineActionBusy = false;
+async function celerpLineActionOnce(e, run) {
+  if ((e && e.detail > 1) || _celerpLineActionBusy) return;
+  _celerpLineActionBusy = true;
+  var leaving = false;
+  try { leaving = await run(); } finally { if (!leaving) _celerpLineActionBusy = false; }
+}
+// The [name, value] pairs naming the chosen rows: line_id each when every row has one,
+// otherwise the item each row binds.
+function celerpLineSelection(rows) {
+  var byLine = rows.every(function(cb) { return cb.getAttribute('data-line-id'); });
+  var out = [];
+  rows.forEach(function(cb) {
+    var id = byLine ? cb.getAttribute('data-line-id') : cb.value;
+    if (id) out.push([byLine ? 'line_id' : 'selected', id]);
+  });
+  return out;
+}
+// A count message in the form that reads right for n: forms is {one, many}, each with {n}.
+function celerpCount(forms, n) {
+  return forms[n === 1 ? 'one' : 'many'].replace('{n}', n);
+}
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
@@ -107,6 +158,10 @@ function celerpToast(message, type, persist, action) {
   // is clicked; the rest auto-dismiss after 6s.
   if (!persist) setTimeout(function() { _dismissToast(toast); }, 6000);
 }
+// Keep a toast for the next page load, which shows it (a redirect or reload follows).
+function _celerpKeepToast(toast) {
+  try { sessionStorage.setItem('celerp_pending_toast', JSON.stringify(toast)); } catch(ex) {}
+}
 function _dismissToast(toast) {
   toast.classList.remove('toast--visible');
   setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
@@ -116,7 +171,9 @@ document.addEventListener('htmx:afterRequest', function(e) {
   if (!hdr) return;
   try {
     var obj = JSON.parse(hdr);
-    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
+    // A toast sent with a redirect is shown on the page the redirect opens, not on this one.
+    if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
+    else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist);
     if (obj.celerpRestoreCell) {
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;
@@ -128,6 +185,13 @@ document.addEventListener('htmx:afterRequest', function(e) {
       document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
     }
   } catch(ex) {}
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var pending;
+  try { pending = sessionStorage.getItem('celerp_pending_toast'); sessionStorage.removeItem('celerp_pending_toast'); } catch(ex) {}
+  if (!pending) return;
+  try { var t = JSON.parse(pending); celerpToast(t.message, t.type || 'error', t.persist); } catch(ex) {}
 });
 
 function showGlobalUiError(message) {

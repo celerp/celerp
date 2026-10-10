@@ -73,6 +73,14 @@ async def _ship(client, auth, doc: str, *items: str) -> None:
     assert r.status_code == 200, r.text
 
 
+async def _shipped_elsewhere(client, auth, item_id: str, qty: float) -> None:
+    """Another invoice ships ``qty`` of a lot an earlier invoice holds: the goods leave stock
+    and their cost moves with them, so the earlier invoice still wants them. (A memo cannot
+    send out goods a finalized invoice holds.)"""
+    other = await _invoice(client, auth, (item_id, qty))
+    await _ship(client, auth, other, item_id)
+
+
 async def _take_back(client, auth, doc: str, *items: str) -> None:
     r = await client.post(f"/docs/{doc}/revert-lines", headers=auth["headers"], json={"line_entity_ids": list(items)})
     assert r.status_code == 200, r.text
@@ -186,10 +194,9 @@ async def test_part_shipped_order_with_production_running_is_short_only_the_rest
     fg_lot = (await _lots(client, auth, fg, 6))[0]
     doc = await _invoice(client, auth, (fg, 4), (fg_lot, 6))
     await _ship(client, auth, doc, fg)
-    sold_elsewhere = await _invoice(client, auth, (fg_lot, 6))
-    await _ship(client, auth, sold_elsewhere, fg_lot)
+    await _shipped_elsewhere(client, auth, fg_lot, 6)
 
-    # The first order still wants the six whose lot went to the second; three are on the way.
+    # The first order still wants the six another invoice shipped; three are on the way.
     assert _figures(await _row(client, auth, fg)) == (6, 0, 3, 3)
     assert await _outstanding(session, auth, doc) == [(0, 4, 4, 0), (1, 6, 0, 6)]
 
@@ -272,8 +279,7 @@ async def test_posting_alongside_a_part_shipped_order_and_running_production(cli
     fg_lot = (await _lots(client, auth, fg, 6))[0]
     first = await _invoice(client, auth, (fg, 4), (fg_lot, 6))
     await _ship(client, auth, first, fg)
-    elsewhere = await _invoice(client, auth, (fg_lot, 6))
-    await _ship(client, auth, elsewhere, fg_lot)
+    await _shipped_elsewhere(client, auth, fg_lot, 6)
     await _auto(session, auth)
 
     doc = await _invoice(client, auth, (fg, 2))

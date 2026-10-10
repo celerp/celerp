@@ -884,6 +884,57 @@ async def test_woocommerce_on_hold_reservation_releases_on_woo_restore_status(
 
 
 @pytest.mark.asyncio
+async def test_woocommerce_cancel_releases_every_hold_of_the_order(use_test_session):
+    """Cancelling gives back everything the order holds, as voiding a document does,
+    including a hold no current line accounts for."""
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import upsert_external_product
+    session = use_test_session
+    cid = await _seed_company(session, "WooHoldAll")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="731", variation_id=None,
+        sku="HOLD-ALL", name="Hold Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:hold-all-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "HOLD-ALL", "name": "Hold Product", "quantity": 2,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": 732, "number": "732", "status": "on-hold", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": 731, "variation_id": 0, "sku": "HOLD-ALL",
+            "name": "Hold Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc_id = "doc:woocommerce:order:732"
+    session.add(Projection(
+        company_id=cid, entity_id="item:hold-all-stray", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "HOLD-ALL", "name": "Hold Product", "quantity": 1,
+               "status": "reserved", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "status_doc_id": doc_id,
+               "status_line_entity_id": str(_uuid.uuid4())},
+    ))
+    await session.commit()
+    assert await u.upsert_order_from_woocommerce(str(cid), {**order, "status": "cancelled"}) == "updated"
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    assert not [r.entity_id for r in rows if (r.state or {}).get("status") == "reserved"]
+
+
+@pytest.mark.asyncio
 async def test_woocommerce_pending_defers_stock_binding_until_processing(use_test_session):
     from datetime import datetime, timezone
     from celerp.models.projections import Projection
@@ -2112,3 +2163,46 @@ async def test_queued_woocommerce_stock_push_reads_only_that_product(
     assert result.updated == 1
     assert shirt.calls.last.request.content == b'{"stock_quantity":5}'
     assert set(loaded) == {"item:shirt", "item:shirt-lot"}
+
+
+@pytest.mark.asyncio
+async def test_mark_and_undo_reconciled_through_the_routes(client, use_test_session, monkeypatch):
+    """The two attention-list routes reach the shared mark: the order's note
+    clears on mark and returns on undo."""
+    import secrets
+
+    from jose import jwt
+    import celerp.gateway.state as gw_state
+    from celerp.config import settings
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    r = await client.post("/auth/register", json={
+        "company_name": "WooRouteMark", "email": f"woo-{uuid.uuid4().hex[:8]}@example.test",
+        "name": "Admin", "password": "pwvalid1",
+    })
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+    gateway_token = secrets.token_hex(32)
+    monkeypatch.setattr(gw_state, "_session_token", gateway_token, raising=False)
+    h = {"Authorization": f"Bearer {token}", "X-Session-Token": gateway_token}
+    cid = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])["company_id"]
+
+    order = {**_WOO_PLAIN_ORDER, "id": 2190}
+    await u.upsert_order_from_woocommerce(cid, order)
+    with pytest.raises(WooCommerceReconciliationRequired) as first:
+        await u.upsert_order_from_woocommerce(cid, {**order, "refunds": [{"id": 90, "total": "-4.00"}]})
+    await _attention_run(session, cid, [_entry("2190", first.value)])
+
+    r = await client.post("/connectors/woocommerce/orders/2190/reconciled", headers=h,
+                          json={"signature": first.value.signature})
+    assert r.status_code == 200, r.text
+    assert r.json()["entry"]["reconciled"] is True
+    session.expire_all()
+    assert (await _state(session, cid, "woocommerce:order:2190"))["woocommerce_reconciliation_required"] is None
+
+    r = await client.delete("/connectors/woocommerce/orders/2190/reconciled", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["entry"]["reconciled"] is False
+    session.expire_all()
+    assert (await _state(session, cid, "woocommerce:order:2190"))["woocommerce_reconciliation_required"] == str(first.value)

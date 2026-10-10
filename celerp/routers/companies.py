@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import re
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
@@ -49,22 +51,33 @@ from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
+from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TAX_NAMES = {t["name"] for t in TAX_REGIMES["_default"]["taxes"]}
+def _generic_taxes() -> list[dict]:
+    """The neutral tax list a company starts from until it configures its own."""
+    return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
+
+
+def _configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
+    """The list saved under ``key``, an explicitly saved empty list included; a copy
+    of ``default`` only when nothing was ever saved."""
+    value = settings.get(key)
+    return value if value is not None else copy.deepcopy(default)
 
 
 async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> None:
-    """Re-seed taxes and currency from the country in address if:
-    - address has a non-empty 'country' key
-    - company taxes are still at the generic _default (not yet customised)
+    """Seed the tax regime of the country in ``address`` into a company that has not
+    set anything up yet.
 
-    Safe to call multiple times — no-op if already customised.
-    """
+    Taxes are replaced only while they are unset or exactly the generic list, and the
+    currency only while none was ever saved. A company that has posted entries of its
+    own keeps both: changing them would silently restate its books, so it changes
+    them explicitly in settings. Safe to call repeatedly."""
     if not address:
         return
     country = str(address.get("country") or "").strip()
@@ -74,18 +87,18 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     company = await locked_company(session, company_id)
     if company is None:
         return
-
-    current_taxes = company.settings.get("taxes") or []
-    current_names = {t.get("name") for t in current_taxes}
-
-    # Only re-seed if taxes are empty or still match the generic _default set
-    if current_taxes and not current_names.issubset(_DEFAULT_TAX_NAMES | {""}):
-        return  # user has customised — don't overwrite
+    taxes = company.settings.get("taxes")
+    if taxes is not None and taxes != TAX_REGIMES["_default"]["taxes"]:
+        return
+    from celerp.services.demo import has_own_books
+    if await has_own_books(session, company_id):
+        return
 
     regime = get_regime(country)
     settings = dict(company.settings)
-    settings["taxes"] = regime["taxes"]
-    settings["currency"] = regime["currency"]
+    settings["taxes"] = copy.deepcopy(regime["taxes"])
+    if "currency" not in settings:
+        settings["currency"] = regime["currency"]
     company.settings = settings
 
 
@@ -310,42 +323,12 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         raise HTTPException(status_code=404, detail="Not found")
     if payload.name is not None:
         company.name = payload.name.strip()
-    # Merge (PATCH semantics): a partial settings payload must not wipe other
-    # keys. Replacing wholesale erased e.g. the numbering `sequences`, currency,
-    # and category_schemas whenever a caller sent only one field (the UI happens
-    # to pre-merge, but partial callers — and a name-only patch — must be safe).
+    # Merge (PATCH semantics): a partial settings payload must not wipe other keys,
+    # and a name-only patch leaves the settings as they are.
     if payload.settings:
-        # Role grants are owner-only and may be written only through the dedicated
-        # PATCH /me/role-permissions endpoint (manage_permissions). This door is
-        # admin-gated (manage_company_settings), so accepting role_grants here would
-        # let an admin self-escalate around the owner gate. role_permissions is the
-        # retired storage key; reject it too so it can never be re-introduced.
-        if "role_grants" in payload.settings or "role_permissions" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Role permissions are set through the permissions matrix, not company settings",
-            )
-        # Business type carries modules, categories and default terms with it, so it
-        # changes only through POST /companies/me/business-type.
-        if "vertical" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Business type is set through POST /companies/me/business-type, not company settings",
-            )
-        # The record of which company backup a company was restored from is written only by
-        # the restore itself; a restore of that backup finds its company by it.
-        if "restored_backup" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="The restored backup record is set only by restoring a company backup, not company settings",
-            )
-        # The company's module choice changes only through the enable/disable endpoints,
-        # which check installation and dependencies and keep the load list in step.
-        if "enabled_modules" in payload.settings:
-            raise HTTPException(
-                status_code=422,
-                detail="Modules are turned on and off on the Modules page, not company settings",
-            )
+        # Only the general settings change here; every other key has its own route,
+        # which checks its own permission and rules (celerp.services.company_settings).
+        require_general(payload.settings)
         merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:
@@ -353,33 +336,107 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         require_phone(payload.settings.get("phone"))
-        from celerp.modules.loader import is_running
-        from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
-        # Empty is the default deposit account.
-        chosen = [k for k in (ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY)
-                  if payload.settings.get(k) not in (None, "")]
-        if chosen and not is_running("celerp-docs"):
-            raise HTTPException(status_code=422, detail=(
-                "Turn on Documents on the Modules page before choosing a deposit account."))
-        for key in chosen:
-            value = payload.settings[key]
-            if not isinstance(value, str):
-                raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
-            from celerp_docs.routes_payments import require_online_deposit_account
-            await require_online_deposit_account(session, company_id, value)
-        # Price config must pass the same gate as the dedicated endpoints: the read
-        # path trusts stored config, so no door may store what the validator rejects.
-        if "price_lists" in payload.settings or "base_price_list" in payload.settings:
-            merged_lists = merged.get("price_lists") or []
-            error = price_config_error(merged_lists, merged.get("base_price_list"),
-                                       (company.settings or {}).get("price_lists") or [])
-            if error:
-                raise HTTPException(status_code=422, detail=error)
-            if merged.get("price_lists"):
-                merged["price_lists"] = normalized_price_lists(merged["price_lists"])
         company.settings = merged
     await session.commit()
     return {"ok": True}
+
+
+class BooksPatch(BaseModel):
+    currency: str | None = None
+    fiscal_year_start: str | None = None
+    import_vat_recoverable_default: object = None
+    stripe_deposit_account: object = None
+    woocommerce_deposit_account: object = None
+    opening_balance_date: object = None
+
+
+_FISCAL_YEAR_STARTS = frozenset(f"{m:02d}-01" for m in range(1, 13))
+
+
+async def _check_books_change(session: AsyncSession, company_id, current: dict, key: str, value) -> object:
+    """The value to store for one books setting, or a keyed refusal saying what to do."""
+    from celerp.accounting_roles import refusal
+    from celerp.services.currencies import CURRENCY_CODES
+
+    if key == "currency":
+        value = str(value).strip().upper()
+        if value not in CURRENCY_CODES:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.currency_unknown",
+                f"{value} is not a currency Celerp knows. Pick a currency from the list.", currency=value))
+        held = current.get("currency")
+        if held and held != value:
+            from celerp.services.demo import has_own_books
+            if await has_own_books(session, company_id):
+                raise HTTPException(status_code=409, detail=refusal(
+                    "company.currency_has_postings",
+                    f"The books are kept in {held} and entries are already posted in it, so the "
+                    "currency cannot change. Start a new company to keep books in another currency.",
+                    currency=held))
+        return value
+    if key == "fiscal_year_start":
+        if value not in _FISCAL_YEAR_STARTS:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.fiscal_year_start_invalid",
+                f"{value} is not a fiscal year start. Pick the first day of a month, as MM-01.",
+                value=str(value)))
+        return value
+    if key == "opening_balance_date":
+        if value is None or value == "":
+            return None
+        try:
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+                raise ValueError  # fromisoformat also reads week dates (2026-W41-6) and basic forms
+            return date.fromisoformat(value).isoformat()
+        except ValueError:
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.opening_balance_date_invalid",
+                f"{value} is not a date. Enter the date the opening balances are stated at, "
+                "as YYYY-MM-DD, or leave it empty.", value=str(value))) from None
+    if key == "import_vat_recoverable_default":
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=422, detail=refusal(
+                "company.import_vat_default_invalid",
+                "Import VAT recovery must be on or off. Send true or false."))
+        return value
+    # A deposit account: empty is the default account.
+    if value is None or (isinstance(value, str) and value == ""):
+        return value
+    from celerp.modules.loader import is_running
+    if not is_running("celerp-docs"):
+        raise HTTPException(status_code=422, detail=(
+            "Turn on Documents on the Modules page before choosing a deposit account."))
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+    from celerp_docs.routes_payments import require_online_deposit_account
+    await require_online_deposit_account(session, company_id, value)
+    return value
+
+
+@router.patch("/me/books")
+async def patch_books(
+    payload: BooksPatch,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the settings the books depend on: the currency (fixed once the company
+    has posted entries of its own), the fiscal year start, the opening balance date, the
+    import VAT default and the online deposit accounts. Each change records who made it and when."""
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    sent = payload.model_dump(exclude_unset=True)
+    settings = dict(company.settings or {})
+    for key in sorted(BOOKS_KEYS & set(sent)):
+        value = await _check_books_change(session, company_id, settings, key, sent[key])
+        if settings.get(key) != value:
+            settings[key] = value
+            record_change(settings, key, user.id)
+    company.settings = settings
+    await session.commit()
+    return {key: settings.get(key) for key in sorted(BOOKS_KEYS)}
 
 
 @router.patch("/me/role-permissions")
@@ -1032,9 +1089,14 @@ async def rename_category(
     category_key: str,
     payload: dict,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Rename a category: its schema and display name, and every item in it, each item
+    through its own item.updated event so the rename is in the ledger and survives a
+    rebuild of the projections."""
+    from celerp.events.engine import emit_event
     from celerp.models.projections import Projection
     new_name = str(payload.get("name") or "").strip()
     if not new_name:
@@ -1061,21 +1123,23 @@ async def rename_category(
     display_names.pop(category_key, None)
     settings["category_display_names"] = display_names
     company.settings = settings
-    # Bulk-update item projections
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "item",
-        )
+        ).order_by(Projection.entity_id)
     )).scalars().all()
-    updated = 0
-    for row in rows:
-        if str(row.state.get("category") or "") == category_key:
-            new_state = dict(row.state)
-            new_state["category"] = new_key
-            row.state = new_state
-            updated += 1
+    moved = [row.entity_id for row in rows if str(row.state.get("category") or "") == category_key]
+    for entity_id in moved:
+        await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="item",
+            event_type="item.updated",
+            data={"fields_changed": {"category": {"old": category_key, "new": new_key}}},
+            actor_id=user.id, location_id=None, source="category_rename",
+            idempotency_key=str(uuid.uuid4()), metadata_={"reason": "category_rename"},
+        )
     await session.commit()
+    updated = len(moved)
     return {"ok": True, "items_updated": updated}
 
 
@@ -1151,20 +1215,12 @@ async def patch_column_prefs(
 # Tax rates
 # ---------------------------------------------------------------------------
 
-DEFAULT_TAX_RATES: list[dict] = [
-    {"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True,
-     "description": "Standard VAT rate", "is_compound": False, "default_order": 0},
-    {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-     "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-]
-
-
 @router.get("/me/taxes")
 async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return company.settings.get("taxes") or DEFAULT_TAX_RATES
+    return _configured(company.settings, "taxes", _generic_taxes())
 
 
 @router.patch("/me/taxes")
@@ -1205,7 +1261,7 @@ async def import_taxes_batch(
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
-    taxes = list(settings.get("taxes") or DEFAULT_TAX_RATES)
+    taxes = list(_configured(settings, "taxes", _generic_taxes()))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
 
     records = [rec.data for rec in (payload.records or [])]
@@ -1438,35 +1494,16 @@ async def patch_terms_conditions(
 
 
 # ---------------------------------------------------------------------------
-# Purchasing taxes & payment terms (independent copies, seeded from sales)
+# Purchasing taxes & payment terms (independent copies, read from sales until saved)
 # ---------------------------------------------------------------------------
 
 def _purchasing_list(settings: dict, key: str, sales_key: str, default: list[dict]) -> list[dict]:
-    """Purchasing data as stored, or a copy of the sales data it is seeded from."""
+    """Purchasing data as stored, else a copy of the sales data while purchasing was
+    never saved. Reading never writes; only PATCH and import store purchasing data."""
     existing = settings.get(key)
     if existing is not None:
         return existing
-    return copy.deepcopy(settings.get(sales_key) or default)
-
-
-async def _seed_purchasing_key(
-    session: AsyncSession, company: Company, key: str, sales_key: str, default: list[dict],
-) -> list[dict]:
-    """Return purchasing data; on first access, copy from sales data and persist."""
-    existing = company.settings.get(key)
-    if existing is not None:
-        return existing
-    company = await locked_company(session, company.id)
-    existing = company.settings.get(key)
-    if existing is not None:
-        await session.commit()
-        return existing
-    seeded = _purchasing_list(company.settings, key, sales_key, default)
-    settings = dict(company.settings)
-    settings[key] = seeded
-    company.settings = settings
-    await session.commit()
-    return seeded
+    return copy.deepcopy(_configured(settings, sales_key, default))
 
 
 @router.get("/me/purchasing-taxes")
@@ -1477,7 +1514,7 @@ async def get_purchasing_taxes(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return await _seed_purchasing_key(session, company, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES)
+    return _purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes())
 
 
 @router.patch("/me/purchasing-taxes")
@@ -1509,7 +1546,7 @@ async def import_purchasing_taxes_batch(
     await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", DEFAULT_TAX_RATES))
+    taxes = list(_purchasing_list(company.settings, "purchasing_taxes", "taxes", _generic_taxes()))
     existing_names = {str(t.get("name", "")).strip().lower() for t in taxes if t.get("name")}
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
@@ -1548,7 +1585,7 @@ async def get_purchasing_payment_terms(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return await _seed_purchasing_key(session, company, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
+    return _purchasing_list(company.settings, "purchasing_payment_terms", "payment_terms", DEFAULT_PAYMENT_TERMS)
 
 
 @router.patch("/me/purchasing-payment-terms")

@@ -4349,6 +4349,23 @@ class TestListsCreateBlank:
         assert r.json()["ok"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["line.protected_held", "docs.some_other_refusal"])
+    async def test_save_lines_refusal_returns_the_translated_reason(self, ui_client, key):
+        """A refused save answers 400 with the translated reason; the page puts the stored lines back
+        for every refusal (tests/test_browser/test_line_save_refusal.py)."""
+        from ui.api_client import _api_error
+        detail = {"message_key": key, "message": "Line 1 (W-1) holds reserved stock.", "params": {}}
+        refused = _api_error(409, {"detail": detail}, "")
+        with patch("ui.api_client.patch_doc", new=AsyncMock(side_effect=refused)):
+            r = await ui_client.post(
+                "/docs/doc:INV-2026-0001/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+                cookies=_authed(),
+            )
+        assert r.status_code == 400
+        assert r.json() == {"error": r.json()["error"]} and r.json()["error"]
+
+    @pytest.mark.asyncio
     async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
         """POST /lists/{id}/lines saves only the submitted page slice via
         api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
@@ -4383,6 +4400,18 @@ class TestListsCreateBlank:
             )
         assert r.status_code == 409
         assert r.json()["code"] == "stale_version"
+
+    @pytest.mark.asyncio
+    async def test_line_confirms_read_right_for_one_line(self, ui_client):
+        """The line-action confirms carry a one-line form, so selecting one line never reads
+        "Set 1 lines", and Delete selected has a confirm of its own."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert r.status_code == 200
+        for text in ("Set 1 line as reserved?", "Set {n} lines as reserved?",
+                     "Set 1 line as available?", "Delete 1 line?", "Delete {n} lines?"):
+            assert text in r.text, text
+        assert "celerpCount(_L.confirm_delete_lines" in r.text
 
     @pytest.mark.asyncio
     async def test_save_lines_unauthorized_redirects(self, ui_client):
@@ -8296,6 +8325,40 @@ class TestNikolaiFixedBugs:
         assert r.status_code == 200
         assert b"error" in r.content.lower() or b"Invalid" in r.content
         mock_patch.assert_not_called()
+
+    # ── Opening balance date ──────────────────────────────────────────────────
+
+    def test_company_tab_shows_the_opening_balance_date_or_dashes(self):
+        """The date the opening balances are stated at is a click-to-edit row; unset shows --."""
+        from ui.routes.settings import _company_settings_card
+        from fasthtml.common import to_xml
+        html = to_xml(_company_settings_card({"settings": {"opening_balance_date": "2026-03-31"}}))
+        assert "Opening balances as at" in html and "2026-03-31" in html
+        assert "/settings/company/opening_balance_date/edit" in html
+        empty = to_xml(_company_settings_card({"settings": {}}))
+        assert "/settings/company/opening_balance_date/edit" in empty and "--" in empty
+
+    @pytest.mark.asyncio
+    async def test_company_tab_opening_balance_date_edit_is_a_date_input(self, ui_client):
+        with patch("ui.api_client.get_company",
+                   new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})):
+            r = await ui_client.get("/settings/company/opening_balance_date/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b'type="date"' in r.content and b'value="2026-03-31"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_company_tab_opening_balance_date_saves_through_the_books(self, ui_client):
+        with (
+            patch("ui.api_client.get_company",
+                  new=AsyncMock(return_value={**_COMPANY, "opening_balance_date": "2026-03-31"})),
+            patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
+        ):
+            r = await ui_client.patch("/settings/company/opening_balance_date",
+                                      data={"value": "2026-03-31"}, cookies=_authed())
+        assert r.status_code == 200
+        mock_patch.assert_awaited_once()
+        assert mock_patch.await_args.args[1] == {"opening_balance_date": "2026-03-31"}
+        assert b"2026-03-31" in r.content
 
     # ── Timezone display ──────────────────────────────────────────────────────
 
@@ -12440,6 +12503,14 @@ class TestCatalogConsolidationEndpoint:
 
     _UNITS = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "count"}]
 
+    @staticmethod
+    def _by_text(items):
+        """GET /items returning ``items`` for a text search; no lot carries the text as a
+        barcode or RFID tag."""
+        async def _list(_t, params):
+            return {"items": [] if "barcode" in params or "rfid_epc" in params else items}
+        return _list
+
     @pytest.mark.asyncio
     async def test_catalog_search_consolidates_splittable_lots(self, ui_client):
         items = [
@@ -12451,7 +12522,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"inventory_method": "fifo"}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=W", cookies=_authed())
         assert r.status_code == 200
@@ -12470,7 +12541,7 @@ class TestCatalogConsolidationEndpoint:
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items})),
+            patch("ui.api_client.list_items", new=AsyncMock(side_effect=self._by_text(items))),
         ):
             r = await ui_client.get("/docs/catalog-search?q=DIA", cookies=_authed())
         assert r.status_code == 200
@@ -12489,6 +12560,8 @@ class TestCatalogConsolidationEndpoint:
         ]
 
         async def _list(_t, params):
+            if "barcode" in params or "rfid_epc" in params:
+                return {"items": []}
             return {"items": sold if params.get("status") == "sold" else []}
 
         with (
@@ -14297,16 +14370,20 @@ class TestProFormaLabel:
 
     def test_status_label_proforma_for_draft_invoice(self):
         """When doc_type='invoice' and status='draft', label is 'Pro Forma'."""
-        doc_type = "invoice"
-        status = "draft"
-        status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
-        assert status_label == "Pro Forma"
+        from ui.routes.documents import _doc_status_label
+        assert _doc_status_label("invoice", "draft") == "Pro Forma"
 
     def test_status_label_draft_for_non_invoice(self):
         """Other doc types still show 'Draft' for draft status."""
+        from ui.routes.documents import _doc_status_label
         for dt in ("credit_note", "memo", "receipt"):
-            status_label = "Pro Forma" if dt == "invoice" and "draft" == "draft" else "draft".replace("_", " ").title()
-            assert status_label == "Draft", f"{dt} should show Draft"
+            assert _doc_status_label(dt, "draft") == "Draft", f"{dt} should show Draft"
+
+    def test_status_label_is_the_catalog_label(self):
+        """Every other status reads from the doc_status catalog, not the raw slug."""
+        from ui.routes.documents import _doc_status_label
+        assert _doc_status_label("invoice", "partial") == "Partially Paid"
+        assert _doc_status_label("bill", "partially_received") == "Partially Received"
 
     def test_invoice_status_cards_include_proforma(self):
         """Invoice status cards show Pro Forma, All Issued, Awaiting Payment, Overdue, Paid, Void.
@@ -17186,20 +17263,30 @@ class TestInboundPerLineStatus:
         assert "badge--not_received" in html
         assert "Not Received" in html
 
-    def test_bill_received_shows_in_stock_badge(self):
-        """Stock line with entity_id on a received bill must show real item status ('In Stock')."""
+    def test_bill_line_badge_says_what_this_bill_received(self):
+        """A received line says what this bill did for it, never the catalog item's status:
+        a line in part received says how much, and a return on another line changes nothing."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+
+        def _line(sku, qty, received, **extra):
+            return {"sku": sku, "name": sku, "quantity": qty, "unit_price": 10, "line_total": qty * 10,
+                    "receive_as": "stock", "entity_id": f"item:{sku}", "quantity_received": received, **extra}
+
         doc = self._make_bill_finalized(line_items=[
-            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
-             "receive_as": "stock", "entity_id": "item:received-1"},
+            _line("FULL", 5, 5), _line("PART", 5, 3), _line("NONE", 5, 0),
+            _line("BACK", 2, 2, return_status="returned"),
+            _line("SOME", 4, 4, return_status="partial_returned"),
         ])
-        # Use "received" status - items are in inventory at this point
-        doc["status"] = "received"
-        html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
-        assert "badge--available" in html
-        assert "In Stock" in html
-        assert "Not Received" not in html
+        doc["status"] = "partial_returned"
+        # The catalog says otherwise for every line; the badge must not follow it.
+        html = to_xml(_doc_detail(doc, item_status_map={f"item:{s}": "available" for s in
+                                                        ("FULL", "PART", "NONE", "BACK", "SOME")}))
+        badges = [td.get_text(" ", strip=True)
+                  for td in BeautifulSoup(html, "html.parser").select("td.col-item-status")]
+        assert badges == ["Received", "Received 3 of 5", "Not Received", "Returned", "Part returned"]
+        assert "In Stock" not in html
 
     def test_bill_expense_line_shows_no_status_badge(self):
         """Expense line must not show any status badge."""
@@ -19845,16 +19932,24 @@ class TestAPIErrorStructuredDetail:
         assert isinstance(e.data, dict)
         assert e.data["conflicts"] == conflicts
 
-    def test_apierror_message_less_dict_detail_passes_through(self):
-        """{"errors": [...]} details (fulfill/revert/reserve) must NOT be unwrapped:
-        their consumers json-dump the dict themselves."""
+    def test_apierror_errors_list_detail_renders_plain_and_keeps_its_payload(self):
+        """{"errors": [...]} details (fulfill/revert/reserve) render as plain text; the
+        payload itself rides on APIError.data for callers that branch on it."""
         from ui.api_client import APIError, _raise
-        detail = {"errors": [{"entity_id": "item:x", "error": "not available"}]}
+        detail = {"errors": ["RAW-1: not available"]}
         with pytest.raises(APIError) as exc:
             _raise(self._resp(detail))
         e = exc.value
-        assert e.detail == detail
-        assert e.data is None
+        assert e.detail == "RAW-1: not available"
+        assert e.data == detail
+
+    def test_apierror_field_map_detail_passes_through(self):
+        """A field-by-field detail map stays a dict for its page to lay out."""
+        from ui.api_client import APIError, _raise
+        detail = {"company_name": "Required"}
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp(detail))
+        assert exc.value.detail == detail and exc.value.data is None
 
     def test_apierror_preserves_top_level_code_with_string_detail(self):
         """A scan_run_conflict body - a machine `code` beside a plain-string detail -
