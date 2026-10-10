@@ -1074,9 +1074,14 @@ async def rename_category(
     category_key: str,
     payload: dict,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Rename a category: its schema and display name, and every item in it, each item
+    through its own item.updated event so the rename is in the ledger and survives a
+    rebuild of the projections."""
+    from celerp.events.engine import emit_event
     from celerp.models.projections import Projection
     new_name = str(payload.get("name") or "").strip()
     if not new_name:
@@ -1103,21 +1108,23 @@ async def rename_category(
     display_names.pop(category_key, None)
     settings["category_display_names"] = display_names
     company.settings = settings
-    # Bulk-update item projections
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "item",
-        )
+        ).order_by(Projection.entity_id)
     )).scalars().all()
-    updated = 0
-    for row in rows:
-        if str(row.state.get("category") or "") == category_key:
-            new_state = dict(row.state)
-            new_state["category"] = new_key
-            row.state = new_state
-            updated += 1
+    moved = [row.entity_id for row in rows if str(row.state.get("category") or "") == category_key]
+    for entity_id in moved:
+        await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="item",
+            event_type="item.updated",
+            data={"fields_changed": {"category": {"old": category_key, "new": new_key}}},
+            actor_id=user.id, location_id=None, source="category_rename",
+            idempotency_key=str(uuid.uuid4()), metadata_={"reason": "category_rename"},
+        )
     await session.commit()
+    updated = len(moved)
     return {"ok": True, "items_updated": updated}
 
 
