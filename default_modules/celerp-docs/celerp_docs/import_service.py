@@ -12,6 +12,7 @@ import json
 import uuid
 from collections.abc import Sequence
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,8 @@ from celerp_docs.routes import (
     check_imported_snapshot,
     imported_opening_snapshot,
     imported_settlement_free,
+    import_digest,
+    refuse_reused_import_key,
     settle_imported_credit,
     write_doc_patch,
 )
@@ -97,8 +100,20 @@ async def import_doc_records(
         # for one made in the app, by its id; with upsert on, either is updated.
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != DOC_CREATED or replay.entity_id != rec.entity_id:
+            if replay is None:
                 outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: idempotency key belongs to another operation")
+                continue
+            # With upsert off the row must be the record its key first imported; with it on,
+            # only the record itself, whose contents the update then replaces.
+            try:
+                if not upsert:
+                    refuse_reused_import_key(replay, event_type=DOC_CREATED, entity_id=rec.entity_id,
+                                             data=rec.data, batch=True)
+                elif (replay.event_type, replay.entity_id) != (DOC_CREATED, rec.entity_id):
+                    refuse_reused_import_key(replay, event_type=DOC_CREATED, entity_id=rec.entity_id,
+                                             data=rec.data)
+            except HTTPException as exc:
+                outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: {failure_reason(exc)}")
                 continue
             if not upsert:
                 outcome.add(rec.entity_id, "skipped")
@@ -171,7 +186,8 @@ async def _create_doc(
         location_id=None,
         source=rec.source,
         idempotency_key=rec.idempotency_key,
-        metadata_=_import_metadata(rec.source_ts, data, post_ledger=post_ledger),
+        metadata_=_import_metadata(rec.source_ts, data, post_ledger=post_ledger,
+                                   request=import_digest(rec.entity_id, rec.data)),
     )
     if getattr(entry, "was_deduped", False):
         return "skipped"

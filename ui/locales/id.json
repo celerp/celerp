@@ -4625,5 +4625,12 @@
   "doc_import.settlement_not_issued": "Dokumen {number} berstatus {status} tetapi menyatakan sudah dibayar. Dokumen {status} tidak memuat pembayaran: impor sebagai dokumen terbit, atau impor tanpa jumlah yang dibayar.",
   "docs.payment_not_issued": "Dokumen {number} berstatus {status}, jadi tidak dapat menerima pembayaran. Pembayaran dicatat pada dokumen terbit: finalisasi draf, atau batalkan pembatalan dokumen yang dibatalkan, terlebih dahulu.",
   "docs.payment_status_refused": "Dokumen {number} berstatus {status}, jadi tidak dapat menerima pembayaran.",
-  "docs.bulk_payment_none_payable": "Tidak ada dokumen ini yang menunggu pembayaran. Pilih dokumen terbit yang masih memiliki saldo terutang."
+  "docs.bulk_payment_none_payable": "Tidak ada dokumen ini yang menunggu pembayaran. Pilih dokumen terbit yang masih memiliki saldo terutang.",
+  "credit_note.original_missing": "Nota kredit ini menyebut {invoice} sebagai faktur yang dikreditnya, tetapi tidak ada dokumen {invoice} di perusahaan ini. Buat atau impor faktur itu di sini terlebih dahulu, lalu nota kreditnya.",
+  "credit_note.original_not_invoice": "Nota kredit ini menyebut {document}, yang merupakan {doc_type}, bukan faktur. Nota kredit mengkredit faktur: pilih faktur yang dikreditnya. Untuk mengurangi utang pada tagihan pemasok, kembalikan barangnya pada tagihan itu.",
+  "credit_note.original_not_issued": "Nota kredit ini mengkredit faktur {invoice}, yang masih berupa draf. Finalisasi fakturnya terlebih dahulu, lalu nota kreditnya.",
+  "docs.reopen_memo_only": "Hanya memo yang ditutup yang dapat dibuka kembali. {document} ditutup karena fakturnya dibatalkan dan tetap ditutup; untuk memberi kredit kepada pelanggan, terbitkan nota kredit baru pada faktur yang berlaku.",
+  "docs.closed_memo_reopen_first": "Memo ini sudah ditutup. Buka kembali terlebih dahulu, lalu coba lagi.",
+  "doc_import.key_reused": "Kunci impor {key} sudah dipakai untuk {record} dengan isi yang berbeda. Untuk mengubah {record}, edit; untuk mengimpor catatan lain, beri kunci baru.",
+  "doc_import.key_reused_update": "Kunci impor {key} sudah dipakai untuk {record} dengan isi yang berbeda. Untuk menerapkan perubahan, impor lagi dengan pembaruan catatan yang ada diaktifkan; untuk mengimpor catatan lain, beri kunci baru."
 }

@@ -4625,5 +4625,12 @@
   "doc_import.settlement_not_issued": "Chứng từ {number} ở trạng thái {status} nhưng ghi là đã thanh toán. Chứng từ {status} không có khoản thanh toán: hãy nhập như chứng từ đã phát hành, hoặc nhập không kèm số tiền đã trả.",
   "docs.payment_not_issued": "Chứng từ {number} ở trạng thái {status} nên không thể nhận thanh toán. Thanh toán được ghi trên chứng từ đã phát hành: hãy hoàn tất bản nháp, hoặc bỏ hủy chứng từ đã hủy, trước.",
   "docs.payment_status_refused": "Chứng từ {number} ở trạng thái {status} nên không thể nhận thanh toán.",
-  "docs.bulk_payment_none_payable": "Không chứng từ nào trong số này đang chờ thanh toán. Hãy chọn chứng từ đã phát hành còn số dư phải trả."
+  "docs.bulk_payment_none_payable": "Không chứng từ nào trong số này đang chờ thanh toán. Hãy chọn chứng từ đã phát hành còn số dư phải trả.",
+  "credit_note.original_missing": "Phiếu ghi có này ghi {invoice} là hóa đơn được ghi có, nhưng công ty này không có chứng từ {invoice} nào. Hãy tạo hoặc nhập hóa đơn đó tại đây trước, rồi mới đến phiếu ghi có.",
+  "credit_note.original_not_invoice": "Phiếu ghi có này ghi {document}, là {doc_type}, không phải hóa đơn. Phiếu ghi có ghi có cho một hóa đơn: hãy chọn hóa đơn được ghi có. Để giảm số tiền còn nợ trên hóa đơn nhà cung cấp, hãy trả hàng trên hóa đơn đó.",
+  "credit_note.original_not_issued": "Phiếu ghi có này ghi có cho hóa đơn {invoice}, hóa đơn này vẫn là bản nháp. Hãy hoàn tất hóa đơn trước, rồi đến phiếu ghi có.",
+  "docs.reopen_memo_only": "Chỉ có thể mở lại một bản ghi nhớ đã đóng. {document} đã đóng vì hóa đơn của nó bị hủy và vẫn đóng; để ghi có cho khách hàng, hãy phát hành giấy báo có mới trên một hóa đơn còn hiệu lực.",
+  "docs.closed_memo_reopen_first": "Bản ghi nhớ này đã đóng. Hãy mở lại trước, rồi thử lại.",
+  "doc_import.key_reused": "Khóa nhập {key} đã được dùng cho {record} với nội dung khác. Để thay đổi {record}, hãy chỉnh sửa nó; để nhập một bản ghi khác, hãy dùng khóa mới.",
+  "doc_import.key_reused_update": "Khóa nhập {key} đã được dùng cho {record} với nội dung khác. Để áp dụng thay đổi, hãy nhập lại với tùy chọn cập nhật bản ghi hiện có được bật; để nhập một bản ghi khác, hãy dùng khóa mới."
 }

@@ -4625,5 +4625,12 @@
   "doc_import.settlement_not_issued": "Dokument {number} ist {status}, gibt aber an, bezahlt zu sein. Ein Dokument im Status {status} enthält keine Zahlung: Importieren Sie es als ausgestellt oder ohne den bezahlten Betrag.",
   "docs.payment_not_issued": "Dokument {number} ist {status} und kann daher keine Zahlung annehmen. Zahlungen werden auf ausgestellten Dokumenten erfasst: Schließen Sie zuerst einen Entwurf ab oder heben Sie die Stornierung eines stornierten Dokuments auf.",
   "docs.payment_status_refused": "Dokument {number} ist {status} und kann daher keine Zahlung annehmen.",
-  "docs.bulk_payment_none_payable": "Keines dieser Dokumente wartet auf Zahlung. Wählen Sie ausgestellte Dokumente, die noch offen sind."
+  "docs.bulk_payment_none_payable": "Keines dieser Dokumente wartet auf Zahlung. Wählen Sie ausgestellte Dokumente, die noch offen sind.",
+  "credit_note.original_missing": "Diese Gutschrift nennt {invoice} als die Rechnung, die sie gutschreibt, aber in diesem Unternehmen gibt es kein Dokument {invoice}. Legen Sie diese Rechnung hier zuerst an oder importieren Sie sie, danach die Gutschrift.",
+  "credit_note.original_not_invoice": "Diese Gutschrift nennt {document}, das ist ein(e) {doc_type}, keine Rechnung. Eine Gutschrift schreibt eine Rechnung gut: Wählen Sie die Rechnung, die sie gutschreibt. Um den offenen Betrag einer Eingangsrechnung zu senken, senden Sie die Ware über die Eingangsrechnung zurück.",
+  "credit_note.original_not_issued": "Diese Gutschrift schreibt Rechnung {invoice} gut, die noch ein Entwurf ist. Schließen Sie zuerst die Rechnung ab, danach die Gutschrift.",
+  "docs.reopen_memo_only": "Nur ein geschlossenes Memo kann wieder geöffnet werden. {document} wurde geschlossen, weil seine Rechnung storniert ist, und bleibt geschlossen; um dem Kunden etwas gutzuschreiben, stellen Sie eine neue Gutschrift zu einer gültigen Rechnung aus.",
+  "docs.closed_memo_reopen_first": "Dieses Memo ist geschlossen. Öffnen Sie es zuerst wieder und versuchen Sie es dann erneut.",
+  "doc_import.key_reused": "Der Importschlüssel {key} wurde bereits für {record} mit anderem Inhalt verwendet. Um {record} zu ändern, bearbeiten Sie es; um einen anderen Datensatz zu importieren, geben Sie ihm einen neuen Schlüssel.",
+  "doc_import.key_reused_update": "Der Importschlüssel {key} wurde bereits für {record} mit anderem Inhalt verwendet. Um die Änderung zu übernehmen, importieren Sie erneut mit aktivierter Aktualisierung vorhandener Datensätze; um einen anderen Datensatz zu importieren, geben Sie ihm einen neuen Schlüssel."
 }

@@ -194,7 +194,7 @@ async def test_credit_note_on_a_void_invoice_keeps_only_what_it_paid_out(client,
     await _backfill(session, auth)
     settled = {"1120": 50.0, "4100": -40.0, "1111": -10.0, "6960": 0.0}
     assert await _books(session, auth) == settled
-    assert (await _doc(session, auth, cn))[:2] == ("paid", 0.0)
+    assert (await _doc(session, auth, cn))[:2] == ("closed", 0.0)
     for path, body in ((f"/docs/{cn}/cn-refund", {"amount": 30.0, "date": "2026-10-09", "bank_account": "1111"}),
                        (f"/docs/{cn}/apply-to-invoice", {"target_doc_id": other, "amount": 30.0}),
                        (f"/docs/{cn}/void-payment", {"payment_index": 0}),

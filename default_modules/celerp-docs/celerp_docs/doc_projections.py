@@ -60,16 +60,26 @@ def _recalc_list_totals(state: dict) -> dict:
 UNISSUED_STATUSES = frozenset({"draft", "void"})
 
 
+# Only a credit note and the invoice it credits settle each other (``credited``). A bill is
+# settled by its payments and supplier returns alone, so a ``credited`` an older release
+# wrote on one takes nothing off what it owes.
+CREDITED_DOC_TYPES = frozenset({"invoice", "credit_note"})
+
+
+def _credited(state: dict):
+    return to_decimal(state.get("credited", 0) or 0) if state.get("doc_type") in CREDITED_DOC_TYPES else Decimal(0)
+
+
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
     """Return document-currency paid and outstanding balances. Goods sent back to the supplier
     owe nothing: what their return took off accounts payable (``returned_credit``) comes off
-    the total the same as a payment. What an issued credit note settled between a document
-    and the invoice it credits (``credited``) is owed by neither."""
+    the total the same as a payment, once. What an issued credit note settled between itself
+    and the invoice it credits (``credited``, CREDITED_DOC_TYPES) is owed by neither."""
     currency = str(state.get("currency") or "USD")
     owed = round_money(to_decimal(state.get("total", 0) or 0) - to_decimal(state.get("returned_credit", 0) or 0),
                        currency)
     paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
-    credited = round_money(to_decimal(state.get("credited", 0) or 0), currency)
+    credited = round_money(_credited(state), currency)
     outstanding = round_money(max(Decimal(0), owed - paid_d - credited), currency)
     return paid_d, outstanding
 
@@ -84,7 +94,7 @@ def payment_status(state: dict, paid: Decimal, outstanding: Decimal) -> str:
     (``credited``) has settled part of it; otherwise final."""
     if outstanding == 0:
         return "paid"
-    return "partial" if paid > 0 or to_decimal(state.get("credited", 0) or 0) > 0 else "final"
+    return "partial" if paid > 0 or _credited(state) > 0 else "final"
 
 
 def _receipt_status(current: dict) -> str:
@@ -203,6 +213,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
             _, outstanding = _payment_balances(current, current.get("amount_paid", 0))
             current["amount_outstanding"] = to_stored_float(outstanding)
+        elif "credited" in data["fields_changed"] and current.get("doc_type") not in CREDITED_DOC_TYPES:
+            # An older release settled a credit note on a bill: the bill still owes what its
+            # payments and returns leave, and stands as they make it.
+            paid, outstanding = _payment_balances(current, current.get("amount_paid", 0))
+            current["amount_outstanding"] = to_stored_float(outstanding)
+            if current.get("status") in ("final", "partial", "paid"):
+                current["status"] = payment_status(current, paid, outstanding)
     elif event_type == "doc.renumbered":
         # Narrow alias of doc.updated: only ref_id / doc_number may be changed.
         for field, change in data["fields_changed"].items():

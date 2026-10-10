@@ -4625,5 +4625,12 @@
   "doc_import.settlement_not_issued": "O documento {number} está {status} mas indica que foi pago. Um documento {status} não contém pagamento: importe-o como emitido ou sem o valor pago.",
   "docs.payment_not_issued": "O documento {number} está {status}, portanto não pode receber pagamento. Pagamentos são registrados em documentos emitidos: finalize o rascunho, ou desfaça a anulação do documento anulado, primeiro.",
   "docs.payment_status_refused": "O documento {number} está {status}, portanto não pode receber pagamento.",
-  "docs.bulk_payment_none_payable": "Nenhum destes documentos aguarda pagamento. Escolha documentos emitidos que ainda tenham saldo em aberto."
+  "docs.bulk_payment_none_payable": "Nenhum destes documentos aguarda pagamento. Escolha documentos emitidos que ainda tenham saldo em aberto.",
+  "credit_note.original_missing": "Esta nota de crédito indica {invoice} como a fatura que credita, mas não existe nenhum documento {invoice} nesta empresa. Crie ou importe primeiro essa fatura aqui e depois a nota de crédito.",
+  "credit_note.original_not_invoice": "Esta nota de crédito indica {document}, que é um(a) {doc_type}, não uma fatura. Uma nota de crédito credita uma fatura: escolha a fatura que ela credita. Para reduzir o valor devido numa fatura de fornecedor, devolva as mercadorias nessa fatura.",
+  "credit_note.original_not_issued": "Esta nota de crédito credita a fatura {invoice}, que ainda é um rascunho. Finalize primeiro a fatura e depois a nota de crédito.",
+  "docs.reopen_memo_only": "Só um memo fechado pode ser reaberto. {document} foi fechado porque a sua fatura está anulada e continua fechado; para creditar o cliente, emita uma nova nota de crédito numa fatura válida.",
+  "docs.closed_memo_reopen_first": "Este memo está fechado. Reabra-o primeiro e tente novamente.",
+  "doc_import.key_reused": "A chave de importação {key} já foi usada para {record} com outro conteúdo. Para alterar {record}, edite-o; para importar outro registro, dê a ele uma nova chave.",
+  "doc_import.key_reused_update": "A chave de importação {key} já foi usada para {record} com outro conteúdo. Para aplicar a alteração, importe novamente com a atualização de registros existentes ativada; para importar outro registro, dê a ele uma nova chave."
 }

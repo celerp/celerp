@@ -4625,5 +4625,12 @@
   "doc_import.settlement_not_issued": "Le document {number} est {status} mais indique qu'il a été payé. Un document {status} ne porte aucun paiement : importez-le comme émis, ou sans le montant payé.",
   "docs.payment_not_issued": "Le document {number} est {status} et ne peut donc pas recevoir de paiement. Les paiements sont enregistrés sur des documents émis : finalisez d'abord le brouillon, ou annulez l'annulation du document annulé.",
   "docs.payment_status_refused": "Le document {number} est {status} et ne peut donc pas recevoir de paiement.",
-  "docs.bulk_payment_none_payable": "Aucun de ces documents n'attend de paiement. Choisissez des documents émis qui ont encore un solde dû."
+  "docs.bulk_payment_none_payable": "Aucun de ces documents n'attend de paiement. Choisissez des documents émis qui ont encore un solde dû.",
+  "credit_note.original_missing": "Cet avoir indique {invoice} comme la facture qu'il crédite, mais aucun document {invoice} n'existe dans cette société. Créez ou importez d'abord cette facture ici, puis l'avoir.",
+  "credit_note.original_not_invoice": "Cet avoir indique {document}, qui est un(e) {doc_type}, pas une facture. Un avoir crédite une facture : choisissez la facture qu'il crédite. Pour réduire le montant dû sur une facture fournisseur, retournez les marchandises sur cette facture.",
+  "credit_note.original_not_issued": "Cet avoir crédite la facture {invoice}, qui est encore un brouillon. Finalisez d'abord la facture, puis l'avoir.",
+  "docs.reopen_memo_only": "Seul un mémo clôturé peut être rouvert. {document} a été clôturé car sa facture est annulée et reste clôturé ; pour créditer le client, émettez un nouvel avoir sur une facture en vigueur.",
+  "docs.closed_memo_reopen_first": "Ce mémo est clôturé. Rouvrez-le d'abord, puis réessayez.",
+  "doc_import.key_reused": "La clé d'import {key} a déjà servi pour {record} avec un autre contenu. Pour modifier {record}, éditez-le ; pour importer un autre enregistrement, donnez-lui une nouvelle clé.",
+  "doc_import.key_reused_update": "La clé d'import {key} a déjà servi pour {record} avec un autre contenu. Pour appliquer la modification, importez de nouveau avec la mise à jour des enregistrements existants activée ; pour importer un autre enregistrement, donnez-lui une nouvelle clé."
 }

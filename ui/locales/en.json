@@ -4625,5 +4625,12 @@
   "doc_import.settlement_not_issued": "Document {number} is {status} but says it was paid. A {status} document holds no payment: import it as issued, or import it without the paid amount.",
   "docs.payment_not_issued": "Document {number} is {status}, so it cannot take a payment. Payments are recorded on issued documents: finalize a draft, or unvoid a void document, first.",
   "docs.payment_status_refused": "Document {number} is {status}, so it cannot take a payment.",
-  "docs.bulk_payment_none_payable": "None of these documents awaits payment. Choose issued documents that still owe money."
+  "docs.bulk_payment_none_payable": "None of these documents awaits payment. Choose issued documents that still owe money.",
+  "credit_note.original_missing": "This credit note names {invoice} as the invoice it credits, but no document {invoice} exists in this company. Create or import that invoice here first, then the credit note.",
+  "credit_note.original_not_invoice": "This credit note names {document}, which is a {doc_type}, not an invoice. A credit note credits an invoice: choose the invoice it credits. To reduce what a bill owes, return the goods on the bill.",
+  "credit_note.original_not_issued": "This credit note credits invoice {invoice}, which is still a draft. Finalize the invoice first, then the credit note.",
+  "docs.reopen_memo_only": "Only a closed memo can be reopened. {document} closed because its invoice is void and stays closed; to credit the customer, issue a new credit note on a live invoice.",
+  "docs.closed_memo_reopen_first": "This memo is closed. Reopen it first, then try again.",
+  "doc_import.key_reused": "Import key {key} was already used for {record} with other contents. To change {record}, edit it; to import a different record, give it a new key.",
+  "doc_import.key_reused_update": "Import key {key} was already used for {record} with other contents. To apply the change, import again with updating existing records turned on; to import a different record, give it a new key."
 }

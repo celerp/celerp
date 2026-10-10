@@ -661,9 +661,11 @@ def _reject_if_closed(state: dict, action: str) -> None:
     payment reversals (refund / void / delete) recompute its status through their
     reducers, so applying one to a closed memo silently un-closes it. The user must
     Reopen it first, which is the way back the message names. Called under the doc-row
-    lock so the status read here is the committed one, not a stale pre-lock value."""
-    if state.get("status") == "closed":
-        raise HTTPException(status_code=409, detail=f"Reopen this closed memo before you {action}.")
+    lock so the status read here is the committed one, not a stale pre-lock value. A
+    credit note closed because its invoice is void is refused by refuse_on_void_invoice."""
+    if state.get("status") == "closed" and state.get("doc_type") == "memo":
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.closed_memo_reopen_first", f"This memo is closed. Reopen it first, then {action}."))
 
 
 def _line_item_brief(line_items: list[dict], eids) -> list[dict]:
@@ -1688,9 +1690,9 @@ async def create_doc(
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     company = await locked_company(session, company_id)
 
-    if payload.doc_type == "credit_note" and payload.original_doc_id:
-        # Locked, so the total checked is the one the invoice's last writer left.
-        inv = await _get_doc(session, company_id, payload.original_doc_id, for_update=True)
+    # Locked, so the total checked is the one the invoice's last writer left.
+    inv = await credit_note_original(session, company_id, payload.model_dump(), for_update=True)
+    if inv is not None:
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
@@ -1734,7 +1736,7 @@ async def create_doc(
 
     data = payload.model_dump(exclude_none=True)
     chosen = _chosen_terms(data)
-    if payload.doc_type == "credit_note" and payload.original_doc_id:
+    if inv is not None:
         # A credit note refunds its invoice's amounts, which the contact's prices do not change.
         chosen |= {"currency", "price_list"}
         data.update(credit_note_currency(inv.state, company.settings.get("currency", "USD"),
@@ -1904,6 +1906,9 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
                 await require_line_destinations(session, company_id, [
                     li for i, li in enumerate(incoming_lis)
                     if isinstance(li, dict) and li.get("account_code") != existing_by_idx.get(i, {}).get("account_code")])
+    if {"original_doc_id", "doc_type"} & fields_changed.keys():
+        await credit_note_original(session, company_id, {
+            **row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
@@ -2308,6 +2313,9 @@ async def finalize_document(
     _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
 
     _require_doc_rate_http(_initial_doc_state, _base_currency)
+    # Locked, so the invoice's currency is checked as its last writer left it.
+    _cn_invoice = await credit_note_original(session, company_id, _initial_doc_state, for_update=True)
+    _cn_invoice_state = dict(_cn_invoice.state) if _cn_invoice is not None else None
 
     # Invoices: assign real INV number on finalize, preserving PF ref.
     # On re-finalize (after revert-to-draft) the doc already holds the INV ref
@@ -2397,9 +2405,8 @@ async def finalize_document(
         await _capitalise_landed_received(session, company_id, _user_id, entity_id, _initial_doc_state,
                                           f"fin:{_revert_count}")
     elif doc_type == "credit_note":
-        if _initial_doc_state.get("original_doc_id"):
-            invoice = await _get_doc(session, company_id, str(_initial_doc_state["original_doc_id"]), for_update=True)
-            credit_note_currency(invoice.state, _base_currency, _initial_doc_state.get("currency"),
+        if _cn_invoice_state is not None:
+            credit_note_currency(_cn_invoice_state, _base_currency, _initial_doc_state.get("currency"),
                                  _initial_doc_state.get("conversion_rate"))
         await auto_je.create_for_credit_note_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
         await _settle_moved_cost(session, company_id, _user_id, entity_id, _initial_doc_state,
@@ -2636,19 +2643,25 @@ _SETTLEMENT_STATUSES = frozenset({"final", "sent", "awaiting_payment", "partial"
 
 
 async def emit_credit_settlement(session, company_id, user_id, doc_id: str, state: dict, *, outstanding: Decimal,
-                                 credited: Decimal, idempotency_key: str, metadata: dict):
+                                 credited: Decimal, idempotency_key: str, metadata: dict,
+                                 released: Decimal = Decimal(0)):
     """Record what an issued credit note settles on one document: its balance, its
     ``credited`` and, while the document stands, the status those make it (paid once
     nothing is owed, partial while part is settled). A document issued and sent stays sent
-    until something is settled on it. The only writer of ``credited``."""
+    until something is settled on it. A credit note that ``released`` what it still had
+    open (its invoice is void) is closed: nothing was paid. The only writer of
+    ``credited`` and ``released``."""
     outstanding, credited = max(Decimal(0), outstanding), max(Decimal(0), credited)
     fields = {
         "amount_outstanding": {"old": state.get("amount_outstanding"), "new": to_stored_float(outstanding)},
         "credited": {"old": state.get("credited"), "new": to_stored_float(credited)},
     }
     current = state.get("status")
-    if current in _SETTLEMENT_STATUSES:
-        status = payment_status({"credited": credited}, to_decimal(state.get("amount_paid") or 0), outstanding)
+    if released > 0:
+        fields["released"] = {"old": state.get("released"), "new": to_stored_float(released)}
+        fields["status"] = {"old": current, "new": "closed"}
+    elif current in _SETTLEMENT_STATUSES:
+        status = payment_status({"doc_type": state.get("doc_type"), "credited": credited}, to_decimal(state.get("amount_paid") or 0), outstanding)
         if status != current and not (status == "final" and current not in ("partial", "paid")):
             fields["status"] = {"old": current, "new": status}
     return await emit_event(
@@ -2662,6 +2675,42 @@ def settled_by_credit_only(state: dict) -> bool:
     it needs no payment voided first."""
     return (state.get("status") in ("partial", "paid") and not float(state.get("amount_paid") or 0)
             and float(state.get("credited") or 0) > 0)
+
+
+async def credit_note_original(session, company_id, data: dict, *, for_update: bool = False) -> Projection | None:
+    """The invoice a credit note credits: an issued (or since voided) invoice of this
+    company. An id that names nothing in this company, a document of another type, or an
+    invoice still in draft is refused (422) on every writer that sets it: create, edit,
+    finalize, and the single and batch import. A void invoice passes here and is handled by
+    its own rules (refuse_on_void_invoice, close_credit_on_void_invoice). None when the
+    document is not a credit note or names no invoice."""
+    if data.get("doc_type") != "credit_note" or not data.get("original_doc_id"):
+        return None
+    original = str(data["original_doc_id"])
+    if for_update:
+        row = (await lock_projections(session, company_id, [original])).get(original)
+    else:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": original})
+    state = (row.state if row is not None and row.entity_type == "doc" else None) or {}
+    number = str(state.get("doc_number") or state.get("ref_id") or original.removeprefix("doc:"))
+    if not state:
+        raise HTTPException(status_code=422, detail=refusal(
+            "credit_note.original_missing",
+            f"This credit note names {number} as the invoice it credits, but no document {number} exists in "
+            f"this company. Create or import that invoice here first, then the credit note.", invoice=number))
+    if state.get("doc_type") != "invoice":
+        doc_type = str(state.get("doc_type") or "document").replace("_", " ")
+        raise HTTPException(status_code=422, detail=refusal(
+            "credit_note.original_not_invoice",
+            f"This credit note names {number}, which is a {doc_type}, not an invoice. A credit note credits an "
+            f"invoice: choose the invoice it credits. To reduce what a bill owes, return the goods on the bill.",
+            document=number, doc_type=doc_type))
+    if state.get("status") in (None, "draft"):
+        raise HTTPException(status_code=422, detail=refusal(
+            "credit_note.original_not_issued",
+            f"This credit note credits invoice {number}, which is still a draft. Finalize the invoice first, "
+            f"then the credit note.", invoice=number))
+    return row
 
 
 async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
@@ -2709,8 +2758,10 @@ async def check_imported_snapshot(session, company_id, entity_id: str, data: dic
     anything is written: more paid (refunded, on a credit note) than its total or less than
     0, which no posting could book without inventing a figure, or a credit note in another
     currency or rate than its invoice, refused as creating one is (credit_note_currency),
-    whichever of the two comes in first. A draft or void document that says it was paid
-    is refused too: only an issued document holds a payment. Shared by the single and the
+    checked from either side so an invoice arriving after an older credit note against it
+    is held to it too. A credit note is refused unless its original is an issued invoice
+    of this company (credit_note_original), and a draft or void document that says it was
+    paid is refused: only an issued document holds a payment. Shared by the single and the
     batch import."""
     doc_type = data.get("doc_type")
     currency = str(data.get("currency") or base_currency).upper()
@@ -2740,10 +2791,8 @@ async def check_imported_snapshot(session, company_id, entity_id: str, data: dic
             "doc_import.refunded_over_total",
             f"Credit note {number} says {params['paid']} was refunded on a total of {params['total']}. The "
             f"refunded amount cannot exceed the credit note total.", **params))
-    if doc_type == "credit_note" and data.get("original_doc_id"):
-        invoice = await session.get(Projection, {"company_id": company_id, "entity_id": str(data["original_doc_id"])})
-        if invoice is not None and (invoice.state or {}).get("status") not in (None, "draft"):
-            credit_note_currency(invoice.state, base_currency, data.get("currency"), data.get("conversion_rate"))
+    if (invoice := await credit_note_original(session, company_id, data)) is not None:
+        credit_note_currency(invoice.state, base_currency, data.get("currency"), data.get("conversion_rate"))
     elif doc_type == "invoice" and data.get("status") not in (None, "draft"):
         for row in await _issued_credit_note_rows(session, company_id, entity_id):
             credit_note_currency(data, base_currency, row.state.get("currency"), row.state.get("conversion_rate"))
@@ -2754,8 +2803,8 @@ async def close_credit_on_void_invoice(session, company_id, user_id, cn_id: str)
     stands, so it keeps only what it already paid out (refunded or applied), which its
     entry still books against the receivable and that payout settled; what it still had
     open is released (auto_je.release_credit_note_open) and is never refunded or applied
-    (refuse_on_void_invoice). Shared by every place a credit note meets a void invoice:
-    an import in either order and the settlement of earlier credit notes. Running it again
+    (refuse_on_void_invoice); the credit note reads closed with ``released`` on record. Shared by every place a credit note meets a void invoice:
+    the import of either document and the settlement of earlier credit notes. Running it again
     changes nothing."""
     row = await session.get(Projection, {"company_id": company_id, "entity_id": cn_id}, populate_existing=True)
     note = (row.state if row else None) or {}
@@ -2773,12 +2822,12 @@ async def close_credit_on_void_invoice(session, company_id, user_id, cn_id: str)
         session, company_id, user_id, cn_id, note, outstanding=Decimal(0),
         credited=round_money(to_decimal(note.get("credited") or 0), currency),
         idempotency_key=f"credit-note-void-invoice:{cn_id}",
-        metadata={"credit_note_effect": "released", "released_amount": to_stored_float(left)})
+        metadata={"credit_note_effect": "released", "released_amount": to_stored_float(left)}, released=left)
 
 
 async def settle_imported_credit(session, company_id, user_id, entity_id: str, data: dict) -> None:
     """Record what each issued credit note settled between an imported invoice and the
-    credit notes against it, once both are in, in either order. Both snapshots already
+    credit notes against it, once both are in. Both snapshots already
     carry their balances; the credit note's total, less what was paid out of it and what it
     still has open, is what it settled, up to what the invoice's balance does not explain
     (total less paid, outstanding and what other credit notes settled). That amount is
@@ -2787,11 +2836,11 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
     never took off its balance, so it stays open on the credit note as the customer's
     credit.
 
-    A credit note imported while its invoice is not issued in these books settled what it
-    claims on an invoice they do not hold: that comes off its credit against retained
-    earnings (auto_je.create_for_imported_used), as its refunded part does, and is
-    reversed once its invoice comes in and takes it off its own balance. One whose invoice
-    is void is closed (close_credit_on_void_invoice)."""
+    A credit note is imported only after its invoice (credit_note_original). What one on a
+    void invoice claims, or one an older release imported first, is booked against retained
+    earnings (auto_je.create_for_imported_used); the latter is reversed
+    (auto_je.void_imported_used) once its invoice comes in and takes it off its own
+    balance. One whose invoice is void is then closed (close_credit_on_void_invoice)."""
     if data.get("doc_type") == "credit_note" and data.get("original_doc_id"):
         pairs = [(str(data["original_doc_id"]), entity_id)]
     elif data.get("doc_type") == "invoice":
@@ -2919,6 +2968,12 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
         return done
     if row.state.get("status") != "closed":
         raise HTTPException(status_code=409, detail="Only a closed memo can be reopened")
+    if row.state.get("doc_type") != "memo":
+        number = str(row.state.get("doc_number") or row.state.get("ref_id") or entity_id)
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.reopen_memo_only",
+            f"Only a closed memo can be reopened. {number} closed because its invoice is void and stays closed; "
+            "to credit the customer, issue a new credit note on a live invoice.", document=number))
     restored = row.state.get("pre_close_status") or "final"
     event_data = payload.model_dump(exclude_none=True)
     event_data["restored_status"] = restored
@@ -7240,8 +7295,7 @@ async def import_doc(
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "doc.created" or replay.entity_id != body.entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        refuse_reused_import_key(replay, event_type="doc.created", entity_id=body.entity_id, data=body.data)
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
     # Entity guard: one create event per document identity.
@@ -7275,7 +7329,8 @@ async def import_doc(
         location_id=None,
         source=body.source,
         idempotency_key=body.idempotency_key,
-        metadata_=_import_metadata(body.source_ts, data, post_ledger=True),
+        metadata_=_import_metadata(body.source_ts, data, post_ledger=True,
+                                   request=import_digest(body.entity_id, body.data)),
     )
     await settle_imported_credit(session, company_id, user.id, body.entity_id, data)
 
@@ -7324,11 +7379,42 @@ def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
     }
 
 
-def _import_metadata(source_ts: str | None, data: dict, *, post_ledger: bool) -> dict:
-    """Ledger metadata of a raw snapshot import, recording that it came through import and,
-    for a purchase order or bill imported into the books, that the opening balances hold it
-    (auto_je.IMPORTED_OPENING)."""
-    meta: dict = {auto_je.IMPORTED_SNAPSHOT: True}
+def import_digest(entity_id: str, data: dict) -> str:
+    """The digest of one imported record as it was sent, recorded on its event so the key
+    it came with names that record and no other."""
+    return _request_digest("import", entity_id, None, data)
+
+
+def refuse_reused_import_key(replay, *, event_type: str, entity_id: str, data: dict, batch: bool = False) -> None:
+    """Refuse (409) an import whose key an earlier import used for another record, or for
+    this record with other contents. An earlier import that recorded no digest is taken as
+    the same record: nothing shows it differs. The single and batch imports of documents
+    and lists all pass here; a batch row is pointed at its update toggle
+    (doc_import.key_reused_update), a single import at editing the record
+    (doc_import.key_reused)."""
+    recorded = (replay.metadata_ or {}).get("request")
+    if (replay.event_type == event_type and replay.entity_id == entity_id
+            and recorded in (None, import_digest(entity_id, data))):
+        return
+    key, record = replay.idempotency_key, replay.entity_id
+    if batch:
+        raise HTTPException(status_code=409, detail=refusal(
+            "doc_import.key_reused_update",
+            f"Import key {key} was already used for {record} with other contents. To apply the change, "
+            "import again with updating existing records turned on; to import a different record, give it a new key.",
+            key=key, record=record))
+    raise HTTPException(status_code=409, detail=refusal(
+        "doc_import.key_reused",
+        f"Import key {key} was already used for {record} with other contents. To change {record}, edit it; "
+        "to import a different record, give it a new key.",
+        key=key, record=record))
+
+
+def _import_metadata(source_ts: str | None, data: dict, *, post_ledger: bool, request: str) -> dict:
+    """Ledger metadata of a raw snapshot import, recording that it came through import, the
+    digest of the record as sent (import_digest) and, for a purchase order or bill imported
+    into the books, that the opening balances hold it (auto_je.IMPORTED_OPENING)."""
+    meta: dict = {auto_je.IMPORTED_SNAPSHOT: True, "request": request}
     if post_ledger and auto_je.imported_issue_kind(data) in ("purchase_order", "bill"):
         meta[auto_je.IMPORTED_OPENING] = True
     if source_ts:
@@ -8980,8 +9066,7 @@ async def import_list(
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "list.created" or replay.entity_id != body.entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        refuse_reused_import_key(replay, event_type="list.created", entity_id=body.entity_id, data=body.data)
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
@@ -8994,7 +9079,8 @@ async def import_list(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
         event_type="list.created", data=body.data, actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
-        metadata_={"source_ts": body.source_ts} if body.source_ts else {},
+        metadata_={"request": import_digest(body.entity_id, body.data),
+                   **({"source_ts": body.source_ts} if body.source_ts else {})},
     )
     await session.commit()
     return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
@@ -9056,9 +9142,18 @@ async def batch_import_lists(
             continue
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != "list.created" or replay.entity_id != rec.entity_id:
+            try:
+                if replay is None:
+                    raise HTTPException(status_code=409, detail="Idempotency key belongs to another operation")
+                if not body.upsert:
+                    refuse_reused_import_key(replay, event_type="list.created", entity_id=rec.entity_id,
+                                             data=rec.data, batch=True)
+                elif replay.event_type != "list.created" or replay.entity_id != rec.entity_id:
+                    refuse_reused_import_key(replay, event_type="list.created", entity_id=rec.entity_id,
+                                             data=rec.data)
+            except HTTPException as exc:
                 if len(errors) < 10:
-                    errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
+                    errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
                 skipped += 1
                 continue
             if not body.upsert:
@@ -9098,7 +9193,8 @@ async def batch_import_lists(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
                 event_type="list.created", data=rec.data, actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+                metadata_={"request": import_digest(rec.entity_id, rec.data),
+                           **({"source_ts": rec.source_ts} if rec.source_ts else {})},
             )
             existing_keys.add(rec.idempotency_key)
             existing_entities.add(entry.entity_id)

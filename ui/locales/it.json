@@ -4625,5 +4625,12 @@
   "doc_import.settlement_not_issued": "Il documento {number} è {status} ma risulta pagato. Un documento {status} non contiene pagamenti: importalo come emesso, oppure senza l'importo pagato.",
   "docs.payment_not_issued": "Il documento {number} è {status}, quindi non può ricevere un pagamento. I pagamenti si registrano su documenti emessi: prima finalizza la bozza o revoca l'annullamento del documento annullato.",
   "docs.payment_status_refused": "Il documento {number} è {status}, quindi non può ricevere un pagamento.",
-  "docs.bulk_payment_none_payable": "Nessuno di questi documenti è in attesa di pagamento. Scegli documenti emessi con un saldo ancora da pagare."
+  "docs.bulk_payment_none_payable": "Nessuno di questi documenti è in attesa di pagamento. Scegli documenti emessi con un saldo ancora da pagare.",
+  "credit_note.original_missing": "Questa nota di credito indica {invoice} come la fattura che accredita, ma in questa azienda non esiste alcun documento {invoice}. Crea o importa prima quella fattura qui, poi la nota di credito.",
+  "credit_note.original_not_invoice": "Questa nota di credito indica {document}, che è un(a) {doc_type}, non una fattura. Una nota di credito accredita una fattura: scegli la fattura che accredita. Per ridurre quanto dovuto su una fattura fornitore, restituisci la merce su quella fattura.",
+  "credit_note.original_not_issued": "Questa nota di credito accredita la fattura {invoice}, che è ancora una bozza. Finalizza prima la fattura, poi la nota di credito.",
+  "docs.reopen_memo_only": "Solo un memo chiuso può essere riaperto. {document} è stato chiuso perché la sua fattura è annullata e resta chiuso; per accreditare il cliente, emetti una nuova nota di credito su una fattura valida.",
+  "docs.closed_memo_reopen_first": "Questo memo è chiuso. Riaprilo prima, poi riprova.",
+  "doc_import.key_reused": "La chiave di importazione {key} è già stata usata per {record} con un contenuto diverso. Per modificare {record}, modificalo; per importare un altro record, assegnagli una nuova chiave.",
+  "doc_import.key_reused_update": "La chiave di importazione {key} è già stata usata per {record} con un contenuto diverso. Per applicare la modifica, importa di nuovo con l'aggiornamento dei record esistenti attivato; per importare un altro record, assegnagli una nuova chiave."
 }
