@@ -2182,7 +2182,7 @@ def setup_routes(app):
                 lst, import_url=await _print_import_url(token, entity_id), auto_print=True,
                 layout=layout, line_identifier=_ident_mode)
         except ValueError as e:
-            return _HR(f"<p>Error: {e}</p>", status_code=422)
+            return _HR(f"<p>{e}</p>", status_code=422)
         return _HR(html)
 
     @app.get("/lists/{entity_id}/items/csv")

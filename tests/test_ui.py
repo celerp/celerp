@@ -13913,6 +13913,19 @@ class TestDocumentsOverhaul:
         assert '/api/docs/doc:INV-2026-0001/pdf' not in content
 
     @pytest.mark.asyncio
+    async def test_list_print_view_rejects_layout_on_a_non_shipping_list_without_an_error_prefix(self, ui_client):
+        """?layout= only applies to shipping lists; on anything else it 422s with the
+        server's own explanation alone, never a bare 'Error:' prefix in front of it."""
+        non_shipping_list = {**_BLANK_DOC, "entity_id": "list:L-001", "ref_id": "L-001", "doc_type": "list",
+                             "list_type": "sales_order"}
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=non_shipping_list)):
+            r = await ui_client.get("/lists/list:L-001/print?layout=commercial_invoice", cookies=_authed())
+        assert r.status_code == 422
+        content = r.content.decode()
+        assert "layout is only valid for shipping documents" in content
+        assert "Error:" not in content
+
+    @pytest.mark.asyncio
     async def test_po_shows_convert_to_bill_button(self, ui_client):
         """Draft PO shows 'Convert to Bill' instead of 'Finalize'."""
         po_doc = {**_BLANK_DOC, "doc_type": "purchase_order", "entity_id": "doc:PO-001", "ref_id": "PO-001"}
