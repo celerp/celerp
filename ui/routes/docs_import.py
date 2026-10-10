@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import OrderedDict
+from datetime import date
 from urllib.parse import parse_qs, urlsplit
 
 from fasthtml.common import *
@@ -39,6 +41,7 @@ from ui.routes.csv_import import (
     validation_result,
 )
 from ui.i18n import t, get_lang
+from celerp.services.auto_je import imported_issue_kind
 
 
 _DOC_IMPORT_SPEC = CsvImportSpec(
@@ -61,6 +64,133 @@ _DOC_IMPORT_LABEL_KEYS = {
         "line_sku", "line_barcode", "line_stone_type", "line_weight_ct",
         "line_qty", "line_unit_price", "line_total_price", "line_cost_basis")},
 }
+
+
+def _number(row: dict, key: str) -> float | None:
+    raw = str(row.get(key, "")).strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _group_documents(rows: list[dict]) -> OrderedDict:
+    """The documents in the spreadsheet, keyed by (doc_type, doc_number): one row per line
+    item, the document's own fields taken from its first row."""
+    doc_map: OrderedDict = OrderedDict()
+    for r in rows:
+        doc_type = str(r.get("doc_type", "")).strip().lower()
+        doc_number = str(r.get("doc_number", "")).strip()
+        if not doc_type or not doc_number:
+            continue
+        key = (doc_type, doc_number)
+        if key not in doc_map:
+            doc_map[key] = {
+                "doc_type": doc_type,
+                "doc_number": doc_number,
+                "date": str(r.get("date", "")).strip() or None,
+                "due_date": str(r.get("due_date", "")).strip() or None,
+                "contact_name": str(r.get("contact_name", "")).strip() or None,
+                "total": _number(r, "total") or 0.0,
+                "amount_outstanding": _number(r, "amount_outstanding") or 0.0,
+                "status": str(r.get("status", "")).strip() or "draft",
+                "line_items": [],
+            }
+        line_sku = str(r.get("line_sku", "")).strip()
+        line_total = _number(r, "line_total_price")
+        if line_sku or line_total:
+            line: dict = {}
+            if line_sku:
+                line["sku"] = line_sku
+            if str(r.get("line_barcode", "")).strip():
+                line["barcode"] = str(r.get("line_barcode", "")).strip()
+            if str(r.get("line_stone_type", "")).strip():
+                line["description"] = str(r.get("line_stone_type", "")).strip()
+            wt = _number(r, "line_weight_ct")
+            if wt:
+                line["weight"] = wt
+            qty = _number(r, "line_qty")
+            line["quantity"] = qty if qty is not None else 1.0
+            up = _number(r, "line_unit_price")
+            if up:
+                line["unit_price"] = up
+            if line_total:
+                line["total_price"] = line_total
+            cost = _number(r, "line_cost_basis")
+            if cost:
+                line["cost_basis"] = cost
+            doc_map[key]["line_items"].append(line)
+    return doc_map
+
+
+# The form field carrying a document's treatment, and the treatments the import accepts.
+_TREATMENT_FIELD = "treatment:{doc_type}:{doc_number}"
+_TREATMENTS = (("opening_balances", "docs_import.treatment_opening"),
+               ("record_now", "docs_import.treatment_record_now"))
+
+
+def _iso_date(value) -> date | None:
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
+def _prefilled(data: dict, opening: date | None) -> str:
+    """The treatment offered for a document that posts: by its date against the opening
+    balance date when both are known; otherwise none for a bill (the import refuses it
+    until one is chosen) and Record it now for an invoice or credit note, as the import
+    does when it is not told."""
+    dated = _iso_date(data.get("date"))
+    if opening is not None and dated is not None:
+        return "opening_balances" if dated <= opening else "record_now"
+    return "" if data["doc_type"] == "bill" else "record_now"
+
+
+async def _treatment_choice(token: str, rows: list[dict]) -> FT | str:
+    """Per document that posts (a bill, invoice or credit note), newest first, how it enters
+    the books, pre-filled from the company's opening balance date. Empty when none posts."""
+    docs = [d for d in _group_documents(rows).values()
+            if imported_issue_kind(d) in ("bill", "invoice", "credit_note")]
+    if not docs:
+        return ""
+    try:
+        opening = _iso_date((await api.get_company(token)).get("opening_balance_date"))
+    except APIError:
+        opening = None
+    docs.sort(key=lambda d: (_iso_date(d.get("date")) is not None, _iso_date(d.get("date")) or date.min),
+              reverse=True)
+
+    def _row(d: dict) -> FT:
+        chosen = _prefilled(d, opening)
+        return Tr(
+            Td(display_enum(d["doc_type"])),
+            Td(d["doc_number"]),
+            Td(d.get("date") or EMPTY),
+            Td(Select(
+                Option(EMPTY, value="", selected=chosen == ""),
+                *[Option(t(key), value=value, selected=chosen == value) for value, key in _TREATMENTS],
+                name=_TREATMENT_FIELD.format(**d),
+                cls="form-input cell-input--select",
+            )),
+        )
+
+    hint = (t("docs_import.treatment_hint_dated", date=opening.isoformat()) if opening is not None
+            else t("docs_import.treatment_hint_undated"))
+    return Div(
+        H3(t("docs_import.treatment_title")),
+        P(hint, cls="import-hint"),
+        P(t("docs_import.treatment_note"), cls="import-hint"),
+        Table(
+            Thead(Tr(Th(t("th.document_type")), Th(t("th.number")), Th(t("th.date")),
+                     Th(t("docs_import.treatment_column")))),
+            Tbody(*[_row(d) for d in docs]),
+            cls="data-table",
+        ),
+        cls="mt-sm mb-sm",
+    )
 
 
 # The address free-tier share links are published under.
@@ -547,6 +677,7 @@ def setup_routes(app):
                 revalidate_action="/docs/import/revalidate",
                 has_mapping=True,
                 upsert_label=t("docs_import.upsert_label"),
+                form_fields=await _treatment_choice(token, rows),
             ),
             title=page_title("docs_import.import_documents"),
             nav_active="docs",
@@ -583,6 +714,7 @@ def setup_routes(app):
             revalidate_action="/docs/import/revalidate",
             has_mapping=True,
             upsert_label=t("docs_import.upsert_label"),
+            form_fields=await _treatment_choice(token, rows),
         )
 
     @app.post("/docs/import/errors")
@@ -606,64 +738,11 @@ def setup_routes(app):
         csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
-        def _f(row: dict, key: str) -> float | None:
-            raw = str(row.get(key, "")).strip()
-            if not raw:
-                return None
-            try:
-                return float(raw)
-            except ValueError:
-                return None
-
-        # Group rows by (doc_type, doc_number) - one CSV row per line item
-        from collections import OrderedDict
-        doc_map: OrderedDict = OrderedDict()
-        for r in rows:
-            doc_type = str(r.get("doc_type", "")).strip().lower()
-            doc_number = str(r.get("doc_number", "")).strip()
-            if not doc_type or not doc_number:
-                continue
-            key = (doc_type, doc_number)
-            if key not in doc_map:
-                doc_map[key] = {
-                    "doc_type": doc_type,
-                    "doc_number": doc_number,
-                    "date": str(r.get("date", "")).strip() or None,
-                    "due_date": str(r.get("due_date", "")).strip() or None,
-                    "contact_name": str(r.get("contact_name", "")).strip() or None,
-                    "total": _f(r, "total") or 0.0,
-                    "amount_outstanding": _f(r, "amount_outstanding") or 0.0,
-                    "status": str(r.get("status", "")).strip() or "draft",
-                    "line_items": [],
-                }
-            # Append line item if present
-            line_sku = str(r.get("line_sku", "")).strip()
-            line_total = _f(r, "line_total_price")
-            if line_sku or line_total:
-                line: dict = {}
-                if line_sku:
-                    line["sku"] = line_sku
-                if str(r.get("line_barcode", "")).strip():
-                    line["barcode"] = str(r.get("line_barcode", "")).strip()
-                if str(r.get("line_stone_type", "")).strip():
-                    line["description"] = str(r.get("line_stone_type", "")).strip()
-                wt = _f(r, "line_weight_ct")
-                if wt:
-                    line["weight"] = wt
-                qty = _f(r, "line_qty")
-                line["quantity"] = qty if qty is not None else 1.0
-                up = _f(r, "line_unit_price")
-                if up:
-                    line["unit_price"] = up
-                if line_total:
-                    line["total_price"] = line_total
-                cost = _f(r, "line_cost_basis")
-                if cost:
-                    line["cost_basis"] = cost
-                doc_map[key]["line_items"].append(line)
-
         records: list[dict] = []
-        for (doc_type, doc_number), data in doc_map.items():
+        for (doc_type, doc_number), data in _group_documents(rows).items():
+            chosen = str(form.get(_TREATMENT_FIELD.format(doc_type=doc_type, doc_number=doc_number)) or "")
+            if chosen:
+                data["import_treatment"] = chosen
             records.append({
                 "event_type": "doc.created",
                 "data": data,

@@ -121,10 +121,12 @@ IMPORTED_CUTOVER = "imported_cutover"
 def imported_issue_kind(data: dict) -> str | None:
     """What an imported snapshot was issued as, or None for one not issued.
 
-    An issued invoice or credit note posts its entry at import. An issued purchase
-    order or bill posts nothing: the opening balances hold it (IMPORTED_OPENING).
-    Shared by the import endpoints and the Doctor (which only repairs an entry the
-    document's own history says should exist)."""
+    How an issued one enters the books is its ``import_treatment``: already in the
+    opening balances (nothing posts) or recorded now (it posts as the app posts it). An
+    invoice or credit note is recorded now unless it says otherwise; a bill, or a
+    purchase order with goods received, must say which. Shared by the import endpoints,
+    the import screen (which asks for the treatment) and the Doctor (which only repairs
+    an entry the document's own history says should exist)."""
     status = str(data.get("status") or "draft")
     total = float(data.get("total", 0) or 0)
     if status in ("void", "draft", "converted", "expired") or total <= 0:

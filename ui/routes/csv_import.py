@@ -1222,6 +1222,7 @@ def validation_result(
     notes: Any = "",
     ready: int | None = None,
     col_labels: dict[str, str] | None = None,
+    form_fields: Any = "",
 ) -> FT:
     """Return the post-upload panel: inline-fix error panel or clean confirm panel.
 
@@ -1233,6 +1234,7 @@ def validation_result(
     button letting users opt-in to updating existing records. ``notes`` are shown
     on the confirm panel above the preview table; ``ready`` is how many rows the
     import will add, when the server's preview says fewer than every row.
+    ``form_fields`` are controls submitted with the import (inside its form).
     """
     error_pairs = [(i, _row_errors(row, cols, validate)) for i, row in enumerate(rows)]
     error_row_indices = [i for i, errs in error_pairs if errs]
@@ -1268,6 +1270,7 @@ def validation_result(
         notes=notes,
         ready=ready,
         col_labels=col_labels or {},
+        form_fields=form_fields,
     )
 
 
@@ -1324,6 +1327,7 @@ def _confirm_panel(
     notes: Any = "",
     ready: int | None = None,
     col_labels: dict[str, str],
+    form_fields: Any = "",
 ) -> FT:
     """Rows-ready summary, preview table, and the single import button."""
     review_step = 3 if has_mapping else 2
@@ -1343,6 +1347,7 @@ def _confirm_panel(
             _preview_table(rows, cols, col_labels),
             Form(
                 *[Input(type="hidden", name=k, value=v) for k, v in hidden.items()],
+                form_fields,
                 upsert_control,
                 Button(
                     import_icon(),
