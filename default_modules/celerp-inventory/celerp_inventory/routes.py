@@ -649,7 +649,7 @@ async def assert_expirable(session: AsyncSession, company_id, entity_id: str) ->
     if row is not None and not in_stock(state):
         raise HTTPException(
             status_code=409,
-            detail=f"Only stock on hand can be expired; this item is {state.get('status') or 'unknown'}.",
+            detail=t("inventory.err_expire_not_on_hand", status=state.get("status") or "unknown"),
         )
 
 
@@ -3229,7 +3229,10 @@ async def bulk_restore_deleted(payload: RestoreDeletedBody, company_id=Depends(g
     rows = await _lock_selected_items(session, company_id, payload.entity_ids)
     live = sorted(str((row.state or {}).get("sku") or e) for e, row in rows.items() if _status_of(row) != DELETED)
     if live:
-        raise HTTPException(status_code=409, detail=f"Nothing was restored. These items are not deleted: {', '.join(live)}.")
+        raise HTTPException(status_code=409, detail=refusal(
+            "inventory.restore_nothing_to_restore",
+            f"Nothing was restored. These items are not deleted: {', '.join(live)}.",
+            items=", ".join(live)))
     at = datetime.now(timezone.utc).isoformat()
     for eid in rows:
         await emit_event(session, company_id=company_id, entity_id=eid, entity_type="item",
@@ -3881,7 +3884,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     parent_weight = parent_qty if weight_type and stored_weight is not None else stored_weight
     parent_pieces = parent_qty if pieces_type and stored_pieces is not None else stored_pieces
     if sell_by in unit_map and exceeds_precision(child_qty, int(unit_map[sell_by].get("decimals") or 0)):
-        raise ValueError(f"{child_qty:g} is more precise than {sell_by} allows")
+        raise ValueError(t("inventory.split_too_precise", qty=f"{child_qty:g}", unit=sell_by))
 
     if weight_type and child_weight is None:
         child_weight = child_qty
@@ -3893,7 +3896,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
     if child_pieces is not None and float(child_pieces) != int(float(child_pieces)):
-        raise ValueError("pieces must be a whole number")
+        raise ValueError(t("inventory.split_pieces_not_whole"))
     ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
 
     # What the mother keeps of each measure: the difference when both sides are known,
@@ -3904,14 +3907,16 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         if child_weight is not None:
             weight_after = round(parent_weight - child_weight, 10)
             if weight_after < 0:
-                raise ValueError(f"weight {child_weight:g} is more than the {parent_weight:g} the lot has")
+                raise ValueError(t("inventory.split_weight_exceeds_lot",
+                                    weight=f"{child_weight:g}", lot_weight=f"{parent_weight:g}"))
         fields_changed["weight"] = {"old": parent.state.get("weight"), "new": weight_after}
     pieces_after: int | None = None
     if parent_pieces is not None:
         if ch_pieces is not None:
             pieces_after = _to_int_pieces(parent_pieces) - ch_pieces
             if pieces_after < 0:
-                raise ValueError(f"{ch_pieces} pieces is more than the {parent_pieces:g} the lot has")
+                raise ValueError(t("inventory.split_pieces_exceeds_lot",
+                                    pieces=ch_pieces, lot_pieces=f"{parent_pieces:g}"))
         fields_changed["pieces"] = {"old": stored_pieces, "new": pieces_after}
 
     # The split child is the same product as the parent: it KEEPS the parent SKU and is
@@ -4309,7 +4314,7 @@ def _check_merge_request(payload: MergeBody) -> None:
     if len(set(payload.source_entity_ids)) != len(payload.source_entity_ids):
         raise HTTPException(status_code=422, detail=t("inventory.err_merge_duplicate"))
     if payload.target_sku_from not in payload.source_entity_ids:
-        raise HTTPException(status_code=422, detail="target_sku_from must identify one of the merge sources.")
+        raise HTTPException(status_code=422, detail=t("inventory.err_merge_target_not_source"))
 
 
 def _merge_request_digest(payload: MergeBody) -> str:
@@ -4401,7 +4406,8 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         if not is_item_available(proj.state or {}):
             sku = (proj.state or {}).get("sku") or sid
             raise HTTPException(status_code=409,
-                                detail=f"Item '{sku}' is not on hand ({status or 'no status'}), so it cannot be merged.")
+                                detail=t("inventory.err_merge_not_on_hand",
+                                          item=sku, status=status or "no status"))
         source_projections.append(proj)
 
     try:
@@ -4637,8 +4643,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         reject_price_change({"cost_total"}, role, settings)
         raise HTTPException(
             status_code=422,
-            detail="A merge keeps the cost of the items it combines. To change the merged item's cost, "
-                   "merge first and then make a cost correction on the merged item.",
+            detail=t("inventory.err_merge_cost_locked"),
         )
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
@@ -4939,7 +4944,7 @@ async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id),
     after that the merge is part of what followed and stays."""
     merged = (await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}))
     if merged is None or merged.entity_type != "item":
-        raise HTTPException(status_code=404, detail=f"Item '{entity_id}' not found.")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
     marker = await _latest_item_event(session, company_id, entity_id)
     if marker is None or marker.event_type != "item.merged":
         raise HTTPException(status_code=409, detail=(

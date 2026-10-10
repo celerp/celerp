@@ -2575,7 +2575,7 @@ async def test_a_restore_stopped_part_way_changes_nothing(tmp_path, real_engine)
 
 # The error each kind of unusable psql gives.
 PSQL = {
-    "missing": "psql not found",
+    "missing": "a database tool is missing on this computer",
     "not executable": "psql: Permission denied",
     "failing": "psql (exit 127)",
 }

@@ -622,7 +622,7 @@ async def restate_item_cost(
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
         if replay.event_type != event_type or replay.entity_id != entity_id:
-            raise CostRestatementConflict("Idempotency key was already used for another operation")
+            raise CostRestatementConflict(t("inventory.err_cost_idempotency_reused"))
         return replay
 
     # Company, then the invoices the change adjusts, then the lots: the order every

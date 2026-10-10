@@ -340,7 +340,7 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
     source books held it in. Nothing else is guessed: a snapshot of another system's item
     records none until its stock is placed. No later event may change it: the lot's value
     stays on that account for as long as the lot holds stock."""
-    from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+    from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
     from celerp.services.account_roles import source_lot_account
 
     data = kwargs["data"]
@@ -356,7 +356,9 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
         # An older lot that recorded none takes the one the upgrade or the user places it on,
         # and consigned goods take the one the bill that buys them debits.
         if current:
-            raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
+            raise HTTPException(status_code=409, detail=refusal(
+                "inventory.account_already_recorded",
+                "This stock already records its inventory account."))
         return
     changed = data.get("fields_changed")
     if LOT_ACCOUNT_FIELD in data:
@@ -369,7 +371,9 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
     if written != current:
         raise HTTPException(
             status_code=422,
-            detail="An item's inventory account is recorded when its stock is booked and cannot be changed.",
+            detail=refusal(
+                "inventory.account_locked_after_booking",
+                "An item's inventory account is recorded when its stock is booked and cannot be changed."),
         )
 
 
@@ -377,7 +381,7 @@ def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None
     """A consigned lot records the account its sale is owed to the consignor on when it is
     first sold, and a lot born from it (a part of it, or goods a customer returns) keeps
     it. No later event may change it: the payable recognized there is cleared there."""
-    from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD
+    from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, refusal
 
     if kwargs["event_type"] in ITEM_BIRTHS and previous_state is None:
         return
@@ -385,7 +389,9 @@ def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None
     data = kwargs["data"]
     if kwargs["event_type"] == "item.consignor_payable.recorded":
         if current:
-            raise HTTPException(status_code=409, detail="This stock already records its consignor payable account.")
+            raise HTTPException(status_code=409, detail=refusal(
+                "inventory.consignor_payable_already_recorded",
+                "This stock already records its consignor payable account."))
         return
     changed = data.get("fields_changed")
     if CONSIGNOR_PAYABLE_FIELD in data:
@@ -398,7 +404,10 @@ def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None
     if written != current:
         raise HTTPException(
             status_code=422,
-            detail="The account a consigned item's sale is owed on is recorded when it is first sold and cannot be changed.",
+            detail=refusal(
+                "inventory.consignor_payable_locked_after_sale",
+                "The account a consigned item's sale is owed on is recorded when it is "
+                "first sold and cannot be changed."),
         )
 
 
@@ -411,7 +420,7 @@ def _guard_on_books(kwargs: dict) -> None:
     """Whether retired stock stays on the books follows from the action that retired it
     (projections._keep_on_books); nothing may enter it, an import or a field edit least
     of all."""
-    from celerp.accounting_roles import ON_BOOKS_FIELD
+    from celerp.accounting_roles import ON_BOOKS_FIELD, refusal
 
     data = kwargs["data"]
     changed = data.get("fields_changed")
@@ -419,8 +428,10 @@ def _guard_on_books(kwargs: dict) -> None:
             isinstance(changed, dict) and ON_BOOKS_FIELD in changed):
         raise HTTPException(
             status_code=422,
-            detail="Whether archived or expired stock stays on the books is set by Archive and Expire "
-                   "and cannot be entered.",
+            detail=refusal(
+                "inventory.on_books_locked",
+                "Whether archived or expired stock stays on the books is set by Archive "
+                "and Expire and cannot be entered."),
         )
 
 
