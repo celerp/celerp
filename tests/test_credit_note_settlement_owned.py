@@ -263,7 +263,12 @@ async def test_paying_an_invoice_an_earlier_credit_note_reduced_owes_what_is_lef
     await _tie(session, auth)
 
 
-async def test_an_earlier_credit_note_in_a_locked_period_posts_on_the_first_open_day(client, session, auth):
+async def test_an_earlier_credit_note_in_a_locked_period_posts_on_the_business_date(client, session, auth):
+    """The locked period is never changed and the entry is never backdated to the day
+    after the lock: it posts on the company's business date today."""
+    from celerp.models.company import Company
+    from celerp.services.business_time import business_date_of
+
     inv = await _svc_invoice(client, auth, 80.0, issue_date="2026-01-10")
     cn = await _legacy_cn(client, session, auth, inv, 30.0, issue_date="2026-01-15")
     r = await _post(client, auth, "/accounting/period-lock", {"lock_date": "2026-03-31"})
@@ -271,7 +276,9 @@ async def test_an_earlier_credit_note_in_a_locked_period_posts_on_the_first_open
     await _backfill(session, auth)
     je = await _state(session, auth, f"je:auto:{cn}:fin")
     number = (await _state(session, auth, cn)).get("ref_id")
-    assert str(je.get("ts"))[:10] == "2026-04-01", je
+    company = await session.get(Company, auth["company_id"])
+    today = business_date_of(None, (company.settings or {}).get("timezone"))
+    assert str(je.get("ts"))[:10] == today != "2026-04-01", je
     assert number in je.get("memo", ""), je
     await _tie(session, auth)
 

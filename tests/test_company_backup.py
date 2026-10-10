@@ -4342,7 +4342,9 @@ async def test_restored_backup_record_not_writable_through_settings(real_engine,
     claim = {"settings": {"restored_backup": {"backup_id": manifest(data)["backup_id"]}}}
     r = await real_client.patch("/companies/me", json=claim, headers=auth(tok))
     assert r.status_code == 422, r.text
-    assert "restoring a company backup" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "company.setting_has_own_route"
+    assert "/company-backups/restore" in detail["message"]
     assert "restored_backup" not in await _bk_settings(real_engine, cid)
     body = _r_created(await restore(real_client, tok, data, "new_company"))
     assert body["company_id"] != str(cid)

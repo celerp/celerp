@@ -61,6 +61,7 @@ from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, verify_password
+from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services.company_backup_files import private_file
 from celerp.services.company_lock import hold_company, lock_company, locked_company
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
@@ -98,9 +99,9 @@ EXCLUDED_TABLES = {
 
 # Settings that describe this installation or its people, not the business.
 DROPPED_SETTINGS = frozenset({
-    "ai_memory", "lock_date_set_by", "reorder_alert_email", "column_prefs",
+    "ai_memory", "reorder_alert_email", "column_prefs",
     "pay_tip_shown", "reorder_last_scan_at", "restored_backup",
-})
+}) | SET_BY_KEYS
 
 # What role permissions allow is installation policy. A backup carries the company's own
 # customizations, but a restore applies them only to a copy beside the company it came

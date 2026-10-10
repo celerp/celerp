@@ -102,10 +102,17 @@ async def test_an_item_event_for_an_item_that_never_existed_is_refused(committed
 
 
 async def _a_location(engine, cid):
+    """One of the company's own locations, added when it has none, so a transfer names a
+    real place and only the missing item is wrong."""
     from celerp.models.company import Location
 
     async with maker(engine)() as s:
-        return (await s.scalars(select(Location.id).where(Location.company_id == cid))).first()
+        found = (await s.scalars(select(Location.id).where(Location.company_id == cid))).first()
+        if found is None:
+            found = uuid.uuid4()
+            s.add(Location(id=found, company_id=cid, name="Shelf", type="warehouse"))
+            await s.commit()
+        return found
 
 
 _EVENTS = [

@@ -35,7 +35,7 @@ async def _paying_into_a_bank(monkeypatch, engine, client):
         headers=headers)
     assert r.status_code == 200, r.text
     code = r.json()["chart_account_code"]
-    r = await client.patch("/companies/me", json={"settings": {"stripe_deposit_account": code}}, headers=headers)
+    r = await client.patch("/companies/me/books", json={"stripe_deposit_account": code}, headers=headers)
     assert r.status_code == 200, r.text
     cloud = _Cloud(monkeypatch, engine)
     eid, share = await _shared_invoice(client, engine, boss, a)

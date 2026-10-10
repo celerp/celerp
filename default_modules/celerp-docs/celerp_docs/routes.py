@@ -27,7 +27,7 @@ from celerp.db import get_session
 from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
                                   refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
 from celerp.importers.results import failure_reason
-from celerp.models.company import Company, Location
+from celerp.models.company import Company
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
@@ -37,6 +37,7 @@ from celerp_docs.doc_projections import UNISSUED_STATUSES, payment_status
 from celerp_docs.taxes import TaxApplication
 from celerp.services import auto_je
 from celerp.services.field_schema import reject_system_item_fields
+from celerp.services.locations import require_company_location
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
@@ -4680,16 +4681,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
     Shared by the receive route and an import that records its goods now."""
     entity_id = row.entity_id
     doc_type = row.state.get("doc_type")
-    location_uuid = None
-    if payload.location_id:
-        try:
-            location_uuid = uuid.UUID(payload.location_id)
-        except ValueError:
-            location_uuid = None
-        if location_uuid is None or (await session.execute(
-            select(Location.id).where(Location.id == location_uuid, Location.company_id == company_id)
-        )).scalar_one_or_none() is None:
-            raise HTTPException(status_code=422, detail="That location does not exist. Choose one of your locations.")
+    location_uuid = await require_company_location(session, company_id, payload.location_id)
 
     is_consignment = doc_type == "consignment_in"
     # Inbound docs always create new parcels - never adjust an existing item's qty.

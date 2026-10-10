@@ -4656,5 +4656,21 @@
   "docs.revert_imported_receipt": "Este documento não pode voltar a rascunho: foi importado com mercadorias já em estoque, que os saldos de abertura carregam. Devolva as mercadorias que ainda mantém com Devolução de mercadorias e depois quite o que ainda deve com um pagamento.",
   "notice.imported_doc_cutover.waiting_title": "Pedidos de compra e faturas importados ainda não corrigidos",
   "notice.imported_doc_cutover.locked": "Estes pedidos de compra e faturas importados antes desta atualização estão num período bloqueado e ainda não puderam ser corrigidos: {numbers}. Mova o bloqueio de período em Configurações > Contabilidade para que exista uma data aberta; a correção é executada novamente no próximo início.",
-  "notice.imported_doc_cutover.failed": "Não foi possível corrigir estes pedidos de compra e faturas importados antes desta atualização: {numbers}. Abra cada um e verifique as linhas e os pagamentos; a correção é executada novamente no próximo início."
+  "notice.imported_doc_cutover.failed": "Não foi possível corrigir estes pedidos de compra e faturas importados antes desta atualização: {numbers}. Abra cada um e verifique as linhas e os pagamentos; a correção é executada novamente no próximo início.",
+  "accounting.year_end_invalid": "{value} não é uma data. Introduza o último dia do ano a encerrar no formato AAAA-MM-DD.",
+  "accounting.bank_not_found": "Essa conta bancária não foi encontrada nesta empresa. Escolha uma das contas bancárias da empresa.",
+  "location.not_found": "{value} não é um local desta empresa. Escolha um local em Configurações > Estoque > Locais ou adicione-o lá primeiro.",
+  "erase.locked_period": "Nada foi apagado. {count} dos itens selecionados têm histórico com data igual ou anterior a {lock_date}, quando os livros estão bloqueados. Desbloqueie o período em Settings > Accounting, apague-os e depois bloqueie o período novamente.",
+  "demo.not_sample_fixture": "Nada foi apagado. {count} dos itens selecionados têm registros que não são dados de exemplo, por isso não são removidos como exemplos. Abra cada item e use Delete, Archive ou Write Off Stock.",
+  "accounting.reversal_date_invalid": "Escolha uma data de estorno no formato YYYY-MM-DD, igual ou posterior à data do lançamento estornado ({entry_date}).",
+  "accounting.reversal_date_locked": "O período está bloqueado até {lock_date}, por isso nada pode ser lançado em {date}. Escolha uma data de estorno posterior a {lock_date}.",
+  "accounting.reversal_no_open_date": "O período está bloqueado até {lock_date}, o que inclui hoje, por isso não há uma data aberta para lançar o estorno. Recue a data de bloqueio em Settings > Accounting e tente novamente.",
+  "accounting.reversal_account_missing": "O lançamento foi feito na conta {account}, que já não está no plano de contas, por isso o seu estorno não pode ser lançado. Adicione novamente a conta {account} em Settings > Accounting e tente novamente.",
+  "company.setting_unknown": "{key} não é uma configuração da empresa. Remova-a da solicitação e tente novamente.",
+  "company.setting_system_owned": "{key} é mantida pelo Celerp e não pode ser definida diretamente. Remova-a da solicitação e tente novamente.",
+  "company.setting_has_own_route": "{key} não é alterada nas configurações da empresa. Altere-a por meio de {route}.",
+  "company.currency_unknown": "{currency} não é uma moeda que o Celerp conhece. Escolha uma moeda da lista.",
+  "company.currency_has_postings": "Os livros são mantidos em {currency} e já há lançamentos nessa moeda, por isso a moeda não pode mudar. Crie uma nova empresa para manter os livros em outra moeda.",
+  "company.fiscal_year_start_invalid": "{value} não é um início de exercício fiscal. Escolha o primeiro dia de um mês, no formato MM-01.",
+  "company.import_vat_default_invalid": "A recuperação do IVA de importação deve estar ativada ou desativada. Envie true ou false."
 }

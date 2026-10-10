@@ -11,6 +11,9 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
 
     if event_type == "acc.journal_entry.created":
         current.update({"entity_type": "journal_entry", **data})
+        # Written again, the entry is live on its own date: an earlier reversal's date
+        # belongs to the void that was undone.
+        current.pop("reversed_on", None)
         # We don't currently expose a draft-journal-entry workflow in the UI/API.
         # Default to posted so accounting reports are meaningful for normal ERP usage.
         current.setdefault("status", "posted")
@@ -20,6 +23,8 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = "void"
         if data.get("reason"):
             current["void_reason"] = data["reason"]
+        if data.get("reversed_on"):
+            current["reversed_on"] = data["reversed_on"]
 
     elif event_type == "acc.period.closed":
         current.update({"entity_type": "period", "period": data["period"], "status": "closed"})

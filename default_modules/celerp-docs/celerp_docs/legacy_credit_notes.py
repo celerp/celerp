@@ -19,7 +19,7 @@ settled, and each earlier credit note is then settled as one issued now would be
   already paid out by refund or application elsewhere was a second use of the same
   credit, so the invoice owes it again. Its entry (Dr revenue and output tax, Cr
   receivable) posts at its full amount on the day it was issued, unless an entry for it
-  already exists; a day inside a locked period posts on the first open day instead,
+  already exists; a day inside a locked period posts on the business date today instead,
   with a memo naming the credit note. A credit note at another rate than its invoice
   takes the invoice's rate, and an entry already posted at its own rate is brought to
   the invoice's against exchange gain or loss.
@@ -42,7 +42,7 @@ what marks the pair settled.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException
@@ -100,16 +100,12 @@ async def _posted_entry(session: AsyncSession, company_id, cn_id: str) -> bool:
     return any((r.state or {}).get("status") == "posted" for r in rows)
 
 
-async def _first_open_day(session: AsyncSession, company_id, day: str) -> str | None:
-    """None when ``day`` is open, else the day after the company's lock date."""
-    from celerp.models.company import Company
-    from celerp.services.lot_origin import period_open
+async def _open_day(session: AsyncSession, company_id, day: str) -> str | None:
+    """None when ``day`` is open, else the open date the shared rule gives: the company's
+    business date today, never the day after the lock (posting_dates.correction_day)."""
+    from celerp.services.posting_dates import correction_day
 
-    if await period_open(session, company_id, day):
-        return None
-    company = await session.get(Company, company_id)
-    lock = date.fromisoformat(str((company.settings or {}).get("lock_date")))
-    return (lock + timedelta(days=1)).isoformat()
+    return await correction_day(session, company_id, day)
 
 
 def _spent_elsewhere(note: dict, invoice_id: str) -> Decimal:
@@ -187,9 +183,9 @@ async def _post(session, company_id, cn_id: str, note: dict, inv: dict, label: s
         log.info("Earlier %s takes its invoice's rate %s instead of %s", label, rate, note.get("conversion_rate"))
         note = {**note, "conversion_rate": rate, "payments": payments}
     issued = str(note.get("finalized_at") or note.get("issue_date") or date.today().isoformat())[:10]
-    open_day = await _first_open_day(session, company_id, issued)
-    memo = (f"Credit note {_number(note, cn_id)} issued {issued}, posted on the first open day after "
-            f"the locked period") if open_day else None
+    open_day = await _open_day(session, company_id, issued)
+    memo = (f"Credit note {_number(note, cn_id)} issued {issued}, in a locked period, posted on "
+            f"{open_day}") if open_day else None
     if await _posted_entry(session, company_id, cn_id):
         log.info("Earlier %s: its entry was already posted", label)
     else:

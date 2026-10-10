@@ -3,7 +3,7 @@
 """
 Coverage gap closers for the record checks behind POST /admin/doctor (celerp_admin routes):
   - void/draft/expired/converted docs skipped in missing_jes
-  - legacy entity_id format (not je:auto: prefix) in duplicate_jes
+  - legacy entity_id format (not je:auto: prefix) restated is not a duplicate_jes finding
   - orphan_projections fix=True path
   - stale_projections projection with no events (continue)
   - stale_projections fix=True path (replayed != current)
@@ -119,7 +119,7 @@ async def test_doctor_missing_jes_skips_void(client: "AsyncClient"):
 
 @pytest.mark.asyncio
 async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", session: AsyncSession):
-    """JE entity_id not starting with je:auto: uses fallback group_key."""
+    """A legacy-id JE written twice on its own record is one entry, not a duplicate."""
     tok, _ = await _reg(client)
 
     # Get company_id from token
@@ -146,15 +146,14 @@ async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", sess
     })
     assert r1.json()["created"] == 1
 
-    # Manually insert a second ledger event for the SAME legacy entity_id
-    # to create a duplicate pair that triggers the fallback group_key
+    # A second created event on the SAME legacy record: a restatement of that entry
     import uuid as _uuid
     from celerp.models.ledger import LedgerEntry
 
     cid = _uuid.UUID(company_id)
     le = LedgerEntry(
         company_id=cid,
-        entity_id=legacy_id,         # no je:auto: prefix → fallback branch
+        entity_id=legacy_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.created",
         data={"memo": "dup", "entries": balanced},
@@ -169,8 +168,7 @@ async def test_doctor_duplicate_jes_legacy_entity_id(client: "AsyncClient", sess
     rd = await client.post("/admin/doctor?checks=duplicate_jes", headers=_h(tok))
     assert rd.status_code == 200
     result = next(c for c in rd.json()["results"] if c["check"] == "duplicate_jes")
-    # Should have processed the legacy entity_id via fallback (found >= 0 regardless)
-    assert "found" in result
+    assert result["found"] == 0 and result["fixed"] == 0, result
 
 
 # ---------------------------------------------------------------------------

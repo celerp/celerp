@@ -4656,5 +4656,21 @@
   "docs.revert_imported_receipt": "Este documento no puede volver a borrador: se importó con mercancía que ya estaba en existencias y que llevan los saldos iniciales. Devuelva la mercancía que aún tenga con Devolución de mercancías y luego liquide lo que aún se debe con un pago.",
   "notice.imported_doc_cutover.waiting_title": "Órdenes de compra y facturas importadas aún sin corregir",
   "notice.imported_doc_cutover.locked": "Estas órdenes de compra y facturas importadas antes de esta actualización están en un período bloqueado y aún no se pudieron corregir: {numbers}. Mueva el bloqueo de período en Ajustes > Contabilidad para que exista una fecha abierta; la corrección se ejecuta de nuevo en el próximo inicio.",
-  "notice.imported_doc_cutover.failed": "Estas órdenes de compra y facturas importadas antes de esta actualización no se pudieron corregir: {numbers}. Abra cada una y revise sus líneas y pagos; la corrección se ejecuta de nuevo en el próximo inicio."
+  "notice.imported_doc_cutover.failed": "Estas órdenes de compra y facturas importadas antes de esta actualización no se pudieron corregir: {numbers}. Abra cada una y revise sus líneas y pagos; la corrección se ejecuta de nuevo en el próximo inicio.",
+  "accounting.year_end_invalid": "{value} no es una fecha. Introduzca el último día del año que va a cerrar como AAAA-MM-DD.",
+  "accounting.bank_not_found": "Esa cuenta bancaria no se encontró en esta empresa. Elija una de las cuentas bancarias de la empresa.",
+  "location.not_found": "{value} no es una ubicación de esta empresa. Elige una ubicación en Configuración > Inventario > Ubicaciones o créala allí primero.",
+  "erase.locked_period": "No se borró nada. {count} de los artículos seleccionados tienen historial con fecha igual o anterior al {lock_date}, cuando los libros están bloqueados. Desbloquee el periodo en Settings > Accounting, bórrelos y vuelva a bloquear el periodo.",
+  "demo.not_sample_fixture": "No se borró nada. {count} de los artículos seleccionados tienen registros que no son datos de ejemplo, así que no se eliminan como ejemplos. Abra cada artículo y use Delete, Archive o Write Off Stock en su lugar.",
+  "accounting.reversal_date_invalid": "Elija una fecha de reversión con el formato YYYY-MM-DD, igual o posterior a la fecha del asiento que revierte ({entry_date}).",
+  "accounting.reversal_date_locked": "El periodo está bloqueado hasta {lock_date}, así que no se puede contabilizar nada el {date}. Elija una fecha de reversión posterior a {lock_date}.",
+  "accounting.reversal_no_open_date": "El periodo está bloqueado hasta {lock_date}, lo que incluye hoy, así que no hay una fecha abierta para contabilizar la reversión. Retrase la fecha de bloqueo en Settings > Accounting e inténtelo de nuevo.",
+  "accounting.reversal_account_missing": "El asiento se contabilizó en la cuenta {account}, que ya no está en el plan de cuentas, así que su reversión no se puede contabilizar. Vuelva a añadir la cuenta {account} en Settings > Accounting e inténtelo de nuevo.",
+  "company.setting_unknown": "{key} no es un ajuste de la empresa. Quítelo de la solicitud e inténtelo de nuevo.",
+  "company.setting_system_owned": "Celerp mantiene {key} y no se puede establecer directamente. Quítelo de la solicitud e inténtelo de nuevo.",
+  "company.setting_has_own_route": "{key} no se cambia en los ajustes de la empresa. Cámbielo mediante {route}.",
+  "company.currency_unknown": "{currency} no es una moneda que Celerp conozca. Elija una moneda de la lista.",
+  "company.currency_has_postings": "Los libros se llevan en {currency} y ya hay asientos contabilizados en esa moneda, así que no se puede cambiar. Cree una empresa nueva para llevar los libros en otra moneda.",
+  "company.fiscal_year_start_invalid": "{value} no es un inicio de ejercicio fiscal. Elija el primer día de un mes, como MM-01.",
+  "company.import_vat_default_invalid": "La recuperación del IVA de importación debe estar activada o desactivada. Envíe true o false."
 }

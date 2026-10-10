@@ -55,6 +55,7 @@ from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_p
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, received_share, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
+from celerp.services.posting_dates import correction_day, void_reversal
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
 from sqlalchemy import func, or_
@@ -3794,9 +3795,11 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
     """Restore exactly what the immediately preceding void removed.
 
     Finds the recognition JEs the most recent void batch reversed and re-posts
-    each as a new JE copying its memo, entries, and date verbatim - never
-    recomputing: costs may have moved since the doc was voided, and an unvoid
-    must put back the numbers the void took out, not today's. Each restore
+    each as a new JE copying its memo and entries verbatim - never recomputing:
+    costs may have moved since the doc was voided, and an unvoid must put back the
+    numbers the void took out, not today's. The copy keeps the entry's own date
+    unless that date is locked, when it posts on the open date the shared rule
+    gives (posting_dates.correction_day). Each restore
     lives at je:auto:{doc_id}:{root}:unvoid:{n}, so repeated void/unvoid cycles
     keep every generation distinct, and a family that already holds a posted JE
     is skipped (the restore already happened). One copy mechanism covers every
@@ -3879,7 +3882,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
             idem_create=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "p"),
             memo=state.get("memo") or f"Auto JE for {doc_id} unvoided",
-            ts=state.get("ts"),
+            ts=await correction_day(session, company_id, state.get("ts")) or state.get("ts"),
             entries=entries,
             metadata_=metadata_,
         )
@@ -4329,7 +4332,7 @@ async def book_opening_inventory(
     today = await entry_day(session, company_id)
     version = (ob_proj.version if ob_proj else 0) or 0
     if ob_proj and ob_proj.state.get("status") == "posted":
-        await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
+        await void_reversal(session, company_id, ob_je_id, je_void_data("", ob_proj.state))
     if needed_d > 0:
         await _check_period_lock(session, company_id, {"ts": today})
     # Void the existing OB JE if posted (amount changed or gap closed)

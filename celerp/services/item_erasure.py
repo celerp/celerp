@@ -11,13 +11,18 @@ what their own operation allows first, then erase, in one transaction. An import
 holds an item: ``release_from_imports`` takes a deleted item out of the imports that
 list it, so undoing the rest still works.
 
+Erasing never changes a locked period: an item with a ledger row dated on or before the
+company's lock date is refused (``erase.locked_period``) until the period is unlocked.
+
 An erased item that came from a connector stays erased: its connector identity is kept
 in the company settings, and a later sync of that record writes nothing."""
 from __future__ import annotations
 
 import sqlalchemy as sa
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal
 from celerp.models.import_batch import ImportBatch
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -113,12 +118,62 @@ async def release_from_imports(session: AsyncSession, company_id, entity_ids) ->
             batch.entity_ids = kept
 
 
+async def locked_history(session: AsyncSession, company_id, entity_ids) -> tuple[str | None, set[str]]:
+    """The company's lock date and the given ids with a ledger row dated on or before it.
+
+    A row is dated by the date its data records (``ts``, ``issue_date`` or ``date``), else
+    by when it was written, as a business day in the company's timezone."""
+    from datetime import date as _date, datetime as _datetime
+
+    from celerp.models.company import Company
+    from celerp.services.business_time import business_date_at, business_date_of
+
+    company = await session.get(Company, company_id)
+    settings = (company.settings or {}) if company else {}
+    lock = settings.get("lock_date")
+    ids = sorted(set(entity_ids))
+    if not lock or not ids:
+        return lock, set()
+    lock_day = _date.fromisoformat(lock)
+    tz = settings.get("timezone")
+    recorded = sa.func.coalesce(LedgerEntry.data["ts"].as_string(), LedgerEntry.data["issue_date"].as_string(),
+                                LedgerEntry.data["date"].as_string())
+    found: set[str] = set()
+    for start in range(0, len(ids), _CHUNK):
+        for eid, day, ts in (await session.execute(sa.select(LedgerEntry.entity_id, recorded, LedgerEntry.ts).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(ids[start:start + _CHUNK])))).all():
+            if eid in found:
+                continue
+            try:
+                when = business_date_of(day, tz) if day else (
+                    business_date_at(ts, tz) if isinstance(ts, _datetime) else business_date_of(ts, tz))
+            except ValueError:
+                continue
+            if _date.fromisoformat(when) <= lock_day:
+                found.add(eid)
+    return lock, found
+
+
+async def require_unlocked_history(session: AsyncSession, company_id, entity_ids) -> None:
+    """Refuse when any of the items has history inside the locked period."""
+    lock, locked = await locked_history(session, company_id, entity_ids)
+    if locked:
+        raise HTTPException(status_code=409, detail=refusal(
+            "erase.locked_period",
+            f"Nothing was erased. {len(locked)} of the selected items have history dated on or before "
+            f"{lock}, when the books are locked. Unlock the period in Settings > Accounting, erase them, "
+            "then lock the period again.",
+            count=len(locked), lock_date=lock))
+
+
 async def erase_items(session: AsyncSession, company_id, entity_ids) -> None:
     """Remove the items and every ledger row of theirs. Runs inside the caller's
-    transaction and does not commit; the caller has already checked they may go."""
+    transaction and does not commit; the caller has already checked they may go. Refused
+    when any of them has history inside the locked period (``require_unlocked_history``)."""
     ids = sorted(set(entity_ids))
     if not ids:
         return
+    await require_unlocked_history(session, company_id, ids)
     keys = {(state or {}).get("idempotency_key") for (state,) in (await session.execute(
         sa.select(Projection.state).where(Projection.company_id == company_id, Projection.entity_id.in_(ids))))}
     keys.discard(None)

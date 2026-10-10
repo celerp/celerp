@@ -346,3 +346,37 @@ async def test_startup_mapping_and_a_new_child_never_leave_a_role_on_a_header(co
     else:
         assert children == ["1121"] and mapped is None
         assert not isinstance(out, BaseException), out
+
+
+# --- Two people add the same account code at once -------------------------------------
+
+
+@pytest.mark.parametrize("parent", [None, "6000"])
+async def test_the_same_code_added_twice_at_once_is_refused_once(committed_engine, parent):
+    """The second add waits for the first and is refused as a duplicate code, never a
+    database error; one account exists."""
+    factory = _factory(committed_engine)
+    cid = await _seed(factory)
+    account_type = "expense" if parent else "asset"
+    _, out = await _second(committed_engine, factory,
+                           lambda s: _create(s, cid, "8800", parent, account_type),
+                           lambda s: _create(s, cid, "8800", parent, account_type))
+    assert isinstance(out, HTTPException) and out.status_code == 409, out
+    assert out.detail["message_key"] == "chart.code_exists"
+    async with factory() as s:
+        rows = (await s.execute(select(Account.code).where(
+            Account.company_id == cid, Account.code == "8800"))).scalars().all()
+    assert rows == ["8800"]
+
+
+async def test_two_different_codes_added_at_once_both_land(committed_engine):
+    """Neighbour: distinct codes wait for each other and then both land."""
+    factory = _factory(committed_engine)
+    cid = await _seed(factory)
+    _, out = await _second(committed_engine, factory,
+                           lambda s: _create(s, cid, "8810", None), lambda s: _create(s, cid, "8811", None))
+    assert out == "8811", out
+    async with factory() as s:
+        rows = sorted((await s.execute(select(Account.code).where(
+            Account.company_id == cid, Account.code.in_(["8810", "8811"])))).scalars().all())
+    assert rows == ["8810", "8811"]

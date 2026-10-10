@@ -350,7 +350,9 @@ async def test_company_settings_cannot_change_the_module_choice(client, value):
     config_before = _configured()
     r = await client.patch("/companies/me", headers=h, json={"settings": {"enabled_modules": value}})
     assert r.status_code == 422, r.text
-    assert "Modules page" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "company.setting_has_own_route"
+    assert "/companies/me/modules/" in detail["message"]
     assert (await client.get("/companies/me", headers=h)).json()["settings"].get("enabled_modules") == before
     assert _configured() == config_before
 

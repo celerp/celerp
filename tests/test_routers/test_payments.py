@@ -420,7 +420,7 @@ async def test_payment_projection_stores_bank_account_not_default(client):
 
 async def _foreign_invoice(client, token: str, total: float = 100.0) -> str:
     """A finalized USD invoice in a company whose books are in THB."""
-    r = await client.patch("/companies/me", headers=_h(token), json={"settings": {"currency": "THB"}})
+    r = await client.patch("/companies/me/books", headers=_h(token), json={"currency": "THB"})
     assert r.status_code == 200, r.text
     data = {"doc_type": "invoice", "currency": "USD", "conversion_rate": 35.0, "total": total,
             "line_items": [{"name": "X", "quantity": 1, "unit_price": total, "line_total": total}]}

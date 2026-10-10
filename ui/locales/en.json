@@ -4656,5 +4656,21 @@
   "docs.revert_imported_receipt": "This document cannot go back to draft: it was imported holding goods already in stock, which the opening balances carry. Send back any goods it still holds with Return Goods, then settle what it still owes with a payment.",
   "notice.imported_doc_cutover.waiting_title": "Imported purchase orders and bills not corrected yet",
   "notice.imported_doc_cutover.locked": "These purchase orders and bills imported before this update sit in a locked period and could not be corrected yet: {numbers}. Move the period lock in Settings > Accounting so an open date exists; the correction runs again at the next start.",
-  "notice.imported_doc_cutover.failed": "These purchase orders and bills imported before this update could not be corrected: {numbers}. Open each one and check its lines and payments; the correction runs again at the next start."
+  "notice.imported_doc_cutover.failed": "These purchase orders and bills imported before this update could not be corrected: {numbers}. Open each one and check its lines and payments; the correction runs again at the next start.",
+  "accounting.year_end_invalid": "{value} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
+  "accounting.bank_not_found": "That bank account was not found in this company. Choose one of the company's bank accounts.",
+  "location.not_found": "{value} is not one of this company's locations. Choose a location from Settings > Inventory > Locations, or add it there first.",
+  "erase.locked_period": "Nothing was erased. {count} of the selected items have history dated on or before {lock_date}, when the books are locked. Unlock the period in Settings > Accounting, erase them, then lock the period again.",
+  "demo.not_sample_fixture": "Nothing was erased. {count} of the selected items hold records that are not sample data, so they are not removed as samples. Open each item and use Delete, Archive or Write Off Stock instead.",
+  "accounting.reversal_date_invalid": "Pick a reversal date as YYYY-MM-DD, on or after the date of the entry it reverses ({entry_date}).",
+  "accounting.reversal_date_locked": "The period is locked through {lock_date}, so nothing can post on {date}. Pick a reversal date after {lock_date}.",
+  "accounting.reversal_no_open_date": "The period is locked through {lock_date}, which includes today, so there is no open date to post the reversal on. Move the lock date back in Settings > Accounting, then try again.",
+  "accounting.reversal_account_missing": "The entry posted to account {account}, which is no longer in the chart of accounts, so its reversal cannot post. Add account {account} back under Settings > Accounting, then try again.",
+  "company.setting_unknown": "{key} is not a company setting. Remove it from the request and try again.",
+  "company.setting_system_owned": "{key} is kept by Celerp and cannot be set directly. Remove it from the request and try again.",
+  "company.setting_has_own_route": "{key} is not changed in company settings. Change it through {route}.",
+  "company.currency_unknown": "{currency} is not a currency Celerp knows. Pick a currency from the list.",
+  "company.currency_has_postings": "The books are kept in {currency} and entries are already posted in it, so the currency cannot change. Start a new company to keep books in another currency.",
+  "company.fiscal_year_start_invalid": "{value} is not a fiscal year start. Pick the first day of a month, as MM-01.",
+  "company.import_vat_default_invalid": "Import VAT recovery must be on or off. Send true or false."
 }

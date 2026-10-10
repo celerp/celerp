@@ -970,11 +970,35 @@ async def _je_rows(
     for row in rows:
         state = row.state
         status = state.get("status")
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        day = str(ts_raw)[:10] if ts_raw else ""
+        if status == "void" and state.get("reversed_on"):
+            # Voided out of a locked period: the entry stays posted in its own period and
+            # its reversal posts on reversed_on (posting_dates.void_reversal).
+            out.append((row.entity_id, {**state, "status": "posted"}, day))
+            out.append((f"{row.entity_id}:reversal", _reversal_state(row.entity_id, state), state["reversed_on"]))
+            continue
         if status != "posted" and not (include_void and status == "void"):
             continue
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        out.append((row.entity_id, state, str(ts_raw)[:10] if ts_raw else ""))
+        out.append((row.entity_id, state, day))
     return out
+
+
+_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
+
+
+def _reversal_state(entity_id: str, state: dict) -> dict:
+    """The reversal of a journal entry on its reversed_on date: every line through the
+    same account and roles with debit and credit swapped."""
+    memo = state.get("memo") or ""
+    return {
+        **state,
+        "status": "posted",
+        "ts": state["reversed_on"],
+        "memo": f"Reversal of {memo}" if memo else "Reversal",
+        "reverses": entity_id,
+        "entries": [{_SWAPPED.get(k, k): v for k, v in line.items()} for line in state.get("entries") or []],
+    }
 
 
 async def _base_currency(session: AsyncSession, company_id: uuid.UUID) -> str:
@@ -1311,6 +1335,8 @@ async def _journal_payload(
             "status": state.get("status"),
             "je_type": state.get("je_type"),
             "void_reason": state.get("void_reason"),
+            # Set on an entry voided out of a locked period and on its reversal row.
+            "reversed_on": state.get("reversed_on"),
             "source_doc": {"doc_id": ref["doc_id"], "doc_ref": ref["doc_ref"]} if ref else None,
             "lines": lines,
             "fx": entry_fx,
@@ -1574,6 +1600,9 @@ class ManualJECreate(BaseModel):
 
 class ManualJEVoidPayload(BaseModel):
     reason: str | None = None
+    # When the entry sits in a locked period, the open date its reversal posts on;
+    # the company's business date today when not given (posting_dates.correction_day).
+    reversal_date: str | None = None
 
 
 # A ceiling on how much writing one request can ask for, so a hand-built or mis-clicked
@@ -1585,6 +1614,7 @@ _BULK_VOID_LIMIT = 200
 class BulkJEVoidPayload(BaseModel):
     je_ids: list[str]
     reason: str | None = None
+    reversal_date: str | None = None
 
 
 @router.post("/journal-entries")
@@ -1743,7 +1773,8 @@ async def create_manual_journal_entry(
     }
 
 
-async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None) -> dict:
+async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: str | None,
+                    reversal_date: str | None = None) -> dict:
     """Void one manual journal entry, committing it. Raises the refusal as HTTPException.
 
     Both the single-entry route and the bulk route go through here, so a rule about
@@ -1769,6 +1800,8 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         return {"je_id": entity_id, "status": "void", "void_reason": state.get("void_reason")}
 
     data = je_void_data(reason, state)
+    if reversal_date:
+        data["reversed_on"] = reversal_date
     await emit_event(
         session,
         company_id=company_id,
@@ -1783,7 +1816,7 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
         metadata_={},
     )
     await session.commit()
-    return {"je_id": entity_id, "status": "void", "void_reason": reason}
+    return {"je_id": entity_id, "status": "void", "void_reason": reason, "reversed_on": data.get("reversed_on")}
 
 
 @router.post("/journal-entries/bulk-void")
@@ -1818,7 +1851,7 @@ async def bulk_void_journal_entries(
         try:
             results.append(await _void_one(
                 session, company_id=company_id, actor_id=actor_id,
-                entity_id=entity_id, reason=payload.reason,
+                entity_id=entity_id, reason=payload.reason, reversal_date=payload.reversal_date,
             ))
         except HTTPException as exc:
             # Every entry starts from a clean session, whatever the one before it
@@ -1849,6 +1882,7 @@ async def void_manual_journal_entry(
     return await _void_one(
         session, company_id=company_id, actor_id=user.id,
         entity_id=entity_id, reason=payload.reason if payload else None,
+        reversal_date=payload.reversal_date if payload else None,
     )
 
 
@@ -2554,7 +2588,11 @@ async def create_bank_account(
         idem_c = f"opening:{bank.id}:c"
         idem_p = f"opening:{bank.id}:p"
         from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
-        today = datetime.now(timezone.utc).date().isoformat()
+        # The balance is as of the company's today, in its own timezone.
+        from celerp.models.company import Company
+        from celerp.services.business_time import business_date_at
+        company = await session.get(Company, company_id)
+        today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
         ob = float(payload.opening_balance)
         # Debit the bank account, credit equity (the retained earnings account)
         entries = [
@@ -2638,8 +2676,8 @@ async def patch_bank_account(
 # ---------------------------------------------------------------------------
 
 class TransferCreate(BaseModel):
-    from_bank_id: str
-    to_bank_id: str
+    from_bank_id: uuid.UUID
+    to_bank_id: uuid.UUID
     amount: FiniteFloat
     date: str  # ISO date "YYYY-MM-DD"
     description: str = ""
@@ -2660,7 +2698,7 @@ async def create_transfer(
     from_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.from_bank_id),
+                BankAccount.id == payload.from_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2672,7 +2710,7 @@ async def create_transfer(
     to_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.to_bank_id),
+                BankAccount.id == payload.to_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2685,7 +2723,7 @@ async def create_transfer(
     je_id = f"je:transfer:{uuid.uuid4()}"
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
-    memo = payload.description or f"Transfer {payload.from_bank_id[:8]} → {payload.to_bank_id[:8]}"
+    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} → {str(payload.to_bank_id)[:8]}"
     entries = [
         {"account": to_bank.chart_account_code, "debit": payload.amount, "credit": 0.0},
         {"account": from_bank.chart_account_code, "debit": 0.0, "credit": payload.amount},
@@ -2703,8 +2741,8 @@ async def create_transfer(
             "entries": entries,
             "je_type": "transfer",
             "reference": payload.reference,
-            "from_bank_account_id": payload.from_bank_id,
-            "to_bank_account_id": payload.to_bank_id,
+            "from_bank_account_id": str(payload.from_bank_id),
+            "to_bank_account_id": str(payload.to_bank_id),
         },
         actor_id=user.id,
         location_id=None,
@@ -2729,8 +2767,8 @@ async def create_transfer(
 
     return {
         "je_id": je_id,
-        "from_bank_id": payload.from_bank_id,
-        "to_bank_id": payload.to_bank_id,
+        "from_bank_id": str(payload.from_bank_id),
+        "to_bank_id": str(payload.to_bank_id),
         "amount": payload.amount,
         "date": payload.date,
         "memo": memo,
@@ -2743,7 +2781,7 @@ async def create_transfer(
 # ---------------------------------------------------------------------------
 
 class ReconciliationStart(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     statement_date: str  # "YYYY-MM-DD"
     statement_balance: FiniteFloat
 
@@ -2882,7 +2920,7 @@ async def start_reconciliation(
     bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.bank_account_id),
+                BankAccount.id == payload.bank_account_id,
                 BankAccount.company_id == company_id,
             ).with_for_update()
         )
@@ -3076,7 +3114,7 @@ class WriteOffPayload(BaseModel):
 
 
 class ReconRuleCreate(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     match_field: str = "description"
     match_pattern: str
     match_type: str = "contains"
@@ -3866,14 +3904,14 @@ async def write_off_difference(
 
 @router.get("/rules")
 async def get_recon_rules(
-    bank_account_id: str | None = None,
+    bank_account_id: uuid.UUID | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
     q = select(ReconciliationRule).where(ReconciliationRule.company_id == company_id)
     if bank_account_id:
-        q = q.where(ReconciliationRule.bank_account_id == uuid.UUID(bank_account_id))
+        q = q.where(ReconciliationRule.bank_account_id == bank_account_id)
     rows = (await db.execute(q.order_by(ReconciliationRule.created_at))).scalars().all()
     return {"items": [_rule_to_dict(r) for r in rows], "total": len(rows)}
 
@@ -3885,10 +3923,17 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    bank = (await db.execute(select(BankAccount.id).where(
+        BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
+    ))).scalar_one_or_none()
+    if bank is None:
+        raise HTTPException(status_code=404, detail=refusal(
+            "accounting.bank_not_found",
+            "That bank account was not found in this company. Choose one of the company's bank accounts."))
     rule = ReconciliationRule(
         id=uuid.uuid4(),
         company_id=company_id,
-        bank_account_id=uuid.UUID(payload.bank_account_id),
+        bank_account_id=payload.bank_account_id,
         match_field=payload.match_field,
         match_pattern=payload.match_pattern,
         match_type=payload.match_type,
@@ -4235,6 +4280,7 @@ async def set_posting_account(
     role: str,
     payload: PostingAccountIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4242,7 +4288,7 @@ async def set_posting_account(
     where they are; the earlier account stays with the role for them."""
     from celerp.services.account_roles import set_role
 
-    await set_role(session, company_id, role, payload.code)
+    await set_role(session, company_id, role, payload.code, user.id)
     await session.commit()
     return await _posting_accounts(session, company_id)
 
@@ -4297,8 +4343,15 @@ async def close_fiscal_year(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Close a fiscal year: zero revenue + expense accounts, transfer net income to Retained Earnings."""
-    company = await locked_company(session, company_id)
     year_end = payload.fiscal_year_end
+    try:
+        _require_iso_date(year_end, "fiscal_year_end")
+    except HTTPException:
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_invalid",
+            f"{year_end} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
+            value=year_end)) from None
+    company = await locked_company(session, company_id)
     # Build account balances through the year-end date
     posted = await _je_rows(session, company_id)
     balances = _build_balances(posted, None, year_end)

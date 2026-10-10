@@ -275,7 +275,7 @@ async def test_undoing_a_merge_in_a_locked_period_is_refused_and_changes_nothing
     await _lock_books(session, auth)
     r = await client.post(f"/items/{out['id']}/undo-merge", headers=auth["headers"])
     assert r.status_code == 422, r.text
-    assert "Period is locked" in r.text
+    assert "locked through" in r.text
     assert (await _reclass(session, auth, out["id"]))["status"] == "posted"
     assert (await _state(session, auth, b))["status"] == "merged"
     assert (await _state(session, auth, out["id"]))["status"] == "available"

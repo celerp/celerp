@@ -10,6 +10,7 @@ from typing import BinaryIO
 import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
+from celerp.services.company_settings import BOOKS_KEYS, GENERAL
 from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
@@ -806,14 +807,13 @@ async def get_commercial_state(token: str, timeout: float = 3.0) -> dict:
 
 async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Only the changed settings keys are sent (the API merges them),
-    so keys owned by dedicated endpoints are never echoed back through this door.
+    so keys owned by dedicated endpoints are never echoed back through this door; the
+    books settings go to their own route.
     Dashboard preferences are one nested dict, merged here with its current value;
     top-level fields (name, slug) are patched directly."""
-    _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
-                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
-                        "line_item_identifier", "getting_started_dismissed"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
-    settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
+    settings_patch = {k: v for k, v in data.items() if k in GENERAL}
+    books_patch = {k: v for k, v in data.items() if k in BOOKS_KEYS}
     dashboard_patch = {}
     # Map default_per_page to per_page for storage
     for k in _DASHBOARD_FIELDS:
@@ -821,8 +821,10 @@ async def patch_company(token: str, data: dict) -> dict:
             storage_key = "per_page" if k == "default_per_page" else k
             dashboard_patch[storage_key] = data[k]
     direct_patch = {k: v for k, v in data.items()
-                    if k not in _SETTINGS_FIELDS and k not in _DASHBOARD_FIELDS}
+                    if k not in GENERAL and k not in BOOKS_KEYS and k not in _DASHBOARD_FIELDS}
     async with _api_client(token) as c:
+        if books_patch:
+            _raise(await c.patch("/companies/me/books", json=books_patch))
         if dashboard_patch:
             current = _raise(await c.get("/companies/me")).json()
             settings_patch["dashboard"] = {**((current.get("settings") or {}).get("dashboard") or {}), **dashboard_patch}

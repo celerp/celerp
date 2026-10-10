@@ -65,3 +65,53 @@ async def test_demo_seeding_stops_with_an_error_when_a_call_fails(client: AsyncC
     with pytest.raises(SystemExit) as exit_info:
         await seed_demo.seed_items(client, "not-a-valid-token")
     assert exit_info.value.code == 1
+
+
+async def _skus(client: AsyncClient, token: str) -> list[str]:
+    r = await client.get("/items", params={"limit": 500}, headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    return [it["sku"] for it in r.json()["items"]]
+
+
+@pytest.mark.asyncio
+async def test_demo_items_land(client: AsyncClient):
+    """Every demo item the seeder reports as created is in the company's inventory."""
+    token = await _token(client)
+    wanted = sorted(row[0] for row in seed_demo._ITEMS)
+    ids = await seed_demo.seed_items(client, token)
+    assert len(ids) == len(wanted)
+    landed = await _skus(client, token)
+    assert sorted(s for s in landed if s in wanted) == wanted, landed
+    # A second run adds nothing and still succeeds.
+    assert await seed_demo.seed_items(client, token) == []
+    assert sorted(await _skus(client, token)) == sorted(landed)
+
+
+class _RejectingImport:
+    """Passes every call through, but strips sell_by from item import rows so the
+    import refuses each row inside a 200 response."""
+
+    def __init__(self, client: AsyncClient):
+        self._c = client
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+    async def post(self, url, json=None, **kw):
+        if url == "/items/import/batch" and json:
+            for rec in json.get("records", []):
+                rec["data"].pop("sell_by", None)
+        return await self._c.post(url, json=json, **kw)
+
+
+@pytest.mark.asyncio
+async def test_demo_seeding_stops_when_the_import_refuses_an_item(client: AsyncClient, capsys):
+    """A row the import refuses inside a 200 response stops the seed with the reason,
+    instead of being counted as created over an empty company."""
+    token = await _token(client)
+    with pytest.raises(SystemExit) as exit_info:
+        await seed_demo.seed_items(_RejectingImport(client), token)
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "Seeding failed at item" in err and "sell_by" in err, err
+    assert "created" not in capsys.readouterr().out

@@ -255,9 +255,14 @@ async def _receipt_without_its_record(s, company_id) -> None:
     from celerp.models.projections import Projection
     from celerp_docs.legacy_receipts import LEGACY_RECEIPTS_KEY
 
+    from celerp.models.company import Location
+
+    location = Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True)
+    s.add(location)
+    await s.flush()
     bill = f"doc:{uuid.uuid4().hex}"
     for event_type, data in (("doc.created", {"doc_type": "bill", "total": 0.0, "line_items": []}),
-                             ("doc.received", {"received_items": [], "location_id": "loc-1"})):
+                             ("doc.received", {"received_items": [], "location_id": str(location.id)})):
         await emit_event(s, company_id=company_id, entity_id=bill, entity_type="doc", event_type=event_type,
                          data=data, actor_id=None, location_id=None, source="test",
                          idempotency_key=f"test:{event_type}:{bill}", metadata_={})

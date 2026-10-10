@@ -4656,5 +4656,21 @@
   "docs.revert_imported_receipt": "この書類は下書きに戻せません。インポート時にすでに在庫にあった商品を含んでおり、それらは期首残高で計上されています。まだ保有している商品は「返品」で返品し、残りの支払額は支払いで精算してください。",
   "notice.imported_doc_cutover.waiting_title": "まだ修正されていないインポート済みの発注書と請求書",
   "notice.imported_doc_cutover.locked": "この更新前にインポートされた次の発注書と請求書はロックされた期間にあるため、まだ修正できませんでした: {numbers}。開いている日付ができるよう、設定 > 会計 で期間ロックを移動してください。修正は次回の起動時に再実行されます。",
-  "notice.imported_doc_cutover.failed": "この更新前にインポートされた次の発注書と請求書は修正できませんでした: {numbers}。それぞれを開いて明細と支払いを確認してください。修正は次回の起動時に再実行されます。"
+  "notice.imported_doc_cutover.failed": "この更新前にインポートされた次の発注書と請求書は修正できませんでした: {numbers}。それぞれを開いて明細と支払いを確認してください。修正は次回の起動時に再実行されます。",
+  "accounting.year_end_invalid": "{value} は日付ではありません。締める年度の最終日を YYYY-MM-DD 形式で入力してください。",
+  "accounting.bank_not_found": "この口座はこの会社に見つかりません。会社の銀行口座から選んでください。",
+  "location.not_found": "{value} はこの会社の保管場所ではありません。[設定] > [在庫] > [保管場所] から保管場所を選ぶか、先にそこで追加してください。",
+  "erase.locked_period": "何も消去されていません。選択した品目のうち {count} 件に、帳簿がロックされている {lock_date} 以前の履歴があります。Settings > Accounting で期間のロックを解除し、消去してから、期間を再びロックしてください。",
+  "demo.not_sample_fixture": "何も消去されていません。選択した品目のうち {count} 件にサンプルデータではない記録があるため、サンプルとしては削除されません。各品目を開き、代わりに Delete、Archive、または Write Off Stock を使ってください。",
+  "accounting.reversal_date_invalid": "取消日は YYYY-MM-DD 形式で、取り消す仕訳の日付（{entry_date}）以降の日付を選んでください。",
+  "accounting.reversal_date_locked": "{lock_date} までの期間はロックされているため、{date} には何も記帳できません。{lock_date} より後の取消日を選んでください。",
+  "accounting.reversal_no_open_date": "{lock_date} までの期間は今日を含めてロックされているため、取消を記帳できる日付がありません。Settings > Accounting でロック日を前に戻してから、もう一度お試しください。",
+  "accounting.reversal_account_missing": "この仕訳は勘定科目 {account} に記帳されていますが、その科目は勘定科目表にもうないため、取消を記帳できません。Settings > Accounting で勘定科目 {account} を追加し直してから、もう一度お試しください。",
+  "company.setting_unknown": "{key} は会社の設定ではありません。リクエストから削除して、もう一度お試しください。",
+  "company.setting_system_owned": "{key} は Celerp が管理しており、直接設定できません。リクエストから削除して、もう一度お試しください。",
+  "company.setting_has_own_route": "{key} は会社の設定では変更できません。{route} から変更してください。",
+  "company.currency_unknown": "{currency} は Celerp が認識できる通貨ではありません。一覧から通貨を選んでください。",
+  "company.currency_has_postings": "帳簿は {currency} で管理されており、すでに仕訳が計上されているため、通貨は変更できません。別の通貨で帳簿を管理するには、新しい会社を作成してください。",
+  "company.fiscal_year_start_invalid": "{value} は会計年度の開始日ではありません。月の初日を MM-01 の形式で選んでください。",
+  "company.import_vat_default_invalid": "輸入消費税の控除はオンかオフのどちらかです。true か false を送ってください。"
 }
