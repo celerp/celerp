@@ -225,6 +225,45 @@ async def test_goods_booked_now_go_back_and_the_bill_owes_less(client, session, 
     assert (await _books(session, auth, AP))[AP] == -3 * PRICE
 
 
+async def _lock(client, auth, day: str = "2026-06-30") -> None:
+    r = await client.post("/accounting/period-lock", headers=auth["headers"], json={"lock_date": day})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("treatment", ["opening_balances", "record_now"])
+async def test_a_locked_period_bill_is_booked_once_under_either_treatment(client, session, auth, treatment):
+    """L3-06: a bill imported with its treatment and then locked into a closed period is not
+    booked again by the start-up correction of earlier imports: payables, stock and the
+    ledger stay where the import left them."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    if treatment == "opening_balances":
+        await _opening(client, auth, *_owed("bill", 5, 2))
+    rec = _rec(_snapshot(lot, "bill", 5, 2), treatment)
+    assert (await _post(client, auth, rec, False)).status_code == 200
+    await _lock(client, auth)
+    before, lot_before, n = await _books(session, auth, AP), await _lot(session, auth, lot), await _events(session, auth)
+    result = await _repair(session)
+    assert (result["corrected"], result["deferred"]) == (0, 0), result
+    assert await _events(session, auth) == n
+    assert await _books(session, auth, AP) == before
+    assert await _lot(session, auth, lot) == lot_before
+    await _check(session, auth, [rec["entity_id"]], "locked, after the start-up correction")
+
+
+async def test_record_now_dated_in_a_locked_period_is_refused_and_writes_nothing(client, session, auth):
+    """Booking now posts on the bill's own date; inside a locked period that is refused,
+    so nothing is booked and the import can be resent once the date is open."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    await _lock(client, auth)
+    n, before = await _events(session, auth), await _books(session, auth, AP)
+    rec = _rec(_snapshot(lot, "bill", 5, 2), "record_now")
+    r = await _post(client, auth, rec, False)
+    assert r.status_code == 422 and "locked" in r.text.lower(), r.text
+    assert await _events(session, auth) == n
+    assert await _books(session, auth, AP) == before
+    assert await _state(session, auth, rec["entity_id"]) == {}
+
+
 async def test_a_staged_migration_needs_no_treatment(client, session, auth):
     from celerp_docs import import_service
     from celerp_docs.routes import DocImportRecord
