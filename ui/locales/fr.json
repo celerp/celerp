@@ -323,7 +323,6 @@
   "btn.restore": "Restaurer",
   "btn.resume": "Reprendre",
   "btn.retry": "Réessayer",
-  "btn.revert_fulfillment": "Annuler la livraison",
   "btn.revert_goods_received": "Annuler la réception des marchandises",
   "btn.revert_return_stock": "Annuler le retour en stock",
   "btn.save": "Enregistrer",

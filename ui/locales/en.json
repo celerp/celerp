@@ -350,7 +350,6 @@
   "btn.restore": "Restore",
   "btn.resume": "Resume",
   "btn.retry": "Retry",
-  "btn.revert_fulfillment": "Revert Fulfillment",
   "btn.revert_goods_received": "Revert Goods Received",
   "btn.revert_return_stock": "Revert Return Stock",
   "btn.revoke": "Revoke",

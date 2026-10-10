@@ -323,7 +323,6 @@
   "btn.restore": "يعيد",
   "btn.resume": "استئناف",
   "btn.retry": "أعد المحاولة",
-  "btn.revert_fulfillment": "التراجع عن تنفيذ الطلب",
   "btn.revert_goods_received": "التراجع عن استلام البضاعة",
   "btn.revert_return_stock": "التراجع عن إرجاع المخزون",
   "btn.save": "يحفظ",

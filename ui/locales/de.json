@@ -323,7 +323,6 @@
   "btn.restore": "Wiederherstellen",
   "btn.resume": "Fortsetzen",
   "btn.retry": "Erneut versuchen",
-  "btn.revert_fulfillment": "Auslieferung rückgängig machen",
   "btn.revert_goods_received": "Wareneingang rückgängig machen",
   "btn.revert_return_stock": "Retourlager rückgängig machen",
   "btn.save": "Speichern",

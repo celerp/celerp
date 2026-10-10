@@ -323,7 +323,6 @@
   "btn.restore": "คืนค่า",
   "btn.resume": "ดำเนินการต่อ",
   "btn.retry": "ลองอีกครั้ง",
-  "btn.revert_fulfillment": "ย้อนกลับการจัดส่ง",
   "btn.revert_goods_received": "ยกเลิกการรับสินค้า",
   "btn.revert_return_stock": "ยกเลิกการคืนสต็อก",
   "btn.save": "บันทึก",

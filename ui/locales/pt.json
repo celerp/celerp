@@ -323,7 +323,6 @@
   "btn.restore": "Restaurar",
   "btn.resume": "Retomar",
   "btn.retry": "Tentar novamente",
-  "btn.revert_fulfillment": "Reverter processamento do pedido",
   "btn.revert_goods_received": "Reverter recebimento de mercadorias",
   "btn.revert_return_stock": "Reverter devolução ao estoque",
   "btn.save": "Salvar",

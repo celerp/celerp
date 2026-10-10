@@ -323,7 +323,6 @@
   "btn.restore": "復元する",
   "btn.resume": "再開",
   "btn.retry": "リトライ",
-  "btn.revert_fulfillment": "出荷を元に戻す",
   "btn.revert_goods_received": "入荷を元に戻す",
   "btn.revert_return_stock": "返品在庫を元に戻す",
   "btn.save": "保存",
