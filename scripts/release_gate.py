@@ -40,21 +40,31 @@ def _api() -> str:
     return f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions"
 
 
+def api_get(url: str) -> tuple[object, str]:
+    """One GitHub API response: its JSON body and the URL of its next page, if any."""
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"token {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.load(response)
+            link = response.headers.get("Link") or ""
+    except urllib.error.HTTPError as e:
+        raise Refused(f"GitHub API returned HTTP {e.code} for {url}") from e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise Refused(f"GitHub API request failed for {url}: {e}") from e
+    return body, next(iter(re.findall(r'<([^>]+)>; *rel="next"', link)), "")
+
+
 def _list(url: str, key: str) -> list[dict]:
     """Every item of a paginated list, following GitHub's Link header."""
     items: list[dict] = []
     while url:
-        request = urllib.request.Request(url, headers={
-            "Authorization": f"token {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json"})
+        body, following = api_get(url)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                items += json.load(response)[key]
-                link = response.headers.get("Link") or ""
-        except urllib.error.HTTPError as e:
-            raise Refused(f"GitHub API returned HTTP {e.code} for {url}") from e
-        except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
+            items += body[key]
+        except (KeyError, TypeError) as e:
             raise Refused(f"GitHub API request failed for {url}: {e}") from e
-        url = next(iter(re.findall(r'<([^>]+)>; *rel="next"', link)), "")
+        url = following
     return items
 
 

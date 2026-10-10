@@ -440,9 +440,30 @@ def test_packaged_build_checks_its_modules_and_boots_with_every_locked_module():
 
 
 def test_packaged_upgrade_smoke_runs_nightly_and_on_demand_only():
+    """The nightly build of main starts the check when it completes, whatever its
+    conclusion, so a failed build fails the check instead of skipping it; a manual
+    run names its build. Both take the same candidate checks before either platform."""
+    build = _workflow("build.yml")[True]  # YAML 1.1 reads the bare key `on` as True
+    assert build["schedule"] == [{"cron": "17 3 * * *"}]
     wf = _workflow("packaged-upgrade-smoke.yml")
-    triggers = wf[True]  # YAML 1.1 reads the bare key `on` as True
-    assert set(triggers) == {"schedule", "workflow_dispatch"}
-    steps = [s.get("name") for s in wf["jobs"]["upgrade"]["steps"]]
+    triggers = wf[True]
+    assert set(triggers) == {"workflow_run", "workflow_dispatch"}
+    assert triggers["workflow_run"] == {"workflows": ["Build Binaries"], "types": ["completed"], "branches": ["main"]}
+    assert triggers["workflow_dispatch"]["inputs"]["candidate_run"]["required"] is True
+    candidate = wf["jobs"]["candidate"]
+    assert candidate["if"] == ("github.event_name == 'workflow_dispatch' || "
+                               "github.event.workflow_run.event == 'schedule'")
+    check = candidate["steps"][-1]
+    assert check["run"] == 'python3 scripts/upgrade_candidate.py check "$CANDIDATE_RUN" $CANDIDATE_BRANCH'
+    assert check["env"]["CANDIDATE_RUN"] == "${{ github.event.workflow_run.id || inputs.candidate_run }}"
+    assert check["env"]["CANDIDATE_BRANCH"] == "${{ github.event_name == 'workflow_run' && 'main' || '' }}"
+    upgrade = wf["jobs"]["upgrade"]
+    assert upgrade["needs"] == "candidate"
+    assert upgrade["env"]["CANDIDATE_RUN"] == "${{ needs.candidate.outputs.run }}"
+    runs = "\n".join(s.get("run", "") for s in upgrade["steps"])
+    assert "gh run list" not in runs and "dev-latest" not in runs
+    assert 'python3 scripts/upgrade_candidate.py newer "$(version candidate)" "$PREVIOUS_VERSION"' in runs
+    assert "python scripts/upgrade_candidate.py newer $new $env:PREVIOUS_VERSION" in runs
+    steps = [s.get("name") for s in upgrade["steps"]]
     assert "Previous, candidate, downgrade, reopen (Linux, data)" in steps
     assert "Previous, candidate, downgrade, in-app update run (Windows, install)" in steps

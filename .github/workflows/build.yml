@@ -6,13 +6,17 @@ on:
     branches: ["develop", "bugfix"]
   pull_request:
     branches: ["main"]   # mac-only unsigned build + boot smoke (pre-tag gate)
+  # Nightly Linux and Windows build of main; its completion starts the packaged
+  # upgrade check (packaged-upgrade-smoke.yml) on this run's binaries.
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Platforms to build on this manual run"
+        description: "Platforms to build on this manual run (linux-windows: what the nightly builds)"
         type: choice
         default: all
-        options: [all, windows, linux, mac]
+        options: [all, linux-windows, windows, linux, mac]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -67,7 +71,8 @@ jobs:
             *) echo "ERROR: PyPI lookup returned HTTP $STATUS" >&2; exit 1 ;;
           esac
 
-  # Compute the build matrix: the bugfix branch and pull requests build macOS only.
+  # Compute the build matrix: the bugfix branch and pull requests build macOS only,
+  # the nightly schedule Linux and Windows only.
   # Bugfix pushes use the normal signed-dev path; pull requests remain unsigned
   # because signing credentials must not be exposed to PR workflows.
   setup-matrix:
@@ -77,20 +82,24 @@ jobs:
     steps:
       - id: gen
         shell: bash
+        env:
+          PLATFORMS: ${{ github.event.inputs.platforms }}
         run: |
           mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
           win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
           lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
-          sel="${{ github.event.inputs.platforms }}"
+          sel="$PLATFORMS"
+          [ "$GITHUB_EVENT_NAME" = "schedule" ] && sel=linux-windows
           if [ -n "$sel" ] && [ "$sel" != "all" ]; then
             case "$sel" in
+              linux-windows) inc="$lin,$win" ;;
               windows) inc="$win" ;;
               linux)   inc="$lin" ;;
               mac)     inc="$mac" ;;
               *)       inc="$lin,$win,$mac" ;;
             esac
             echo "matrix={\"include\":[$inc]}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_name }}" = "bugfix" ] || [ "${{ github.event_name }}" = "pull_request" ]; then
+          elif [ "$GITHUB_REF_NAME" = "bugfix" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
           else
             echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"

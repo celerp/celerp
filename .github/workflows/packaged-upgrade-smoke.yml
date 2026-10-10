@@ -12,16 +12,24 @@ name: Packaged Upgrade Smoke
 # updater makes (--updated). The pip updater, its state file and a 2.5.0 data
 # directory are covered by scripts/e2e_update.py (E6).
 #
-# The candidate is the newest successful Build Binaries run on main that carries
-# the platform's binaries, or the run given as candidate_run; it must be built
-# from a commit after the previous release, so the job never tests a downgrade as
-# an upgrade. Releases before GUARDED_SINCE do not check the version of an
-# install or of the data before opening it, so with such a release as "previous"
-# the downgrade step reports what happened and asserts nothing.
+# The candidate is one Build Binaries run, so Linux and Windows test the same
+# commit: the nightly build of main when it completes, or the run given as
+# candidate_run. Both take the same checks (scripts/upgrade_candidate.py) before
+# either platform starts: the run succeeded, it built the commit its branch
+# pointed at when the run was created, and it carries both platforms' binaries.
+# A failed or incomplete nightly build fails this workflow, it is never skipped.
+# Each platform then checks that the installed candidate is newer than the
+# previous release, so the job never tests a downgrade as an upgrade. Releases
+# before GUARDED_SINCE do not check the version of an install or of the data
+# before opening it, so with such a release as "previous" the downgrade step
+# reports what happened and asserts nothing.
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
+  # Runs from the default branch's copy of this file only.
+  workflow_run:
+    workflows: ["Build Binaries"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       previous:
@@ -29,9 +37,9 @@ on:
         type: string
         default: ""
       candidate_run:
-        description: "Build Binaries run id to take the candidate from (blank: the newest successful main build)"
+        description: "Build Binaries run id to take the candidate from"
         type: string
-        default: ""
+        required: true
 
 permissions:
   contents: read
@@ -41,7 +49,30 @@ env:
   GUARDED_SINCE: "2.5.4"
 
 jobs:
+  candidate:
+    # The nightly is the scheduled build; other builds of main are not candidates.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+      previous: ${{ steps.check.outputs.previous }}
+      previous_version: ${{ steps.check.outputs.previous_version }}
+      guarded: ${{ steps.check.outputs.guarded }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the candidate build
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS: ${{ inputs.previous }}
+          CANDIDATE_RUN: ${{ github.event.workflow_run.id || inputs.candidate_run }}
+          # The nightly must be a build of main; an ad hoc run may name any branch's build.
+          CANDIDATE_BRANCH: ${{ github.event_name == 'workflow_run' && 'main' || '' }}
+        run: python3 scripts/upgrade_candidate.py check "$CANDIDATE_RUN" $CANDIDATE_BRANCH
+
   upgrade:
+    needs: candidate
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +87,10 @@ jobs:
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
+      PREVIOUS: ${{ needs.candidate.outputs.previous }}
+      PREVIOUS_VERSION: ${{ needs.candidate.outputs.previous_version }}
+      PREVIOUS_GUARDED: ${{ needs.candidate.outputs.guarded }}
+      CANDIDATE_RUN: ${{ needs.candidate.outputs.run }}
     steps:
       - uses: actions/checkout@v7
 
@@ -64,29 +99,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/previous" "$RUNNER_TEMP/candidate"
-          PREVIOUS="${{ inputs.previous }}"
-          [ -n "$PREVIOUS" ] || PREVIOUS=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
           gh release download "$PREVIOUS" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.asset }}" --dir "$RUNNER_TEMP/previous"
-          CANDIDATE="${{ inputs.candidate_run }}"
-          if [ -z "$CANDIDATE" ]; then
-            for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --branch main --status success --limit 50 \
-                --json databaseId,event -q '.[] | select(.event != "pull_request") | .databaseId'); do
-              found=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?name=${{ matrix.artifact }}" -q '[.artifacts[] | select(.expired | not)] | length')
-              if [ "$found" -gt 0 ]; then CANDIDATE=$run; break; fi
-            done
-            [ -n "$CANDIDATE" ] || { echo "::error::no successful Build Binaries run on main carries ${{ matrix.artifact }}"; exit 1; }
-          fi
-          gh run download "$CANDIDATE" --repo "$GITHUB_REPOSITORY" --name "${{ matrix.artifact }}" --dir "$RUNNER_TEMP/candidate"
-          CANDIDATE_SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE" -q .head_sha)
-          [ "$(gh api "repos/$GITHUB_REPOSITORY/compare/$PREVIOUS...$CANDIDATE_SHA" -q .status)" = ahead ] ||
-            { echo "::error::candidate run $CANDIDATE (commit $CANDIDATE_SHA) is not built from a commit after $PREVIOUS"; exit 1; }
-          BEHIND=$(gh api "repos/$GITHUB_REPOSITORY/compare/$CANDIDATE_SHA...main" -q .ahead_by)
-          PREVIOUS_VERSION="${PREVIOUS#v}"
-          GUARDED=false
-          [ "$(printf '%s\n%s\n' "$GUARDED_SINCE" "$PREVIOUS_VERSION" | sort -V | head -1)" = "$GUARDED_SINCE" ] && GUARDED=true
-          echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> "$GITHUB_ENV"
-          echo "PREVIOUS_GUARDED=$GUARDED" >> "$GITHUB_ENV"
-          echo "previous $PREVIOUS (checks before opening: $GUARDED); candidate run $CANDIDATE, commit $CANDIDATE_SHA, $BEHIND commits behind main"
+          gh run download "$CANDIDATE_RUN" --repo "$GITHUB_REPOSITORY" --name "${{ matrix.artifact }}" --dir "$RUNNER_TEMP/candidate"
+          [ -s "$RUNNER_TEMP/candidate/${{ matrix.asset }}" ] || { echo "::error::build run $CANDIDATE_RUN's ${{ matrix.artifact }} holds no ${{ matrix.asset }}"; exit 1; }
 
       # Data: each copy opens the same data directory in turn.
       - name: Previous, candidate, downgrade, reopen (Linux, data)
@@ -139,7 +154,7 @@ jobs:
           echo "previous: opened fresh data, $(cat "$RUNNER_TEMP/previous.seed")"
           state=$(open_data "$RUNNER_TEMP/candidate/Celerp.AppImage" 240 candidate snapshot)
           [ "$state" = ready ] || { tail -100 "$RUNNER_TEMP/candidate.log"; cat "$RUNNER_TEMP/candidate.snapshot" 2>/dev/null || true; echo "::error::candidate did not open the previous release's data ($state)"; exit 1; }
-          [ "$(version candidate)" != "$(version previous)" ] || { echo "::error::candidate reports the previous release's version $(version previous)"; exit 1; }
+          python3 scripts/upgrade_candidate.py newer "$(version candidate)" "$PREVIOUS_VERSION"
           # The previous release may not serve every module page on fresh data (2.5.3
           # answers 404 there), so the ledger must match exactly, every page it served
           # must match, and the candidate must serve every page.
@@ -207,7 +222,9 @@ jobs:
 
           $code = Install $candidate @("/S", "/currentuser")
           $new = Installed
-          if ($code -ne 0 -or $new -eq $old) { Fail "candidate over $old exited $code, entry $new" }
+          if ($code -ne 0) { Fail "candidate over $old exited $code, entry $new" }
+          python scripts/upgrade_candidate.py newer $new $env:PREVIOUS_VERSION
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           Write-Host "candidate: updated $old to $new"
 
           Set-Content -Encoding Ascii (Join-Path (InstallDir) "celerp-ci-sentinel.txt") "candidate install"

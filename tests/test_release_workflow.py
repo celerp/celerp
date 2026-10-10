@@ -411,3 +411,161 @@ def test_the_github_release_reads_every_page_of_jobs(tmp_path, github):
     code, out, calls = _run_job(tmp_path, "build.yml", "publish-release", GITHUB_API_URL=github.url)
     assert code == 0, out
     assert any("PATCH" in c and "releases/7" in c for c in calls), calls
+
+
+# ---------------------------------------------------------------------------
+# The nightly build and the candidate the packaged upgrade check installs
+# ---------------------------------------------------------------------------
+
+def _matrix(tmp_path: Path, event: str, platforms: str = "", ref_name: str = "main") -> list[str]:
+    step = next(s for s in _steps("build.yml", "setup-matrix") if s.get("id") == "gen")
+    out = tmp_path / "github_output"
+    r = _run(tmp_path, step["run"], _env(tmp_path, GITHUB_EVENT_NAME=event, GITHUB_REF_NAME=ref_name,
+                                         PLATFORMS=platforms, GITHUB_OUTPUT=str(out)))
+    assert r.returncode == 0, r.stdout + r.stderr
+    line = out.read_text().strip()
+    return [m["os"] for m in json.loads(line.removeprefix("matrix="))["include"]]
+
+
+@pytest.mark.parametrize("event,platforms,built", [
+    ("schedule", "", ["ubuntu-latest", "windows-latest"]),
+    ("workflow_dispatch", "linux-windows", ["ubuntu-latest", "windows-latest"]),
+    ("workflow_dispatch", "all", ["ubuntu-latest", "windows-latest", "macos-latest"]),
+    ("workflow_dispatch", "linux", ["ubuntu-latest"]),
+    ("pull_request", "", ["macos-latest"]),
+    ("push", "", ["ubuntu-latest", "windows-latest", "macos-latest"]),
+])
+def test_the_nightly_builds_linux_and_windows_only(tmp_path, event, platforms, built):
+    assert _matrix(tmp_path, event, platforms) == built
+
+
+_CANDIDATE = 37700000001
+_HEAD, _OLD = "a" * 40, "b" * 40
+_REPO = "/repos/celerp/celerp"
+
+
+def _candidate_run(**fields) -> dict:
+    return {"id": _CANDIDATE, "name": "Build Binaries", "path": ".github/workflows/build.yml", "head_branch": "main",
+            "head_sha": _HEAD, "event": "schedule", "status": "completed", "conclusion": "success",
+            "created_at": "2026-10-11T03:17:05Z", **fields}
+
+
+def _artifact(name: str, **fields) -> dict:
+    return {"name": name, "expired": False, "size_in_bytes": 400_000_000, **fields}
+
+
+def _serve_candidate(github, run: dict, artifacts: list[dict] | None = None, activity: list[dict] | None = None,
+                     latest: str = "v2.5.4") -> None:
+    if artifacts is None:
+        artifacts = [_artifact("binaries-ubuntu-latest"), _artifact("binaries-windows-latest")]
+    if activity is None:
+        # main moved on after the run was created; the run built the head before that.
+        activity = [{"timestamp": "2026-10-11T04:00:00Z", "after": "c" * 40, "before": _HEAD},
+                    {"timestamp": "2026-10-10T12:23:11Z", "after": _HEAD, "before": _OLD}]
+    github.pages[f"{_REPO}/actions/runs/{_CANDIDATE}"] = [(200, run)]
+    github.pages[f"{_REPO}/actions/runs/{_CANDIDATE}/artifacts"] = [
+        (200, {"total_count": len(artifacts), "artifacts": artifacts})]
+    github.pages[f"{_REPO}/activity"] = [(200, activity)]
+    github.pages[f"{_REPO}/releases/latest"] = [(200, {"tag_name": latest})]
+    github.pages[f"{_REPO}/releases/tags/v2.5.3"] = [(200, {"tag_name": "v2.5.3"})]
+
+
+def _check(tmp_path, github, *args: str, **env: str) -> tuple[int, str, str]:
+    out = tmp_path / "github_output"
+    r = subprocess.run(["python3", "scripts/upgrade_candidate.py", "check", *args], capture_output=True, text=True,
+                       cwd=_WORKFLOWS.parent.parent,
+                       env=_env(tmp_path, **{"GITHUB_API_URL": github.url, "GITHUB_OUTPUT": str(out),
+                                             "GUARDED_SINCE": "2.5.4", "PREVIOUS": "", **env}))
+    return r.returncode, r.stdout + r.stderr, out.read_text() if out.exists() else ""
+
+
+def test_the_nightly_candidate_is_the_successful_build_of_main_with_both_platforms(tmp_path, github):
+    _serve_candidate(github, _candidate_run())
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), "main")
+    assert code == 0, out
+    assert outputs.splitlines() == [f"run={_CANDIDATE}", f"sha={_HEAD}", "previous=v2.5.4", "previous_version=2.5.4",
+                                    "guarded=true", "branch=main"]
+    assert f"{_REPO}/activity?ref=refs%2Fheads%2Fmain&per_page=100" in github.calls
+
+
+def test_a_manual_candidate_takes_the_same_checks_against_its_own_branch(tmp_path, github):
+    _serve_candidate(github, _candidate_run(head_branch="ci/nightly", event="workflow_dispatch"))
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), PREVIOUS="v2.5.3")
+    assert code == 0, out
+    assert "previous=v2.5.3\nprevious_version=2.5.3\nguarded=false\n" in outputs
+    assert f"{_REPO}/activity?ref=refs%2Fheads%2Fci%2Fnightly&per_page=100" in github.calls
+
+
+@pytest.mark.parametrize("fields,message", [
+    ({"conclusion": "failure"}, "conclusion failure; only a successful build is a candidate"),
+    ({"conclusion": "cancelled"}, "conclusion cancelled"),
+    ({"status": "in_progress", "conclusion": None}, "is in_progress"),
+    ({"path": ".github/workflows/ci.yml"}, "not Build Binaries"),
+    ({"head_branch": "develop"}, "built develop, not main"),
+    ({"head_sha": _OLD}, f"built {_OLD}, but main pointed at {_HEAD} when the run was created"),
+], ids=["build failed", "build cancelled", "build running", "other workflow", "other branch", "not the head"])
+def test_a_build_that_is_not_the_nightly_head_or_did_not_succeed_fails_the_check(tmp_path, github, fields, message):
+    _serve_candidate(github, _candidate_run(**fields))
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), "main")
+    assert code == 1, out
+    assert f"::error::" in out and message in out
+    assert outputs == ""
+
+
+@pytest.mark.parametrize("artifacts,missing", [
+    ([_artifact("binaries-ubuntu-latest")], "binaries-windows-latest"),
+    ([_artifact("binaries-windows-latest")], "binaries-ubuntu-latest"),
+    ([_artifact("binaries-ubuntu-latest", expired=True), _artifact("binaries-windows-latest")], "binaries-ubuntu-latest"),
+    ([_artifact("binaries-ubuntu-latest"), _artifact("binaries-windows-latest", size_in_bytes=0)],
+     "binaries-windows-latest"),
+    ([], "binaries-ubuntu-latest, binaries-windows-latest"),
+], ids=["no windows", "no linux", "linux expired", "windows empty", "none"])
+def test_a_build_missing_either_platform_fails_the_check(tmp_path, github, artifacts, missing):
+    _serve_candidate(github, _candidate_run(), artifacts=artifacts)
+    code, out, _ = _check(tmp_path, github, str(_CANDIDATE), "main")
+    assert code == 1, out
+    assert f"build run {_CANDIDATE} carries no {missing}" in out
+
+
+def test_a_branch_with_no_recorded_head_before_the_run_fails_the_check(tmp_path, github):
+    _serve_candidate(github, _candidate_run(), activity=[{"timestamp": "2026-10-11T04:00:00Z", "after": _HEAD}])
+    code, out, _ = _check(tmp_path, github, str(_CANDIDATE), "main")
+    assert code == 1, out
+    assert "no change to main at or before 2026-10-11T03:17:05Z" in out
+
+
+@pytest.mark.parametrize("path", [f"actions/runs/{_CANDIDATE}", "activity", f"actions/runs/{_CANDIDATE}/artifacts",
+                                  "releases/latest"])
+def test_the_check_fails_when_the_github_api_fails(tmp_path, github, path):
+    _serve_candidate(github, _candidate_run())
+    github.pages[f"{_REPO}/{path}"] = [(502, {"message": "Bad Gateway"})]
+    code, out, outputs = _check(tmp_path, github, str(_CANDIDATE), "main")
+    assert code == 1, out
+    assert "GitHub API returned HTTP 502" in out
+    assert outputs == ""
+
+
+@pytest.mark.parametrize("run_id", ["", "latest", "1; echo x"])
+def test_the_check_refuses_a_malformed_run_id(tmp_path, github, run_id):
+    code, out, _ = _check(tmp_path, github, run_id)
+    assert code == 1, out
+    assert "is not a run id" in out
+    assert github.calls == []
+
+
+@pytest.mark.parametrize("installed,previous,is_newer", [
+    ("2.5.5-dev.3+g1a2b3c4", "2.5.4", True),
+    ("2.6.0", "v2.5.9", True),
+    ("2.5.10-dev.1+g1a2b3c4", "2.5.9", True),
+    ("2.5.4", "2.5.4", False),
+    ("2.5.4-dev.3+g1a2b3c4", "2.5.4", False),  # built before the release it carries the number of
+    ("2.4.1-dev.12+g1a2b3c4", "2.5.3", False),
+    ("not-a-version", "2.5.3", False),
+    ("", "2.5.3", False),
+])
+def test_the_installed_candidate_must_be_newer_than_the_previous_release(installed, previous, is_newer):
+    r = subprocess.run(["python3", "scripts/upgrade_candidate.py", "newer", installed, previous],
+                       capture_output=True, text=True, cwd=_WORKFLOWS.parent.parent)
+    assert (r.returncode == 0) is is_newer, r.stdout + r.stderr
+    if not is_newer:
+        assert "::error::" in r.stdout
