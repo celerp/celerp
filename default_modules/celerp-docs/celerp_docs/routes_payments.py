@@ -95,17 +95,15 @@ async def require_online_deposit_account(session: AsyncSession, company_id, code
     archived or retyped while a payment posts to them."""
     from celerp_accounting.models import BankAccount
     default = await resolve(session, company_id, AccountRole.DEFAULT_DEPOSIT)
-    try:
-        if code != default and (await session.execute(select(BankAccount.id).where(
-                BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
-                BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
-            raise HTTPException(status_code=422, detail="No active bank account uses it.")
-        await require_settlement_account(session, company_id, code)
-    except HTTPException as refused:
-        reason = refused.detail["message"] if isinstance(refused.detail, dict) else refused.detail
-        raise HTTPException(status_code=422, detail=(
-            f"Online payments can be deposited only to the default deposit account ({default}) or an active "
-            f"bank account; '{code}' is neither. {reason}")) from None
+    if code != default and (await session.execute(select(BankAccount.id).where(
+            BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
+            BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
+        raise HTTPException(status_code=422, detail=refusal(
+            "documents.err_deposit_account_refused",
+            f"Account {code} can't receive online payments because it isn't the default deposit "
+            f"account ({default}) or an active bank account. Choose one of your bank accounts, or "
+            "the default deposit account.", code=code, default=default))
+    await require_settlement_account(session, company_id, code)
 
 
 _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")

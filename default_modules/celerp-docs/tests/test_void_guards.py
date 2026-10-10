@@ -94,7 +94,7 @@ async def test_void_blocked_on_received_bill(client):
 
     r = await client.post(f"/docs/{doc}/void", headers=_h(t), json={})
     assert r.status_code == 409
-    assert "return the goods" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t_("docs.void_received_items", "en")
 
 
 @pytest.mark.asyncio

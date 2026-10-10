@@ -173,11 +173,10 @@ STALE_PREVIEW = "company_backup.err_stale_preview"
 ATTACHMENT_MISSING = "company_backup.err_attachment_missing"
 MODULES_REQUIRED = "company_backup.err_modules_required"
 NAME_TAKEN = "company_backup.err_name_taken"
-# Refusals main added after the locale keys above, still in English.
-OLDER = "This company backup was made by an older version of Celerp and cannot be restored here." + _NOT_RESTORED
-RESHAPED = "The structure of {table} changed while it was being backed up." + _NOT_BACKED_UP + " Try again."
-RESTORE_RUNNING = "A restore of this backup is already running." + _NOT_RESTORED
-OTHER_RESTORE_RUNNING = "A restore of another backup of this company is already running." + _NOT_RESTORED
+OLDER = "company_backup.err_older"
+RESHAPED = "company_backup.err_reshaped"
+RESTORE_RUNNING = "company_backup.err_restore_running"
+OTHER_RESTORE_RUNNING = "company_backup.err_other_restore_running"
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RAW_NUL = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000")
@@ -674,7 +673,7 @@ async def _unchanged(session: AsyncSession, plan: _Plan, lock) -> None:
     reshaped, or given other columns or keys since ``plan`` was made."""
     changed = await lock(session, plan.order) or await _committed_shape(plan)
     if changed:
-        raise BackupError(409, RESHAPED.format(table=changed))
+        raise BackupError(409, t(RESHAPED, table=changed))
 
 
 async def _export_company(session: AsyncSession, company_id, partial: Path, *, provenance: dict | None) -> dict:
@@ -776,7 +775,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
         # A table whose columns changed meanwhile can fail to read, e.g. once a type it
         # uses is renamed; that is answered as the change it is.
         if isinstance(exc, DBAPIError) and (changed := await _committed_shape(plan)):
-            raise BackupError(409, RESHAPED.format(table=changed)) from None
+            raise BackupError(409, t(RESHAPED, table=changed)) from None
         raise
     return manifest
 
@@ -1020,7 +1019,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
     m = backup.manifest
     source = m["company"]["id"]
     carried = set(order)
-    unreadable = OLDER if _older(m) else t(DAMAGED)
+    unreadable = t(OLDER) if _older(m) else t(DAMAGED)
     files = {f["url"] for f in m["attachments"]}
 
     def check_files(value) -> None:
@@ -1124,7 +1123,7 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
         if name in plan.refused:
             raise _unsupported(await db_catalog.label(session, name), plan.owners.get(name), restoring=True)
         if name not in plan.order:
-            raise BackupError(422, OLDER if _older(backup.manifest) else t(NEWER))
+            raise BackupError(422, t(OLDER) if _older(backup.manifest) else t(NEWER))
     order = [t for t in plan.order if t in tables]
     ids, digests, others = await asyncio.to_thread(_scan_rows, backup, order, plan)
     await _check_foreign(session, plan, backup.manifest["company"]["id"], others)
@@ -1207,9 +1206,9 @@ async def _claim(session: AsyncSession, backup_id: str, source: str) -> None:
     """Claim this backup and the company it was made from for this transaction's restore,
     refusing at once while another restore of either runs: two of them would create the
     same company twice, or one under the same web address the other is creating."""
-    for key, refusal in ((backup_id, RESTORE_RUNNING), (f"source:{source}", OTHER_RESTORE_RUNNING)):
+    for key, refusal_key in ((backup_id, RESTORE_RUNNING), (f"source:{source}", OTHER_RESTORE_RUNNING)):
         if not await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _lock_key(key)}):
-            raise BackupError(409, refusal)
+            raise BackupError(409, t(refusal_key))
 
 
 async def _is_member(session: AsyncSession, user_id, company_id) -> bool:

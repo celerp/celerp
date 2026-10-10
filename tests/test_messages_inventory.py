@@ -165,7 +165,7 @@ _REWRITTEN = [
 @pytest.mark.parametrize("key", [
     "inventory.err_sku_comma", "inventory.err_fields_restricted", "inventory.err_price_derived",
     "inventory.err_merge_linked", "inventory.err_import_not_reversible", "inventory.err_store_product_taken",
-    "manufacturing.err_recipe_cycle", "manufacturing.err_issue_before_complete", "manufacturing.err_run_closed",
+    "mfg.recipe_cycle", "manufacturing.err_issue_before_complete", "manufacturing.err_run_closed",
     *_REWRITTEN,
 ])
 def test_rewritten_inventory_messages_exist_in_every_language(key):
