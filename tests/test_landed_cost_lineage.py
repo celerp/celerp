@@ -17,6 +17,11 @@ return and a revert take off the books.
   price; the units that stay keep their own cost and their own freight.
 - In a foreign currency, the partial returns of a bill take off accounts payable its share of
   the bill in the company's currency, so accounts payable follows what is still owed.
+- A lot made by a transform is a different product, however it was recorded: a transform's
+  product from before transforms stopped inheriting split_from cannot go back on the bill,
+  and is not a part of the receipt still on hand.
+- Another bill's goods going back take this receipt's units with them only beyond that
+  bill's own units still in the lot at the time.
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ from test_cost_restatement import _state
 from test_landed_cost_pools import _b, _inv, _po_into, _post, _received, _sell
 from test_landed_cost_removals import _audit, _seed, _split, _writeoff
 from test_landed_cost_structural import (LEGS, _ROOT, _callers, _counted_lot, _family, _goods,
-                                         _refused_units_sold, _undo)
+                                         _refused_units_sold, _transformed, _undo)
 from test_money_stock_and_contact_invariants import _account_net
 from test_receipt_accounting import _return
 
@@ -341,3 +346,70 @@ async def test_returning_a_bill_one_unit_at_a_time_ends_exactly(client, session,
         assert r.status_code == 200, r.text
         await _ap_follows(session, auth, [doc], rate, f"return {i}")
     await _inv(client, session, auth, doc, rate=rate, step="all back")
+
+
+# ── A transform's product from before transforms stopped inheriting split_from ──
+
+async def _transformed_before(client, session, auth, field: str):
+    """A bill of 5 at 10.00 received, 2 split off and transformed into 10, the product recorded
+    the way transforms recorded it before: carrying the split_from of the lot it was made from.
+    ``field`` "kept" also keeps transformed_from; "gone" leaves only the ledger's transform;
+    "new" leaves the product as transforms record it now."""
+    from celerp.models.projections import Projection
+
+    doc, lot, kid, made = await _transformed(client, session, auth, 10)
+    if field == "new":
+        return doc, lot, made
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": made})
+    state = {**row.state, "split_from": lot}
+    if field == "gone":
+        state.pop("transformed_from", None)
+    row.state = state
+    await session.commit()
+    return doc, lot, made
+
+
+@pytest.mark.parametrize("field", ["new", "kept", "gone"])
+async def test_an_older_transform_product_cannot_go_back_on_the_bill(client, session, auth, field):
+    doc, lot, made = await _transformed_before(client, session, auth, field)
+    before = await _b(session, auth, *LEGS)
+    r = await _return(client, auth, doc, made, 5)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "docs.return_lot_transformed", r.text
+    assert await _b(session, auth, *LEGS) == before
+    assert (await _return(client, auth, doc, lot, 3)).status_code == 200
+
+
+@pytest.mark.parametrize("field", ["new", "kept", "gone"])
+async def test_an_older_transform_product_is_not_the_receipt_still_on_hand(client, session, auth, field):
+    doc, lot, made = await _transformed_before(client, session, auth, field)
+    before = await _b(session, auth, *LEGS)
+    _refused_units_sold(await _undo(client, auth, doc))
+    assert await _b(session, auth, *LEGS) == before
+
+
+# ── Another bill's return takes this receipt's units only beyond its own ────
+
+# Bill B makes a lot of 5 and 3 are sold; bill A then adds 4. B sending back 5 takes its own 2
+# and 3 of A's, so A's receipt can no longer be undone. Sending back only its own 2 leaves A's
+# 4 in the lot at what A received them for, and A's receipt undoes cleanly. The bill still
+# stands after an undo, so the books are checked settled before it.
+@pytest.mark.parametrize("back, refused", [(5, True), (2, False)], ids=["beyond_own", "own_only"])
+async def test_another_bills_return_counts_only_beyond_its_own_units(client, session, auth, back, refused):
+    await _seed(session, auth)
+    b, [lot] = await _received(client, session, auth, [_goods(10.0, 5)], from_order=False)
+    await _sell(client, auth, lot, 3)
+    a = await _po_into(client, auth, lot, 4, 20.0)
+    r = await _return(client, auth, b, lot, back)
+    assert r.status_code == 200, r.text
+    await assert_settled(client, session, auth)
+    before = await _b(session, auth, *LEGS)
+    held = float((await _state(session, auth, lot))["quantity"])
+    r = await _undo(client, auth, a)
+    if refused:
+        _refused_units_sold(r)
+        assert r.json()["detail"]["params"]["gone"] == "3", r.text
+        assert await _b(session, auth, *LEGS) == before
+    else:
+        assert r.status_code == 200, r.text
+        assert float((await _state(session, auth, lot))["quantity"]) == held - 4

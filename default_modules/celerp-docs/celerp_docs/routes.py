@@ -4597,15 +4597,32 @@ async def _receipt_lot(session: AsyncSession, company_id, item_id: str,
         if item_id in seen:
             return None, False
         seen.add(item_id)
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
-        state = (row.state or {}) if row is not None and row.entity_type == "item" else {}
-        parent = state.get("split_from")
-        if not parent and state.get("transformed_from"):
-            parent, transformed = state["transformed_from"], True
+        parent = (await _transform_parents(session, company_id, [item_id])).get(item_id)
+        if parent:
+            transformed = True
+        else:
+            row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+            parent = ((row.state or {}) if row is not None and row.entity_type == "item" else {}).get("split_from")
         if not parent:
             return None, False
         item_id = str(parent)
     return item_id, transformed
+
+
+async def _transform_parents(session: AsyncSession, company_id, lots: list[str]) -> dict[str, str]:
+    """Lot id -> the lot it was made from, for each of ``lots`` a transform made. Read from the
+    transform's own ledger entry, so a product a transform made is one whatever else its
+    record carries: before transforms stopped copying it, a product kept the split_from of
+    the lot it was made from."""
+    from celerp.models.ledger import LedgerEntry
+
+    if not lots:
+        return {}
+    rows = (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.data)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(lots),
+               LedgerEntry.event_type == "item.transformed_from"))).all()
+    return {lot: str(data["parent_id"]) for lot, data in rows if (data or {}).get("parent_id")}
 
 
 def _landed_held(doc_id: str, lots: Iterable[dict]) -> dict[str, float]:
@@ -4674,17 +4691,28 @@ async def _others_added(session: AsyncSession, company_id, doc_id: str, lot_id: 
         .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == lot_id,
                LedgerEntry.event_type == "item.quantity.adjusted", source.is_not(None), source != doc_id)
         .group_by(source).order_by(_func.max(LedgerEntry.id).desc()))).scalars().all()
-    cost = 0.0
+    additions = []
     for other in docs:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": other})
+        additions.append((other, *_lot_additions(row.state if row is not None else {}).get(lot_id, (0.0, 0.0))))
+    return round_basis(sum(cost for _, cost in _held_newest_first(additions, units).values()))
+
+
+def _held_newest_first(additions: Iterable[tuple[str, float, float]], units: float) -> dict[str, tuple[float, float]]:
+    """Document -> (units, cost) of what its receipt added to a lot that the lot still holds when
+    it holds ``units``, from ``additions`` (document, units added and still there, their cost),
+    latest receipt first. A lot goods were added to is taken to have sold its earlier stock
+    first: the latest additions are what it still holds, and whatever they do not cover is the
+    stock the lot was made with."""
+    held: dict[str, tuple[float, float]] = {}
+    for doc, qty, cost in additions:
         if units <= 1e-9:
             break
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": other})
-        qty, added = _lot_additions(row.state if row is not None else {}).get(lot_id, (0.0, 0.0))
         if qty > 1e-9:
-            held = min(units, qty)
-            cost += added * held / qty
-            units -= held
-    return round_basis(cost)
+            part = min(units, qty)
+            held[doc] = (part, cost * part / qty)
+            units -= part
+    return held
 
 
 def _line_quantities_received(doc: dict) -> dict[int, float]:
@@ -5235,7 +5263,8 @@ class _LineReturnLots(NamedTuple):
 async def _split_descendants(session: AsyncSession, company_id, roots: list[str],
                              skip: set[str]) -> dict[str, list[Projection]]:
     """Root lot -> the rows of the lots split off it, and off those in turn, nearest first.
-    Lots in ``skip`` and whatever was split off them are left out."""
+    Lots in ``skip`` and whatever was split off them are left out, as are products a transform
+    made (_transform_parents), which are not parts of the lot."""
     out: dict[str, list[Projection]] = {root: [] for root in roots}
     root_of = {root: root for root in roots}
     frontier = list(roots)
@@ -5243,9 +5272,10 @@ async def _split_descendants(session: AsyncSession, company_id, roots: list[str]
         rows = (await session.execute(select(Projection).where(
             Projection.company_id == company_id,
             Projection.state["split_from"].as_string().in_(frontier)))).scalars().all()
+        made = await _transform_parents(session, company_id, [r.entity_id for r in rows])
         frontier = []
         for r in sorted(rows, key=lambda r: r.entity_id):
-            if r.entity_id in skip or r.entity_id in root_of:
+            if r.entity_id in skip or r.entity_id in root_of or r.entity_id in made:
                 continue
             root_of[r.entity_id] = root_of[str(r.state.get("split_from"))]
             out[root_of[r.entity_id]].append(r)
@@ -5823,7 +5853,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             if whole:
                 share = basis
             else:
-                others_held = await _others_added(session, company_id, entity_id, root, new_qty) if taken else 0.0
+                others_held = await _others_added(session, company_id, entity_id, root, new_qty)
                 share = min(max(0.0, round_basis(basis - others_held)), at_cost)
             # What the document charged for the goods comes off what it is owed: its own units at
             # their price, any others at what they cost.
@@ -9912,7 +9942,9 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
 
     Only units that left at the lot's average cost count, because they took a share of this
     receipt's cost with them. Another document's own goods going back (its receipt undone,
-    or its goods returned to the supplier) leave at that document's cost. A migration's
+    or its goods returned to the supplier) leave at that document's cost. A return taking
+    more than that document's own units still in the lot (_beyond_own_units) took the rest at
+    the lot's average, so those units count. A migration's
     movements are the source's history at the source's own figures, written after the
     receipts it carries, so the ledger order says nothing about which came first."""
     from celerp.models.ledger import LedgerEntry
@@ -9941,9 +9973,29 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
     paired: dict[str, dict[tuple[str, str], float]] = {lot: {} for lot in lots}
     # A part carved off only to go back to its supplier is a return, not a split.
     sent_back = {lot for _, lot, event_type, _, _, _ in entries if event_type == "item.returned_to_supplier"}
+    # Per lot: the units each receipt added to it and still there, oldest first: the same
+    # bookkeeping a return values other documents' units by.
+    adds: dict[str, dict[str, float]] = {}
+    just_carved: dict[str, str] = {}  # part -> lot, for the parts the previous entry carved off
     for entry_id, lot, event_type, data, source, meta in entries:
         before = states.get(lot)
         states[lot] = ProjectionEngine._apply(dict(before or {}), event_type, data or {})
+        meta = meta or {}
+        carved, just_carved = just_carved, (dict.fromkeys((data or {}).get("child_ids") or [], lot)
+                                            if event_type == "item.split" else {})
+        if event_type == "item.quantity.adjusted" and meta.get("source_receive_undo"):
+            adds.get(lot, {}).pop(str(meta["source_receive_undo"]), None)
+        elif event_type == "item.quantity.adjusted" and meta.get("source_doc"):
+            doc = str(meta["source_doc"])
+            lot_adds = adds.setdefault(lot, {})
+            moved = held(states[lot]) - held(before)
+            units = max(0.0, lot_adds.pop(doc, 0.0) + moved) if moved > 0 else max(0.0, lot_adds.get(doc, 0.0) + moved)
+            lot_adds[doc] = units  # a receipt adding goods makes them the lot's latest
+        elif event_type == "item.returned_to_supplier":
+            gone_back = _beyond_own_units(states, adds, lot, before, carved.get(lot),
+                                          (data or {}).get("source_doc_id"), entity_id, held)
+            if entry_id > first and source not in ("migration", "receive_undo"):
+                plain[root_of[lot]] += gone_back
         if (entry_id <= first or source in ("migration", "receive_undo")
                 or event_type == "item.returned_to_supplier"):
             continue
@@ -9958,6 +10010,43 @@ async def _units_gone_since_receipt(session: AsyncSession, company_id, entity_id
             plain[root] -= moved  # units split off into a lot of the lineage are still held
     gone = {lot: plain[lot] + sum(max(0.0, units) for units in paired[lot].values()) for lot in lots}
     return {lot: max(0.0, round_basis(units)) for lot, units in gone.items()}, split
+
+
+def _beyond_own_units(states: dict[str, dict], adds: dict[str, dict[str, float]], lot: str,
+                      before: dict | None, carved_from: str | None, doc: str | None, receipt_doc: str,
+                      held: Callable[[dict | None], float]) -> float:
+    """Units another document's return to its supplier took from a lot beyond that document's
+    own units in it at that moment: the other documents' additions the lot held before the
+    return and no longer holds after it (_held_newest_first), which is what the return valued
+    the rest of the lot by (_others_added). Those units leave at the lot's average, like a
+    sale, and come off what their documents are recorded as having added; the document's own
+    units leave at its own cost. ``carved_from`` is the lot the returned part was carved off
+    just before it went back, if it was. A return of the receipt's own document, or one
+    naming no document, counts nothing here."""
+    if not doc or doc == receipt_doc:
+        return 0.0
+    doc = str(doc)
+    if carved_from and carved_from in states:
+        units = float((states.get(lot) or {}).get("quantity") or 0)
+        holder, on_hand = carved_from, held(states[carved_from]) + units
+    else:
+        units = held(before)
+        holder, on_hand = lot, units
+    while holder not in adds and (states.get(holder) or {}).get("split_from") in states:
+        holder = states[holder]["split_from"]
+    lot_adds = adds.get(holder, {})
+    others = [(d, q, q) for d, q in reversed(lot_adds.items()) if d != doc]
+    kept_before = _held_newest_first(others, on_hand)
+    kept_after = _held_newest_first(others, on_hand - units)
+    beyond = 0.0
+    for other, (part, _) in kept_before.items():
+        took = part - kept_after.get(other, (0.0, 0.0))[0]
+        if took > 1e-9:
+            lot_adds[other] = max(0.0, lot_adds[other] - took)
+            beyond += took
+    if doc in lot_adds:
+        lot_adds[doc] = max(0.0, lot_adds[doc] - (units - beyond))
+    return max(0.0, round_basis(beyond))
 
 
 async def _receipt_measures_on_lots(session: AsyncSession, company_id, entity_id: str, doc: dict) -> dict:
