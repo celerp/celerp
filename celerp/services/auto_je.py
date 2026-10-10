@@ -3578,13 +3578,15 @@ async def _legacy_cogs_truth(
     session, company_id, doc_id: str, doc_state: dict, settings: dict,
 ) -> dict[str, float] | None:
     """What an invoice issued before invoices kept their allocation recognizes, or None
-    when there is nothing to true up: no goods taken back and no take-back booked yet, or
-    no cost of goods sold booked at all.
+    when there is nothing to true up: no goods taken back, no take-back booked yet and no
+    goods credited by a credit note, or no cost of goods sold booked at all.
 
     Its cost of goods sold sits in one kind of entry, plus any cost corrections posted
     against it since (cogs-adj:restate-*). The backfill booked every line at its bound
-    lot's cost (compute_doc_cogs), so that computation is its allocation and the invoice
-    is trued up as one that kept it. A fulfilment entry booked the lots shipped before
+    lot's cost (compute_doc_cogs), so that computation is its allocation, less the goods
+    credit notes credited (_less_credited, as _read_books does for a kept allocation),
+    and the invoice is trued up as one that kept it: a credited unit not yet shipped
+    never left, while a shipped one keeps its cost until it is received back. A fulfilment entry booked the lots shipped before
     it, each at its cost of sale; those lots are what it covers, and the invoice
     recognizes the ones still out. Either way the basis must
     reproduce what was posted, per account to the cent, or the share of a lot taken back
@@ -3599,7 +3601,8 @@ async def _legacy_cogs_truth(
     takebacks = {s for s, r in roots.items() if r.startswith("cogs-adj:") and not r.startswith("cogs-adj:restate-")}
     backfilled = any(r == "cogs-backfill" for r in roots.values())
     fulfilment = [s for s, r in roots.items() if _FULFILLMENT_COGS.fullmatch(r)]
-    if not back and not takebacks:
+    credited = (await credited_quantities(session, company_id, [doc_id])).get(doc_id, {})
+    if not back and not takebacks and not credited:
         return None
     if not backfilled and not fulfilment:
         return None
@@ -3614,9 +3617,13 @@ async def _legacy_cogs_truth(
     basis = _money(_inventory_relief(settings, [row for s, row in posted.items() if s not in takebacks]))
     if backfilled:
         cogs = await compute_doc_cogs(session, company_id, doc_state)
-        if cogs.ambiguous or _money(cogs.by_account) != basis:
+        # The backfill refused a line its bound lot could not cost, so a line that spans
+        # its lot now does so because goods left the lot since; the amounts still have to
+        # reproduce what was posted.
+        if _money(cogs.by_account) != basis:
             raise CogsShareUnknown()
-        books = _Books(recognized={doc_id: RecognizedCogs(cycle="", allocations=cogs.allocations)},
+        allocations = _less_credited(cogs.allocations, credited)
+        books = _Books(recognized={doc_id: RecognizedCogs(cycle="", allocations=allocations)},
                        shipments=shipments, repriced={},
                        payable_codes=frozenset(scope_codes(settings, R.CONSIGNOR_PAYABLE)))
         return await _recognized_total(session, company_id, doc_id, doc_state, books)
