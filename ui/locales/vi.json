@@ -4642,5 +4642,8 @@
   "doc_import.treatment_unknown": "Chứng từ {number} đưa ra cách nhập ({given}) mà ứng dụng không biết. Dùng Đã có trong số dư đầu kỳ của tôi hoặc Ghi nhận ngay, hoặc để trống, rồi nhập lại.",
   "doc_import.received_invalid": "Chứng từ {number}: không đọc được một dòng hàng đã nhận ({problem}). Sửa số lượng đã nhận trong tệp rồi nhập lại.",
   "docs.void_imported_receipt": "Không thể hủy chứng từ này: chứng từ được nhập cùng hàng hóa đã có trong kho, do số dư đầu kỳ ghi nhận. Trả lại hàng còn giữ bằng Trả hàng, sau đó thanh toán phần còn nợ bằng một khoản thanh toán.",
-  "docs.revert_imported_receipt": "Không thể đưa chứng từ này về bản nháp: chứng từ được nhập cùng hàng hóa đã có trong kho, do số dư đầu kỳ ghi nhận. Trả lại hàng còn giữ bằng Trả hàng, sau đó thanh toán phần còn nợ bằng một khoản thanh toán."
+  "docs.revert_imported_receipt": "Không thể đưa chứng từ này về bản nháp: chứng từ được nhập cùng hàng hóa đã có trong kho, do số dư đầu kỳ ghi nhận. Trả lại hàng còn giữ bằng Trả hàng, sau đó thanh toán phần còn nợ bằng một khoản thanh toán.",
+  "notice.imported_doc_cutover.waiting_title": "Đơn đặt hàng và hóa đơn đã nhập chưa được sửa",
+  "notice.imported_doc_cutover.locked": "Các đơn đặt hàng và hóa đơn này được nhập trước bản cập nhật này nằm trong kỳ đã khóa và chưa thể sửa: {numbers}. Hãy dời khóa kỳ trong Cài đặt > Kế toán để có một ngày còn mở; việc sửa sẽ chạy lại ở lần khởi động tiếp theo.",
+  "notice.imported_doc_cutover.failed": "Không thể sửa các đơn đặt hàng và hóa đơn này được nhập trước bản cập nhật này: {numbers}. Hãy mở từng chứng từ và kiểm tra các dòng và khoản thanh toán; việc sửa sẽ chạy lại ở lần khởi động tiếp theo."
 }

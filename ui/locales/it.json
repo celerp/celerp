@@ -4642,5 +4642,8 @@
   "doc_import.treatment_unknown": "Il documento {number} indica un trattamento di importazione ({given}) che l'app non conosce. Usa Già nei miei saldi di apertura o Registralo ora, oppure lascialo vuoto, poi importalo di nuovo.",
   "doc_import.received_invalid": "Documento {number}: una riga di merce ricevuta non può essere letta ({problem}). Correggi le quantità ricevute nel file e importalo di nuovo.",
   "docs.void_imported_receipt": "Questo documento non può essere annullato: è stato importato con merce già in magazzino, portata dai saldi di apertura. Rimanda la merce che ancora detiene con Reso merci, poi salda il dovuto residuo con un pagamento.",
-  "docs.revert_imported_receipt": "Questo documento non può tornare in bozza: è stato importato con merce già in magazzino, portata dai saldi di apertura. Rimanda la merce che ancora detiene con Reso merci, poi salda il dovuto residuo con un pagamento."
+  "docs.revert_imported_receipt": "Questo documento non può tornare in bozza: è stato importato con merce già in magazzino, portata dai saldi di apertura. Rimanda la merce che ancora detiene con Reso merci, poi salda il dovuto residuo con un pagamento.",
+  "notice.imported_doc_cutover.waiting_title": "Ordini di acquisto e fatture importati non ancora corretti",
+  "notice.imported_doc_cutover.locked": "Questi ordini di acquisto e fatture importati prima di questo aggiornamento si trovano in un periodo bloccato e non è stato ancora possibile correggerli: {numbers}. Sposta il blocco del periodo in Impostazioni > Contabilità in modo che esista una data aperta; la correzione viene eseguita di nuovo al prossimo avvio.",
+  "notice.imported_doc_cutover.failed": "Non è stato possibile correggere questi ordini di acquisto e fatture importati prima di questo aggiornamento: {numbers}. Apri ciascuno e controlla le righe e i pagamenti; la correzione viene eseguita di nuovo al prossimo avvio."
 }

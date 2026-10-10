@@ -4642,5 +4642,8 @@
   "doc_import.treatment_unknown": "Document {number} gives an import treatment ({given}) the app does not know. Use Already in my opening balances or Record it now, or leave it out, then import it again.",
   "doc_import.received_invalid": "Document {number}: a line of goods received on it cannot be read ({problem}). Correct its received quantities in the file and import it again.",
   "docs.void_imported_receipt": "This document cannot be voided: it was imported holding goods already in stock, which the opening balances carry. Send back any goods it still holds with Return Goods, then settle what it still owes with a payment.",
-  "docs.revert_imported_receipt": "This document cannot go back to draft: it was imported holding goods already in stock, which the opening balances carry. Send back any goods it still holds with Return Goods, then settle what it still owes with a payment."
+  "docs.revert_imported_receipt": "This document cannot go back to draft: it was imported holding goods already in stock, which the opening balances carry. Send back any goods it still holds with Return Goods, then settle what it still owes with a payment.",
+  "notice.imported_doc_cutover.waiting_title": "Imported purchase orders and bills not corrected yet",
+  "notice.imported_doc_cutover.locked": "These purchase orders and bills imported before this update sit in a locked period and could not be corrected yet: {numbers}. Move the period lock in Settings > Accounting so an open date exists; the correction runs again at the next start.",
+  "notice.imported_doc_cutover.failed": "These purchase orders and bills imported before this update could not be corrected: {numbers}. Open each one and check its lines and payments; the correction runs again at the next start."
 }

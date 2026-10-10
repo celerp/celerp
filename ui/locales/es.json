@@ -4642,5 +4642,8 @@
   "doc_import.treatment_unknown": "El documento {number} indica un tratamiento de importación ({given}) que la aplicación no conoce. Use Ya está en mis saldos iniciales o Registrarlo ahora, o déjelo vacío, y vuelva a importarlo.",
   "doc_import.received_invalid": "Documento {number}: no se puede leer una línea de mercancía recibida ({problem}). Corrija las cantidades recibidas en el archivo y vuelva a importarlo.",
   "docs.void_imported_receipt": "Este documento no se puede anular: se importó con mercancía que ya estaba en existencias y que llevan los saldos iniciales. Devuelva la mercancía que aún tenga con Devolución de mercancías y luego liquide lo que aún se debe con un pago.",
-  "docs.revert_imported_receipt": "Este documento no puede volver a borrador: se importó con mercancía que ya estaba en existencias y que llevan los saldos iniciales. Devuelva la mercancía que aún tenga con Devolución de mercancías y luego liquide lo que aún se debe con un pago."
+  "docs.revert_imported_receipt": "Este documento no puede volver a borrador: se importó con mercancía que ya estaba en existencias y que llevan los saldos iniciales. Devuelva la mercancía que aún tenga con Devolución de mercancías y luego liquide lo que aún se debe con un pago.",
+  "notice.imported_doc_cutover.waiting_title": "Órdenes de compra y facturas importadas aún sin corregir",
+  "notice.imported_doc_cutover.locked": "Estas órdenes de compra y facturas importadas antes de esta actualización están en un período bloqueado y aún no se pudieron corregir: {numbers}. Mueva el bloqueo de período en Ajustes > Contabilidad para que exista una fecha abierta; la corrección se ejecuta de nuevo en el próximo inicio.",
+  "notice.imported_doc_cutover.failed": "Estas órdenes de compra y facturas importadas antes de esta actualización no se pudieron corregir: {numbers}. Abra cada una y revise sus líneas y pagos; la corrección se ejecuta de nuevo en el próximo inicio."
 }

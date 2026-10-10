@@ -31,6 +31,19 @@ CUTOVER_KEY = "imported_doc_cutover"
 _TITLE = "Imported purchase orders and bills corrected"
 
 
+_WAITING_TITLE = "Imported purchase orders and bills not corrected yet"
+_WAITING = {
+    "locked": ("notice.imported_doc_cutover.locked",
+               "These purchase orders and bills imported before this update sit in a locked period and "
+               "could not be corrected yet: {numbers}. Move the period lock in Settings > Accounting so "
+               "an open date exists; the correction runs again at the next start."),
+    "failed": ("notice.imported_doc_cutover.failed",
+               "These purchase orders and bills imported before this update could not be corrected: "
+               "{numbers}. Open each one and check its lines and payments; the correction runs again at "
+               "the next start."),
+}
+
+
 def _body(numbers: list[str]) -> str:
     return ("Purchase orders and bills imported before this update were booked a second time on top of "
             "the opening balances, which already hold them. Those entries were reversed, so payables "
@@ -65,11 +78,18 @@ async def _correct(session: AsyncSession, company_id, doc_id: str) -> bool:
     return changed
 
 
+async def _number(session: AsyncSession, company_id, doc_id: str) -> str:
+    from celerp.models.projections import Projection
+
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+    state = (row.state if row else None) or {}
+    return str(state.get("doc_number") or state.get("ref_id") or doc_id)
+
+
 async def repair_imported_documents(session: AsyncSession) -> dict:
     """Correct every document an earlier release imported. Caller owns the transaction."""
     from celerp.migrations._data_reconcile import get_meta, set_meta
     from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
     from celerp.notifications.service import notify_once
     from celerp.services import auto_je
     from celerp.services.migrations import is_company_migration_staged
@@ -83,6 +103,7 @@ async def repair_imported_documents(session: AsyncSession) -> dict:
         .where(LedgerEntry.event_type == "doc.created").order_by(LedgerEntry.id)
     )).all()
     corrected: dict = {}
+    waiting: dict = {}
     deferred = errored = 0
     staged: dict = {}
     for company_id, doc_id, meta, data in imports:
@@ -103,25 +124,37 @@ async def repair_imported_documents(session: AsyncSession) -> dict:
                 raise  # backup in progress: nothing lands, the next start retries
             if exc.status_code == 422 and "locked" in str(exc.detail).lower():
                 deferred += 1
+                reason = "locked"
                 log.warning("Imported document %s is in a locked period; correcting it on a later start", doc_id)
             else:
                 errored += 1
+                reason = "failed"
                 log.warning("Could not correct imported document %s: %s", doc_id, exc.detail)
-            continue
         except Exception:
             errored += 1
+            reason = "failed"
             log.exception("Could not correct imported document %s", doc_id)
+        else:
+            reason = "corrected" if changed else None
+        if reason is None:
             continue
-        if changed:
-            row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
-            state = (row.state if row else None) or {}
-            corrected.setdefault(company_id, []).append(str(state.get("doc_number") or state.get("ref_id") or doc_id))
+        number = await _number(session, company_id, doc_id)
+        if reason == "corrected":
+            corrected.setdefault(company_id, []).append(number)
+        else:
+            waiting.setdefault((company_id, reason), []).append(number)
 
     for company_id, numbers in corrected.items():
         listed = ", ".join(numbers)
         await notify_once(session, company_id, "system", _TITLE, _body(numbers),
                           i18n={"title": "notice.imported_doc_cutover.title",
                                 "body": "notice.imported_doc_cutover.body", "params": {"numbers": listed}})
+    for (company_id, reason), numbers in waiting.items():
+        key, text = _WAITING[reason]
+        listed = ", ".join(numbers)
+        await notify_once(session, company_id, "system", _WAITING_TITLE, text.format(numbers=listed),
+                          i18n={"title": "notice.imported_doc_cutover.waiting_title", "body": key,
+                                "params": {"numbers": listed}})
     pending = deferred or errored or any(staged.values())
     if not pending:
         await conn.run_sync(lambda c: set_meta(c, CUTOVER_KEY, "done"))

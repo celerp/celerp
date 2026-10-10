@@ -4642,5 +4642,8 @@
   "doc_import.treatment_unknown": "O documento {number} indica um tratamento de importação ({given}) que o aplicativo não conhece. Use Já está nos meus saldos de abertura ou Registrar agora, ou deixe em branco, e importe-o novamente.",
   "doc_import.received_invalid": "Documento {number}: uma linha de mercadorias recebidas não pode ser lida ({problem}). Corrija as quantidades recebidas no arquivo e importe-o novamente.",
   "docs.void_imported_receipt": "Este documento não pode ser anulado: foi importado com mercadorias já em estoque, que os saldos de abertura carregam. Devolva as mercadorias que ainda mantém com Devolução de mercadorias e depois quite o que ainda deve com um pagamento.",
-  "docs.revert_imported_receipt": "Este documento não pode voltar a rascunho: foi importado com mercadorias já em estoque, que os saldos de abertura carregam. Devolva as mercadorias que ainda mantém com Devolução de mercadorias e depois quite o que ainda deve com um pagamento."
+  "docs.revert_imported_receipt": "Este documento não pode voltar a rascunho: foi importado com mercadorias já em estoque, que os saldos de abertura carregam. Devolva as mercadorias que ainda mantém com Devolução de mercadorias e depois quite o que ainda deve com um pagamento.",
+  "notice.imported_doc_cutover.waiting_title": "Pedidos de compra e faturas importados ainda não corrigidos",
+  "notice.imported_doc_cutover.locked": "Estes pedidos de compra e faturas importados antes desta atualização estão num período bloqueado e ainda não puderam ser corrigidos: {numbers}. Mova o bloqueio de período em Configurações > Contabilidade para que exista uma data aberta; a correção é executada novamente no próximo início.",
+  "notice.imported_doc_cutover.failed": "Não foi possível corrigir estes pedidos de compra e faturas importados antes desta atualização: {numbers}. Abra cada um e verifique as linhas e os pagamentos; a correção é executada novamente no próximo início."
 }
