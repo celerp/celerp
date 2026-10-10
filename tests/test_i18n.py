@@ -479,7 +479,7 @@ _FULFILL_NON_FAMILY_PROSE = {
 
 def _fulfillment_family_keys(en: dict) -> list[str]:
     explicit = {
-        "btn.fulfill_deduct_inventory", "btn.revert_fulfillment", "doc.fulfilled",
+        "btn.fulfill_deduct_inventory", "doc.fulfilled",
         "doc.partially_fulfilled", "status.unfulfilled", "event.item.fulfilled",
         "event.item.fulfillment_reversed", "event.doc.fulfilled",
         "event.doc.partially_fulfilled", "event.doc.fulfillment_reversed",
@@ -527,7 +527,6 @@ def test_line_item_false_friends_absent():
 _FULFILL_EXPECTED = {
     "am": {
         "btn.fulfill_deduct_inventory": "ትዕዛዝ ፈጽም / ክምችት ቀንስ",
-        "btn.revert_fulfillment": "የትዕዛዝ አፈጻጸምን ቀልብስ",
         "doc.fulfilled": "ተፈጽሟል",
         "doc.partially_fulfilled": "በከፊል ተፈጽሟል",
         "status.unfulfilled": "ያልተፈጸመ",
@@ -539,10 +538,10 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "የተፈጸሙ ዕቃዎች ተዘምነዋል",
         "lines.cannot_fulfil": "ትዕዛዝ መፈጸም አልተቻለም፦ {reasons}",
         "lines.fulfil_status": "የዚህ መዝገብ ሁኔታ {doc_status} እስከሆነ ድረስ መስመሮችን መፈጸም አይቻልም።",
+        "lines.shipped_elsewhere": "{went} መጀመሪያ የትዕዛዝ አፈጻጸምን ይቀልብሱ፦ በ{docs} ላይ ዕቃዎቹን እንዳለ አዘጋጅን ይጠቀሙ።",
     },
     "ar": {
         "btn.fulfill_deduct_inventory": "تنفيذ الطلب / خصم المخزون",
-        "btn.revert_fulfillment": "التراجع عن تنفيذ الطلب",
         "doc.fulfilled": "تم تنفيذه",
         "doc.partially_fulfilled": "تم تنفيذه جزئيًا",
         "status.unfulfilled": "لم يُنفَّذ",
@@ -554,10 +553,10 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "تم تحديث العناصر المُنفَّذة",
         "lines.cannot_fulfil": "تعذر تنفيذ الطلب: {reasons}",
         "lines.fulfil_status": "لا يمكن تنفيذ البنود ما دامت حالة هذا السجل {doc_status}.",
+        "lines.shipped_elsewhere": "{went} تراجع عن تنفيذ الطلب أولًا: عيّن البضاعة كـ «متاح» في {docs}.",
     },
     "es": {
         "btn.fulfill_deduct_inventory": "Procesar pedido / Descontar inventario",
-        "btn.revert_fulfillment": "Revertir procesamiento",
         "doc.fulfilled": "Procesado",
         "doc.partially_fulfilled": "Procesado parcialmente",
         "status.unfulfilled": "Sin procesar",
@@ -569,10 +568,10 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "Artículos procesados actualizados",
         "lines.cannot_fulfil": "No se puede procesar: {reasons}",
         "lines.fulfil_status": "No se pueden procesar líneas mientras el estado de este registro sea {doc_status}.",
+        "lines.shipped_elsewhere": "{went} Revierta primero el procesamiento: marque la mercancía como disponible en {docs}.",
     },
     "id": {
         "btn.fulfill_deduct_inventory": "Proses pesanan / Kurangi inventori",
-        "btn.revert_fulfillment": "Batalkan pemrosesan pesanan",
         "doc.fulfilled": "Diproses",
         "doc.partially_fulfilled": "Diproses sebagian",
         "status.unfulfilled": "Belum diproses",
@@ -584,10 +583,10 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "Barang yang telah diproses diperbarui",
         "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
         "lines.fulfil_status": "Baris tidak dapat diproses selama status catatan ini {doc_status}.",
+        "lines.shipped_elsewhere": "{went} Batalkan pemrosesan pesanan terlebih dahulu: tetapkan barang sebagai tersedia di {docs}.",
     },
     "pt": {
         "btn.fulfill_deduct_inventory": "Processar pedido / Deduzir estoque",
-        "btn.revert_fulfillment": "Reverter processamento do pedido",
         "doc.fulfilled": "Processado",
         "doc.partially_fulfilled": "Processado parcialmente",
         "status.unfulfilled": "Não processado",
@@ -599,6 +598,7 @@ _FULFILL_EXPECTED = {
         "activity.change.fulfilled_items": "Itens processados atualizados",
         "lines.cannot_fulfil": "Não é possível processar: {reasons}",
         "lines.fulfil_status": "As linhas não podem ser processadas enquanto o status deste registro for {doc_status}.",
+        "lines.shipped_elsewhere": "{went} Reverta primeiro o processamento do pedido: defina a mercadoria como disponível em {docs}.",
     },
 }
 
@@ -916,3 +916,20 @@ def test_labels_naming_a_thing_are_nouns(lang, key, noun):
     "Coder", Thai "to contact") or a wrong sense (Japanese "physical touch") reads
     as a broken translation."""
     assert t(key, lang) == noun
+
+
+def test_no_catalog_carries_the_unused_revert_fulfillment_button():
+    """The whole-document Revert Fulfillment button went with bulk line actions, and a
+    line-action refusal toast can only carry a link, not a set-available action. The
+    label has no reader, so no catalog may keep it."""
+    import pathlib
+    import subprocess
+    root = pathlib.Path(__file__).resolve().parents[1]
+    carrying = sorted(p.stem for p in (root / "ui" / "locales").glob("*.json")
+                      if "btn.revert_fulfillment" in json.loads(p.read_text(encoding="utf-8")))
+    assert not carrying, f"catalogs still carry btn.revert_fulfillment: {carrying}"
+    readers = subprocess.run(
+        ["git", "grep", "-l", "btn.revert_fulfillment", "--", "*.py", "*.js", "*.html",
+         ":!tests", ":!ui/locales"],
+        cwd=root, capture_output=True, text=True).stdout.split()
+    assert not readers, f"code still reads btn.revert_fulfillment: {readers}"

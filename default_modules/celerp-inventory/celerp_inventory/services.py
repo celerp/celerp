@@ -197,11 +197,13 @@ class CostCarve:
 def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | None = None,
                landed_of: str | None = None, landed_part: dict[str, float] | None = None) -> CostCarve:
     """The one division of a lot's cost when ``part_qty`` of it becomes a lot of its own (a
-    split, a return to the supplier). The lot keeps its quantity share of the goods cost
-    (unless ``part_goods`` names the part's) and of every landed pool, each to the cent in
+    split, a return to the supplier, a count). The lot keeps its quantity share of the goods
+    cost (unless ``part_goods`` names the part's) and of every landed pool, each to the cent in
     ``currency`` (allocate_pro_rata), and the part takes the difference. The books carry
     every lot to the cent, so the part and the lot round back to exactly what the whole
-    carried. Goods going back to the supplier of bill ``landed_of`` take a share of that
+    carried. When the whole lot divides by quantity, its whole cost is rounded once: the lot
+    keeps the cent share of goods and pools together, the share an invoice costs the same
+    units at, and its goods take what its rounded pools leave of that share. Goods going back to the supplier of bill ``landed_of`` take a share of that
     bill's landed pools only: another bill's pool changes only with that bill. A pool named in
     ``landed_part`` gives the part the amount named, never more than the pool holds, in place
     of its quantity share: goods a bill added to a lot carry that bill's landed cost per unit
@@ -227,19 +229,28 @@ def carve_cost(state: dict, part_qty: float, currency: str, part_goods: float | 
         part = round_basis(part_goods)
         return CostCarve(part, part_landed, round_basis(basis - part), rest_landed)
     rest = kept(basis)
+    if landed_of is None and not named and basis > 0:
+        once = round_basis(kept(basis + sum(pools.values())) - sum(rest_landed.values()))
+        if 0 <= once <= basis:
+            rest = once
     return CostCarve(round_basis(basis - rest), part_landed, rest, rest_landed)
 
 
-def pools_kept(state: dict, new_qty: float, currency: str) -> dict[str, dict[str, float]]:
-    """The landed pools a lot keeps when it falls to ``new_qty`` with no part becoming a lot
-    of its own (a count, a manual adjustment, a consumption), to the cent (carve_cost), as the
-    ``landed_costs`` of the event that moves it; empty when the lot rises, keeps its quantity,
-    empties or has no pools. A lot that rises keeps its pools as they are (units found bring
-    no freight), and an emptied lot keeps its whole unit cost for stock that comes back."""
+def cost_kept(state: dict, new_qty: float, currency: str) -> dict:
+    """The cost a lot with landed pools keeps when it falls to ``new_qty`` with no part
+    becoming a lot of its own (a count, a manual adjustment, a consumption), to the cent
+    (carve_cost), as the ``landed_costs`` and ``cost_base`` of the event that moves it; empty
+    when the lot rises, keeps its quantity, empties or has no pools. A lot that rises keeps
+    its pools as they are (units found bring no freight), and an emptied lot keeps its whole
+    unit cost for stock that comes back."""
     old = float(state.get("quantity") or 0)
     if not state.get("landed_costs") or old <= 0 or not 0 < float(new_qty) < old:
         return {}
-    return {"landed_costs": carve_cost(state, old - float(new_qty), currency).rest_landed}
+    carve = carve_cost(state, old - float(new_qty), currency)
+    out: dict = {"landed_costs": carve.rest_landed}
+    if carve.rest_goods is not None:
+        out["cost_base"] = carve.rest_goods
+    return out
 
 
 def _basis_or_conflict(state: dict, label: str) -> float:
@@ -3639,7 +3650,7 @@ async def adjust_item_quantity(
 ):
     """Set an item's quantity on hand, checked against its selling unit's decimals and
     against what finalized invoices hold of it, read under the lock. Units that leave take
-    their freight to the cent (pools_kept). The caller commits."""
+    their cost to the cent (cost_kept). The caller commits."""
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row:
         current_sell_by = row.state.get("sell_by")
@@ -3648,7 +3659,7 @@ async def adjust_item_quantity(
             validate_quantity(data["new_qty"], unit_map[current_sell_by]["decimals"])
         if "landed_costs" not in data and "cost_base" not in data:
             from celerp.services.auto_je import company_currency
-            data = {**data, **pools_kept(row.state, data["new_qty"], await company_currency(session, company_id))}
+            data = {**data, **cost_kept(row.state, data["new_qty"], await company_currency(session, company_id))}
     return await emit_event(
         session,
         company_id=company_id,

@@ -144,9 +144,10 @@ async def test_audit_counts_down_by_one(client, session, auth, pooled):
         LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == lot,
         LedgerEntry.event_type == "item.quantity.adjusted").order_by(LedgerEntry.id))).scalars().all()
     audited = [d["value"] for d in values if d.get("reason") == "audit"]
-    # Goods cost scales unrounded (2.00 -> 1.33 -> 0.67). A pool is carved to the cent by
-    # largest remainder, so 0.67 + 0.67 stay and the first count takes 0.66. Both sum to 1.33.
-    assert audited == ([0.66, 0.67] if pooled else [0.67, 0.66]), audited
+    # The lot keeps the cent share of its whole cost, goods and freight together, the share an
+    # invoice costs the same units at: 2.00 -> 1.33 -> 0.67 whether or not it carries a pool,
+    # so the first count takes 0.67 and the second 0.66.
+    assert audited == [0.67, 0.66], audited
 
 
 # ── Undo a receipt once any of its units left ────────────────────────────────

@@ -61,7 +61,9 @@ async def test_ship_a_reserved_line_ships_its_hold(client, h):
 @pytest.mark.parametrize("other_type,out_status", [("invoice", "sold"), ("memo", "memo_out")])
 async def test_ship_a_line_whose_lot_went_out_on_another_record_is_refused(client, h, other_type, out_status):
     """The line names a lot another record shipped: nothing ships, no other lot stands in
-    for it, and the refusal names that record and what the lot is now, in plain words.
+    for it, and the refusal names that record in plain words: for an invoice, that the
+    goods went out on it and fulfillment there is reverted first; for a memo, that they
+    are out on it.
 
     A memo cannot send out goods a finalized invoice holds, so the memo goes out while the
     invoice is still a draft, and finalizing the invoice is what is refused, naming the memo.
@@ -88,8 +90,11 @@ async def test_ship_a_line_whose_lot_went_out_on_another_record_is_refused(clien
     assert (await item(client, h, a))["status"] == out_status
     detail = r.json()["detail"]
     try:
-        for code, status_label in (("en", "Sold" if out_status == "sold" else "memo"),
-                                   ("es", "Vendido" if out_status == "sold" else "consignación")):
+        if not memo:
+            [reason] = detail["params"]["reasons"]
+            assert reason["message_key"] == "lines.shipped_elsewhere", detail
+        for code, status_label in (("en", "memo" if memo else "Revert fulfillment first"),
+                                   ("es", "consignación" if memo else "Revierta primero el procesamiento")):
             i18n.set_lang(code)
             text = i18n.refusal_text(detail)
             assert status_label in (text.lower() if memo else text), text

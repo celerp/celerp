@@ -360,7 +360,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         return {"issued": [], "value": "0"}
 
     from celerp_inventory.projections import is_item_available
-    from celerp_inventory.services import pools_kept
+    from celerp_inventory.services import cost_kept
 
     rows = await lock_projections(op.session, op.company_id, [i["item_id"] for i in wanted])
     befores: dict[str, Decimal] = {}
@@ -400,7 +400,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         s = rows[item_id].state or {}
         left = max(0.0, float(s.get("quantity") or 0) - line["quantity"])
         await op.emit(item_id, "item", "item.consumed",
-                      {"quantity_consumed": line["quantity"], **pools_kept(s, left, op.currency)},
+                      {"quantity_consumed": line["quantity"], **cost_kept(s, left, op.currency)},
                       f"mfg:{op.order_id}:issue:{rk}:{item_id}",
                       metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},

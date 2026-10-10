@@ -7,6 +7,8 @@ Taking them off stock by hand, or merging their lot into another, while an invoi
 them is refused, naming the invoice."""
 from __future__ import annotations
 
+import uuid
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,8 @@ from celerp.models.projections import Projection
 from stock_books import assert_settled
 from test_cost_follows_goods import COGS, OPENING, _doc_number, _expect, _invoice, _lots, _ship
 from test_invoice_unshipped_books import _lot, _ok
+from test_landed_cost_pools import _po_into
+from test_receipt_accounting import _return
 from test_money_stock_and_contact_invariants import _account_net
 
 pytestmark = pytest.mark.asyncio
@@ -236,4 +240,78 @@ async def test_goods_reserved_for_the_invoice_are_the_ones_it_holds(client, sess
     session.expire_all()
     lots = [SimpleNamespace(entity_id=lot), SimpleNamespace(entity_id=part)]
     assert await set_aside(session, auth["company_id"], lots) == {part: {number: 2.0}}
+    await assert_settled(client, session, auth)
+
+
+async def test_a_count_down_to_the_held_goods_keeps_their_cost_on_the_books(client, session, auth):
+    """15 at 177.00 (10 at 100.00, then 5 at 14.00 with 7.00 freight billed into the lot), 2
+    sent back to the bill, 1 set aside for an invoice, then the lot counted down to that 1: the
+    lot keeps the cent share the invoice costed it at, so the books carry the stock to the cent
+    after the count and after the invoice ships."""
+    sku = f"CNT-{uuid.uuid4().hex[:6]}"
+    lot = await _lot(client, auth, sku, 10, 100.0)
+    bill = await _po_into(client, auth, lot, 5, 14.0, shipping=7.0)
+    r = await _return(client, auth, bill, lot, 2)
+    assert r.status_code == 200, r.text
+    inv = await _invoice(client, auth, [(lot, sku, 1)])
+    await assert_settled(client, session, auth)
+    r = await _adjust(client, auth, lot, 1)
+    assert r.status_code == 200, r.text
+    await assert_settled(client, session, auth)
+    await _ship(client, auth, inv, lot)
+    await assert_settled(client, session, auth)
+
+
+async def test_a_carve_keeps_the_cent_share_of_the_whole_lot_cost():
+    """What a lot keeps is its cent share of its whole cost, goods and freight together, the
+    share an invoice costs the same units at; the part takes the rest."""
+    from celerp.services.money import allocate_pro_rata
+    from celerp_inventory.services import carve_cost
+
+    state = {"quantity": 13.0, "cost_base": 142.0, "landed_costs": {"bill:1::shipping": 4.2}}
+    carve = carve_cost(state, 12.0, "USD")
+    kept, _part = allocate_pro_rata(Decimal("146.20"), [Decimal(1), Decimal(12)], "USD")
+    assert round(carve.rest_goods + sum(carve.rest_landed.values()), 2) == float(kept) == 11.25
+    assert round(carve.part_goods + sum(carve.part_landed.values()), 2) == 134.95
+    assert carve.rest_landed == {"bill:1::shipping": 0.32}
+
+
+async def test_a_held_claim_is_an_estimate_that_reconciles_when_the_goods_ship(client, session, auth):
+    """15 at 177.00 (10 at 100.00, then 5 at 14.00 with 7.00 freight billed into the lot): two
+    invoices set goods aside at 11.80 a unit, one more ships, units are written off, one goes
+    back to the bill line at 15.40, and the last invoice reserves its unit. The held claims stay
+    the 11.80 estimates they were costed at while the lot moves under them, and once every held
+    unit ships the books carry the stock to the cent."""
+    from celerp.services.auto_je import unshipped_claims
+    from test_landed_cost_removals import _writeoff
+
+    sku = f"EST-{uuid.uuid4().hex[:6]}"
+    lot = await _lot(client, auth, sku, 10, 100.0)
+    bill = await _po_into(client, auth, lot, 5, 14.0, shipping=7.0)
+    three = await _invoice(client, auth, [(lot, sku, 3)])
+    shipped = await _invoice(client, auth, [(lot, sku, 1)])
+    await _writeoff(client, auth, lot, 1, "6970")
+    await _ship(client, auth, shipped, lot)
+    one = await _invoice(client, auth, [(lot, sku, 1)])
+    await _writeoff(client, auth, lot, 1, "6970")
+    session.expire_all()
+    [bill_line] = (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": bill})
+                   ).state["line_items"]
+    r = await client.post(f"/docs/{bill}/return-items", headers=auth["headers"],
+                          json={"lines": [{"line_id": bill_line["line_id"], "quantity_returned": 1}]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{one}/reserve-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [lot], "new_status": "reserved"})
+    assert r.status_code == 200, r.text
+
+    session.expire_all()
+    held = await unshipped_claims(session, auth["company_id"])
+    assert sorted((c.doc_id, c.qty, c.amount) for c in held) == sorted([(three, 3.0, 35.4), (one, 1.0, 11.8)])
+
+    for doc in (three, one):
+        session.expire_all()
+        state = (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": doc})).state
+        await _ship(client, auth, doc, *{li.get("entity_id") or li.get("item_id") for li in state["line_items"]})
+    session.expire_all()
+    assert await unshipped_claims(session, auth["company_id"]) == []
     await assert_settled(client, session, auth)

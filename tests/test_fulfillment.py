@@ -769,7 +769,7 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
         assert r.status_code == 200, r.text
         return
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message_key"] == "line.protected_shipped"
+    assert r.json()["detail"]["message_key"] == "lines.shipped_elsewhere"
 
 
 @pytest.mark.asyncio

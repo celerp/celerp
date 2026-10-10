@@ -312,11 +312,12 @@ def _apply_goods_cost(current: dict, field: str, value) -> None:
 def _set_quantity(current: dict, new_qty, cost_base=None, landed_costs=None) -> None:
     """Move a lot to new_qty with its cost following the units (perpetual costing).
 
-    An explicit cost_base (a receipt adding the received goods' cost, the undo of one, or a
-    migrated stock position carrying the source's value) is the new goods basis, and the
-    landed pools stay as they are: goods arriving or leaving with their own cost change no
-    freight. Explicit landed_costs (a split, a return or a count carving the lot, each to the
-    cent) are the new pools. Otherwise the goods basis scales by new/old quantity, so units
+    An explicit cost_base (a receipt adding the received goods' cost, the undo of one, a
+    migrated stock position carrying the source's value, or a count carving the lot to the
+    cent) is the new goods basis, and the landed pools stay as they are unless the event names
+    them too: goods arriving or leaving with their own cost change no freight. Explicit
+    landed_costs (a split, a return or a count carving the lot, each to the cent) are the new
+    pools. Otherwise the goods basis scales by new/old quantity, so units
     that leave take their share of it and units found come in at the lot's average goods
     cost. A pool is what a bill charged: units leaving take their share of it, units found
     bring none. At zero quantity the whole unit cost is kept as cost_price, so stock that
@@ -597,7 +598,7 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # What is drawn down carries its share of cost, exactly as a sale relieves COGS.
         qty = float(current.get("quantity") or 0)
         _set_quantity(current, max(0.0, qty - float(data["quantity_consumed"])),
-                      landed_costs=data.get("landed_costs"))
+                      data.get("cost_base"), data.get("landed_costs"))
     elif event_type == "item.produced":
         current["quantity"] = float(current.get("quantity", 0)) + float(data["quantity_produced"])
     elif event_type == "item.recipe.set":
