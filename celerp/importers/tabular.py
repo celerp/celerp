@@ -807,8 +807,6 @@ def _lines(data: bytes, filename: str, *, sheet: str | None) -> list[list[str]]:
         return _csv_lines(data.decode("utf-8-sig"))
     if suffix == ".xlsx":
         return _xlsx_lines(data, sheet=sheet)
-    if suffix in (".xlsm", ".xls"):
-        raise TabularError(f"{suffix} files are not supported; save as .xlsx or .csv.", code="unsupported_type")
     raise TabularError(t("import.err_unsupported_type", type=suffix or repr(filename)), code="unsupported_type")
 
 
@@ -853,7 +851,7 @@ def read_table_at_header(
     """
     lines = _lines(data, filename, sheet=sheet)
     if not any(any(line) for line in lines):
-        raise TabularError("The file has no data.", code="empty")
+        raise TabularError(t("import.err_empty", file=filename), code="empty")
     if header_row is None:
         header_row = detect_header_row(lines[:HEADER_SEARCH_LINES], known)
         if header_row is None:

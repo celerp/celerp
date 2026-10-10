@@ -1498,8 +1498,8 @@ class TestTabularParityInvariant:
     @pytest.mark.parametrize("filename", ["items.xls", "items.xlsm", "items.pdf"])
     async def test_unsupported_formats_are_refused_with_a_reason(self, filename):
         rows, err = await _read(b"whatever", filename)
-        expected = (t_("import.err_unsupported_type", "en", type=".pdf") if filename.endswith(".pdf")
-                    else "files are not supported")
+        suffix = "." + filename.rsplit(".", 1)[1]
+        expected = t_("import.err_unsupported_type", "en", type=suffix)
         assert rows == [] and expected in err
 
     @pytest.mark.asyncio
