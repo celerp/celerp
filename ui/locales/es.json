@@ -4620,5 +4620,6 @@
   "company_reset.reference_cycle": "Las tablas {tables} se hacen referencia entre sí en un ciclo, por lo que esta empresa no se puede restablecer. No se eliminó nada.",
   "shell.unknown_error": "Error desconocido",
   "documents.cost_moved_with_goods": "El lote {sku} estaba reservado para la factura {doc}. El costo de la factura {doc} se registrará cuando se envíe.",
-  "accounting.year_end_invalid": "{value} no es una fecha. Introduzca el último día del año que va a cerrar como AAAA-MM-DD."
+  "accounting.year_end_invalid": "{value} no es una fecha. Introduzca el último día del año que va a cerrar como AAAA-MM-DD.",
+  "accounting.bank_not_found": "Esa cuenta bancaria no se encontró en esta empresa. Elija una de las cuentas bancarias de la empresa."
 }

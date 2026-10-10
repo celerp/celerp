@@ -4620,5 +4620,6 @@
   "company_reset.reference_cycle": "Le tabelle {tables} si richiamano a vicenda in un ciclo, quindi questa azienda non può essere reimpostata. Non è stato eliminato nulla.",
   "shell.unknown_error": "Errore sconosciuto",
   "documents.cost_moved_with_goods": "Il lotto {sku} era riservato alla fattura {doc}. Il costo della fattura {doc} sarà registrato alla spedizione.",
-  "accounting.year_end_invalid": "{value} non è una data. Inserisci l'ultimo giorno dell'anno da chiudere nel formato AAAA-MM-GG."
+  "accounting.year_end_invalid": "{value} non è una data. Inserisci l'ultimo giorno dell'anno da chiudere nel formato AAAA-MM-GG.",
+  "accounting.bank_not_found": "Quel conto bancario non è stato trovato in questa azienda. Scegli uno dei conti bancari dell'azienda."
 }

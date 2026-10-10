@@ -4620,5 +4620,6 @@
   "company_reset.reference_cycle": "Tabel {tables} saling merujuk dalam satu lingkaran, jadi perusahaan ini tidak dapat diatur ulang. Tidak ada yang dihapus.",
   "shell.unknown_error": "Kesalahan tidak diketahui",
   "documents.cost_moved_with_goods": "Lot {sku} disisihkan untuk faktur {doc}. Biaya faktur {doc} akan dicatat saat dikirim.",
-  "accounting.year_end_invalid": "{value} bukan tanggal. Masukkan hari terakhir tahun yang akan ditutup dengan format YYYY-MM-DD."
+  "accounting.year_end_invalid": "{value} bukan tanggal. Masukkan hari terakhir tahun yang akan ditutup dengan format YYYY-MM-DD.",
+  "accounting.bank_not_found": "Rekening bank itu tidak ditemukan di perusahaan ini. Pilih salah satu rekening bank perusahaan."
 }

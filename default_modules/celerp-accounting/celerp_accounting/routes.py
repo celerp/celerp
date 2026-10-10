@@ -2638,8 +2638,8 @@ async def patch_bank_account(
 # ---------------------------------------------------------------------------
 
 class TransferCreate(BaseModel):
-    from_bank_id: str
-    to_bank_id: str
+    from_bank_id: uuid.UUID
+    to_bank_id: uuid.UUID
     amount: FiniteFloat
     date: str  # ISO date "YYYY-MM-DD"
     description: str = ""
@@ -2660,7 +2660,7 @@ async def create_transfer(
     from_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.from_bank_id),
+                BankAccount.id == payload.from_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2672,7 +2672,7 @@ async def create_transfer(
     to_bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.to_bank_id),
+                BankAccount.id == payload.to_bank_id,
                 BankAccount.company_id == company_id,
                 BankAccount.is_active.is_(True),
             )
@@ -2685,7 +2685,7 @@ async def create_transfer(
     je_id = f"je:transfer:{uuid.uuid4()}"
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
-    memo = payload.description or f"Transfer {payload.from_bank_id[:8]} → {payload.to_bank_id[:8]}"
+    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} → {str(payload.to_bank_id)[:8]}"
     entries = [
         {"account": to_bank.chart_account_code, "debit": payload.amount, "credit": 0.0},
         {"account": from_bank.chart_account_code, "debit": 0.0, "credit": payload.amount},
@@ -2703,8 +2703,8 @@ async def create_transfer(
             "entries": entries,
             "je_type": "transfer",
             "reference": payload.reference,
-            "from_bank_account_id": payload.from_bank_id,
-            "to_bank_account_id": payload.to_bank_id,
+            "from_bank_account_id": str(payload.from_bank_id),
+            "to_bank_account_id": str(payload.to_bank_id),
         },
         actor_id=user.id,
         location_id=None,
@@ -2729,8 +2729,8 @@ async def create_transfer(
 
     return {
         "je_id": je_id,
-        "from_bank_id": payload.from_bank_id,
-        "to_bank_id": payload.to_bank_id,
+        "from_bank_id": str(payload.from_bank_id),
+        "to_bank_id": str(payload.to_bank_id),
         "amount": payload.amount,
         "date": payload.date,
         "memo": memo,
@@ -2743,7 +2743,7 @@ async def create_transfer(
 # ---------------------------------------------------------------------------
 
 class ReconciliationStart(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     statement_date: str  # "YYYY-MM-DD"
     statement_balance: FiniteFloat
 
@@ -2882,7 +2882,7 @@ async def start_reconciliation(
     bank = (
         await session.execute(
             select(BankAccount).where(
-                BankAccount.id == uuid.UUID(payload.bank_account_id),
+                BankAccount.id == payload.bank_account_id,
                 BankAccount.company_id == company_id,
             ).with_for_update()
         )
@@ -3076,7 +3076,7 @@ class WriteOffPayload(BaseModel):
 
 
 class ReconRuleCreate(BaseModel):
-    bank_account_id: str
+    bank_account_id: uuid.UUID
     match_field: str = "description"
     match_pattern: str
     match_type: str = "contains"
@@ -3866,14 +3866,14 @@ async def write_off_difference(
 
 @router.get("/rules")
 async def get_recon_rules(
-    bank_account_id: str | None = None,
+    bank_account_id: uuid.UUID | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
     q = select(ReconciliationRule).where(ReconciliationRule.company_id == company_id)
     if bank_account_id:
-        q = q.where(ReconciliationRule.bank_account_id == uuid.UUID(bank_account_id))
+        q = q.where(ReconciliationRule.bank_account_id == bank_account_id)
     rows = (await db.execute(q.order_by(ReconciliationRule.created_at))).scalars().all()
     return {"items": [_rule_to_dict(r) for r in rows], "total": len(rows)}
 
@@ -3885,10 +3885,17 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    bank = (await db.execute(select(BankAccount.id).where(
+        BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
+    ))).scalar_one_or_none()
+    if bank is None:
+        raise HTTPException(status_code=404, detail=refusal(
+            "accounting.bank_not_found",
+            "That bank account was not found in this company. Choose one of the company's bank accounts."))
     rule = ReconciliationRule(
         id=uuid.uuid4(),
         company_id=company_id,
-        bank_account_id=uuid.UUID(payload.bank_account_id),
+        bank_account_id=payload.bank_account_id,
         match_field=payload.match_field,
         match_pattern=payload.match_pattern,
         match_type=payload.match_type,

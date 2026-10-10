@@ -4620,5 +4620,6 @@
   "company_reset.reference_cycle": "Die Tabellen {tables} verweisen in einer Schleife aufeinander. Daher kann diese Firma nicht zurückgesetzt werden. Es wurde nichts gelöscht.",
   "shell.unknown_error": "Unbekannter Fehler",
   "documents.cost_moved_with_goods": "Los {sku} war für Rechnung {doc} zurückgelegt. Die Kosten von Rechnung {doc} werden beim Versand gebucht.",
-  "accounting.year_end_invalid": "{value} ist kein Datum. Geben Sie den letzten Tag des abzuschließenden Jahres als JJJJ-MM-TT ein."
+  "accounting.year_end_invalid": "{value} ist kein Datum. Geben Sie den letzten Tag des abzuschließenden Jahres als JJJJ-MM-TT ein.",
+  "accounting.bank_not_found": "Dieses Bankkonto wurde in diesem Unternehmen nicht gefunden. Wählen Sie eines der Bankkonten des Unternehmens."
 }

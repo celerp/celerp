@@ -4620,5 +4620,6 @@
   "company_reset.reference_cycle": "Les tables {tables} se référencent mutuellement en boucle, cette entreprise ne peut donc pas être réinitialisée. Rien n'a été supprimé.",
   "shell.unknown_error": "Erreur inconnue",
   "documents.cost_moved_with_goods": "Le lot {sku} était réservé à la facture {doc}. Le coût de la facture {doc} sera comptabilisé à son expédition.",
-  "accounting.year_end_invalid": "{value} n'est pas une date. Saisissez le dernier jour de l'exercice à clôturer au format AAAA-MM-JJ."
+  "accounting.year_end_invalid": "{value} n'est pas une date. Saisissez le dernier jour de l'exercice à clôturer au format AAAA-MM-JJ.",
+  "accounting.bank_not_found": "Ce compte bancaire est introuvable dans cette entreprise. Choisissez l'un des comptes bancaires de l'entreprise."
 }

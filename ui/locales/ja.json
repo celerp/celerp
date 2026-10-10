@@ -4620,5 +4620,6 @@
   "settings.type_reset_suffix": "と入力してください。この操作は元に戻せません。",
   "shell.unknown_error": "不明なエラー",
   "documents.cost_moved_with_goods": "ロット {sku} は請求書 {doc} 用に確保されていました。請求書 {doc} の原価は出荷時に計上されます。",
-  "accounting.year_end_invalid": "{value} は日付ではありません。締める年度の最終日を YYYY-MM-DD 形式で入力してください。"
+  "accounting.year_end_invalid": "{value} は日付ではありません。締める年度の最終日を YYYY-MM-DD 形式で入力してください。",
+  "accounting.bank_not_found": "この口座はこの会社に見つかりません。会社の銀行口座から選んでください。"
 }

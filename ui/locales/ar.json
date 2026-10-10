@@ -4620,5 +4620,6 @@
   "company_reset.reference_cycle": "الجداول {tables} تشير إلى بعضها في حلقة، لذا لا يمكن إعادة تعيين هذه الشركة. لم يُحذف أي شيء.",
   "shell.unknown_error": "خطأ غير معروف",
   "documents.cost_moved_with_goods": "كانت الدفعة {sku} محجوزة للفاتورة {doc}. ستُحتسب تكلفة الفاتورة {doc} عند شحنها.",
-  "accounting.year_end_invalid": "{value} ليس تاريخًا. أدخل آخر يوم في السنة المراد إقفالها بصيغة YYYY-MM-DD."
+  "accounting.year_end_invalid": "{value} ليس تاريخًا. أدخل آخر يوم في السنة المراد إقفالها بصيغة YYYY-MM-DD.",
+  "accounting.bank_not_found": "لم يُعثر على هذا الحساب المصرفي في هذه الشركة. اختر أحد الحسابات المصرفية للشركة."
 }

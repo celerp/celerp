@@ -4620,5 +4620,6 @@
   "company_reset.reference_cycle": "Các bảng {tables} tham chiếu lẫn nhau thành vòng, nên không thể đặt lại công ty này. Không có gì bị xóa.",
   "shell.unknown_error": "Lỗi không xác định",
   "documents.cost_moved_with_goods": "Lô {sku} đã được giữ cho hóa đơn {doc}. Giá vốn của hóa đơn {doc} sẽ được ghi nhận khi giao hàng.",
-  "accounting.year_end_invalid": "{value} không phải là ngày. Nhập ngày cuối cùng của năm cần khóa sổ theo định dạng YYYY-MM-DD."
+  "accounting.year_end_invalid": "{value} không phải là ngày. Nhập ngày cuối cùng của năm cần khóa sổ theo định dạng YYYY-MM-DD.",
+  "accounting.bank_not_found": "Không tìm thấy tài khoản ngân hàng đó trong công ty này. Chọn một trong các tài khoản ngân hàng của công ty."
 }
