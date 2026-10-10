@@ -1157,9 +1157,22 @@ class ReturnCharges:
     owed: BillOwed | None = None
 
 
+def _return_difference(gain: _Dec, difference: _Dec, shrinkage: _Dec = _Dec(0)) -> dict[AccountRole, _Dec]:
+    """Debits (negative: credits) to stock gains and stock shrinkage for goods sent back to a
+    supplier (R09). ``gain`` and ``shrinkage`` are set amounts on each; ``difference`` is what
+    the goods gave up beyond what the supplier credits for them: a shortfall (positive) is a
+    shrinkage loss, an excess credit (negative) a stock gain."""
+    return {R.STOCK_GAIN: gain + min(difference, _Dec(0)), R.STOCK_SHRINKAGE: shrinkage + max(difference, _Dec(0))}
+
+
+def _return_difference_lines(acc: dict, held: dict[AccountRole, _Dec]) -> list[dict]:
+    return [_line(acc[role], role, debit=to_stored_float(max(amt, _Dec(0))), credit=to_stored_float(max(-amt, _Dec(0))))
+            for role, amt in held.items() if amt]
+
+
 async def create_for_supplier_return(
     session, *, company_id, user_id, doc_id: str, return_key: str, goods: dict[AccountRole | str, float],
-    billed: dict[AccountRole | str, float], charges: ReturnCharges, gain: float,
+    billed: dict[AccountRole | str, float], charges: ReturnCharges, gain: float, loss: float,
     landed_by_account: dict[str, _Dec],
 ) -> _Dec:
     """Goods sent back to the supplier come off accounts payable at what the document charged
@@ -1172,11 +1185,15 @@ async def create_for_supplier_return(
     / Cr input tax for the tax it booked on them (``charges``), AP on
     the account the document recognized its payable on. The return that sends back the last of
     the goods takes what the earlier returns left, so accounts payable and input tax hold
-    nothing more for the goods once all of them have gone back. Goods whose cost was corrected
-    after they came in carry more or less than was charged: the difference leaves the inventory
-    account back through the accounts the corrections were booked to (lot_origin.book_lot_value),
-    ``gain`` of it off stock gains and the rest off stock shrinkage, in an entry of its own that
-    a void or revert of the document leaves standing, as the goods it values are gone. Landed
+    nothing more for the goods once all of them have gone back, and never moves what the goods
+    took off stock. Goods leave stock at what they carried, which may differ from what was
+    charged, in an entry of its own that a void or revert of the document leaves standing, as
+    the goods it values are gone. A difference that comes from corrections to the lot's cost
+    after the goods came in goes back through the accounts the corrections were booked to
+    (lot_origin.book_lot_value): ``gain`` off stock gains, ``loss`` back onto stock shrinkage.
+    Any other difference is classified (_return_difference_lines): a supplier credit beyond
+    what the goods carried is a stock gain, goods carrying more than the credit a shrinkage
+    loss; cost of sales already recognised never moves. Landed
     cost the goods carried (``landed_by_account``: what each inventory account's lots gave up
     beyond the goods cost, to the cent, either sign), the bill's shipping among it, is a cost of
     goods that are gone: it is expensed to stock shrinkage off the lots' inventory accounts.
@@ -1195,11 +1212,11 @@ async def create_for_supplier_return(
     revalued = {key: round_money(amount or 0, currency) - rounded[key] for key, amount in goods.items()}
     revalued = {key: change for key, change in revalued.items() if change}
     change = sum(revalued.values(), _Dec(0))
-    gain_d = max(round_money(gain, currency), change, _Dec(0))
-    shrinkage = gain_d - change
-    if revalued or gain_d:
-        acc = await resolve_many(session, company_id, [*([R.STOCK_GAIN] if gain_d else []),
-                                                       *([R.STOCK_SHRINKAGE] if shrinkage else [])])
+    gain_d, loss_d = round_money(gain, currency), round_money(loss, currency)
+    # Debits to stock gains and stock shrinkage that balance the goods leaving at what they carried.
+    held = _return_difference(gain_d, change - gain_d + loss_d, -loss_d)
+    if revalued or any(held.values()):
+        acc = await resolve_many(session, company_id, [role for role, amt in held.items() if amt])
 
         def _goods_line(key, debit=0.0, credit=0.0) -> dict:
             return (_line(acc[key], key, debit=debit, credit=credit) if isinstance(key, AccountRole)
@@ -1217,9 +1234,7 @@ async def create_for_supplier_return(
             memo=f"Auto JE for {doc_id} corrected cost of goods returned to supplier",
             ts=day,
             entries=[
-                *([_line(acc[R.STOCK_GAIN], R.STOCK_GAIN, debit=to_stored_float(gain_d))] if gain_d else []),
-                *([_line(acc[R.STOCK_SHRINKAGE], R.STOCK_SHRINKAGE, credit=to_stored_float(shrinkage))]
-                  if shrinkage else []),
+                *_return_difference_lines(acc, held),
                 *(_goods_line(key, credit=to_stored_float(max(c, _Dec(0))), debit=to_stored_float(max(-c, _Dec(0))))
                   for key, c in revalued.items()),
             ],
@@ -1227,20 +1242,20 @@ async def create_for_supplier_return(
         )
     credits = dict(rounded)
     tax_d = round_money(charges.tax, currency)
+    settled: dict = {}
     if charges.settles is not None:
         # The last goods back take what the earlier returns left, so the bill's goods and
-        # their tax come off accounts payable and input tax exactly.
+        # their tax come off accounts payable and input tax exactly. The goods still leave
+        # stock at what was charged for them: what the bill's whole charge comes to beyond
+        # that is classified, never spread over the stock.
         earlier = await _sum_lines(session, company_id, f"je:auto:{doc_id}:rtn:", settings,
                                    {R.PAYABLE.value: "debit", R.TAX_INPUT.value: "credit",
                                     R.FX_GAIN.value: "credit", R.FX_LOSS.value: "debit"})
         payable = round_money(charges.settles["payable"], currency) - earlier[R.PAYABLE.value]
         tax_d = round_money(charges.settles["tax"], currency) - earlier[R.TAX_INPUT.value]
         exchanged = earlier[R.FX_GAIN.value] - earlier[R.FX_LOSS.value]
-        keys = sorted(credits, key=str)
-        weights = [abs(credits[k]) or abs(rounded[k]) for k in keys]
-        if sum(weights, _Dec(0)):
-            credits = dict(zip(keys, allocate_pro_rata(payable - tax_d + exchanged, weights, currency)))
-    goods_d = sum(credits.values(), _Dec(0))
+        settled = _return_difference(_Dec(0), sum(credits.values(), _Dec(0)) - (payable - tax_d + exchanged))
+    goods_d = sum(credits.values(), _Dec(0)) - sum(settled.values(), _Dec(0))
     payable_d = goods_d + tax_d
     taken = round_money(payable_d / charges.rate, charges.currency)
     if charges.settles is not None:
@@ -1251,7 +1266,8 @@ async def create_for_supplier_return(
         ap = await party_origin(session, company_id, doc_id, R.PAYABLE, settings)
         roles = [k for k, amt in credits.items() if amt and isinstance(k, AccountRole)]
         acc = await resolve_many(session, company_id, [*roles, *([] if ap else [R.PAYABLE]),
-                                                       *([R.TAX_INPUT] if tax_d else [])])
+                                                       *([R.TAX_INPUT] if tax_d else []),
+                                                       *(role for role, amt in settled.items() if amt)])
         ap_line = (_origin_line(settings, ap, R.PAYABLE, debit=to_stored_float(payable_d)) if ap
                    else _line(acc[R.PAYABLE], R.PAYABLE, debit=to_stored_float(payable_d)))
         goods_lines = [_line(acc[k], k, credit=to_stored_float(amt)) if isinstance(k, AccountRole)
@@ -1267,7 +1283,7 @@ async def create_for_supplier_return(
             memo=f"Auto JE for {doc_id} goods returned to supplier",
             ts=day,
             entries=await _with_fx_difference(session, company_id, [
-                ap_line, *goods_lines,
+                ap_line, *goods_lines, *_return_difference_lines(acc, settled),
                 *([_line(acc[R.TAX_INPUT], R.TAX_INPUT, credit=to_stored_float(tax_d))] if tax_d else [])]),
             metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
         )

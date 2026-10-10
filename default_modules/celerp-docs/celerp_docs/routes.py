@@ -6060,7 +6060,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             done = restated_back.get(x["item_id"], (Decimal(0), Decimal(0)))
             restated_back[x["item_id"]] = (done[0] + to_decimal(x["value_returned"]),
                                            done[1] + to_decimal(x.get("gain_returned") or 0))
-    gain = Decimal(0)
+    gain = restated_loss = Decimal(0)
     returned: list[dict] = []
     freight_of: dict[str, _LotFreight] | None = None  # _bill_freight, read once when a return needs it
     for line_no, (it, source_line_id, line_index) in enumerate(picked):
@@ -6137,29 +6137,39 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             at_cost = to_stored_float(round_money(taken_cost + rest_cost, currency))
             share = basis if whole else min(at_cost, basis)
             # What the document charged for the goods comes off what it is owed: its own units at
-            # their price, any others at what they cost.
+            # their price, any others at what they cost. The lot giving up more or less than that
+            # is the difference auto_je.create_for_supplier_return classifies (R09).
             if billed_rest is not None:
                 billed_lot = to_stored_float(round_money(taken_cost, currency)) + billed_rest
             else:
-                billed_lot = at_cost if taken and not whole else share
+                billed_lot = at_cost if taken else share
             goods[target] = goods.get(target, 0.0) + share
             billed[target] = billed.get(target, 0.0) + billed_lot
             value = round_money(share, currency) - round_money(billed_lot, currency)
+            # The part of that difference a correction to the lot's cost made goes back through
+            # the accounts the correction was booked to, never past what it booked there.
             raised, lowered = await auto_je.lot_restatements(session, company_id, it.item_id)
             done_value, done_gain = restated_back.get(it.item_id, (Decimal(0), Decimal(0)))
-            if raised != lowered:
-                back = round_money(raised * (done_value + value) / (raised - lowered), currency) - done_gain
-            else:
-                back = raised - done_gain if whole else Decimal(0)
-            back = max(back, value, Decimal(0))
+            back = loss = Decimal(0)
+            if raised or lowered:
+                if raised != lowered:
+                    back = round_money(raised * (done_value + value) / (raised - lowered), currency) - done_gain
+                else:
+                    back = raised - done_gain if whole else Decimal(0)
+                back = min(max(back, value, Decimal(0)), max(raised - done_gain, Decimal(0)))
+                loss = min(max(back - value, Decimal(0)), max(lowered - (done_gain - done_value), Decimal(0)))
             gain += back
-            restated_back[it.item_id] = (done_value + value, done_gain + back)
-            if value or back:
-                returned[-1].update({"value_returned": to_stored_float(value), "gain_returned": to_stored_float(back)})
+            restated_loss += loss
+            restated = back - loss
+            restated_back[it.item_id] = (done_value + restated, done_gain + back)
+            if restated or back:
+                returned[-1].update({"value_returned": to_stored_float(restated), "gain_returned": to_stored_float(back)})
             if charging:
                 tax += to_decimal(billed_lot) * charging.tax_rate(root, line_index)
             if root in added:
-                taken_cost = min(share, to_stored_float(round_money(taken_cost, currency)))
+                # What the document charged for the units it takes back, so its next return
+                # out of the lot is charged at its price too, whatever the lot carried.
+                taken_cost = to_stored_float(round_money(taken_cost, currency))
                 returned[-1].update({"lot_quantity_taken": taken, "lot_cost_taken": taken_cost})
                 # Later goods in this return count these off what the document added.
                 lot_qty, lot_cost = added[root]
@@ -6239,7 +6249,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         settles = charging.settles(row.state, rate, currency) if charging and all_returned else None
         payable = await auto_je.create_for_supplier_return(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
-            goods=goods, billed=billed, gain=to_stored_float(gain),
+            goods=goods, billed=billed, gain=to_stored_float(gain), loss=to_stored_float(restated_loss),
             landed_by_account={code: value - round_money(goods_off.get(code, 0.0), currency)
                                for code, value in lot_moved.items()},
             charges=auto_je.ReturnCharges(rate=to_decimal(rate), currency=doc_currency,
