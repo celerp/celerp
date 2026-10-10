@@ -7200,7 +7200,11 @@ async def import_doc(
     # Raw import is a snapshot-create transport, not a lifecycle/event escape hatch.
     # Updates go through PATCH and state transitions through their dedicated endpoints.
     if body.event_type != "doc.created":
-        raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+        raise HTTPException(status_code=422, detail=refusal(
+            "doc_import.event_type_unsafe",
+            f"Event type {body.event_type!r} is not import-safe",
+            event_type=body.event_type,
+        ))
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_doc_import_permissions(settings, role, body.data)
 
@@ -7212,10 +7216,15 @@ async def import_doc(
     # Entity guard: one create event per document identity.
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
     if existing is not None:
+        status = existing.state.get("status", "unknown")
         raise HTTPException(
             status_code=409,
-            detail=f"Document {body.entity_id} already exists (status: {existing.state.get('status', 'unknown')}). "
-            f"Use PATCH to update or lifecycle endpoints to advance its state.",
+            detail=refusal(
+                "doc_import.entity_exists",
+                f"Document {body.entity_id} already exists (status: {status}). "
+                f"Use PATCH to update or lifecycle endpoints to advance its state.",
+                entity_id=body.entity_id, status=status,
+            ),
         )
 
     from celerp_docs import import_service
@@ -9044,7 +9053,11 @@ async def import_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if body.event_type != "list.created":
-        raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+        raise HTTPException(status_code=422, detail=refusal(
+            "doc_import.event_type_unsafe",
+            f"Event type {body.event_type!r} is not import-safe",
+            event_type=body.event_type,
+        ))
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_list_import_permissions(settings, role, body.data)
 
@@ -9055,7 +9068,11 @@ async def import_list(
 
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
     if existing is not None:
-        raise HTTPException(status_code=409, detail=f"List {body.entity_id} already exists")
+        raise HTTPException(status_code=409, detail=refusal(
+            "doc_import.list_entity_exists",
+            f"List {body.entity_id} already exists",
+            entity_id=body.entity_id,
+        ))
     await _lock_imported_contact(session, company_id, "list", body.data)
     await _assert_import_number_free(session, company_id, "list", body.data)
 
@@ -9121,14 +9138,14 @@ async def batch_import_lists(
     for rec in body.records:
         if rec.event_type != "list.created":
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+                errors.append(f"{rec.entity_id}: event type {rec.event_type} isn't a supported import type")
             skipped += 1
             continue
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
             try:
                 if replay is None:
-                    raise HTTPException(status_code=409, detail="Idempotency key belongs to another operation")
+                    raise HTTPException(status_code=409, detail="This import key was already used for a different record")
                 if not body.upsert:
                     refuse_reused_import_key(replay, event_type="list.created", entity_id=rec.entity_id,
                                              data=rec.data, batch=True)
