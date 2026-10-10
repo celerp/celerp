@@ -362,6 +362,37 @@ async def _imported_bill_corrected(s, company_id) -> bool:
     return bool(rows) and all(state.get("status") == "void" for state in rows)
 
 
+async def _credit_note_issued_by_earlier_release(s, company_id) -> None:
+    """A credit note as an earlier release left it: it took its amount off the invoice's
+    balance, recorded nothing on itself and posted no entry."""
+    from celerp.events.engine import emit_event
+
+    inv, cn = f"doc:{uuid.uuid4().hex}", f"doc:{uuid.uuid4().hex}"
+    line = [{"description": "Service", "quantity": 1, "unit_price": 80.0, "line_total": 80.0}]
+    for entity_id, data in (
+            (inv, {"doc_type": "invoice", "status": "final", "total": 80.0, "subtotal": 80.0, "amount_paid": 0.0,
+                   "amount_outstanding": 80.0, "line_items": line}),
+            (cn, {"doc_type": "credit_note", "status": "final", "total": 40.0, "subtotal": 40.0,
+                  "amount_paid": 0.0, "amount_outstanding": 40.0, "original_doc_id": inv,
+                  "issue_date": "2026-01-01", "line_items": [{**line[0], "unit_price": 40.0, "line_total": 40.0}]})):
+        await emit_event(s, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.created",
+                         data=data, actor_id=None, location_id=None, source="test",
+                         idempotency_key=f"test:doc.created:{entity_id}", metadata_={})
+    await emit_event(s, company_id=company_id, entity_id=inv, entity_type="doc", event_type="doc.updated",
+                     data={"fields_changed": {"amount_outstanding": {"old": 80.0, "new": 40.0}}},
+                     actor_id=None, location_id=None, source="test", idempotency_key=f"test:legacy-credit:{cn}",
+                     metadata_={"source_credit_note": cn})
+
+
+async def _credit_note_settled(s, company_id) -> bool:
+    from celerp.models.projections import Projection
+
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
+    notes = [state for state in rows if state.get("doc_type") == "credit_note"]
+    return bool(notes) and all(float(state.get("credited") or 0) == 40.0 for state in notes)
+
+
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
@@ -372,6 +403,8 @@ LIFECYCLE_BACKFILLS = {
     "celerp_manufacturing.routes:settle_open_runs_hook": (_run_issued_by_older_release, _run_settled),
     "celerp_docs.historical_lots:link_historical_lots_hook": (_delivered_lot_without_its_product, _delivered_lot_linked),
     "celerp_docs.imported_cutover:imported_cutover_hook": (_bill_imported_by_earlier_release, _imported_bill_corrected),
+    "celerp_docs.legacy_credit_notes:legacy_credit_notes_hook": (_credit_note_issued_by_earlier_release,
+                                                                 _credit_note_settled),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.
