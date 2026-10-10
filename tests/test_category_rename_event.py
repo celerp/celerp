@@ -4,16 +4,12 @@
 
 Renaming a category moves each item in it through its own item.updated event, so the
 ledger holds the rename and a rebuild of the projections keeps it. Items in other
-categories are untouched. The census at the end lists every direct write to a
-projection outside the reducer, with why it stays; a new one fails until it is
-dispositioned.
+categories are untouched. Every other direct writer of a projection is listed, with
+why a rebuild keeps what it writes, in tests/test_set_aside_older_paths.py.
 """
 from __future__ import annotations
 
-import re
-import subprocess
 import uuid
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -22,8 +18,6 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
 pytestmark = pytest.mark.asyncio
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 async def _owner(client) -> tuple[dict, uuid.UUID]:
@@ -120,49 +114,3 @@ async def test_a_refused_rename_moves_no_item(client, session):
     count = await session.scalar(sa.select(sa.func.count()).select_from(LedgerEntry).where(
         LedgerEntry.company_id == cid, LedgerEntry.source == "category_rename"))
     assert count == 0
-
-
-# Every direct write to a projection outside the reducer (celerp/projections/engine.py),
-# by file, with why it stays. Each one either writes what a replay of the ledger yields,
-# or removes the projection together with every ledger row it was built from, so a
-# rebuild produces the same projections.
-_DIRECT_WRITERS = {
-    # Deleting a draft document (one or in bulk) or a draft list removes its projection
-    # with its ledger rows.
-    "default_modules/celerp-docs/celerp_docs/routes.py": 3,
-    # Erasing items removes the projections with their ledger rows.
-    "celerp/services/item_erasure.py": 1,
-    # One-time upgrade fills taken from a replay of the record's own ledger.
-    "celerp/services/status_doc_backfill.py": 1,
-    "default_modules/celerp-docs/celerp_docs/legacy_receipts.py": 1,
-    # The doctor's stale-projection fix writes the replay itself.
-    "default_modules/celerp-admin/celerp_admin/routes.py": 1,
-}
-
-_WRITE = re.compile(
-    r"\b(?:row|proj|projection|owner|p|item|doc|lot|entry|existing|target)\.state\s*=[^=]"
-    r"|delete\(\s*Projection\s*\)"
-    r"|update\(\s*Projection\s*\)"
-    r"|\bprojections\s+SET\b"
-    r"|DELETE\s+FROM\s+projections\b", re.IGNORECASE)
-
-
-def _source_files():
-    out = subprocess.run(["git", "ls-files", "celerp", "default_modules", "ui"], cwd=ROOT,
-                         capture_output=True, text=True, check=True).stdout.split()
-    for path in out:
-        if not path.endswith(".py") or "/tests/" in path or "/migrations/versions/" in path:
-            continue
-        if path == "celerp/projections/engine.py":
-            continue
-        yield path
-
-
-def test_every_direct_projection_writer_is_dispositioned():
-    found: dict[str, int] = {}
-    for path in _source_files():
-        text = (ROOT / path).read_text()
-        hits = len(_WRITE.findall(text))
-        if hits:
-            found[path] = hits
-    assert found == _DIRECT_WRITERS

@@ -336,7 +336,11 @@ async def test_every_change_to_an_existing_item_takes_the_company_lock(client, s
 
 # A projection written outside emit_event never passes the hold check, so each one must
 # be unable to take goods an invoice holds. A new writer fails this test until it is
-# routed through emit_event or added here with the reason it cannot.
+# routed through emit_event or added here with the reason it cannot. Each one must also
+# leave a rebuild unchanged: it writes what a replay of the ledger yields, or removes the
+# projection together with every ledger row it was built from. A writer that changes a
+# projection the ledger does not record (as the category rename once did) is lost on the
+# next rebuild, so it becomes an event instead.
 _WRITERS = {
     ("celerp/projections/engine.py", "Projection("): "the apply core every event goes through",
     ("celerp/projections/engine.py", "await session.execute(delete(Projection) if company_id is None else "
@@ -348,7 +352,6 @@ _WRITERS = {
     ("default_modules/celerp-admin/celerp_admin/routes.py", "await ProjectionEngine.rebuild(session, company_id=company_id)"): "rebuild from the judged ledger",
     ("default_modules/celerp-admin/celerp_admin/routes.py", "proj.state = replayed"): "stale projection replayed from the judged ledger",
     ("celerp/connectors/outbound_queue.py", "self.state = state"): "an outbound delivery's own state, not a projection",
-    ("celerp/routers/companies.py", "row.state = new_state"): "category rename, changes only the category",
     ("celerp/services/status_doc_backfill.py", "proj.state = new_state"): "writes only status_doc_id and status_doc_number",
     ("default_modules/celerp-docs/celerp_docs/legacy_receipts.py", "row.state = state"): "bill receipt fields; bills hold nothing",
     ("default_modules/celerp-docs/celerp_docs/received_legacy.py", "await ProjectionEngine.apply_event(session, entry)"): "imported received documents, not items",
@@ -359,16 +362,16 @@ _WRITERS = {
      "Projection.company_id == company_id, Projection.entity_id == entity_id))"): "deletes draft documents and lists",
 }
 _WRITE = re.compile(r"\.state = |\.state\[[^]]+\] = |(?<![\w.])Projection\(|ProjectionEngine\.(apply_event|rebuild)\(|"
-                    r"(insert|update|delete)\(Projection\)")
+                    r"(insert|update|delete)\(Projection\)|(?i:\b(update|delete\s+from)\s+projections\b)")
 
 
 async def test_every_projection_writer_is_accounted_for():
     root = Path(__file__).resolve().parents[1]
     found: dict[tuple[str, str], int] = {}
-    for base in ("celerp", "default_modules"):
+    for base in ("celerp", "default_modules", "ui"):
         for path in sorted((root / base).rglob("*.py")):
             rel = path.relative_to(root).as_posix()
-            if "/tests/" in rel:
+            if "/tests/" in rel or "/migrations/versions/" in rel:
                 continue
             for line in path.read_text(encoding="utf-8").splitlines():
                 code = line.strip()
