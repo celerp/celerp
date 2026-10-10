@@ -149,27 +149,194 @@ async def test_csv_export_matches_list_for_scan(client):
     assert listed == exported == {ids["barcode_1042"], ids["sku_1042_1"]}
 
 
-@pytest.mark.asyncio
-async def test_inventory_content_shows_not_found_and_exact_rows(monkeypatch):
-    """Red statement: the list had no Not found line and no mark on exact rows."""
+async def _render(monkeypatch, client, h, q: str) -> str:
+    """Render the inventory list for ``q`` from the real GET /items response."""
     import ui.routes.inventory as inv
+
+    api_items = await _list(client, h, q)
 
     async def _get_valuation(_token, _params=None):
         return {}
 
     async def _list_items(_token, _params):
-        return {"items": [{"id": "i1", "entity_id": "i1", "sku": "RING-A", "name": "Gold ring",
-                           "barcode": "1042", "status": "available", "q_exact": "barcode"}],
-                "total": 1, "not_found": ["1099", "1100"]}
+        return api_items
 
     monkeypatch.setattr(inv.api, "get_valuation", _get_valuation)
     monkeypatch.setattr(inv.api, "list_items", _list_items)
-    p = {"q": "barcode: 1042, 1099, 1100", "skus": "", "page": 1, "status": "", "category": "",
+    p = {"q": q, "skus": "", "page": 1, "status": "", "category": "",
          "inventory_type": "", "location_id": "", "source": "", "filter": "", "on_memo_to": "",
          "consigned_from": "", "attr_filters": {}, "sort": "", "dir": "desc", "per_page": 50, "cols": []}
-    xml = to_xml(await inv._inventory_content(
+    return to_xml(await inv._inventory_content(
         "tok", p, [], {}, {}, {"currency": "USD", "settings": {}}, [], [{"name": "each"}], {},
         lang="en", role="owner"))
+
+
+@pytest.mark.asyncio
+async def test_inventory_content_scoped_scan_shows_not_found_without_exact_rows(client, monkeypatch):
+    """A scoped scan is a filter on its field, so the real API marks no row exact: the
+    list names the scans that matched nothing and marks no row as an exact match."""
+    h = await _owner(client)
+    await _collisions(client, h)
+    xml = await _render(monkeypatch, client, h, "barcode: 1042, 1099, 1100")
     assert "Not found: 1099, 1100" in xml
+    assert "data-row--exact" not in xml
+    assert "Exact barcode match" not in xml
+
+
+@pytest.mark.asyncio
+async def test_inventory_content_bare_term_marks_exact_rows(client, monkeypatch):
+    """Red statement: the list had no mark on exact rows. A bare term ranks, so the row
+    whose barcode is exactly the term is marked, from the real API output."""
+    h = await _owner(client)
+    await _collisions(client, h)
+    xml = await _render(monkeypatch, client, h, "1042")
     assert "data-row--exact" in xml
     assert "Exact barcode match" in xml
+    assert "Not found" not in xml
+
+
+@pytest.mark.asyncio
+async def test_q_exact_scoped_versus_bare_term(client):
+    """The API marks an exact hit for a bare term and none for a fully scoped search,
+    which the two rendering tests above rely on."""
+    h = await _owner(client)
+    ids = await _collisions(client, h)
+    scoped = (await _list(client, h, "barcode: 1042"))["items"]
+    assert [(i["id"], i.get("q_exact")) for i in scoped] == [(ids["barcode_1042"], None)]
+    bare = {i["id"]: i.get("q_exact") for i in (await _list(client, h, "1042"))["items"]}
+    assert bare[ids["barcode_1042"]] == "barcode"
+
+
+# ── Ordering: FEFO is the primary order, exact identifier hits rank inside it ──
+
+
+def _row(id_: str, *, expires_at: str | None = None, q_exact: str | None = None,
+         updated_at: str = "2030-01-01T00:00:00", **fields) -> dict:
+    return {"id": id_, "entity_id": id_, "name": id_, "expires_at": expires_at,
+            "q_exact": q_exact, "updated_at": updated_at, **fields}
+
+
+def _ordered(rows: list[dict], **kw) -> list[str]:
+    from celerp_inventory.search import apply_item_order
+
+    args = {"inventory_method": None, "sort": None, "direction": "desc", "status": None, **kw}
+    apply_item_order(rows, **args)
+    return [r["id"] for r in rows]
+
+
+def test_fefo_wins_over_exact_identifier_tier():
+    """Red statement: the exact-identifier sort ran after FEFO, so an exact barcode hit
+    expiring next month was listed above a partial hit expiring tomorrow. FEFO stays the
+    primary order; the tier only orders items that share an expiry date."""
+    rows = [
+        _row("partial_tomorrow", expires_at="2030-01-02", q_exact=None),
+        _row("barcode_next_month", expires_at="2030-02-01", q_exact="barcode"),
+    ]
+    assert _ordered(rows, inventory_method="fefo") == ["partial_tomorrow", "barcode_next_month"]
+    # The same with the available status and a column sort, which FEFO also overrides.
+    rows.reverse()
+    assert _ordered(rows, inventory_method="fefo", status="available", sort="name",
+                    direction="asc") == ["partial_tomorrow", "barcode_next_month"]
+
+
+def test_fefo_ranks_exact_hits_within_one_expiry_date():
+    """Neighbour guard: inside one expiry date (and among items with no expiry, which
+    FEFO lists last) the exact tier still leads."""
+    rows = [
+        _row("none_partial", q_exact=None),
+        _row("none_sku", q_exact="sku"),
+        _row("jan_partial", expires_at="2030-01-02", q_exact=None),
+        _row("jan_sku", expires_at="2030-01-02", q_exact="sku"),
+        _row("jan_barcode", expires_at="2030-01-02", q_exact="barcode"),
+    ]
+    assert _ordered(rows, inventory_method="fefo") == [
+        "jan_barcode", "jan_sku", "jan_partial", "none_sku", "none_partial"]
+
+
+def test_exact_tier_leads_without_expiry_policy():
+    """Neighbour guard: with no expiry policy (FIFO or unset) the exact tier leads the
+    default most-recently-updated order."""
+    for method in ("fifo", None):
+        rows = [
+            _row("partial_new", q_exact=None, updated_at="2030-03-01T00:00:00"),
+            _row("sku_mid", q_exact="sku", updated_at="2030-02-01T00:00:00"),
+            _row("barcode_old", q_exact="barcode", updated_at="2030-01-01T00:00:00"),
+        ]
+        assert _ordered(rows, inventory_method=method) == ["barcode_old", "sku_mid", "partial_new"]
+
+
+def test_user_sort_wins_over_exact_tier():
+    """Neighbour guard: a column the user sorts by wins over the tier, under FIFO and
+    under FEFO for a status other than available."""
+    def rows():
+        return [
+            _row("a_partial", q_exact=None, sku="A"),
+            _row("c_barcode", q_exact="barcode", sku="C"),
+            _row("b_sku", q_exact="sku", sku="B"),
+        ]
+    assert _ordered(rows(), inventory_method="fifo", sort="sku", direction="asc") == [
+        "a_partial", "b_sku", "c_barcode"]
+    assert _ordered(rows(), inventory_method="fefo", status="draft", sort="sku", direction="asc") == [
+        "a_partial", "b_sku", "c_barcode"]
+
+
+@pytest.mark.asyncio
+async def test_fefo_list_and_global_search_lead_with_soonest_expiry(client, session):
+    """Red statement: in a FEFO company a bare `1042` listed the exact barcode hit that
+    expires next month above the partial hit that expires tomorrow, in the list and in
+    the global search bar alike."""
+    from celerp.services.auth import get_token_claims
+    from celerp.services.company_lock import locked_company
+    from celerp_inventory.search import global_search
+
+    r = await client.post("/auth/register", json={
+        "company_name": "FefoCo", "email": f"fefo-{uuid.uuid4().hex[:8]}@test.example",
+        "name": "Owner", "password": "pwvalid1",
+    })
+    assert r.status_code == 200, r.text
+    tok = r.json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    company_id = get_token_claims(tok)["company_id"]
+    company = await locked_company(session, company_id)
+    company.settings = {**(company.settings or {}), "inventory_method": "fefo"}
+    await session.flush()
+    partial = await _item(client, h, "1042-A", "Partial tomorrow", status="available",
+                          attributes={"expiry_date": "2030-01-02"})
+    exact = await _item(client, h, "B-1", "Exact next month", barcode="1042", status="available",
+                        attributes={"expiry_date": "2030-02-01"})
+    listed = (await _list(client, h, "1042", status="all"))["items"]
+    assert [i["id"] for i in listed] == [partial, exact]
+    assert [i["q_exact"] for i in listed] == [None, "barcode"]
+    found = (await global_search(session, company_id, "owner", "1042", 10))["items"]
+    assert [i["id"] for i in found] == [partial, exact]
+
+
+# ── q_exact comes only from the group that matched ──
+
+
+def _matched(item: dict, q: str) -> list[dict]:
+    from celerp_inventory.search import apply_query_match, parse_item_query
+
+    groups = parse_item_query(q, [item], {})
+    return apply_query_match([item], groups, {})
+
+
+def test_failed_or_group_does_not_set_exact_tier():
+    """Red statement: q_exact looked at every bare term in every group, so for
+    `name: ring, all: ABC & qty: 999` the Ring with SKU ABC and quantity 1 matched the
+    first group but was ranked an exact SKU hit by the failed second group."""
+    ring = {"id": "r1", "name": "Ring", "sku": "ABC", "quantity": 1, "status": "available"}
+    hit = _matched(ring, "name: ring, all: ABC & qty: 999")
+    assert [h["id"] for h in hit] == ["r1"]
+    assert hit[0]["q_exact"] is None
+    assert hit[0]["q_match"] == [{"field": "name", "match": "ring"}]
+
+
+def test_matched_group_bare_identifier_still_sets_exact_tier():
+    """Neighbour guard: a bare identifier in the group that did match still ranks, and
+    a range term in it never does."""
+    ring = {"id": "r1", "name": "Ring", "sku": "ABC", "quantity": 7, "status": "available"}
+    assert _matched(dict(ring), "zzz, ABC")[0]["q_exact"] == "sku"
+    assert _matched(dict(ring), "all: ABC & qty: 7")[0]["q_exact"] == "sku"
+    ranged = {"id": "r2", "name": "Bolt", "sku": "5-10", "quantity": 7, "status": "available"}
+    assert _matched(ranged, "5-10")[0]["q_exact"] is None

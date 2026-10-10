@@ -37,8 +37,9 @@ from .routes import (
     best_exact_identifier,
     flatten_item,
     identifier_tier,
+    match_reasons,
+    matched_group,
     parse_query,
-    parsed_match_reasons,
     searchable_field_sets,
 )
 
@@ -176,22 +177,23 @@ def apply_query_match(
 
     Grammar: comma = OR groups (a named field carries to the groups after it), & = AND
     terms, lo-hi = numeric range, scoped identifier = whole value, bare number =
-    numeric-exact OR text, else text substring (parsed_match_reasons). Each item is
+    numeric-exact OR text, else text substring (matched_group). Each item is
     matched against its own category's numeric/text field sets, so a number-typed
     category field resolves and a text-typed one is not coerced. Reasons are computed
     over the visibility-stripped dict, so every cited field is one the role may see.
-    q_exact names the identifier field of the item's best exact hit by a bare term
-    (best_exact_identifier), or None; apply_item_order ranks by it.
+    q_exact names the identifier field of the item's best exact hit by a bare term of
+    the group that matched (best_exact_identifier over the same evaluation), or None;
+    apply_item_order ranks by it.
     """
     matched: list[dict] = []
     for r in result:
         num, txt = item_field_sets.get(
             r.get("id"), (_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS)
         )
-        reasons = parsed_match_reasons(r, groups, num, txt)
-        if reasons is not None:
-            r["q_match"] = [{"field": f, "match": m} for f, m in reasons]
-            r["q_exact"] = best_exact_identifier(r, groups)
+        pairs = matched_group(r, groups, num, txt)
+        if pairs is not None:
+            r["q_match"] = [{"field": f, "match": m} for f, m in match_reasons(pairs)]
+            r["q_exact"] = best_exact_identifier(r, pairs)
             matched.append(r)
     return matched
 
@@ -227,11 +229,18 @@ def apply_item_order(
     (most-recently-updated first, then name asc, then entity_id asc).
 
     Search ranking: unless a user column sort is in effect, exact identifier hits
-    (q_exact, set by apply_query_match) lead in IDENTIFIER_TIERS order, and the order
-    above breaks ties. A column the user chose to sort by always wins.
+    (q_exact, set by apply_query_match) rank in IDENTIFIER_TIERS order. Without FEFO
+    they lead the default order. Under FEFO expiry stays the primary order and the
+    tier only orders items that share an expiry date (or have none). A column the user
+    chose to sort by always wins.
     """
     is_fefo = inventory_method == "fefo"
     user_sort = bool(sort) and (not is_fefo or status not in (None, "available", ""))
+    if not user_sort:
+        if not is_fefo:
+            default_order(result)
+        # Stable sorts: the FEFO sort below keeps this as its tie-break.
+        result.sort(key=lambda item: identifier_tier(item.get("q_exact")))
     if is_fefo:
         def _fefo_key(item: dict):
             # Items without expiry float to the bottom; expired items sort first.
@@ -252,10 +261,6 @@ def apply_item_order(
             return (0, str(v).lower())
 
         result.sort(key=_sort_key, reverse=reverse)
-    elif not sort and not is_fefo:
-        default_order(result)
-    if not user_sort:
-        result.sort(key=lambda item: identifier_tier(item.get("q_exact")))
 
 
 async def global_search(session, company_id, role, q, limit) -> dict:

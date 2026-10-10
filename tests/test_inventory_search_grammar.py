@@ -504,3 +504,34 @@ def test_unscoped_term_reports_exact_identifier_field():
     text field that merely contains it."""
     item = _item(name="Ring 1042 set", sku="RS", barcode="1042")
     assert query_match_reasons(item, "1042") == [("barcode", "1042")]
+
+
+# ── A numeric range keeps its meaning next to an identifier that looks like one ──
+
+
+def test_unscoped_range_is_not_an_exact_sku():
+    """Red statement: an unscoped `5-10` was checked as an exact identifier before it
+    was read as a range, so the item whose SKU is 5-10 matched even though its quantity
+    (20) is outside the range. An unscoped range keeps its numeric meaning."""
+    sku_5_10 = _item(name="Bolt", sku="5-10", quantity=20)
+    assert query_match_reasons(sku_5_10, "5-10") is None
+    # The same item inside the range matches on its quantity, not its SKU.
+    assert query_match_reasons(_item(name="Bolt", sku="5-10", quantity=7), "5-10") == [("quantity", "7")]
+
+
+def test_scoped_sku_selects_range_shaped_identifier():
+    """Neighbour guard: `sku: 5-10` and `sku:5-10` select the identifier explicitly,
+    whatever the quantity."""
+    sku_5_10 = _item(name="Bolt", sku="5-10", quantity=20)
+    assert query_match_reasons(sku_5_10, "sku: 5-10") == [("sku", "5-10")]
+    assert query_match_reasons(sku_5_10, "sku:5-10") == [("sku", "5-10")]
+    assert query_match_reasons(_item(name="Bolt", sku="5-100", quantity=20), "sku: 5-10") is None
+
+
+def test_unscoped_range_filtering_unchanged():
+    """Neighbour guard: range filtering is unchanged. In range matches on the numeric
+    column, out of range does not match, and a reversed range (lo > hi) is still literal
+    text, so an exact identifier written that way is still found."""
+    assert query_match_reasons(_item(name="Bolt", sku="B7", quantity=7), "5-10") == [("quantity", "7")]
+    assert query_match_reasons(_item(name="Bolt", sku="B20", quantity=20), "5-10") is None
+    assert query_match_reasons(_item(name="Bolt", sku="10-5", quantity=20), "10-5") == [("sku", "10-5")]

@@ -871,9 +871,10 @@ def _term_match_reason(
     A scoped term matches its one field (parse_query resolved the field). Identifier
     fields (barcode, rfid_epc, gtin, sku) compare whole values under their canonical
     key, so `barcode: 1042` never matches 10420; other text fields match any part; a
-    numeric field may take a range or an exact number. An unscoped term names an exact
-    identifier hit first (exact_identifier_field), then a range, a text part, or a
-    numeric value.
+    numeric field may take a range or an exact number. An unscoped term is a numeric
+    range when it reads as one (lo <= hi), so `5-10` keeps its range meaning and
+    `sku: 5-10` names the identifier; otherwise it names an exact identifier hit
+    (exact_identifier_field), then a text part, or a numeric value.
 
     numeric_fields / text_fields are the effective per-category searchable field sets
     (searchable_field_sets); they decide whether a scoped value is coerced to a number.
@@ -914,9 +915,6 @@ def _term_match_reason(
         if value in str(stored if stored is not None else "").lower():
             return field, value
         return None
-    exact = exact_identifier_field(record, value)
-    if exact is not None:
-        return exact, value
     m = _RANGE_RE.match(value)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
@@ -926,6 +924,9 @@ def _term_match_reason(
                     return f, format(n, "g")
             return None
         # lo > hi is not a usable range; fall through and treat the term as literal text.
+    exact = exact_identifier_field(record, value)
+    if exact is not None:
+        return exact, value
     field = _text_match(record, value)
     if field is not None:
         return field, value
@@ -950,6 +951,31 @@ def query_match_reasons(
         record, parse_query(q, numeric_fields, text_fields, [record]), numeric_fields, text_fields)
 
 
+def matched_group(
+    record: dict, groups: list[list[QueryTerm]],
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> list[tuple[QueryTerm, tuple[str, str]]] | None:
+    """The first group whose AND-terms all match the record, as (term, (field, matched
+    text)) pairs in term order, or None when no group matches. The groups OR together.
+    This is the one match evaluation; the reasons and the exact-hit rank both read it."""
+    for terms in groups:
+        reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
+        if all(r is not None for r in reasons):
+            return list(zip(terms, reasons))
+    return None
+
+
+def match_reasons(pairs: list[tuple[QueryTerm, tuple[str, str]]]) -> list[tuple[str, str]]:
+    """The (field, matched text) reasons of a matched group (matched_group), deduped,
+    order preserved."""
+    deduped: list[tuple[str, str]] = []
+    for _term, r in pairs:
+        if r not in deduped:
+            deduped.append(r)
+    return deduped
+
+
 def parsed_match_reasons(
     record: dict, groups: list[list[QueryTerm]],
     numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
@@ -962,24 +988,22 @@ def parsed_match_reasons(
 
     numeric_fields / text_fields are the effective per-category searchable field sets
     threaded to _term_match_reason; they default to the module-level sets."""
-    for terms in groups:
-        reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
-        if all(r is not None for r in reasons):
-            deduped: list[tuple[str, str]] = []
-            for r in reasons:
-                if r not in deduped:
-                    deduped.append(r)
-            return deduped
-    return None
+    pairs = matched_group(record, groups, numeric_fields, text_fields)
+    return match_reasons(pairs) if pairs is not None else None
 
 
-def best_exact_identifier(record: dict, groups: list[list[QueryTerm]]) -> str | None:
-    """The identifier field of the record's best exact hit by any unscoped term (its
-    highest IDENTIFIER_TIERS tier), or None. Ranks a bare-term search; a scoped term is
-    already a filter on its one field, so it does not rank."""
+def best_exact_identifier(
+    record: dict, pairs: list[tuple[QueryTerm, tuple[str, str]]],
+) -> str | None:
+    """The identifier field of the record's best exact hit by an unscoped term of the
+    group that matched (matched_group), at its highest IDENTIFIER_TIERS tier, or None.
+    Only a term whose match was that identifier counts, so a term of a failed group or
+    a term read as a numeric range never ranks. A scoped term is already a filter on its
+    one field, so it does not rank."""
     hits = [
-        f for terms in groups for t in terms if t.field is None
-        if (f := exact_identifier_field(record, t.value)) is not None
+        field for t, (field, _m) in pairs
+        if t.field is None and field in _IDENTIFIER_KEYS
+        and exact_identifier_field(record, t.value) == field
     ]
     return min(hits, key=identifier_tier) if hits else None
 
