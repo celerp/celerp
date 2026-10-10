@@ -9543,8 +9543,11 @@ async function celerpCsvImport(input, entityId) {{
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
         _line_acts = _doc_line_actions(doc_type, status)
+        # Shipping and holding act on stock, so they are offered only when a line holds an item
+        # (the same rule that disables the checkbox of a line without one).
+        _stocked_lines = any(li.get("entity_id") or li.get("item_id") for li in line_items)
         # Set as shipped and Set as available share the toolbar's shipping options.
-        _fulfillable_status = (_line_acts.fulfil or _line_acts.revert) and bool(line_items)
+        _fulfillable_status = (_line_acts.fulfil or _line_acts.revert) and _stocked_lines
         # Inbound docs (bill, consignment_in) show Receive Goods / Return Goods in toolbar.
         # They do NOT use fulfill-lines; the toolbar posts to /receive instead.
         from celerp_docs.doc_constants import RECEIVABLE_STATUSES
@@ -9559,7 +9562,7 @@ async function celerpCsvImport(input, entityId) {{
         # finalized list of any type. Reserve/Release are ledger-neutral, so a list qualifies
         # with no fulfil capability - unlike Set as shipped, which stays invoice/memo only.
         # (Draft lists reserve too - handled on the draft branch, not here.)
-        _doc_reservable = _line_acts.reserve and bool(line_items)
+        _doc_reservable = _line_acts.reserve and _stocked_lines
         _list_reservable = (
             is_list
             and status == _LF
