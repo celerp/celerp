@@ -4297,8 +4297,15 @@ async def close_fiscal_year(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Close a fiscal year: zero revenue + expense accounts, transfer net income to Retained Earnings."""
-    company = await locked_company(session, company_id)
     year_end = payload.fiscal_year_end
+    try:
+        _require_iso_date(year_end, "fiscal_year_end")
+    except HTTPException:
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_invalid",
+            f"{year_end} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
+            value=year_end)) from None
+    company = await locked_company(session, company_id)
     # Build account balances through the year-end date
     posted = await _je_rows(session, company_id)
     balances = _build_balances(posted, None, year_end)

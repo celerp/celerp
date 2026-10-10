@@ -4619,5 +4619,6 @@
   "settings.type_reset_prefix": "Type ",
   "settings.type_reset_suffix": " to confirm. This cannot be undone.",
   "shell.unknown_error": "Unknown error",
-  "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships."
+  "documents.cost_moved_with_goods": "Lot {sku} was set aside for invoice {doc}. Invoice {doc} will be costed when it ships.",
+  "accounting.year_end_invalid": "{value} is not a date. Enter the last day of the year to close as YYYY-MM-DD."
 }

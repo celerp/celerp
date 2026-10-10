@@ -4619,5 +4619,6 @@
   "settings.type_reset_prefix": "พิมพ์ ",
   "settings.type_reset_suffix": " เพื่อยืนยัน การดำเนินการนี้ไม่สามารถย้อนกลับได้",
   "shell.unknown_error": "ข้อผิดพลาดที่ไม่ทราบสาเหตุ",
-  "documents.cost_moved_with_goods": "ล็อต {sku} ถูกกันไว้สำหรับใบแจ้งหนี้ {doc} ต้นทุนของใบแจ้งหนี้ {doc} จะถูกบันทึกเมื่อจัดส่ง"
+  "documents.cost_moved_with_goods": "ล็อต {sku} ถูกกันไว้สำหรับใบแจ้งหนี้ {doc} ต้นทุนของใบแจ้งหนี้ {doc} จะถูกบันทึกเมื่อจัดส่ง",
+  "accounting.year_end_invalid": "{value} ไม่ใช่วันที่ ใส่วันสุดท้ายของปีที่จะปิดในรูปแบบ YYYY-MM-DD"
 }

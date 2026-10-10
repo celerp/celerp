@@ -4619,5 +4619,6 @@
   "settings.type_reset_prefix": "ይተይቡ ",
   "settings.type_reset_suffix": "። ይህ ሊቀለበስ አይችልም።",
   "shell.unknown_error": "ያልታወቀ ስህተት",
-  "documents.cost_moved_with_goods": "ሎት {sku} ለደረሰኝ {doc} ተይዞ ነበር። የደረሰኝ {doc} ወጪ ሲላክ ይሰላል።"
+  "documents.cost_moved_with_goods": "ሎት {sku} ለደረሰኝ {doc} ተይዞ ነበር። የደረሰኝ {doc} ወጪ ሲላክ ይሰላል።",
+  "accounting.year_end_invalid": "{value} ቀን አይደለም። የሚዘጋውን ዓመት የመጨረሻ ቀን በ YYYY-MM-DD ቅርጸት ያስገቡ።"
 }
