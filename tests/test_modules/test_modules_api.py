@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.xdist_group("modules_api")
 
@@ -858,8 +858,8 @@ class TestPurgeRechecksTablePrefix:
             r = await client.post(
                 "/companies/me/modules/acme-grabber/purge-data", headers=_h(token))
         assert r.status_code == 409, r.text
-        assert "connector_configs" in r.json()["detail"]
-        assert "Nothing was deleted" in r.json()["detail"]
+        assert "connector_configs" in refusal_text(r.json()["detail"])
+        assert "Nothing was deleted" in refusal_text(r.json()["detail"])
         assert (await session.execute(
             text('SELECT count(*) FROM "connector_configs"'))).scalar_one() == before
 
@@ -877,8 +877,8 @@ class TestPurgeRechecksTablePrefix:
             r = await client.post(
                 "/companies/me/modules/acme-grabber/purge-data", headers=_h(token))
         assert r.status_code == 409, r.text
-        assert table in r.json()["detail"]
-        assert "Nothing was deleted" in r.json()["detail"]
+        assert table in refusal_text(r.json()["detail"])
+        assert "Nothing was deleted" in refusal_text(r.json()["detail"])
         assert (await session.execute(text(f"SELECT to_regclass('{table}')"))).scalar() is not None
 
     @pytest.mark.asyncio
@@ -897,8 +897,8 @@ class TestPurgeRechecksTablePrefix:
             r = await client.post(
                 "/companies/me/modules/acme-grabber/purge-data", headers=_h(token))
         assert r.status_code == 409, r.text
-        assert "instance_meta" in r.json()["detail"]
-        assert "Nothing was deleted" in r.json()["detail"]
+        assert "instance_meta" in refusal_text(r.json()["detail"])
+        assert "Nothing was deleted" in refusal_text(r.json()["detail"])
         assert (await session.execute(text(
             "SELECT value FROM instance_meta WHERE key = 'zz_marker'"))).scalar_one() == "kept"
 
@@ -916,7 +916,7 @@ class TestPurgeRechecksTablePrefix:
             r = await client.post(
                 "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
         assert r.status_code == 409, r.text
-        assert "overlaps" in r.json()["detail"]
+        assert "overlaps" in refusal_text(r.json()["detail"])
         assert (await session.execute(
             text('SELECT count(*) FROM "acme_sub_thing"'))).scalar_one() == 2
         assert (await session.execute(

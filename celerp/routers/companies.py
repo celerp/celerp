@@ -405,10 +405,13 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
         return value
     from celerp.modules.loader import is_running
     if not is_running("celerp-docs"):
-        raise HTTPException(status_code=422, detail=(
+        raise HTTPException(status_code=422, detail=refusal(
+            "company.deposit_account_needs_docs",
             "Turn on Documents on the Modules page before choosing a deposit account."))
     if not isinstance(value, str):
-        raise HTTPException(status_code=422, detail=f"{key} must be an account code or empty.")
+        raise HTTPException(status_code=422, detail=refusal(
+            "company.deposit_account_not_code",
+            "Deposit account must be an account code or empty."))
     from celerp_docs.routes_payments import require_online_deposit_account
     await require_online_deposit_account(session, company_id, value)
     return value
@@ -757,7 +760,10 @@ async def transfer_install_owner(
         ).with_for_update()
     )).scalar_one_or_none()
     if target is None or not target.is_active or membership is None:
-        raise HTTPException(status_code=400, detail="Installation owner must be an active user in this company")
+        from celerp.accounting_roles import refusal
+        raise HTTPException(status_code=400, detail=refusal(
+            "company.install_owner_not_active_member",
+            "Installation owner must be an active user in this company."))
 
     current.is_install_owner = False
     await session.flush()
@@ -1860,13 +1866,17 @@ async def disable_module(
 
 async def _refuse_while_in_use(session: AsyncSession, module_name: str, action: str) -> None:
     """409 while any company uses the module or it is still running."""
+    from celerp.accounting_roles import refusal
     from celerp.modules.loader import is_running
     from celerp.modules.registry import load_set
     if module_name in await load_set(session) or is_running(module_name):
         raise HTTPException(
             status_code=409,
-            detail=f"A company still uses this module, or it is still running. "
-                   f"Turn it off in every company and restart before {action}.")
+            detail=refusal(
+                "company.module_still_in_use",
+                f"A company still uses this module, or it is still running. "
+                f"Turn it off in every company and restart before {action}.",
+                action=action))
 
 
 @router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)])
@@ -1998,8 +2008,10 @@ async def purge_module_data(
         from celerp.modules.importer import table_prefix_problem
         problem = table_prefix_problem(module_name, prefix)
         if problem:
-            raise HTTPException(status_code=409,
-                                detail=f"Could not purge: {problem} Nothing was deleted.")
+            from celerp.accounting_roles import refusal
+            raise HTTPException(status_code=409, detail=refusal(
+                "company.purge_blocked",
+                f"Could not purge: {problem} Nothing was deleted.", problem=problem))
     tables = await _module_tables_with_row_counts(session, prefix)
     names = [t["name"] for t in tables]
     if not names:
@@ -2242,8 +2254,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     if len(data) > MAX_ARCHIVE_BYTES:
         raise HTTPException(status_code=413, detail=t("company.err_download_too_large"))
     if hashlib.sha256(data).hexdigest() != answer["sha256"]:
-        raise HTTPException(status_code=502,
-                            detail="The downloaded package does not match its listing. Try again.")
+        raise HTTPException(status_code=502, detail=t("company.err_download_mismatch"))
 
     ref = await asyncio.to_thread(
         marketplace_stage.write_stage, data, slug=answer["slug"], version=answer["version"],
