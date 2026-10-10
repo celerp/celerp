@@ -7347,8 +7347,21 @@ def imported_booked_now(data: dict) -> tuple[dict, list[dict]]:
     """An issued purchase order or bill booked now (RECORD_NOW) as it enters the books, and
     the goods its snapshot says were received: a bill is finalized, since it was issued,
     and the goods are taken off the snapshot so the receipt that brings them in records
-    them (imported_receipt)."""
+    them (imported_receipt). Goods the snapshot marks as already held in a lot
+    (``lot_quantity_added``, as imported_opening_snapshot marks them) are refused (422):
+    the receipt would bring them in a second time, so only the opening balances can hold
+    them."""
     received = list(data.get("received_items") or [])
+    held = next((x for x in received if "lot_quantity_added" in x), None)
+    if held is not None:
+        number = str(data.get("doc_number") or data.get("ref_id") or "")
+        lot = str(held.get("sku") or held.get("item_id") or "")
+        raise HTTPException(status_code=422, detail=refusal(
+            "doc_import.record_now_goods_held",
+            f"Document {number} says goods received on it are already in stock in lot {lot}. Record "
+            "it now brings its goods into stock, so they would be counted twice. Import it as Already "
+            "in my opening balances, or remove what the lot holds from its received goods, then import "
+            "it again.", number=number, lot=lot))
     data = {k: v for k, v in data.items() if k not in ("received_items", "received_item_ids")}
     data["line_items"] = [{k: v for k, v in li.items() if k != "quantity_received"}
                           for li in data.get("line_items") or []]

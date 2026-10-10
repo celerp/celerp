@@ -201,6 +201,38 @@ async def test_record_now_resent_books_it_once(client, session, auth):
     assert (await _books(session, auth, AP))[AP] == -5 * PRICE
 
 
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("doc_type", ["bill", "purchase_order"])
+async def test_record_now_is_refused_for_goods_the_file_says_a_lot_already_holds(
+        client, session, auth, batch, doc_type):
+    """Red statement: a received line marked with what its lot already holds
+    (lot_quantity_added, as Celerp marks goods held in the opening balances) was booked now
+    all the same; the receipt dropped the mark and brought the goods in a second time, so
+    stock held them twice. Booking now brings the goods in through the receipt, so goods
+    already in a lot can only be imported as already in the opening balances."""
+    lot = await _item(client, auth, _OPENING, qty=10)
+    data = _snapshot(lot, doc_type, 5, 2)
+    data["received_items"][0].update(lot_quantity_added=2.0, lot_cost_added=2 * PRICE)
+    rec = _rec(data, "record_now")
+    n, before = await _events(session, auth), await _lot(session, auth, lot)
+    r = await _post(client, auth, rec, batch)
+    if batch:
+        assert r.status_code == 200 and r.json()["created"] == 0, r.text
+        assert "already in stock" in r.json()["errors"][0], r.text
+    else:
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["message_key"] == "doc_import.record_now_goods_held", r.text
+        assert set(r.json()["detail"]["params"]) >= {"number", "lot"}, r.text
+    assert await _state(session, auth, rec["entity_id"]) == {}
+    assert await _events(session, auth) == n
+    assert await _lot(session, auth, lot) == before
+    # The same file with the opening balances holding it imports, the goods staying in the lot.
+    await _opening(client, auth, *_owed(doc_type, 5, 2))
+    r = await _post(client, auth, _rec(data, "opening_balances"), batch)
+    assert r.status_code == 200, r.text
+    assert await _lot(session, auth, lot) == before
+
+
 async def test_a_document_booked_now_is_not_taken_for_an_earlier_import(client, session, auth):
     lot = await _item(client, auth, _OPENING, qty=10)
     bill = _rec(_snapshot(lot, "bill", 5, 2), "record_now")

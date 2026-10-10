@@ -4612,6 +4612,7 @@
   "item.deleted": "{sku} was deleted: restore it from the Deleted list to use it.",
   "doc_import.treatment_required": "Document {number} must say how it enters the books. Choose Already in my opening balances (nothing is posted and its goods stay at their imported value) or Record it now (it is booked as a bill and a receipt are), then import it again.",
   "doc_import.treatment_unknown": "Document {number} gives an import treatment ({given}) the app does not know. Use Already in my opening balances or Record it now, or leave it out, then import it again.",
+  "doc_import.record_now_goods_held": "Document {number} says goods received on it are already in stock in lot {lot}. Record it now brings its goods into stock, so they would be counted twice. Import it as Already in my opening balances, or remove what the lot holds from its received goods, then import it again.",
   "doc_import.received_invalid": "Document {number}: a line of goods received on it cannot be read ({problem}). Correct its received quantities in the file and import it again.",
   "docs.void_imported_receipt": "This document cannot be voided: it was imported holding goods already in stock, which the opening balances carry. Send back any goods it still holds with Return Goods, then settle what it still owes with a payment.",
   "docs.revert_imported_receipt": "This document cannot go back to draft: it was imported holding goods already in stock, which the opening balances carry. Send back any goods it still holds with Return Goods, then settle what it still owes with a payment.",

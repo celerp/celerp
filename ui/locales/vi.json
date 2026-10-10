@@ -4612,6 +4612,7 @@
   "item.deleted": "{sku} đã bị xóa: hãy khôi phục nó từ danh sách Đã xóa để sử dụng.",
   "doc_import.treatment_required": "Chứng từ {number} phải cho biết cách ghi vào sổ. Chọn Đã có trong số dư đầu kỳ của tôi (không ghi sổ gì và hàng giữ giá trị đã nhập) hoặc Ghi nhận ngay (ghi sổ như một hóa đơn mua và một lần nhận hàng), rồi nhập lại.",
   "doc_import.treatment_unknown": "Chứng từ {number} đưa ra cách nhập ({given}) mà ứng dụng không biết. Dùng Đã có trong số dư đầu kỳ của tôi hoặc Ghi nhận ngay, hoặc để trống, rồi nhập lại.",
+  "doc_import.record_now_goods_held": "Chứng từ {number} cho biết hàng đã nhận trên chứng từ đã có trong kho ở lô {lot}. Ghi nhận ngay sẽ đưa hàng vào kho, nên hàng sẽ bị tính hai lần. Hãy nhập chứng từ là Đã có trong số dư đầu kỳ của tôi, hoặc bỏ phần lô đang giữ khỏi hàng đã nhận, rồi nhập lại.",
   "doc_import.received_invalid": "Chứng từ {number}: không đọc được một dòng hàng đã nhận ({problem}). Sửa số lượng đã nhận trong tệp rồi nhập lại.",
   "docs.void_imported_receipt": "Không thể hủy chứng từ này: chứng từ được nhập cùng hàng hóa đã có trong kho, do số dư đầu kỳ ghi nhận. Trả lại hàng còn giữ bằng Trả hàng, sau đó thanh toán phần còn nợ bằng một khoản thanh toán.",
   "docs.revert_imported_receipt": "Không thể đưa chứng từ này về bản nháp: chứng từ được nhập cùng hàng hóa đã có trong kho, do số dư đầu kỳ ghi nhận. Trả lại hàng còn giữ bằng Trả hàng, sau đó thanh toán phần còn nợ bằng một khoản thanh toán.",
