@@ -42,7 +42,7 @@ from celerp.services import auto_je
 from celerp.services.account_roles import consignor_of, is_consigned, lineage, new_lot_account, party_key
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_money import UnratedTaxError, document_money
 
 _EPS = Decimal("1e-9")
@@ -352,23 +352,25 @@ def _cannot_recompute() -> HTTPException:
 def _lot_costs(plan: _Plan, by_line: dict[int, tuple[str, Decimal]], base_currency: str) -> dict[str, Decimal]:
     """Each lot's cost at the bill's price per unit, for the units the company kept: a
     sold lot's units that a customer returned and that went back to the consignor are
-    not. The lots received on a line share exactly what the bill debits for it, the
-    rounding remainder going to the largest."""
+    not. The lots received on a line share exactly what the bill debits for it, spread by
+    the allocator (money.allocate_pro_rata) over the bill units each lot kept."""
     costs: dict[str, Decimal] = {}
-    on_line: dict[int, list[str]] = {}
+    on_line: dict[int, list[tuple[str, Decimal]]] = {}
     for group in plan.groups:
         debit = by_line[group.line][1] if group.line in by_line else Decimal(0)
         kept = plan.kept.get(group.line, Decimal(0))
-        unit = debit * group.basis / kept if kept > 0 else Decimal(0)
         for row in group.members:
-            qty = to_decimal(row.state.get("quantity") or 0) - plan.back.get(row.entity_id, Decimal(0))
-            costs[row.entity_id] = round_money(unit * max(qty, Decimal(0)), base_currency)
+            qty = max(to_decimal(row.state.get("quantity") or 0) - plan.back.get(row.entity_id, Decimal(0)), Decimal(0))
             if group.returned is None:
-                on_line.setdefault(group.line, []).append(row.entity_id)
+                on_line.setdefault(group.line, []).append((row.entity_id, qty * group.basis))
+            else:
+                # Goods a customer brought back: one lot at the line's price per unit, not a share.
+                costs[row.entity_id] = round_money(debit * group.basis * qty / kept if kept > 0 else 0, base_currency)
     for line, lots in on_line.items():
         debit = by_line[line][1] if line in by_line else Decimal(0)
-        largest = max(lots, key=lambda lot: (costs[lot], lot))
-        costs[largest] += debit - sum((costs[lot] for lot in lots), Decimal(0))
+        weights = [w for _lot, w in lots]
+        shares = allocate_pro_rata(debit, weights, base_currency) if any(weights) else [Decimal(0)] * len(lots)
+        costs.update({lot: share for (lot, _w), share in zip(lots, shares)})
     return costs
 
 

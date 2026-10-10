@@ -14,6 +14,7 @@ import pytest
 
 from test_consignment_in_sale import AP, PAYABLE, PURCHASED, _books, _consign, _sell, _settled, _state
 from test_set_aside_goods_every_exit import _write_off
+from test_set_aside_goods_follow_the_lot import _split
 
 pytestmark = pytest.mark.asyncio
 
@@ -69,4 +70,15 @@ async def test_consigned_goods_held_cannot_be_written_off_or_archived(client, se
     assert (await _state(session, auth, lot))["status"] == "available"
     bill = await _convert(client, session, auth, con)
     assert [li["quantity"] for li in bill["line_items"]] == [3]
+    await _settled(client, session, auth)
+
+
+async def test_the_lots_bought_on_a_line_share_its_debit_to_the_cent(client, session, auth):
+    """A line of 3 at 10.00 in all (3.333 each), split into three lots of 1: the bill's
+    10.00 is spread by the allocator, 3.34 / 3.33 / 3.33, and the lots hold exactly it."""
+    con, lot = await _consign(client, session, auth, qty=3, unit_price=10 / 3, cost_price=10 / 3)
+    parts = [lot, await _split(client, auth, lot, 1), await _split(client, auth, lot, 1)]
+    await _convert(client, session, auth, con)
+    costs = sorted([round(float((await _state(session, auth, x))["cost_total"]), 2) for x in parts], reverse=True)
+    assert costs == [3.34, 3.33, 3.33], costs
     await _settled(client, session, auth)
