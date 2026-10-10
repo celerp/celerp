@@ -140,18 +140,23 @@ def _iso_date(value) -> date | None:
 
 def _prefilled(data: dict, opening: date | None) -> str:
     """The treatment offered for a document that posts: by its date against the opening
-    balance date when both are known; otherwise none for a bill (the import refuses it
-    until one is chosen) and Record it now for an invoice or credit note, as the import
+    balance date when both are known. A date the file gives but that cannot be read leaves
+    any document to be chosen. With no date to compare, none for a bill (the import refuses
+    it until one is chosen) and Record it now for an invoice or credit note, as the import
     does when it is not told."""
-    dated = _iso_date(data.get("date"))
+    given = data.get("date")
+    dated = _iso_date(given)
+    if given and dated is None:
+        return ""
     if opening is not None and dated is not None:
         return "opening_balances" if dated <= opening else "record_now"
     return "" if data["doc_type"] == "bill" else "record_now"
 
 
-async def _treatment_choice(token: str, rows: list[dict]) -> FT | str:
+async def _treatment_choice(token: str, rows: list[dict], form=None) -> FT | str:
     """Per document that posts (a bill, invoice or credit note), newest first, how it enters
-    the books, pre-filled from the company's opening balance date. Empty when none posts."""
+    the books: what the user already chose when the review is shown again (``form``),
+    otherwise pre-filled from the company's opening balance date. Empty when none posts."""
     docs = [d for d in _group_documents(rows).values()
             if imported_issue_kind(d) in ("bill", "invoice", "credit_note")]
     if not docs:
@@ -160,11 +165,14 @@ async def _treatment_choice(token: str, rows: list[dict]) -> FT | str:
         opening = _iso_date((await api.get_company(token)).get("opening_balance_date"))
     except APIError:
         opening = None
+    submitted = form or {}
+    known = {"", *(value for value, _ in _TREATMENTS)}
     docs.sort(key=lambda d: (_iso_date(d.get("date")) is not None, _iso_date(d.get("date")) or date.min),
               reverse=True)
 
     def _row(d: dict) -> FT:
-        chosen = _prefilled(d, opening)
+        field = _TREATMENT_FIELD.format(**d)
+        chosen = submitted.get(field) if submitted.get(field) in known else _prefilled(d, opening)
         return Tr(
             Td(display_enum(d["doc_type"])),
             Td(d["doc_number"]),
@@ -172,7 +180,7 @@ async def _treatment_choice(token: str, rows: list[dict]) -> FT | str:
             Td(Select(
                 Option(EMPTY, value="", selected=chosen == ""),
                 *[Option(t(key), value=value, selected=chosen == value) for value, key in _TREATMENTS],
-                name=_TREATMENT_FIELD.format(**d),
+                name=field,
                 cls="form-input cell-input--select",
             )),
         )
@@ -714,7 +722,7 @@ def setup_routes(app):
             revalidate_action="/docs/import/revalidate",
             has_mapping=True,
             upsert_label=t("docs_import.upsert_label"),
-            form_fields=await _treatment_choice(token, rows),
+            form_fields=await _treatment_choice(token, rows, form),
         )
 
     @app.post("/docs/import/errors")

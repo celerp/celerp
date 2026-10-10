@@ -104,3 +104,32 @@ async def test_the_chosen_treatment_travels_with_the_document(client, session, a
     assert len(rows) == 1, rows
     doc = (await client.get(f"/docs/{rows[0]['id']}", headers=auth["headers"])).json()
     assert doc.get("import_treatment") == "opening_balances", doc
+
+
+async def test_revalidating_keeps_the_treatment_the_user_chose(monkeypatch):
+    """B-OLD is switched to Record it now and B-NEW left at --, a cell fixed and the file
+    revalidated: both choices survive the re-render instead of going back to the prefill."""
+    routes = _screen(monkeypatch, {"id": str(uuid.uuid4()), "opening_balance_date": "2026-01-31"})
+    form = await _staged_form("tok", _CSV, **{"treatment:bill:B-OLD": "record_now",
+                                              "treatment:bill:B-NEW": ""})
+    html = to_xml(await routes["/docs/import/revalidate"](form))
+    assert _choice(html, "bill", "B-OLD") == "record_now"
+    assert _choice(html, "bill", "B-NEW") == ""
+    assert _choice(html, "invoice", "I-1") == "record_now"
+
+
+async def test_a_date_that_cannot_be_read_leaves_every_document_to_be_chosen(monkeypatch):
+    """Opening date 2026-01-31 and documents dated 15/01/2026, a form the import does not
+    read as a date: neither the invoice nor the bill is filled in, so a document already in
+    the opening receivables or payables is never booked again by default."""
+    csv_text = ("doc_type,doc_number,date,status,total\n"
+                "invoice,I-OLD,15/01/2026,sent,50\n"
+                "credit_note,C-OLD,15/01/2026,sent,5\n"
+                "bill,B-OLD,15/01/2026,awaiting_payment,100\n"
+                "invoice,I-NEW,2026-02-15,sent,50\n")
+    routes = _screen(monkeypatch, {"id": str(uuid.uuid4()), "opening_balance_date": "2026-01-31"})
+    html = to_xml(await routes["/docs/import/revalidate"](await _staged_form("tok", csv_text)))
+    assert _choice(html, "invoice", "I-OLD") == ""
+    assert _choice(html, "credit_note", "C-OLD") == ""
+    assert _choice(html, "bill", "B-OLD") == ""
+    assert _choice(html, "invoice", "I-NEW") == "record_now"
