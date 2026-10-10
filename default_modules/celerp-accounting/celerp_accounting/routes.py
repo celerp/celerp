@@ -2818,10 +2818,23 @@ async def _recon_bank_and_entries(
     return bank, await _je_entries_for_account(db, company_id, bank.chart_account_code)
 
 
+def _cleared_je_ids(recon: ReconciliationSession, bank: BankAccount) -> set[str]:
+    """Book entries a session counts as cleared: those matched on it, plus the entry
+    that posted the bank's opening balance.
+
+    The opening balance is the balance brought forward, so it is cleared from the
+    start and never offered for matching. Its one source is that ledger entry, the
+    same one the bank list reads; the bank account's opening_balance column is never
+    added on top, so the balance cannot count twice, and an opening balance with no
+    posted entry counts nowhere (the bank list flags it as opening_unbacked).
+    """
+    return set(recon.reconciled_je_ids or []) | {_opening_je_id(bank.id)}
+
+
 def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> tuple[float, float]:
     """(matched balance, remaining difference) for a session."""
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    matched_balance = float(bank.opening_balance) + sum(e["amount"] for e in all_entries if e["je_id"] in reconciled_ids)
+    cleared = _cleared_je_ids(recon, bank)
+    matched_balance = sum(e["amount"] for e in all_entries if e["je_id"] in cleared)
     return matched_balance, float(recon.statement_balance) - matched_balance
 
 
@@ -2970,9 +2983,9 @@ async def get_reconciliation(
     recon = await _get_recon(db, session_id, company_id)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    unreconciled = [e for e in all_entries if e["je_id"] not in reconciled_ids]
-    reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
+    cleared = _cleared_je_ids(recon, bank)
+    unreconciled = [e for e in all_entries if e["je_id"] not in cleared]
+    reconciled = [e for e in all_entries if e["je_id"] in cleared]
     matched_balance, difference = _recon_balance(recon, bank, all_entries)
 
     d = _recon_to_dict(recon)
@@ -2981,7 +2994,7 @@ async def get_reconciliation(
         "all_entries": all_entries,
         "unreconciled_entries": unreconciled,
         "reconciled_entries": reconciled,
-        "book_balance": float(bank.opening_balance) + sum(e["amount"] for e in all_entries),
+        "book_balance": sum(e["amount"] for e in all_entries),
         "matched_balance": matched_balance,
         "difference": difference,
     })
@@ -3063,11 +3076,11 @@ async def reconciliation_workbench(
             BankStatementLine.status.in_(("unmatched", "suggested")),
         ).order_by(BankStatementLine.line_date, BankStatementLine.created_at)
     )).scalars().all()
-    reconciled_ids = set(recon.reconciled_je_ids or [])
+    cleared = _cleared_je_ids(recon, bank)
     _, difference = _recon_balance(recon, bank, all_entries)
 
     open_lines, lines_truncated = _capped([_stmt_line_to_dict(l) for l in lines])
-    entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in reconciled_ids])
+    entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in cleared])
     return {
         "session": _recon_to_dict(recon),
         "bank_account": _bank_to_dict(bank),
@@ -3373,8 +3386,8 @@ async def auto_match_recon(
     )).scalars().all()
 
     book_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
-    already_matched = set(recon.reconciled_je_ids or [])
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in already_matched]
+    cleared = _cleared_je_ids(recon, bank)
+    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared]
 
     stmt_dicts = [_stmt_line_to_dict(l) for l in stmt_lines]
     matches = auto_match(stmt_dicts, unmatched_entries)
