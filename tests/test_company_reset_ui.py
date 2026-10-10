@@ -76,7 +76,8 @@ async def test_wrong_name_shows_the_reason_inside_the_dialog(ui, real_engine):
 
     assert r.status_code == 200
     assert "HX-Redirect" not in r.headers
-    assert t("settings.reset_name_mismatch") in _page(r)
+    assert "The name you typed does not match this company&#x27;s name. Nothing was deleted." in r.text \
+        or "The name you typed does not match this company's name. Nothing was deleted." in r.text
     assert await count(real_engine, "companies", "id = :c", c=str(a)) == 1
 
 
