@@ -1039,8 +1039,9 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
     try:
         report = await _verification(session, run)
         # Approval applies to the exact figures shown, never a changed set of numbers.
-        if report["rows"] != (run.reconciliation or {}).get("rows") or (
-            report["blockers"] and not reviewable_differences(report)
+        if report["blockers"] and (
+            report.get("rows") != (run.reconciliation or {}).get("rows")
+            or not reviewable_differences(report)
         ):
             run.reconciliation = report
             await session.commit()

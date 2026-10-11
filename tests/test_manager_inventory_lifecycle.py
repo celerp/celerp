@@ -379,7 +379,14 @@ async def test_manager_source_oracle_independent_of_manifest_decode(real_engine,
 
     run, _ = await migrate(real_engine, INVENTORY.read_bytes(), "lifecycle.manager", {"mode": "full_history"},
                            monkeypatch, tmp_path)
-    assert run.status == "failed"
+    # Exact source-to-target mismatches remain visible but require explicit review;
+    # no mismatched import is activated automatically.
+    assert run.status == "ready_to_finalize"
+    from celerp.models.company import Company
+    from migration_support import maker
+    async with maker(real_engine)() as s:
+        company = await s.get(Company, run.company_id)
+        assert company.is_migration_staged and not company.is_active
     failing = {(r["check"], r["key"], D(r["source"])) for r in run.reconciliation["rows"] if r["result"] == "fail"}
     assert {("inventory_quantity", WID, HELD[0]), ("inventory_value", WID, HELD[1])} <= failing
 
