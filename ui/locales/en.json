@@ -5406,5 +5406,6 @@
   "manufacturing.err_output_required": "A run must name the product it makes",
   "manufacturing.err_quantity_not_positive": "A run must make a quantity greater than zero",
   "manufacturing.err_import_id_conflict": "A record with this id already exists and differs from this one; it was not imported again.",
-  "error.restore_tool_bin_dir_missing": "{name} not found in the configured PostgreSQL tools folder ({bin_dir}). Reinstall the app, or set CELERP_PG_BIN_DIR to a valid client-tools directory."
+  "error.restore_tool_bin_dir_missing": "{name} not found in the configured PostgreSQL tools folder ({bin_dir}). Reinstall the app, or set CELERP_PG_BIN_DIR to a valid client-tools directory.",
+  "docs.return_exceeds_outstanding": "This return exceeds what is still owed on the bill. The excess needs separate supplier credit or refund handling."
 }

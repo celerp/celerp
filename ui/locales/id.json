@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "Suatu run harus menyebutkan produk yang dihasilkannya",
   "manufacturing.err_quantity_not_positive": "Suatu run harus menghasilkan jumlah lebih dari nol",
   "manufacturing.err_import_id_conflict": "Rekaman dengan id ini sudah ada dan berbeda dari yang ini; tidak diimpor lagi.",
-  "error.restore_tool_bin_dir_missing": "{name} tidak ditemukan di folder alat PostgreSQL yang dikonfigurasi ({bin_dir}). Instal ulang aplikasi, atau atur CELERP_PG_BIN_DIR ke direktori alat klien yang valid."
+  "error.restore_tool_bin_dir_missing": "{name} tidak ditemukan di folder alat PostgreSQL yang dikonfigurasi ({bin_dir}). Instal ulang aplikasi, atau atur CELERP_PG_BIN_DIR ke direktori alat klien yang valid.",
+  "migration.differences_title": "Selisih yang perlu ditinjau",
+  "migration.differences_hint": "Pemeriksaan ini tidak cocok dengan sumber. Tinjau setiap selisih sebelum menyelesaikan.",
+  "migration.review_differences": "Saya telah meninjau selisih ini",
+  "migration.err_review_differences": "Tinjau selisih dan centang kotak konfirmasi sebelum menyelesaikan.",
+  "docs.return_exceeds_outstanding": "Pengembalian ini melebihi sisa tagihan yang terutang. Selisihnya harus ditangani secara terpisah sebagai kredit atau pengembalian dana dari pemasok."
 }

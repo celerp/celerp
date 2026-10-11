@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "Một lượt chạy phải nêu tên sản phẩm mà nó tạo ra",
   "manufacturing.err_quantity_not_positive": "Một lượt chạy phải tạo ra số lượng lớn hơn không",
   "manufacturing.err_import_id_conflict": "Đã tồn tại một bản ghi với id này và khác với bản ghi này; nó không được nhập lại.",
-  "error.restore_tool_bin_dir_missing": "Không tìm thấy {name} trong thư mục công cụ PostgreSQL đã cấu hình ({bin_dir}). Hãy cài lại ứng dụng, hoặc đặt CELERP_PG_BIN_DIR thành một thư mục công cụ khách hợp lệ."
+  "error.restore_tool_bin_dir_missing": "Không tìm thấy {name} trong thư mục công cụ PostgreSQL đã cấu hình ({bin_dir}). Hãy cài lại ứng dụng, hoặc đặt CELERP_PG_BIN_DIR thành một thư mục công cụ khách hợp lệ.",
+  "migration.differences_title": "Chênh lệch cần xem xét",
+  "migration.differences_hint": "Các kết quả kiểm tra này không khớp với dữ liệu nguồn. Hãy xem xét từng chênh lệch trước khi hoàn tất.",
+  "migration.review_differences": "Tôi đã xem xét các chênh lệch này",
+  "migration.err_review_differences": "Hãy xem xét các chênh lệch và đánh dấu ô xác nhận trước khi hoàn tất.",
+  "docs.return_exceeds_outstanding": "Giá trị hàng trả này vượt quá số tiền còn phải trả trên hóa đơn. Phần vượt phải được xử lý riêng dưới dạng khoản ghi có hoặc hoàn tiền từ nhà cung cấp."
 }

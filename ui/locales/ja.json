@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "実行は製造する製品を指定する必要があります",
   "manufacturing.err_quantity_not_positive": "実行はゼロより大きい数量を製造する必要があります",
   "manufacturing.err_import_id_conflict": "このIDを持つレコードは既に存在し、この内容とは異なります。再インポートされませんでした。",
-  "error.restore_tool_bin_dir_missing": "設定されたPostgreSQLツールフォルダ（{bin_dir}）に{name}が見つかりません。アプリを再インストールするか、CELERP_PG_BIN_DIRを有効なクライアントツールディレクトリに設定してください。"
+  "error.restore_tool_bin_dir_missing": "設定されたPostgreSQLツールフォルダ（{bin_dir}）に{name}が見つかりません。アプリを再インストールするか、CELERP_PG_BIN_DIRを有効なクライアントツールディレクトリに設定してください。",
+  "migration.differences_title": "確認が必要な差額",
+  "migration.differences_hint": "これらの照合結果は元データと一致していません。完了する前に各差額を確認してください。",
+  "migration.review_differences": "これらの差額を確認しました",
+  "migration.err_review_differences": "完了する前に差額を確認し、確認欄にチェックを入れてください。",
+  "docs.return_exceeds_outstanding": "この返品額は請求書の未払残高を超えています。超過分は仕入先からの返金またはクレジットとして別途処理してください。"
 }

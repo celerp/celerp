@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "Ein Lauf muss das Produkt benennen, das er herstellt",
   "manufacturing.err_quantity_not_positive": "Ein Lauf muss eine Menge größer als null herstellen",
   "manufacturing.err_import_id_conflict": "Ein Datensatz mit dieser ID existiert bereits und unterscheidet sich von diesem; er wurde nicht erneut importiert.",
-  "error.restore_tool_bin_dir_missing": "{name} wurde im konfigurierten PostgreSQL-Tools-Ordner ({bin_dir}) nicht gefunden. Installieren Sie die App neu, oder setzen Sie CELERP_PG_BIN_DIR auf ein gültiges Client-Tools-Verzeichnis."
+  "error.restore_tool_bin_dir_missing": "{name} wurde im konfigurierten PostgreSQL-Tools-Ordner ({bin_dir}) nicht gefunden. Installieren Sie die App neu, oder setzen Sie CELERP_PG_BIN_DIR auf ein gültiges Client-Tools-Verzeichnis.",
+  "migration.differences_title": "Abweichungen prüfen",
+  "migration.differences_hint": "Diese Prüfungen stimmen nicht mit der Quelle überein. Prüfen Sie jede Abweichung, bevor Sie abschließen.",
+  "migration.review_differences": "Ich habe diese Abweichungen geprüft",
+  "migration.err_review_differences": "Prüfen Sie die Abweichungen und bestätigen Sie dies vor dem Abschluss.",
+  "docs.return_exceeds_outstanding": "Diese Rückgabe übersteigt den noch offenen Rechnungsbetrag. Der Überschuss muss separat als Lieferantengutschrift oder Erstattung behandelt werden."
 }

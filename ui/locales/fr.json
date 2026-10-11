@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "Une exécution doit nommer le produit qu'elle fabrique",
   "manufacturing.err_quantity_not_positive": "Une exécution doit produire une quantité supérieure à zéro",
   "manufacturing.err_import_id_conflict": "Un enregistrement avec cet identifiant existe déjà et diffère de celui-ci ; il n'a pas été réimporté.",
-  "error.restore_tool_bin_dir_missing": "{name} introuvable dans le dossier d'outils PostgreSQL configuré ({bin_dir}). Réinstallez l'application, ou définissez CELERP_PG_BIN_DIR sur un répertoire d'outils client valide."
+  "error.restore_tool_bin_dir_missing": "{name} introuvable dans le dossier d'outils PostgreSQL configuré ({bin_dir}). Réinstallez l'application, ou définissez CELERP_PG_BIN_DIR sur un répertoire d'outils client valide.",
+  "migration.differences_title": "Écarts à examiner",
+  "migration.differences_hint": "Ces contrôles ne correspondent pas à la source. Examinez chaque écart avant de terminer.",
+  "migration.review_differences": "J’ai examiné ces écarts",
+  "migration.err_review_differences": "Examinez les écarts et cochez la case de confirmation avant de terminer.",
+  "docs.return_exceeds_outstanding": "Ce retour dépasse le montant encore dû sur la facture. L’excédent doit être traité séparément comme un avoir ou un remboursement du fournisseur."
 }

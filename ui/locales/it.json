@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "Un'esecuzione deve indicare il prodotto che realizza",
   "manufacturing.err_quantity_not_positive": "Un'esecuzione deve produrre una quantità maggiore di zero",
   "manufacturing.err_import_id_conflict": "Esiste già un record con questo id che differisce da questo; non è stato importato di nuovo.",
-  "error.restore_tool_bin_dir_missing": "{name} non trovato nella cartella degli strumenti PostgreSQL configurata ({bin_dir}). Reinstalla l'app, oppure imposta CELERP_PG_BIN_DIR su una directory di strumenti client valida."
+  "error.restore_tool_bin_dir_missing": "{name} non trovato nella cartella degli strumenti PostgreSQL configurata ({bin_dir}). Reinstalla l'app, oppure imposta CELERP_PG_BIN_DIR su una directory di strumenti client valida.",
+  "migration.differences_title": "Differenze da verificare",
+  "migration.differences_hint": "Questi controlli non corrispondono alla fonte. Verifica ogni differenza prima di concludere.",
+  "migration.review_differences": "Ho verificato queste differenze",
+  "migration.err_review_differences": "Verifica le differenze e seleziona la casella di conferma prima di concludere.",
+  "docs.return_exceeds_outstanding": "Questo reso supera l'importo ancora dovuto sulla fattura. L'eccedenza richiede una nota di credito o un rimborso separato del fornitore."
 }

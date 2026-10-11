@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "አንድ ሩጫ የሚያመርተውን ምርት መሰየም አለበት",
   "manufacturing.err_quantity_not_positive": "አንድ ሩጫ ከዜሮ የሚበልጥ ብዛት ማምረት አለበት",
   "manufacturing.err_import_id_conflict": "በዚህ id ያለ መዝገብ አስቀድሞ አለ እና ከዚህኛው ይለያል፤ እንደገና አልተገባም።",
-  "error.restore_tool_bin_dir_missing": "{name} በተዋቀረው የPostgreSQL መሳሪያዎች አቃፊ ({bin_dir}) ውስጥ አልተገኘም። መተግበሪያውን እንደገና ይጫኑ፣ ወይም CELERP_PG_BIN_DIR ን ትክክለኛ የደንበኛ-መሳሪያዎች አቃፊ ላይ ያዘጋጁ።"
+  "error.restore_tool_bin_dir_missing": "{name} በተዋቀረው የPostgreSQL መሳሪያዎች አቃፊ ({bin_dir}) ውስጥ አልተገኘም። መተግበሪያውን እንደገና ይጫኑ፣ ወይም CELERP_PG_BIN_DIR ን ትክክለኛ የደንበኛ-መሳሪያዎች አቃፊ ላይ ያዘጋጁ።",
+  "migration.differences_title": "ሊገመገሙ የሚገቡ ልዩነቶች",
+  "migration.differences_hint": "እነዚህ ማረጋገጫዎች ከምንጩ ጋር አይዛመዱም። ከማጠናቀቅዎ በፊት እያንዳንዱን ልዩነት ይገምግሙ።",
+  "migration.review_differences": "እነዚህን ልዩነቶች ገምግሜአለሁ",
+  "migration.err_review_differences": "ከማጠናቀቅዎ በፊት ልዩነቶቹን ይገምግሙ እና የማረጋገጫ ሳጥኑን ይምረጡ።",
+  "docs.return_exceeds_outstanding": "ይህ መመለስ በደረሰኙ ላይ ከሚቀረው ዕዳ ይበልጣል። ተጨማሪው መጠን በአቅራቢ ክሬዲት ወይም በተመላሽ ገንዘብ በተለየ መንገድ መያዝ አለበት።"
 }

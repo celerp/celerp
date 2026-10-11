@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "Una corrida debe nombrar el producto que fabrica",
   "manufacturing.err_quantity_not_positive": "Una corrida debe producir una cantidad mayor que cero",
   "manufacturing.err_import_id_conflict": "Ya existe un registro con este id y difiere de este; no se volvió a importar.",
-  "error.restore_tool_bin_dir_missing": "No se encontró {name} en la carpeta de herramientas de PostgreSQL configurada ({bin_dir}). Reinstala la aplicación o configura CELERP_PG_BIN_DIR con un directorio de herramientas cliente válido."
+  "error.restore_tool_bin_dir_missing": "No se encontró {name} en la carpeta de herramientas de PostgreSQL configurada ({bin_dir}). Reinstala la aplicación o configura CELERP_PG_BIN_DIR con un directorio de herramientas cliente válido.",
+  "migration.differences_title": "Diferencias por revisar",
+  "migration.differences_hint": "Estas comprobaciones no coinciden con el origen. Revise cada diferencia antes de finalizar.",
+  "migration.review_differences": "He revisado estas diferencias",
+  "migration.err_review_differences": "Revise las diferencias y marque la casilla de confirmación antes de finalizar.",
+  "docs.return_exceeds_outstanding": "Esta devolución supera el importe pendiente de la factura. El excedente requiere una nota de crédito o un reembolso del proveedor por separado."
 }

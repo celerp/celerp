@@ -5402,5 +5402,10 @@
   "manufacturing.err_output_required": "Uma execução deve nomear o produto que fabrica",
   "manufacturing.err_quantity_not_positive": "Uma execução deve produzir uma quantidade maior que zero",
   "manufacturing.err_import_id_conflict": "Já existe um registro com este id que difere deste; não foi importado novamente.",
-  "error.restore_tool_bin_dir_missing": "{name} não encontrado na pasta de ferramentas do PostgreSQL configurada ({bin_dir}). Reinstale o aplicativo ou defina CELERP_PG_BIN_DIR para um diretório de ferramentas cliente válido."
+  "error.restore_tool_bin_dir_missing": "{name} não encontrado na pasta de ferramentas do PostgreSQL configurada ({bin_dir}). Reinstale o aplicativo ou defina CELERP_PG_BIN_DIR para um diretório de ferramentas cliente válido.",
+  "migration.differences_title": "Diferenças a rever",
+  "migration.differences_hint": "Estas verificações não correspondem à origem. Reveja cada diferença antes de concluir.",
+  "migration.review_differences": "Revi estas diferenças",
+  "migration.err_review_differences": "Reveja as diferenças e assinale a confirmação antes de concluir.",
+  "docs.return_exceeds_outstanding": "Esta devolução excede o montante ainda devido na fatura. O excedente requer um crédito ou reembolso separado do fornecedor."
 }
