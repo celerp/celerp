@@ -4106,6 +4106,7 @@ def _company_backup_section() -> FT:
         P(t("company_backup.contents"), cls="settings-hint"),
         Div(
             A(t("company_backup.download"), href=DOWNLOAD, cls="btn btn--primary btn--sm"),
+            A("Send company copy", href="/accountant-copies", cls="btn btn--secondary btn--sm"),
             A(t("company_backup.restore_title"), href=SETTINGS.base, cls="btn btn--secondary btn--sm"),
             cls="flex-row gap-sm flex-wrap",
         ),

@@ -55,7 +55,7 @@ from ui.security import NoticeMiddleware, hx_redirect
 from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
-    modules_page, account, commercial, system_update, migrations, company_backup, doctor,
+    modules_page, account, commercial, system_update, migrations, company_backup, accountant_copies, doctor,
 )
 from fasthtml.common import *
 from starlette.responses import HTMLResponse
@@ -578,6 +578,7 @@ for mod in (auth, setup, search, settings, settings_import,
     mod.setup_routes(app)
 migrations.migrations_routes(app)
 company_backup.company_backup_routes(app)
+accountant_copies.accountant_copy_routes(app)
 
 import importlib as _importlib
 

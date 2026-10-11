@@ -3949,3 +3949,19 @@ async def company_backup_bootstrap_restore(upload_token: str, name: str, email: 
                 "company_name": company_name,
             })
     return _raise(r).json()
+
+
+# Accountant company copies
+async def accountant_copy_send(token: str, body: dict) -> dict:
+    async with _api_client(token, timeout=300.0) as c:
+        return _raise(await c.post("/accountant-copies/send", json=body)).json()
+
+
+async def accountant_copy_list(token: str) -> list[dict]:
+    async with _api_client(token, timeout=35.0) as c:
+        return _raise(await c.get("/accountant-copies")).json()["items"]
+
+
+async def accountant_copy_revoke(token: str, handoff_id: str) -> dict:
+    async with _api_client(token, timeout=35.0) as c:
+        return _raise(await c.post(f"/accountant-copies/{handoff_id}/revoke")).json()
