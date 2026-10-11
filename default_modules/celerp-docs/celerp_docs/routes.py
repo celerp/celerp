@@ -6732,6 +6732,16 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         # charged for its goods, less what earlier returns took.
         payable_credit = to_stored_float(
             settles[0] - to_decimal(row.state.get("returned_credit") or 0) if settles else payable)
+        # Returning more than remains owed would leave an unrecorded supplier refund.
+        # A supplier refund must be recorded separately, not manufactured by reducing
+        # a bill whose outstanding balance cannot go below zero.
+        due = outstanding_balance(row.state)
+        if due is None or round_money(payable_credit, doc_currency) > round_money(due, doc_currency):
+            await session.rollback()  # stock, journal and document must all stay unchanged
+            raise HTTPException(status_code=409, detail=refusal(
+                "docs.return_exceeds_outstanding",
+                "This return exceeds the amount still owed on the bill. Record the supplier refund "
+                "before returning more goods.", amount=payable_credit))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.items_returned",
