@@ -51,7 +51,7 @@ RECEIVABLE_STATUSES: dict[str, frozenset[str]] = {
 # Statuses a purchase document sends goods back to its supplier in (POST /return-items): once
 # goods have come in on it, and until all of them have gone back.
 SUPPLIER_RETURN_STATUSES: frozenset[str] = frozenset({
-    "received", "partially_received", "partial_returned", "awaiting_payment",
+    "received", "partially_received", "partial_returned", "awaiting_payment", "final", "partial",
 })
 
 # Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
