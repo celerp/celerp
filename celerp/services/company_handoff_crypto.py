@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Streaming encryption for company-copy handoffs.
+"""Streaming encryption for company handoff handoffs.
 
 The decrypted file is published only after its authentication tag verifies.
 Company data import continues through the existing backup restore service.
@@ -23,7 +23,7 @@ MAX_PLAINTEXT = MAX_CIPHERTEXT - len(_MAGIC) - _NONCE_BYTES - _TAG_BYTES
 
 def _key(key: bytes) -> None:
     if not isinstance(key, bytes) or len(key) != 32:
-        raise ValueError("A company-copy key must be 32 bytes")
+        raise ValueError("A company handoff key must be 32 bytes")
 
 
 def _temp(destination: Path) -> tuple[int, Path]:
@@ -67,11 +67,11 @@ def decrypt_file(source: Path, destination: Path, key: bytes) -> None:
     size = source.stat().st_size
     overhead = len(_MAGIC) + _NONCE_BYTES + _TAG_BYTES
     if size < overhead or size > MAX_CIPHERTEXT:
-        raise ValueError("Invalid company-copy file size")
+        raise ValueError("Invalid company handoff file size")
     with source.open("rb") as encrypted:
         header = encrypted.read(len(_MAGIC) + _NONCE_BYTES)
         if header[:len(_MAGIC)] != _MAGIC:
-            raise ValueError("Unsupported company-copy file")
+            raise ValueError("Unsupported company handoff file")
         nonce = header[len(_MAGIC):]
         encrypted.seek(-_TAG_BYTES, os.SEEK_END)
         tag = encrypted.read(_TAG_BYTES)
@@ -85,7 +85,7 @@ def decrypt_file(source: Path, destination: Path, key: bytes) -> None:
                 while remaining:
                     chunk = encrypted.read(min(_CHUNK, remaining))
                     if not chunk:
-                        raise ValueError("Truncated company-copy file")
+                        raise ValueError("Truncated company handoff file")
                     remaining -= len(chunk)
                     plain.write(decryptor.update(chunk))
                 plain.write(decryptor.finalize())
