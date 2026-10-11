@@ -39,6 +39,22 @@ def _aged_balance(state: dict, doc_types: tuple[str, ...]) -> Decimal | None:
     return outstanding_balance(state)
 
 
+def _aging_amount(state: dict, charges: tuple[str, ...], note_type: str) -> tuple[Decimal, bool] | None:
+    """Aged debt, or a still-unused issued credit reducing the party's control balance.
+
+    A credit is current, not overdue: it is available to offset an open document
+    rather than itself being an unpaid charge.
+    """
+    doc_type = canonical_doc_type(state.get("doc_type", state.get("type", "")))
+    if doc_type == note_type:
+        if state.get("status") not in {"sent", "final", "awaiting_payment", "partial"}:
+            return None
+        balance = outstanding_balance(state)
+        return (-balance, True) if balance is not None and balance > 0 else None
+    balance = _aged_balance(state, charges)
+    return (balance, False) if balance is not None else None
+
+
 def _doc_cogs(inv: dict) -> Decimal:
     """Compute COGS for a document from its line_items (cost_price * quantity).
 
@@ -92,14 +108,16 @@ async def ar_aging(
 
     for row in rows:
         state = row.state
-        outstanding = _aged_balance(state, ("invoice",))
-        if outstanding is None:
+        amount = _aging_amount(state, ("invoice",), "credit_note")
+        if amount is None:
             continue
+        outstanding, is_credit = amount
 
         customer_id = state.get("contact_id") or state.get("customer_id") or "unlinked"
         names[customer_id] = state.get("contact_name") or state.get("customer_name") or "Unlinked Invoices"
 
-        due_date_str = doc_value(state, "due_date") or state.get("date") or today.isoformat()
+        due_date_str = (today.isoformat() if is_credit else
+                        doc_value(state, "due_date") or state.get("date") or today.isoformat())
         try:
             due = date.fromisoformat(due_date_str[:10])
         except ValueError:
@@ -173,14 +191,16 @@ async def ap_aging(
 
     for row in rows:
         state = row.state
-        outstanding = _aged_balance(state, ("purchase_order", "bill"))
-        if outstanding is None:
+        amount = _aging_amount(state, ("purchase_order", "bill"), "debit_note")
+        if amount is None:
             continue
+        outstanding, is_credit = amount
 
         supplier_id = state.get("contact_id") or state.get("supplier_id") or "Unlinked"
         names[supplier_id] = state.get("contact_name") or state.get("supplier_name") or supplier_id
 
-        due_date_str = doc_value(state, "due_date") or state.get("expected_delivery") or today.isoformat()
+        due_date_str = (today.isoformat() if is_credit else
+                        doc_value(state, "due_date") or state.get("expected_delivery") or today.isoformat())
         try:
             due = date.fromisoformat(due_date_str[:10])
         except ValueError:
