@@ -36,6 +36,7 @@ from celerp.services.doc_balance import is_awaiting_payment, outstanding_balance
 from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -94,17 +95,15 @@ async def require_online_deposit_account(session: AsyncSession, company_id, code
     archived or retyped while a payment posts to them."""
     from celerp_accounting.models import BankAccount
     default = await resolve(session, company_id, AccountRole.DEFAULT_DEPOSIT)
-    try:
-        if code != default and (await session.execute(select(BankAccount.id).where(
-                BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
-                BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
-            raise HTTPException(status_code=422, detail="No active bank account uses it.")
-        await require_settlement_account(session, company_id, code)
-    except HTTPException as refused:
-        reason = refused.detail["message"] if isinstance(refused.detail, dict) else refused.detail
-        raise HTTPException(status_code=422, detail=(
-            f"Online payments can be deposited only to the default deposit account ({default}) or an active "
-            f"bank account; '{code}' is neither. {reason}")) from None
+    if code != default and (await session.execute(select(BankAccount.id).where(
+            BankAccount.company_id == company_id, BankAccount.chart_account_code == code,
+            BankAccount.is_active.is_(True)).with_for_update(read=True))).first() is None:
+        raise HTTPException(status_code=422, detail=refusal(
+            "documents.err_deposit_account_refused",
+            f"Account {code} can't receive online payments because it isn't the default deposit "
+            f"account ({default}) or an active bank account. Choose one of your bank accounts, or "
+            "the default deposit account.", code=code, default=default))
+    await require_settlement_account(session, company_id, code)
 
 
 _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")
@@ -130,7 +129,8 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
     payments, is judged when the payment is recorded, under the document's lock
     (apply_doc_payment)."""
     if not (isinstance(books, dict) and all(isinstance(books.get(k), str) and books[k] for k in _BOOKS)):
-        raise HTTPException(status_code=422, detail="The payment carries no books to record it on")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_no_books", "The payment carries no books to record it on."))
     try:
         timezone, rate = business_timezone(books["timezone"]).key, checked_exchange_rate(books["rate"])
     except ValueError as exc:
@@ -175,7 +175,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         paid_at = paid_at or datetime.datetime.now(datetime.timezone.utc)
     account, timezone, base, rate = await _checked_books(session, company_id, context)
     if paid_at is None:
-        raise HTTPException(status_code=422, detail="The payment carries no time it was paid")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_no_paid_time", "The payment carries no time it was paid."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
@@ -193,7 +194,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             idempotency_key=idempotency_key or reference, books=(base, rate), commit=False,
         )
     except HTTPException as exc:
-        if exc.status_code == 409 and exc.detail == "Payment already recorded":
+        if exc.status_code == 409 and exc.detail == t("documents.err_payment_recorded"):
             return None
         raise
     if getattr(entry, "was_deduped", False):
@@ -274,21 +275,27 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
         return None
     account, timezone, base, rate = await _checked_books(session, company_id, context)
     if occurred_at is None:
-        raise HTTPException(status_code=422, detail="The refund carries no time it happened")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_refund_no_time", "The refund carries no time it happened."))
     doc_currency = str(row.state.get("currency") or "USD").upper()
     if currency.upper() != doc_currency:
-        raise HTTPException(status_code=422, detail=f"Refund currency {currency.upper()} does not match "
-                                                    f"document currency {doc_currency}")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_refund_currency_mismatch",
+            f"Refund currency {currency.upper()} does not match document currency {doc_currency}.",
+            refund_currency=currency.upper(), doc_currency=doc_currency))
     payment = next((p for p in row.state.get("payments", [])
                     if p.get("reference") == reference and p.get("status") == "active"), None)
     if payment is None or payment.get("method") != "stripe":
-        raise HTTPException(status_code=409, detail="The refunded payment is not on this document")
+        raise HTTPException(status_code=409, detail=refusal(
+            "pay.err_refund_not_on_document", "The refunded payment is not on this document."))
     released_at = payment.get("stripe_released_at")
     if (reference not in await stripe_receipt_references(session, company_id, entity_id, managed=True)
             or (released_at and occurred_at >= datetime.datetime.fromisoformat(released_at))):
         raise HTTPException(status_code=409, detail=NOT_LINKED_TO_STRIPE)
     if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
-        raise HTTPException(status_code=422, detail="The refund carries other books than its payment was recorded on")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_refund_books_mismatch",
+            "The refund carries other books than its payment was recorded on."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
@@ -304,10 +311,12 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
             actor_id=actor, source="stripe", idempotency_key=key)
     applied = await find_event_by_idempotency(session, company_id, stripe_refund_key(refund_id, cycle, "applied"))
     if applied is None:
-        raise HTTPException(status_code=409, detail="The refund being reversed was never applied")
+        raise HTTPException(status_code=409, detail=refusal(
+            "pay.err_reversal_not_applied", "The refund being reversed was never applied."))
     refund = dict(applied.data or {})
     if refund.get("reference") != reference or Decimal(str(refund.get("amount"))) != amount:
-        raise HTTPException(status_code=422, detail="The reversal does not match the refund it reverses")
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_reversal_mismatch", "The reversal does not match the refund it reverses."))
     return await reverse_payment_refund(session, company_id, entity_id, row, payment, refund,
                                         reversal_date=day, books=books, actor_id=actor, source="stripe",
                                         idempotency_key=key)
@@ -354,9 +363,9 @@ _NOT_SET_UP = "Online payment is not set up for this invoice. Please contact the
 async def start_payment(token: str, session: AsyncSession = Depends(get_session)):
     company_id, entity_id, state = await _doc_for_token(session, token)
     if state is None:
-        raise HTTPException(status_code=404, detail="Payment link not found")
+        raise HTTPException(status_code=404, detail=t("documents.err_pay_link_unknown"))
     if not pay.payments_enabled():
-        raise HTTPException(status_code=503, detail="Online payment is not available")
+        raise HTTPException(status_code=503, detail=t("documents.err_pay_unavailable"))
     if (state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0
             or not is_awaiting_payment(state.get("doc_type"), state.get("status"))):
         raise HTTPException(status_code=409, detail=refusal(
@@ -366,7 +375,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     try:
         books = await payment_books(session, company_id, state)
     except ValueError:
-        raise HTTPException(status_code=409, detail="This document is not payable")
+        raise HTTPException(status_code=409, detail=t("documents.err_pay_not_payable"))
     try:
         amount = pay.to_stripe_amount(_outstanding(state), currency)
     except ValueError as exc:
@@ -384,9 +393,9 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
             generation=await pay.checkout_generation(), context=books,
         )
     except pay.CheckoutPaused:
-        raise HTTPException(status_code=409, detail=pay.PAUSED)
+        raise HTTPException(status_code=409, detail=t("documents.err_pay_paused"))
     if not _stripe_url(result):
-        raise HTTPException(status_code=502, detail="Could not start payment")
+        raise HTTPException(status_code=502, detail=t("documents.err_pay_start_failed"))
     return RedirectResponse(result["url"], status_code=303)
 
 
@@ -422,7 +431,7 @@ async def payments_connect() -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
     if not _stripe_url(result):
-        raise HTTPException(status_code=502, detail="Could not start Stripe connection")
+        raise HTTPException(status_code=502, detail=t("documents.err_stripe_connect_failed"))
     return {"url": result["url"]}
 
 
@@ -431,7 +440,7 @@ async def payments_disconnect() -> dict:
     """What Cloud did: disconnected, or disconnecting while existing payments finish."""
     result = await pay.disconnect()
     if result is None:
-        raise HTTPException(status_code=502, detail="Could not disconnect Stripe")
+        raise HTTPException(status_code=502, detail=t("error.stripe_disconnect_failed"))
     return result
 
 

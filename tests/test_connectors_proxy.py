@@ -59,7 +59,7 @@ async def test_connectors_tab_shows_trial_cta_when_relay_gates_on_plan():
     assert "instance_id=" not in html
     assert "celerp.com" not in html
     assert "connector-entitlement-cta" in html
-    assert "Could not load connectors" not in html
+    assert "Celerp couldn't load your connections" not in html
 
 
 @pytest.mark.asyncio
@@ -224,7 +224,7 @@ async def test_failed_disconnect_offers_disconnect_anyway_with_a_warning(redirec
             )
 
     html = normal.content.decode()
-    assert "Disconnect failed. Nothing was changed" in html
+    assert "Nothing was disconnected or changed." in html
     assert "Disconnect anyway" in html
     escaped = redirect.replace("&", "&amp;")
     assert f'hx-delete="/settings/connectors/woocommerce/disconnect?force=1{escaped}"' in html
@@ -331,7 +331,7 @@ async def test_failed_reset_changes_nothing_and_offers_to_reset_anyway():
             )
 
     html = normal.content.decode()
-    assert "Disconnect failed. Nothing was changed" in html
+    assert "Nothing was disconnected or changed." in html
     assert 'hx-delete="/settings/connectors/woocommerce/reset?force=1"' in html
     assert 'hx-target="#connector-card-woocommerce"' in html
     assert reset.await_args_list[0].kwargs == {"force": False}
@@ -428,7 +428,7 @@ async def test_deposit_account_route_rejects_an_unknown_account(deposit_ui):
         r = await client.post("/settings/connectors/woocommerce/deposit-account",
                               data={"woocommerce_deposit_account": "9999"}, cookies=cookies)
     assert r.status_code == 200
-    assert "9999 is not an active bank account." in r.text
+    assert "9999 isn't an active bank account." in r.text
     patch_company.assert_not_awaited()
 
 

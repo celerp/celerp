@@ -206,7 +206,7 @@ class TestMalformedManifest:
     def test_non_dict_manifest_refused_others_load(self, tmp_path, value):
         result = _load_bad_beside_good(tmp_path, value)
         assert [m["name"] for m in result] == ["test_mod_good"]
-        assert "PLUGIN_MANIFEST must be a dict" in load_errors()["test_mod_bad"]
+        assert "description is built incorrectly" in load_errors()["test_mod_bad"]
 
     @pytest.mark.parametrize("field,value", [
         ("name", "1"), ("name", "['a']"), ("version", "1.0"), ("version", "{'v': 1}"),

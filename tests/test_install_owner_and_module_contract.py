@@ -13,6 +13,7 @@ from celerp.gateway.client import GatewayClient
 from celerp.models.company import User
 from celerp.modules.api import ai_query
 from test_helpers import invite_user, notice_in, register_admin, seed_member, signed_request
+from ui.i18n import refusal_text
 
 
 @pytest.mark.asyncio
@@ -180,7 +181,7 @@ async def test_transfer_to_a_user_not_active_in_this_company_says_so(client, ses
     r = await client.post(
         f"/companies/me/users/{target['id']}/installation-owner", headers=admin_h)
     assert r.status_code == 400
-    assert r.json()["detail"] == "Installation owner must be an active user in this company"
+    assert refusal_text(r.json()["detail"]) == "Installation owner must be an active user in this company."
 
 
 @pytest.mark.asyncio

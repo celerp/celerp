@@ -13,6 +13,7 @@ from celerp.projections.engine import ProjectionEngine
 from celerp.services.activity_redaction import redact_entries_for_role, redact_event_costs
 from celerp.services.ledger_display import display_fields, entry_ts
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from ui.i18n import t
 from celerp.services.permissions import get_current_company_settings, require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -72,7 +73,7 @@ async def list_entries(
 async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await session.get(LedgerEntry, entry_id)
     if entry is None or entry.company_id != company_id:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     from celerp.services.activity_redaction import can_see_costs
     data = entry.data if can_see_costs(settings, role) else redact_event_costs(entry.event_type, entry.data or {})
     return {

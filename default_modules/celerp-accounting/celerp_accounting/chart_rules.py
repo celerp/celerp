@@ -240,7 +240,9 @@ async def change_account(
         await lock_chart(session, company_id)
     acc = await _account(session, company_id, code, lock=True)
     if acc is None:
-        raise HTTPException(status_code=404, detail="Account not found")
+        raise HTTPException(status_code=404, detail=refusal(
+            "chart.account_not_found",
+            "Celerp couldn't find this account. It may have been deleted. Refresh the page."))
     await check_account_change(session, company_id, acc, account_type=account_type, is_active=is_active)
     # Read after the row lock, so a role remap that committed meanwhile is seen.
     settings = await current_settings(session, company_id)
@@ -252,16 +254,23 @@ async def change_account(
             bad = [ROLE_LABELS[AccountRole(r)] for r, c in current.items()
                    if c == code and account_type not in allowed_types(r, current)]
             if bad:
+                roles = ", ".join(bad)
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Account {code} is the posting account for {', '.join(bad)}; "
-                           f"an account of type {account_type} cannot serve it.",
+                    detail=refusal(
+                        "chart.type_change_blocked_by_role",
+                        f"Account {code} is the posting account for {roles}; "
+                        f"an account of type {account_type} cannot serve it.",
+                        code=code, roles=roles, type=account_type),
                 )
         if await has_journal_history(session, company_id, code):
             raise HTTPException(
                 status_code=409,
-                detail=f"Account {code} has journal entries, so its type cannot change. "
-                       "Create a new account of the right type instead.",
+                detail=refusal(
+                    "chart.type_change_blocked_by_history",
+                    f"Account {code} has journal entries, so its type cannot change. "
+                    "Create a new account of the right type instead.",
+                    code=code),
             )
         children = (await session.execute(
             select(Account.code, Account.account_type).where(
@@ -272,16 +281,23 @@ async def change_account(
             if account_type not in PARENT_TYPES.get(child_type, frozenset()):
                 raise HTTPException(
                     status_code=422,
-                    detail=f"Account {child_code} ({child_type}) sits under {code}; "
-                           f"it cannot sit under an account of type {account_type}.",
+                    detail=refusal(
+                        "chart.type_change_breaks_child",
+                        f"Account {child_code} ({child_type}) sits under {code}; "
+                        f"it cannot sit under an account of type {account_type}.",
+                        child_code=child_code, child_type=child_type, code=code, type=account_type),
                 )
         acc.account_type = account_type
 
     if is_active is False and acc.is_active and targeted:
+        roles = ", ".join(targeted)
         raise HTTPException(
             status_code=409,
-            detail=f"Account {code} is the posting account for {', '.join(targeted)}. "
-                   "Choose another account in Settings > Accounting > Posting accounts first.",
+            detail=refusal(
+                "chart.deactivate_blocked_by_role",
+                f"Account {code} is the posting account for {roles}. "
+                "Choose another account in Settings > Accounting > Posting accounts first.",
+                code=code, roles=roles),
         )
     if is_active is False and acc.is_active:
         kept = [r for r in CONTINUED_ROLES if code in scope_codes(settings, r.value)]
@@ -298,23 +314,30 @@ async def change_account(
             ).order_by(Account.code)
         )).scalars().all()
         if active_children:
+            children = ", ".join(active_children)
             raise HTTPException(
                 status_code=409,
-                detail=f"Accounts under {code} are still active ({', '.join(active_children)}). "
-                       "Switch them off or move them first.",
+                detail=refusal(
+                    "chart.active_children_block_deactivate",
+                    f"Accounts under {code} are still active ({children}). "
+                    "Switch them off or move them first.",
+                    code=code, children=children),
             )
     if is_active is True and not acc.is_active and acc.parent_code is not None and (
             not moving or parent_code == acc.parent_code):
         parent = await _account(session, company_id, acc.parent_code)
         if parent is not None and not parent.is_active:
-            raise HTTPException(status_code=422, detail=f"Parent account {acc.parent_code} is inactive.")
+            raise HTTPException(status_code=422, detail=refusal(
+                "chart.parent_inactive", f"Parent account {acc.parent_code} is inactive.",
+                parent_code=acc.parent_code))
     if is_active is not None:
         acc.is_active = is_active
 
     if moving and parent_code != acc.parent_code:
         if parent_code is not None:
             if parent_code == code:
-                raise HTTPException(status_code=422, detail="An account cannot be its own parent.")
+                raise HTTPException(status_code=422, detail=refusal(
+                    "chart.self_parent", "An account cannot be its own parent."))
             parent = await _account(session, company_id, parent_code, lock=True)
             problem = parent_problem(acc.account_type, parent, parent_code, posting_targets(settings))
             if problem:
@@ -329,7 +352,10 @@ async def change_account(
             if node is not None:
                 raise HTTPException(
                     status_code=422,
-                    detail=f"Account {parent_code} sits under {code}, so it cannot be its parent.",
+                    detail=refusal(
+                        "chart.parent_cycle",
+                        f"Account {parent_code} sits under {code}, so it cannot be its parent.",
+                        parent_code=parent_code, code=code),
                 )
         acc.parent_code = parent_code
 

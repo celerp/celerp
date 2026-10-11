@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+from ui.i18n import t
 from sqlalchemy import text
 
 from company_backup_support import company, member, owner, snapshot, token
@@ -274,7 +276,7 @@ async def test_a_failure_part_way_leaves_the_company_intact(real_engine, real_cl
         before = await snapshot(real_engine)
         r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"}, headers=auth(tok))
         assert r.status_code == 500
-        assert r.json()["detail"] == "The company could not be reset. Nothing was deleted."
+        assert r.json()["detail"] == t("settings.reset_not_done")
         assert await snapshot(real_engine) == before
         assert (_folder(tmp_path, a) / "alpha.pdf").exists()
         assert (await real_client.get("/companies/me", headers=auth(tok))).status_code == 200

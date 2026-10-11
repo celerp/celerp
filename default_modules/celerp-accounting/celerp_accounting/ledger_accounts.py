@@ -13,14 +13,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp_accounting.models import Account, BankAccount
+from ui.i18n import t
 
 
 def require_open_account(acc: Account | None, code: str) -> Account:
     """422 unless *acc* (the chart row for *code*) exists and is active."""
     if acc is None:
-        raise HTTPException(status_code=422, detail=f"Unknown account {code}.")
+        raise HTTPException(status_code=422, detail=t("acct.err_account_unknown", code=code))
     if not acc.is_active:
-        raise HTTPException(status_code=422, detail=f"Account {code} is inactive.")
+        raise HTTPException(status_code=422, detail=t("acct.err_account_archived", code=code))
     return acc
 
 
@@ -33,8 +34,8 @@ async def require_money_account(session: AsyncSession, company_id: uuid.UUID, co
     )).scalar_one_or_none()
     require_open_account(acc, code)
     if acc.account_type != "asset":
-        raise HTTPException(status_code=422, detail=(
-            f"Account {code} is a {acc.account_type} account; money can be held only in an asset account."))
+        raise HTTPException(status_code=422, detail=t(
+            "acct.err_account_not_money", code=code, type=t(f"enum.account_type.{acc.account_type}")))
     return acc
 
 

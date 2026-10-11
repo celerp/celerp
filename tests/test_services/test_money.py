@@ -340,7 +340,7 @@ def test_doc_rate_refuses_a_rate_that_cannot_be_right(doc):
 
 
 def test_require_doc_rate_refuses_unknown_foreign_rate():
-    with pytest.raises(ValueError, match="conversion rate is required"):
+    with pytest.raises(ValueError, match="needs an exchange rate"):
         require_doc_rate({"currency": "USD"}, "THB")
 
 

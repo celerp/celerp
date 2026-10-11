@@ -33,6 +33,7 @@ from celerp.importers.adapters.manager_io.book import (
     AP, AR, INVENTORY, INVENTORY_PURCHASES, Book, Document, Movement, Settlement, line_account,
 )
 from celerp.importers.schema import CIFMode
+from ui.i18n import t
 
 ZERO = Decimal(0)
 SALES_TYPES = ("SalesInvoice", "CreditNote")
@@ -195,10 +196,10 @@ def holding_stock(book: Book) -> set[str]:
 
 def _check_cutover(book: Book, cutover: date | None) -> date:
     if cutover is None:
-        raise ScanError("Choose a cutover date.")
+        raise ScanError(t("migration.err_choose_cutover"))
     dated = book.dated_records()
     if dated and cutover < dated[0][0]:
-        raise ScanError("The cutover date is before the first transaction in this business file.")
+        raise ScanError(t("migration.err_cutover_before_first"))
     if any(book.is_foreign(a.currency) for a in book.accounts.values()) or any(
             book.is_foreign(c.currency) for c in book.contacts.values()):
         raise ScanError("Cutover is not available yet for a business with foreign currency balances. "

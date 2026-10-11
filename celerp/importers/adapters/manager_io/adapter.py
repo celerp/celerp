@@ -29,6 +29,7 @@ from celerp.importers.schema import (
     CoverageClass,
     ReconciliationExpectations,
 )
+from ui.i18n import t
 
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAPPED = (CoverageClass.MAPPED, CoverageClass.MAPPED_WITH_LOSS)
@@ -39,7 +40,7 @@ NOT_CARRIED = frozenset({"DefaultInventoryLocation", "InventoryUnitCost", "LockD
 
 def _single(artifacts: ArtifactSet) -> Artifact:
     if len(artifacts) != 1:
-        raise ScanError("Upload exactly one Manager business file.")
+        raise ScanError(t("migration.err_one_business_file"))
     return artifacts[0]
 
 
@@ -79,14 +80,14 @@ def _refuse_gaps(book: Book, ledger: Ledger, bundle: CIFImportBundle) -> None:
             missing[verdict.source_type] += 1
     if missing:
         listed = ", ".join(f"{source_type} ({count})" for source_type, count in sorted(missing.items()))
-        raise ScanError(f"This company cannot be migrated yet: records not carried into the migration: {listed}.")
+        raise ScanError(t("migration.err_records_not_carried", listed=listed))
 
 
 def _refuse_blockers(book: Book) -> None:
     blocking = book.blocking_rows
     if blocking:
         listed = ", ".join(f"{row.source_type} ({row.count})" for row in blocking)
-        raise ScanError(f"This company cannot be migrated yet: {listed}.")
+        raise ScanError(t("migration.err_blocked", listed=listed))
 
 
 class ManagerIOAdapter:

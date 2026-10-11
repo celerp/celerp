@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from company_backup_support import company, owner, token
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
+from ui.i18n import t
 from test_helpers import merge_items
 
 pytestmark = pytest.mark.asyncio
@@ -328,8 +329,7 @@ async def test_active_channel_link_blocks_merge_naming_provider(client, session)
     assert (await _channel_state(client, h, a))["shopify"]["linked"] is True
     r = await _merge(client, h, a, b)
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == (
-        "This catalog product is currently linked to Shopify. Merge its physical lots instead.")
+    assert r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="Shopify")
     assert (await _state(session, cid, a)).get("status") == "available"
 
 
@@ -340,13 +340,11 @@ async def test_merge_error_lists_live_providers_in_order(client, session):
     a, b = await _pair(client, session, h, cid, "BOTH", shopify=dict(LIVE_SHOPIFY), woocommerce=dict(LIVE_WOO))
     r = await _merge(client, h, a, b)
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == (
-        "This catalog product is currently linked to WooCommerce. Merge its physical lots instead.")
+    assert r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="WooCommerce")
     await _connect(session, cid, "shopify")
     r = await _merge(client, h, a, b)
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == (
-        "This catalog product is currently linked to Shopify and WooCommerce. Merge its physical lots instead.")
+    assert r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="Shopify, WooCommerce")
 
 
 async def test_legacy_idempotency_key_identity_does_not_block_merge(client, session):
@@ -391,7 +389,7 @@ async def test_disconnect_detaches_identity_and_allows_merge(client, session, co
     await _connect(session, cid, "shopify")
     a, b = await _pair(client, session, h, cid, "DISC", shopify=dict(LIVE_SHOPIFY))
     r = await _merge(client, h, a, b)
-    assert r.status_code == 409 and "currently linked to Shopify" in r.json()["detail"], r.text
+    assert r.status_code == 409 and r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="Shopify"), r.text
     with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
         r = await client.delete("/connectors/shopify/credentials", headers=h)
     assert r.status_code == 200 and r.json() == {"ok": True}, r.text
@@ -451,7 +449,8 @@ async def test_deactivation_rolls_back_when_detach_fails(client, session):
                AsyncMock(side_effect=RuntimeError("detach failed"))):
         r = await client.delete("/companies/me", headers=h)
     assert r.status_code == 503, r.text
-    assert r.json()["detail"].endswith("the company was not deactivated.")
+    from ui.i18n import t
+    assert r.json()["detail"] == t("error.deactivate_disconnect_failed", "en", service="Shopify")
     company_row = await session.get(Company, uuid.UUID(cid), populate_existing=True)
     assert company_row.is_active is True
     assert await session.scalar(sa.select(sa.func.count()).select_from(ConnectorConfig).where(
@@ -470,7 +469,7 @@ async def test_merge_ownership_lookup_failure_refuses_without_channel_claim(clie
     r = await _merge(client, h, a, b)
     assert r.status_code == 503, r.text
     detail = r.json()["detail"]
-    assert "linked" not in detail.lower() and "Nothing was merged" in detail
+    assert detail == t("inventory.err_merge_stores_unchecked", "en")
     assert (await _state(session, cid, a)).get("status") == "available"
 
 
@@ -672,7 +671,7 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
             await holder.commit()
         r = await task
         assert r.status_code == 409, r.text
-        assert "currently linked to Shopify" in r.json()["detail"]
+        assert r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="Shopify")
     finally:
         await holder.close()
 

@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import event, select, text
@@ -264,7 +265,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
         r = await real_client.get("/company-backups/download", params=params, headers=auth(tok))
         assert r.status_code == 409, (params, r.text)
         detail = r.json()["detail"]
-        assert url in detail and detail.endswith("Nothing was backed up."), detail
+        assert url in detail and "Nothing was backed up." in detail, detail
         assert not [p for p in folder.rglob("*") if p.is_file()]
     out = tmp_path / "bk-out" / "books.celerp-company"
     with pytest.raises(cb.BackupError) as err:
@@ -438,7 +439,8 @@ async def test_downloads_started_together_up_to_the_connection_ceiling_are_all_a
     finally:
         await pooled.dispose()
 
-    first, rest = cb.RESHAPED.split("{table}")
+    en = json.loads((Path(__file__).resolve().parents[1] / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
+    first, rest = en[cb.RESHAPED].split("{table}")
     seen = [repr(r) if isinstance(r, Exception) else (r.status_code, r.text[:120]) for r in answers]
     assert all(not isinstance(r, Exception) and r.status_code in (200, 409) for r in answers), seen
     assert 200 in [r.status_code for r in answers], seen

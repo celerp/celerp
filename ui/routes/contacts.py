@@ -597,8 +597,7 @@ def _contact_bulk_templates(contact_type: str) -> FT:
             P(t("contacts.merge_prompt", type=contact_type),
               cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
             Div(id="contact-merge-radio-list",
-                data_merge_failed=t("contacts.merge_failed"),
-                data_merge_failed_prefix=t("contacts.merge_failed_prefix")),
+                data_merge_failed=t("contacts.merge_failed")),
             Button(t("btn.confirm_merge"), type="button", id="contact-merge-confirm-btn",
                    cls="btn btn--primary btn--sm", style="margin-top:0.75rem;",
                    disabled=True,
@@ -638,7 +637,7 @@ def _contact_bulk_templates(contact_type: str) -> FT:
       }
     }).catch(function(err) {
       var res = document.getElementById('bulk-action-result');
-      if (res) res.innerHTML = '<p class="flash flash--error">' + list.dataset.mergeFailedPrefix + err.message + '</p>';
+      if (res) res.innerHTML = '<p class="flash flash--error">' + list.dataset.mergeFailed + '</p>';
     });
   };
   if (window.htmx) htmx.process(list.parentElement);
@@ -726,7 +725,6 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         "confirmDelete": t("contacts.confirm_bulk_delete"),
         "deletedTpl": t("contacts.deleted_count"),
         "deleteFailed": t("contacts.delete_failed"),
-        "deleteFailedPrefix": t("contacts.delete_failed_prefix"),
     })
     return await base_shell(
         page_header(
@@ -779,7 +777,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
           res.innerHTML = '<p class="flash flash--error">' + (d.detail || CFG.deleteFailed) + '</p>';
         }}
       }}).catch(function(err){{
-        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailedPrefix + err.message + '</p>';
+        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailed + '</p>';
       }});
       return;
     }}
@@ -870,9 +868,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         sessionStorage.removeItem('celerp_contact_selection');
         window.location.href = {_json.dumps(back_href)};
       }} else {{
-        alert(d.detail || {_json.dumps(t("contacts.delete_failed_dot"))});
+        alert(d.detail || {_json.dumps(t("contacts.delete_failed"))});
       }}
-    }}).catch(function(err){{ alert({_json.dumps(t("contacts.delete_failed_prefix"))} + err.message); }});
+    }}).catch(function(err){{ alert({_json.dumps(t("contacts.delete_failed"))}); }});
   }});
 }})();
 """)
@@ -1350,7 +1348,7 @@ def setup_routes(app):
         from ui.routes.settings import _check_permission
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if (r := await _check_permission(request, "manage_company_settings")):
             return r
         sid = await _resolve_self_contact_id(token)
@@ -1383,7 +1381,7 @@ def setup_routes(app):
     async def contact_tab_documents(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
@@ -1401,7 +1399,7 @@ def setup_routes(app):
     async def contact_tab_notes(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             notes = await api.list_contact_notes(token, contact_id)
         except APIError:
@@ -1413,7 +1411,7 @@ def setup_routes(app):
     async def contact_tab_activity(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             ledger_resp = await api.list_ledger(token, {"entity_id": contact_id, "limit": 10})
             ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
@@ -1427,7 +1425,7 @@ def setup_routes(app):
     async def contact_add_note(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         text = str(form.get("note", "")).strip()
         if text:
@@ -1446,7 +1444,7 @@ def setup_routes(app):
     async def contact_note_edit_form(request: Request, contact_id: str, note_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             notes = await api.list_contact_notes(token, contact_id)
         except APIError:
@@ -1464,7 +1462,7 @@ def setup_routes(app):
     async def contact_edit_note(request: Request, contact_id: str, note_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         text = str(form.get("note", "")).strip()
         if text:
@@ -1483,7 +1481,7 @@ def setup_routes(app):
     async def contact_delete_note(request: Request, contact_id: str, note_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.delete_contact_note(token, contact_id, note_id)
         except APIError as e:
@@ -1539,7 +1537,7 @@ def setup_routes(app):
     async def contact_address_create(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         data = {k: str(form.get(k, "")).strip() for k in ("address_type", "line1", "line2", "city", "state", "postal_code", "country", "attn")}
         data = {k: v for k, v in data.items() if v}
@@ -1556,7 +1554,7 @@ def setup_routes(app):
     async def contact_address_edit_form(request: Request, contact_id: str, address_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError:
@@ -1600,7 +1598,7 @@ def setup_routes(app):
     async def contact_address_update(request: Request, contact_id: str, address_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         data = {k: str(form.get(k, "")).strip() for k in ("address_type", "line1", "line2", "city", "state", "postal_code", "country", "attn")}
         data = {k: v for k, v in data.items() if v}
@@ -1617,7 +1615,7 @@ def setup_routes(app):
     async def contact_address_delete(request: Request, contact_id: str, address_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError:
@@ -1641,7 +1639,7 @@ def setup_routes(app):
         """Re-render just the addresses section (used by cancel buttons in edit forms)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError:
@@ -1652,7 +1650,7 @@ def setup_routes(app):
     async def contact_address_make_primary(request: Request, contact_id: str, address_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.update_contact_address(token, contact_id, address_id, {"is_default": True})
             contact = await api.get_contact(token, contact_id)
@@ -1691,7 +1689,7 @@ def setup_routes(app):
     async def contact_person_create(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         data = {k: str(form.get(k, "")).strip() for k in ("name", "role", "email", "phone")}
         data = {k: v for k, v in data.items() if v}
@@ -1713,7 +1711,7 @@ def setup_routes(app):
     async def contact_person_edit_form(request: Request, contact_id: str, person_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError:
@@ -1749,7 +1747,7 @@ def setup_routes(app):
     async def contact_person_update(request: Request, contact_id: str, person_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         data = {k: str(form.get(k, "")).strip() for k in ("name", "role", "email", "phone")}
         data = {k: v for k, v in data.items() if v}
@@ -1770,7 +1768,7 @@ def setup_routes(app):
     async def contact_person_delete(request: Request, contact_id: str, person_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.remove_contact_person(token, contact_id, person_id)
             contact = await api.get_contact(token, contact_id)
@@ -1782,7 +1780,7 @@ def setup_routes(app):
     async def contact_field_edit(request: Request, contact_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             _settings = (await api.get_company(token)).get("settings") or {}
         except APIError:
@@ -1794,7 +1792,7 @@ def setup_routes(app):
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
-            return P(t("contacts.error_prefix", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
 
@@ -1897,7 +1895,7 @@ def setup_routes(app):
         """Return the read-only display cell (used by ESC cancel)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
@@ -1908,13 +1906,13 @@ def setup_routes(app):
     async def contact_field_patch(request: Request, contact_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
         if field == "currency" and value and value not in _CURRENCY_CODES:
-            return P(t("contacts.invalid_currency", code=repr(value)), cls="cell-error")
+            return P(t("contacts.invalid_currency", code=value), cls="cell-error")
         data = {field: float(value) if field == "credit_limit" and value else value}
         try:
             await api.patch_contact(token, contact_id, data)
@@ -1927,7 +1925,7 @@ def setup_routes(app):
     async def contact_add_tag(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         tag = str(form.get("tag", "")).strip()
         if not tag:
@@ -1963,7 +1961,7 @@ def setup_routes(app):
     async def contact_remove_tag(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         tag = str(form.get("tag", "")).strip()
         try:
@@ -1986,7 +1984,7 @@ def setup_routes(app):
     async def contact_upload_file(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         file = form.get("file")
         if not file or not hasattr(file, "read"):
@@ -2014,7 +2012,7 @@ def setup_routes(app):
     async def contact_delete_file(request: Request, contact_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.delete_contact_file(token, contact_id, file_id)
             contact = await api.get_contact(token, contact_id)
@@ -2027,7 +2025,7 @@ def setup_routes(app):
     async def contact_tag_file(request: Request, contact_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         document_tag = str(form.get("document_tag", "")).strip()
         try:
@@ -2042,7 +2040,7 @@ def setup_routes(app):
     async def contact_patch_file_description(request: Request, contact_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         description = str(form.get("description", "")).strip()
         try:
@@ -2057,7 +2055,7 @@ def setup_routes(app):
     async def contact_files_section(request: Request, contact_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         qp = request.query_params
         try:
             contact = await api.get_contact(token, contact_id)
@@ -2444,7 +2442,7 @@ def setup_routes(app):
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
-            return JSONResponse({"detail": t("error.unauthorized")}, status_code=401)
+            return JSONResponse({"detail": t("error.session_expired")}, status_code=401)
         try:
             body = await request.json()
             result = await api.bulk_delete_contacts(token, body.get("contact_ids", []))
@@ -2458,7 +2456,7 @@ def setup_routes(app):
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
-            return JSONResponse({"detail": t("error.unauthorized")}, status_code=401)
+            return JSONResponse({"detail": t("error.session_expired")}, status_code=401)
         try:
             body = await request.json()
             result = await api.merge_contacts(

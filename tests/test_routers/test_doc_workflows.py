@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
+from ui.i18n import t
 from test_helpers import sell_item
 
 
@@ -454,7 +455,7 @@ async def test_edit_ref_id_uniqueness(client, session):
         json={"fields_changed": {"ref_id": {"old": None, "new": "DUP-001"}}},
     )
     assert r.status_code == 409
-    assert "already exists" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_doc_number_taken", "en", number="DUP-001")
 
 
 @pytest.mark.asyncio
@@ -1208,7 +1209,7 @@ async def test_receive_return_fails_loudly_when_no_data_resolvable(client, sessi
     # SKU has no sold record and no matching line item on the CN - must fail loudly
     r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "GHOST-SKU", "quantity": 1}]})
     assert r.status_code == 422, r.text
-    assert "name" in r.json()["detail"] or "sell_by" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_return_origin_unknown", "en", sku="GHOST-SKU")
 
 
 @pytest.mark.asyncio

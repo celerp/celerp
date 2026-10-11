@@ -51,6 +51,7 @@ _EXPECTED_AGENT_ROUTES = {
     ("PATCH", "/accounting/reconciliation/{session_id}/lines/{line_id}"),
     ("POST", "/accounting/reconciliation/{session_id}/bulk-confirm"),
     ("POST", "/accounting/reconciliation/{session_id}/complete"),
+    ("POST", "/accounting/reconciliation/{session_id}/reopen"),
     ("POST", "/accounting/reconciliation/{session_id}/write-off"),
 }
 

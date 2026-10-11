@@ -136,7 +136,7 @@ async def test_bill_total_above_its_lines_is_refused_with_a_message(client, sess
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
     assert r.status_code == 422, r.text
-    assert "do not add up to its total of 120" in r.json()["detail"]
+    assert "don't add up to the total of 120.00 USD" in r.json()["detail"]
 
 
 @pytest.mark.asyncio

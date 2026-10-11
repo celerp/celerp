@@ -223,7 +223,7 @@ async def _run(op: _Op) -> Projection:
     """The run, locked, as the last committed operation left it."""
     row = (await lock_projections(op.session, op.company_id, [op.order_id])).get(op.order_id)
     if row is None or row.entity_type != "mfg_order":
-        raise HTTPException(status_code=404, detail="Order not found")
+        raise refuse(404, "order_not_found", "Order not found.")
     return row
 
 

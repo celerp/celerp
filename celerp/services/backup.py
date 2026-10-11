@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from celerp.config import settings
+from ui.i18n import t
 
 _NONCE_BYTES = 12
 
@@ -87,9 +88,7 @@ def _find_pg_tool(name: str) -> str:
         # a bad user override. Fail loudly rather than falling back to a system
         # pg_dump of unknown version, which risks an incompatible/corrupt backup.
         raise FileNotFoundError(
-            f"{name} not found in configured pg_bin_dir ({settings.pg_bin_dir}). "
-            "The bundled PostgreSQL tools are missing — reinstall the app, or set "
-            "CELERP_PG_BIN_DIR to a valid client-tools directory."
+            t("error.restore_tool_bin_dir_missing", name=name, bin_dir=str(settings.pg_bin_dir))
         )
     if found := shutil.which(name):
         return found
@@ -130,11 +129,9 @@ def _parse_key(b64_key: str) -> bytes:
     try:
         key = base64.b64decode(b64_key)
     except Exception as exc:
-        raise ValueError(f"BACKUP_ENCRYPTION_KEY is not valid base64: {exc}") from exc
+        raise ValueError(t("error.backup_key_invalid")) from exc
     if len(key) != 32:
-        raise ValueError(
-            f"BACKUP_ENCRYPTION_KEY must decode to exactly 32 bytes, got {len(key)}"
-        )
+        raise ValueError(t("error.backup_key_invalid"))
     return key
 
 
@@ -153,12 +150,12 @@ def dump_database(database_url: str, *, runner=None) -> bytes:
             timeout=300,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("pg_dump not found in PATH — cannot create backup") from exc
+        raise RuntimeError(t("error.backup_tool_missing")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("pg_dump timed out after 300 seconds") from exc
+        raise RuntimeError(t("error.backup_timed_out")) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"pg_dump failed (exit {result.returncode}): {stderr}")
+        raise RuntimeError(t("error.backup_failed_detail", detail=stderr))
     return result.stdout
 
 
@@ -266,9 +263,8 @@ def check_restore_target(database_url: str) -> None:
     (``_UNSUPPORTED_OBJECTS``); read-only."""
     names = _psql(database_url, _UNSUPPORTED_OBJECTS)
     if names:
-        raise ValueError("Celerp restores only its own tables and sequences in the public schema. "
-                         "Remove or move these database objects, then try again: "
-                         + "; ".join(name for name in names.split("\n") if name))
+        raise ValueError(t("system_recovery.restore_target_unsupported",
+                           names="; ".join(name for name in names.split("\n") if name)))
 
 
 def _psql(database_url: str, sql: str) -> str:
@@ -287,8 +283,9 @@ def check_free_space(dump_path: Path) -> None:
     need = dump_path.stat().st_size * _SCRIPT_PER_DUMP_BYTE + _FREE_SPACE_FLOOR
     free = shutil.disk_usage(dump_path.parent).free
     if free < need:
-        raise ValueError(f"Not enough free disk space to restore this backup: {-(-need >> 20)} MB must be free "
-                         f"on the disk holding {dump_path.parent}, and {free >> 20} MB is.")
+        raise ValueError(t(
+            "backup.not_enough_free_space",
+            need_mb=-(-need >> 20), free_mb=free >> 20, path=str(dump_path.parent)))
 
 
 def check_backup_dump(dump_path: Path, database_url: str,
@@ -302,8 +299,7 @@ def check_backup_dump(dump_path: Path, database_url: str,
     lines = [line for line in _text(listing).splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
     if other:
-        raise ValueError("This backup holds database objects Celerp does not restore. Remove them from "
-                         f"{source}, then try again: " + "; ".join(other))
+        raise ValueError(t("backup.unrestorable_objects", source=source, objects="; ".join(other)))
     _check_extensions(sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match}),
                       database_url, source)
     _check_server_objects(dump_path, database_url, source)
@@ -351,9 +347,7 @@ def _check_server_objects(dump_path: Path, database_url: str, source: str) -> No
              for name, table, names in policies if absent.intersection(names)]
     found += [f"{kind} {name}" for kind, name in missing if kind != "role"]
     if found:
-        raise ValueError("This backup needs database roles, collations or tablespaces this database "
-                         f"does not have. Add them here, or stop using them in {source}, then try again: "
-                         + "; ".join(found))
+        raise ValueError(t("backup.missing_server_objects", source=source, objects="; ".join(found)))
 
 
 def check_database_extensions(database_url: str) -> None:
@@ -365,9 +359,7 @@ def check_database_extensions(database_url: str) -> None:
 
 def _check_extensions(extensions: list[str], database_url: str, source: str) -> None:
     if extensions and (blocked := _psql(database_url, _UNINSTALLABLE_EXTENSIONS.format(" ".join(extensions)))):
-        raise ValueError("This backup uses database extensions that Celerp's database user cannot install "
-                         f"here. Remove them from {source}, or have a database administrator allow that "
-                         "user to install them, then try again: " + ", ".join(blocked.split()))
+        raise ValueError(t("backup.uninstallable_extensions", source=source, extensions=", ".join(blocked.split())))
 
 
 def restore_tools() -> tuple[str, str]:
@@ -376,7 +368,7 @@ def restore_tools() -> tuple[str, str]:
     try:
         tools = _find_pg_tool("pg_restore"), _find_pg_tool("psql")
     except FileNotFoundError as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise RuntimeError(t("error.restore_tool_missing")) from exc
     for tool in tools:
         _run_tool([tool, "--version"], None, timeout=10)
     return tools
@@ -442,12 +434,12 @@ def _run_tool(command: list[str], runner, timeout: int = 600, cwd: Path | None =
     try:
         result = (runner or subprocess.run)(command, capture_output=True, timeout=timeout, cwd=cwd)
     except FileNotFoundError as exc:
-        raise RuntimeError(f"{name} not found") from exc
+        raise RuntimeError(t("error.restore_tool_missing")) from exc
     except OSError as exc:
-        raise RuntimeError(f"{name} could not run: {exc.strerror}") from exc
+        raise RuntimeError(t("error.restore_failed_detail", detail=f"{name}: {exc.strerror}")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{name} timed out after {timeout} seconds") from exc
+        raise RuntimeError(t("error.restore_timed_out", seconds=timeout)) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"{name} failed (exit {result.returncode}): {stderr}")
+        raise RuntimeError(t("error.restore_failed_detail", detail=f"{name} (exit {result.returncode}): {stderr}"))
     return result.stdout

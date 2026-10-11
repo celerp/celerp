@@ -21,6 +21,7 @@ from pathlib import Path
 
 from celerp.importers.adapters.base import ScanError, SourceRevisionError
 from celerp.importers.adapters.manager_io.protobuf import DEFAULT_LIMITS, DecodeError, decode
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -49,10 +50,7 @@ OLDER_REVISION = (
     "This Manager business file was saved by an older version of Manager (file format {version}). "
     "Open it in the latest version of Manager, which updates the file, then save it and upload the saved file."
 )
-NEWER_REVISION = (
-    "This Manager business file was saved by a newer version of Manager (file format {version}) than Celerp "
-    "can read yet. Celerp reads file format {supported}. Nothing was imported."
-)
+NEWER_REVISION = "migration.err_newer_revision"
 UNKNOWN_REVISION = (
     "Celerp cannot read the file format version of this Manager business file. Open it in the latest "
     "version of Manager, save it, and upload the saved file."
@@ -174,9 +172,7 @@ class ManagerReader:
         if version < SUPPORTED_SCHEMA_MIN:
             raise SourceRevisionError(OLDER_REVISION.format(version=version))
         if version > SUPPORTED_SCHEMA_MAX:
-            supported = (str(SUPPORTED_SCHEMA_MIN) if SUPPORTED_SCHEMA_MIN == SUPPORTED_SCHEMA_MAX
-                         else f"{SUPPORTED_SCHEMA_MIN} to {SUPPORTED_SCHEMA_MAX}")
-            raise SourceRevisionError(NEWER_REVISION.format(version=version, supported=supported))
+            raise SourceRevisionError(t(NEWER_REVISION))
         return version
 
     def has_table(self, name: str) -> bool:

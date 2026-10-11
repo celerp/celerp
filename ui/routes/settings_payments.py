@@ -253,7 +253,7 @@ def setup_routes(app):
     async def unmatched_invoice_edit(request: Request, reference: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             invoices = (await api.get_unmatched_invoices(token, reference)).get("items", [])
         except APIError as e:
@@ -268,7 +268,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         entity_id = str((await request.form()).get("value", "")).strip()
         if entity_id:
             try:
@@ -287,11 +287,11 @@ def setup_routes(app):
     async def unmatched_invoice_display(request: Request, reference: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             row = await _payment_row(token, reference)
         except APIError as e:
-            return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
+            return P(e.detail, cls="cell-error")
         return _invoice_cell(reference, (row or {}).get("document_ref"))
 
 

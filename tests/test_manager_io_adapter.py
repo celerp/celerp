@@ -18,6 +18,7 @@ from celerp.importers.schema import CIFMode, CoverageClass
 from fixtures.manager_io import specs
 from fixtures.manager_io.encoder import Blob, Obj, write_manager_file
 from fixtures.manager_io.support import BASIC, CHECKPOINTS, FX, INVENTORY, actual_rows, adapter, artifact, ref
+from ui.i18n import t
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 
@@ -163,7 +164,7 @@ def test_manager_decoder_resource_limits(tmp_path):
     # The readable invoices are still classified: INV2 was entered including tax.
     assert (coverage["SalesInvoice"][0], coverage["SalesInvoice (amounts including tax)"][0]) == (2, 1)
     assert coverage["JournalEntry"][0] == 1
-    with pytest.raises(ScanError, match="cannot be migrated"):
+    with pytest.raises(ScanError, match="can't be moved into Celerp yet"):
         adapter().build_manifest([art], FULL)
 
 
@@ -230,7 +231,7 @@ def test_manager_attachment_handling_is_untrusted_and_reported(tmp_path):
     rejected = {row["source_external_id"]: row["reason"] for row in manifest.source_summary["attachments"]["rejected"]}
     assert set(rejected) == {ref(label) for label in [*cases, "EXTERNAL"]}
     assert all(reason for reason in rejected.values())
-    assert "target" in rejected[ref("NOTARGET")]
+    assert rejected[ref("NOTARGET")] == t("migration.attachment_no_target", "en")
     for label in [*cases, "EXTERNAL"]:
         with pytest.raises(ScanError):
             manager.read_attachment([art], ref(label))

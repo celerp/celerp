@@ -20,6 +20,8 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ui.i18n import t
+
 logger = logging.getLogger(__name__)
 
 # Fixed advisory lock key that serializes first-owner bootstrap across workers.
@@ -40,7 +42,7 @@ def verify_setup_code(provided: str | None) -> bool:
         return False
     value = (provided or "").strip()
     if not value or not hmac.compare_digest(hashlib.sha256(value.encode()).hexdigest(), required):
-        raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
+        raise HTTPException(status_code=403, detail=t("auth.setup_code_invalid"))
     return True
 
 

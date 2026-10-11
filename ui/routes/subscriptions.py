@@ -284,7 +284,7 @@ def setup_routes(app) -> None:
     async def subscriptions_search(request: Request, direction: str = "sales", status: str = ""):
         token = _token(request)
         if not token:
-            return Div(t("error.unauthorized"), id="sub-table")
+            return Div(t("error.session_expired"), id="sub-table")
         q = request.query_params.get("q", "")
         try:
             resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from fasthtml.common import *
@@ -85,7 +86,67 @@ def _sync_status_label(status: str) -> str:
     return t(key) if key else (status or "")
 
 
-def _last_sync_info(run, attention: int = 0) -> FT:
+# Raw error text a sync stores (exception messages, kept in English) -> the plain reason
+# shown on the connector's page, matched in order on the text after any record label
+# and "... API error:" style prefix. Anything unmatched gets connectors.fail_generic.
+_FAILURE_REASONS: tuple[tuple[re.Pattern, str], ...] = tuple(
+    (re.compile(pattern, re.IGNORECASE), key) for pattern, key in (
+        (r"already in progress", "connectors.fail_busy"),
+        (r"connection changed while", "connectors.fail_connection_changed"),
+        (r"blocked by direction", "connectors.fail_direction"),
+        (r"does not support", "connectors.fail_unsupported"),
+        (r"update celerp to continue", "connectors.fail_upgrade"),
+        (r"records came from it", "connectors.fail_store_unchecked"),
+        (r"does not have them", "connectors.fail_store_changed"),
+        (r"credentials are temporarily unavailable", "connectors.fail_credentials"),
+        (r"realm_id", "connectors.fail_credentials"),
+        (r"\b40[13]\b|unauthori[sz]ed|forbidden|invalid.{0,20}(token|key|credential)", "connectors.fail_access"),
+        (r"\b429\b|rate.?limit|too many requests", "connectors.fail_rate_limited"),
+        (r"timed? ?out|timeout|connecterror|connection (refused|reset|error)|name or service|"
+         r"name resolution|nodename|unreachable|all connection attempts", "connectors.fail_unreachable"),
+        (r"\b5\d\d\b|server error|bad gateway|service unavailable", "connectors.fail_remote"),
+        (r"invalid stock quantity", "connectors.fail_stock"),
+    )
+)
+# A record-level error starts with what it was about ("SKU ABC-1: ...", "WooCommerce
+# product 12: ..."); the record stays in front of the reason.
+_RECORD_PREFIX = re.compile(r"^((?:[A-Za-z]+ )?(?:SKU|Invoice|Customer|Contact|Item|Product)\b[^:]*): (.*)$", re.DOTALL)
+_SYNC_REASONS_ID = "connector-sync-reasons"
+
+
+def sync_failure_reason(raw: str, service: str, lang: str | None = None) -> str:
+    """The plain reason, with what to do, for one error a *service* sync stored. Never
+    echoes the raw text, which is an exception message, not something to act on."""
+    text = str(raw or "")
+    record = _RECORD_PREFIX.match(text)
+    cause = record.group(2) if record else text
+    key = next((k for pattern, k in _FAILURE_REASONS if pattern.search(cause)), "connectors.fail_generic")
+    reason = t(key, lang, service=service)
+    return f"{record.group(1)}: {reason}" if record else reason
+
+
+def _sync_reasons(runs: dict, service: str, lang: str = "en") -> FT:
+    """Why the latest sync of each record type had problems, in plain words, shown under
+    the status table; the Failed and Issues badges link here. Identical reasons are
+    listed once."""
+    items = []
+    for e in _ENTITY_ORDER:
+        r = runs.get(e)
+        if r is None or getattr(r, "finished_at", None) is None:
+            continue
+        reasons = dict.fromkeys(sync_failure_reason(x, service, lang) for x in (getattr(r, "errors", None) or []))
+        items += [Li(Strong(_entity_label(e, lang)), ": ", reason) for reason in reasons]
+    if not items:
+        return Span()
+    return Div(
+        P(t("connectors.fail_reasons_header", lang), cls="settings-section-title"),
+        Ul(*items),
+        id=_SYNC_REASONS_ID,
+        cls="connector-sync-reasons",
+    )
+
+
+def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     """Compact summary of the latest SyncRun, or a 'never synced' note. Uses the shared
     relative_time() formatter and thousands-separated counts for consistency with the
     rest of the app. ``attention`` counts records still waiting on a person, which
@@ -104,10 +165,16 @@ def _last_sync_info(run, attention: int = 0) -> FT:
         "failed": "connector-sync-info--err",
     }.get(run.status, "")
     counts = f"+{run.created_count:,} ~{run.updated_count:,}"
-    parts = [relative_time(finished.isoformat()), _sync_status_label(run.status), counts]
+    status = _sync_status_label(run.status)
+    if href and run.status in ("failed", "partial") and getattr(run, "errors", None):
+        status = A(status, href=f"{href}#{_SYNC_REASONS_ID}")
+    parts = [relative_time(finished.isoformat()), status, counts]
     if attention:
         parts.append(t("connectors.attention_count", n=attention))
-    return Span(" · ".join(parts), cls=f"connector-sync-info {status_cls}")
+    joined = [parts[0]]
+    for part in parts[1:]:
+        joined += [" · ", part]
+    return Span(*joined, cls=f"connector-sync-info {status_cls}")
 
 
 def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
@@ -218,7 +285,7 @@ def _request_company_id(request: Request) -> str:
     company = getattr(request.state, "auth_company", None)
     company_id = company.get("id") if isinstance(company, dict) else None
     if not company_id:
-        raise RuntimeError("Current company is unavailable")
+        raise RuntimeError(t("error.company_unavailable"))
     return str(company_id)
 
 
@@ -401,12 +468,15 @@ def _overall_status(runs: dict) -> str:
     return "success"
 
 
-def _status_badge_for(status: str, lang: str = "en") -> FT:
+def _status_badge_for(status: str, lang: str = "en", has_reasons: bool = False) -> FT:
+    """Status badge; a Failed or Issues badge with reasons links to them below the table."""
     cls = {"success": "badge--active", "partial": "badge--draft",
            "failed": "badge--overdue", "running": "badge--inactive"}.get(status, "badge--inactive")
     label = {"success": t("connectors.status_ok", lang), "partial": t("connectors.status_partial", lang),
              "failed": t("connectors.status_failed", lang), "running": t("connectors.syncing", lang)}.get(
         status, status or "-")
+    if has_reasons and status in ("failed", "partial"):
+        return A(label, href=f"#{_SYNC_REASONS_ID}", cls=f"badge {cls}")
     return Span(label, cls=f"badge {cls}")
 
 
@@ -425,9 +495,9 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
         rows.append(Tr(
             Td(_entity_label(e, lang)),
             Td(when),
-            Td(_status_badge_for("running" if running else r.status, lang)),
+            Td(_status_badge_for("running" if running else r.status, lang, has_reasons=bool(errs))),
             Td(counts, cls="cell--number"),
-            Td(str(len(errs)) if errs else "--", cls="cell--number", title="; ".join(errs) if errs else ""),
+            Td(str(len(errs)) if errs else "--", cls="cell--number"),
             cls="data-row",
         ))
     return Table(
@@ -501,6 +571,7 @@ def _connector_status_view(
     is needed only where a request can fail mid-poll, as in the modules restart panel);
     when all entities are terminal it renders WITHOUT the trigger, stopping the poll.
     aria-live announces it."""
+    from celerp.connectors.registry import service_name
     polling = force_poll or _any_in_progress(runs)
     attrs: dict = {}
     if polling:
@@ -508,6 +579,7 @@ def _connector_status_view(
                  "hx_trigger": "load delay:2s", "hx_swap": "outerHTML"}
     return Div(
         _entity_status_table(runs, lang),
+        _sync_reasons(runs, service_name(platform), lang),
         _attention_list(platform, list(attention), lang),
         id=f"connector-status-{platform}",
         cls="connector-status-view",
@@ -660,7 +732,7 @@ def _connector_card(
     # ── Connected details ─────────────────────────────────────────────────────
     connected_details = Span()
     if connected:
-        sync_info = _last_sync_info(last_run, attention)
+        sync_info = _last_sync_info(last_run, attention, href=f"/settings/connectors/{cid}")
         dir_row = _direction_toggle(cid, config.direction if config else "both", lang)
         freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
         connected_details = Div(
@@ -922,8 +994,7 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
                 )
             return Div(_entitlement_cta(lang), *owned_cards, cls="settings-card")
         return Div(
-            P(fetch_err or t("connectors.fetch_error", lang,
-                default="Could not load connectors from relay. Check your connection."),
+            P(fetch_err or t("connectors.fetch_error", lang),
               cls="flash flash--warning"),
             cls="settings-card",
         )
@@ -981,11 +1052,12 @@ def setup_routes(app):
         """HTMX: get OAuth authorize URL and return JS to open it in a new tab."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         lang = get_lang(request)
 
+        from celerp.connectors.registry import service_name
         from ui.api_client import APIError, get_connector_authorize_url
         try:
             result = await get_connector_authorize_url(token, platform, shop=shop)
@@ -1001,10 +1073,10 @@ def setup_routes(app):
 
         url = result.get("authorize_url", "")
         if not url:
-            return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
+            return Span(t("connectors.authorize_error", lang, service=service_name(platform)), cls="flash flash--warning")
 
         if not is_safe_authorize_url(url):
-            return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
+            return Span(t("connectors.authorize_error", lang, service=service_name(platform)), cls="flash flash--warning")
 
         # Open the authorize URL in a new tab AND show an on-screen next step + fallback
         # link, so nothing is silently lost if the popup is blocked (GDR: users must
@@ -1023,7 +1095,7 @@ def setup_routes(app):
         """HTMX: update sync frequency for an accounting connector."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1072,7 +1144,7 @@ def setup_routes(app):
         """HTMX: update sync direction (inbound / outbound / both) for a connector."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1117,7 +1189,7 @@ def setup_routes(app):
         """HTMX: disconnect a connector by deleting its tokens on relay."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1166,7 +1238,7 @@ def setup_routes(app):
         """HTMX: reset a connection no company owns, for the whole installation."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1203,7 +1275,7 @@ def setup_routes(app):
         per-entity sync failures surface in the status table + the completion toast."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1231,13 +1303,13 @@ def setup_routes(app):
         (only when ?polling=1, so opening the detail page never fires a stale toast)."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
             return err
 
-    
+        from celerp.connectors.registry import service_name
         company_id = _request_company_id(request)
         lang = get_lang(request)
         runs = await _entity_runs(company_id, platform)
@@ -1246,7 +1318,7 @@ def setup_routes(app):
         polling = request.query_params.get("polling") == "1"
         if polling and runs and not _any_in_progress(runs):
             ok = _overall_status(runs) != "failed"
-            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang)
+            msg = t("connectors.sync_complete", lang) if ok else t("connectors.sync_failed", lang, service=service_name(platform))
             from ui.components.shell import toast_header
             return HTMLResponse(
                 to_xml(view),
@@ -1259,7 +1331,7 @@ def setup_routes(app):
         """HTMX: choose the account payments from this store's orders are booked to."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if platform != "woocommerce":
@@ -1302,7 +1374,7 @@ def setup_routes(app):
         re-render it. Only WooCommerce orders carry this action."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if platform != "woocommerce":
@@ -1375,7 +1447,7 @@ def setup_routes(app):
         """HTMX: save API key credentials for a connector (e.g. WooCommerce)."""
         token = _token(request)
         if not token:
-            return Span(t("error.unauthorized"), cls="flash flash--warning")
+            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if (err := _validate_platform(platform)):
@@ -1395,19 +1467,15 @@ def setup_routes(app):
 
         if not consumer_key or not consumer_secret:
             return Div(
-                Span(t("connectors.missing_credentials", lang, default="Consumer key and secret are required."),
+                Span(t("connectors.missing_credentials", lang),
                      cls="flash flash--warning"),
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )
 
         if (url_err := _store_url_error(store_url, platform)) is not None:
-            _defaults = {
-                "connectors.store_url_must_use_https": "Store URL must use https:// (API keys are sent as Basic Auth).",
-                "connectors.store_url_required": "Store URL is required.",
-            }
             return Div(
-                Span(t(url_err, lang, default=_defaults[url_err]), cls="flash flash--warning"),
+                Span(t(url_err, lang), cls="flash flash--warning"),
                 id=f"connector-card-{platform}", cls="connector-card",
             )
 
@@ -1433,7 +1501,7 @@ def setup_routes(app):
             if err == "subscription_required":
                 msg = t("connectors.no_subscription", lang)
             elif err in ("store_rejected", "store_unreachable"):
-                msg = t("connectors.connect_check_failed", lang, detail=detail)
+                msg = t("connectors.connect_check_failed", lang, detail=detail.rstrip("."))
             elif err in ("already_connected", "store_changed") and detail:
                 msg = detail
             else:

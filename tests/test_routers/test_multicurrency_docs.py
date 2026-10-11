@@ -400,7 +400,7 @@ async def test_finalize_foreign_currency_without_rate_fails(client):
 
     finalize = await client.post(f"/docs/{doc_id}/finalize", headers=h)
     assert finalize.status_code == 422
-    assert "conversion rate" in finalize.json()["detail"].lower()
+    assert "exchange rate" in finalize.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

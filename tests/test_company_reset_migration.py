@@ -28,6 +28,7 @@ from migration_support import (  # noqa: F401
 )
 from test_company_backup_ui import _cookie, _follow, _page, ui  # noqa: F401
 from test_company_reset import _local_files
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -35,7 +36,7 @@ API = "/migrations/start-company"
 WIZARD = "/setup/start-company/migrate"
 CHOOSER = "/setup/start-company"
 NAME = "Harbor Goods Ltd"
-HAS_COMPANY = "This login already has a company. Sign in instead."
+HAS_COMPANY = t("auth.has_company", "en")
 EXPIRED = "This scan has expired. Upload the file again."
 
 

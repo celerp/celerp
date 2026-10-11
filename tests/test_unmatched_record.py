@@ -9,6 +9,7 @@ import datetime
 
 import pytest
 
+from celerp.services.permissions import missing_permission_text
 from test_payments_stripe import BOOKS, PAID, _company_id, _doc_state, _h, _payable_invoice, _register
 from test_payments_stripe import payments_on  # noqa: F401  (fixture)
 
@@ -140,7 +141,7 @@ async def test_a_role_without_record_payments_is_refused(client, session, paymen
     r = await _record(client, tok, eid)
     listed = await client.get(f"/payments/unmatched/invoices?reference=pi_lost", headers=_h(tok))
 
-    assert r.status_code == 403 and r.json()["detail"] == "Requires the record_payments permission"
+    assert r.status_code == 403 and r.json()["detail"] == missing_permission_text("record_payments")
     assert listed.status_code == 403
     assert await _listed(client, tok) == ["pi_lost"]
     assert not (await _doc_state(client, tok, eid)).get("payments")

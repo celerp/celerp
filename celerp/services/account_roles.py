@@ -163,12 +163,14 @@ def source_controls(settings: dict | None, role) -> list[str]:
 def source_control(settings: dict | None, role) -> str:
     """The one account the source books kept ``role``'s balances on; a missing or
     ambiguous control is refused rather than guessed."""
+    from ui.i18n import t
+
     codes = source_controls(settings, role)
     label = ROLE_LABELS[AccountRole(role)].lower().removeprefix("accounts ")
     if not codes:
-        raise ValueError(f"the source books mark no {label} account.")
+        raise ValueError(t("posting.source_control_missing", role=label))
     if len(codes) > 1:
-        raise ValueError(f"the source books mark more than one {label} account ({', '.join(codes)}).")
+        raise ValueError(t("posting.source_control_ambiguous", role=label, codes=", ".join(codes)))
     return codes[0]
 
 
@@ -514,7 +516,9 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
         raise HTTPException(status_code=422, detail=no_account_chosen())
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(status_code=404, detail="Company not found.")
+        raise HTTPException(status_code=404, detail=refusal(
+            "posting.company_not_found",
+            "Celerp couldn't find this company. It may have been deleted. Refresh the page."))
     # A child added under the account meanwhile would turn it into a header.
     await lock_chart(session, company_id)
     settings = with_role(dict(company.settings or {}), role, code)

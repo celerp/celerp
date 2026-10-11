@@ -119,6 +119,7 @@ class EventType(StrEnum):
     ACC_JOURNAL_ENTRY_VOIDED = "acc.journal_entry.voided"
     ACC_PERIOD_CLOSED = "acc.period.closed"
     ACC_PERIOD_REOPENED = "acc.period.reopened"
+    ACC_RECONCILIATION_REOPENED = "acc.reconciliation.reopened"
 
     # Subscriptions (recurring orders)
     SUB_CREATED = "sub.created"

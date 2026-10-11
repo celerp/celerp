@@ -12,6 +12,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from celerp.main import app
+from ui.i18n import t
 
 
 @pytest.mark.asyncio
@@ -53,7 +54,7 @@ async def test_rate_limit_on_login(client: AsyncClient) -> None:
             last = await client.post("/auth/login", json={"email": "nobody@example.com", "password": "bad"})
         assert last is not None
         assert last.status_code == 429
-        assert last.json() == {"detail": "Rate limit exceeded"}
+        assert last.json() == {"detail": t("error.rate_limited")}
     finally:
         auth_limiter.enabled = False
         auth_limiter._storage.reset()
@@ -64,4 +65,4 @@ async def test_max_body_size_rejects(client: AsyncClient) -> None:
     too_big = b"x" * (10 * 1024 * 1024 + 1)
     res = await client.post("/health", content=too_big)
     assert res.status_code == 413
-    assert res.json() == {"detail": "Request too large"}
+    assert res.json() == {"detail": t("error.upload_too_large", "en")}

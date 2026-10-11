@@ -22,6 +22,7 @@ from test_helpers import invite_user, merge_items
 from test_cost_restatement import _state
 from test_posting_roles_landed import _freight_bill
 from test_receipt_accounting import _finalize, _receive
+from ui.i18n import t
 
 _FIELD = "inventory_account_code"
 _A_TO_B = {"destination": "1130-OB", "destination_name": "Inventory - Opening Balance", "currency": "USD",
@@ -261,7 +262,7 @@ async def test_a_locked_period_refuses_the_merge_and_changes_nothing(session, cl
     before = await _entries(session, auth)
     r = await _merge(client, auth, [a, b])
     assert r.status_code == 422, r.text
-    assert "Period is locked" in r.text
+    assert r.json()["detail"] == t("error.period_locked", "en", date="2999-12-31")
     assert await _entries(session, auth) == before
     for lot in (a, b):
         state = await _state(session, auth, lot)

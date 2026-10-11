@@ -21,6 +21,7 @@ from celerp.services import import_stage
 
 from test_import_stage_invariants import _IMPORTERS, _REPO, _calls, _confirm, _route_path
 from ui.routes import csv_import as ci
+from ui.i18n import t
 
 _RESULT_IMPORTERS = ["chart", "locations", "taxes", "terms"]
 
@@ -53,7 +54,7 @@ async def test_every_importer_renders_actual_errors(name, stage_dir):
 @pytest.mark.parametrize("name", _RESULT_IMPORTERS)
 async def test_failed_count_rendered_when_it_is_the_only_signal(name, stage_dir):
     _, html = await _result(name, _FAILED_ONLY)
-    assert "2 record(s) failed" in html
+    assert t("settings_import.records_failed", "en", n=2) in html
 
 
 @pytest.mark.asyncio
@@ -61,12 +62,12 @@ async def test_failed_count_rendered_when_it_is_the_only_signal(name, stage_dir)
 async def test_failed_count_not_rendered_when_errors_are_present(name, stage_dir):
     _, html = await _result(name, _BOTH)
     assert "Zeta VAT: Invalid rate" in html
-    assert "record(s) failed" not in html
+    assert t("settings_import.records_failed", "en", n=2) not in html
 
 
 def test_helper_accepts_errors_list_and_failed_count():
     assert ci.import_result_errors(_ERRORS_ONLY) == ["Zeta VAT: Invalid rate"]
-    assert ci.import_result_errors(_FAILED_ONLY) == ["2 record(s) failed"]
+    assert ci.import_result_errors(_FAILED_ONLY) == [t("settings_import.records_failed", "en", n=2)]
     assert ci.import_result_errors(_BOTH) == ["Zeta VAT: Invalid rate"]
     assert ci.import_result_errors(_CLEAN) == []
     assert ci.import_result_errors({"created": 3, "failed": 0}) == []

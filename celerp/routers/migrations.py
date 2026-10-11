@@ -53,15 +53,15 @@ from celerp.services.auth import (
 )
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import create_install_owner, provision_migration_company
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/migrations", tags=["migrations"])
 
-OWNER_ONLY = "Only the company owner can move a company into Celerp."
-BOOTSTRAPPED = "System already bootstrapped. Contact your admin."
-MODULES_NOT_SAVED = ("Celerp could not turn on the features this migration needs, so nothing was created. "
-                     "Check that Celerp can save its settings, then try again.")
+OWNER_ONLY = "migration.err_owner_only"
+BOOTSTRAPPED = "migration.err_bootstrapped"
+MODULES_NOT_SAVED = "migration.err_modules_not_saved"
 BOOTSTRAP: store.ScanOwner = ("bootstrap", None)
 
 
@@ -147,7 +147,7 @@ async def _upload_parts(request: Request) -> AsyncIterator[store.UploadPart]:
             try:
                 parser.write(chunk)
             except MultipartParseError as exc:
-                raise store.ScanStoreError(422, "The upload could not be read. Try again.") from exc
+                raise store.ScanStoreError(422, t("migration.err_upload_unreadable")) from exc
         return events.popleft()
 
     async def chunks() -> AsyncIterator[bytes]:
@@ -170,13 +170,13 @@ async def _upload_parts(request: Request) -> AsyncIterator[store.UploadPart]:
 
 async def user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContext:
     if not role_has_permission(ctx.company.settings, ctx.role, "manage_company_lifecycle"):
-        raise HTTPException(status_code=403, detail=OWNER_ONLY)
+        raise HTTPException(status_code=403, detail=t(OWNER_ONLY))
     return ctx
 
 
 async def ensure_not_bootstrapped(session: AsyncSession) -> None:
     if await session.scalar(select(User.id).limit(1)) is not None:
-        raise HTTPException(status_code=409, detail=BOOTSTRAPPED)
+        raise HTTPException(status_code=409, detail=t(BOOTSTRAPPED))
 
 
 def _company_name(value: str, errors: dict) -> str:
@@ -223,7 +223,7 @@ async def _turn_on_modules(plan: migrations.StartPlan) -> bool:
         return await asyncio.to_thread(requirements.prepare, plan.requirements)
     except OSError:
         logger.exception("Could not turn on the modules a migration needs")
-        raise HTTPException(status_code=503, detail=MODULES_NOT_SAVED) from None
+        raise HTTPException(status_code=503, detail=t(MODULES_NOT_SAVED)) from None
 
 
 async def _stage(session: AsyncSession, *, user: User, company_name: str, scan: store.ScanSession,
@@ -247,7 +247,7 @@ async def _start_errors(session: AsyncSession) -> AsyncIterator[None]:
     except Exception:
         await session.rollback()
         logger.exception("Migration start failed")
-        raise HTTPException(status_code=500, detail="Migration could not start.") from None
+        raise HTTPException(status_code=500, detail=t("migration.err_start_failed")) from None
 
 
 async def _claim(session: AsyncSession, run_id: uuid.UUID, scan_token: str, *, awaiting: bool) -> None:
@@ -385,7 +385,7 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
             response.status_code = 200
             awaiting = bool(run.source_summary.get("awaiting_modules"))
         else:
-            raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
+            raise migrations.MigrationError(409, t(migrations.SCAN_ALREADY_STARTED))
         run_id = run.id
         await session.commit()
     await _claim(session, run_id, payload.scan_token, awaiting=awaiting)
@@ -413,7 +413,7 @@ def _start_company_owner(scan_token: str) -> store.ScanOwner:
 async def start_company_scan(request: Request, credentials: HTTPBasicCredentials | None = Depends(_basic),
                              session: AsyncSession = Depends(get_session)) -> dict:
     if credentials is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=t("auth.invalid_credentials"))
     user_id = (await companyless_login(session, credentials.username, credentials.password)).id
     await session.rollback()  # nothing is held while the upload streams in
     scan = await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id))
@@ -444,9 +444,9 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
         user = await companyless_login(session, payload.email, payload.password)
         await hold_direct_slot(session)
         if not await hold_companyless_login(session, user.id):
-            raise HTTPException(status_code=409, detail=HAS_COMPANY)
+            raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
         if await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token)) is not None:
-            raise migrations.MigrationError(409, migrations.SCAN_ALREADY_STARTED)
+            raise migrations.MigrationError(409, t(migrations.SCAN_ALREADY_STARTED))
         scan = store.load_scan(payload.scan_token, owner=(START_COMPANY, user.id))
         plan = await _prepare(scan)
         errors: dict[str, str] = {}
@@ -479,7 +479,7 @@ async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
         run_id = await session.scalar(select(MigrationRun.id).where(MigrationRun.company_id == ctx.company_id)
                                       .order_by(MigrationRun.created_at.desc()).limit(1))
     if run_id is None:
-        raise migrations.MigrationError(404, migrations.NOT_FOUND)
+        raise migrations.MigrationError(404, t(migrations.NOT_FOUND))
     return await _run_view(session, run_id, ctx)
 
 
@@ -494,7 +494,7 @@ async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_a
                              session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
     if not run.reconciliation:
-        raise HTTPException(status_code=409, detail="Verification has not run yet.")
+        raise HTTPException(status_code=409, detail=t("migration.err_not_verified"))
     return run.reconciliation
 
 
@@ -503,12 +503,12 @@ async def get_reconciliation_pack(run_id: uuid.UUID, ctx: AuthContext = Depends(
                                   session: AsyncSession = Depends(get_session)) -> Response:
     run = await _owned_run(session, run_id, ctx)
     if not run.reconciliation:
-        raise HTTPException(status_code=409, detail="Verification has not run yet.")
+        raise HTTPException(status_code=409, detail=t("migration.err_not_verified"))
     try:
         body = migrations.reconciliation_pack_csv(run)
     except Exception:
         logger.exception("Reconciliation pack for migration %s failed", run.id)
-        raise HTTPException(status_code=500, detail="Could not build the reconciliation pack.") from None
+        raise HTTPException(status_code=500, detail=t("migration.err_pack_failed")) from None
     return Response(body, media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="reconciliation-{run.id}.csv"'})
 

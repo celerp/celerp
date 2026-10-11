@@ -21,12 +21,12 @@ import uuid
 
 import pytest
 
+from ui.i18n import t
+
 pytestmark = pytest.mark.browser
 
-# The English value of the new shared dedup key. The tests assert the rendered,
-# translated copy (en locale in the browser context) rather than match against a
-# hardcoded English literal elsewhere.
-_DUP_MSG = "Item is already on this document."
+# The English value of the shared dedup key (en locale in the browser context).
+_DUP_MSG = t("documents.duplicate_item_on_document", "en")
 
 
 def _sku_row_count(page, sku: str) -> int:

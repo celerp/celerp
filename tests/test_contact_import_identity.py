@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -136,7 +137,7 @@ async def test_a_customer_imported_again_as_a_vendor_becomes_both(client):
 async def test_an_unknown_currency_refuses_the_row(client, session):
     h = await _reg(client)
     result = await _batch(client, h, _row({"name": "Bad Money", "currency": "XXQ"}))
-    assert result["created"] == 0 and result["errors"] == ["Bad Money: Invalid currency code: XXQ"], result
+    assert result["created"] == 0 and result["errors"] == [f"Bad Money: {t('error.invalid_currency', value='XXQ')}"], result
     assert await _contacts(None, client, h) == []
 
 

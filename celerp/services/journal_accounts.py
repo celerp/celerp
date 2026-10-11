@@ -142,7 +142,9 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
     for entry in entries:
         code = entry["account"]
         if accounts is not None and code not in accounts:
-            raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
+            raise HTTPException(status_code=422, detail=refusal(
+                "posting.destination.not_in_chart",
+                f"Account {code} is not in the chart of accounts.", code=code))
         roles = entry.get("account_roles")
         if roles is None:
             if SCHEMA_KEY in settings:
@@ -156,9 +158,13 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict) -
                 if problems:
                     raise PostingRoleError([problems[role]])
             elif code not in scope_codes(settings, role):
+                label = ROLE_LABELS[AccountRole(role)].lower()
                 raise HTTPException(
                     status_code=422,
-                    detail=f"Account {code} has never been the {ROLE_LABELS[AccountRole(role)].lower()} account.",
+                    detail=refusal(
+                        "posting.account_never_had_role",
+                        f"Account {code} has never been the {label} account.",
+                        code=code, role=label),
                 )
 
 

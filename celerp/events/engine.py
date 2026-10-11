@@ -23,6 +23,7 @@ from celerp.services.document_lines import (
     normalize_line_ids,
 )
 from celerp.services.business_time import business_date_of
+from ui.i18n import t
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -31,9 +32,6 @@ def apply_event(state: dict, event: LedgerEntry) -> dict:
 
 STRIPE_OWNED_PAYMENT = (
     "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
-)
-STRIPE_RECEIPT_KEPT = (
-    "This payment was received through Stripe, so it was real and cannot be deleted. Void or refund it instead."
 )
 PAYMENT_NOT_NAMED = "A payment can be taken off a document only by naming it, and a deletion keeps its place."
 # Every event that takes a received payment back off a document.
@@ -104,7 +102,7 @@ async def refuse_stripe_payment_removal(session, company_id, entity_id, payments
         raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
     if (event_type == "doc.payment.deleted" and payment is not None
             and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
-        raise HTTPException(status_code=422, detail=STRIPE_RECEIPT_KEPT)
+        raise HTTPException(status_code=422, detail=t("error.stripe_receipt_kept"))
 
 
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
@@ -181,7 +179,7 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
-            detail=f"Period is locked through {lock_date_str}. Unlock in Settings > Accounting to modify past transactions.",
+            detail=t("error.period_locked", date=lock_date_str),
         )
 
 
@@ -342,7 +340,7 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
     source books held it in. Nothing else is guessed: a snapshot of another system's item
     records none until its stock is placed. No later event may change it: the lot's value
     stays on that account for as long as the lot holds stock."""
-    from celerp.accounting_roles import LOT_ACCOUNT_FIELD
+    from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
     from celerp.services.account_roles import source_lot_account
 
     data = kwargs["data"]
@@ -358,7 +356,9 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
         # An older lot that recorded none takes the one the upgrade or the user places it on,
         # and consigned goods take the one the bill that buys them debits.
         if current:
-            raise HTTPException(status_code=409, detail="This stock already records its inventory account.")
+            raise HTTPException(status_code=409, detail=refusal(
+                "inventory.account_already_recorded",
+                "This stock already records its inventory account."))
         return
     changed = data.get("fields_changed")
     if LOT_ACCOUNT_FIELD in data:
@@ -371,7 +371,9 @@ async def _record_lot_account(session, kwargs: dict, previous_state: dict | None
     if written != current:
         raise HTTPException(
             status_code=422,
-            detail="An item's inventory account is recorded when its stock is booked and cannot be changed.",
+            detail=refusal(
+                "inventory.account_locked_after_booking",
+                "An item's inventory account is recorded when its stock is booked and cannot be changed."),
         )
 
 
@@ -379,7 +381,7 @@ def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None
     """A consigned lot records the account its sale is owed to the consignor on when it is
     first sold, and a lot born from it (a part of it, or goods a customer returns) keeps
     it. No later event may change it: the payable recognized there is cleared there."""
-    from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD
+    from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, refusal
 
     if kwargs["event_type"] in ITEM_BIRTHS and previous_state is None:
         return
@@ -387,7 +389,9 @@ def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None
     data = kwargs["data"]
     if kwargs["event_type"] == "item.consignor_payable.recorded":
         if current:
-            raise HTTPException(status_code=409, detail="This stock already records its consignor payable account.")
+            raise HTTPException(status_code=409, detail=refusal(
+                "inventory.consignor_payable_already_recorded",
+                "This stock already records its consignor payable account."))
         return
     changed = data.get("fields_changed")
     if CONSIGNOR_PAYABLE_FIELD in data:
@@ -400,7 +404,10 @@ def _record_consignor_payable(kwargs: dict, previous_state: dict | None) -> None
     if written != current:
         raise HTTPException(
             status_code=422,
-            detail="The account a consigned item's sale is owed on is recorded when it is first sold and cannot be changed.",
+            detail=refusal(
+                "inventory.consignor_payable_locked_after_sale",
+                "The account a consigned item's sale is owed on is recorded when it is "
+                "first sold and cannot be changed."),
         )
 
 
@@ -413,7 +420,7 @@ def _guard_on_books(kwargs: dict) -> None:
     """Whether retired stock stays on the books follows from the action that retired it
     (projections._keep_on_books); nothing may enter it, an import or a field edit least
     of all."""
-    from celerp.accounting_roles import ON_BOOKS_FIELD
+    from celerp.accounting_roles import ON_BOOKS_FIELD, refusal
 
     data = kwargs["data"]
     changed = data.get("fields_changed")
@@ -421,8 +428,10 @@ def _guard_on_books(kwargs: dict) -> None:
             isinstance(changed, dict) and ON_BOOKS_FIELD in changed):
         raise HTTPException(
             status_code=422,
-            detail="Whether archived or expired stock stays on the books is set by Archive and Expire "
-                   "and cannot be entered.",
+            detail=refusal(
+                "inventory.on_books_locked",
+                "Whether archived or expired stock stays on the books is set by Archive "
+                "and Expire and cannot be entered."),
         )
 
 
@@ -457,9 +466,9 @@ async def _item_applied(session, entry: LedgerEntry, transition) -> None:
     )
 
     if transition.before is None and entry.event_type not in ITEM_BIRTHS:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
     if transition.before is not None and entry.event_type in ITEM_BIRTHS:
-        raise HTTPException(status_code=409, detail="This item already exists.")
+        raise HTTPException(status_code=409, detail=t("inventory.err_item_exists"))
     assert_draft_not_circulated(entry.event_type, transition)
     # Modules hold an item to what its lineage may still take (a production run's open
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
@@ -503,7 +512,7 @@ async def emit_event(
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
     if _backup_active():
-        raise HTTPException(status_code=503, detail="Backup in progress, try again shortly.")
+        raise HTTPException(status_code=503, detail=t("error.backup_running"))
 
     schema = EVENT_SCHEMA_MAP.get(kwargs["event_type"])
     if schema is None:

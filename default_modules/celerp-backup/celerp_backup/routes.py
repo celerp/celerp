@@ -115,12 +115,12 @@ def _restore_flash(result, base_msg: str) -> Response:
                     headers={SESSION_ENDED_HEADER: "1"})
 
 
-def _recovery_response(result, success_msg: str, failure_prefix: str) -> Response:
+def _recovery_response(result, success_msg: str) -> Response:
     """The page's answer to a recovery: restored, waiting for confirmation, or failed."""
     if result.needs_confirmation:
         return _confirm_without_safety(result)
     if not result.ok:
-        return _flash(f"{failure_prefix}: {result.error or 'Unknown error'}", "error")
+        return _flash(result.error or t("error.restore_failed_unknown"), "error")
     return _restore_flash(result, success_msg)
 
 
@@ -193,7 +193,7 @@ async def trigger_backup():
     backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
 
     if not result.ok:
-        raise HTTPException(status_code=422, detail=result.error or "Unknown error")
+        raise HTTPException(status_code=422, detail=result.error or t("error.backup_failed_unknown"))
 
     resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)} uploaded)")
     resp.headers["HX-Trigger"] = "backupDone"
@@ -247,7 +247,7 @@ async def restore_backup(backup_id: str):
     """Restore a cloud snapshot (database + files) via the canonical importer."""
     from celerp.services import backup_repo
     result = await backup_repo.restore_snapshot(backup_id)
-    return _recovery_response(result, t("system_recovery.restored"), "Restore failed")
+    return _recovery_response(result, t("system_recovery.restored"))
 
 
 @router.get("/export")
@@ -295,7 +295,7 @@ async def import_backup(
         await session.close()
         result = await run_recovery(tmp_path)
         return _recovery_response(
-            result, t("system_recovery.imported", company=meta.company_name or "unknown"), "Import failed",
+            result, t("system_recovery.imported", company=meta.company_name or "unknown"),
         )
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -312,17 +312,13 @@ async def continue_import(
 
     await session.close()
     result = await backup_import.continue_recovery(confirmation_id, digest)
-    return _recovery_response(result, t("system_recovery.restored"), "Restore failed")
+    return _recovery_response(result, t("system_recovery.restored"))
 
 
 # ── Bootstrap import (public — no auth, only works before first user exists) ──
 
 public_router = APIRouter()
 
-_ALREADY_SET_UP = (
-    "This installation is already set up. Sign in as the installation owner and "
-    "use System Recovery, which replaces the whole installation."
-)
 
 
 @public_router.post("/import-bootstrap")
@@ -342,7 +338,7 @@ async def import_backup_bootstrap(
     if existing is not None:
         raise HTTPException(
             status_code=403,
-            detail=_ALREADY_SET_UP,
+            detail=t("error.restore_already_set_up"),
         )
 
     tmp_path = await _spool_upload(file)
@@ -359,13 +355,13 @@ async def import_backup_bootstrap(
             if existing is not None:
                 raise HTTPException(
                     status_code=403,
-                    detail=_ALREADY_SET_UP,
+                    detail=t("error.restore_already_set_up"),
                 )
             await session.close()
             result = await bootstrap_recovery(tmp_path)
             if not result.ok:
                 raise HTTPException(
-                    status_code=422, detail=result.error or "Import failed"
+                    status_code=422, detail=result.error or t("error.restore_failed_unknown")
                 )
             if setup_code_configured:
                 await asyncio.to_thread(bootstrap.clear_setup_code)

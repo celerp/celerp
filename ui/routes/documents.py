@@ -31,7 +31,7 @@ from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payme
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
-from celerp.services.permissions import role_has_permission
+from celerp.services.permissions import missing_permission_text, role_has_permission
 from ui.components.import_access import can_import_documents
 from ui.module_slots import connected_connector_ids, required_connectors, visible_slot_contributions
 from celerp.output.document_context import prepare_document_output
@@ -1931,7 +1931,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _Resp(content=t("documents.error_detail", detail=error_message(e)), status_code=e.status)
+            return _Resp(content=error_message(e), status_code=e.status)
         line_items = doc.get("line_items") or []
         doc_ref = (doc.get("ref_id") or doc.get("doc_number") or entity_id).replace(" ", "_")
 
@@ -2164,7 +2164,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return _HR(to_xml(P(t("documents.error_detail", detail=error_message(e)))), status_code=e.status)
+            return _HR(to_xml(P(error_message(e))), status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
         if not lst.get("issue_date"):
@@ -2182,7 +2182,7 @@ def setup_routes(app):
                 lst, import_url=await _print_import_url(token, entity_id), auto_print=True,
                 layout=layout, line_identifier=_ident_mode)
         except ValueError as e:
-            return _HR(f"<p>Error: {e}</p>", status_code=422)
+            return _HR(f"<p>{e}</p>", status_code=422)
         return _HR(html)
 
     @app.get("/lists/{entity_id}/items/csv")
@@ -2207,7 +2207,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             from starlette.responses import HTMLResponse as _HR
-            return _HR(to_xml(P(t("documents.error_detail", detail=error_message(e)))), status_code=e.status)
+            return _HR(to_xml(P(error_message(e))), status_code=e.status)
         # Inject company fields
         doc = await _merge_company_letterhead(token, doc)
         # Fill any missing customer-facing fields independently from the selected contact.
@@ -2234,10 +2234,10 @@ def setup_routes(app):
         """HTMX endpoint: render inline bulk payment panel for selected docs."""
         token = _token(request)
         if not token:
-            return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
+            return Div(P(t("error.session_expired")), id="bulk-payment-panel")
         _settings = (await api.get_company(token)).get("settings") or {}
         if not role_has_permission(_settings, _get_role(request), "record_payments"):
-            return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
+            return Div(P(missing_permission_text("record_payments")), id="bulk-payment-panel")
         doc_ids_raw = request.query_params.get("doc_ids", "")
         doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
         if not doc_ids:
@@ -2257,7 +2257,7 @@ def setup_routes(app):
         contact_ids.discard("")
         if len(contact_ids) > 1:
             return Div(
-                P(t("doc._all_selected_documents_must_be_from_the_same_cont"), cls="flash flash--error"),
+                P(t("documents.err_selected_contacts_differ"), cls="flash flash--error"),
                 id="bulk-payment-panel",
             )
 
@@ -2604,11 +2604,11 @@ celerpUpdateBulkAlloc();
     async def doc_field_display(request: Request, entity_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         # Resolve contact fields to display names
         if field in ("contact_id", "commission_contact_id"):
             display_value = _resolve_contact_display(doc, field)
@@ -2622,7 +2622,7 @@ celerpUpdateBulkAlloc();
     async def doc_field_edit(request: Request, entity_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         _settings = (await api.get_company(token)).get("settings") or {}
         if not role_has_permission(_settings, _get_role(request), "edit_documents"):
             # Without the edit permission, return the display state instead of an
@@ -2631,7 +2631,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         value = str(doc.get(field, "") or "")
 
         restore_url = f"/docs/{entity_id}/field/{field}/display"
@@ -2799,7 +2799,7 @@ celerpUpdateBulkAlloc();
     async def doc_field_patch(request: Request, entity_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
         if value == "__new__":
@@ -2886,10 +2886,10 @@ celerpUpdateBulkAlloc();
     @app.get("/docs/{entity_id}/line/{li_index}/field/{field}/edit")
     async def doc_li_field_edit(request: Request, entity_id: str, li_index: str, field: str):
         if field not in _LI_FINALIZED_EDITABLE:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("documents.err_finalized_field_locked"), cls="cell-error")
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         _settings = (await api.get_company(token)).get("settings") or {}
         if not role_has_permission(_settings, _get_role(request), "edit_documents"):
             return await doc_li_field_display(request, entity_id, li_index, field)
@@ -2944,7 +2944,7 @@ celerpUpdateBulkAlloc();
     async def doc_li_field_display(request: Request, entity_id: str, li_index: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             doc = await api.get_doc(token, entity_id)
             line_items = doc.get("line_items") or []
@@ -2957,10 +2957,10 @@ celerpUpdateBulkAlloc();
     @app.patch("/docs/{entity_id}/line/{li_index}/field/{field}")
     async def doc_li_field_patch(request: Request, entity_id: str, li_index: str, field: str):
         if field not in _LI_FINALIZED_EDITABLE:
-            return _action_error(t("error.unauthorized"))
+            return _action_error(t("documents.err_finalized_field_locked"))
         token = _token(request)
         if not token:
-            return _action_error(t("error.unauthorized"))
+            return _action_error(t("error.session_expired"))
         form = await request.form()
         value = str(form.get("value", ""))
         try:
@@ -4075,7 +4075,7 @@ celerpUpdateBulkAlloc();
     async def doc_upload_file(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         file = form.get("file")
         if not file or not hasattr(file, "read"):
@@ -4100,7 +4100,7 @@ celerpUpdateBulkAlloc();
     async def doc_delete_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.delete_doc_file(token, entity_id, file_id)
             doc = await api.get_doc(token, entity_id)
@@ -4112,7 +4112,7 @@ celerpUpdateBulkAlloc();
     async def doc_tag_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         document_tag = str(form.get("document_tag", "")).strip()
         try:
@@ -4126,7 +4126,7 @@ celerpUpdateBulkAlloc();
     async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         description = str(form.get("description", "")).strip()
         try:
@@ -4195,7 +4195,7 @@ celerpUpdateBulkAlloc();
     async def doc_files_section(request: Request, entity_id: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         qp = request.query_params
         try:
             doc = await api.get_doc(token, entity_id)
@@ -4631,14 +4631,14 @@ celerpUpdateBulkAlloc();
     async def list_field_edit(request: Request, entity_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         _settings = (await api.get_company(token)).get("settings") or {}
         if not role_has_permission(_settings, _get_role(request), "edit_documents"):
             return await list_field_display(request, entity_id, field)
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         value = str(lst.get(field, "") or "")
         restore_url = f"/lists/{entity_id}/field/{field}/display"
         patch_url = f"/lists/{entity_id}/field/{field}"
@@ -4692,11 +4692,11 @@ celerpUpdateBulkAlloc();
     async def list_field_display(request: Request, entity_id: str, field: str):
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         value = _resolve_contact_display(lst, field) if field == "contact_id" else lst.get(field)
         return _doc_display_cell(entity_id, field, value, "list")
 
@@ -4705,7 +4705,7 @@ celerpUpdateBulkAlloc();
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
         # The type can change while draft OR issued — it goes through its own endpoint (allows
@@ -4928,7 +4928,7 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _action_error(t("documents.session_expired"))
+            return _action_error(t("error.session_expired"))
         form = await request.form()
         barcode = str(form.get("barcode", "")).strip()
         price_list = str(form.get("price_list", "")).strip() or None
@@ -4977,7 +4977,7 @@ celerpUpdateBulkAlloc();
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
-            return _R(t("documents.session_expired"), status_code=401)
+            return _R(t("error.session_expired"), status_code=401)
         form = await request.form()
         ids = [s for s in form.getlist("selected") if s]
         scanned = str(form.get("scanned", "1")).strip() not in ("0", "false", "")
@@ -4993,7 +4993,7 @@ celerpUpdateBulkAlloc();
         from ui.components.table import EMPTY as _EMPTY
         token = _token(request)
         if not token:
-            return _action_error(t("documents.session_expired"))
+            return _action_error(t("error.session_expired"))
         form = await request.form()
         raw = str(form.get("counted_qty", "")).strip()
         try:
@@ -5021,11 +5021,11 @@ celerpUpdateBulkAlloc();
         """Return an inline edit input for the Counted cell (standard editable-cell idiom)."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         prefill = f"{float(counted):g}" if counted is not None else ""
@@ -5055,11 +5055,11 @@ celerpUpdateBulkAlloc();
         from ui.components.table import EMPTY as _EMPTY
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         try:
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
         counted = li.get("counted_qty") if li else None
         display_val = f"{float(counted):g}" if counted is not None else _EMPTY
@@ -5093,13 +5093,13 @@ celerpUpdateBulkAlloc();
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if field not in _WRITEOFF_FIELDS:
             return _R("Unknown field", status_code=404)
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_editable_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -5111,7 +5111,7 @@ celerpUpdateBulkAlloc();
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if field not in _WRITEOFF_FIELDS:
             return _R("Unknown field", status_code=404)
         form = await request.form()
@@ -5150,13 +5150,13 @@ celerpUpdateBulkAlloc();
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return P(t("error.session_expired"), cls="cell-error")
         if field not in _WRITEOFF_FIELDS:
             return _R("Unknown field", status_code=404)
         try:
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError as e:
-            return P(t("documents.error_detail", detail=error_message(e)), cls="cell-error")
+            return P(error_message(e), cls="cell-error")
         opts, labels = await _writeoff_account_opts(token) if field == "account" else ([], {})
         return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
 
@@ -7898,7 +7898,7 @@ window._L = {_json.dumps({
     "scan_run_committed": t("documents.scan_run_committed"),
     "scan_reload_needed": t("documents.scan_reload_needed"),
     "scanned": t("documents.scanned_prefix"),
-    "not_found": t("documents.not_found_prefix"),
+    "scan_not_found": t("documents.scan_not_found"),
     "lookup_error": t("documents.lookup_error"),
     "view_item_details": t("documents.view_item_details"),
     "no_linked_item": t("documents.no_linked_item"),
@@ -8183,7 +8183,7 @@ function _celerpPickerStatus(text) {{
                 scanStatus.textContent = '✓ ' + (data.sku || code);
                 scanStatus.className = 'scan-bar-status scan-bar-status--ok';
             }} else {{
-                scanStatus.textContent = '✗ ' + _L.not_found + code;
+                scanStatus.textContent = '✗ ' + _L.scan_not_found.replace('{{code}}', code);
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
         }} catch (err) {{
@@ -8556,7 +8556,7 @@ function celerpQtyBlur(input) {{
     const currentQty = parseFloat(input.value || 0);
     if (itemQty > 0 && currentQty !== itemQty) {{
         const eid = entityIdEl.value;
-        const msg = _L.allow_split_warn.replace('{{qty}}', itemQty).replace('{{eid}}', eid);
+        const msg = _L.allow_split_warn.replace('{{qty}}', itemQty);
         alert(msg);
         // Per UX rules: do NOT revert the value or make readonly - just warn
     }}
@@ -9402,7 +9402,7 @@ async function celerpCsvImport(input, entityId) {{
             alert(data.error || _L.import_failed);
         }}
     }} catch (err) {{
-        alert(_L.import_failed + ': ' + err.message);
+        alert(_L.import_failed);
     }}
     input.value = '';
 }}
@@ -10100,7 +10100,7 @@ async function celerpCsvImport(input, entityId) {{
         if currency != company_currency:
             _rate_val = doc.get("conversion_rate")
             _rate_display = str(_rate_val) if _rate_val else "--"
-            _contact_rows.append(Div(Div(t("doc.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
+            _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
             _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
 

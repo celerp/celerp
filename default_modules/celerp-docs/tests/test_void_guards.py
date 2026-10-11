@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import t as t_
 
 
 async def _register(client) -> str:
@@ -51,7 +52,7 @@ async def test_void_blocked_while_memo_stones_are_out(client):
 
     r = await client.post(f"/docs/{doc}/void", headers=_h(t), json={})
     assert r.status_code == 409
-    assert "revert fulfillment" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t_("documents.err_void_delivered", "en")
 
     # Bring the stones back, then voiding works.
     r = await client.post(f"/docs/{doc}/revert-lines", headers=_h(t), json={"line_entity_ids": [item]})
@@ -72,7 +73,7 @@ async def test_void_blocked_on_fulfilled_invoice(client):
 
     r = await client.post(f"/docs/{doc}/void", headers=_h(t), json={})
     assert r.status_code == 409
-    assert "fulfilled" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t_("documents.err_void_delivered", "en")
 
 
 @pytest.mark.asyncio
@@ -93,7 +94,7 @@ async def test_void_blocked_on_received_bill(client):
 
     r = await client.post(f"/docs/{doc}/void", headers=_h(t), json={})
     assert r.status_code == 409
-    assert "return the goods" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t_("docs.void_received_items", "en")
 
 
 @pytest.mark.asyncio

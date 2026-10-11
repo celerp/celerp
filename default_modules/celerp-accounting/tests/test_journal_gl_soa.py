@@ -26,6 +26,9 @@ import uuid
 
 import pytest
 
+from ui.i18n import t
+from celerp.services.permissions import missing_permission_text
+
 
 async def _reg(client) -> str:
     addr = f"jgs-{uuid.uuid4().hex[:8]}@jgs.test"
@@ -284,9 +287,8 @@ async def test_void_auto_je_rejected(client):
 @pytest.mark.asyncio
 async def test_void_unknown_je_404(client):
     """The 404 must come from the handler rejecting an unknown entry, not from
-    the route being absent: the very same route voids a real entry successfully
-    in this test, and the refusal carries the handler's own detail rather than
-    the "Not Found" an unmatched path answers with.
+    the route being absent: the same route voids a real entry, and the refusal
+    carries the route's own message rather than the unknown-address one.
     """
     tok = await _reg(client)
     je_id = (await _post_manual_je(client, tok, _bal(10.0))).json()["je_id"]
@@ -298,7 +300,7 @@ async def test_void_unknown_je_404(client):
     r = await client.post("/accounting/journal-entries/je:manual:nope/void",
                           headers=_h(tok), json={})
     assert r.status_code == 404
-    assert r.json()["detail"] != "Not Found", r.text
+    assert r.json()["detail"] != t("error.api_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -496,7 +498,7 @@ async def test_bulk_void_requires_manage_accounting(client, session):
 
     r = await _bulk_void(client, reader, [je_id], reason="Not mine to void")
     assert r.status_code == 403, r.text
-    assert "manage_accounting" in r.json()["detail"]
+    assert r.json()["detail"] == missing_permission_text("manage_accounting")
     entry = [e for e in (await _journal(client, admin))["entries"] if e["je_id"] == je_id][0]
     assert entry["status"] == "posted"
 
@@ -1400,7 +1402,7 @@ async def test_ledger_rejects_a_contact_filter_that_matches_no_contact(client):
     r = await client.get("/accounting/ledger/1120", headers=_h(tok),
                          params={"contact_id": "contact:not-a-real-id"})
     assert r.status_code == 422, r.text
-    assert "contact_id" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_contact_pick", "en")
 
 
 @pytest.mark.asyncio
@@ -1474,7 +1476,7 @@ async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(c
     r = await client.get("/accounting/general-ledger", headers=_h(tok),
                          params={"contact_id": "contact:not-a-real-id"})
     assert r.status_code == 422, r.text
-    assert "contact_id" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_contact_pick", "en")
 
 
 # ---------------------------------------------------------------------------
@@ -1710,7 +1712,8 @@ async def test_report_date_filters_reject_unparsable_dates(client, param, bad):
     for path in _dated_report_paths(contact):
         r = await client.get(path, headers=_h(tok), params={param: bad})
         assert r.status_code == 422, f"{path} accepted {bad!r}: {r.text}"
-        assert param in r.json()["detail"]
+        field = t("label.start_date" if param == "date_from" else "acct.field_end_date", "en")
+        assert r.json()["detail"] == t("acct.err_date_invalid", "en", field=field)
 
 
 async def test_report_date_filters_reject_an_inverted_range(client):
@@ -1727,7 +1730,7 @@ async def test_report_date_filters_reject_an_inverted_range(client):
             "date_from": "2026-12-31", "date_to": "2026-01-01"})
         assert r.status_code == 422, f"{path} accepted an inverted range: {r.text}"
         detail = r.json()["detail"]
-        assert "date_from" in detail and "date_to" in detail, detail
+        assert detail == t("acct.err_date_range", "en", start="2026-12-31", end="2026-01-01"), detail
 
 
 async def test_report_date_filters_accept_valid_dates(client):
@@ -2208,7 +2211,7 @@ async def test_the_balance_sheet_rejects_an_unparsable_as_of(client):
     tok = await _reg(client)
     r = await client.get("/accounting/balance-sheet?as_of=2026-W01", headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "as_of" in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_date_invalid", "en", field=t("acct.field_as_of_date", "en"))
 
 
 def test_the_screen_offers_exactly_the_account_types_the_api_accepts():

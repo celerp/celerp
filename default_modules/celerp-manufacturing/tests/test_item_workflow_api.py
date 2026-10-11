@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
+from ui.i18n import t
 
 
 async def _register(client) -> str:
@@ -96,7 +97,7 @@ async def test_put_workflow_rejects_unknown_ref_file(client) -> None:
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token),
                          json={"steps": [_step(instructions="X", ref_file_id="nope")]})
     assert r.status_code == 422
-    assert "reference file" in r.json()["detail"].lower()
+    assert r.json()["detail"] == t("manufacturing.err_step_file_not_attached", "en")
 
 
 @pytest.mark.asyncio

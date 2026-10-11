@@ -91,24 +91,23 @@ from celerp.services.company_lock import lock_company
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
 RETENTION_DAYS = 7
 STALE_AFTER = timedelta(seconds=120)
 
-NOT_FOUND = "Migration not found."
-ALREADY_RUNNING = "Migration is already running."
-SCAN_ALREADY_STARTED = "This upload was already used to start a migration, or it was replaced."
-NO_UNFINISHED = "This company has no unfinished migration to discard."
-NOTHING_TO_MIGRATE = "The source file contains no records to migrate."
-OLDER_IMPORTER = "This migration was created by an older importer version and must be restarted."
+NOT_FOUND = "migration.err_not_found"
+ALREADY_RUNNING = "migration.err_already_running"
+SCAN_ALREADY_STARTED = "migration.err_scan_already_started"
+NO_UNFINISHED = "migration.err_no_unfinished"
+NOTHING_TO_MIGRATE = "migration.err_nothing_to_migrate"
+OLDER_IMPORTER = "migration.err_older_importer"
 CHANGED_LOCK_DATE = ("The lock date in the source file has changed since this migration started. "
                      "Restore the original file or start a new migration.")
-MISSING_FEATURES = ("This migration needs {features}, which this installation does not have or cannot run. "
-                    "Install or update it, then start again. Nothing was created.")
-STILL_PREPARING = ("Celerp is still preparing the features this migration needs. "
-                   "The migration starts by itself once they are ready.")
+MISSING_FEATURES = "migration.err_missing_features"
+STILL_PREPARING = "migration.err_still_preparing"
 FEATURE_STOPPED = ("A feature this migration needs stopped running before anything was moved. "
                    "Discard this migration and start again.")
 STOPPED = "The migration stopped unexpectedly. Nothing from the failed step was saved. Start it again to resume."
@@ -193,26 +192,26 @@ def validate_prepared_by(value) -> str | None:
     if not value:
         return None
     if len(value) > _PREPARED_BY_MAX:
-        raise MigrationError(422, {"prepared_by": f"Prepared by must be at most {_PREPARED_BY_MAX} characters."})
+        raise MigrationError(422, {"prepared_by": t("migration.err_prepared_by_too_long", max=_PREPARED_BY_MAX)})
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
-        raise MigrationError(422, {"prepared_by": "Prepared by must be a single line of text."})
+        raise MigrationError(422, {"prepared_by": t("migration.err_prepared_by_one_line")})
     return value
 
 
 def _cutover_date(scan: store.ScanSession, value) -> date:
     if value is None or value == "":
-        raise ValueError("Choose a cutover date.")
+        raise ValueError(t("migration.err_choose_cutover"))
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
-        raise ValueError("Enter the cutover date as YYYY-MM-DD.")
+        raise ValueError(t("migration.err_cutover_format"))
     try:
         chosen = date.fromisoformat(value)
     except ValueError:
-        raise ValueError("Enter the cutover date as YYYY-MM-DD.") from None
+        raise ValueError(t("migration.err_cutover_format")) from None
     start, end = scan.scan.period_start, scan.scan.period_end
     if start is not None and chosen < start:
-        raise ValueError(f"The cutover date must be on or after {start.isoformat()}, where the source's records begin.")
+        raise ValueError(t("migration.err_cutover_before_start", date=start.isoformat()))
     if end is not None and chosen > end:
-        raise ValueError(f"The cutover date must be on or before {end.isoformat()}, where the source's records end.")
+        raise ValueError(t("migration.err_cutover_after_end", date=end.isoformat()))
     return chosen
 
 
@@ -325,7 +324,7 @@ def prepare_start(scan: store.ScanSession) -> StartPlan:
         raise MigrationError(422, {"mode": "Choose how to move the books before starting."})
     decisions = validate_decisions(scan, store.decisions_json(scan.decisions))
     if sum(scan.scan.object_counts.values()) == 0:
-        raise MigrationError(422, NOTHING_TO_MIGRATE)
+        raise MigrationError(422, t(NOTHING_TO_MIGRATE))
     try:
         adapter = _adapter(scan.adapter_key)
         manifest = adapter.build_manifest(scan.artifacts, decisions)
@@ -335,7 +334,7 @@ def prepare_start(scan: store.ScanSession) -> StartPlan:
     plan = requirements.plan_requirements(dict.fromkeys(_unserved_modules(manifest)))
     unavailable = plan.blocked + plan.needs_consent
     if unavailable:
-        raise MigrationError(422, MISSING_FEATURES.format(features=", ".join(r.label for r in unavailable)))
+        raise MigrationError(422, t(MISSING_FEATURES, features=", ".join(r.label for r in unavailable)))
     return StartPlan(decisions, plan)
 
 
@@ -375,7 +374,7 @@ def scan_view(scan: store.ScanSession) -> dict:
 def _adapter(key: str) -> SourceAdapter:
     adapter = get_adapter(key)
     if adapter is None:
-        raise ScanError("This source is not available.")
+        raise ScanError(t("migration.err_source_unavailable"))
     return adapter
 
 
@@ -411,7 +410,7 @@ async def started_run_id(session: AsyncSession, claim: str, user_id: uuid.UUID) 
 
 
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
-    return MigrationError(409, f"Cannot {action} a migration that is {run.status}.")
+    return MigrationError(409, t(f"migration.err_cannot_{action}", status=t(f"migration.status.{run.status}")))
 
 
 def staged_settings(modules: Sequence[str]) -> dict:
@@ -546,7 +545,7 @@ async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user
         .where(MigrationRun.id == run_id, MigrationRun.created_by_user_id == user_id)
     )).first()
     if row is None or not role_has_permission(row.settings, normalize_role(row.role), "manage_company_lifecycle"):
-        raise MigrationError(404, NOT_FOUND)
+        raise MigrationError(404, t(NOT_FOUND))
     return row[0]
 
 
@@ -563,11 +562,11 @@ async def request_start(session: AsyncSession, run: MigrationRun) -> None:
     if not can_transition(_S(run.status), _S.RUNNING):
         raise _illegal("start", run)
     if run.source_summary.get("awaiting_modules"):
-        raise MigrationError(409, STILL_PREPARING)
+        raise MigrationError(409, t(STILL_PREPARING))
     if run.status != _S.READY and not store.run_dir(run.id).exists():
-        raise MigrationError(409, "The source file for this migration has been deleted. Discard it and start again.")
+        raise MigrationError(409, t("migration.err_source_deleted"))
     if not await _try_xact_lock(session, run.id):
-        raise MigrationError(409, ALREADY_RUNNING)
+        raise MigrationError(409, t(ALREADY_RUNNING))
     now = datetime.now(timezone.utc)
     if run.status == _S.READY_TO_FINALIZE:
         run.phase_state = {}  # a re-run replays every phase; replayed records are skipped
@@ -612,10 +611,10 @@ def _source(run: MigrationRun) -> tuple[SourceAdapter, list[Artifact], Migration
     artifacts = [Artifact(directory / a["name"], a["original_name"], a["size_bytes"], a["sha256"])
                  for a in run.source_summary.get("artifacts", [])]
     if not artifacts or not all(a.path.is_file() for a in artifacts):
-        raise ScanError("The source file for this migration has been deleted.")
+        raise ScanError(t("migration.err_source_deleted"))
     # Every read of the run's source is bound to the file that was scanned: size first, then the hash.
     if any(store.artifact_changed(a) for a in artifacts):
-        raise ScanError("The source file for this migration has changed since it was scanned.")
+        raise ScanError(t("migration.err_source_changed"))
     return _adapter(run.source_system), artifacts, store.decisions_from_json(run.mapping_decisions)
 
 
@@ -741,7 +740,7 @@ class IncompatibleImporterVersion(Exception):
     """The run's cursors and mappings were made by an importer whose output may differ now."""
 
     def __init__(self) -> None:
-        super().__init__(OLDER_IMPORTER)
+        super().__init__(t(OLDER_IMPORTER))
 
 
 def _require_same_importer(run: MigrationRun, adapter: SourceAdapter) -> None:
@@ -1019,7 +1018,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
         if report["blockers"]:
             run.reconciliation = report
             await session.commit()
-            raise MigrationError(409, "Verification no longer matches the source. Resume the migration to re-run it.")
+            raise MigrationError(409, t("migration.err_verification_stale"))
         company = await session.get(Company, run.company_id)
         try:
             await posting_readiness.apply_choices(session, run.company_id, posting_accounts)
@@ -1044,7 +1043,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
     except Exception:
         await session.rollback()
         logger.exception("Migration %s could not be finalized", run_id)
-        raise MigrationError(500, "Could not finish the migration. Nothing was changed.") from None
+        raise MigrationError(500, t("migration.err_finalize_failed")) from None
     await _cleanup_source(session, run)
     return run
 
@@ -1107,9 +1106,9 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     await _lock_run(session, run)
     company = await session.get(Company, run.company_id)
     if run.status == _S.COMPLETED or not company.is_migration_staged:
-        raise MigrationError(409, NO_UNFINISHED)
+        raise MigrationError(409, t(NO_UNFINISHED))
     if not await _try_xact_lock(session, run.id):
-        raise MigrationError(409, ALREADY_RUNNING)
+        raise MigrationError(409, t(ALREADY_RUNNING))
     try:
         await db_catalog.pin(session)
     except db_catalog.TableElsewhere as exc:

@@ -25,6 +25,7 @@ from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_chart
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
+from ui.i18n import t
 from celerp_accounting.chart_rules import (
     check_new_account,
     checked_account_code,
@@ -71,7 +72,7 @@ async def check_line_contacts(
     if missing:
         raise HTTPException(
             status_code=422,
-            detail="No contact matches " + ", ".join(missing) + ".",
+            detail=t("error.contacts_not_found", names=", ".join(missing)),
         )
 
 
@@ -161,7 +162,7 @@ async def create_chart_account(
     )).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail=refusal(
-            "chart.code_exists", f"Account code {code} already exists", code=code))
+            "chart.code_exists", f"Account code {code} is already used. Choose a different code.", code=code))
     await check_new_account(session, company_id, account_type=account_type, parent_code=parent_code)
     acc = Account(
         id=uuid.uuid4(),
@@ -190,9 +191,13 @@ async def add_posting_account(
 
 
 async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID, parent_code: str | None) -> str:
-    """The first free code numbered beneath ``parent_code``: 1111, 1112, ... under
-    1110; 1015-1, 1015-2, ... under a code not ending in 0; BANK-1, BANK-2, ... for
-    a bank with no parent account."""
+    """The first free code numbered beneath ``parent_code``, with no limit on how many:
+    1111 to 1119 under 1110; 1015-1 to 1015-9 under a code not ending in 0; BANK-1 to
+    BANK-9 for a bank with no parent account. After the ninth come 1119-0010,
+    1119-0011, ... (likewise 1015-9-0010, BANK-9-0010): the code keeps its parent's
+    stem, so range tests still read it, and the zero-padded suffix keeps every code
+    sorting in the order the accounts were added. Past 9,999 the codes stay unique
+    and valid but no longer sort in that order."""
     if not parent_code:
         stem = "BANK-"
     elif parent_code.isdigit() and parent_code.endswith("0"):
@@ -202,11 +207,15 @@ async def next_bank_account_code(session: AsyncSession, company_id: uuid.UUID, p
     used = set((await session.execute(
         select(Account.code).where(Account.company_id == company_id, Account.code.like(f"{stem}%"))
     )).scalars().all())
-    for i in range(1, 100):
-        code = f"{stem}{i}"
-        if code not in used:
-            return code
-    raise HTTPException(status_code=400, detail=f"No available account codes under {parent_code}")
+    n = 1
+    while _bank_code(stem, n) in used:
+        n += 1
+    return _bank_code(stem, n)
+
+
+def _bank_code(stem: str, n: int) -> str:
+    """The *n*th automatic bank code beneath ``stem`` (see next_bank_account_code)."""
+    return f"{stem}{n}" if n < 10 else f"{stem}9-{n:04d}"
 
 
 async def add_bank_account(

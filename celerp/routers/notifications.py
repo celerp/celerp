@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.notifications import service as notif_svc
 from celerp.services.auth import get_current_company_id, get_current_user
+from ui.i18n import t
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -86,7 +87,7 @@ async def mark_read(
     """Mark a single notification as read for the current user."""
     found = await notif_svc.mark_read(session, notification_id, company_id, user.id)
     if not found:
-        raise HTTPException(status_code=404, detail="Notification not found")
+        raise HTTPException(status_code=404, detail=t("error.notification_not_found"))
     await session.commit()
 
 

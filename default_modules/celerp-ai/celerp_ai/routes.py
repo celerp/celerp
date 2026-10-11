@@ -54,6 +54,7 @@ from celerp.models.ai import AIBatchJob
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
+from ui.i18n import t
 
 # AI-specific rate limiter: tighter than the global 60/min default.
 # LLM queries are expensive; uploads have file-size costs.
@@ -129,9 +130,9 @@ def _load_file_http(fid: str, company_id, user_id) -> tuple[bytes, dict]:
     try:
         return load_file(fid, company_id, user_id)
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"File {fid} not found")
+        raise HTTPException(status_code=404, detail=t("error.file_not_found"))
     except PermissionError:
-        raise HTTPException(status_code=403, detail=f"File {fid} not accessible")
+        raise HTTPException(status_code=403, detail=t("error.file_not_accessible"))
 
 
 _TABLE_TYPES = frozenset({"text/csv", XLSX_CONTENT_TYPE})
@@ -234,23 +235,23 @@ async def ai_upload(
     """Upload files for AI batch processing. Returns list of file IDs."""
     from celerp.ai.files import save_upload
     if len(files) > 20:
-        raise HTTPException(status_code=400, detail="Maximum 20 files allowed per batch")
+        raise HTTPException(status_code=400, detail=t("error.batch_too_many", max=20))
     for file in files:
         # Check size limit (10MB)
         file.file.seek(0, 2)
         size = file.file.tell()
         file.file.seek(0)
         if size > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail=f"File {file.filename} exceeds 10MB limit")
+            raise HTTPException(status_code=400, detail=t("ai.err_file_too_large", name=file.filename))
         if file.content_type not in AGENT_UPLOAD_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail=f"File {file.filename} has an unsupported type: {file.content_type}",
+                detail=t("ai.err_file_type_named", name=file.filename),
             )
 
     # Held until the files are written: a company reset waits, then deletes them with the company.
     if not await hold_company(session, company_id):
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     file_ids = []
     try:
         for file in files:
@@ -541,7 +542,7 @@ async def get_conv(
     from celerp.ai.conversations import get_conversation, get_messages
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     msgs = await get_messages(session, conversation_id)
     jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
     return ConversationDetail(
@@ -569,7 +570,7 @@ async def delete_conv(
         raise _conflict("conversation_busy", "This conversation still has files being processed. Wait for the job to finish before deleting it.")
     found = await delete_conversation(session, conversation_id, company_id, user.id)
     if not found:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     await session.commit()
 
 
@@ -587,7 +588,7 @@ async def rename_conv(
     from celerp.ai.conversations import rename_conversation
     conv = await rename_conversation(session, conversation_id, company_id, user.id, body.title)
     if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     await session.commit()
     await session.refresh(conv)
     return ConversationOut(
@@ -658,14 +659,14 @@ async def query_in_conversation(
     from celerp.ai.service import AgentResult, run_agent
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
 
     kinds = _attachment_kinds(body.file_ids, company_id, user.id)
     if body.document_mode == "receipts":
         if not body.file_ids or kinds != {"document"}:
             raise HTTPException(
                 status_code=400,
-                detail="Receipt processing accepts attached images and PDFs only.",
+                detail=t("ai.err_receipt_type"),
             )
         user_msg = await add_message(
             session, conversation_id, "user", body.query, file_ids=body.file_ids,
@@ -1051,10 +1052,10 @@ async def confirm_all(
     from celerp.ai.tools import compile_agent_capabilities
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     msg = await get_message(session, body.message_id, conversation_id)
     if msg is None:
-        raise HTTPException(status_code=404, detail="Message not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_message_not_found"))
     ids = _selected_action_ids(pending_actions(msg.tools_called), body.tool_call_ids)
     if not ids:
         raise _conflict("action_not_pending", "Nothing is pending on this message.")
@@ -1375,10 +1376,10 @@ async def propose_from_job(
     from celerp.ai.tools import compile_agent_capabilities
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     job = await get_batch_job(session, job_id, company_id, user.id)
     if job is None or job.conversation_id != conversation_id or job.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if job.status in ("pending", "running"):
         raise _conflict("job_not_finished", "The files are still being read.")
     result_files = (job.results or {}).get("files") or []
@@ -1535,5 +1536,5 @@ async def batch_status(
     from celerp.ai.batch import get_batch_job
     job = await get_batch_job(session, job_id, company_id, user.id)
     if job is None:
-        raise HTTPException(status_code=404, detail="Batch job not found")
+        raise HTTPException(status_code=404, detail=t("ai.err_batch_not_found"))
     return _job_out(job)

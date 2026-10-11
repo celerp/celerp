@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from urllib.parse import urlparse
 
 from fasthtml.common import *
@@ -27,6 +28,8 @@ from ui.routes.settings import (
     PAID_TIERS,
 )
 from ui.routes.settings_general import _section_breadcrumb
+
+logger = logging.getLogger(__name__)
 
 # The only storage backends the infra form and its handlers accept. A value
 # outside this set is rejected before it ever reaches celerp-config.json or
@@ -1104,7 +1107,7 @@ def setup_routes(app):
         if not _active_team_entitlement(await _commercial_state(request)):
             return Div()
         if not token:
-            return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
+            return P(t("error.session_expired"), cls="infra-test-result infra-test-result--err")
 
         form = await request.form()
         host = form.get("db_host", "").strip()
@@ -1164,7 +1167,7 @@ def setup_routes(app):
         if not _active_team_entitlement(await _commercial_state(request)):
             return Div()
         if not token:
-            return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
+            return P(t("error.session_expired"), cls="infra-test-result infra-test-result--err")
 
         form = await request.form()
         backend = form.get("storage_backend", "local")
@@ -1227,7 +1230,7 @@ def setup_routes(app):
         if not _active_team_entitlement(await _commercial_state(request)):
             return Div()
         if not token:
-            return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
+            return P(t("error.session_expired"), cls="infra-test-result infra-test-result--err")
 
         form = await request.form()
         import os
@@ -1248,7 +1251,7 @@ def setup_routes(app):
         if await _check_permission(request, "manage_integrations"):
             return Div()
         if not token:
-            return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
+            return P(t("error.session_expired"), cls="infra-test-result infra-test-result--err")
 
         import os
         if os.environ.get("CELERP_DATA_DIR"):
@@ -1339,7 +1342,7 @@ def _save_infra_packaged(form) -> FT:
             patch["storage_s3_secret_key"] = form.get("s3_secret_key")
 
     if patch and not merge_packaged_config(patch):
-        return Span(t("settings_cloud.save_failed", err=t("settings_cloud.config_write_failed")),
+        return Span(t("settings_cloud.save_failed"),
                     cls="infra-test-result--err")
     return _packaged_apply_fragment(t("settings_cloud.saved_restart_to_apply"))
 
@@ -1459,8 +1462,9 @@ async def _save_infra_selfhosted(form) -> FT:
             subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
 
         return Span(t("settings._saved"), cls="infra-test-result--ok")
-    except Exception as exc:
-        return Span(t("settings_cloud.save_failed", err=exc), cls="infra-test-result--err")
+    except Exception:
+        logger.exception("saving infrastructure settings failed")
+        return Span(t("settings_cloud.save_failed"), cls="infra-test-result--err")
 
 
 def _restore_db_packaged() -> FT:
@@ -1476,7 +1480,7 @@ def _restore_db_packaged() -> FT:
     current_url = current.get("external_db_url", "") or ""
     patch = {"external_db_url_backup": current_url, "external_db_url": prev_url}
     if not merge_packaged_config(patch):
-        return Span(t("settings_cloud.restore_failed", err=t("settings_cloud.config_write_failed")),
+        return Span(t("settings_cloud.restore_failed"),
                     cls="infra-test-result--err")
     return _packaged_apply_fragment(t("settings_cloud.restored_restart_to_apply"))
 
@@ -1509,8 +1513,9 @@ async def _restore_db_selfhosted() -> FT:
         subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
 
         return Span(t("settings._restored_previous_db_url_restarting"), cls="infra-test-result--ok")
-    except Exception as exc:
-        return Span(t("settings_cloud.restore_failed", err=exc), cls="infra-test-result--err")
+    except Exception:
+        logger.exception("restoring the previous database URL failed")
+        return Span(t("settings_cloud.restore_failed"), cls="infra-test-result--err")
 
 
 async def _try_db_connect(host: str, port: int, name: str, user: str, password: str) -> None:

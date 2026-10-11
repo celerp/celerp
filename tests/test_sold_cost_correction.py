@@ -25,6 +25,7 @@ from celerp.services import auto_je
 from test_cost_restatement import (
     _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
+from ui.i18n import t
 from stock_books import book_older_opening
 from test_consignment_in_sale import _consign
 from test_helpers import TZ, company_auth, invoices_booking_one_lot_twice
@@ -525,12 +526,13 @@ async def test_locked_current_period_refuses_and_writes_nothing(client, session)
         await step(client, session, auth, ctx)
     from celerp.services.company_lock import locked_company
     company = await locked_company(session, auth["company_id"])
-    company.settings = {**company.settings, "lock_date": business_date_at(datetime.now(timezone.utc), TZ)}
+    lock_date = business_date_at(datetime.now(timezone.utc), TZ)
+    company.settings = {**company.settings, "lock_date": lock_date}
     await session.commit()
     before = await _snapshot(session, auth)
     r = await _set_cost(client, auth, ctx["a"], 100.0)
     assert r.status_code == 422, r.text
-    assert "Period is locked" in r.json()["detail"]
+    assert r.json()["detail"] == t("error.period_locked", date=lock_date)
     assert await _snapshot(session, auth) == before
 
 

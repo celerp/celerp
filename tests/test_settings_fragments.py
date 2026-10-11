@@ -257,7 +257,8 @@ async def test_billing_portal_unavailable_is_an_error(client, owner_h):
     with patch("celerp.services.payments.billing_portal_url", AsyncMock(return_value=None)):
         r = await client.post("/settings/cloud/billing-portal", headers=owner_h)
     assert r.status_code == 502
-    assert "subscription management" in r.json()["detail"].lower()
+    from ui.i18n import t
+    assert r.json()["detail"] == t("error.billing_portal_failed", "en")
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +347,7 @@ def test_cloud_tab_connecting_hides_account_view():
 def test_cloud_tab_error_shows_recovery_only():
     """A failed known connection keeps its status plus retry and disconnect."""
     html = _relay_tab_html("error", token_bound=True, tier="cloud", entitled=True)
-    assert "Connection failed" in html
+    assert "The connection didn't work" in html
     assert "cloud-connect-btn" in html
     assert "cloud-disconnect" in html
     assert "Link subscription" not in html
@@ -360,7 +361,7 @@ def test_cloud_tab_error_unknown_entitlement_offers_link_recovery(token_bound):
     html = to_xml(_cloud_relay_tab(
         relay_status="error", public_url="", tier="",
         token_bound=token_bound, entitlement_known=False))
-    assert "Connection failed" in html
+    assert "The connection didn't work" in html
     assert "cloud-connect-btn" in html
     assert "Link subscription" in html
     assert ("cloud-disconnect" in html) is token_bound

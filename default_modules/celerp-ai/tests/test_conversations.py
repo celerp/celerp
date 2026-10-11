@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from celerp.ai.conversations import (
     EXECUTING_STALE_S,
     MAX_CONVERSATIONS_PER_USER,
-    UNFINISHED_ACTION_TEXT,
+    unfinished_action_text,
     MAX_MESSAGES_PER_CONVERSATION,
     HISTORY_TOKEN_BUDGET,
     _CHARS_PER_TOKEN,
@@ -411,7 +411,7 @@ def test_pending_actions_reports_stale_executing_as_retryable():
     result = pending_actions([stale])
     assert result[0]["id"] == "lost"
     assert result[0]["status"] == "retryable"
-    assert result[0]["error"] == UNFINISHED_ACTION_TEXT
+    assert result[0]["error"] == unfinished_action_text()
     history = build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[stale])])
     assert "[action awaiting retry: create_contact]" in history[0]["content"]
 

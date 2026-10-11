@@ -17,6 +17,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from celerp.db import get_session_ctx
 from celerp.held_back import HeldBack, held_back
 from celerp.services.runtime_state import is_draining
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class MaxBodySizeMiddleware:
         if cl is not None:
             try:
                 if int(cl) > self.max_body_size_bytes:
-                    response = JSONResponse(status_code=413, content={"detail": "Request too large"})
+                    response = JSONResponse(status_code=413, content={"detail": t("error.upload_too_large")})
                     await response(scope, receive, send)
                     return
             except ValueError:
@@ -133,7 +134,7 @@ class MaxBodySizeMiddleware:
             if not too_large:
                 raise
         if too_large and not started:
-            await JSONResponse(status_code=413, content={"detail": "Request too large"})(scope, receive, send)
+            await JSONResponse(status_code=413, content={"detail": t("error.upload_too_large")})(scope, receive, send)
 
 
 class SlidingTokenRefreshMiddleware:
@@ -311,7 +312,7 @@ class DrainMiddleware:
         if draining:
             response = JSONResponse(
                 status_code=503,
-                content={"detail": "Server is temporarily unavailable for maintenance"},
+                content={"detail": t("error.maintenance")},
                 headers={"Retry-After": "10"},
             )
             await response(scope, receive, send)
@@ -368,7 +369,7 @@ class RecoveryMaintenanceMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        from celerp.services.backup_import import MAINTENANCE_MESSAGE, recovery_incomplete
+        from celerp.services.backup_import import recovery_incomplete
 
         if (scope["type"] != "http" or scope.get("path", "") in _RECOVERY_PROBES
                 or not recovery_incomplete()):
@@ -376,6 +377,6 @@ class RecoveryMaintenanceMiddleware:
             return
         response = JSONResponse(
             status_code=503,
-            content={"detail": f"System Recovery did not finish. {MAINTENANCE_MESSAGE}"},
+            content={"detail": t("error.recovery_incomplete")},
         )
         await response(scope, receive, send)

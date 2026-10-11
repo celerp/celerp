@@ -116,7 +116,7 @@ async def test_posting_checks_the_real_chart_not_a_third_party_one(client, sessi
     # An account the chart does not hold stays refused.
     with pytest.raises(HTTPException) as exc:
         await _post(session, cid, [{"account": "9999", "debit": 5}, {"account": "1120", "credit": 5}])
-    assert exc.value.status_code == 422 and "9999" in exc.value.detail
+    assert exc.value.status_code == 422 and exc.value.detail["params"]["code"] == "9999"
     # An account made inactive stays inactive to a payment.
     await session.execute(update(Account).where(
         Account.company_id == cid, Account.code == "1111").values(is_active=False))

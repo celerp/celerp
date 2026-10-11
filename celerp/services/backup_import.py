@@ -24,6 +24,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
+from ui.i18n import t
+
 from celerp.modules.importer import ModuleImportError, _validate_name_chars
 
 log = logging.getLogger(__name__)
@@ -44,8 +46,7 @@ def _refuse_newer_archive(recorded) -> None:
     try:
         newer = is_newer_than_running(recorded)
     except (InvalidVersion, TypeError):
-        raise ValueError(f"This backup records a Celerp version that cannot be read ({recorded!r}). "
-                         f"Nothing was changed.")
+        raise ValueError(t("error.restore_version_unreadable", recorded=repr(recorded)))
     if newer:
         raise ValueError(
             f"This backup was made with Celerp {recorded}, which is newer than this copy "
@@ -92,38 +93,38 @@ def validate_archive(path: Path) -> ImportMeta:
     Raises ValueError on invalid archive or version incompatibility.
     """
     if not tarfile.is_tarfile(str(path)):
-        raise ValueError("Not a valid .celerp-backup archive (not a tar.gz)")
+        raise ValueError(t("error.restore_not_backup"))
 
     with tarfile.open(str(path), "r:gz") as tar:
         names = tar.getnames()
 
         if "database.dump" not in names:
-            raise ValueError("Archive missing database.dump")
+            raise ValueError(t("error.restore_incomplete"))
         if "meta.json" not in names:
-            raise ValueError("Archive missing meta.json")
+            raise ValueError(t("error.restore_incomplete"))
 
         # Security: check for path traversal and platform-ambiguous separators.
         # Celerp-generated tar names are POSIX paths; a backslash can become a
         # separator on Windows and must never acquire different extraction meaning.
         for name in names:
             if name.startswith("/") or "\\" in name or ".." in name:
-                raise ValueError(f"Unsafe path in archive: {name}")
+                raise ValueError(t("error.restore_unsafe"))
 
         meta_file = tar.extractfile("meta.json")
         if meta_file is None:
-            raise ValueError("Cannot read meta.json from archive")
+            raise ValueError(t("error.restore_damaged"))
         meta_data = json.loads(meta_file.read())
 
     modules = meta_data.get("enabled_modules")
     if modules is None:
         modules = []
     if not isinstance(modules, list) or not all(isinstance(name, str) for name in modules):
-        raise ValueError("Archive meta.json has an invalid enabled_modules list")
+        raise ValueError(t("backup.err_meta_enabled_modules_invalid"))
     try:
         for name in modules:
             _validate_name_chars(name)
     except ModuleImportError as exc:
-        raise ValueError(f"Archive meta.json lists an invalid module name: {exc}") from exc
+        raise ValueError(t("backup.err_meta_module_name_invalid", reason=str(exc))) from exc
 
     meta = ImportMeta(
         celerp_version=meta_data.get("celerp_version") or "unknown",
@@ -141,12 +142,7 @@ def validate_archive(path: Path) -> ImportMeta:
     backup_major = _pg_major(meta.pg_version)
     local_major = _local_pg_restore_major()
     if backup_major is not None and local_major is not None and backup_major > local_major:
-        raise ValueError(
-            f"This backup was created with PostgreSQL {backup_major}, but this system's "
-            f"restore tools are PostgreSQL {local_major}. Install PostgreSQL {backup_major} "
-            f"(client tools, and a matching server) to restore it - pg_restore cannot read a "
-            f"backup from a newer PostgreSQL."
-        )
+        raise ValueError(t("error.restore_pg_newer", backup=backup_major, local=local_major))
 
     _refuse_newer_archive(meta_data.get("celerp_version"))
     return meta
@@ -201,9 +197,7 @@ async def _reconcile_schema() -> None:
     try:
         await asyncio.to_thread(_sync)
     except Exception as exc:
-        raise RuntimeError(
-            f"The database was restored, but its schema could not be brought up to date: {exc}"
-        ) from exc
+        raise RuntimeError(t("error.restore_schema_update", detail=exc)) from exc
     log.info("Schema reconcile completed after pg_restore")
 
 
@@ -234,8 +228,6 @@ def _is_protected_module_dir(
 
 RESTORE_NOTICE_FILE = "restore-notice.json"
 
-
-SAFETY_WARNING = "A safety backup could not be made before restoring."
 
 # Response header on a successful whole-installation restore: every session
 # ended with it, so the UI drops the browser's session cookies.
@@ -380,7 +372,7 @@ def _stage_members(archive: Path, root: Path) -> None:
             if member.name == "meta.json" or member.isdir():
                 continue
             if not member.isfile():
-                raise ValueError(f"Unsupported entry in archive (links and devices are not allowed): {member.name}")
+                raise ValueError(t("error.restore_unsafe"))
             if member.name == _STAGED_DUMP:
                 dest = root / _STAGED_DUMP
             else:
@@ -388,21 +380,21 @@ def _stage_members(archive: Path, root: Path) -> None:
                 if parts[0] not in keys:
                     continue
                 if len(parts) < 2:
-                    raise ValueError(f"Unsafe path in archive: {member.name}")
+                    raise ValueError(t("error.restore_unsafe"))
                 if parts[0] == "modules" and _is_protected_module_dir(module_root, parts[1], protected):
                     # Bundled module directories belong to the application, not the backup.
                     continue
                 dest = files.joinpath(*parts)
                 if not dest.resolve().is_relative_to(files_root):
-                    raise ValueError(f"Unsafe path in archive: {member.name}")
+                    raise ValueError(t("error.restore_unsafe"))
             dest.parent.mkdir(parents=True, exist_ok=True)
             src = tar.extractfile(member)
             if src is None:
-                raise ValueError(f"Cannot read {member.name} from archive")
+                raise ValueError(t("error.restore_damaged"))
             with src, dest.open("wb") as out:
                 shutil.copyfileobj(src, out)
     if not (root / _STAGED_DUMP).is_file():
-        raise ValueError("Archive missing database.dump")
+        raise ValueError(t("error.restore_incomplete"))
 
 
 def _prepare_sync(path: Path) -> PreparedRecovery:
@@ -421,7 +413,7 @@ def _prepare_sync(path: Path) -> PreparedRecovery:
         try:
             write_restore_script(root / _STAGED_DUMP, root / _STAGED_SCRIPT)
         except RuntimeError as exc:
-            raise ValueError(f"This backup file is damaged and cannot be restored: {exc}") from exc
+            raise ValueError(t("backup.err_file_damaged", reason=str(exc))) from exc
         prepared = PreparedRecovery(id=staging_id, root=root, digest=digest, meta=meta,
                                     files=_staged_files(root))
         (root / _STAGED_RECORD).write_text(json.dumps({
@@ -658,7 +650,7 @@ async def _reconcile_connectors() -> None:
             _write_marker(state)
     if state["connectors"]:
         names = ", ".join(sorted({e["connector"] for e in state["connectors"]}))
-        raise ConnectorRemoteCleanupError(f"Connections to other services could not be disconnected ({names})")
+        raise ConnectorRemoteCleanupError(t("error.restore_disconnect_failed", names=names))
 
 
 async def _clear_restored_connector_state(session) -> None:
@@ -953,7 +945,7 @@ async def run_recovery(path: Path):
                 try:
                     _remove_staging((await prepare_recovery(safety.path)).root)
                 except ValueError as exc:
-                    raise ValueError(f"The safety backup of this installation could not be restored: {exc}") from exc
+                    raise ValueError(t("backup.err_safety_restore_failed", reason=str(exc))) from exc
                 await _cloud_safety_snapshot()
                 return await commit_recovery(prepared, safety.path)
     except Exception as exc:
@@ -964,7 +956,7 @@ async def run_recovery(path: Path):
         "digest": prepared.digest, "expires_at": expires_at.isoformat(),
     }))
     detail = (safety.error or "").rstrip(".")
-    return _failed(f"{SAFETY_WARNING} {detail}.", needs_confirmation=True,
+    return _failed(t("system_recovery.safety_failed", detail=detail), needs_confirmation=True,
                    confirmation_id=prepared.id, archive_digest=prepared.digest)
 
 

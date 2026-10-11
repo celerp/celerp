@@ -5,6 +5,8 @@ file storage, are for the installation owner. Pages offer those controls only
 to them; a company admin sees what is installed and a plain note instead."""
 from __future__ import annotations
 
+import json
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ from fasthtml.common import FastHTML
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
+from ui.i18n import t
 
 _MODULES = [
     {"name": "mod-off", "label": "Mod Off", "version": "1.0", "author": "A",
@@ -64,7 +67,7 @@ async def test_company_admin_is_not_offered_installation_controls(ui_client):
     body = await _modules_page(ui_client, owner=False)
     for control in _INSTALL_CONTROLS:
         assert control not in body, control
-    assert "Only the installation owner can install, remove or restart modules" in body
+    assert t("modules.owner_only", "en") in body
     # Choosing which installed modules the company uses stays theirs.
     assert 'hx-post="/modules/mod-off/enable"' in body
     assert 'hx-post="/modules/mod-pending/disable"' in body
@@ -75,7 +78,7 @@ async def test_installation_owner_is_offered_installation_controls(ui_client):
     body = await _modules_page(ui_client, owner=True)
     for control in _INSTALL_CONTROLS:
         assert control in body, control
-    assert "Only the installation owner" not in body
+    assert t("modules.owner_only", "en") not in body
 
 
 @pytest.mark.asyncio
@@ -148,17 +151,15 @@ def test_infrastructure_tab_offers_the_settings_to_the_owner_only():
 
 
 @pytest.mark.asyncio
-async def test_a_module_that_failed_to_load_is_explained_in_plain_words_before_the_reason(ui_client):
-    """The loader's reason is written for the module's author; the toast leads
-    with what it means for the user and keeps that reason after it."""
+async def test_a_module_that_failed_to_load_names_the_reason_and_what_to_do(ui_client):
+    """The toast names the module, keeps the loader's reason, and says what to do."""
     reason = "api_routes 'celerp.routers.health' does not resolve to source inside the module."
     broken = [{"name": "bad-mod", "label": "Bad Mod", "version": "1.0", "author": "A",
                "enabled": True, "running": False, "load_error": reason}]
     with _owner(True), patch("ui.api_client.get_modules", new=AsyncMock(return_value=broken)), \
             patch("ui.routes.modules_page._modules_dir_display", return_value="/data/modules"):
         r = await ui_client.get("/modules", cookies=_cookies())
-    lead = "Bad Mod could not start, so it is not running. Ask the module's author to fix it."
-    assert f"{lead} Their detail: {reason}" in r.text
+    assert json.dumps(t("modules.load_failed", "en", label="Bad Mod", error=reason))[1:-1] in r.text
 
 
 def test_zero_priced_marketplace_module_reads_paid():

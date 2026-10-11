@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,9 +51,9 @@ async def _account(client, tok, code: str, account_type: str, *, active: bool = 
 # ── creating a bank account on an existing chart account ─────────────────────
 
 @pytest.mark.parametrize("account_type, active, reason", [
-    ("asset", False, "Account 1190 is inactive."),
-    ("revenue", True, "Account 1190 is a revenue account"),
-    ("liability", True, "Account 1190 is a liability account"),
+    ("asset", False, "Account 1190 is archived"),
+    ("revenue", True, "Account 1190 is a Revenue account"),
+    ("liability", True, "Account 1190 is a Liability account"),
 ])
 async def test_a_bank_account_on_an_existing_chart_account_needs_an_active_asset_account(
         client, account_type, active, reason):
@@ -140,7 +141,7 @@ async def test_a_bank_account_is_restored_only_onto_an_active_asset_account(clie
     r = await client.patch(f"/accounting/bank-accounts/{bank['id']}", headers=_h(tok), json={"is_active": True})
 
     assert r.status_code == 422, r.text
-    assert f"Account {code} is inactive." in r.json()["detail"]
+    assert r.json()["detail"] == t("acct.err_account_archived", "en", code=code)
     banks = (await client.get("/accounting/bank-accounts?include_inactive=true", headers=_h(tok))).json()["items"]
     assert [b["is_active"] for b in banks if b["id"] == bank["id"]] == [False]
 
@@ -164,7 +165,7 @@ async def test_cash_in_a_company_that_never_connected_online_payments_is_kept_on
     r = await client.patch("/accounting/accounts/1110", headers=_h(tok), json=change)
 
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert detail.startswith("Account 1110 is the posting account for Cash and cash equivalents")
     assert "nline payments" not in detail
     acc = await _chart_account(client, tok, "1110")

@@ -55,6 +55,7 @@ from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_d
 from celerp_docs.doc_money import UnratedTaxError, document_money
 from celerp_docs.taxes import TaxApplication
 from celerp.services.currencies import CURRENCY_CODES
+from ui.i18n import t
 
 # Authenticated router — share token generation requires login
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -102,9 +103,9 @@ def _import_link(link: str | None, src: str | None, token: str | None) -> str:
             raise HTTPException(status_code=400, detail="Give either link, or src and token, not both")
         return link
     if not (src and token):
-        raise HTTPException(status_code=400, detail="A share link is required: link, or both src and token")
+        raise HTTPException(status_code=400, detail=t("documents.err_share_link_required"))
     if not _TOKEN_RE.fullmatch(token):
-        raise HTTPException(status_code=400, detail="Not a Celerp share link")
+        raise HTTPException(status_code=400, detail=t("docs_import.invalid_share_link"))
     return f"{src.rstrip('/')}/share/{token}"
 
 
@@ -123,7 +124,7 @@ async def _validate_share_link(link: str) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     token = urlsplit(page).path.rsplit("/", 1)[-1]
     if not token:
-        raise HTTPException(status_code=400, detail="Not a Celerp share link")
+        raise HTTPException(status_code=400, detail=t("docs_import.invalid_share_link"))
     return page
 
 
@@ -132,7 +133,7 @@ async def _read_body_capped(request: Request, limit: int) -> bytes:
     async for chunk in request.stream():
         body.extend(chunk)
         if len(body) > limit:
-            raise HTTPException(status_code=413, detail="Bundle too large")
+            raise HTTPException(status_code=413, detail=t("documents.err_share_too_large"))
     return bytes(body)
 
 
@@ -142,7 +143,7 @@ def _num(v) -> float:
     except (TypeError, ValueError):
         return 0.0
     if not math.isfinite(f):
-        raise HTTPException(status_code=422, detail="Bundle contains a number that is not finite")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_bad_number"))
     return f
 
 
@@ -189,7 +190,7 @@ def _public_taxes(raw) -> list[dict]:
 def _public_bundle_doc(doc: dict) -> dict:
     """Allowlisted customer-facing bundle state; internal projection fields never leave the sender."""
     if not isinstance(doc, dict):
-        raise HTTPException(status_code=422, detail="Bundle document is malformed")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_damaged"))
     out: dict = {}
     for key in _DOC_STR_FIELDS:
         value = _str(
@@ -212,7 +213,7 @@ def _public_bundle_doc(doc: dict) -> dict:
     if not isinstance(raw_lines, list):
         raw_lines = []
     if len(raw_lines) > _MAX_LINE_ITEMS:
-        raise HTTPException(status_code=422, detail="Too many line items in bundle")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_too_many_lines"))
     lines: list[dict] = []
     for raw in raw_lines:
         if not isinstance(raw, dict):
@@ -246,15 +247,15 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     never misstate the figures the recipient sees.
     """
     if not isinstance(doc, dict):
-        raise HTTPException(status_code=422, detail="Bundle document is malformed")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_damaged"))
     doc_type = str(doc.get("doc_type") or "").strip()
     if doc_type not in SHAREABLE_DOC_TYPES:
-        raise HTTPException(status_code=422, detail="Unsupported document type in bundle")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_type_unsupported"))
 
     public = _public_bundle_doc(doc)
     currency = public.get("currency")
     if currency not in CURRENCY_CODES:
-        raise HTTPException(status_code=422, detail="Bundle document has no supported currency")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_currency"))
     # Payment state and derived totals are local accounting facts. Never
     # accept them from an untrusted sender: totals are recomputed below, and a
     # received document carries no payment state at all.
@@ -263,7 +264,7 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     out["currency"] = currency
     out["discount_type"] = public.get("discount_type") or "flat"
     if out["discount_type"] not in ("flat", "percentage"):
-        raise HTTPException(status_code=422, detail="Bundle document has an unknown discount type")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_discount"))
     out["discount"] = _num(public.get("discount"))
     out["shipping"] = _num(public.get("shipping"))
 
@@ -293,7 +294,7 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     except UnratedTaxError as exc:
         raise HTTPException(
             status_code=422,
-            detail="This document has a tax amount without a tax rate, so it cannot be imported without changing its total.",
+            detail=t("documents.err_share_tax_no_rate"),
         ) from exc
     return out
 
@@ -448,9 +449,9 @@ async def share_status(
     activates anything."""
     row = await session.get(Projection, (company_id, entity_id))
     if row is None or row.entity_type not in ("doc", "list"):
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
     if not is_shareable(row.entity_type, row.state or {}):
-        raise HTTPException(status_code=422, detail="This type of document cannot be shared")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     await session.commit()
     return await _share_status(session, share_row)
@@ -468,19 +469,19 @@ async def create_share_link(
     expiry of the existing one)."""
     row = await session.get(Projection, (company_id, entity_id))
     if row is None or row.entity_type not in ("doc", "list"):
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
     if not is_shareable(row.entity_type, row.state or {}):
-        raise HTTPException(status_code=422, detail="This type of document cannot be shared")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_type_not_shareable"))
 
     expires = None
     if body and body.expires_at:
         try:
             expiry_date = _date.fromisoformat(body.expires_at)
         except ValueError:
-            raise HTTPException(status_code=422, detail="expires_at must be an ISO date (YYYY-MM-DD)")
+            raise HTTPException(status_code=422, detail=t("documents.err_share_expiry_format"))
         expires = datetime.combine(expiry_date, _time(23, 59, 59), tzinfo=timezone.utc)
         if expires <= datetime.now(timezone.utc):
-            raise HTTPException(status_code=422, detail="expires_at must be in the future")
+            raise HTTPException(status_code=422, detail=t("documents.err_share_expiry_past"))
 
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     share_row.revoked_at = None
@@ -504,7 +505,7 @@ async def revoke_share_link(
     document keeps its stable URL; Share turns the same link back on."""
     token_row = await _find_share_row(session, company_id, entity_id)
     if not token_row:
-        raise HTTPException(status_code=404, detail="No share link found")
+        raise HTTPException(status_code=404, detail=t("documents.err_share_none"))
     token_row.revoked_at = datetime.now(timezone.utc)
     await session.commit()
     return await _share_status(session, token_row)
@@ -680,11 +681,11 @@ async def download_share_bundle(
     """Download the document as a .celerp JSON bundle (fallback for p2p import failures)."""
     share_row = await _active_share_row(session, token)
     if share_row is None:
-        raise HTTPException(status_code=404, detail="Share link not found or revoked")
+        raise HTTPException(status_code=404, detail=t("documents.err_share_link_off"))
 
     row = await session.get(Projection, (share_row.company_id, share_row.entity_id))
     if row is None:
-        raise HTTPException(status_code=404, detail="Document no longer exists")
+        raise HTTPException(status_code=404, detail=t("documents.err_share_doc_deleted"))
 
     doc = dict(row.state or {})
     if row.entity_type == "list":
@@ -759,20 +760,20 @@ async def import_shared_doc(
         if r.status_code == 404:
             raise HTTPException(
                 status_code=404,
-                detail="Share link not found on sender's instance",
+                detail=t("documents.err_share_sender_unknown"),
             )
         if r.status_code >= 400:
             raise HTTPException(
                 status_code=502,
-                detail=f"Sender's instance returned {r.status_code}",
+                detail=t("documents.err_share_sender_error", status=r.status_code),
             )
         bundle = json.loads(r.content)
     except PublicFetchTooLarge as exc:
-        raise HTTPException(status_code=413, detail="Bundle too large") from exc
+        raise HTTPException(status_code=413, detail=t("documents.err_share_too_large")) from exc
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=502, detail="Could not reach sender's Celerp instance")
+        raise HTTPException(status_code=502, detail=t("documents.err_share_sender_offline"))
 
     return await _import_bundle(bundle, company_id, user.id, session, page)
 
@@ -792,21 +793,21 @@ async def import_bundle_upload(
     """
     clen = request.headers.get("content-length")
     if clen and clen.isdigit() and int(clen) > 2 * _MAX_BUNDLE_BYTES:
-        raise HTTPException(status_code=413, detail="Bundle too large")
+        raise HTTPException(status_code=413, detail=t("documents.err_share_too_large"))
 
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
         form = await request.form()
         file = form.get("bundle")
         if file is None:
-            raise HTTPException(status_code=422, detail="Missing 'bundle' field in multipart form")
+            raise HTTPException(status_code=422, detail=t("documents.err_share_no_file"))
         raw = await file.read(_MAX_BUNDLE_BYTES + 1)
         if len(raw) > _MAX_BUNDLE_BYTES:
-            raise HTTPException(status_code=413, detail="Bundle too large")
+            raise HTTPException(status_code=413, detail=t("documents.err_share_too_large"))
         try:
             bundle = json.loads(raw)
         except Exception:
-            raise HTTPException(status_code=422, detail="Bundle file is not valid JSON")
+            raise HTTPException(status_code=422, detail=t("documents.err_share_not_bundle"))
     else:
         raw = await _read_body_capped(request, _MAX_BUNDLE_BYTES)
         try:
@@ -830,10 +831,10 @@ async def _import_bundle(
 ) -> Response:
     """File a .celerp bundle in Received. Returns a redirect to the Received entry."""
     if not isinstance(bundle, dict):
-        raise HTTPException(status_code=422, detail="Bundle is malformed")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_damaged"))
     doc = bundle.get("doc") or {}
     if not isinstance(doc, dict) or not doc:
-        raise HTTPException(status_code=422, detail="Bundle contains no document data")
+        raise HTTPException(status_code=422, detail=t("documents.err_share_empty"))
 
     # Accept only known fields and recompute money locally — never trust the bundle.
     document = _sanitize_bundle_doc(doc)

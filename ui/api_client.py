@@ -11,7 +11,7 @@ import httpx
 
 from celerp.capacity import REQUEST_DB_POOL_SIZE
 from celerp.services.company_settings import BOOKS_KEYS, GENERAL
-from ui.i18n import refusal_text, t
+from ui.i18n import current_lang, refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,11 @@ def saturation_message() -> str:
 
 def timeout_message() -> str:
     return t("api.timed_out")
+
+
+def call_failure_text(exc: Exception) -> str:
+    """What to show for a failed call: the API's own reason, else the unreachable copy."""
+    return exc.detail if isinstance(exc, APIError) else t("api.unreachable")
 
 
 NO_RESPONSE = "no_response"
@@ -177,6 +182,9 @@ def _local_client(
     from ui.config import API_BASE
 
     merged_headers = dict(headers or {})
+    # The API answers in the language of the page that asked, so the messages it
+    # returns read in the user's language.
+    merged_headers.setdefault("Accept-Language", current_lang())
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
@@ -333,6 +341,13 @@ def _api_error(status: int, body, text: str) -> APIError:
     detail = body.get("detail", text)
     if isinstance(detail, dict) and ("message" in detail or "errors" in detail):
         return APIError(status, refusal_text(detail) or t("error.unexpected_error_body"), data=detail)
+    if isinstance(detail, list):
+        # A request validation error: name the rejected fields in a sentence and
+        # carry the original list on data.
+        fields = ", ".join(dict.fromkeys(
+            str(e["loc"][-1]) for e in detail if isinstance(e, dict) and e.get("loc")))
+        return APIError(status, t("error.invalid_input_fields", fields=fields) if fields
+                        else t("error.invalid_input"), data=body)
     if isinstance(detail, str):
         detail = refusal_text(detail)
     return APIError(status, detail, data=body if set(body) - {"detail"} else None)
@@ -357,7 +372,7 @@ def error_text(r: httpx.Response, fallback: str) -> str:
 
 def _raise(r: httpx.Response) -> httpx.Response:
     if r.is_redirect:
-        raise APIError(r.status_code, f"Unexpected redirect to {r.headers.get('location', '?')}")
+        raise APIError(r.status_code, t("error.unexpected_redirect"))
     if r.is_error:
         try:
             body = r.json()
@@ -763,6 +778,15 @@ async def switch_company(token: str, company_id: str) -> tuple[str, str]:
         r = _raise(await c.post(f"/auth/switch-company/{company_id}"))
         data = r.json()
         return data["access_token"], data["refresh_token"]
+
+
+async def reactivate_company(token: str, company_id: str) -> dict:
+    """Reactivate one of the user's deactivated companies. The API reactivates the
+    session's company, so the call runs on a token for that company; the caller's own
+    session stays in the company it is working in."""
+    access, _ = await switch_company(token, company_id)
+    async with _api_client(access) as c:
+        return _raise(await c.post("/companies/me/reactivate")).json()
 
 
 # ---------------------------------------------------------------------------
@@ -1763,6 +1787,11 @@ async def complete_reconciliation(token: str, session_id: str) -> dict:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/complete")).json()
 
 
+async def reopen_reconciliation(token: str, session_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/reopen")).json()
+
+
 async def import_recon_csv(token: str, session_id: str, content: bytes, filename: str, column_map: dict | None = None) -> dict:
     import json as _json
     async with _bulk_api_client(token) as c:
@@ -2198,7 +2227,7 @@ async def export_items_csv(token: str, params: dict | None = None) -> bytes:
 async def export_docs_csv(token: str, params: dict | None = None):
     """GET /docs/export/csv, streamed on the bulk transport. Returns (iter, headers)."""
     return await _stream_get(token, "/docs/export/csv", params=params,
-                             timeout_message="The export timed out.")
+                             timeout_message=t("api.export_timed_out"))
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
@@ -2446,7 +2475,7 @@ async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
 async def export_lists_csv(token: str, params: dict | None = None):
     """GET /lists/export/csv, streamed. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, "/lists/export/csv", params=params,
-                             timeout_message="The export timed out.")
+                             timeout_message=t("api.export_timed_out"))
 
 
 # ---------------------------------------------------------------------------
@@ -3476,7 +3505,7 @@ async def export_backup(token: str, backup_id: str | None = None):
     url = f"/backup/export/{backup_id}" if backup_id else "/backup/export"
     return await _stream_get(
         token, url,
-        timeout_message="Backup timed out. The archive took too long to build.")
+        timeout_message=t("api.backup_timed_out"))
 
 
 async def disconnect_relay(token: str) -> dict:

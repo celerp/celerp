@@ -21,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 from ui.api_client import APIError
+from ui.i18n import t
 from test_helpers import assert_not_permitted_redirect, make_test_token
 
 
@@ -414,7 +415,7 @@ def test_failed_record_card_has_no_buttons_and_says_why():
     assert "/ai/confirm-action-ui" not in html
     assert "Dismiss" not in html
     bare = _card_html({**_ACTION, "title": "Create item", "status": "failed"})
-    assert "This change was not applied." in bare
+    assert t("ai.action_failed", "en") in bare
 
 
 def test_action_card_formats_amounts_and_quantities():
@@ -550,7 +551,8 @@ async def test_confirm_all_last_chunk_shows_tally_and_drafts_link(ui_client):
             "doc_ids": ",".join(f"doc:{i}" for i in range(1, 11)),
         })
     assert r.status_code == 200, r.text
-    assert "12 applied, 0 failed." in r.text
+    assert t("ai.confirm_all_done", "en", completed=12) in r.text
+    assert "not applied" not in r.text and "marked Failed" not in r.text
     assert "hx-trigger" not in r.text
     assert "Open these 12 drafts" in r.text
     assert 'href="/docs?view=drafts&amp;ids=' + ",".join(f"doc:{i}" for i in range(1, 13)) + '"' in r.text
@@ -573,7 +575,7 @@ async def test_confirm_all_cards_view_replaces_each_card(ui_client):
                                  data={"selected": ["p1", "p2"]})
     assert call.await_args.kwargs["tool_call_ids"] == ["p1", "p2"]
     assert r.status_code == 200
-    assert "1 applied, 1 failed." in r.text
+    assert t("ai.confirm_all_result", "en", completed=1, failed=1) in r.text
     assert 'hx-swap-oob="true" id="ai-act-m2-p1"' in r.text
     assert "Add vendor Supplier Co" in r.text and "ai-action__done" in r.text
     assert 'href="/contacts/contact:1"' in r.text
@@ -635,7 +637,7 @@ async def test_confirm_all_api_failure_stops_the_run_with_the_tally(ui_client):
         r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(), data={
             "selected": ["p11", "p12"], "completed": "9", "failed": "1", "doc_ids": "doc:1",
         })
-    assert "9 applied, 1 failed." in r.text
+    assert t("ai.confirm_all_result", "en", completed=9, failed=1) in r.text
     assert "The API is down." in r.text
     assert "hx-trigger" not in r.text
     assert "Open these 1 drafts" in r.text
@@ -648,7 +650,7 @@ async def test_conversations_list_failure_is_not_empty_state(ui_client):
     with patch("celerp_ai.ui_routes.api.ai_conversations_list",
                AsyncMock(side_effect=APIError(502, "down"))):
         r = await ui_client.get("/ai/conversations-list", cookies=_authed())
-    assert "Conversations could not be loaded." in r.text
+    assert t("ai.conversations_load_failed", "en") in r.text
     assert "Retry" in r.text
     assert "No conversations yet." not in r.text
 
@@ -658,7 +660,7 @@ async def test_memory_failure_has_retry_and_no_clear(ui_client):
     with patch("celerp_ai.ui_routes.api.ai_memory_get",
                AsyncMock(side_effect=APIError(502, "down"))):
         r = await ui_client.get("/ai/memory-panel", cookies=_authed())
-    assert "Memory could not be loaded." in r.text
+    assert t("ai.memory_load_failed", "en") in r.text
     assert "Retry" in r.text
     assert "Clear All Memory" not in r.text
 
@@ -684,7 +686,7 @@ async def test_ai_page_status_failure_is_not_showcase(ui_client):
         r = await ui_client.get("/ai", cookies=_authed())
     finally:
         _stop(patches)
-    assert "Celerp AI is temporarily unavailable." in r.text
+    assert t("ai.service_unavailable", "en") in r.text
     assert "ai-showcase__terminal" not in r.text
 
 
@@ -754,7 +756,6 @@ async def test_proposals_ui_failed_job_is_an_error_bubble(ui_client):
     with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)):
         r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
     assert "ai-msg--error" in r.text
-    assert "The files could not be read." in r.text
     assert "Every file failed to read." in r.text
     assert "Attach files and try again" in r.text
     assert "hx-get" not in r.text
@@ -769,7 +770,7 @@ async def test_proposals_ui_api_error_shows_message(ui_client):
          patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(side_effect=err)):
         r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
     assert "1 of 1 files were read." in r.text
-    assert "Error: The bill capability is not available." in r.text
+    assert ">The bill capability is not available.<" in r.text
 
 
 @pytest.mark.asyncio
@@ -805,4 +806,4 @@ def test_chat_view_has_no_gif_and_an_upload_error_slot():
     html = to_xml(_chat_view(lang="en"))
     assert "image/gif" not in html
     assert 'id="ai-upload-error"' in html
-    assert "Upload failed: {detail}" in html
+    assert t("ai.upload_failed", "en") in html

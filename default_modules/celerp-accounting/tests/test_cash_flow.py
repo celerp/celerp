@@ -14,6 +14,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import t
+from celerp.services.permissions import missing_permission_text
 
 
 async def _reg(client) -> str:
@@ -252,7 +254,7 @@ async def test_an_unknown_category_is_rejected_and_the_valid_ones_named(client):
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     for name in ("operating", "investing", "financing"):
-        assert name in detail
+        assert t(f"enum.cash_flow.{name}", "en") in detail
 
     c = await client.post("/accounting/accounts", json={
         "code": "6299", "name": "Odd", "account_type": "expense",
@@ -323,7 +325,7 @@ async def test_reports_permission_can_read_it(client, session):
                     {"account": "4100", "debit": 0.0, "credit": 10.0}],
     }, headers=_h(reader))
     assert w.status_code == 403, w.text
-    assert "manage_accounting" in w.json()["detail"]
+    assert w.json()["detail"] == missing_permission_text("manage_accounting")
 
 
 # ---------------------------------------------------------------------------

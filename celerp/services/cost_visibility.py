@@ -11,8 +11,6 @@ per-company field configuration, not a hardcoded gate.
 """
 from __future__ import annotations
 
-from celerp.services.auth import ROLE_LEVELS
-
 # Item-dict keys stripped when the caller lacks view_inventory_costs.
 COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 # Cost companions: derived cost data that a cost-hidden caller must not see either, or the
@@ -24,6 +22,9 @@ COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", 
 
 def restricted_field_keys(role: str, field_schema: list[dict]) -> set[str]:
     """Schema keys whose visible_to_roles floor sits above the caller's role."""
+    # Imported here: auth imports ui.i18n, which imports pricing, which imports this module.
+    from celerp.services.auth import ROLE_LEVELS
+
     caller_level = ROLE_LEVELS.get(role, 0)
     return {
         f["key"]

@@ -620,17 +620,30 @@ function quietError(e) {
   return !!(el && el.closest && el.closest('[data-quiet-error]'));
 }
 
+/* A short plain-text or JSON {detail} reply already says what went wrong;
+   anything else (an HTML page, a long body) gets the general message. */
+function serverErrorText(xhr) {
+  if (!xhr) return '';
+  var type = xhr.getResponseHeader('Content-Type') || '';
+  var body = xhr.responseText || '';
+  var text = '';
+  if (type.indexOf('text/plain') === 0) {
+    text = body;
+  } else if (type.indexOf('application/json') === 0) {
+    try { var d = JSON.parse(body).detail; if (typeof d === 'string') text = d; } catch (_) {}
+  }
+  text = text.trim();
+  return text.length && text.length <= 300 ? text : '';
+}
+
 document.addEventListener('htmx:responseError', function(e) {
   if (quietError(e)) return;
-  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || window.__shellI18n.unknownRequest;
-  var status = (e.detail && e.detail.xhr && e.detail.xhr.status) || 'error';
-  showGlobalUiError(window.__shellI18n.requestFailedPrefix + ' (' + status + '): ' + path);
+  showGlobalUiError(serverErrorText(e.detail && e.detail.xhr) || window.__shellI18n.requestFailed);
 });
 
 document.addEventListener('htmx:sendError', function(e) {
   if (quietError(e)) return;
-  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || window.__shellI18n.unknownRequest;
-  showGlobalUiError(window.__shellI18n.networkErrorPrefix + ': ' + path);
+  showGlobalUiError(window.__shellI18n.networkError);
 });
 
 /* ── Image cell drag-and-drop ─────────────────────────────────────────── */
@@ -1377,7 +1390,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!r.ok) throw new Error(String(r.status));
           }).catch(function() {
             autoInput.checked = !wanted;
-            setState(i18n.requestFailedPrefix, false);
+            setState(i18n.requestFailed, false);
           });
         });
         autoInput.addEventListener('keydown', function(e) {
@@ -1845,9 +1858,8 @@ def _shell_js_i18n(lang: str = "en") -> dict:
     return {
         "copied": t("shell.copied", lang),
         "copyLabel": t("btn.copy", lang),
-        "unknownRequest": t("shell.unknown_request", lang),
-        "requestFailedPrefix": t("shell.request_failed_prefix", lang),
-        "networkErrorPrefix": t("shell.network_error_prefix", lang),
+        "requestFailed": t("shell.request_failed", lang),
+        "networkError": t("shell.network_error", lang),
         "markAsRead": t("shell.mark_as_read", lang),
         "noNotifications": t("shell.no_notifications", lang),
         "upToDate": t("shell.up_to_date", lang),

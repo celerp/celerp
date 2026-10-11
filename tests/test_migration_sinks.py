@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import func, select
 
 from test_helpers import register_admin
+from ui.i18n import t
 
 _PROVENANCE = {"source_system": "manager_io"}
 
@@ -153,7 +154,7 @@ async def test_internal_sinks_share_domain_import_services(client, session, monk
     }]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["created"] == 0 and "No contact matches contact:missing" in body["errors"][0]
+    assert body["created"] == 0 and t("error.contacts_not_found", "en", names="contact:missing") in body["errors"][0]
     assert calls == ["import_journal_records"]
     receivable = CIFAccount(
         **_PROVENANCE, source_type="Account", source_external_id="acct-ar", code="1100",
@@ -325,7 +326,7 @@ async def test_core_sink_attaches_source_files_like_the_upload_routes(client, se
     assert set(errors) == {"att-missing", "att-hash", "att-exe"}
     assert "target record was not imported" in errors["att-missing"]
     assert "does not match its recorded hash" in errors["att-hash"]
-    assert "Unsupported file type" in errors["att-exe"]
+    assert "can't be attached" in errors["att-exe"]
     assert "att-missing" not in read_keys
     doc = await session.get(Projection, (company_id, targets["inv-1"]))
     contact = await session.get(Projection, (company_id, targets["cust-1"]))

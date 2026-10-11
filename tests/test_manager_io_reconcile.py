@@ -76,7 +76,7 @@ def test_manager_multicurrency_requires_proven_fx_treatment():
     # The currency master is not a financial record and still maps; its rate table is not moved.
     assert coverage["ForeignCurrency"].coverage_class == CoverageClass.MAPPED
     assert coverage["ExchangeRate"].coverage_class == CoverageClass.UNSUPPORTED_NONFINANCIAL
-    with pytest.raises(ScanError, match="cannot be migrated"):
+    with pytest.raises(ScanError, match="can't be moved into Celerp yet"):
         manager.build_manifest([art], FULL)
 
     # The lock date is read and shown even on a file that cannot be migrated.

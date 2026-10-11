@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import t
 
 
 async def _register(client) -> str:
@@ -136,7 +137,7 @@ async def test_renumber_conflict_with_existing_doc(client, session):
     # Try to rename B to A's number
     r = await client.post(f"/docs/{doc_b['id']}/renumber", headers=_h(token), json={"ref_id": ref_a})
     assert r.status_code == 409, r.text
-    assert "already exists" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_doc_number_taken", "en", number=ref_a)
 
 
 @pytest.mark.asyncio
@@ -187,7 +188,7 @@ async def test_renumber_voided_doc_blocked(client, session):
 
     r = await client.post(f"/docs/{doc['id']}/renumber", headers=_h(token), json={"ref_id": "NEW-NUM"})
     assert r.status_code == 409, r.text
-    assert "Voided" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_renumber_void", "en")
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +240,7 @@ async def test_patch_doc_ref_id_uniqueness_uses_state_scan(client, session):
         json={"fields_changed": {"ref_id": {"old": ref_b, "new": new_a}}},
     )
     assert r.status_code == 409, r.text
-    assert "already exists" in r.json()["detail"]
+    assert r.json()["detail"] == t("documents.err_doc_number_taken", "en", number=new_a)
 
 
 # ---------------------------------------------------------------------------

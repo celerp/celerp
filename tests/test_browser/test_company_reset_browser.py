@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from ui.i18n import t
+
 from .test_company_backup_browser import _WAIT_MS, _add_user, _client, _db, _session_company, _token_for
 from .test_migration_journeys_browser import _start_additional, held_runner  # noqa: F401 - fixture
 from .test_migration_wizard_browser import _run_id, _through_review, _upload
@@ -65,8 +67,7 @@ def test_reset_dialog_needs_the_exact_name_and_shows_refusals_inside(page, fresh
         assert c.patch("/companies/me", json={"name": renamed}).status_code == 200
     confirm.click()
     flash = page.locator("#company-reset-flash")
-    flash.locator("text=does not match this company's name").wait_for(timeout=_WAIT_MS)
-    assert "Nothing was deleted." in flash.inner_text()
+    flash.locator(f"text={t('company_reset.name_mismatch', 'en')}").wait_for(timeout=_WAIT_MS)
     assert page.locator("#company-reset-modal[open]").count() == 1
     _shot(page, "2-reset-refused-inside-dialog")
     assert _companies_named(renamed) == 1

@@ -9,6 +9,7 @@ import re
 import httpx
 
 from celerp.connectors.base import ConnectorContext
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,17 @@ class ConnectorRemoteCleanupError(RuntimeError):
 
 class ConnectorRemoteStateChangedError(ConnectorRemoteCleanupError):
     """The remote connection changed during cleanup."""
+
+
+def _unconfirmed(connector_name: str) -> ConnectorRemoteCleanupError:
+    from celerp.connectors.registry import service_name
+    return ConnectorRemoteCleanupError(
+        t("error.connector_disconnect_unconfirmed", service=service_name(connector_name))
+    )
+
+
+def _changed() -> ConnectorRemoteStateChangedError:
+    return ConnectorRemoteStateChangedError(t("error.connector_changed_while_disconnecting"))
 
 
 def _safe_connector_name(value: str) -> str:
@@ -41,26 +53,18 @@ async def connection_revision(connector_name: str) -> str | None:
                 headers=relay_session_headers(),
             )
     except Exception as exc:
-        raise ConnectorRemoteCleanupError(
-            "Connector state could not be confirmed."
-        ) from exc
+        raise _unconfirmed(connector_name) from exc
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        raise ConnectorRemoteCleanupError(
-            "Connector state could not be confirmed."
-        )
+        raise _unconfirmed(connector_name)
     try:
         data = response.json()
     except Exception as exc:
-        raise ConnectorRemoteCleanupError(
-            "Connector state could not be confirmed."
-        ) from exc
+        raise _unconfirmed(connector_name) from exc
     revision = data.get("revision") if isinstance(data, dict) else None
     if not isinstance(revision, str) or not revision:
-        raise ConnectorRemoteCleanupError(
-            "Connector state could not be confirmed."
-        )
+        raise _unconfirmed(connector_name)
     return revision
 
 
@@ -128,7 +132,7 @@ async def _remove_woocommerce_webhooks(
     except Exception as exc:
         if not force:
             raise ConnectorRemoteCleanupError(
-                "The store's webhooks could not be removed."
+                t("error.connector_webhooks_not_removed", service=get_connector("woocommerce").display_name)
             ) from exc
         log.warning("WooCommerce webhook cleanup failed during a forced disconnect", exc_info=True)
 
@@ -153,9 +157,7 @@ async def revoke_connector_remote_state(
     if current is None:
         return
     if revision is not None and current != revision:
-        raise ConnectorRemoteStateChangedError(
-            "The connection changed while disconnecting; retry."
-        )
+        raise _changed()
     revision = current
 
     if connector_name == "woocommerce":
@@ -163,9 +165,7 @@ async def revoke_connector_remote_state(
             str(company_id), list(webhook_ids or []), force=force
         )
         if await connection_revision(connector_name) != revision:
-            raise ConnectorRemoteStateChangedError(
-                "The connection changed while disconnecting; retry."
-            )
+            raise _changed()
 
     headers = {
         **relay_session_headers(),
@@ -180,15 +180,13 @@ async def revoke_connector_remote_state(
                 headers=headers,
             )
     except Exception as exc:
-        raise ConnectorRemoteCleanupError(
-            "Connector cleanup could not be confirmed."
-        ) from exc
+        raise _unconfirmed(connector_name) from exc
 
     if response.status_code == 409:
-        raise ConnectorRemoteStateChangedError(
-            "The connection changed while disconnecting; retry."
-        )
+        raise _changed()
     if response.status_code not in (200, 404):
-        raise ConnectorRemoteCleanupError(
-            f"Connector cleanup returned {response.status_code}."
-        )
+        from celerp.connectors.registry import service_name
+        raise ConnectorRemoteCleanupError(t(
+            "error.connector_disconnect_refused",
+            service=service_name(connector_name), status=response.status_code,
+        ))

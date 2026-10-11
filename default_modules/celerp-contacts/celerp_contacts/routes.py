@@ -28,6 +28,7 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_projections
 from celerp.services.currencies import require_currency_code, require_phone
 from celerp.services.permissions import locked_authority, require_permission
+from ui.i18n import t
 
 from celerp.importers.sinks import register_sink
 from celerp_contacts import services
@@ -133,7 +134,7 @@ async def _get_contact(session: AsyncSession, company_id, contact_id: str) -> Pr
     """Canonical contact lookup: an id from another projection type is not a contact."""
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Contact not found")
+        raise HTTPException(status_code=404, detail=t("contacts.err_contact_not_found"))
     return row
 
 
@@ -143,10 +144,10 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "crm.contact.created":
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             return {"event_id": replay.id, "id": replay.entity_id}
     if not payload.name or not payload.name.strip():
-        raise HTTPException(status_code=422, detail="Contact name is required and must be non-empty")
+        raise HTTPException(status_code=422, detail=t("contacts.err_name_required"))
     require_currency_code(payload.currency)
     require_phone(payload.phone)
     entity_id = f"contact:{uuid.uuid4()}"
@@ -198,7 +199,7 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "crm.contact.updated" or replay.entity_id != contact_id:
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             return {"event_id": replay.id}
     require_currency_code((payload.fields_changed.get("currency") or {}).get("new"))
     require_phone((payload.fields_changed.get("phone") or {}).get("new"))
@@ -247,14 +248,14 @@ async def _locked_contact(session: AsyncSession, company_id, contact_id: str) ->
     """The contact a file change applies to, read once no other write to it is in flight."""
     row = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     return row
 
 
 def _get_contact_file(files: list[dict], file_id: str) -> dict:
     match = next((f for f in files if f.get("id") == file_id), None)
     if match is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=t("contacts.err_file_not_found"))
     return match
 
 
@@ -349,7 +350,7 @@ async def download_contact_file(
 ) -> FileResponse:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
 
     match = _get_contact_file(row.state.get("files", []), file_id)
     url = match.get("url", "")
@@ -360,7 +361,7 @@ async def download_contact_file(
         url = f"/static/attachments/{company_id}/{file_id}{ext}"
     dest = local_attachment_url_path(str(company_id), url)
     if dest is None:
-        raise HTTPException(status_code=404, detail="File missing from disk")
+        raise HTTPException(status_code=404, detail=t("contacts.err_file_missing"))
 
     return FileResponse(
         path=str(dest),
@@ -408,7 +409,7 @@ async def _locked_note(session: AsyncSession, company_id, contact_id: str, note_
     rows = await lock_projections(session, company_id, [contact_id, note_id])
     contact = rows.get(contact_id)
     if contact is None or contact.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     note = rows.get(note_id)
     if note is None or note.entity_type != "contact_note" or note.state.get("contact_id") != contact_id \
             or note.state.get("deleted"):
@@ -452,7 +453,7 @@ async def add_contact_note(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
 
     note_id = f"note:{uuid.uuid4()}"
     entry = await emit_event(
@@ -554,7 +555,7 @@ async def add_contact_person(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     require_phone(payload.phone)
     person_id = f"person:{uuid.uuid4()}"
     entry = await emit_event(
@@ -586,7 +587,7 @@ async def update_contact_person(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     person = next((p for p in row.state.get("people") or [] if p.get("person_id") == person_id), {})
     if payload.phone != person.get("phone"):
         require_phone(payload.phone)
@@ -618,7 +619,7 @@ async def remove_contact_person(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -649,7 +650,7 @@ async def add_contact_address(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     address_id = f"address:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -680,7 +681,7 @@ async def update_contact_address(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -709,7 +710,7 @@ async def remove_contact_address(
 ) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -747,7 +748,7 @@ async def import_contact(
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
         if replay.event_type != "crm.contact.created" or replay.entity_id != body.entity_id:
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
     record = (await services.import_contact_records(session, company_id, user.id, [body], match_identity=True)).records[0]
     if record.status in ("rejected", "failed"):
         raise HTTPException(status_code=409 if record.status == "rejected" else 422, detail=record.message)
@@ -807,7 +808,7 @@ async def bulk_delete_contacts(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if not payload.contact_ids:
-        raise HTTPException(status_code=422, detail="No contacts selected.")
+        raise HTTPException(status_code=422, detail=t("contacts.err_none_selected"))
 
     # Lock the contacts before scanning their references, the order a Document or List
     # selection takes, so no new reference can commit between the scan and the tombstone.
@@ -816,7 +817,7 @@ async def bulk_delete_contacts(
     for cid in payload.contact_ids:
         row = locked.get(cid)
         if row is None or row.state.get("deleted"):
-            raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.")
+            raise HTTPException(status_code=404, detail=t("contacts.err_selected_not_found"))
         contact_rows.append(row)
 
     # Block deletion if any Document, List or Deal (regardless of status) names the contact.
@@ -878,31 +879,31 @@ async def merge_contacts_service(
     user = SimpleNamespace(id=actor_id)
     # 1. Validate inputs
     if not payload.source_contact_ids:
-        raise HTTPException(status_code=422, detail="source_contact_ids must not be empty.")
+        raise HTTPException(status_code=422, detail=t("contacts.err_merge_no_sources"))
     if payload.target_contact_id in payload.source_contact_ids:
-        raise HTTPException(status_code=422, detail="target_contact_id must not be in source_contact_ids.")
+        raise HTTPException(status_code=422, detail=t("contacts.err_merge_into_itself"))
 
     locked = await lock_contacts(session, company_id, [payload.target_contact_id, *payload.source_contact_ids])
 
     # 2. Validate target
     target_row = locked.get(payload.target_contact_id)
     if target_row is None:
-        raise HTTPException(status_code=404, detail=f"Target contact '{payload.target_contact_id}' not found.")
+        raise HTTPException(status_code=404, detail=t("contacts.err_merge_target_not_found"))
     if target_row.state.get("deleted"):
-        raise HTTPException(status_code=422, detail="Cannot merge into a deleted contact.")
+        raise HTTPException(status_code=422, detail=t("contacts.err_merge_target_deleted"))
 
     # 3. Validate sources
     source_rows = []
     for sid in payload.source_contact_ids:
         row = locked.get(sid)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Source contact '{sid}' not found.")
+            raise HTTPException(status_code=404, detail=t("contacts.err_merge_source_not_found"))
         if row.state.get("deleted"):
-            raise HTTPException(status_code=422, detail=f"Contact '{sid}' is already deleted.")
+            raise HTTPException(status_code=422, detail=t("contacts.err_merge_source_deleted"))
         if row.state.get("merged_into"):
             raise HTTPException(
                 status_code=422,
-                detail=f"Contact '{sid}' is already merged into '{row.state['merged_into']}'.",
+                detail=t("contacts.err_merge_source_merged"),
             )
         source_rows.append(row)
 

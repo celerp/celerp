@@ -51,7 +51,6 @@ INSTALL_WIDE = {
 
 AI_BATCH_ACTIVE = ("Wait for the assistant to finish reading files before resetting this company. "
                    "Nothing was deleted.")
-FAILED = "The company could not be reset. Nothing was deleted."
 # Another transaction in the way: the reset rolls back and is refused as busy.
 _BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
 PAYMENTS_NOT_CLOSED = {
@@ -333,5 +332,5 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     except SQLAlchemyError as exc:
         if isinstance(exc, DBAPIError) and sqlstate(exc) in _BUSY:
             raise ResetRefused(409, _busy().detail, closure) from exc
-        raise ResetRefused(500, FAILED, closure) from exc
+        raise ResetRefused(500, t("settings.reset_not_done"), closure) from exc
     return Reset(task.id, closure)

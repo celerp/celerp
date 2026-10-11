@@ -33,7 +33,6 @@ _XX = {
     "doc.tax_id": "XX_TAXID",
     "reports.printed": "XX_PRINTED {date}",
     "reports.powered_by": "XX_POWERED",
-    "shell.error_prefix": "XX_ERROR",
 }
 
 
@@ -74,6 +73,6 @@ def test_print_shell_translates_powered_by():
     assert "XX_POWERED" in out
 
 
-def test_plain_error_response_translates_error_prefix():
+def test_plain_error_response_shows_the_detail_alone():
     response = plain_error_response(APIError(400, "bad request"))
-    assert response.body == b"XX_ERROR bad request"
+    assert response.body == b"bad request"

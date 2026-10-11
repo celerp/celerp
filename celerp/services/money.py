@@ -174,9 +174,13 @@ def doc_rate(doc: dict, base_currency: str) -> Decimal | None:
     raw = doc.get("conversion_rate")
     if raw in (None, ""):
         return Decimal(1) if currency == base else None
-    rate = checked_exchange_rate(raw)
+    from ui.i18n import t  # ui.i18n imports pricing, which imports this module
+    try:
+        rate = checked_exchange_rate(raw)
+    except ValueError as exc:
+        raise ValueError(t("error.rate_invalid", raw=raw)) from exc
     if currency == base and rate != 1:
-        raise ValueError(f"a {base} document cannot carry a conversion rate of {raw}")
+        raise ValueError(t("error.rate_not_one_for_base", base=base, raw=raw))
     return rate
 
 
@@ -184,9 +188,10 @@ def require_doc_rate(doc: dict, base_currency: str) -> Decimal:
     """A document rate suitable for creating base-currency money."""
     rate = doc_rate(doc, base_currency)
     if rate is None:
-        currency = str(doc.get("currency") or "").upper() or "foreign currency"
+        currency = str(doc.get("currency") or "").upper()
         base = str(base_currency or "").upper()
-        raise ValueError(f"a conversion rate is required for {currency} documents in {base} books")
+        from ui.i18n import t  # ui.i18n imports pricing, which imports this module
+        raise ValueError(t("error.rate_required", currency=currency, base=base))
     return rate
 
 

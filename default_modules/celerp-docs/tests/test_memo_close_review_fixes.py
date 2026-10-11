@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import t
 
 
 async def _register(client) -> str:
@@ -198,7 +199,7 @@ async def test_manual_overpayment_no_reference_still_409(client):
                           json={"amount": 999, "payment_date": "2026-07-01",
                                 "method": "cash", "bank_account": "1111"})
     assert r.status_code == 409, f"a manual no-reference overshoot must 409, not clamp; got {r.status_code}: {r.text}"
-    assert "exceeds" in r.text.lower()
+    assert r.json()["detail"] == t("documents.err_payment_too_much", "en", amount=999.0, outstanding=10.0)
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]

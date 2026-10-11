@@ -26,6 +26,7 @@ from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
 from stock_books import assert_books_carry_stock, assert_settled
 from test_cost_restatement import _item, _merge, _set_cost, _state
+from ui.i18n import refusal_text
 from test_money_stock_and_contact_invariants import _account_net
 from test_receipt_accounting import _doc, _receive
 
@@ -115,7 +116,7 @@ async def test_turning_booked_stock_into_a_service_is_refused(client, session, a
     r = await _patch(client, auth, lot, inventory_type="service")
 
     assert r.status_code == 422, r.text
-    assert "inventory type" in r.json()["detail"]
+    assert "inventory type" in refusal_text(r.json()["detail"])
     assert await _state(session, auth, lot) == before
     await assert_settled(client, session, auth)
 

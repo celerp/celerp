@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
+from ui.i18n import t
 
 
 class UnratedTaxError(ValueError):
@@ -31,7 +32,7 @@ def _recompute_tax_applications(raw, base, currency: str):
     except Exception as exc:
         raise HTTPException(
             status_code=422,
-            detail="Stored tax data is invalid; correct it before repricing",
+            detail=t("documents.err_tax_invalid"),
         ) from exc
     resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
     return [item.model_dump() for item in resolved], sum(

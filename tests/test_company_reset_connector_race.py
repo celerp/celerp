@@ -92,6 +92,7 @@ async def test_connector_work_started_during_a_reset_waits_and_finds_the_company
         await holder.close()
 
     assert r.status_code == 200, r.text
-    assert await connector == "Connector company is inactive"
+    from ui.i18n import t
+    assert await connector == t("error.connector_company_inactive", "en", service="Shopify")
     assert await count(real_engine, "companies", "id = :c", c=a) == 0
     assert await count(real_engine, "connector_configs") == 0

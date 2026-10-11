@@ -823,7 +823,8 @@ def test_the_stripe_payment_states_are_worded_in_every_locale():
     en = _load_locale("en")
     assert en["pay.settings_disconnecting"] == "Stripe is disconnecting while existing payments finish."
     assert en["pay.settings_revoked"] == (
-        "Reconnect this Stripe account to finish checking payments already in progress.")
+        "Celerp lost access to your Stripe account, so payments already in progress can't be checked. "
+        "Use Reconnect Stripe in Web Access, Online Payments to finish checking them.")
     for code in _shipped_locales():
         loc = _load_locale(code)
         for key in ("pay.settings_disconnecting", "pay.settings_revoked", "pay.reconnect_stripe"):

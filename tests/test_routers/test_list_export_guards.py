@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import t
 
 
 async def _reg(client) -> str:
@@ -156,7 +157,7 @@ async def test_doc_list_and_export_share_sort(client):
     bad_sort = await client.get("/docs?sort=sideways", headers=_h(tok))
     assert bad_sort.status_code == 422 and "sideways" in bad_sort.json()["detail"], bad_sort.text
     bad_dir = await client.get("/docs?sort=total&dir=up", headers=_h(tok))
-    assert bad_dir.status_code == 422 and "asc or desc" in bad_dir.json()["detail"], bad_dir.text
+    assert bad_dir.status_code == 422 and bad_dir.json()["detail"] == t("documents.err_sort_dir", "en"), bad_dir.text
 
 
 # ── query and sort equivalence ────────────────────────────────────────────────

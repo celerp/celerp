@@ -20,6 +20,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _state
 from test_posting_roles_merge import _FIELD, _lot, _merge, _remap, _two_accounts
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -75,7 +76,7 @@ async def test_a_merge_key_reused_for_a_different_merge_is_refused(session, clie
     before = await _ledger_count(session, auth)
     again = await client.post("/items/merge", headers=auth["headers"], json=body)
     assert again.status_code == 409, again.text
-    assert "already used" in again.json()["detail"]
+    assert again.json()["detail"] == t("contacts.err_resubmitted", "en")
     assert await _ledger_count(session, auth) == before
 
 

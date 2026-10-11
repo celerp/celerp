@@ -26,6 +26,7 @@ from celerp_accounting.models import Account
 from celerp_accounting.routes import seed_chart_of_accounts
 from test_posting_roles_finalize import _CHOICES
 from test_posting_roles_migration_sinks import _SOURCE_CHART, _import_chart, _staged_context
+from ui.i18n import t
 from test_posting_roles_race_pg import _factory, _second, _settings
 
 pytestmark = pytest.mark.asyncio
@@ -77,7 +78,7 @@ async def test_two_concurrent_finalizes_leave_exactly_one_completion(committed_e
     assert len(completed) == 1 and len(refused) == 1, results
     assert completed[0].status == migrations._S.COMPLETED.value
     assert isinstance(refused[0], migrations.MigrationError) and refused[0].status_code == 409
-    assert "completed" in refused[0].detail
+    assert refused[0].detail == t("migration.err_cannot_finalize", "en", status=t("migration.status.completed", "en"))
 
     async with factory() as s:
         company = await s.get(Company, cid)

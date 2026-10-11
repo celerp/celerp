@@ -48,6 +48,8 @@ def _open(page: Page, ui_server: str, lang: str, width: int, path: str = "/inven
     page.goto(path)
     page.wait_for_selector(".page-header #search-input", state="visible")
     page.wait_for_load_state("load")
+    # The company switcher loads after the page; on a phone it can add a top bar row.
+    page.wait_for_selector("#topbar-company-switcher", state="detached")
 
 
 @pytest.mark.parametrize("path", ["/inventory", "/docs", "/lists"])

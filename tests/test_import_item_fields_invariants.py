@@ -369,7 +369,7 @@ class TestIdentifierFields:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)
     async def test_gtin_import_uses_canonical_gtin_validation(self, client, session, ctx, transport):
-        from celerp.inventory_codes import GTIN_LENGTH_MESSAGE, GTIN_NOT_DIGITS_MESSAGE
+        from ui.i18n import t
 
         states = await _import_clean(client, session, ctx, transport, [{
             "sku": "GT-1", "name": "Boxed lamp", "sell_by": "piece", "quantity": "1", "gtin": "00012345678905",
@@ -377,7 +377,7 @@ class TestIdentifierFields:
         assert states["GT-1"].get("gtin") == "00012345678905", "a valid GTIN keeps its leading zeros"
         assert "gtin" not in _attributes(states["GT-1"])
 
-        for value, message in (("12AB5678", GTIN_NOT_DIGITS_MESSAGE), ("1234567", GTIN_LENGTH_MESSAGE)):
+        for value, message in (("12AB5678", t("inventory.err_gtin_digits")), ("1234567", t("inventory.err_gtin_length"))):
             errors = await _assert_rejected(client, session, ctx, transport, [{
                 "sku": "GT-BAD", "name": "Bad code", "sell_by": "piece", "quantity": "1", "gtin": value,
             }], "gtin", "invalid_value")
@@ -386,7 +386,8 @@ class TestIdentifierFields:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", _TRANSPORTS)
     async def test_rfid_import_uses_canonical_rfid_validation(self, client, session, ctx, transport):
-        from celerp.inventory_codes import RFID_EPC_NOT_ALNUM_MESSAGE, RFID_EPC_TOO_LONG_MESSAGE, MAX_RFID_EPC_LEN
+        from celerp.inventory_codes import MAX_RFID_EPC_LEN
+        from ui.i18n import t
 
         states = await _import_clean(client, session, ctx, transport, [{
             "sku": "RF-1", "name": "Tagged tool", "sell_by": "piece", "quantity": "1", "rfid_epc": " e2806894000040 ",
@@ -394,7 +395,8 @@ class TestIdentifierFields:
         assert states["RF-1"].get("rfid_epc") == "E2806894000040", "the EPC is stored in its canonical form"
         assert "rfid_epc" not in _attributes(states["RF-1"])
 
-        for value, message in (("E2-80!", RFID_EPC_NOT_ALNUM_MESSAGE), ("A" * (MAX_RFID_EPC_LEN + 1), RFID_EPC_TOO_LONG_MESSAGE)):
+        for value, message in (("E2-80!", t("inventory.err_rfid_chars")),
+                               ("A" * (MAX_RFID_EPC_LEN + 1), t("inventory.err_rfid_too_long", max=MAX_RFID_EPC_LEN))):
             errors = await _assert_rejected(client, session, ctx, transport, [{
                 "sku": "RF-BAD", "name": "Bad tag", "sell_by": "piece", "quantity": "1", "rfid_epc": value,
             }], "rfid_epc", "invalid_value")

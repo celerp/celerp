@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.company import Company, WorkCenter
+from ui.i18n import t
 
 
 async def _register(client) -> str:
@@ -201,7 +202,7 @@ async def test_wc_make_default_race_correct_message(client, monkeypatch):
     monkeypatch.setattr(mfg_routes, "_unset_other_defaults", _noop)
     r = await client.patch(f"/manufacturing/work-centers/{b['id']}/is_default", headers=_h(token))
     assert r.status_code == 409
-    assert r.json()["detail"] == "Another work center is already the default"
+    assert r.json()["detail"] == t("manufacturing.err_wc_default_taken", "en")
 
 
 @pytest.mark.asyncio

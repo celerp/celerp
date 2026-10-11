@@ -11,10 +11,9 @@ from celerp.schemas.numbers import PositiveFloat
 
 # The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
 # boundary, the interactive routes, the allocation service, and the scanner share one
-# source of truth. reject_comma_sku/SKU_COMMA_MESSAGE are re-exported here because
-# celerp_inventory.routes imports them from this module.
+# source of truth. reject_comma_sku is re-exported here because
+# celerp_inventory.routes imports it from this module.
 from celerp.inventory_codes import (  # noqa: F401 - re-exported for celerp_inventory
-    SKU_COMMA_MESSAGE,
     reject_comma_sku,
     validate_barcode,
     validate_gtin,
@@ -1162,6 +1161,14 @@ class AccPeriodReopened(BaseModel):
     period: str
 
 
+class AccReconciliationReopened(BaseModel):
+    """A completed bank reconciliation put back in progress. Only the reconciliation
+    changes; the books do not."""
+    bank_account_id: str
+    statement_date: str
+    completed_at: str | None = None
+
+
 # -----------------
 # System
 # -----------------
@@ -1472,6 +1479,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "acc.journal_entry.voided": AccJournalEntryVoided,
     "acc.period.closed": AccPeriodClosed,
     "acc.period.reopened": AccPeriodReopened,
+    "acc.reconciliation.reopened": AccReconciliationReopened,
 
     # System
     "sys.company.created": SysCompanyCreated,

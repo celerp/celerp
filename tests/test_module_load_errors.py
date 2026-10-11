@@ -103,7 +103,7 @@ def test_load_errors_are_recorded(tmp_path):
 
     errs = load_errors()
     assert "broken-module" in errs and "boom at import time" in errs["broken-module"]
-    assert "no-manifest" in errs and "PLUGIN_MANIFEST" in errs["no-manifest"]
+    assert "no-manifest" in errs and "no module description" in errs["no-manifest"]
     assert "needs-dep" in errs and "not-installed" in errs["needs-dep"]
     # the good module carries no error
     assert "ok-module" not in errs

@@ -33,6 +33,7 @@ from sqlalchemy.pool import NullPool
 
 from celerp.db import REQUEST_CONNECT_ARGS
 from test_helpers import DATABASE_URL
+from ui.i18n import t
 
 
 # ── Real-concurrency proof (independent Postgres sessions) ────────────────────
@@ -291,7 +292,7 @@ async def test_wrong_setup_code_is_rejected_before_bootstrap_lock(real_engine):
             with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, timeout=1.0)
         assert exc.value.status_code == 403
-        assert exc.value.detail == "Invalid or missing setup code."
+        assert exc.value.detail == t("auth.setup_code_invalid", "en")
 
         assert await _bootstrap_lock_waiters(real_engine) == 0, "invalid setup code attempted to acquire the bootstrap lock"
     finally:

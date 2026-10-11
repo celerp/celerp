@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.services import backup_import
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,7 +57,7 @@ async def test_readiness_and_other_routes_are_refused_before_they_run(client, un
         app.dependency_overrides.clear()
         app.dependency_overrides.update(saved)
     assert r.status_code == 503, (path, r.text)
-    assert "System Recovery did not finish" in r.json()["detail"]
+    assert r.json()["detail"] == t("error.recovery_incomplete", "en")
     assert calls == []
 
 
