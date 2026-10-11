@@ -1,0 +1,19 @@
+name: Accountant workspace validation
+on:
+  push:
+    branches: [accountant-channel-foundation-20261011]
+permissions:
+  contents: read
+jobs:
+  checkout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source checkout
+        run: |
+          test -f pyproject.toml
+          test -f celerp/services/migrations.py
+          test -f celerp/services/company_backup.py
+          python -m compileall -q celerp/services/migrations.py celerp/services/company_backup.py
+          echo "WORKTREE_VALIDATED=$(git rev-parse --short HEAD)"
