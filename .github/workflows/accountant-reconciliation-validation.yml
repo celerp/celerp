@@ -1,0 +1,69 @@
+name: Accountant reconciliation validation
+on:
+  push:
+    branches: [accountant-app-recovery-20261011]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready -U celerp
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      BASE_SHA: c79f24efb7b881e4d59d55c66be2810a7c7c055a
+      TARGET_REF: refs/heads/accounting-migration-improvements-20261011
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+      ALLOW_INSECURE_JWT: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply proposed patch at verified head
+        run: |
+          gzip -dc .github/accountant-reconciliation.patch.gz > /tmp/accountant-reconciliation.patch
+          git switch --detach "$BASE_SHA"
+          git apply --check /tmp/accountant-reconciliation.patch
+          git apply --index /tmp/accountant-reconciliation.patch
+          git diff --cached --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+      - name: Install test dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]" -c constraints.txt
+      - name: Verify lock is canonical
+        run: |
+          python scripts/gen_first_party_lock.py --stdout > /tmp/expected-first-party.lock
+          cmp /tmp/expected-first-party.lock default_modules/first_party.lock.json
+      - name: Test opening balances and migrations
+        run: |
+          pytest -q tests/test_manager_io_reconcile.py::test_manager_source_expectations_are_independent_of_cif tests/test_migration_e2e.py::test_open_documents_must_tie_out_to_imported_control_balances tests/test_migration_e2e.py::test_source_financial_effect_has_exactly_one_representation -x --tb=short --no-cov
+      - name: Publish one source commit (exact-head fast-forward)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git commit -m "Reconcile imported receivables and payables against open documents"
+          actual="$(git ls-remote origin "$TARGET_REF" | cut -f1)"
+          test "$actual" = "$BASE_SHA" || { echo "Target branch moved; no publication"; exit 1; }
+          git push origin "HEAD:$TARGET_REF"
+          gh workflow run ci.yml --ref accounting-migration-improvements-20261011
