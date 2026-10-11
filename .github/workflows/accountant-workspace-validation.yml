@@ -39,4 +39,4 @@ jobs:
         env:
           ALLOW_INSECURE_JWT: "true"
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
-        run: pytest tests/test_migration_lifecycle.py tests/test_migration_e2e.py -q --tb=short --no-cov --timeout=45
+        run: pytest tests/test_migration_lifecycle.py tests/test_migration_e2e.py tests/test_supplier_return_settles_bill.py -q --tb=short --no-cov --timeout=45

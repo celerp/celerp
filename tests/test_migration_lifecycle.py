@@ -655,9 +655,13 @@ async def test_reviewed_differences_can_finish_but_unreviewed_cannot(real_engine
     )
     assert (await load_run(real_engine, run_id)).status == "ready_to_finalize"
 
+    from migration_support import posting_choices_from
+    from celerp.services.posting_readiness import readiness
+
     async with maker(real_engine)() as s:
+        choices = posting_choices_from(await readiness(s, company_id) or [])
         await migrations.finalize(
-            s, await creator_run(s, run_id), reviewed_differences=True,
+            s, await creator_run(s, run_id), choices, reviewed_differences=True,
         )
     finished = await load_run(real_engine, run_id)
     assert finished.status == "completed"
