@@ -33,6 +33,12 @@ jobs:
             constraints.txt
       - name: Install dependencies
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist -c constraints.txt
+      - name: Regenerate bundled-module content lock for temporary validation
+        run: |
+          python scripts/gen_first_party_lock.py
+          echo '===== LOCK CONTENT ====='
+          cat default_modules/first_party.lock.json
+          echo '===== END LOCK ====='
       - name: Compile affected modules
         run: python -m compileall -q celerp/services/migrations.py celerp/routers/migrations.py ui/routes/migrations.py
       - name: Focused migration lifecycle and end-to-end tests
