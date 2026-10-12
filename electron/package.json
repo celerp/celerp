@@ -45,6 +45,7 @@
     "files": [
       "main.js",
       "app-main.js",
+      "api-wait.js",
       "handoff-protocol.js",
       "restart.js",
       "shutdown.js",
