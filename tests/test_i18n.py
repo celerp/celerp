@@ -965,3 +965,41 @@ def test_item_status_labels_are_distinct_per_locale(lang):
         if key.startswith("enum.item_status."):
             by_value.setdefault(value, []).append(key)
     assert not {v: ks for v, ks in by_value.items() if len(ks) > 1}
+
+
+# Spanish addresses the user as usted. These words only exist in the informal tú
+# register; "se selecciona" / "se elige" are impersonal and stay allowed.
+_TU_FORMS = frozenset({
+    "tienes", "puedes", "tu", "tus", "haz", "elige", "selecciona", "inténtalo",
+    "necesitas", "quieres", "estás", "has", "puedas", "tengas", "contigo",
+    "tuyo", "tuya", "tuyos", "tuyas", "elegiste", "pulsa",
+})
+
+
+def _tu_forms(text: str) -> list[str]:
+    words = re.findall(r"\w+", re.sub(r"\{[^}]*\}", " ", text).lower())
+    return [w for i, w in enumerate(words)
+            if w in _TU_FORMS and not (i and words[i - 1] == "se")]
+
+
+def test_es_uses_usted_register():
+    root = Path(__file__).resolve().parents[1]
+    catalogs = [Path(_LOCALES_DIR) / "es.json",
+                *sorted(root.glob("default_modules/*/*/locales/es.json"))]
+    informal = {f"{p.parent.parent.name}:{k}": hits
+                for p in catalogs
+                for k, v in json.loads(p.read_text(encoding="utf-8")).items()
+                if (hits := _tu_forms(v))}
+    assert not informal, informal
+
+
+@pytest.mark.parametrize("lang", ["es", "pt"])
+def test_leading_count_stays_a_count(lang):
+    """"{n} invoices" is a number of invoices; "facturas de {n}" reads as invoices
+    belonging to {n}."""
+    en = json.loads((Path(_LOCALES_DIR) / "en.json").read_text(encoding="utf-8"))
+    tr = json.loads((Path(_LOCALES_DIR) / f"{lang}.json").read_text(encoding="utf-8"))
+    inverted = {k: tr[k] for k, v in en.items()
+                if (m := re.match(r"(\{\w+\}) ", v)) and k in tr
+                and re.search(rf"\bde {re.escape(m.group(1))}$", tr[k])}
+    assert not inverted, inverted
