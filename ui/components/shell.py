@@ -782,9 +782,9 @@ _INFO_TIP_JS = """
 """
 
 
-def info_tip(text: str) -> FT:
+def info_tip(text: str, glyph: str = "ⓘ") -> FT:
     """An info icon whose explanation opens on hover or keyboard focus (``_INFO_TIP_JS``)."""
-    return Span("ⓘ", cls="info-tip", tabindex="0", role="img", **{"aria-label": text, "data-tip": text})
+    return Span(glyph, cls="info-tip", tabindex="0", role="img", **{"aria-label": text, "data-tip": text})
 
 
 _HEALTH_BANNER_JS = """

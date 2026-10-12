@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 from fasthtml.common import *
-from ui.i18n import t, field_label
+from ui.i18n import t, t_or, field_label
 from celerp.services.field_schema import MIXED_VALUE
 # Canonical definitions live with the shared document renderer; re-exported
 # here for the UI's many call sites. EMPTY is the canonical empty-value
@@ -1306,6 +1306,41 @@ def table_columns(schema: list[dict], show_cols: list[str] | None = None,
     return visible
 
 
+def match_field_label(field: str, labels: dict[str, str]) -> str:
+    """Display label of a searched field: the page's label for it (``field_label`` of its
+    schema entry, so a custom field reads as the user named it), else the built-in
+    ``field.label.*`` translation, else the key."""
+    return labels.get(field) or t_or(f"field.label.{field}", field)
+
+
+def match_value(record: dict, field: str) -> str | None:
+    """The record's value of a searched field as text (numbers without a trailing .0), or
+    None when the record does not carry it (e.g. hidden by role visibility)."""
+    raw = record.get(field)
+    if raw is None or raw == "":
+        return None
+    return format(raw, "g") if isinstance(raw, (int, float)) else str(raw)
+
+
+def match_reason_text(record: dict, labels: dict[str, str]) -> str | None:
+    """Why a searched row matched, as one sentence per reason (q_match), joined by "; ":
+    "Matched Barcode: 7436" when the reason is the field's whole value (or its exact
+    identifier hit, q_exact), else "Barcode contains 7436". None when no reason names a
+    field the row carries, so nothing is ever shown that the row cannot back."""
+    parts = []
+    for reason in record.get("q_match") or []:
+        field, match = reason.get("field") or "", str(reason.get("match") or "")
+        value = match_value(record, field) if field and match else None
+        if value is None:
+            continue
+        label = match_field_label(field, labels)
+        if record.get("q_exact") == field or value.lower() == match.lower():
+            parts.append(t("inventory.search_matched", field=label, value=value))
+        else:
+            parts.append(t("inventory.search_contains", field=label, value=match))
+    return "; ".join(parts) or None
+
+
 def data_row(
     row: dict,
     columns: list[dict],
@@ -1318,10 +1353,12 @@ def data_row(
     edit_url_tpl: str | None = None,
     delete_url_tpl: str | None = None,
     cell_renderers: dict | None = None,
+    match_labels: dict[str, str] | None = None,
 ) -> FT:
-    """One body row of ``data_table``: checkbox, a cell per column of ``table_columns``,
-    and the row menu. Every path that renders or re-renders a row calls this, so a row
-    never differs from the one the table drew. Arguments as for ``data_table``."""
+    """One body row of ``data_table``: checkbox, the search-match cell (when
+    ``match_labels`` is given), a cell per column of ``table_columns``, and the row menu.
+    Every path that renders or re-renders a row calls this, so a row never differs from
+    the one the table drew. Arguments as for ``data_table``."""
     entity_id = row.get("id") or row.get("entity_id", "")
     safe_id = entity_id.replace(":", "-")
     _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
@@ -1369,17 +1406,21 @@ def data_row(
     if str(row.get("inventory_type") or "") == "component":
         row_cls += " data-row--component"  # visual cue for component (raw-material) items
     # Search ranking cue: the row's identifier equals the search term exactly (q_exact,
-    # from the inventory search), named in the row title.
-    row_title: dict = {}
+    # from the inventory search); the match cell's "?" says which field.
     if row.get("q_exact"):
         row_cls += " data-row--exact"
-        row_title["title"] = t(f"inventory.search_exact_{row['q_exact']}")
+    match_td = []
+    if match_labels is not None:
+        from ui.components.shell import info_tip
+        reason = match_reason_text(row, match_labels)
+        match_td = [Td(info_tip(reason, glyph="?") if reason else "", cls="col-match")]
     # Per-row editability escape: a row may carry _row_editable_keys naming fields
     # that render click-to-edit even when the schema marked them read-only
     # (used for draft items, whose amount fields stay authorable until commit).
     row_editable = set(row.get("_row_editable_keys") or ())
     return Tr(
         *checkbox_td,
+        *match_td,
         *[
             cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
             else display_cell(
@@ -1399,7 +1440,6 @@ def data_row(
         *action_cell,
         id=f"row-{safe_id}",
         cls=row_cls,
-        **row_title,
     )
 
 
@@ -1425,6 +1465,7 @@ def data_table(
     cell_renderers: dict | None = None,
     hidden_fields: set | None = None,
     column_filters: dict | None = None,
+    match_labels: dict[str, str] | None = None,
 ) -> FT:
     """
     Dynamic spreadsheet table. Headers from schema (never hardcoded), rows from API.
@@ -1443,6 +1484,9 @@ def data_table(
                   ``/api/items/{id}/field/{field}/edit`` for all editable cells.
     delete_url_tpl: URL template for row-menu delete, with ``{entity_id}`` placeholder
                     (e.g. ``"/api/items/{entity_id}"``). Defaults to ``/api/items/{entity_id}``.
+    match_labels: display labels by field key for a searched list; when given, a leading
+                  column after the checkbox holds each row's "?" match reason
+                  (``match_reason_text``).
     """
     visible = table_columns(schema, show_cols, hidden_fields)
     if not rows:
@@ -1492,6 +1536,7 @@ def data_table(
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title=t("label.select_all")), cls="col-checkbox")] if show_checkboxes else []
     header = Thead(Tr(
         *checkbox_th,
+        *([] if match_labels is None else [Th("", cls="col-match")]),
         *[_th(f) for f in visible],
         *([] if not show_row_menu else [Th("", cls="col-actions")]),
     ))
@@ -1500,7 +1545,7 @@ def data_table(
         return data_row(row, visible, entity_type=entity_type, currency=currency,
                         show_row_menu=show_row_menu, show_checkboxes=show_checkboxes,
                         link_fn=link_fn, edit_url_tpl=edit_url_tpl, delete_url_tpl=delete_url_tpl,
-                        cell_renderers=cell_renderers)
+                        cell_renderers=cell_renderers, match_labels=match_labels)
 
     # JS: smart column defaults + localStorage persistence + drag-to-resize
     import json as _json
@@ -1731,14 +1776,16 @@ def data_table(
           if (!k) return null;
           return cells.find(function(td) {{ return td.dataset.col === k; }});
         }}).filter(Boolean);
-        // Preserve fixed columns (checkbox, actions) by class
+        // Preserve fixed columns (checkbox, search match, actions) by class
         var checkboxTd = tr.querySelector('.col-checkbox');
+        var matchTd = tr.querySelector('.col-match');
         var actionsTd = tr.querySelector('.col-actions');
         var dataTds = newOrder.filter(function(td) {{
           return td && td !== checkboxTd && td !== actionsTd;
         }});
         var ordered = [];
         if (checkboxTd) ordered.push(checkboxTd);
+        if (matchTd) ordered.push(matchTd);
         ordered = ordered.concat(dataTds);
         if (actionsTd) ordered.push(actionsTd);
         ordered.forEach(function(td) {{ tr.appendChild(td); }});
@@ -1772,12 +1819,14 @@ def data_table(
     table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
       var cells = Array.from(tr.children);
       var checkboxTd = tr.querySelector('.col-checkbox');
+      var matchTd = tr.querySelector('.col-match');
       var actionsTd = tr.querySelector('.col-actions');
       var dataCells = allThs2.map(function(th2) {{
         return cells.find(function(td) {{ return td.dataset.col === th2.dataset.key; }});
       }}).filter(Boolean);
       var ordered = [];
       if (checkboxTd) ordered.push(checkboxTd);
+      if (matchTd) ordered.push(matchTd);
       ordered = ordered.concat(dataCells);
       if (actionsTd) ordered.push(actionsTd);
       ordered.forEach(function(td) {{ tr.appendChild(td); }});
@@ -2411,9 +2460,9 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     order.forEach(function(k){{var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);}});
     var allThs=Array.from(htr.querySelectorAll('th[data-key]'));
     t.querySelectorAll('tbody tr.data-row').forEach(function(tr){{
-      var cbTd=tr.querySelector('.col-checkbox'),aTd=tr.querySelector('.col-actions');
+      var cbTd=tr.querySelector('.col-checkbox'),mTd=tr.querySelector('.col-match'),aTd=tr.querySelector('.col-actions');
       var data=allThs.map(function(h){{return tr.querySelector('[data-col="'+h.dataset.key+'"]');}}).filter(Boolean);
-      var out=[];if(cbTd)out.push(cbTd);out=out.concat(data);if(aTd)out.push(aTd);
+      var out=[];if(cbTd)out.push(cbTd);if(mTd)out.push(mTd);out=out.concat(data);if(aTd)out.push(aTd);
       out.forEach(function(td){{tr.appendChild(td);}});
     }});
   }}

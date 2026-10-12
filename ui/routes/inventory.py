@@ -1100,6 +1100,8 @@ def _inventory_table(
         ),
         hidden_fields=set(_PAIRED_TABLE.values()),
     )
+    if str(p.get("q") or "").strip():
+        table_args["match_labels"] = {f["key"]: field_label(f) for f in eff_schema}
     return eff_schema, visible_cols, table_args
 
 
@@ -3142,7 +3144,7 @@ function celerpPrintLabel(entityId, templateId) {
             # sold value included), falling back to the item itself outside any scope.
             scoped = await api.list_items(token, {
                 "skus": item.get("sku", ""), "limit": 50,
-                **{k: p[k] for k in ("status", "on_memo_to", "consigned_from") if p.get(k)}})
+                **{k: p[k] for k in ("q", "status", "on_memo_to", "consigned_from") if p.get(k)}})
         except APIError as e:
             return Response(str(e.detail), status_code=500)
         row = next((r for r in scoped.get("items", []) if r.get("id") == entity_id), None) \
@@ -6018,12 +6020,13 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
     table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
       var cells = Array.from(tr.children);
-      var checkboxTd = cells[0];
-      var actionsTd = cells[cells.length - 1];
+      var checkboxTd = tr.querySelector('.col-checkbox');
+      var matchTd = tr.querySelector('.col-match');
+      var actionsTd = tr.querySelector('.col-actions');
       var dataCells = allThs.map(function(th) {{
         return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
       }}).filter(Boolean);
-      [checkboxTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
+      [checkboxTd, matchTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
         if (td) tr.appendChild(td);
       }});
     }});

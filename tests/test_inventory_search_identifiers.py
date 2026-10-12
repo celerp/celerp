@@ -180,19 +180,101 @@ async def test_inventory_content_scoped_scan_shows_not_found_without_exact_rows(
     xml = await _render(monkeypatch, client, h, "barcode: 1042, 1099, 1100")
     assert "Not found: 1099, 1100" in xml
     assert "data-row--exact" not in xml
-    assert "Exact barcode match" not in xml
+
+
+def _rows(xml: str) -> list:
+    from bs4 import BeautifulSoup
+    return BeautifulSoup(xml, "html.parser").select("#data-table tbody tr.data-row")
+
+
+def _tip(tr) -> str | None:
+    """The "?" icon's sentence in a row's match cell, or None when the cell is empty."""
+    cell = tr.find("td", class_="col-match")
+    assert cell is not None, "row has no match cell"
+    tip = cell.find(class_="info-tip")
+    return tip["data-tip"] if tip else None
 
 
 @pytest.mark.asyncio
-async def test_inventory_content_bare_term_marks_exact_rows(client, monkeypatch):
-    """Red statement: the list had no mark on exact rows. A bare term ranks, so the row
-    whose barcode is exactly the term is marked, from the real API output."""
+async def test_exact_row_keeps_tint_and_names_reason_in_the_icon(client, monkeypatch):
+    """Red statement: the exact row named its reason only in the row's hover title. A bare
+    term ranks, so the row whose barcode is exactly the term keeps its tint, and its "?"
+    icon says why, from the real API output."""
+    h = await _owner(client)
+    ids = await _collisions(client, h)
+    xml = await _render(monkeypatch, client, h, "1042")
+    assert "Not found" not in xml
+    rows = {tr["id"]: tr for tr in _rows(xml)}
+    exact = rows["row-" + ids["barcode_1042"].replace(":", "-")]
+    assert "data-row--exact" in exact["class"]
+    assert not exact.get("title")
+    assert _tip(exact) == "Matched Barcode: 1042"
+    assert _tip(rows["row-" + ids["barcode_10420"].replace(":", "-")]) == "Barcode contains 1042"
+
+
+@pytest.mark.asyncio
+async def test_inventory_rows_show_a_question_mark_icon_when_searching(client, monkeypatch):
+    """Red statement: a searched row did not say why it matched. Every row of a search
+    carries a "?" icon in a leading column, with a header cell above it."""
     h = await _owner(client)
     await _collisions(client, h)
-    xml = await _render(monkeypatch, client, h, "1042")
-    assert "data-row--exact" in xml
-    assert "Exact barcode match" in xml
-    assert "Not found" not in xml
+    xml = await _render(monkeypatch, client, h, "ring")
+    rows = _rows(xml)
+    assert rows
+    for tr in rows:
+        cells = tr.find_all("td", recursive=False)
+        assert "col-checkbox" in cells[0]["class"] and "col-match" in cells[1]["class"]
+        assert cells[1].find(class_="info-tip").get_text() == "?"
+        assert _tip(tr)
+    assert any(_tip(tr) == "Name contains ring" for tr in rows)
+    from bs4 import BeautifulSoup
+    head = BeautifulSoup(xml, "html.parser").select("#data-table thead th")
+    assert "col-match" in head[1]["class"]
+
+
+@pytest.mark.asyncio
+async def test_no_icon_column_without_a_search(client, monkeypatch):
+    """Guard: the plain list has no match column, so it cannot shift the table."""
+    h = await _owner(client)
+    await _collisions(client, h)
+    xml = await _render(monkeypatch, client, h, "")
+    from bs4 import BeautifulSoup
+    assert _rows(xml)
+    assert not BeautifulSoup(xml, "html.parser").select("#data-table .col-match")
+
+
+@pytest.mark.asyncio
+async def test_icon_keeps_after_inline_edit_rerender():
+    """Red statement: the single-row reload drew the row without the match cell, so a
+    row edited during a search lost its "?" icon and slid one column left."""
+    from unittest.mock import AsyncMock, patch
+    from bs4 import BeautifulSoup
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+
+    item = {"id": "item:1", "entity_id": "item:1", "sku": "SKU-1", "name": "Ruby ring",
+            "quantity": 1.0, "sell_by": "piece", "status": "available", "barcode": "99742"}
+    listed = {**item, "q_match": [{"field": "barcode", "match": "742"}]}
+    list_items = AsyncMock(return_value={"items": [listed]})
+    with (
+        patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
+        patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+        patch("ui.api_client.list_items", new=list_items),
+        patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+        patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+        patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            r = await c.get("/api/items/item:1/row", cookies={"celerp_token": make_test_token(role="owner")},
+                            headers={"hx-current-url": "http://ui/inventory?q=742"})
+    assert r.status_code == 200, r.text
+    assert list_items.await_args.args[1]["q"] == "742"
+    tr = BeautifulSoup(r.text, "html.parser").find("tr")
+    assert _tip(tr) == "Barcode contains 742"
 
 
 @pytest.mark.asyncio

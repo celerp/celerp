@@ -519,6 +519,8 @@ a:hover { text-decoration: underline; }
 .cell-actions { display: flex; gap: 4px; align-items: center; }
 
 .col-checkbox { width: 28px; }
+/* The search-match "?" column: only drawn while a search is active. */
+.col-match { width: 24px; text-align: center; }
 
 /* compact variant */
 .data-table--compact th, .data-table--compact td { padding: 4px 8px; }

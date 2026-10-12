@@ -12,7 +12,7 @@ from starlette.responses import Response
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.table import display_enum
+from ui.components.table import display_enum, match_field_label, match_value
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from celerp.services.app_paths import is_app_local_path
@@ -21,20 +21,20 @@ logger = logging.getLogger(__name__)
 
 
 def _match_tags(record: dict, visible: tuple[str, ...]) -> list:
-    """`- field: value` tags for the record's search-match reasons (q_match, set by
+    """`- Field: value` tags for the record's search-match reasons (q_match, set by
     the inventory list endpoint) in fields the row does not already display, with
     the matched part of the value bold and long values clipped to a window around
-    it. A reason whose field is missing from the record (e.g. hidden by role
+    it. The field reads as its display label, as on the inventory list's "?" icon.
+    A reason whose field is missing from the record (e.g. hidden by role
     visibility) renders no tag."""
     tags = []
     for reason in record.get("q_match") or []:
         field, match = reason.get("field") or "", str(reason.get("match") or "")
         if not field or not match or field in visible:
             continue
-        raw = record.get(field)
-        if raw is None or raw == "":
+        value = match_value(record, field)
+        if value is None:
             continue
-        value = format(raw, "g") if isinstance(raw, (int, float)) else str(raw)
         i = value.lower().find(match.lower())
         if i < 0:
             continue
@@ -43,7 +43,8 @@ def _match_tags(record: dict, visible: tuple[str, ...]) -> list:
             pre = "..." + pre[-24:]
         if len(post) > 24:
             post = post[:24] + "..."
-        tags.append(Span(f" - {field}: ", pre, Strong(hit), post, cls="search-result-match"))
+        tags.append(Span(f" - {match_field_label(field, {})}: ", pre, Strong(hit), post,
+                         cls="search-result-match"))
     return tags
 
 

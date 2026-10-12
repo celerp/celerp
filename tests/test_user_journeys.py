@@ -1074,9 +1074,9 @@ class TestEdgeCases:
         assert b"Sold Widget" in r.content
 
     @pytest.mark.asyncio
-    async def test_global_search_shows_match_reason_tags(self, ui):
+    async def test_global_search_tag_uses_display_label(self, ui):
         """A result that matched on a field the row does not display gets a
-        "- field: value" tag with the matched part bold, so the user can see why
+        "- Field: value" tag with the matched part bold, so the user can see why
         it hit. A match on an already-visible field (name/sku) adds no tag."""
         mock_items = AsyncMock(return_value={"items": [
             {"name": "Widget", "sku": "W1", "id": "item:w1", "status": "available",
@@ -1088,8 +1088,10 @@ class TestEdgeCases:
         with _Patches(_search_mocks(list_items=mock_items)):
             r = await ui.get("/search?q=255", cookies=_c())
         assert r.status_code == 200
-        # Hidden-field hit: tag names the field, matched part bold within the value.
-        assert b"barcode: " in r.content
+        # Hidden-field hit: tag names the field by its display label (never the raw
+        # key), matched part bold within the value.
+        assert b" - Barcode: " in r.content
+        assert b" - barcode: " not in r.content
         assert b"000<strong>255</strong>" in r.content
         # Visible-field hit: no tag rendered for name.
         assert b"name: " not in r.content
