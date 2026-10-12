@@ -674,3 +674,75 @@ async def test_s3_reads_a_stored_thumbnail_by_its_id(monkeypatch):
     missing = _S3MissingClient(b"")
     monkeypatch.setattr(att_svc, "_s3_client", lambda *a: missing)
     assert await s3.read_stored("co1", "a2_thumb", "image/jpeg", 100) is None
+
+
+# ── The photo id is internal: never searched, never a facet ────────────────────
+
+def _photo_only_tail(file_id: str, *other: str) -> str:
+    """A 6-character piece of the photo id that appears in no other value of the item."""
+    for i in range(len(file_id) - 6, -1, -1):
+        tail = file_id[i:i + 6]
+        if "-" not in tail and not any(tail.lower() in o.lower() for o in other):
+            return tail
+    raise AssertionError("no unique piece of the photo id")
+
+
+async def _item_with_photo(client, h, sku="PHOTO-ITEM"):
+    item_id = await _item(client, h, sku)
+    file_id = await _upload(client, h, item_id, _png())
+    return item_id, file_id, _photo_only_tail(file_id, sku, item_id, "Thumb item")
+
+
+@pytest.mark.asyncio
+async def test_search_does_not_match_the_thumbnail_file_id(client):
+    h = await _headers(client)
+    item_id, file_id, tail = await _item_with_photo(client, h)
+    r = await client.get(f"/items/{item_id}", headers=h)
+    assert r.json()["thumbnail_file_id"] == file_id  # the item still carries its photo
+    r = await client.get("/items", params={"q": tail}, headers=h)
+    assert r.status_code == 200, r.text
+    assert [it["id"] for it in r.json()["items"]] == []
+
+
+@pytest.mark.asyncio
+async def test_search_still_finds_the_real_barcode(client):
+    h = await _headers(client)
+    item_id, _, _ = await _item_with_photo(client, h)
+    r = await client.patch(f"/items/{item_id}", json={"fields_changed": {"barcode": {"old": None, "new": "143715"}}},
+                           headers=h)
+    assert r.status_code == 200, r.text
+    r = await client.get("/items", params={"q": "4371"}, headers=h)
+    rows = [it for it in r.json()["items"] if it["id"] == item_id]
+    assert rows and rows[0]["q_match"][0]["field"] == "barcode"
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_file_id_is_not_an_attribute_facet(client):
+    h = await _headers(client)
+    await _item_with_photo(client, h)
+    r = await client.get("/items", headers=h)
+    assert r.status_code == 200, r.text
+    assert "thumbnail_file_id" not in r.json()["attribute_facets"]
+
+
+@pytest.mark.asyncio
+async def test_csv_export_with_q_excludes_a_photo_id_match(client):
+    h = await _headers(client)
+    _, _, tail = await _item_with_photo(client, h)
+    r = await client.get("/items/export/csv", params={"q": tail}, headers=h)
+    assert r.status_code == 200, r.text
+    assert "PHOTO-ITEM" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_global_search_excludes_a_photo_id_match(client, session):
+    from celerp_inventory.search import global_search
+    from celerp.services.auth import get_token_claims
+    h = await _headers(client)
+    _, _, tail = await _item_with_photo(client, h)
+    company_id = get_token_claims(h["Authorization"].split()[1])["company_id"]
+    import uuid
+    found = await global_search(session, uuid.UUID(company_id), "owner", tail, 10)
+    assert found["items"] == []
+    found = await global_search(session, uuid.UUID(company_id), "owner", "PHOTO-ITEM", 10)
+    assert [it["sku"] for it in found["items"]] == ["PHOTO-ITEM"]

@@ -70,6 +70,8 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "parent_item_id", "manufacturing_order_id", "lot",
     # files / media
     "files", "attachments", "preview_image_id",
+    # derived on every read by flatten_item (the list photo); never searched or faceted
+    "thumbnail_file_id",
     # other structured internals
     "recipe", "workflow", "tax_codes",
 })
