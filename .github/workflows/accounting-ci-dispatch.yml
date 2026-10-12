@@ -1,0 +1,21 @@
+name: Validate accountant accounting branch
+on:
+  push:
+    branches: [accounting-ci-dispatch-20261012]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dispatch canonical accounting branch checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          current="$(git ls-remote origin refs/heads/accounting-migration-improvements-20261011 | cut -f1)"
+          test "$current" = "8d2421b2f1363bfa596870e27bcf8c85278e7273" || { echo 'Branch moved'; exit 1; }
+          gh workflow run ci.yml --ref accounting-migration-improvements-20261011
+          gh workflow run build.yml --ref accounting-migration-improvements-20261011
