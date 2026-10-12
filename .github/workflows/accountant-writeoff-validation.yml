@@ -3,7 +3,8 @@ on:
   push:
     branches: [accountant-writeoff-validation-20261012]
 permissions:
-  contents: read
+  contents: write
+  actions: write
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -69,3 +70,29 @@ jobs:
       - name: Test write-off correction and neighbors
         run: |
           pytest -q tests/test_writeoff_cost_restatement.py tests/test_posting_roles_kept_stock.py tests/test_cost_restatement.py tests/test_writeoff_zero_cost.py --tb=short --no-cov -x
+      - name: Publish tested correction at exact target head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git add tests/test_writeoff_cost_restatement.py
+          git diff --cached --check
+          python - <<'PY'
+          import subprocess
+          expected = {
+              "celerp/services/auto_je.py",
+              "default_modules/celerp-docs/celerp_docs/routes.py",
+              "default_modules/celerp-inventory/celerp_inventory/services.py",
+              "default_modules/first_party.lock.json",
+              "tests/test_writeoff_cost_restatement.py",
+          }
+          actual = set(subprocess.check_output(["git", "diff", "--cached", "--name-only"], text=True).splitlines())
+          assert actual == expected, (sorted(actual), sorted(expected))
+          PY
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git commit -m "Correct late write-off cost adjustments"
+          target=refs/heads/accounting-migration-improvements-20261011
+          actual="$(git ls-remote origin "$target" | cut -f1)"
+          test "$actual" = "814d8f9983698890e4a88ace3fa543781143eeae" || { echo "Branch moved; no publication"; exit 1; }
+          git push origin "HEAD:$target"
+          gh workflow run ci.yml --ref accounting-migration-improvements-20261011
