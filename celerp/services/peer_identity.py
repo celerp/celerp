@@ -145,3 +145,88 @@ async def receive_contact(session: AsyncSession, *, grant, source_entity_id: str
         mapping.last_payload_hash = digest
     await session.flush()
     return result.status
+
+
+async def receive_item(session: AsyncSession, *, grant, source_entity_id: str,
+                       source_revision: int, data: dict) -> str:
+    """Apply item metadata through the normal inventory import writer.
+
+    Quantities, costs and lifecycle statuses are not part of this contract.
+    They must arrive through their own stock and accounting operations.
+    """
+    from types import SimpleNamespace
+
+    from celerp.models.company import Company
+    from celerp_inventory.services import BatchImportRequest, ImportRecord, write_import_batch
+
+    if (type(source_revision) is not int or not 1 <= source_revision <= 2**63 - 1
+            or not isinstance(source_entity_id, str) or not 1 <= len(source_entity_id) <= 512):
+        raise HTTPException(422, "Invalid item revision")
+    allowed = {"name", "sku", "sell_by", "description", "category", "barcode", "weight_unit"}
+    if (not isinstance(data, dict) or not set(data) <= allowed
+            or not all(isinstance(data.get(field), str) and data[field].strip()
+                       for field in ("name", "sku", "sell_by"))):
+        raise HTTPException(422, "Invalid item metadata")
+
+    company_id, source_company = grant.company_id, grant.source_company_id
+    digest = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":"),
+                                       ensure_ascii=False).encode()).hexdigest()
+    source_key = _digest(source_entity_id)
+    mapping = await session.scalar(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == company_id,
+        CompanyPeerIdentity.source_company_id == source_company,
+        CompanyPeerIdentity.entity_type == "item",
+        CompanyPeerIdentity.source_key_hash == source_key,
+    ))
+    if mapping is not None:
+        if mapping.source_entity_id != source_entity_id:
+            raise HTTPException(409, "External item identity conflict")
+        if source_revision < mapping.last_revision:
+            return "skipped"
+        if source_revision == mapping.last_revision:
+            if mapping.last_payload_hash and mapping.last_payload_hash != digest:
+                raise HTTPException(409, "Item revision already used")
+            return "skipped"
+        target = await peer_identity(session, target_company=company_id,
+                                     source_company=source_company, entity_type="item",
+                                     source_entity_id=source_entity_id)
+    else:
+        target = new_target_identity(source_company, "item", source_entity_id)
+        if await session.get(Projection, (company_id, target)) is not None:
+            raise HTTPException(409, "External item identity conflicts with an existing record")
+
+    company = await session.get(Company, company_id)
+    if company is None or not company.is_active or company.is_migration_staged:
+        raise HTTPException(404, "Company unavailable")
+
+    current = await session.get(Projection, (company_id, target)) if mapping is not None else None
+    if current is not None and all((current.state or {}).get(key) == value for key, value in data.items()):
+        result = "skipped"
+    else:
+        create = mapping is None
+        record = ImportRecord(
+            entity_id=target, event_type="item.created" if create else "item.patched",
+            data={**data, "quantity": 0, "status": "draft"} if create else data,
+            source="connector",
+            idempotency_key=f"peer:item:{source_company}:{source_key}:{source_revision}",
+        )
+        outcome, _ = await write_import_batch(
+            session, company_id, SimpleNamespace(id=None), "owner",
+            company.settings or {}, BatchImportRequest(records=[record]),
+        )
+        result = outcome.records[0].status
+        if result not in ("created", "updated", "skipped"):
+            raise HTTPException(409, "Item update was not accepted")
+
+    if mapping is None:
+        session.add(CompanyPeerIdentity(
+            company_id=company_id, source_company_id=source_company, entity_type="item",
+            source_entity_id=source_entity_id, source_key_hash=source_key,
+            target_entity_id=target, last_revision=source_revision,
+            last_payload_hash=digest,
+        ))
+    else:
+        mapping.last_revision = source_revision
+        mapping.last_payload_hash = digest
+    await session.flush()
+    return result

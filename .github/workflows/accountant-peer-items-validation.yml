@@ -1,0 +1,41 @@
+name: Accountant peer item validation
+on:
+  push:
+    branches: [accountant-peer-items-validation-20261012]
+permissions:
+  contents: read
+jobs:
+  item-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+      ALLOW_INSECURE_JWT: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install application test dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]" -c constraints.txt
+      - name: Verify peer catalog and identity contracts
+        run: |
+          pytest -q tests/test_company_peer_items.py tests/test_celerp_peer_connector.py tests/test_company_peer_identity.py tests/test_company_peer_access.py --no-cov --tb=short -x
+      - name: Validate migration graph
+        run: |
+          pytest -q tests/test_migrations/test_alembic_graph.py --no-cov --tb=short -x

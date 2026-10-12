@@ -95,6 +95,43 @@ class PeerContactUpdate(BaseModel):
     data: ContactData
 
 
+class PeerItemData(BaseModel):
+    """Item catalogue fields only, never stock quantities or their costs."""
+    model_config = {"extra": "forbid"}
+    name: str = Field(min_length=1, max_length=255)
+    sku: str = Field(min_length=1, max_length=128)
+    sell_by: str = Field(min_length=1, max_length=64)
+    description: str | None = Field(default=None, max_length=4096)
+    category: str | None = Field(default=None, max_length=255)
+    barcode: str | None = Field(default=None, max_length=128)
+    weight_unit: str | None = Field(default=None, max_length=64)
+
+
+class PeerItemUpdate(BaseModel):
+    source_company_id: uuid.UUID
+    source_entity_id: str = Field(min_length=1, max_length=512)
+    source_revision: int = Field(ge=1, le=2**63 - 1)
+    data: PeerItemData
+
+
+@router.post("/items")
+async def receive_peer_item(body: PeerItemUpdate,
+                            authorization: str = Header(default=""),
+                            session: AsyncSession = Depends(get_session)):
+    from celerp.services.peer_identity import receive_item
+    scheme, _, key = authorization.partition(" ")
+    if scheme != "Peer" or not key:
+        raise HTTPException(401, "Invalid integration credentials")
+    grant = await peer_access.authenticate(
+        session, key, source_company_id=body.source_company_id, scope="items")
+    result = await receive_item(
+        session, grant=grant, source_entity_id=body.source_entity_id,
+        source_revision=body.source_revision,
+        data=body.data.model_dump(exclude_none=True))
+    await session.commit()
+    return {"status": result}
+
+
 @router.post("/contacts")
 async def receive_peer_contact(body: PeerContactUpdate,
                                authorization: str = Header(default=""),

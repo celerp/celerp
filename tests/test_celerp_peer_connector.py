@@ -15,8 +15,8 @@ from celerp.connectors import celerp as peer
 
 def test_celerp_is_outbound_only_and_registered():
     connector = get("celerp")
-    assert supported_outbound(connector) == ["contacts_out"]
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["contacts_out"]
+    assert supported_outbound(connector) == ["products_out", "contacts_out"]
+    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out"]
     assert sync_plan(connector, SyncDirection.INBOUND) == []
 
 
@@ -71,3 +71,41 @@ def test_peer_credential_form_uses_key_and_https_origin():
     for url in ("", "http://accountant.example.com", "https://accountant.example.com/path",
                 "https://accountant.example.com?x=1", "https://user@accountant.example.com"):
         assert _store_url_error(url, "celerp") is not None
+
+
+@pytest.mark.asyncio
+async def test_item_outbound_is_catalog_only(monkeypatch):
+    sent = []
+    company_id = str(uuid.uuid4())
+    async def read_page(company_id_arg, after, entity_type="contact"):
+        assert str(company_id_arg) == company_id
+        assert entity_type == "item"
+        return ([("item:one", 8, {
+            "name": "One", "sku": "ONE", "sell_by": "piece",
+            "description": "Description", "cost_price": 123,
+            "cost_total": 800, "quantity": 10, "location_id": "private",
+            "private_note": "Internal", "status": "available",
+        })] if not after else [])
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"public_only": True}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return None
+        async def post(self, url, **kwargs):
+            assert url == "https://peer.example/company-peers/items"
+            sent.append(kwargs)
+            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+
+    monkeypatch.setattr(peer, "_read_page", read_page)
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    connector = peer.CelerpConnector()
+    result = await connector.sync_products_out(ConnectorContext(
+        company_id=company_id, store_handle="https://peer.example", access_token="cp1.secret"))
+    assert result.created == 1 and result.errors == []
+    assert sent[0]["json"]["source_revision"] == 8
+    assert sent[0]["json"]["data"] == {
+        "name": "One", "sku": "ONE", "sell_by": "piece",
+        "description": "Description",
+    }
+    assert sent[0]["headers"]["Authorization"] == "Peer cp1.secret"
