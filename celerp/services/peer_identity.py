@@ -148,3 +148,88 @@ async def receive_contact(session: AsyncSession, *, grant, source_entity_id: str
         mapping.last_payload_hash = digest
     await session.flush()
     return result.status
+
+
+
+async def receive_product(session: AsyncSession, *, grant, source_entity_id: str,
+                          source_revision: int, data: dict) -> str:
+    """Apply one product through the ordinary inventory importer, without stock movements."""
+    from types import SimpleNamespace
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+    from celerp_inventory.services import BatchImportRequest, ImportRecord, write_import_batch
+
+    if (type(source_revision) is not int or not 1 <= source_revision <= 2**63 - 1
+            or not isinstance(source_entity_id, str) or not 1 <= len(source_entity_id) <= 512):
+        raise HTTPException(422, "Invalid product revision")
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(422, "Product name required")
+    # Product/catalog changes do not represent stock movements or expense postings.
+    allowed = {"name", "sku", "description", "sell_by", "category",
+               "barcode", "retail_price", "wholesale_price"}
+    if set(data) - allowed:
+        raise HTTPException(422, "Unsupported product fields")
+    body = {key: value for key, value in data.items() if value is not None}
+    digest = hashlib.sha256(json.dumps(
+        data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    company_id, source_company = grant.company_id, grant.source_company_id
+    key = _digest(source_entity_id)
+    mapping = await session.scalar(select(CompanyPeerIdentity).where(
+        CompanyPeerIdentity.company_id == company_id,
+        CompanyPeerIdentity.source_company_id == source_company,
+        CompanyPeerIdentity.entity_type == "item",
+        CompanyPeerIdentity.source_key_hash == key,
+    ).with_for_update())
+    if mapping is not None:
+        if mapping.source_entity_id != source_entity_id:
+            raise HTTPException(409, "External product identity conflict")
+        if source_revision < mapping.last_revision:
+            return "skipped"
+        if source_revision == mapping.last_revision:
+            if mapping.last_payload_hash and mapping.last_payload_hash != digest:
+                raise HTTPException(409, "Product revision already used")
+            return "skipped"
+        target_id = await peer_identity(
+            session, target_company=company_id, source_company=source_company,
+            entity_type="item", source_entity_id=source_entity_id)
+        event_type = "item.patched"
+    else:
+        target_id = new_target_identity(source_company, "item", source_entity_id)
+        if await session.get(Projection, (company_id, target_id)) is not None:
+            raise HTTPException(409, "External product identity conflicts with existing record")
+        event_type = "item.created"
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(404, "Company unavailable")
+    member = (await session.execute(select(User.id, UserCompany.role).join(
+        UserCompany, UserCompany.user_id == User.id).where(
+        UserCompany.company_id == company_id,
+        UserCompany.role == "owner",
+    ).order_by(User.id).limit(1))).first()
+    if member is None:
+        raise HTTPException(403, "Company owner unavailable")
+    record = ImportRecord(
+        entity_id=target_id, event_type=event_type, data=body,
+        source="connector",
+        idempotency_key=f"peer:item:{source_company}:{key}:{source_revision}",
+    )
+    async with session.begin_nested():
+        outcome, _batch = await write_import_batch(
+            session, company_id, SimpleNamespace(id=member.id), member.role,
+            dict(company.settings or {}), BatchImportRequest(records=[record]))
+        result = outcome.records[0]
+        if result.status not in ("created", "updated", "skipped"):
+            raise HTTPException(409, "Product update was not accepted")
+    if mapping is None:
+        mapping = CompanyPeerIdentity(
+            company_id=company_id, source_company_id=source_company,
+            entity_type="item", source_entity_id=source_entity_id,
+            source_key_hash=key, target_entity_id=target_id,
+            last_revision=source_revision, last_payload_hash=digest)
+        session.add(mapping)
+    else:
+        mapping.last_revision = source_revision
+        mapping.last_payload_hash = digest
+    await session.flush()
+    return result.status

@@ -22,7 +22,7 @@ _FIELDS = frozenset({
 })
 
 
-def _target_url(ctx: ConnectorContext) -> str:
+def _target_url(ctx: ConnectorContext, entity: str = "contacts") -> str:
     raw = ctx.store_handle
     if not isinstance(raw, str) or len(raw) > 1024:
         raise ValueError("No receiving Celerp installation is connected")
@@ -36,23 +36,34 @@ def _target_url(ctx: ConnectorContext) -> str:
         valid = False
     if not valid:
         raise ValueError("The receiving Celerp address is invalid")
-    return raw.rstrip("/") + "/company-peers/contacts"
+    if entity not in ("contacts", "products"):
+        raise ValueError("Unsupported peer entity")
+    return raw.rstrip("/") + "/company-peers/" + entity
 
 
-async def _read_page(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
+async def _read_projection_page(company_id: uuid.UUID, after: str, since, entity: str) -> list[tuple[str, int, dict]]:
     from celerp.db import get_session_ctx
     async with get_session_ctx() as session:
         query = select(
             Projection.entity_id, Projection.version, Projection.state,
         ).where(
             Projection.company_id == company_id,
-            Projection.entity_type == "contact",
+            Projection.entity_type == entity,
             Projection.entity_id > after,
         )
         if since is not None:
             query = query.where(Projection.updated_at >= since)
         rows = (await session.execute(query.order_by(Projection.entity_id).limit(_PAGE))).all()
     return [(str(entity_id), int(version), dict(state or {})) for entity_id, version, state in rows]
+
+
+async def _read_page(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
+    return await _read_projection_page(company_id, after, since, "contact")
+
+
+async def _read_products(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
+    return await _read_projection_page(company_id, after, since, "item")
+
 
 
 class CelerpConnector(ConnectorBase):
@@ -120,6 +131,64 @@ class CelerpConnector(ConnectorBase):
                         result.record(status)
                     except Exception:
                         result.errors.append("Contact delivery incomplete")
+                        result.attention.append({"id": entity_id, "label": entity_id,
+                                                 "reason": "Receiving installation needs attention"})
+                after = page[-1][0]
+                if len(page) < _PAGE:
+                    break
+        return result
+
+
+    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push product definitions independently of stock counts and document movements."""
+        from celerp.connectors.sync_runner import _last_success_watermark
+
+        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND,
+                            errors=[], attention=[])
+        target = _target_url(ctx, "products")
+        if not isinstance(ctx.access_token, str) or not ctx.access_token.startswith("cp1."):
+            raise ValueError("No scoped receiving credential is connected")
+        company_id = uuid.UUID(ctx.company_id)
+        since = await _last_success_watermark(ctx.company_id, self.name, "products_out")
+        after = ""
+        product_fields = ("name", "sku", "description", "sell_by", "category",
+                          "barcode", "retail_price", "wholesale_price")
+        async with RateLimitedClient(public_only=True) as client:
+            while True:
+                page = await _read_products(company_id, after, since)
+                if not page:
+                    break
+                for entity_id, revision, state in page:
+                    if (type(revision) is not int or revision < 1
+                            or state.get("deleted") or state.get("merged_into")):
+                        result.errors.append("Product state needs review")
+                        result.attention.append({"id": entity_id, "label": entity_id,
+                                                 "reason": "Product state needs review"})
+                        continue
+                    data = {k: state.get(k) for k in product_fields}
+                    if not data.get("name"):
+                        result.errors.append("Product name missing")
+                        result.attention.append({"id": entity_id, "label": entity_id,
+                                                 "reason": "Product name missing"})
+                        continue
+                    if not data.get("sell_by"):
+                        data["sell_by"] = "piece"
+                    try:
+                        response = await client.post(target, headers={
+                            "Authorization": "Peer " + ctx.access_token,
+                        }, json={
+                            "source_company_id": str(company_id),
+                            "source_entity_id": entity_id,
+                            "source_revision": revision, "data": data,
+                        })
+                        if response.status_code != 200:
+                            raise ValueError("Receiving installation refused product update")
+                        status = response.json().get("status")
+                        if status not in ("created", "updated", "skipped"):
+                            raise ValueError("Receiving installation did not acknowledge product update")
+                        result.record(status)
+                    except Exception:
+                        result.errors.append("Product delivery incomplete")
                         result.attention.append({"id": entity_id, "label": entity_id,
                                                  "reason": "Receiving installation needs attention"})
                 after = page[-1][0]

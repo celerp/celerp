@@ -15,8 +15,8 @@ from celerp.connectors import celerp as peer
 
 def test_celerp_is_outbound_only_and_registered():
     connector = get("celerp")
-    assert supported_outbound(connector) == ["contacts_out"]
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["contacts_out"]
+    assert supported_outbound(connector) == ["products_out", "contacts_out"]
+    assert sync_plan(connector, SyncDirection.OUTBOUND) == ["products_out", "contacts_out"]
     assert sync_plan(connector, SyncDirection.INBOUND) == []
 
 
@@ -102,3 +102,49 @@ async def test_contact_sync_resumes_from_last_successful_run(monkeypatch):
     ))
     assert result.ok
     assert len(seen) == 1 and seen[0][1:] == ("", watermark)
+
+
+
+@pytest.mark.asyncio
+async def test_product_sync_transmits_catalog_only_and_preserves_revision(monkeypatch):
+    from celerp.connectors import sync_runner
+
+    company = str(uuid.uuid4())
+    sent = []
+    async def watermark(company_id, connector, entity):
+        assert (company_id, connector, entity) == (company, "celerp", "products_out")
+        return None
+    async def products(company_id, after, since):
+        assert str(company_id) == company and since is None
+        return [("item:src", 5, {"name": "Widget", "sell_by": "piece",
+                                  "sku": "W1", "quantity": 400, "cost_base": 123})] if not after else []
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs == {"public_only": True}
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, url, **kwargs):
+            assert url == "https://firm.example/company-peers/products"
+            sent.append(kwargs)
+            return SimpleNamespace(status_code=200, json=lambda: {"status": "created"})
+    monkeypatch.setattr(sync_runner, "_last_success_watermark", watermark)
+    monkeypatch.setattr(peer, "_read_products", products)
+    monkeypatch.setattr(peer, "RateLimitedClient", Client)
+    result = await peer.CelerpConnector().sync_products_out(ConnectorContext(
+        company_id=company, store_handle="https://firm.example",
+        access_token="cp1.secret",
+    ))
+    assert result.created == 1 and result.ok
+    assert len(sent) == 1
+    envelope = sent[0]["json"]
+    assert envelope["source_revision"] == 5 and envelope["source_entity_id"] == "item:src"
+    assert envelope["data"]["name"] == "Widget"
+    assert "quantity" not in envelope["data"] and "cost_base" not in envelope["data"]
+
+
+def test_peer_product_payload_rejects_financial_movements_and_nonfinite_prices():
+    from pydantic import ValidationError
+    from celerp.routers.company_peers import ProductData
+    for extra in ({"quantity": 8}, {"cost_total": 200}, {"retail_price": float("inf")}):
+        with pytest.raises(ValidationError):
+            ProductData.model_validate({"name": "Widget", **extra})

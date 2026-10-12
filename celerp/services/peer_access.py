@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.company_peer import CompanyPeerGrant
 from celerp.services.company_lock import locked_company, lock_company
 
-SCOPES = frozenset({"contacts"})
+SCOPES = frozenset({"contacts", "products"})
 MAX_ACTIVE = 5
 MAX_DAYS = 90
 

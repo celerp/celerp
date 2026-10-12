@@ -140,3 +140,76 @@ async def test_peer_contact_clears_optional_value_without_changing_regular_impor
     )
     assert peer_behavior.records[0].status == "updated"
     assert changes == [{"email": {"old": "old@example.test", "new": None}}]
+
+
+
+@pytest.mark.asyncio
+async def test_product_peer_uses_canonical_inventory_writer_and_stable_restore_identity(monkeypatch):
+    from types import SimpleNamespace
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import User
+    from celerp.services.peer_identity import receive_product, new_target_identity
+    from celerp_inventory import services as inventory
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as conn:
+            for table in (Company.__table__, User.__table__, UserCompany.__table__,
+                          Projection.__table__, CompanyPeerIdentity.__table__):
+                await conn.run_sync(table.create)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        target, source, owner_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        grant = SimpleNamespace(company_id=target, source_company_id=source)
+        source_id = "item:source-widget"
+        when = datetime(2026, 10, 12, tzinfo=timezone.utc)
+        with_name = {"name": "Widget", "sku": "A1", "sell_by": "piece"}
+        changes = []
+        async def canonical_writer(session, company_id, user, role, settings, body):
+            assert company_id == target and user.id == owner_id and role == "owner"
+            (record,) = body.records
+            assert record.source == "connector"
+            assert not (set(record.data) & {"quantity", "cost_base", "cost_total"})
+            changes.append(record.event_type)
+            row = await session.get(Projection, (company_id, record.entity_id))
+            if row is None:
+                assert record.event_type == "item.created"
+                session.add(Projection(
+                    company_id=company_id, entity_id=record.entity_id,
+                    entity_type="item", state=record.data, version=1, updated_at=when))
+                status = "created"
+            else:
+                assert record.event_type == "item.patched"
+                row.state = {**row.state, **record.data}
+                row.version += 1
+                status = "updated"
+            await session.flush()
+            return SimpleNamespace(records=[SimpleNamespace(status=status)]), None
+        monkeypatch.setattr(inventory, "write_import_batch", canonical_writer)
+        async with sessions() as session:
+            session.add(Company(id=target, name="Firm", slug="firm", settings={}))
+            session.add(User(id=owner_id, email="firm@example.test", name="Accountant"))
+            session.add(UserCompany(company_id=target, user_id=owner_id, role="owner"))
+            await session.commit()
+        async with sessions() as session:
+            assert await receive_product(session, grant=grant, source_entity_id=source_id,
+                                         source_revision=1, data=with_name) == "created"
+            await session.commit()
+            assert await receive_product(session, grant=grant, source_entity_id=source_id,
+                                         source_revision=1, data=with_name) == "skipped"
+            with pytest.raises(HTTPException) as reused:
+                await receive_product(session, grant=grant, source_entity_id=source_id,
+                                      source_revision=1, data={**with_name, "name": "Wrong"})
+            assert reused.value.status_code == 409
+            assert await receive_product(session, grant=grant, source_entity_id=source_id,
+                                         source_revision=2,
+                                         data={**with_name, "name": "New Widget"}) == "updated"
+            await session.commit()
+            row = await session.get(Projection, (target, new_target_identity(source, "item", source_id)))
+            assert row is not None and row.state["name"] == "New Widget"
+            mapping = await session.scalar(select(CompanyPeerIdentity).where(
+                CompanyPeerIdentity.company_id == target,
+                CompanyPeerIdentity.source_company_id == source))
+            assert mapping.target_entity_id == row.entity_id and mapping.last_revision == 2
+            assert changes == ["item.created", "item.patched"]
+    finally:
+        await engine.dispose()
