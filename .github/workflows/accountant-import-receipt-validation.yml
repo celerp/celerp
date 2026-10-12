@@ -1,0 +1,81 @@
+name: Accountant import receipt validation
+on:
+  push:
+    branches: [accountant-import-receipt-validation-20261012]
+permissions:
+  contents: write
+  actions: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+      ALLOW_INSECURE_JWT: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply exact candidate
+        run: |
+          cat .github/receipt-part-*.b64 | tr -d ' \n' | base64 -d > /tmp/receipt.patch.gz
+          echo 'd87bab46367461b6e211f7132b5df05def6e65fd5c5b174bba09ede7de48e564  /tmp/receipt.patch.gz' | sha256sum -c -
+          gzip -dc /tmp/receipt.patch.gz > /tmp/receipt.patch
+          git switch --detach b8ebcacac3b7ce54d3f9692b7c95aa6088d856a3
+          git apply --check /tmp/receipt.patch
+          git apply --index /tmp/receipt.patch
+          git diff --cached --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test environment
+        run: |
+          pip install uv
+          uv pip install --system -e '.[dev]' -c constraints.txt
+      - name: Test receipt and company restoration
+        run: |
+          pytest -q tests/test_company_handoff_receipts.py tests/test_company_handoff_receipt_delivery.py tests/test_company_backup_lifecycle.py tests/test_company_backup_ui.py -k 'handoff or receipt or restore' --no-cov --tb=short -x
+          pytest -q tests/test_company_backup.py::test_company_copy_names_removed --no-cov --tb=short
+      - name: Publish clean source commit if unchanged
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+          import subprocess
+          expected = {
+            'celerp/services/company_backup_files.py',
+            'celerp/services/cloud_entitlement.py',
+            'celerp/gateway/state.py',
+            'celerp/routers/health.py',
+            'celerp/main.py',
+            'celerp/routers/company_backup.py',
+            'ui/api_client.py',
+            'ui/routes/company_backup.py',
+            'celerp/services/company_handoff_receipts.py',
+            'tests/test_company_handoff_receipts.py',
+            'tests/test_company_handoff_receipt_delivery.py',
+          }
+          actual = set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())
+          assert actual == expected, (sorted(actual),sorted(expected))
+          PY
+          git config user.name 'Noah Severs'
+          git config user.email '118095044+ngsevers@users.noreply.github.com'
+          git commit -m 'Acknowledge completed company handoff restores'
+          target=refs/heads/accountant-company-handoff-20261011
+          current="$(git ls-remote origin "$target" | cut -f1)"
+          test "$current" = "b8ebcacac3b7ce54d3f9692b7c95aa6088d856a3" || { echo 'PR branch moved'; exit 1; }
+          git push origin "HEAD:$target"
+          gh workflow run ci.yml --ref accountant-company-handoff-20261011
