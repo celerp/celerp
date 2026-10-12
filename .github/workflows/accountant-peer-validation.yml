@@ -1,0 +1,84 @@
+name: Accountant peer grant validation
+on:
+  push:
+    branches: [accountant-peer-validation-20261012]
+permissions:
+  contents: write
+  actions: write
+jobs:
+  peer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+      ALLOW_INSECURE_JWT: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply exact peer candidate
+        run: |
+          cp .github/accountant-peer.patch.b64 /tmp/accountant-peer.patch.b64
+          printf '%s  %s\n' '1382739ba34cf45993083d9ede32a89b8d9260ba68d887b37593f5682df876ee' '/tmp/accountant-peer.patch.gz' > /tmp/expected
+          base64 -d /tmp/accountant-peer.patch.b64 > /tmp/accountant-peer.patch.gz
+          sha256sum -c /tmp/expected
+          gzip -dc /tmp/accountant-peer.patch.gz > /tmp/accountant-peer.patch
+          git switch --detach ca0fb3df2273794c13589488ac1a3f346cfc0b88
+          git apply --check /tmp/accountant-peer.patch
+          git apply --index /tmp/accountant-peer.patch
+          git diff --cached --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e '.[dev]' -c constraints.txt
+      - name: Validate grants, restore mapping and schema
+        run: |
+          python -m compileall -q celerp/services/peer_access.py celerp/services/peer_identity.py celerp/routers/company_peers.py
+          python -m alembic heads
+          pytest -q tests/test_company_peer_access.py tests/test_company_peer_identity.py tests/test_company_backup.py::test_every_company_table_classified_full_schema tests/test_company_backup.py::test_no_table_in_both_groups tests/test_company_backup.py::test_company_copy_names_removed --no-cov --tb=short -x
+      - name: Publish exact validated source tree
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+          import subprocess
+          expected = {
+            'celerp/main.py',
+            'celerp/migrations/versions/x2p3q4r5s6t7_company_peer_grants.py',
+            'celerp/models/__init__.py',
+            'celerp/models/company_peer.py',
+            'celerp/routers/company_backup.py',
+            'celerp/routers/company_peers.py',
+            'celerp/services/company_backup.py',
+            'celerp/services/peer_access.py',
+            'celerp/services/peer_identity.py',
+            'tests/test_company_peer_access.py',
+            'tests/test_company_peer_identity.py',
+          }
+          actual = set(subprocess.check_output(['git','diff','--cached','--name-only'],text=True).splitlines())
+          assert actual == expected, (sorted(actual),sorted(expected))
+          PY
+          git config user.name 'Noah Severs'
+          git config user.email '118095044+ngsevers@users.noreply.github.com'
+          git commit -m 'Add company-scoped accountant integration grants'
+          target=refs/heads/accountant-company-handoff-20261011
+          current="$(git ls-remote origin "$target" | cut -f1)"
+          test "$current" = "ca0fb3df2273794c13589488ac1a3f346cfc0b88" || { echo 'PR head changed, no publication'; exit 1; }
+          git push origin "HEAD:$target"
+          gh workflow run ci.yml --ref accountant-company-handoff-20261011
