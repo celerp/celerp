@@ -1,0 +1,31 @@
+name: Accountant desktop link validation
+on:
+  push:
+    branches: [accountant-desktop-link-validation-20261012]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate startup and packaging
+        run: |
+          node --check electron/app-main.js
+          node --check electron/handoff-protocol.js
+          node --check electron/tests/handoff-protocol.test.js
+          node -e 'const p = require("./electron/package.json"); if (!p.build.files.includes("handoff-protocol.js") || !p.build.protocols.some(x => x.schemes.includes("celerp"))) process.exit(1)'
+      - name: Install isolated Electron test dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.0.0 --activate
+          cd electron
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Execute handoff and Electron compatibility tests
+        run: |
+          cd electron
+          pnpm exec jest --runInBand --forceExit tests/handoff-protocol.test.js tests/compatibility.test.js
