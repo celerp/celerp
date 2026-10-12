@@ -18,5 +18,5 @@ jobs:
           expected=eb6881ca6d4fee827bcee6a921e207ed2fe7a19b
           current="$(gh api repos/celerp/celerp/git/ref/heads/$target --jq '.object.sha')"
           test "$current" = "$expected" || { echo 'PR head moved, refusing stale validation'; exit 1; }
-          gh workflow run ci.yml --ref "$target"
-          gh workflow run build.yml --ref "$target"
+          gh workflow run ci.yml -R celerp/celerp --ref "$target"
+          gh workflow run build.yml -R celerp/celerp --ref "$target"
