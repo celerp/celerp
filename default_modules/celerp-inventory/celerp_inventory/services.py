@@ -567,7 +567,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                         or not isinstance(matches[0].get("account"), str)
                         or not matches[0]["account"]):
                     raise CostRestatementConflict(
-                        f"{lot_label(before, lot_id)} was disposed of without a current write-off, "
+                        f"{lot_label(before, lot_id)} was disposed of, not verifiably written off on a current write-off record, "
                         "so its cost cannot be restated automatically")
                 origin = lot_account(before)
                 writeoffs.append((lot_id, list_id, matches[0]["account"], origin, change))
