@@ -65,6 +65,18 @@ async def revoke_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user
     await session.commit()
     return {"revoked": True}
 
+@router.get("/verify")
+async def verify_peer_grant(source_company_id: uuid.UUID,
+                            authorization: str = Header(default=""),
+                            session: AsyncSession = Depends(get_session)):
+    scheme, _, credential = authorization.partition(" ")
+    if scheme != "Peer" or not credential:
+        raise HTTPException(401, "Invalid integration credentials")
+    grant = await peer_access.authenticate(
+        session, credential, source_company_id=source_company_id, scope="contacts")
+    return {"company_id": str(grant.company_id), "scopes": ["contacts"]}
+
+
 class ContactData(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     company_name: str | None = Field(default=None, max_length=255)
