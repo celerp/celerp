@@ -1242,7 +1242,9 @@ app.on("open-url", (event, url) => {
 // ── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
-  if (app.isPackaged) app.setAsDefaultProtocolClient("celerp");
+  if (app.isPackaged && typeof app.setAsDefaultProtocolClient === "function") {
+    app.setAsDefaultProtocolClient("celerp");
+  }
   // ── macOS DMG guard ───────────────────────────────────────────────────────
   // Detect if the user launched Celerp directly from a mounted disk image
   // instead of installing it to /Applications first. The app bundle will be
