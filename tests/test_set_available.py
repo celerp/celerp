@@ -65,7 +65,7 @@ async def test_held_and_shipped_lines_come_back_in_one_request(client, session, 
         assert st["status"] == "available" and not st.get("status_doc_id"), st
     recorded = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.event_type == "line_action.recorded",
-        LedgerEntry.data["owner_id"].as_string() == d))).scalars().all()
+        LedgerEntry.data["owner_id"].as_string() == d).order_by(LedgerEntry.id))).scalars().all()
     assert [e.data["action"] for e in recorded][-1] == "set-available"
 
 

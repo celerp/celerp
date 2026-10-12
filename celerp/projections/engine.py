@@ -289,10 +289,15 @@ class ProjectionEngine:
         query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
         if company_id:
             query = query.where(LedgerEntry.company_id == company_id)
-        for entry in (await session.execute(query)).scalars().all():
+        entries = (await session.execute(query)).scalars().all()
+        total = len(entries)
+        # The desktop app reads these lines to show progress while a large company replays.
+        log.info("Rebuilding records: %d of %d ledger entries", 0, total)
+        for done, entry in enumerate(entries, start=1):
             projection = await ProjectionEngine._locked_projection(session, entry)
             # A change to an item with no birth before it is skipped, as a live write refuses
             # it live: replaying it would bring back a removed item as a ghost.
-            if ProjectionEngine._changes_missing_item(entry, projection):
-                continue
-            await ProjectionEngine._write(session, entry, projection)
+            if not ProjectionEngine._changes_missing_item(entry, projection):
+                await ProjectionEngine._write(session, entry, projection)
+            if done % 1000 == 0 or done == total:
+                log.info("Rebuilding records: %d of %d ledger entries", done, total)

@@ -16,6 +16,7 @@ stock, and the books check finds nothing to report.
 """
 from __future__ import annotations
 
+import contextvars
 import time
 import uuid
 
@@ -356,6 +357,11 @@ async def test_finalizing_stays_fast_with_many_open_invoices(client, session, au
     assert time.perf_counter() - started < 2.0
 
 
+# Set only while _timed_finalize's request runs, so its count skips statements other
+# tasks run on the shared test engine at the same time.
+_IN_FINALIZE: contextvars.ContextVar[bool] = contextvars.ContextVar("_IN_FINALIZE", default=False)
+
+
 async def _timed_finalize(client, auth, engine, doc: str) -> tuple[float, int, int]:
     """Finalize ``doc``: (seconds taken, SQL statements run, rows they returned)."""
     from sqlalchemy import event
@@ -364,16 +370,22 @@ async def _timed_finalize(client, auth, engine, doc: str) -> tuple[float, int, i
 
     def count(_conn, cursor, *_args) -> None:
         nonlocal statements, rows
+        if not _IN_FINALIZE.get():
+            return  # another task on the shared engine, not this request
         statements += 1
         rows += max(cursor.rowcount, 0)
 
     event.listen(engine.sync_engine, "after_cursor_execute", count)
+    token = _IN_FINALIZE.set(True)
     try:
         started = time.perf_counter()
         await _ok(client, auth, f"/docs/{doc}/finalize")
-        return time.perf_counter() - started, statements, rows
+        seconds = time.perf_counter() - started
     finally:
+        _IN_FINALIZE.reset(token)
         event.remove(engine.sync_engine, "after_cursor_execute", count)
+    assert statements > 0, "no statements counted for the finalize request"
+    return seconds, statements, rows
 
 
 # Open invoices the shared-SKU speed test seeds on one SKU, and the seconds its last
